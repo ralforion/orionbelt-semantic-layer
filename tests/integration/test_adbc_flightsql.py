@@ -300,23 +300,13 @@ class TestExecution:
         with pytest.raises(Exception, match="(?i)reject|unsupported|\\*"):
             _fetch(conn, f"SELECT * FROM {MODEL_NAME}")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Parameter binding is unimplemented. The placeholder reaches "
-            "translate_sql_to_query at Prepare time, before any value is "
-            "bound, and the OBSQL translator has no notion of one: "
-            'UNSUPPORTED_SQL_FEATURE \'Unsupported predicate "x" = ?. Only '
-            "`column op literal` shapes are accepted.' Supporting it needs "
-            "placeholders in the translator plus DoPut binding. Tracked as "
-            "Track II-2 in design/PLAN_adbc.md."
-        ),
-    )
     def test_prepared_statement_with_parameters(self, conn: Any) -> None:
-        """ADBC clients bind parameters; OBSL must accept or refuse clearly.
+        """ADBC clients bind parameters, and OBSL binds them.
 
-        ``CommandPreparedStatementQuery`` is implemented, but binding
-        goes through ``DoPut`` and is not.
+        The statement is prepared with its ``?`` intact - described from the
+        SELECT list, which no value can change - and the value arrives over
+        DoPut, where it is substituted as a literal node and the whole
+        statement translated normally. Track II-2.
         """
         cur = conn.cursor()
         try:
@@ -386,3 +376,259 @@ class TestModelSelection:
             assert table.num_rows == 2
         finally:
             connection.close()
+
+
+class TestPreparedStatementParameters:
+    """Track II-2. The halves arrive separately: a statement is described
+    before any value exists, and the value binds later over DoPut.
+    """
+
+    def test_a_parameter_filters_the_result(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME} '
+                'WHERE "Customer Country" = ?',
+                parameters=("US",),
+            )
+            bound = cur.fetch_arrow_table()
+            cur.execute(f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME}')
+            unfiltered = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert bound.num_rows < unfiltered.num_rows
+        assert bound.column("Customer Country").to_pylist() == ["US"]
+
+    def test_the_bound_value_is_a_value_not_syntax(self, conn: Any) -> None:
+        """Substituted as a literal node, so it cannot reshape the statement.
+
+        Inlined as text this would read as ``= 'US' OR 1=1 --'`` and return
+        every row; as a node it is one string that matches nothing.
+        """
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f'SELECT "Customer Country" FROM {MODEL_NAME} WHERE "Customer Country" = ?',
+                parameters=("US' OR 1=1 --",),
+            )
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.num_rows == 0
+
+    def test_two_parameters_bind_in_order(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME} '
+                'WHERE "Customer Country" = ? AND "Total Revenue" > ?',
+                parameters=("US", 0),
+            )
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column("Customer Country").to_pylist() == ["US"]
+
+    def test_the_schema_is_known_before_binding(self, conn: Any) -> None:
+        """A client reads the schema from CreatePreparedStatement, and a value
+        changes which rows come back, never which columns."""
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME} '
+                'WHERE "Customer Country" = ?',
+                parameters=("__none__",),
+            )
+            empty = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert empty.num_rows == 0
+        assert empty.column_names == ["Customer Country", "Total Revenue"]
+        assert not any(str(f.type) == "null" for f in empty.schema), [
+            (f.name, str(f.type)) for f in empty.schema
+        ]
+
+    def test_a_parameter_still_refuses_what_the_translator_refuses(self, conn: Any) -> None:
+        """Binding produces an ordinary statement, so governance is unchanged -
+        a bound value cannot buy access to a shape the translator rejects."""
+        cur = conn.cursor()
+        try:
+            with pytest.raises(Exception, match="(?i)reject|unsupported|unknown|error"):
+                cur.execute(
+                    f'SELECT "Customer Country" FROM {MODEL_NAME} WHERE "No Such Column" = ?',
+                    parameters=("US",),
+                )
+                cur.fetch_arrow_table()
+        finally:
+            cur.close()
+
+    def test_a_handle_can_be_bound_again(self, conn: Any) -> None:
+        """Reuse is the point of preparing.
+
+        Binding used to overwrite the prepared entry with its first bound form,
+        so the template was consumed and the second execute failed with
+        "takes no parameters".
+        """
+        sql = (
+            f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME} '
+            'WHERE "Customer Country" = ?'
+        )
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, parameters=("US",))
+            first = cur.fetch_arrow_table()
+            cur.execute(sql, parameters=("__none__",))
+            second = cur.fetch_arrow_table()
+            cur.execute(sql, parameters=("US",))
+            third = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert first.column("Customer Country").to_pylist() == ["US"]
+        assert second.num_rows == 0
+        assert third.column("Customer Country").to_pylist() == ["US"]
+
+    def test_rebinding_changes_the_result(self, conn: Any) -> None:
+        """Not just that it works twice - that the second value is the one used."""
+        sql = f'SELECT "Customer Country" FROM {MODEL_NAME} WHERE "Customer Country" = ?'
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, parameters=("US",))
+            us = cur.fetch_arrow_table().num_rows
+            cur.execute(sql, parameters=("__none__",))
+            none = cur.fetch_arrow_table().num_rows
+        finally:
+            cur.close()
+        assert us == 1
+        assert none == 0
+
+    def test_the_client_learns_what_to_bind(self, conn: Any) -> None:
+        """``adbc_prepare`` returns the parameter schema, not None.
+
+        A generic engine often has to infer a parameter's type. A semantic
+        layer does not: the column a placeholder is compared against has a
+        declared type, so ``WHERE "Customer Country" = ?`` takes whatever
+        that dimension is declared to be.
+        """
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                f'SELECT "Customer Country" FROM {MODEL_NAME} WHERE "Customer Country" = ?'
+            )
+        finally:
+            cur.close()
+        assert params is not None, "parameter schema is still unknown to the client"
+        assert len(params) == 1
+        assert str(params.field(0).type) == "string"
+
+    def test_each_parameter_is_typed_by_its_own_column(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                f'SELECT "Customer Country" FROM {MODEL_NAME} '
+                'WHERE "Customer Country" = ? AND "Total Revenue" > ?'
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert len(params) == 2
+        assert str(params.field(0).type) == "string"
+        assert str(params.field(1).type) != "string", (
+            "a measure parameter should not be typed as text"
+        )
+
+    def test_a_statement_without_parameters_advertises_none(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(f'SELECT "Customer Country" FROM {MODEL_NAME}')
+        finally:
+            cur.close()
+        assert params is None or len(params) == 0
+
+    def test_a_parameterised_catalog_query_is_refused(self, conn: Any) -> None:
+        """Refused rather than bound, because it could not be honoured.
+
+        The catalog surface answers from the model and never reads a WHERE
+        clause - ``server_catalog`` has no notion of one - so a bound value
+        would be silently ignored. Preparing used to materialise the
+        WHERE-stripped form as the *result*: a client that never bound got the
+        whole catalog, and one that did was told the statement takes no
+        parameters.
+        """
+        cur = conn.cursor()
+        try:
+            with pytest.raises(Exception, match="(?i)parameter|catalog"):
+                cur.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
+                    parameters=("__no_such_table__",),
+                )
+                cur.fetch_arrow_table()
+        finally:
+            cur.close()
+
+    def test_an_unparameterised_catalog_query_still_works(self, conn: Any) -> None:
+        """The refusal is scoped to parameters, not to catalog queries."""
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.num_rows > 0
+
+    def test_a_declared_count_binds_as_an_integer(self, conn: Any) -> None:
+        """The compiler infers ``bigint`` for COUNT before any default, so the
+        model's ``defaultNumericDataType`` must not reach it."""
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                f'SELECT "Customer Country" FROM {MODEL_NAME} WHERE "Order Count" > ?'
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert "int" in str(params.field(0).type), str(params.field(0).type)
+
+    def test_raw_mode_streams_what_it_advertised(self, conn: Any) -> None:
+        """Raw mode projects physical columns, and the schema must say so.
+
+        ``declared_result_schema`` emitted only dimensions and measures, so a
+        raw projection advertised *zero* fields - which a client does not read
+        as "unknown" but as a promise, and Flight then contradicted it:
+        "endpoint 0 returned inconsistent schema: expected fields: 0 but got
+        Orders.Amount: float64". Broken for every raw query, parameters or not.
+        """
+        cur = conn.cursor()
+        try:
+            cur.execute(f'SELECT "Orders"."Amount" FROM {MODEL_NAME}')
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column_names == ["Orders.Amount"]
+        assert str(table.schema.field(0).type) != "null"
+
+    def test_a_raw_mode_parameter_is_typed_by_its_column(self, conn: Any) -> None:
+        """The data object declares the column's type, so this is a lookup."""
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                f'SELECT "Orders"."Amount" FROM {MODEL_NAME} WHERE "Orders"."Amount" > ?'
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert str(params.field(0).type) != "string", str(params.field(0).type)
+
+    def test_a_raw_mode_parameter_filters(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(f'SELECT "Orders"."Amount" FROM {MODEL_NAME}')
+            everything = cur.fetch_arrow_table().num_rows
+            cur.execute(
+                f'SELECT "Orders"."Amount" FROM {MODEL_NAME} WHERE "Orders"."Amount" > ?',
+                parameters=(10_000_000,),
+            )
+            none = cur.fetch_arrow_table().num_rows
+        finally:
+            cur.close()
+        assert everything > 0
+        assert none == 0

@@ -29,6 +29,10 @@ from typing import Any
 DECIMAL128_MAX_PRECISION = 38
 DECIMAL256_MAX_PRECISION = 76
 
+#: Aggregations the compiler types structurally as ``bigint``, whatever the
+#: model's numeric default says. Mirrors ``compiler.type_resolver``.
+_COUNT_AGGREGATIONS = frozenset({"COUNT", "COUNT_DISTINCT"})
+
 
 @functools.cache
 def _obml_type_map() -> dict[str, Any]:
@@ -99,8 +103,23 @@ def numeric_result_arrow_type(item: Any, model: Any) -> Any | None:
     """
     from orionbelt.service.db_executor import parse_decimal_type
 
+    if item is None:
+        # An unknown label has no declared width, and falling through to the
+        # model default gave it one: a measure the caller could not resolve was
+        # advertised as a governed decimal. ``declared_result_schema`` reached
+        # here for every synthesized count, which it looked up in
+        # ``model.measures`` rather than ``effective_measures``.
+        return None
     declared = getattr(item, "data_type", None)
     if not declared:
+        aggregation = str(getattr(item, "aggregation", "") or "").upper()
+        if aggregation in _COUNT_AGGREGATIONS:
+            # A count is an integer, and the compiler says so: `type_resolver`
+            # infers ``bigint`` for COUNT before any default applies. Letting
+            # the model-level ``defaultNumericDataType`` reach it advertised a
+            # count as ``decimal(18, 2)`` - contradicting the column the query
+            # actually returns, on both the result and the parameter schema.
+            return None
         settings = getattr(model, "settings", None)
         declared = getattr(settings, "default_numeric_data_type", None) if settings else None
     if not declared:
@@ -142,6 +161,28 @@ def dimension_label_and_declaration(entry: Any, model: Any) -> tuple[str | None,
     return label, None
 
 
+def raw_field_arrow_type(reference: str, model: Any) -> Any:
+    """The Arrow type of a raw ``"<DataObject>"."<Column>"`` projection.
+
+    Raw mode names a physical column, and the data object that owns it
+    declares an ``abstractType`` - so this is a lookup, not an inference.
+    Falls back to utf8 when the reference does not resolve, which keeps a
+    field in the schema for every projected column: a short schema would be
+    contradicted by the stream just as an empty one is.
+    """
+    obj_name, _, column_name = reference.partition(".")
+    data_object = getattr(model, "data_objects", {}).get(obj_name)
+    if data_object is None:
+        return obml_type_to_arrow(None)
+    column = data_object.columns.get(column_name)
+    if column is None:
+        return obml_type_to_arrow(None)
+    return obml_type_to_arrow(getattr(getattr(column, "abstract_type", None), "value", None))
+
+
+_raw_field_arrow_type = raw_field_arrow_type
+
+
 def declared_result_schema(query: Any, model: Any) -> Any:
     """The Arrow schema *model* declares for *query*, without touching a database.
 
@@ -152,6 +193,18 @@ def declared_result_schema(query: Any, model: Any) -> Any:
     import pyarrow as pa
 
     fields: list[Any] = []
+    raw_fields = getattr(query.select, "fields", None)
+    if raw_fields:
+        # Raw mode: the query projects physical columns rather than the
+        # dimension/measure layer, so the types come from the data objects
+        # that declare them. Falling through to the loops below returned an
+        # *empty* schema for these - and an empty schema is not "unknown" to a
+        # client, it is a promise of no columns, which Flight then contradicts
+        # by streaming one ("endpoint 0 returned inconsistent schema").
+        for entry in raw_fields:
+            fields.append(pa.field(str(entry), _raw_field_arrow_type(str(entry), model)))
+        return pa.schema(fields)
+
     dims = getattr(query.select, "dimensions", [])
     measures = getattr(query.select, "measures", [])
     for entry in dims:
@@ -161,7 +214,11 @@ def declared_result_schema(query: Any, model: Any) -> Any:
         rt = getattr(getattr(dim, "result_type", None), "value", None) or "string"
         fields.append(pa.field(label, obml_type_to_arrow(rt)))
     for label in measures:
-        meas = model.measures.get(label)
+        # ``effective_measures``, not ``measures``: a synthesized count is a
+        # measure a query can select, and looking it up in the declared-only
+        # map made it unresolvable - which then took the ``float64`` fallback
+        # below, or a governed decimal from an item that was ``None``.
+        meas = model.effective_measures.get(label)
         met = model.metrics.get(label) if meas is None else None
         decimal_type = numeric_result_arrow_type(meas or met, model)
         if decimal_type is not None:
@@ -203,7 +260,7 @@ def declared_arrow_types(model: Any, query: Any = None) -> dict[str, Any]:
         rt = getattr(getattr(dim, "result_type", None), "value", None)
         if rt:
             types[label] = obml_type_to_arrow(rt)
-    for label, item in list(model.measures.items()) + list(model.metrics.items()):
+    for label, item in list(model.effective_measures.items()) + list(model.metrics.items()):
         decimal_type = numeric_result_arrow_type(item, model)
         if decimal_type is not None:
             types[label] = decimal_type

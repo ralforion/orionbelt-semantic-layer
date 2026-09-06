@@ -695,7 +695,9 @@ _ACTION_CREATE_PREPARED_STATEMENT_RESULT_TYPE_URL = (
 )
 
 
-def build_prepared_statement_result(handle: bytes, schema: pa.Schema) -> bytes:
+def build_prepared_statement_result(
+    handle: bytes, schema: pa.Schema, parameter_schema: pa.Schema | None = None
+) -> bytes:
     """Build an ActionCreatePreparedStatementResult wrapped in a protobuf Any.
 
     The JDBC client parses the do_action result as a protobuf Any message,
@@ -705,12 +707,17 @@ def build_prepared_statement_result(handle: bytes, schema: pa.Schema) -> bytes:
     """
     # Serialize the Arrow schema as IPC Schema message for field 2
     schema_bytes = schema.serialize().to_pybytes()
+    # Field 3 is how a client learns what to bind. An empty one is the
+    # protocol's "unknown", which is what this sent before OBSL could answer:
+    # the column a placeholder is compared against has a declared type, so a
+    # semantic layer does not have to infer one.
+    param_bytes = parameter_schema.serialize().to_pybytes() if parameter_schema is not None else b""
 
     # Build inner ActionCreatePreparedStatementResult
     inner = b""
     inner += _encode_length_delimited(1, handle)  # handle
     inner += _encode_length_delimited(2, schema_bytes)  # dataset_schema
-    inner += _encode_length_delimited(3, b"")  # parameter_schema (empty)
+    inner += _encode_length_delimited(3, param_bytes)  # parameter_schema
 
     # Wrap in protobuf Any: field 1 = type_url (string), field 2 = value (bytes)
     any_msg = b""

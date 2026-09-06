@@ -814,3 +814,195 @@ def test_compiles_with_rollup(model: SemanticModel) -> None:
     result = CompilationPipeline().compile(q, model, "duckdb")
     assert "GROUP BY ROLLUP" in result.sql
     assert "GROUPING(" in result.sql
+
+
+class TestPreparedStatementParameters:
+    """The two halves of a parameterised statement (Track II-2).
+
+    A placeholder never reaches the translator's predicate handling. Preparing
+    strips the WHERE to learn the schema; binding substitutes literal nodes and
+    translates the whole statement. That keeps ``QueryObject`` free of unbound
+    markers, which would otherwise reach cache keys, explain output and logs.
+    """
+
+    def test_counts_placeholders(self) -> None:
+        from orionbelt.compiler.sql_translator import count_placeholders
+
+        assert count_placeholders("SELECT a FROM t") == 0
+        assert count_placeholders("SELECT a FROM t WHERE a = ?") == 1
+        assert count_placeholders("SELECT a FROM t WHERE a = ? AND b > ?") == 2
+
+    def test_an_unparseable_statement_has_no_parameters(self) -> None:
+        """The caller is about to translate it and will give the better error."""
+        from orionbelt.compiler.sql_translator import count_placeholders
+
+        assert count_placeholders("this is not sql (((") == 0
+
+    def test_stripping_where_keeps_the_select_list(self) -> None:
+        from orionbelt.compiler.sql_translator import strip_where_for_schema
+
+        stripped = strip_where_for_schema('SELECT "A", "B" FROM t WHERE "A" = ?')
+        assert '"A"' in stripped and '"B"' in stripped
+        assert "?" not in stripped and "WHERE" not in stripped.upper()
+
+    def test_stripping_removes_having_too(self) -> None:
+        from orionbelt.compiler.sql_translator import strip_where_for_schema
+
+        stripped = strip_where_for_schema(
+            'SELECT "A", SUM("B") FROM t GROUP BY "A" HAVING SUM("B") > ?'
+        )
+        assert "?" not in stripped
+
+    def test_binding_substitutes_values(self) -> None:
+        from orionbelt.compiler.sql_translator import bind_placeholders
+
+        assert bind_placeholders("SELECT a FROM t WHERE a = ?", ["US"]) == (
+            "SELECT a FROM t WHERE a = 'US'"
+        )
+        assert bind_placeholders("SELECT a FROM t WHERE a > ?", [5]) == (
+            "SELECT a FROM t WHERE a > 5"
+        )
+
+    def test_binding_is_positional(self) -> None:
+        from orionbelt.compiler.sql_translator import bind_placeholders
+
+        bound = bind_placeholders("SELECT a FROM t WHERE a = ? AND b = ?", ["x", "y"])
+        assert bound.index("'x'") < bound.index("'y'")
+
+    def test_a_bound_value_cannot_reshape_the_statement(self) -> None:
+        """Substituted as a node, so this stays one string rather than becoming
+        an OR and a comment."""
+        from orionbelt.compiler.sql_translator import bind_placeholders
+
+        bound = bind_placeholders("SELECT a FROM t WHERE a = ?", ["US' OR 1=1 --"])
+        assert bound.count("WHERE") == 1
+        assert " OR " not in bound.upper().replace("'US'' OR 1=1 --'", "")
+
+    def test_a_wrong_count_is_refused(self) -> None:
+        """Binding too few silently shifts every later value onto the wrong
+        column, so it is an error rather than a partial bind."""
+        import pytest
+
+        from orionbelt.compiler.sql_translator import (
+            SQLTranslationError,
+            bind_placeholders,
+        )
+
+        with pytest.raises(SQLTranslationError) as exc:
+            bind_placeholders("SELECT a FROM t WHERE a = ? AND b = ?", ["only-one"])
+        assert exc.value.errors[0].code == "PARAMETER_COUNT_MISMATCH"
+
+    def test_null_and_typed_values_bind(self) -> None:
+        import datetime
+
+        from orionbelt.compiler.sql_translator import bind_placeholders
+
+        assert "NULL" in bind_placeholders("SELECT a FROM t WHERE a = ?", [None]).upper()
+        assert "TRUE" in bind_placeholders("SELECT a FROM t WHERE a = ?", [True]).upper()
+        assert "2026-08-15" in bind_placeholders(
+            "SELECT a FROM t WHERE a = ?", [datetime.date(2026, 8, 15)]
+        )
+
+    def test_a_parameter_is_typed_by_the_column_it_compares_against(self, sales_model) -> None:
+        import pyarrow as pa
+
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        dim = next(iter(sales_model.dimensions))
+        schema = placeholder_arrow_schema(
+            f'SELECT "{dim}" FROM sales WHERE "{dim}" = ?', sales_model
+        )
+        assert len(schema) == 1
+        assert schema.field(0).name == "$1"
+        assert schema.field(0).type == pa.utf8()
+
+    def test_the_column_may_be_on_either_side(self, sales_model) -> None:
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        dim = next(iter(sales_model.dimensions))
+        left = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{dim}" = ?', sales_model)
+        right = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE ? = "{dim}"', sales_model)
+        assert left.field(0).type == right.field(0).type
+
+    def test_the_field_count_is_the_parameter_count(self, sales_model) -> None:
+        """An unresolvable placeholder is typed, not dropped: a short schema
+        would misalign every later parameter."""
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        dim = next(iter(sales_model.dimensions))
+        schema = placeholder_arrow_schema(
+            f'SELECT 1 FROM s WHERE "{dim}" = ? AND "No Such Column" = ? AND UPPER(x) = ?',
+            sales_model,
+        )
+        assert len(schema) == 3
+        assert [f.name for f in schema] == ["$1", "$2", "$3"]
+
+    def test_no_parameters_is_an_empty_schema(self, sales_model) -> None:
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        assert len(placeholder_arrow_schema("SELECT a FROM t", sales_model)) == 0
+
+    def test_an_unparseable_statement_is_empty_not_an_error(self, sales_model) -> None:
+        """Preparing is about to fail with a better message than this could."""
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        assert len(placeholder_arrow_schema("not sql (((", sales_model)) == 0
+
+    def test_a_parameter_types_like_the_column_it_filters(self, sales_model) -> None:
+        """The invariant behind all four review findings.
+
+        A parameter is compared against a column the query resolves, so
+        whatever that column comes back as, the parameter must bind as. Every
+        divergence found in review - case, synthesized counts, metrics,
+        governed decimals - was this invariant broken for one kind of label,
+        and a per-case fix would have left the next kind broken.
+        """
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+        from orionbelt.models.query import QueryObject
+        from orionbelt.service.result_schema import declared_result_schema
+
+        mismatched = []
+        for label in list(sales_model.effective_measures) + list(sales_model.metrics):
+            parameter = placeholder_arrow_schema(
+                f'SELECT 1 FROM s WHERE "{label}" > ?', sales_model
+            ).field(0)
+            result = declared_result_schema(
+                QueryObject.model_validate({"select": {"measures": [label]}}), sales_model
+            ).field(0)
+            if parameter.type != result.type:
+                mismatched.append(f"{label}: binds {parameter.type}, returns {result.type}")
+        assert not mismatched, mismatched
+
+    def test_a_label_binds_the_same_whatever_its_case(self, sales_model) -> None:
+        """``"total revenue"`` executes, so it must type like ``"Total Revenue"``."""
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        label = next(iter(sales_model.effective_measures))
+        upper = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{label}" > ?', sales_model)
+        lower = placeholder_arrow_schema(
+            f'SELECT 1 FROM s WHERE "{label.lower()}" > ?', sales_model
+        )
+        assert upper.field(0).type == lower.field(0).type
+
+    def test_a_synthesized_count_is_an_integer_not_text(self, sales_model) -> None:
+        """It lives in ``effective_measures``; a declared-only lookup made it
+        unresolvable and typed it as a string."""
+        import pyarrow as pa
+
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        count = next(
+            (m for m in sales_model.effective_measures if m not in sales_model.measures),
+            None,
+        )
+        if count is None:
+            pytest.skip("fixture synthesizes no counts")
+        schema = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{count}" > ?', sales_model)
+        assert schema.field(0).type == pa.int64()
+
+    def test_a_metric_is_numeric_not_text(self, sales_model) -> None:
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        metric = next(iter(sales_model.metrics))
+        schema = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{metric}" > ?', sales_model)
+        assert str(schema.field(0).type) != "string"

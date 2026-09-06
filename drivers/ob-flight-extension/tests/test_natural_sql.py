@@ -488,9 +488,16 @@ class TestSemanticResultSchemaDecimals:
 
     def _model(self, **kw: Any) -> SimpleNamespace:
         dim = SimpleNamespace(result_type=SimpleNamespace(value="string"))
+        measures = kw.get("measures", {})
         return SimpleNamespace(
             dimensions={"Region": dim},
-            measures=kw.get("measures", {}),
+            measures=measures,
+            # A real model exposes both: ``effective_measures`` adds the
+            # synthesized counts to the declared ones, and it is what resolves
+            # a measure label - the declared-only map does not know a count
+            # exists. The double carried only ``measures``, so it agreed with
+            # code that looked in the wrong place.
+            effective_measures=measures,
             metrics=kw.get("metrics", {}),
             settings=SimpleNamespace(default_numeric_data_type=kw.get("default_numeric_data_type")),
         )

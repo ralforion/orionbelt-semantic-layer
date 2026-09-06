@@ -20,11 +20,14 @@ See ``design/PLAN_flight_natural_sql.md`` for the full design. Highlights:
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from datetime import date, datetime, time
+from decimal import Decimal
+from typing import Any
 
 import sqlglot
 import sqlglot.expressions as exp
-from sqlglot.errors import ParseError
+from sqlglot.errors import ParseError, SqlglotError
 
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
@@ -1717,3 +1720,207 @@ def _nulls_position(ob: exp.Expression) -> NullsPosition | None:
     if nf is None:
         return None
     return NullsPosition.FIRST if nf else NullsPosition.LAST
+
+
+# ---------------------------------------------------------------------------
+# Prepared-statement parameters (Track II-2)
+# ---------------------------------------------------------------------------
+#
+# A Flight SQL client prepares ``... WHERE "Country" = ?`` and binds the value
+# later, over DoPut. The two halves arrive at different times, and only the
+# second one is a query this translator can read.
+#
+# Rather than teach the translator a notion of an unbound value - which would
+# put a placeholder into ``QueryObject`` and from there into cache keys,
+# explain output and logs - the placeholder never reaches it. Preparing
+# translates the statement with its ``WHERE`` removed, purely to learn the
+# result schema; binding substitutes the values as literal nodes and translates
+# the whole statement normally.
+#
+# Both halves are honest about what they are. A result schema is determined by
+# the SELECT list, so dropping the WHERE to compute it discards nothing: the
+# schema of ``SELECT a, b FROM t WHERE <anything>`` is the schema of
+# ``SELECT a, b FROM t``. And because binding produces an ordinary statement,
+# a bound value passes through exactly the governance an inline literal does -
+# it is inserted as a parsed literal node, never as text spliced into SQL.
+
+
+def count_placeholders(sql: str) -> int:
+    """How many ``?`` parameters *sql* carries.
+
+    Zero for a statement that is already complete, which is how a caller tells
+    a prepared statement that needs binding from one that does not.
+    """
+    try:
+        parsed = sqlglot.parse_one(sql)
+    except SqlglotError:
+        # An unparseable statement has no parameters to count. The caller is
+        # about to translate it and will produce the better error.
+        return 0
+    return len(list(parsed.find_all(exp.Placeholder)))
+
+
+def strip_where_for_schema(sql: str) -> str:
+    """*sql* without its ``WHERE``, for computing a result schema.
+
+    The schema comes from the SELECT list, so this discards nothing that
+    determines it - and it is what lets a statement still carrying ``?`` be
+    described before any value exists. ``HAVING`` is removed for the same
+    reason and with the same effect.
+
+    Returns *sql* unchanged when it cannot be parsed; the caller is about to
+    translate it and will produce the better error.
+    """
+    try:
+        parsed = sqlglot.parse_one(sql)
+    except SqlglotError:
+        return sql
+    for clause in (exp.Where, exp.Having):
+        node = parsed.find(clause)
+        if node is not None:
+            node.pop()
+    return str(parsed.sql())
+
+
+def bind_placeholders(sql: str, values: Sequence[Any]) -> str:
+    """*sql* with each ``?`` replaced by the corresponding value.
+
+    Substituted as parsed literal nodes rather than by string interpolation, so
+    a bound value cannot alter the shape of the statement: it becomes one
+    literal in one predicate, whatever it contains. The translator then reads
+    the result as an ordinary statement and applies the same governance it
+    applies to an inline literal.
+
+    Raises :class:`SQLTranslationError` when the count does not match, because
+    binding the wrong number of values silently shifts every later parameter
+    onto the wrong column.
+    """
+    parsed = sqlglot.parse_one(sql)
+    placeholders = list(parsed.find_all(exp.Placeholder))
+    if len(placeholders) != len(values):
+        raise SQLTranslationError(
+            [
+                SemanticError(
+                    code="PARAMETER_COUNT_MISMATCH",
+                    message=(
+                        f"Statement has {len(placeholders)} parameter(s) but "
+                        f"{len(values)} value(s) were bound."
+                    ),
+                    hint="Bind one value per '?' in the prepared statement.",
+                    context={"expected": len(placeholders), "received": len(values)},
+                )
+            ]
+        )
+    for placeholder, value in zip(placeholders, values, strict=True):
+        placeholder.replace(_literal_node(value))
+    return str(parsed.sql())
+
+
+def _literal_node(value: Any) -> exp.Expression:
+    """A sqlglot literal for a bound Python value."""
+    if value is None:
+        return exp.Null()
+    if isinstance(value, bool):
+        return exp.Boolean(this=value)
+    if isinstance(value, int | float | Decimal):
+        return exp.Literal(this=str(value), is_string=False)
+    if isinstance(value, datetime | date | time):
+        return exp.Literal(this=value.isoformat(), is_string=True)
+    return exp.Literal(this=str(value), is_string=True)
+
+
+def placeholder_arrow_schema(sql: str, model: SemanticModel) -> Any:
+    """The Arrow schema of *sql*'s ``?`` parameters, from what the model declares.
+
+    A Flight SQL client reads this from CreatePreparedStatement to learn what
+    to bind. A generic engine often has to infer it; a semantic layer does not
+    have to, because the column each placeholder is compared against has a
+    declared type. ``WHERE "Customer Country" = ?`` takes whatever
+    ``Customer Country`` is declared to be.
+
+    One field per placeholder, named ``$1``, ``$2``, … in binding order, which
+    is what a client indexes by. A placeholder whose column cannot be resolved
+    - an expression rather than a bare column, a name the model does not carry
+    - is typed ``string`` rather than dropped: the field count *is* the
+    parameter count, and a short schema would misalign every later parameter.
+    An empty schema is the protocol's "unknown", so answering for the ones that
+    resolve is strictly better than answering for none.
+    """
+    import pyarrow as pa
+
+    try:
+        parsed = sqlglot.parse_one(sql)
+    except SqlglotError:
+        return pa.schema([])
+
+    fields: list[Any] = []
+    for index, placeholder in enumerate(parsed.find_all(exp.Placeholder), start=1):
+        fields.append(pa.field(f"${index}", _placeholder_arrow_type(placeholder, model)))
+    return pa.schema(fields)
+
+
+def _placeholder_arrow_type(placeholder: exp.Expression, model: SemanticModel) -> Any:
+    """The Arrow type a placeholder should be bound as, defaulting to utf8.
+
+    Resolved through the same namespace the translator and the result schema
+    use, and for the same reason: a parameter is compared against a column the
+    query will resolve, so anything the query accepts this has to accept
+    identically. Getting that wrong is worse than answering "unknown", because
+    a client believes a type it was told.
+
+    Three things that a plain dict lookup on ``model.dimensions`` /
+    ``model.measures`` gets wrong, and did:
+
+    * labels are matched case-insensitively, so ``"total revenue"`` executes
+      and must type like ``"Total Revenue"``;
+    * measures come from ``effective_measures``, so a synthesized count
+      resolves like a declared measure rather than falling through to text;
+    * a governed decimal takes its exact width from ``dataType``, the way the
+      *result* schema does - a ``decimal(18, 2)`` measure that comes back
+      ``decimal128(18, 2)`` must not be bound as ``double``.
+    """
+    from orionbelt.service.result_schema import (
+        numeric_result_arrow_type,
+        obml_type_to_arrow,
+        raw_field_arrow_type,
+    )
+
+    parent = placeholder.parent
+    if parent is None:
+        return obml_type_to_arrow(None)
+    # ``col op ?`` and ``? op col`` both name the column on the other side.
+    other = parent.expression if parent.this is placeholder else parent.this
+    if other is None:
+        return obml_type_to_arrow(None)
+    # A raw-mode reference names a physical column, whose data object declares
+    # its type. It is not a dimension or measure label, so the lookups below
+    # would miss it and answer utf8 for a column the query returns as a double.
+    if isinstance(other, exp.Column) and other.table:
+        return raw_field_arrow_type(f"{other.table}.{other.name}", model)
+    name = _column_name(other)
+    if name is None:
+        return obml_type_to_arrow(None)
+
+    key = name.lower()
+    dimension = {label.lower(): item for label, item in model.dimensions.items()}.get(key)
+    if dimension is not None:
+        rt = getattr(getattr(dimension, "result_type", None), "value", None)
+        return obml_type_to_arrow(rt)
+
+    measures = {label.lower(): item for label, item in model.effective_measures.items()}
+    metrics = {label.lower(): item for label, item in model.metrics.items()}
+    item = measures.get(key) or metrics.get(key)
+    if item is None:
+        return obml_type_to_arrow(None)
+
+    decimal_type = numeric_result_arrow_type(item, model)
+    if decimal_type is not None:
+        return decimal_type
+    rt = getattr(getattr(item, "result_type", None), "value", None)
+    if rt:
+        return obml_type_to_arrow(rt)
+    # A metric with no declared result type is numeric, which is the fallback
+    # ``declared_result_schema`` makes for the same case.
+    import pyarrow as pa
+
+    return pa.float64() if key in metrics else obml_type_to_arrow(None)
