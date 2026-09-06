@@ -59,8 +59,12 @@ Each row prints a verdict, the Arrow type and the round-tripped value:
 * ``FAMILY``  -- the right family, a different width (an int8 where the model
   said integer). Value-dependent widths are worth knowing about: two pages of
   one column can disagree.
-* ``LOSSY``   -- the fixed-point type became a float or a string. This is the
-  one that silently costs money.
+* ``TEXT``    -- a number carried as a string with every digit intact. ADBC
+  does this for Postgres NUMERIC, whose precision Arrow's decimal cannot hold;
+  ``db_executor`` parses the cells back to ``Decimal``. Nothing is lost, which
+  is why it is not ``LOSSY``.
+* ``LOSSY``   -- the fixed-point type became a float, or a string that does not
+  carry the digits. This is the one that silently costs money.
 """
 
 from __future__ import annotations
@@ -158,8 +162,30 @@ def _family(t: pa.DataType) -> str:
     return str(t)
 
 
+def _is_exact_text_decimal(got: pa.DataType) -> bool:
+    """Whether *got* is a number carried as text, with its digits intact.
+
+    ADBC wraps Postgres NUMERIC in ``arrow.opaque[storage_type=string,
+    type_name=numeric]`` because the type is arbitrary precision with NaN and
+    Infinity, Arrow's ``decimal128`` caps at 38 digits and needs the scale up
+    front, and typmod is ``-1`` for a computed expression. Every digit
+    survives, and ``db_executor`` parses the cells back to ``Decimal`` before a
+    caller sees them - so this is not the float-or-string downgrade ``LOSSY``
+    is for, and calling it that contradicted this file's own definition.
+    """
+    type_name = getattr(got, "type_name", None)
+    storage = getattr(got, "storage_type", None)
+    if not isinstance(type_name, str) or storage is None:
+        return False
+    return pa.types.is_string(storage) and any(
+        token in type_name.lower() for token in ("numeric", "decimal")
+    )
+
+
 def _decimal_verdict(obml: str, got: pa.DataType) -> str:
     precision, scale = (int(x) for x in obml[obml.index("(") + 1 : -1].split(","))
+    if _is_exact_text_decimal(got):
+        return "TEXT    exact digits"
     if not pa.types.is_decimal(got):
         return f"LOSSY   {_family(got)}"
     if (got.precision, got.scale) == (precision, scale):
