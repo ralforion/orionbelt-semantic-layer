@@ -13,6 +13,7 @@ from orionbelt.compiler.sql_translator import (
     SQLTranslationError,
     bind_placeholders,
     count_placeholders,
+    placeholder_arrow_schema,
     strip_where_for_schema,
 )
 from pyarrow import flight
@@ -718,7 +719,15 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 len(schema),
             )
 
-            result_bytes = build_prepared_statement_result(handle, schema)
+            # Only a parameterised statement has one, and it is derived from
+            # the model rather than inferred: see
+            # ``sql_translator.placeholder_arrow_schema``.
+            param_schema = (
+                placeholder_arrow_schema(sql, prep_model)
+                if parameter_count and prep_model is not None
+                else None
+            )
+            result_bytes = build_prepared_statement_result(handle, schema, param_schema)
             yield flight.Result(pa.py_buffer(result_bytes))
 
         elif action_type == ACTION_CLOSE_PREPARED_STATEMENT:

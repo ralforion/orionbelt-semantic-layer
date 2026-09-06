@@ -902,3 +902,48 @@ class TestPreparedStatementParameters:
         assert "2026-08-15" in bind_placeholders(
             "SELECT a FROM t WHERE a = ?", [datetime.date(2026, 8, 15)]
         )
+
+    def test_a_parameter_is_typed_by_the_column_it_compares_against(self, sales_model) -> None:
+        import pyarrow as pa
+
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        dim = next(iter(sales_model.dimensions))
+        schema = placeholder_arrow_schema(
+            f'SELECT "{dim}" FROM sales WHERE "{dim}" = ?', sales_model
+        )
+        assert len(schema) == 1
+        assert schema.field(0).name == "$1"
+        assert schema.field(0).type == pa.utf8()
+
+    def test_the_column_may_be_on_either_side(self, sales_model) -> None:
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        dim = next(iter(sales_model.dimensions))
+        left = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{dim}" = ?', sales_model)
+        right = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE ? = "{dim}"', sales_model)
+        assert left.field(0).type == right.field(0).type
+
+    def test_the_field_count_is_the_parameter_count(self, sales_model) -> None:
+        """An unresolvable placeholder is typed, not dropped: a short schema
+        would misalign every later parameter."""
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        dim = next(iter(sales_model.dimensions))
+        schema = placeholder_arrow_schema(
+            f'SELECT 1 FROM s WHERE "{dim}" = ? AND "No Such Column" = ? AND UPPER(x) = ?',
+            sales_model,
+        )
+        assert len(schema) == 3
+        assert [f.name for f in schema] == ["$1", "$2", "$3"]
+
+    def test_no_parameters_is_an_empty_schema(self, sales_model) -> None:
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        assert len(placeholder_arrow_schema("SELECT a FROM t", sales_model)) == 0
+
+    def test_an_unparseable_statement_is_empty_not_an_error(self, sales_model) -> None:
+        """Preparing is about to fail with a better message than this could."""
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        assert len(placeholder_arrow_schema("not sql (((", sales_model)) == 0

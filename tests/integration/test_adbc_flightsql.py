@@ -500,3 +500,46 @@ class TestPreparedStatementParameters:
             cur.close()
         assert us == 1
         assert none == 0
+
+    def test_the_client_learns_what_to_bind(self, conn: Any) -> None:
+        """``adbc_prepare`` returns the parameter schema, not None.
+
+        A generic engine often has to infer a parameter's type. A semantic
+        layer does not: the column a placeholder is compared against has a
+        declared type, so ``WHERE "Customer Country" = ?`` takes whatever
+        that dimension is declared to be.
+        """
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                f'SELECT "Customer Country" FROM {MODEL_NAME} WHERE "Customer Country" = ?'
+            )
+        finally:
+            cur.close()
+        assert params is not None, "parameter schema is still unknown to the client"
+        assert len(params) == 1
+        assert str(params.field(0).type) == "string"
+
+    def test_each_parameter_is_typed_by_its_own_column(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                f'SELECT "Customer Country" FROM {MODEL_NAME} '
+                'WHERE "Customer Country" = ? AND "Total Revenue" > ?'
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert len(params) == 2
+        assert str(params.field(0).type) == "string"
+        assert str(params.field(1).type) != "string", (
+            "a measure parameter should not be typed as text"
+        )
+
+    def test_a_statement_without_parameters_advertises_none(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(f'SELECT "Customer Country" FROM {MODEL_NAME}')
+        finally:
+            cur.close()
+        assert params is None or len(params) == 0

@@ -1827,3 +1827,55 @@ def _literal_node(value: Any) -> exp.Expression:
     if isinstance(value, datetime | date | time):
         return exp.Literal(this=value.isoformat(), is_string=True)
     return exp.Literal(this=str(value), is_string=True)
+
+
+def placeholder_arrow_schema(sql: str, model: SemanticModel) -> Any:
+    """The Arrow schema of *sql*'s ``?`` parameters, from what the model declares.
+
+    A Flight SQL client reads this from CreatePreparedStatement to learn what
+    to bind. A generic engine often has to infer it; a semantic layer does not
+    have to, because the column each placeholder is compared against has a
+    declared type. ``WHERE "Customer Country" = ?`` takes whatever
+    ``Customer Country`` is declared to be.
+
+    One field per placeholder, named ``$1``, ``$2``, … in binding order, which
+    is what a client indexes by. A placeholder whose column cannot be resolved
+    - an expression rather than a bare column, a name the model does not carry
+    - is typed ``string`` rather than dropped: the field count *is* the
+    parameter count, and a short schema would misalign every later parameter.
+    An empty schema is the protocol's "unknown", so answering for the ones that
+    resolve is strictly better than answering for none.
+    """
+    import pyarrow as pa
+
+    try:
+        parsed = sqlglot.parse_one(sql)
+    except SqlglotError:
+        return pa.schema([])
+
+    fields: list[Any] = []
+    for index, placeholder in enumerate(parsed.find_all(exp.Placeholder), start=1):
+        fields.append(pa.field(f"${index}", _placeholder_arrow_type(placeholder, model)))
+    return pa.schema(fields)
+
+
+def _placeholder_arrow_type(placeholder: exp.Expression, model: SemanticModel) -> Any:
+    """The Arrow type a placeholder should be bound as, defaulting to utf8."""
+    from orionbelt.service.result_schema import obml_type_to_arrow
+
+    parent = placeholder.parent
+    if parent is None:
+        return obml_type_to_arrow(None)
+    # ``col op ?`` and ``? op col`` both name the column on the other side.
+    other = parent.expression if parent.this is placeholder else parent.this
+    name = _column_name(other) if other is not None else None
+    if name is None:
+        return obml_type_to_arrow(None)
+
+    declared: Any = (
+        model.dimensions.get(name) or model.measures.get(name) or model.metrics.get(name)
+    )
+    if declared is None:
+        return obml_type_to_arrow(None)
+    result_type = getattr(getattr(declared, "result_type", None), "value", None)
+    return obml_type_to_arrow(result_type)
