@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 import pyarrow.compute as pc
 from ob_driver_core.detection import is_obml, parse_obml
+from orionbelt.service.db_executor import arrow_type_to_hint
 from pyarrow import flight
 
 from ob_flight.converters import rows_to_batch, schema_from_description
@@ -24,34 +25,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger("ob_flight.server")
 
 
-def _arrow_to_obsl_type_hint(arrow_type: pa.DataType) -> str:
-    """Map an Arrow DataType to the OBSL ``ColumnMetadata.type`` vocabulary
-    (``string`` / ``number`` / ``datetime`` / ``boolean`` / ``binary``). Used
-    when Flight writes to the shared result cache so readers on the other
-    surfaces decode column types correctly instead of falling back to
-    ``string``.
-    """
-    # Before the numeric test, which Arrow's ``is_integer`` does not exclude a
-    # bool from on every version, and because ``string`` is the fallback here:
-    # a boolean landing there is indistinguishable from an unrecognised type.
-    # A sidecar written ``string`` makes pgwire advertise a declared boolean as
-    # TEXT (OID 25) on a Flight-warmed entry, whatever the reader reconciles
-    # the data itself to.
-    if pa.types.is_boolean(arrow_type):
-        return "boolean"
-    if pa.types.is_integer(arrow_type) or pa.types.is_floating(arrow_type):
-        return "number"
-    if pa.types.is_decimal(arrow_type):
-        return "number"
-    if (
-        pa.types.is_date(arrow_type)
-        or pa.types.is_timestamp(arrow_type)
-        or pa.types.is_time(arrow_type)
-    ):
-        return "datetime"
-    if pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
-        return "binary"
-    return "string"
+#: Arrow type -> the OBSL ``ColumnMetadata.type`` vocabulary, used when Flight
+#: writes the *shared* result cache sidecar so readers on the other surfaces
+#: decode column types instead of falling back to ``string``.
+#:
+#: Flight kept its own copy of this until now, and that is how the boolean case
+#: shipped: two of the three copies were corrected and this one was missed, so a
+#: Flight-warmed entry still made pgwire advertise a declared boolean as TEXT.
+#: The core mapping is a superset - it additionally recovers ADBC's opaque types
+#: from the vendor name they carry, and places intervals and durations - so
+#: adopting it also fixes what the sidecar said for those:
+#:
+#:     interval        string -> datetime
+#:     duration        string -> datetime
+#:     opaque numeric  string -> number
+#:
+#: each of which was the mapping's "unrecognised" bucket rather than a claim.
+_arrow_to_obsl_type_hint = arrow_type_to_hint
 
 
 # Query modes for the Flight SQL surface. See PLAN_flight_natural_sql.md §3.2.

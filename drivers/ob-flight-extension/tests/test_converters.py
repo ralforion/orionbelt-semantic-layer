@@ -275,28 +275,40 @@ class TestSidecarTypeHints:
         assert _arrow_to_obsl_type_hint(pa.binary()) == "binary"
         assert _arrow_to_obsl_type_hint(pa.utf8()) == "string"
 
-    def test_it_agrees_with_the_executor_s_mapping(self) -> None:
-        """There are two copies of this. Fixing one and missing the other is
-        exactly how the boolean case shipped, so pin that they agree on every
-        type either is asked about.
+    def test_it_is_the_executor_s_mapping(self) -> None:
+        """Not merely equal - the same object.
+
+        Flight kept its own copy, and that is how the boolean case shipped:
+        two of the three copies were corrected and this one was missed. An
+        equality test would still pass the day someone re-forks it; identity
+        will not.
         """
-        import pyarrow as pa
-        from orionbelt.service.db_executor import _arrow_type_to_hint
+        from orionbelt.service.db_executor import arrow_type_to_hint
 
         from ob_flight.server_execution import _arrow_to_obsl_type_hint
 
-        for arrow_type in (
-            pa.bool_(),
-            pa.int64(),
-            pa.int32(),
-            pa.float64(),
-            pa.decimal128(18, 2),
-            pa.date32(),
-            pa.timestamp("us"),
-            pa.time64("us"),
-            pa.binary(),
-            pa.utf8(),
-        ):
-            assert _arrow_to_obsl_type_hint(arrow_type) == _arrow_type_to_hint(arrow_type), (
-                f"the two mappings disagree on {arrow_type}"
-            )
+        assert _arrow_to_obsl_type_hint is arrow_type_to_hint
+
+    def test_the_types_the_old_copy_could_not_place(self) -> None:
+        """Adopting the core mapping also fixed what the sidecar said for
+        these. Each was landing in the ``string`` bucket, which is that
+        mapping's answer for "unrecognised" rather than a claim about the
+        column.
+        """
+        import pyarrow as pa
+
+        from ob_flight.server_execution import _arrow_to_obsl_type_hint
+
+        assert _arrow_to_obsl_type_hint(pa.month_day_nano_interval()) == "datetime"
+        assert _arrow_to_obsl_type_hint(pa.duration("s")) == "datetime"
+        assert _arrow_to_obsl_type_hint(pa.opaque(pa.string(), "numeric", "PostgreSQL")) == "number"
+
+    def test_an_unrecognised_opaque_type_still_says_string(self) -> None:
+        """The bucket is still the fallback for what it cannot place."""
+        import pyarrow as pa
+
+        from ob_flight.server_execution import _arrow_to_obsl_type_hint
+
+        assert (
+            _arrow_to_obsl_type_hint(pa.opaque(pa.string(), "tsvector", "PostgreSQL")) == "string"
+        )

@@ -319,7 +319,7 @@ def coarse_hint_from_type_name(name: str) -> str:
     return "string"
 
 
-def _arrow_type_to_hint(arrow_type: Any) -> str:
+def arrow_type_to_hint(arrow_type: Any) -> str:
     """Map a PyArrow type to a simple type hint string.
 
     ADBC's PostgreSQL driver wraps types Arrow can't represent natively
@@ -376,6 +376,12 @@ def _arrow_type_to_hint(arrow_type: Any) -> str:
         return coarse_hint_from_type_name(type_name)
     return "string"
 
+
+#: The historical private name. Kept because this module and its tests use it
+#: throughout, and renaming every call site would bury the one-line change
+#: that matters: the mapping is now shared with the Flight driver, which had
+#: its own copy.
+_arrow_type_to_hint = arrow_type_to_hint
 
 # ---------------------------------------------------------------------------
 # Timezone resolution
