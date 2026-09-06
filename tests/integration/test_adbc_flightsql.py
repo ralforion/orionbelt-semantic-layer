@@ -587,3 +587,48 @@ class TestPreparedStatementParameters:
             cur.close()
         assert params is not None
         assert "int" in str(params.field(0).type), str(params.field(0).type)
+
+    def test_raw_mode_streams_what_it_advertised(self, conn: Any) -> None:
+        """Raw mode projects physical columns, and the schema must say so.
+
+        ``declared_result_schema`` emitted only dimensions and measures, so a
+        raw projection advertised *zero* fields - which a client does not read
+        as "unknown" but as a promise, and Flight then contradicted it:
+        "endpoint 0 returned inconsistent schema: expected fields: 0 but got
+        Orders.Amount: float64". Broken for every raw query, parameters or not.
+        """
+        cur = conn.cursor()
+        try:
+            cur.execute(f'SELECT "Orders"."Amount" FROM {MODEL_NAME}')
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column_names == ["Orders.Amount"]
+        assert str(table.schema.field(0).type) != "null"
+
+    def test_a_raw_mode_parameter_is_typed_by_its_column(self, conn: Any) -> None:
+        """The data object declares the column's type, so this is a lookup."""
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                f'SELECT "Orders"."Amount" FROM {MODEL_NAME} WHERE "Orders"."Amount" > ?'
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert str(params.field(0).type) != "string", str(params.field(0).type)
+
+    def test_a_raw_mode_parameter_filters(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(f'SELECT "Orders"."Amount" FROM {MODEL_NAME}')
+            everything = cur.fetch_arrow_table().num_rows
+            cur.execute(
+                f'SELECT "Orders"."Amount" FROM {MODEL_NAME} WHERE "Orders"."Amount" > ?',
+                parameters=(10_000_000,),
+            )
+            none = cur.fetch_arrow_table().num_rows
+        finally:
+            cur.close()
+        assert everything > 0
+        assert none == 0

@@ -1879,14 +1879,25 @@ def _placeholder_arrow_type(placeholder: exp.Expression, model: SemanticModel) -
       *result* schema does - a ``decimal(18, 2)`` measure that comes back
       ``decimal128(18, 2)`` must not be bound as ``double``.
     """
-    from orionbelt.service.result_schema import numeric_result_arrow_type, obml_type_to_arrow
+    from orionbelt.service.result_schema import (
+        numeric_result_arrow_type,
+        obml_type_to_arrow,
+        raw_field_arrow_type,
+    )
 
     parent = placeholder.parent
     if parent is None:
         return obml_type_to_arrow(None)
     # ``col op ?`` and ``? op col`` both name the column on the other side.
     other = parent.expression if parent.this is placeholder else parent.this
-    name = _column_name(other) if other is not None else None
+    if other is None:
+        return obml_type_to_arrow(None)
+    # A raw-mode reference names a physical column, whose data object declares
+    # its type. It is not a dimension or measure label, so the lookups below
+    # would miss it and answer utf8 for a column the query returns as a double.
+    if isinstance(other, exp.Column) and other.table:
+        return raw_field_arrow_type(f"{other.table}.{other.name}", model)
+    name = _column_name(other)
     if name is None:
         return obml_type_to_arrow(None)
 

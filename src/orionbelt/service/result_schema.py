@@ -161,6 +161,28 @@ def dimension_label_and_declaration(entry: Any, model: Any) -> tuple[str | None,
     return label, None
 
 
+def raw_field_arrow_type(reference: str, model: Any) -> Any:
+    """The Arrow type of a raw ``"<DataObject>"."<Column>"`` projection.
+
+    Raw mode names a physical column, and the data object that owns it
+    declares an ``abstractType`` - so this is a lookup, not an inference.
+    Falls back to utf8 when the reference does not resolve, which keeps a
+    field in the schema for every projected column: a short schema would be
+    contradicted by the stream just as an empty one is.
+    """
+    obj_name, _, column_name = reference.partition(".")
+    data_object = getattr(model, "data_objects", {}).get(obj_name)
+    if data_object is None:
+        return obml_type_to_arrow(None)
+    column = data_object.columns.get(column_name)
+    if column is None:
+        return obml_type_to_arrow(None)
+    return obml_type_to_arrow(getattr(getattr(column, "abstract_type", None), "value", None))
+
+
+_raw_field_arrow_type = raw_field_arrow_type
+
+
 def declared_result_schema(query: Any, model: Any) -> Any:
     """The Arrow schema *model* declares for *query*, without touching a database.
 
@@ -171,6 +193,18 @@ def declared_result_schema(query: Any, model: Any) -> Any:
     import pyarrow as pa
 
     fields: list[Any] = []
+    raw_fields = getattr(query.select, "fields", None)
+    if raw_fields:
+        # Raw mode: the query projects physical columns rather than the
+        # dimension/measure layer, so the types come from the data objects
+        # that declare them. Falling through to the loops below returned an
+        # *empty* schema for these - and an empty schema is not "unknown" to a
+        # client, it is a promise of no columns, which Flight then contradicts
+        # by streaming one ("endpoint 0 returned inconsistent schema").
+        for entry in raw_fields:
+            fields.append(pa.field(str(entry), _raw_field_arrow_type(str(entry), model)))
+        return pa.schema(fields)
+
     dims = getattr(query.select, "dimensions", [])
     measures = getattr(query.select, "measures", [])
     for entry in dims:
