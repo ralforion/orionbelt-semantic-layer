@@ -137,16 +137,19 @@ def handle_catalog_sql(server: OBFlightServer, sql: str, model: Any) -> pa.Table
         if table_node is not None:
             bare_raw = getattr(table_node, "name", None) or table_node.sql()
             bare = str(bare_raw).strip('"').strip("`").strip("'").lower()
+        # Each of these returns a whole canned view, so the statement's WHERE
+        # has to be applied to it - otherwise the predicate is accepted and
+        # discarded, and the client is told every table matched its filter.
         if "information_schema.tables" in target_sql or "pg_catalog.pg_class" in target_sql:
-            return catalog_tables_table(model)
+            return filter_catalog_table(catalog_tables_table(model), ast)[0]
         if "information_schema.columns" in target_sql or "pg_catalog.pg_attribute" in target_sql:
-            return catalog_columns_table(model)
+            return filter_catalog_table(catalog_columns_table(model), ast)[0]
         if bare == "_dimensions_metadata" or bare == "dimensions":
-            return build_dimensions_data(model)
+            return filter_catalog_table(build_dimensions_data(model), ast)[0]
         if bare == "_measures_metadata" or bare == "measures":
-            return build_measures_data(model)
+            return filter_catalog_table(build_measures_data(model), ast)[0]
         if bare == "_metrics_metadata" or bare == "metrics":
-            return build_metrics_data(model)
+            return filter_catalog_table(build_metrics_data(model), ast)[0]
         if bare == "model":
             # ``SELECT * FROM <model>.model`` — column-shape probe
             # from a BI tool clicking the model table. Same payload
@@ -468,3 +471,197 @@ def build_catalog_table(
         raise flight.FlightServerError(f"Unsupported catalog command: {type_url}")
 
     return table
+
+
+# ---------------------------------------------------------------------------
+# WHERE filtering over a catalog result
+# ---------------------------------------------------------------------------
+#
+# The dispatch above answers a catalog query by returning a whole canned table,
+# which meant a WHERE clause was accepted and discarded: ``... FROM
+# information_schema.tables WHERE table_name = 'x'`` returned every table. A
+# predicate silently ignored is worse than one refused - the client believes it
+# filtered.
+#
+# These tables are small (a handful of rows, tens for columns), so the filter
+# evaluates row by row in Python rather than building compute expressions. The
+# clarity is worth more than the microseconds.
+#
+# A predicate this cannot evaluate leaves the table *unfiltered*, which is the
+# behaviour that was there before, so no client that works today stops working.
+# The caller is told, and the prepared-statement path uses that to decide
+# whether a parameter can be honoured: binding a value into a predicate nobody
+# can evaluate would be the silent-ignore bug again, wearing a parameter.
+
+#: Sentinel for "this predicate cannot be evaluated here", distinct from False.
+_UNKNOWN = object()
+
+
+def _catalog_literal(node: Any) -> Any:
+    """A Python scalar from a sqlglot literal, or ``_UNKNOWN``."""
+    import sqlglot.expressions as exp
+
+    if isinstance(node, exp.Literal):
+        if node.is_int:
+            return int(node.this)
+        if node.is_number:
+            return float(node.this)
+        return str(node.this)
+    if isinstance(node, exp.Boolean):
+        return bool(node.this)
+    if isinstance(node, exp.Null):
+        return None
+    return _UNKNOWN
+
+
+def _catalog_column_value(node: Any, row: dict[str, Any]) -> Any:
+    """The row's value for a column reference, or ``_UNKNOWN``.
+
+    Matched case-insensitively: clients spell catalog columns both ways, and
+    the canned tables are lower-case.
+    """
+    import sqlglot.expressions as exp
+
+    if not isinstance(node, exp.Column):
+        return _UNKNOWN
+    name = node.name.lower()
+    for key, value in row.items():
+        if key.lower() == name:
+            return value
+    return _UNKNOWN
+
+
+def _like_matches(value: Any, pattern: str, *, case_insensitive: bool) -> bool:
+    r"""SQL ``LIKE`` semantics: ``%`` is any run, ``_`` is one character.
+
+    Walked one character at a time rather than by substitution on an escaped
+    string. Escaping and then un-escaping the two wildcards cannot tell a
+    wildcard from a backslash-escaped literal, so ``LIKE '\_%'`` - the pattern
+    a client sends to find the underscore-prefixed metadata views - matched
+    nothing at all.
+    """
+    import re
+
+    if value is None:
+        return False
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\" and index + 1 < len(pattern):
+            out.append(re.escape(pattern[index + 1]))  # an escaped literal
+            index += 2
+            continue
+        if char == "%":
+            out.append(".*")
+        elif char == "_":
+            out.append(".")
+        else:
+            out.append(re.escape(char))
+        index += 1
+    flags = re.IGNORECASE if case_insensitive else 0
+    return re.fullmatch("".join(out), str(value), flags) is not None
+
+
+def evaluate_catalog_predicate(node: Any, row: dict[str, Any]) -> Any:
+    """Whether *row* satisfies *node*, or ``_UNKNOWN`` when it cannot be said.
+
+    Covers the shapes catalog clients actually send - equality, inequality,
+    ``LIKE``/``ILIKE``, ``IN``, ``IS NULL``, and boolean combinations - and
+    admits ignorance for anything else rather than guessing a verdict.
+    """
+    import sqlglot.expressions as exp
+
+    if isinstance(node, exp.Paren):
+        return evaluate_catalog_predicate(node.this, row)
+    if isinstance(node, exp.And):
+        left = evaluate_catalog_predicate(node.this, row)
+        right = evaluate_catalog_predicate(node.expression, row)
+        if left is False or right is False:
+            return False  # a false conjunct settles it, unknown or not
+        if left is _UNKNOWN or right is _UNKNOWN:
+            return _UNKNOWN
+        return True
+    if isinstance(node, exp.Or):
+        left = evaluate_catalog_predicate(node.this, row)
+        right = evaluate_catalog_predicate(node.expression, row)
+        if left is True or right is True:
+            return True
+        if left is _UNKNOWN or right is _UNKNOWN:
+            return _UNKNOWN
+        return False
+    if isinstance(node, exp.Not):
+        inner = evaluate_catalog_predicate(node.this, row)
+        return _UNKNOWN if inner is _UNKNOWN else not inner
+
+    if isinstance(node, exp.Is):
+        value = _catalog_column_value(node.this, row)
+        if value is _UNKNOWN or not isinstance(node.expression, exp.Null):
+            return _UNKNOWN
+        return value is None
+
+    if isinstance(node, exp.In):
+        value = _catalog_column_value(node.this, row)
+        if value is _UNKNOWN or node.args.get("query") is not None:
+            return _UNKNOWN
+        candidates = [_catalog_literal(e) for e in node.expressions]
+        if any(c is _UNKNOWN for c in candidates):
+            return _UNKNOWN
+        return value in candidates
+
+    if isinstance(node, exp.Like | exp.ILike):
+        value = _catalog_column_value(node.this, row)
+        pattern = _catalog_literal(node.expression)
+        if value is _UNKNOWN or not isinstance(pattern, str):
+            return _UNKNOWN
+        return _like_matches(value, pattern, case_insensitive=isinstance(node, exp.ILike))
+
+    comparisons: dict[Any, Any] = {
+        exp.EQ: lambda a, b: a == b,
+        exp.NEQ: lambda a, b: a != b,
+        exp.GT: lambda a, b: a > b,
+        exp.GTE: lambda a, b: a >= b,
+        exp.LT: lambda a, b: a < b,
+        exp.LTE: lambda a, b: a <= b,
+    }
+    for node_type, compare in comparisons.items():
+        if isinstance(node, node_type):
+            # Either side may be the column.
+            left = _catalog_column_value(node.this, row)
+            right = _catalog_literal(node.expression)
+            if left is _UNKNOWN:
+                left = _catalog_literal(node.this)
+                right = _catalog_column_value(node.expression, row)
+            if left is _UNKNOWN or right is _UNKNOWN:
+                return _UNKNOWN
+            if left is None or right is None:
+                return False  # SQL: a comparison with NULL is not true
+            try:
+                return bool(compare(left, right))
+            except TypeError:
+                return _UNKNOWN
+    return _UNKNOWN
+
+
+def filter_catalog_table(table: pa.Table, ast: Any) -> tuple[pa.Table, bool]:
+    """Apply *ast*'s WHERE to *table*. Returns the table and whether it applied.
+
+    ``False`` means a predicate could not be evaluated and the table came back
+    untouched - the caller decides what that is worth. Nothing is filtered
+    partially: a WHERE either governs the whole result or none of it.
+    """
+    import sqlglot.expressions as exp
+
+    if not isinstance(ast, exp.Select):
+        return table, True
+    where = ast.args.get("where")
+    if where is None:
+        return table, True
+
+    keep: list[bool] = []
+    for row in table.to_pylist():
+        verdict = evaluate_catalog_predicate(where.this, row)
+        if verdict is _UNKNOWN:
+            return table, False
+        keep.append(bool(verdict))
+    return table.filter(pa.array(keep, type=pa.bool_())), True

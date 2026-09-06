@@ -544,26 +544,74 @@ class TestPreparedStatementParameters:
             cur.close()
         assert params is None or len(params) == 0
 
-    def test_a_parameterised_catalog_query_is_refused(self, conn: Any) -> None:
-        """Refused rather than bound, because it could not be honoured.
+    def test_a_parameterised_catalog_query_filters(self, conn: Any) -> None:
+        """The catalog surface reads a WHERE now, so a parameter can be honoured.
 
-        The catalog surface answers from the model and never reads a WHERE
-        clause - ``server_catalog`` has no notion of one - so a bound value
-        would be silently ignored. Preparing used to materialise the
-        WHERE-stripped form as the *result*: a client that never bound got the
-        whole catalog, and one that did was told the statement takes no
-        parameters.
+        It could not before: ``server_catalog`` dispatched on the FROM target
+        and returned a whole canned view, so the predicate was accepted and
+        discarded - and preparing materialised that unfiltered form as the
+        result.
         """
         cur = conn.cursor()
         try:
-            with pytest.raises(Exception, match="(?i)parameter|catalog"):
-                cur.execute(
-                    "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
-                    parameters=("__no_such_table__",),
-                )
-                cur.fetch_arrow_table()
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            everything = cur.fetch_arrow_table()
+            first = everything.column("table_name")[0].as_py()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
+                parameters=(first,),
+            )
+            one = cur.fetch_arrow_table()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
+                parameters=("__no_such_table__",),
+            )
+            none = cur.fetch_arrow_table()
         finally:
             cur.close()
+        assert everything.num_rows > 1
+        assert one.column("table_name").to_pylist() == [first]
+        assert none.num_rows == 0
+
+    def test_a_catalog_parameter_is_typed(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?"
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert len(params) == 1
+
+    def test_a_catalog_query_binds_again(self, conn: Any) -> None:
+        """Same reuse guarantee as a semantic statement."""
+        sql = "SELECT table_name FROM information_schema.tables WHERE table_name = ?"
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            first = cur.fetch_arrow_table().column("table_name")[0].as_py()
+            cur.execute(sql, parameters=(first,))
+            hit = cur.fetch_arrow_table().num_rows
+            cur.execute(sql, parameters=("__no_such_table__",))
+            miss = cur.fetch_arrow_table().num_rows
+        finally:
+            cur.close()
+        assert hit == 1
+        assert miss == 0
+
+    def test_a_literal_catalog_filter_also_applies(self, conn: Any) -> None:
+        """Not a parameter feature: the predicate was ignored either way."""
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_name = '__no_such_table__'"
+            )
+            none = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert none.num_rows == 0
 
     def test_an_unparameterised_catalog_query_still_works(self, conn: Any) -> None:
         """The refusal is scoped to parameters, not to catalog queries."""

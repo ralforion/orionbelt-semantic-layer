@@ -453,3 +453,97 @@ class TestAdvertisedSchemaMatchesStream:
             "pk_table_name",
             "pk_column_name",
         ]
+
+
+class TestCatalogWhereFiltering:
+    """A catalog WHERE used to be accepted and discarded.
+
+    ``handle_catalog_sql`` dispatched on the FROM target and returned a whole
+    canned view, so ``WHERE table_name = 'x'`` returned every table and the
+    client was told they all matched. Worse than refusing, because nothing
+    said the predicate had been dropped.
+    """
+
+    def _table(self) -> object:
+        import pyarrow as pa
+
+        return pa.table(
+            {
+                "table_name": ["model", "_dimensions_metadata", "orders"],
+                "table_type": ["TABLE", "VIEW", "TABLE"],
+                "column_size": [1, 2, 3],
+            }
+        )
+
+    def _filter(self, sql: str) -> tuple[object, bool]:
+        import sqlglot
+
+        from ob_flight.server_catalog import filter_catalog_table
+
+        return filter_catalog_table(self._table(), sqlglot.parse_one(sql))
+
+    def test_equality_selects_one_row(self) -> None:
+        table, applied = self._filter("SELECT * FROM t WHERE table_name = 'model'")
+        assert applied is True
+        assert table.column("table_name").to_pylist() == ["model"]
+
+    def test_a_column_may_be_on_either_side(self) -> None:
+        left, _ = self._filter("SELECT * FROM t WHERE table_name = 'model'")
+        right, _ = self._filter("SELECT * FROM t WHERE 'model' = table_name")
+        assert left.num_rows == right.num_rows == 1
+
+    def test_names_match_case_insensitively(self) -> None:
+        """Clients spell catalog columns both ways; the canned tables are lower."""
+        table, applied = self._filter("SELECT * FROM t WHERE TABLE_NAME = 'model'")
+        assert applied is True
+        assert table.num_rows == 1
+
+    def test_like_and_in_and_not(self) -> None:
+        assert self._filter("SELECT * FROM t WHERE table_name LIKE 'mod%'")[0].num_rows == 1
+        assert (
+            self._filter("SELECT * FROM t WHERE table_name IN ('model', 'orders')")[0].num_rows == 2
+        )
+        assert self._filter("SELECT * FROM t WHERE NOT table_name = 'model'")[0].num_rows == 2
+
+    def test_and_or_combine(self) -> None:
+        both = self._filter("SELECT * FROM t WHERE table_type = 'TABLE' AND table_name = 'orders'")[
+            0
+        ]
+        assert both.column("table_name").to_pylist() == ["orders"]
+        either = self._filter(
+            "SELECT * FROM t WHERE table_name = 'model' OR table_name = 'orders'"
+        )[0]
+        assert either.num_rows == 2
+
+    def test_comparison_operators(self) -> None:
+        assert self._filter("SELECT * FROM t WHERE column_size > 1")[0].num_rows == 2
+        assert self._filter("SELECT * FROM t WHERE column_size <= 1")[0].num_rows == 1
+
+    def test_a_predicate_it_cannot_evaluate_leaves_the_table_alone(self) -> None:
+        """The behaviour that was there before, so nothing working today stops.
+
+        The caller is told, and the prepared path uses that to refuse a
+        parameter rather than bind one into a predicate nobody can apply.
+        """
+        table, applied = self._filter("SELECT * FROM t WHERE weird(table_name) = 1")
+        assert applied is False
+        assert table.num_rows == 3
+
+    def test_a_subquery_is_not_evaluated(self) -> None:
+        table, applied = self._filter("SELECT * FROM t WHERE table_name IN (SELECT x FROM y)")
+        assert applied is False
+        assert table.num_rows == 3
+
+    def test_no_where_is_no_filter(self) -> None:
+        table, applied = self._filter("SELECT * FROM t")
+        assert applied is True
+        assert table.num_rows == 3
+
+    def test_a_false_conjunct_settles_an_unknown_one(self) -> None:
+        """``FALSE AND <unknown>`` is False in SQL, so the row is excluded and
+        the filter still counts as applied."""
+        table, applied = self._filter(
+            "SELECT * FROM t WHERE table_name = '__none__' AND weird(x) = 1"
+        )
+        assert applied is True
+        assert table.num_rows == 0

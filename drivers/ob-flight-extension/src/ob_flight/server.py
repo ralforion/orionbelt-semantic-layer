@@ -629,11 +629,31 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             cache_meta,
         ) = self._prepare_sql(bound_sql, context=context)
         if mode == _MODE_CATALOG:
-            # Unreachable while Prepare refuses a parameterised catalog query,
-            # and kept because binding is what would make it reachable again:
-            # a value that changed routing must not be applied by a surface
-            # that ignores WHERE.
-            raise flight.FlightServerError("Parameters are not supported for catalog queries")
+            # Recompute the catalog rows for the *bound* statement. Refused
+            # rather than served if the predicate is one the catalog filter
+            # cannot evaluate: returning the unfiltered table would be the
+            # accepted-and-discarded predicate this whole path exists to stop,
+            # only now with the client's own value in it.
+            import sqlglot
+
+            from ob_flight.server_catalog import filter_catalog_table
+
+            catalog_table = self._handle_catalog_sql(prepared_sql, _model)
+            _, applied = filter_catalog_table(catalog_table, sqlglot.parse_one(bound_sql))
+            if not applied:
+                raise flight.FlightServerError(
+                    "This catalog predicate cannot be evaluated, so the bound "
+                    "value would be ignored and every row returned. Supported: "
+                    "=, <>, <, <=, >, >=, LIKE, ILIKE, IN, IS NULL, AND/OR/NOT "
+                    "over catalog columns."
+                )
+            self._bound[handle_hex] = ("__catalog__", catalog_table, None)
+            logger.debug(
+                "Bound %d parameter(s) to catalog prepared statement %s",
+                len(values),
+                handle_hex,
+            )
+            return
         # The schema advertised at Prepare stands: binding a value changes
         # which rows come back, never which columns. Recorded beside the
         # template rather than over it, so the handle can be bound again.
@@ -681,21 +701,27 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 # the pa.Table for the eventual do_get.
                 catalog_table = self._handle_catalog_sql(prepared_sql, prep_model)
                 schema = catalog_table.schema
+                handle = uuid.uuid4().bytes
+                handle_hex = handle.hex()
                 if parameter_count:
-                    # Refused, rather than bound. The catalog surface answers
-                    # from the model and never reads a WHERE clause at all -
-                    # ``server_catalog`` has no notion of one - so a bound
-                    # value could not be applied and the statement would return
-                    # the whole catalog as though it had been. Materialising
-                    # the stripped form did exactly that: a client that never
-                    # bound got every row, and one that did was told the
-                    # statement takes no parameters.
-                    raise flight.FlightServerError(
-                        "Parameters are not supported for catalog queries: the "
-                        "catalog surface does not filter on a WHERE clause, so "
-                        "a bound value would be silently ignored. Query the "
-                        "catalog without parameters and filter client-side."
+                    # Describable now, answerable once bound. The catalog table
+                    # is the same whatever the values are - a WHERE selects
+                    # from it - so the schema is already right, and ``do_put``
+                    # recomputes the rows. Kept unbound rather than
+                    # materialised: materialising the WHERE-stripped form
+                    # returned every row as though the filter had matched.
+                    self._prepared[handle_hex] = (
+                        _UNBOUND,
+                        sql,
+                        schema,
+                        None,
+                        parameter_count,
                     )
+                    result_bytes = build_prepared_statement_result(
+                        handle, schema, placeholder_arrow_schema(sql, prep_model)
+                    )
+                    yield flight.Result(pa.py_buffer(result_bytes))
+                    return
                 handle = uuid.uuid4().bytes
                 handle_hex = handle.hex()
                 # Sentinel first element lets CMD_PREPARED_STATEMENT_QUERY
