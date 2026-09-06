@@ -20,11 +20,14 @@ See ``design/PLAN_flight_natural_sql.md`` for the full design. Highlights:
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from datetime import date, datetime, time
+from decimal import Decimal
+from typing import Any
 
 import sqlglot
 import sqlglot.expressions as exp
-from sqlglot.errors import ParseError
+from sqlglot.errors import ParseError, SqlglotError
 
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
@@ -1717,3 +1720,110 @@ def _nulls_position(ob: exp.Expression) -> NullsPosition | None:
     if nf is None:
         return None
     return NullsPosition.FIRST if nf else NullsPosition.LAST
+
+
+# ---------------------------------------------------------------------------
+# Prepared-statement parameters (Track II-2)
+# ---------------------------------------------------------------------------
+#
+# A Flight SQL client prepares ``... WHERE "Country" = ?`` and binds the value
+# later, over DoPut. The two halves arrive at different times, and only the
+# second one is a query this translator can read.
+#
+# Rather than teach the translator a notion of an unbound value - which would
+# put a placeholder into ``QueryObject`` and from there into cache keys,
+# explain output and logs - the placeholder never reaches it. Preparing
+# translates the statement with its ``WHERE`` removed, purely to learn the
+# result schema; binding substitutes the values as literal nodes and translates
+# the whole statement normally.
+#
+# Both halves are honest about what they are. A result schema is determined by
+# the SELECT list, so dropping the WHERE to compute it discards nothing: the
+# schema of ``SELECT a, b FROM t WHERE <anything>`` is the schema of
+# ``SELECT a, b FROM t``. And because binding produces an ordinary statement,
+# a bound value passes through exactly the governance an inline literal does -
+# it is inserted as a parsed literal node, never as text spliced into SQL.
+
+
+def count_placeholders(sql: str) -> int:
+    """How many ``?`` parameters *sql* carries.
+
+    Zero for a statement that is already complete, which is how a caller tells
+    a prepared statement that needs binding from one that does not.
+    """
+    try:
+        parsed = sqlglot.parse_one(sql)
+    except SqlglotError:
+        # An unparseable statement has no parameters to count. The caller is
+        # about to translate it and will produce the better error.
+        return 0
+    return len(list(parsed.find_all(exp.Placeholder)))
+
+
+def strip_where_for_schema(sql: str) -> str:
+    """*sql* without its ``WHERE``, for computing a result schema.
+
+    The schema comes from the SELECT list, so this discards nothing that
+    determines it - and it is what lets a statement still carrying ``?`` be
+    described before any value exists. ``HAVING`` is removed for the same
+    reason and with the same effect.
+
+    Returns *sql* unchanged when it cannot be parsed; the caller is about to
+    translate it and will produce the better error.
+    """
+    try:
+        parsed = sqlglot.parse_one(sql)
+    except SqlglotError:
+        return sql
+    for clause in (exp.Where, exp.Having):
+        node = parsed.find(clause)
+        if node is not None:
+            node.pop()
+    return str(parsed.sql())
+
+
+def bind_placeholders(sql: str, values: Sequence[Any]) -> str:
+    """*sql* with each ``?`` replaced by the corresponding value.
+
+    Substituted as parsed literal nodes rather than by string interpolation, so
+    a bound value cannot alter the shape of the statement: it becomes one
+    literal in one predicate, whatever it contains. The translator then reads
+    the result as an ordinary statement and applies the same governance it
+    applies to an inline literal.
+
+    Raises :class:`SQLTranslationError` when the count does not match, because
+    binding the wrong number of values silently shifts every later parameter
+    onto the wrong column.
+    """
+    parsed = sqlglot.parse_one(sql)
+    placeholders = list(parsed.find_all(exp.Placeholder))
+    if len(placeholders) != len(values):
+        raise SQLTranslationError(
+            [
+                SemanticError(
+                    code="PARAMETER_COUNT_MISMATCH",
+                    message=(
+                        f"Statement has {len(placeholders)} parameter(s) but "
+                        f"{len(values)} value(s) were bound."
+                    ),
+                    hint="Bind one value per '?' in the prepared statement.",
+                    context={"expected": len(placeholders), "received": len(values)},
+                )
+            ]
+        )
+    for placeholder, value in zip(placeholders, values, strict=True):
+        placeholder.replace(_literal_node(value))
+    return str(parsed.sql())
+
+
+def _literal_node(value: Any) -> exp.Expression:
+    """A sqlglot literal for a bound Python value."""
+    if value is None:
+        return exp.Null()
+    if isinstance(value, bool):
+        return exp.Boolean(this=value)
+    if isinstance(value, int | float | Decimal):
+        return exp.Literal(this=str(value), is_string=False)
+    if isinstance(value, datetime | date | time):
+        return exp.Literal(this=value.isoformat(), is_string=True)
+    return exp.Literal(this=str(value), is_string=True)

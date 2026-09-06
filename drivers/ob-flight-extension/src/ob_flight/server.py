@@ -9,6 +9,12 @@ import uuid
 from typing import Any
 
 import pyarrow as pa
+from orionbelt.compiler.sql_translator import (
+    SQLTranslationError,
+    bind_placeholders,
+    count_placeholders,
+    strip_where_for_schema,
+)
 from pyarrow import flight
 
 from ob_flight import server_catalog, server_execution, server_routing
@@ -99,6 +105,25 @@ _MODE_REJECTED = server_execution._MODE_REJECTED
 
 # Back-compat name retained while callers transition.
 _CATALOG_VIRTUAL_TABLES = server_execution._METADATA_VIEW_NAMES
+
+
+#: First slot of a prepared entry whose statement still carries ``?``. The
+#: entry holds the client's original SQL rather than a compiled query, and
+#: stays unusable until ``do_put`` binds values and replaces it.
+_UNBOUND = "__unbound__"
+
+
+def _first_row_values(table: Any) -> list[Any]:
+    """The bound parameter values, in order, from a DoPut parameter batch.
+
+    Flight SQL sends one column per parameter. A client that binds no rows -
+    ADBC does this when a statement is executed without values - yields an
+    empty list, which ``bind_placeholders`` then rejects by count rather than
+    guessing.
+    """
+    if table.num_rows == 0:
+        return []
+    return [table.column(i)[0].as_py() for i in range(table.num_columns)]
 
 
 class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
@@ -412,6 +437,15 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 entry = self._prepared[handle_hex]
                 first, payload, schema = entry[0], entry[1], entry[2]
                 cache_meta_pp = entry[3] if len(entry) > 3 else None
+                if first == _UNBOUND:
+                    # Executed without binding. Saying so beats compiling the
+                    # statement with its ``?`` still in it, which fails deep in
+                    # the translator with a message about predicate shapes.
+                    raise flight.FlightServerError(
+                        f"Prepared statement {handle_hex} expects "
+                        f"{entry[4]} parameter(s); none were bound. "
+                        "Bind them with DoPut before executing."
+                    )
                 if first == "__catalog__":
                     # Precomputed catalog table — stream it directly.
                     self._store_pending(ticket_id, ("obsql_catalog_table", payload))
@@ -515,6 +549,74 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         result_schema: pa.Schema | None = schema_raw if isinstance(schema_raw, pa.Schema) else None
         return self._execute_sql(sql, dialect, cache_meta=cache_meta, result_schema=result_schema)
 
+    def do_put(
+        self,
+        context: flight.ServerCallContext,
+        descriptor: flight.FlightDescriptor,
+        reader: Any,
+        writer: Any,
+    ) -> None:
+        """Bind parameters to a prepared statement.
+
+        This is the second half of a prepared statement that carries ``?``:
+        CreatePreparedStatement described the result without knowing any
+        values, and the values arrive here as a record batch, one column per
+        parameter in order.
+
+        Binding substitutes them as literal *nodes* and re-prepares the whole
+        statement, so what finally executes is an ordinary query that has been
+        through the translator's governance in full. A value cannot change the
+        shape of the statement it lands in.
+        """
+        command = descriptor.command
+        if not command:
+            raise flight.FlightServerError("DoPut requires a Flight SQL command descriptor")
+        parsed = parse_any(bytes(command))
+        if parsed is None or parsed[0] != CMD_PREPARED_STATEMENT_QUERY:
+            raise flight.FlightServerError(
+                "DoPut is supported only for CommandPreparedStatementQuery "
+                "(binding prepared-statement parameters). OBSL is a semantic "
+                "layer: it has no writable tables to ingest into."
+            )
+        handle = parse_prepared_statement_handle(parsed[1])
+        if handle is None:
+            raise flight.FlightServerError("Invalid prepared statement handle")
+        handle_hex = handle.hex()
+        entry = self._prepared.get(handle_hex)
+        if entry is None:
+            raise flight.FlightServerError(f"Unknown prepared statement: {handle_hex}")
+        if entry[0] != _UNBOUND:
+            raise flight.FlightServerError(f"Prepared statement {handle_hex} takes no parameters")
+
+        original_sql = entry[1]
+        values = _first_row_values(reader.read_all())
+        try:
+            bound_sql = bind_placeholders(original_sql, values)
+        except SQLTranslationError as exc:
+            raise flight.FlightServerError("; ".join(e.message for e in exc.errors)) from None
+
+        (
+            prepared_sql,
+            dialect,
+            _model,
+            schema_hint,
+            mode,
+            cache_meta,
+        ) = self._prepare_sql(bound_sql, context=context)
+        if mode == _MODE_CATALOG:
+            raise flight.FlightServerError("Parameters are not supported for catalog queries")
+        # The schema advertised at Prepare stands: binding a value changes
+        # which rows come back, never which columns.
+        self._prepared[handle_hex] = (prepared_sql, dialect, entry[2], cache_meta)
+        logger.debug("Bound %d parameter(s) to prepared statement %s", len(values), handle_hex)
+        if schema_hint is not None and len(schema_hint) != len(entry[2]):
+            logger.warning(
+                "Bound statement %s describes %d columns, prepared %d",
+                handle_hex,
+                len(schema_hint),
+                len(entry[2]),
+            )
+
     def do_action(self, context: flight.ServerCallContext, action: flight.Action) -> Any:
         """Handle Flight SQL actions (CreatePreparedStatement, ClosePreparedStatement)."""
         action_type = action.type
@@ -524,6 +626,16 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             if sql is None:
                 raise flight.FlightServerError("Failed to parse prepared statement query")
 
+            # A statement still carrying ``?`` cannot be compiled yet, and must
+            # still be *described* now: a client reads the schema from the
+            # CreatePreparedStatement result, before it binds anything. The
+            # schema comes from the SELECT list, so preparing translates the
+            # statement with its WHERE removed purely to learn it, and keeps
+            # the original for ``do_put`` to bind. See
+            # ``compiler.sql_translator.strip_where_for_schema``.
+            parameter_count = count_placeholders(sql)
+            sql_to_prepare = strip_where_for_schema(sql) if parameter_count else sql
+
             (
                 prepared_sql,
                 dialect,
@@ -531,7 +643,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 schema_hint,
                 mode,
                 cache_meta,
-            ) = self._prepare_sql(sql, context=context)
+            ) = self._prepare_sql(sql_to_prepare, context=context)
             if mode == _MODE_CATALOG:
                 # DBeaver's SQL editor uses prepared statements, so we
                 # MUST advertise the real schema here. Precompute the
@@ -549,15 +661,30 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 # so the tuple shape matches ``self._prepared``'s annotation.
                 self._prepared[handle_hex] = ("__catalog__", catalog_table, schema, None)
             else:
-                sql = prepared_sql
+                sql_for_entry = prepared_sql
                 schema = (
-                    schema_hint if schema_hint is not None else self._probe_schema(sql, dialect)
+                    schema_hint
+                    if schema_hint is not None
+                    else self._probe_schema(prepared_sql, dialect)
                 )
                 handle = uuid.uuid4().bytes
                 handle_hex = handle.hex()
-                # Stash cache_meta on the prepared entry under a 4th slot
-                # so CMD_PREPARED_STATEMENT_QUERY can forward it to do_get.
-                self._prepared[handle_hex] = (sql, dialect, schema, cache_meta)
+                if parameter_count:
+                    # ``prepared_sql`` here is the compiled form of the
+                    # WHERE-less statement - the right schema and the wrong
+                    # query. Keep the client's original text instead; do_put
+                    # binds it and prepares the result properly.
+                    self._prepared[handle_hex] = (
+                        _UNBOUND,
+                        sql,
+                        schema,
+                        None,
+                        parameter_count,
+                    )
+                else:
+                    # Stash cache_meta on the prepared entry under a 4th slot
+                    # so CMD_PREPARED_STATEMENT_QUERY can forward it to do_get.
+                    self._prepared[handle_hex] = (sql_for_entry, dialect, schema, cache_meta)
 
             logger.debug(
                 "Created prepared statement %s (mode=%s, %d cols)",

@@ -300,23 +300,13 @@ class TestExecution:
         with pytest.raises(Exception, match="(?i)reject|unsupported|\\*"):
             _fetch(conn, f"SELECT * FROM {MODEL_NAME}")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Parameter binding is unimplemented. The placeholder reaches "
-            "translate_sql_to_query at Prepare time, before any value is "
-            "bound, and the OBSQL translator has no notion of one: "
-            'UNSUPPORTED_SQL_FEATURE \'Unsupported predicate "x" = ?. Only '
-            "`column op literal` shapes are accepted.' Supporting it needs "
-            "placeholders in the translator plus DoPut binding. Tracked as "
-            "Track II-2 in design/PLAN_adbc.md."
-        ),
-    )
     def test_prepared_statement_with_parameters(self, conn: Any) -> None:
-        """ADBC clients bind parameters; OBSL must accept or refuse clearly.
+        """ADBC clients bind parameters, and OBSL binds them.
 
-        ``CommandPreparedStatementQuery`` is implemented, but binding
-        goes through ``DoPut`` and is not.
+        The statement is prepared with its ``?`` intact - described from the
+        SELECT list, which no value can change - and the value arrives over
+        DoPut, where it is substituted as a literal node and the whole
+        statement translated normally. Track II-2.
         """
         cur = conn.cursor()
         try:
@@ -386,3 +376,88 @@ class TestModelSelection:
             assert table.num_rows == 2
         finally:
             connection.close()
+
+
+class TestPreparedStatementParameters:
+    """Track II-2. The halves arrive separately: a statement is described
+    before any value exists, and the value binds later over DoPut.
+    """
+
+    def test_a_parameter_filters_the_result(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME} '
+                'WHERE "Customer Country" = ?',
+                parameters=("US",),
+            )
+            bound = cur.fetch_arrow_table()
+            cur.execute(f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME}')
+            unfiltered = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert bound.num_rows < unfiltered.num_rows
+        assert bound.column("Customer Country").to_pylist() == ["US"]
+
+    def test_the_bound_value_is_a_value_not_syntax(self, conn: Any) -> None:
+        """Substituted as a literal node, so it cannot reshape the statement.
+
+        Inlined as text this would read as ``= 'US' OR 1=1 --'`` and return
+        every row; as a node it is one string that matches nothing.
+        """
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f'SELECT "Customer Country" FROM {MODEL_NAME} WHERE "Customer Country" = ?',
+                parameters=("US' OR 1=1 --",),
+            )
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.num_rows == 0
+
+    def test_two_parameters_bind_in_order(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME} '
+                'WHERE "Customer Country" = ? AND "Total Revenue" > ?',
+                parameters=("US", 0),
+            )
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column("Customer Country").to_pylist() == ["US"]
+
+    def test_the_schema_is_known_before_binding(self, conn: Any) -> None:
+        """A client reads the schema from CreatePreparedStatement, and a value
+        changes which rows come back, never which columns."""
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME} '
+                'WHERE "Customer Country" = ?',
+                parameters=("__none__",),
+            )
+            empty = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert empty.num_rows == 0
+        assert empty.column_names == ["Customer Country", "Total Revenue"]
+        assert not any(str(f.type) == "null" for f in empty.schema), [
+            (f.name, str(f.type)) for f in empty.schema
+        ]
+
+    def test_a_parameter_still_refuses_what_the_translator_refuses(self, conn: Any) -> None:
+        """Binding produces an ordinary statement, so governance is unchanged -
+        a bound value cannot buy access to a shape the translator rejects."""
+        cur = conn.cursor()
+        try:
+            with pytest.raises(Exception, match="(?i)reject|unsupported|unknown|error"):
+                cur.execute(
+                    f'SELECT "Customer Country" FROM {MODEL_NAME} WHERE "No Such Column" = ?',
+                    parameters=("US",),
+                )
+                cur.fetch_arrow_table()
+        finally:
+            cur.close()

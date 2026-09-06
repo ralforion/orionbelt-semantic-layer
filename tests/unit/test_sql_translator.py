@@ -814,3 +814,91 @@ def test_compiles_with_rollup(model: SemanticModel) -> None:
     result = CompilationPipeline().compile(q, model, "duckdb")
     assert "GROUP BY ROLLUP" in result.sql
     assert "GROUPING(" in result.sql
+
+
+class TestPreparedStatementParameters:
+    """The two halves of a parameterised statement (Track II-2).
+
+    A placeholder never reaches the translator's predicate handling. Preparing
+    strips the WHERE to learn the schema; binding substitutes literal nodes and
+    translates the whole statement. That keeps ``QueryObject`` free of unbound
+    markers, which would otherwise reach cache keys, explain output and logs.
+    """
+
+    def test_counts_placeholders(self) -> None:
+        from orionbelt.compiler.sql_translator import count_placeholders
+
+        assert count_placeholders("SELECT a FROM t") == 0
+        assert count_placeholders("SELECT a FROM t WHERE a = ?") == 1
+        assert count_placeholders("SELECT a FROM t WHERE a = ? AND b > ?") == 2
+
+    def test_an_unparseable_statement_has_no_parameters(self) -> None:
+        """The caller is about to translate it and will give the better error."""
+        from orionbelt.compiler.sql_translator import count_placeholders
+
+        assert count_placeholders("this is not sql (((") == 0
+
+    def test_stripping_where_keeps_the_select_list(self) -> None:
+        from orionbelt.compiler.sql_translator import strip_where_for_schema
+
+        stripped = strip_where_for_schema('SELECT "A", "B" FROM t WHERE "A" = ?')
+        assert '"A"' in stripped and '"B"' in stripped
+        assert "?" not in stripped and "WHERE" not in stripped.upper()
+
+    def test_stripping_removes_having_too(self) -> None:
+        from orionbelt.compiler.sql_translator import strip_where_for_schema
+
+        stripped = strip_where_for_schema(
+            'SELECT "A", SUM("B") FROM t GROUP BY "A" HAVING SUM("B") > ?'
+        )
+        assert "?" not in stripped
+
+    def test_binding_substitutes_values(self) -> None:
+        from orionbelt.compiler.sql_translator import bind_placeholders
+
+        assert bind_placeholders("SELECT a FROM t WHERE a = ?", ["US"]) == (
+            "SELECT a FROM t WHERE a = 'US'"
+        )
+        assert bind_placeholders("SELECT a FROM t WHERE a > ?", [5]) == (
+            "SELECT a FROM t WHERE a > 5"
+        )
+
+    def test_binding_is_positional(self) -> None:
+        from orionbelt.compiler.sql_translator import bind_placeholders
+
+        bound = bind_placeholders("SELECT a FROM t WHERE a = ? AND b = ?", ["x", "y"])
+        assert bound.index("'x'") < bound.index("'y'")
+
+    def test_a_bound_value_cannot_reshape_the_statement(self) -> None:
+        """Substituted as a node, so this stays one string rather than becoming
+        an OR and a comment."""
+        from orionbelt.compiler.sql_translator import bind_placeholders
+
+        bound = bind_placeholders("SELECT a FROM t WHERE a = ?", ["US' OR 1=1 --"])
+        assert bound.count("WHERE") == 1
+        assert " OR " not in bound.upper().replace("'US'' OR 1=1 --'", "")
+
+    def test_a_wrong_count_is_refused(self) -> None:
+        """Binding too few silently shifts every later value onto the wrong
+        column, so it is an error rather than a partial bind."""
+        import pytest
+
+        from orionbelt.compiler.sql_translator import (
+            SQLTranslationError,
+            bind_placeholders,
+        )
+
+        with pytest.raises(SQLTranslationError) as exc:
+            bind_placeholders("SELECT a FROM t WHERE a = ? AND b = ?", ["only-one"])
+        assert exc.value.errors[0].code == "PARAMETER_COUNT_MISMATCH"
+
+    def test_null_and_typed_values_bind(self) -> None:
+        import datetime
+
+        from orionbelt.compiler.sql_translator import bind_placeholders
+
+        assert "NULL" in bind_placeholders("SELECT a FROM t WHERE a = ?", [None]).upper()
+        assert "TRUE" in bind_placeholders("SELECT a FROM t WHERE a = ?", [True]).upper()
+        assert "2026-08-15" in bind_placeholders(
+            "SELECT a FROM t WHERE a = ?", [datetime.date(2026, 8, 15)]
+        )
