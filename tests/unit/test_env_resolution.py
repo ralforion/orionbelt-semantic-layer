@@ -25,6 +25,8 @@ from __future__ import annotations
 import ast
 import pathlib
 
+import pytest
+
 APP = pathlib.Path(__file__).resolve().parents[2] / "src" / "orionbelt" / "api" / "app.py"
 
 
@@ -64,58 +66,49 @@ class TestDotenvIsResolvedFromTheWorkingDirectory:
             for kw in call.keywords
         )
 
-    def test_a_parent_env_is_not_inherited(self) -> None:
-        """The behavioural half: a child with no .env must see nothing."""
-        import os
-        import tempfile
+    def test_a_parent_env_is_not_inherited(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The behavioural half: a child with no .env must see nothing.
 
+        ``monkeypatch`` for both the cwd and the variable: ``override=False``
+        means a real ``API_SERVER_PORT`` in the caller's environment wins over
+        the temp file, so without ``delenv`` this asserts nothing when one is
+        exported - and restoring by hand leaked the deletion into whatever ran
+        next, which is how these two masked each other.
+        """
         from dotenv import load_dotenv
 
         from orionbelt.settings import Settings
 
-        cwd = pathlib.Path.cwd()
-        with tempfile.TemporaryDirectory() as parent:
-            (pathlib.Path(parent) / ".env").write_text("API_SERVER_PORT=8123\n")
-            child = pathlib.Path(parent) / "child"
-            child.mkdir()
-            try:
-                os.chdir(child)
-                load_dotenv(pathlib.Path.cwd() / ".env", override=False)
-                assert Settings().api_server_port != 8123
-            finally:
-                os.chdir(cwd)
-                os.environ.pop("API_SERVER_PORT", None)
+        monkeypatch.delenv("API_SERVER_PORT", raising=False)
+        (tmp_path / ".env").write_text("API_SERVER_PORT=8123\n")
+        child = tmp_path / "child"
+        child.mkdir()
+        monkeypatch.chdir(child)
 
-    def test_the_working_directory_s_own_env_is_read(self) -> None:
-        import os
-        import tempfile
+        load_dotenv(pathlib.Path.cwd() / ".env", override=False)
+        assert Settings().api_server_port != 8123
 
+    def test_the_working_directory_s_own_env_is_read(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from dotenv import load_dotenv
 
         from orionbelt.settings import Settings
 
-        cwd = pathlib.Path.cwd()
-        with tempfile.TemporaryDirectory() as here:
-            (pathlib.Path(here) / ".env").write_text("API_SERVER_PORT=8321\n")
-            try:
-                os.chdir(here)
-                load_dotenv(pathlib.Path.cwd() / ".env", override=False)
-                assert Settings().api_server_port == 8321
-            finally:
-                os.chdir(cwd)
-                os.environ.pop("API_SERVER_PORT", None)
+        monkeypatch.delenv("API_SERVER_PORT", raising=False)
+        (tmp_path / ".env").write_text("API_SERVER_PORT=8321\n")
+        monkeypatch.chdir(tmp_path)
 
-    def test_a_missing_file_is_a_no_op(self) -> None:
+        load_dotenv(pathlib.Path.cwd() / ".env", override=False)
+        assert Settings().api_server_port == 8321
+
+    def test_a_missing_file_is_a_no_op(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A deployment configured purely by environment has no file on disk."""
-        import os
-        import tempfile
-
         from dotenv import load_dotenv
 
-        cwd = pathlib.Path.cwd()
-        with tempfile.TemporaryDirectory() as empty:
-            try:
-                os.chdir(empty)
-                assert load_dotenv(pathlib.Path.cwd() / ".env") is False
-            finally:
-                os.chdir(cwd)
+        monkeypatch.chdir(tmp_path)
+        assert load_dotenv(pathlib.Path.cwd() / ".env") is False
