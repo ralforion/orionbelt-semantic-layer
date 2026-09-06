@@ -629,6 +629,10 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             cache_meta,
         ) = self._prepare_sql(bound_sql, context=context)
         if mode == _MODE_CATALOG:
+            # Unreachable while Prepare refuses a parameterised catalog query,
+            # and kept because binding is what would make it reachable again:
+            # a value that changed routing must not be applied by a surface
+            # that ignores WHERE.
             raise flight.FlightServerError("Parameters are not supported for catalog queries")
         # The schema advertised at Prepare stands: binding a value changes
         # which rows come back, never which columns. Recorded beside the
@@ -677,11 +681,26 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 # the pa.Table for the eventual do_get.
                 catalog_table = self._handle_catalog_sql(prepared_sql, prep_model)
                 schema = catalog_table.schema
+                if parameter_count:
+                    # Refused, rather than bound. The catalog surface answers
+                    # from the model and never reads a WHERE clause at all -
+                    # ``server_catalog`` has no notion of one - so a bound
+                    # value could not be applied and the statement would return
+                    # the whole catalog as though it had been. Materialising
+                    # the stripped form did exactly that: a client that never
+                    # bound got every row, and one that did was told the
+                    # statement takes no parameters.
+                    raise flight.FlightServerError(
+                        "Parameters are not supported for catalog queries: the "
+                        "catalog surface does not filter on a WHERE clause, so "
+                        "a bound value would be silently ignored. Query the "
+                        "catalog without parameters and filter client-side."
+                    )
+                handle = uuid.uuid4().bytes
+                handle_hex = handle.hex()
                 # Sentinel first element lets CMD_PREPARED_STATEMENT_QUERY
                 # dispatch to the catalog-table branch (precomputed pa.Table
                 # instead of SQL/dialect to execute on the warehouse).
-                handle = uuid.uuid4().bytes
-                handle_hex = handle.hex()
                 # 4th slot is cache_meta for SQL prepared statements; catalog
                 # prepared statements have no cache plumbing — pad with None
                 # so the tuple shape matches ``self._prepared``'s annotation.

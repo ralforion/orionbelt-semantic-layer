@@ -29,6 +29,10 @@ from typing import Any
 DECIMAL128_MAX_PRECISION = 38
 DECIMAL256_MAX_PRECISION = 76
 
+#: Aggregations the compiler types structurally as ``bigint``, whatever the
+#: model's numeric default says. Mirrors ``compiler.type_resolver``.
+_COUNT_AGGREGATIONS = frozenset({"COUNT", "COUNT_DISTINCT"})
+
 
 @functools.cache
 def _obml_type_map() -> dict[str, Any]:
@@ -108,6 +112,14 @@ def numeric_result_arrow_type(item: Any, model: Any) -> Any | None:
         return None
     declared = getattr(item, "data_type", None)
     if not declared:
+        aggregation = str(getattr(item, "aggregation", "") or "").upper()
+        if aggregation in _COUNT_AGGREGATIONS:
+            # A count is an integer, and the compiler says so: `type_resolver`
+            # infers ``bigint`` for COUNT before any default applies. Letting
+            # the model-level ``defaultNumericDataType`` reach it advertised a
+            # count as ``decimal(18, 2)`` - contradicting the column the query
+            # actually returns, on both the result and the parameter schema.
+            return None
         settings = getattr(model, "settings", None)
         declared = getattr(settings, "default_numeric_data_type", None) if settings else None
     if not declared:

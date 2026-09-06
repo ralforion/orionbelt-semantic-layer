@@ -543,3 +543,47 @@ class TestPreparedStatementParameters:
         finally:
             cur.close()
         assert params is None or len(params) == 0
+
+    def test_a_parameterised_catalog_query_is_refused(self, conn: Any) -> None:
+        """Refused rather than bound, because it could not be honoured.
+
+        The catalog surface answers from the model and never reads a WHERE
+        clause - ``server_catalog`` has no notion of one - so a bound value
+        would be silently ignored. Preparing used to materialise the
+        WHERE-stripped form as the *result*: a client that never bound got the
+        whole catalog, and one that did was told the statement takes no
+        parameters.
+        """
+        cur = conn.cursor()
+        try:
+            with pytest.raises(Exception, match="(?i)parameter|catalog"):
+                cur.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
+                    parameters=("__no_such_table__",),
+                )
+                cur.fetch_arrow_table()
+        finally:
+            cur.close()
+
+    def test_an_unparameterised_catalog_query_still_works(self, conn: Any) -> None:
+        """The refusal is scoped to parameters, not to catalog queries."""
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.num_rows > 0
+
+    def test_a_declared_count_binds_as_an_integer(self, conn: Any) -> None:
+        """The compiler infers ``bigint`` for COUNT before any default, so the
+        model's ``defaultNumericDataType`` must not reach it."""
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                f'SELECT "Customer Country" FROM {MODEL_NAME} WHERE "Order Count" > ?'
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert "int" in str(params.field(0).type), str(params.field(0).type)
