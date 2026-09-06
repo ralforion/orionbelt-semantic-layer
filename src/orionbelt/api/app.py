@@ -773,9 +773,20 @@ def main() -> None:
     """Run the REST API server using settings from environment / .env file."""
     # Load .env into os.environ so all env vars (DB credentials, POSTGRES_SCHEMA,
     # etc.) are visible to os.getenv() — not just to pydantic Settings.
-    from dotenv import load_dotenv
+    #
+    # Resolved from the working directory, which is how pydantic-settings
+    # resolves ``env_file=".env"`` (see ``settings.Settings``). Bare
+    # ``load_dotenv()`` searches upward from *this file* instead, so a source
+    # checkout's own .env was loaded whatever directory the server started in -
+    # and the two resolutions then disagreed with each other. Measured: started
+    # from a directory whose .env said ``API_SERVER_PORT=8020`` with no
+    # ``MODEL_FILES``, ``Settings()`` read exactly that while the process came
+    # up on the repo's 9003 against the repo's database. ``find_dotenv``
+    # answers "" when there is none, and ``load_dotenv("")`` is a no-op, so a
+    # deployment with no file on disk keeps using real environment variables.
+    from dotenv import find_dotenv, load_dotenv
 
-    load_dotenv(override=False)
+    load_dotenv(find_dotenv(usecwd=True), override=False)
 
     settings = Settings()
 
