@@ -947,3 +947,62 @@ class TestPreparedStatementParameters:
         from orionbelt.compiler.sql_translator import placeholder_arrow_schema
 
         assert len(placeholder_arrow_schema("not sql (((", sales_model)) == 0
+
+    def test_a_parameter_types_like_the_column_it_filters(self, sales_model) -> None:
+        """The invariant behind all four review findings.
+
+        A parameter is compared against a column the query resolves, so
+        whatever that column comes back as, the parameter must bind as. Every
+        divergence found in review - case, synthesized counts, metrics,
+        governed decimals - was this invariant broken for one kind of label,
+        and a per-case fix would have left the next kind broken.
+        """
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+        from orionbelt.models.query import QueryObject
+        from orionbelt.service.result_schema import declared_result_schema
+
+        mismatched = []
+        for label in list(sales_model.effective_measures) + list(sales_model.metrics):
+            parameter = placeholder_arrow_schema(
+                f'SELECT 1 FROM s WHERE "{label}" > ?', sales_model
+            ).field(0)
+            result = declared_result_schema(
+                QueryObject.model_validate({"select": {"measures": [label]}}), sales_model
+            ).field(0)
+            if parameter.type != result.type:
+                mismatched.append(f"{label}: binds {parameter.type}, returns {result.type}")
+        assert not mismatched, mismatched
+
+    def test_a_label_binds_the_same_whatever_its_case(self, sales_model) -> None:
+        """``"total revenue"`` executes, so it must type like ``"Total Revenue"``."""
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        label = next(iter(sales_model.effective_measures))
+        upper = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{label}" > ?', sales_model)
+        lower = placeholder_arrow_schema(
+            f'SELECT 1 FROM s WHERE "{label.lower()}" > ?', sales_model
+        )
+        assert upper.field(0).type == lower.field(0).type
+
+    def test_a_synthesized_count_is_an_integer_not_text(self, sales_model) -> None:
+        """It lives in ``effective_measures``; a declared-only lookup made it
+        unresolvable and typed it as a string."""
+        import pyarrow as pa
+
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        count = next(
+            (m for m in sales_model.effective_measures if m not in sales_model.measures),
+            None,
+        )
+        if count is None:
+            pytest.skip("fixture synthesizes no counts")
+        schema = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{count}" > ?', sales_model)
+        assert schema.field(0).type == pa.int64()
+
+    def test_a_metric_is_numeric_not_text(self, sales_model) -> None:
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        metric = next(iter(sales_model.metrics))
+        schema = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{metric}" > ?', sales_model)
+        assert str(schema.field(0).type) != "string"

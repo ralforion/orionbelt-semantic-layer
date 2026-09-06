@@ -1860,8 +1860,26 @@ def placeholder_arrow_schema(sql: str, model: SemanticModel) -> Any:
 
 
 def _placeholder_arrow_type(placeholder: exp.Expression, model: SemanticModel) -> Any:
-    """The Arrow type a placeholder should be bound as, defaulting to utf8."""
-    from orionbelt.service.result_schema import obml_type_to_arrow
+    """The Arrow type a placeholder should be bound as, defaulting to utf8.
+
+    Resolved through the same namespace the translator and the result schema
+    use, and for the same reason: a parameter is compared against a column the
+    query will resolve, so anything the query accepts this has to accept
+    identically. Getting that wrong is worse than answering "unknown", because
+    a client believes a type it was told.
+
+    Three things that a plain dict lookup on ``model.dimensions`` /
+    ``model.measures`` gets wrong, and did:
+
+    * labels are matched case-insensitively, so ``"total revenue"`` executes
+      and must type like ``"Total Revenue"``;
+    * measures come from ``effective_measures``, so a synthesized count
+      resolves like a declared measure rather than falling through to text;
+    * a governed decimal takes its exact width from ``dataType``, the way the
+      *result* schema does - a ``decimal(18, 2)`` measure that comes back
+      ``decimal128(18, 2)`` must not be bound as ``double``.
+    """
+    from orionbelt.service.result_schema import numeric_result_arrow_type, obml_type_to_arrow
 
     parent = placeholder.parent
     if parent is None:
@@ -1872,10 +1890,26 @@ def _placeholder_arrow_type(placeholder: exp.Expression, model: SemanticModel) -
     if name is None:
         return obml_type_to_arrow(None)
 
-    declared: Any = (
-        model.dimensions.get(name) or model.measures.get(name) or model.metrics.get(name)
-    )
-    if declared is None:
+    key = name.lower()
+    dimension = {label.lower(): item for label, item in model.dimensions.items()}.get(key)
+    if dimension is not None:
+        rt = getattr(getattr(dimension, "result_type", None), "value", None)
+        return obml_type_to_arrow(rt)
+
+    measures = {label.lower(): item for label, item in model.effective_measures.items()}
+    metrics = {label.lower(): item for label, item in model.metrics.items()}
+    item = measures.get(key) or metrics.get(key)
+    if item is None:
         return obml_type_to_arrow(None)
-    result_type = getattr(getattr(declared, "result_type", None), "value", None)
-    return obml_type_to_arrow(result_type)
+
+    decimal_type = numeric_result_arrow_type(item, model)
+    if decimal_type is not None:
+        return decimal_type
+    rt = getattr(getattr(item, "result_type", None), "value", None)
+    if rt:
+        return obml_type_to_arrow(rt)
+    # A metric with no declared result type is numeric, which is the fallback
+    # ``declared_result_schema`` makes for the same case.
+    import pyarrow as pa
+
+    return pa.float64() if key in metrics else obml_type_to_arrow(None)

@@ -99,6 +99,13 @@ def numeric_result_arrow_type(item: Any, model: Any) -> Any | None:
     """
     from orionbelt.service.db_executor import parse_decimal_type
 
+    if item is None:
+        # An unknown label has no declared width, and falling through to the
+        # model default gave it one: a measure the caller could not resolve was
+        # advertised as a governed decimal. ``declared_result_schema`` reached
+        # here for every synthesized count, which it looked up in
+        # ``model.measures`` rather than ``effective_measures``.
+        return None
     declared = getattr(item, "data_type", None)
     if not declared:
         settings = getattr(model, "settings", None)
@@ -161,7 +168,11 @@ def declared_result_schema(query: Any, model: Any) -> Any:
         rt = getattr(getattr(dim, "result_type", None), "value", None) or "string"
         fields.append(pa.field(label, obml_type_to_arrow(rt)))
     for label in measures:
-        meas = model.measures.get(label)
+        # ``effective_measures``, not ``measures``: a synthesized count is a
+        # measure a query can select, and looking it up in the declared-only
+        # map made it unresolvable - which then took the ``float64`` fallback
+        # below, or a governed decimal from an item that was ``None``.
+        meas = model.effective_measures.get(label)
         met = model.metrics.get(label) if meas is None else None
         decimal_type = numeric_result_arrow_type(meas or met, model)
         if decimal_type is not None:
@@ -203,7 +214,7 @@ def declared_arrow_types(model: Any, query: Any = None) -> dict[str, Any]:
         rt = getattr(getattr(dim, "result_type", None), "value", None)
         if rt:
             types[label] = obml_type_to_arrow(rt)
-    for label, item in list(model.measures.items()) + list(model.metrics.items()):
+    for label, item in list(model.effective_measures.items()) + list(model.metrics.items()):
         decimal_type = numeric_result_arrow_type(item, model)
         if decimal_type is not None:
             types[label] = decimal_type
