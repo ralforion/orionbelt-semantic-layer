@@ -640,3 +640,53 @@ class TestARowBackedHitKeepsItsTypes:
             row_count=1,
         )
         assert result.arrow_schema.field("n").type == pa.int64()
+
+
+class TestCarriedSkipsReachTheResponse:
+    """The half that the structural guard cannot see.
+
+    A rebuilt hit is row-backed, so the response builder's own reconciliation
+    returns nothing. If the skips computed from the cached *table* are not
+    handed over, the response reports the declared type beside the engine's
+    rows and warns about neither - which is what oneshot did while every test
+    passed.
+    """
+
+    def _built(self, declared_skips):
+        from orionbelt.api.services.query_execution import _columns_and_maps
+        from orionbelt.models.warnings import WarningCode
+        from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
+
+        class _Model:
+            dimensions: dict = {}
+            measures: dict = {}
+            metrics: dict = {}
+            settings = None
+
+        # Row-backed, exactly as ``execution_result_from_data`` returns it.
+        result = ExecutionResult(
+            columns=[ColumnMeta(name="Flag", type_hint="number")],
+            raw_rows=[[0], [1], [7]],
+            row_count=3,
+            arrow_schema=pa.schema([pa.field("Flag", pa.int64())]),
+        )
+        skips = (
+            list(declared_skips)
+            if declared_skips is not None
+            else result.reconcile_to_declared({"Flag": pa.bool_()})
+        )
+        columns, _, _ = _columns_and_maps(
+            _Model(), result.columns, None, frozenset(n for n, _ in skips)
+        )
+        return columns, [WarningCode.DECLARED_TYPE_NOT_APPLIED for _ in skips]
+
+    def test_without_the_carried_skips_nothing_is_reported(self) -> None:
+        """The bug: a row-backed result rederives nothing."""
+        columns, warnings = self._built(None)
+        assert warnings == []
+        assert columns[0].type == "number"
+
+    def test_the_carried_skips_produce_the_warning(self) -> None:
+        columns, warnings = self._built([("Flag", "declared boolean but ...")])
+        assert warnings == ["DECLARED_TYPE_NOT_APPLIED"]
+        assert columns[0].type == "number"

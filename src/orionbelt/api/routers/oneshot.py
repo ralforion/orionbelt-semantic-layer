@@ -354,9 +354,11 @@ async def _run_query(
                 compile_result=compile_result,
                 exec_result=hit_exec,
                 model=model,
-                # A cache hit passes no ``declared_skips``, so reconciliation
-                # re-runs: a no-op for the columns the miss already cast, and
-                # it re-derives the warnings for the ones it could not.
+                # The skips from the table above. The builder cannot rederive
+                # them: ``hit_exec`` is row-backed, so its
+                # ``reconcile_to_declared`` finds no Arrow table and returns
+                # nothing at all.
+                declared_skips=hit_skips,
                 query=item.query,
                 response_format="json",
                 format_values=False,

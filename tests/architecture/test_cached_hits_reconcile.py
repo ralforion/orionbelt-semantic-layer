@@ -76,3 +76,56 @@ def test_every_cached_rebuild_reconciles_the_table() -> None:
         "hit returns the engine's types while its miss returned the model's: "
         + ", ".join(offenders)
     )
+
+
+#: The response builder that turns skips into DECLARED_TYPE_NOT_APPLIED warnings.
+_BUILDER = "_build_execute_response"
+
+
+def test_a_rebuild_site_hands_its_skips_to_the_builder() -> None:
+    """Reconciling is half of it; the warnings have to reach the response.
+
+    The first version of this rule only checked that a rebuild site *named*
+    ``reconcile_to_declared``. Oneshot did - it computed ``hit_skips`` and then
+    never passed them - and the guard stayed green while the response reported
+    ``type=boolean`` over rows of 0/1/7 with no warning at all. The builder
+    cannot rederive them: the rebuilt result is row-backed, so its own
+    reconciliation returns nothing.
+
+    Scoped to the builder call that *consumes the rebuilt result*. A miss in
+    the same function passes no skips on purpose - there the builder holds an
+    Arrow table and derives them itself - so demanding the argument everywhere
+    would force a wrong one.
+    """
+    offenders = []
+    for path, fn in _rebuild_sites():
+        rebuilt = {
+            node.targets[0].id
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == _REBUILD
+        }
+        for call in ast.walk(fn):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == _BUILDER
+            ):
+                continue
+            consumes = any(
+                kw.arg == "exec_result"
+                and isinstance(kw.value, ast.Name)
+                and kw.value.id in rebuilt
+                for kw in call.keywords
+            )
+            if consumes and not any(kw.arg == "declared_skips" for kw in call.keywords):
+                offenders.append(f"{path.relative_to(SRC)}::{fn.name}")
+    assert not offenders, (
+        "these hand a rebuilt cached result to the response builder without "
+        "declared_skips, so the hit reports no DECLARED_TYPE_NOT_APPLIED warning "
+        "even though it computed one: " + ", ".join(offenders)
+    )
