@@ -903,3 +903,36 @@ class TestFlightCatalogFilter:
         table = b"_metrics"
         body = bytes([0x1A]) + bytes([len(table)]) + table
         assert parse_catalog_filter(body) is None
+
+
+class TestBoundParameterValues:
+    """What a DoPut parameter batch is allowed to contain."""
+
+    def _values(self, table: object) -> list[object]:
+        from ob_flight.server import _bound_values
+
+        return _bound_values(table)
+
+    def test_one_row_yields_its_values_in_order(self) -> None:
+        import pyarrow as pa
+
+        assert self._values(pa.table({"p0": ["US"], "p1": [5]})) == ["US", 5]
+
+    def test_no_rows_yields_nothing(self) -> None:
+        """ADBC sends this when a statement is executed without values; the
+        count check then refuses it by number rather than guessing."""
+        import pyarrow as pa
+
+        assert self._values(pa.table({"p0": pa.array([], type=pa.string())})) == []
+
+    def test_a_parameter_set_is_refused_not_truncated(self) -> None:
+        """More than one row asks for one execution per row - a real Flight SQL
+        feature this does not implement. Reading row 0 and discarding the rest
+        would answer a different question and look like a correct answer.
+        """
+        import pyarrow as pa
+        import pytest
+        from pyarrow import flight
+
+        with pytest.raises(flight.FlightServerError, match="(?i)parameter rows|parameter sets"):
+            self._values(pa.table({"p0": ["US", "UK"]}))

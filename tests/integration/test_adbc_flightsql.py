@@ -461,3 +461,42 @@ class TestPreparedStatementParameters:
                 cur.fetch_arrow_table()
         finally:
             cur.close()
+
+    def test_a_handle_can_be_bound_again(self, conn: Any) -> None:
+        """Reuse is the point of preparing.
+
+        Binding used to overwrite the prepared entry with its first bound form,
+        so the template was consumed and the second execute failed with
+        "takes no parameters".
+        """
+        sql = (
+            f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME} '
+            'WHERE "Customer Country" = ?'
+        )
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, parameters=("US",))
+            first = cur.fetch_arrow_table()
+            cur.execute(sql, parameters=("__none__",))
+            second = cur.fetch_arrow_table()
+            cur.execute(sql, parameters=("US",))
+            third = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert first.column("Customer Country").to_pylist() == ["US"]
+        assert second.num_rows == 0
+        assert third.column("Customer Country").to_pylist() == ["US"]
+
+    def test_rebinding_changes_the_result(self, conn: Any) -> None:
+        """Not just that it works twice - that the second value is the one used."""
+        sql = f'SELECT "Customer Country" FROM {MODEL_NAME} WHERE "Customer Country" = ?'
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, parameters=("US",))
+            us = cur.fetch_arrow_table().num_rows
+            cur.execute(sql, parameters=("__none__",))
+            none = cur.fetch_arrow_table().num_rows
+        finally:
+            cur.close()
+        assert us == 1
+        assert none == 0

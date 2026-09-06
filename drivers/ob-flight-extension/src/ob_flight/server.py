@@ -113,16 +113,28 @@ _CATALOG_VIRTUAL_TABLES = server_execution._METADATA_VIEW_NAMES
 _UNBOUND = "__unbound__"
 
 
-def _first_row_values(table: Any) -> list[Any]:
+def _bound_values(table: Any) -> list[Any]:
     """The bound parameter values, in order, from a DoPut parameter batch.
 
     Flight SQL sends one column per parameter. A client that binds no rows -
     ADBC does this when a statement is executed without values - yields an
     empty list, which ``bind_placeholders`` then rejects by count rather than
     guessing.
+
+    More than one row is a *parameter set*: the client asks for the statement
+    to run once per row. That is a real Flight SQL feature and this does not
+    implement it, so it is refused rather than served by reading row 0 and
+    discarding the rest - which would answer a different question than the one
+    asked, and look like a correct answer.
     """
     if table.num_rows == 0:
         return []
+    if table.num_rows > 1:
+        raise flight.FlightServerError(
+            f"Bound {table.num_rows} parameter rows; OBSL executes a prepared "
+            "statement once per bind. Parameter sets (one execution per row) "
+            "are not supported - execute once per row instead."
+        )
     return [table.column(i)[0].as_py() for i in range(table.num_columns)]
 
 
@@ -174,6 +186,12 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         # by ``kind_or_sql == "__catalog__"``), so the tuple's middle
         # elements are heterogeneous — Any here, narrowed at the read site.
         self._prepared: dict[str, tuple[Any, ...]] = {}
+        # Current binding of a parameterised handle: handle_hex -> (compiled
+        # sql, dialect, cache_meta). Held apart from ``_prepared`` so binding
+        # never consumes the template. A prepared statement exists to be
+        # executed more than once, and overwriting the entry with its first
+        # bound form made the second execute fail with "takes no parameters".
+        self._bound: dict[str, tuple[Any, ...]] = {}
         # TTL for pending tickets (seconds) — entries older than this are evicted
         self._pending_ttl = 300
 
@@ -438,14 +456,20 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 first, payload, schema = entry[0], entry[1], entry[2]
                 cache_meta_pp = entry[3] if len(entry) > 3 else None
                 if first == _UNBOUND:
-                    # Executed without binding. Saying so beats compiling the
-                    # statement with its ``?`` still in it, which fails deep in
-                    # the translator with a message about predicate shapes.
-                    raise flight.FlightServerError(
-                        f"Prepared statement {handle_hex} expects "
-                        f"{entry[4]} parameter(s); none were bound. "
-                        "Bind them with DoPut before executing."
-                    )
+                    bound = self._bound.get(handle_hex)
+                    if bound is None:
+                        # Executed without binding. Saying so beats compiling
+                        # the statement with its ``?`` still in it, which fails
+                        # deep in the translator with a message about predicate
+                        # shapes.
+                        raise flight.FlightServerError(
+                            f"Prepared statement {handle_hex} expects "
+                            f"{entry[4]} parameter(s); none were bound. "
+                            "Bind them with DoPut before executing."
+                        )
+                    # The template stays put, so the next DoPut on this handle
+                    # binds different values against the same statement.
+                    first, payload, cache_meta_pp = bound
                 if first == "__catalog__":
                     # Precomputed catalog table — stream it directly.
                     self._store_pending(ticket_id, ("obsql_catalog_table", payload))
@@ -589,7 +613,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             raise flight.FlightServerError(f"Prepared statement {handle_hex} takes no parameters")
 
         original_sql = entry[1]
-        values = _first_row_values(reader.read_all())
+        values = _bound_values(reader.read_all())
         try:
             bound_sql = bind_placeholders(original_sql, values)
         except SQLTranslationError as exc:
@@ -606,8 +630,9 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         if mode == _MODE_CATALOG:
             raise flight.FlightServerError("Parameters are not supported for catalog queries")
         # The schema advertised at Prepare stands: binding a value changes
-        # which rows come back, never which columns.
-        self._prepared[handle_hex] = (prepared_sql, dialect, entry[2], cache_meta)
+        # which rows come back, never which columns. Recorded beside the
+        # template rather than over it, so the handle can be bound again.
+        self._bound[handle_hex] = (prepared_sql, dialect, cache_meta)
         logger.debug("Bound %d parameter(s) to prepared statement %s", len(values), handle_hex)
         if schema_hint is not None and len(schema_hint) != len(entry[2]):
             logger.warning(
@@ -702,6 +727,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 handle = action.body.to_pybytes()
                 handle_hex = handle.hex()
                 self._prepared.pop(handle_hex, None)
+                self._bound.pop(handle_hex, None)
                 logger.debug("Closed prepared statement %s", handle_hex)
             except Exception:
                 pass
