@@ -733,3 +733,26 @@ def test_flatten_bails_when_inner_and_outer_both_order() -> None:
         'ORDER BY "Country Name" LIMIT 3'
     )
     assert _flatten_federation_subquery(sql) == sql
+
+
+class TestPgwireReconcilesWithoutACache:
+    """Reconciliation is a property of the surface, not of whether a cache is
+    attached. ``start_pgwire(cache=None)`` is allowed and the tests use it, and
+    that path executed straight through - so a declared boolean came back as
+    OID 701 with values 1/0 on exactly the configuration with no cache.
+    """
+
+    def test_the_no_cache_branch_reconciles(self) -> None:
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[2] / "src" / "orionbelt"
+        source = (root / "pgwire" / "router.py").read_text()
+        after_else = source.split("result = execute_sql(compile_result.sql, dialect=dialect)")[1]
+        assert "reconcile_to_declared" in after_else[:400], "the no-cache path must reconcile too"
+
+    def test_both_branches_use_the_same_declared_types(self) -> None:
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[2] / "src" / "orionbelt"
+        source = (root / "pgwire" / "router.py").read_text()
+        assert source.count("declared_arrow_types(target.model, query)") >= 3

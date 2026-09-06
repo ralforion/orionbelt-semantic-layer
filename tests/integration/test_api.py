@@ -611,6 +611,20 @@ class TestSessionModelFlow:
         assert response.status_code == 200
         assert response.json()["valid"] is True
 
+    async def test_declared_boolean_is_reported_as_boolean(self, client: AsyncClient) -> None:
+        """A declared boolean reported as "string" made the response metadata
+        contradict its own data on every engine returning a real bool."""
+        from orionbelt.api.query_cache import RESULT_TYPE_TO_HINT
+
+        assert RESULT_TYPE_TO_HINT["boolean"] == "boolean"
+
+    async def test_a_boolean_hint_is_not_numeric(self, client: AsyncClient) -> None:
+        """``is_numeric_type_hint`` is lexical, so a new hint could match by
+        accident and start formatting booleans with a decimal pattern."""
+        from orionbelt.service.value_formatting import is_numeric_type_hint
+
+        assert is_numeric_type_hint("boolean") is False
+
     async def test_validate_is_offline_by_default(
         self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1785,3 +1799,74 @@ class TestComposablesEndpoint:
         sid = (await client.post("/v1/sessions")).json()["session_id"]
         r = await client.get(f"/v1/sessions/{sid}/models/nope/composables", params={"anchor": "x"})
         assert r.status_code == 404
+
+
+class TestDeclaredTypeReconciliationWiring:
+    """The wiring the four review findings were about.
+
+    Asserted structurally because each failure is silent: the cache path
+    returned the engine's types while every test passed, and oneshot dropped
+    the reconciliation warnings while still returning a valid envelope.
+    """
+
+    def _source(self, relative: str) -> str:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2] / "src" / "orionbelt"
+        return (root / relative).read_text()
+
+    def test_the_cache_path_reconciles_before_it_reads_rows(self) -> None:
+        """``rows`` frees the Arrow table, so reconciling after it is never."""
+        source = self._source("api/query_cache.py")
+        reconcile = source.index("reconcile_to_declared")
+        rows = source.index("rows=exec_result.rows")
+        assert reconcile < rows, "reconciliation must precede the cache write"
+
+    def test_the_miss_path_carries_its_skips_to_the_response(self) -> None:
+        source = self._source("api/services/query_execution.py")
+        assert "declared_skips=cached.declared_skips" in source
+
+    def test_oneshot_returns_the_envelope_warnings(self) -> None:
+        """Reconciliation warnings are produced while the response is built, so
+        the pre-execution list predates them."""
+        source = self._source("api/routers/oneshot.py")
+        assert "warnings=envelope.warnings" in source
+        assert "warnings=hit_envelope.warnings" in source
+
+    def test_the_documented_type_vocabulary_includes_boolean(self) -> None:
+        assert "'boolean'" in self._source("api/schemas.py")
+
+    def test_the_query_reaches_the_declared_type_map(self) -> None:
+        """Without it a coalesce alias is never declared."""
+        source = self._source("api/services/query_execution.py")
+        assert "declared_arrow_types(model, query)" in source
+
+    def test_reconciliation_is_opt_in_not_defaulted(self) -> None:
+        """Defaulting enrolled every caller of the shared cache helper -
+        including pgwire, whose wire types BI clients consume. A declared
+        boolean cast to Arrow bool reports the coarse hint "string", which
+        moved pgwire's OID from 701 (FLOAT8) to 25 (TEXT) with nobody choosing
+        it."""
+        source = self._source("api/query_cache.py")
+        assert "if declared_types is not None else []" in source
+        assert "else declared_arrow_types(model)" not in source
+
+    def test_pgwire_reconciles_too(self) -> None:
+        """A column's type is a property of the model, not of the engine behind
+        it or the transport in front of it. The cache is shared, so a surface
+        that opted out would serve - and be served - results whose values
+        depended on which surface warmed the entry."""
+        source = self._source("pgwire/router.py")
+        assert "declared_types=declared_arrow_types(target.model, query)" in source
+        assert "reconcile_to_declared(" in source
+
+    def test_the_builder_chooses_rather_than_appends(self) -> None:
+        """A skipped column keeps its engine type, so re-running re-derives the
+        same skip - adding to carried skips reports the warning twice."""
+        source = self._source("api/services/query_execution.py")
+        assert "if declared_skips is not None" in source
+        assert "list(declared_skips or []) +" not in source
+
+    def test_oneshot_declares_coalesce_aliases(self) -> None:
+        source = self._source("api/routers/oneshot.py")
+        assert source.count("query=item.query,") == 2

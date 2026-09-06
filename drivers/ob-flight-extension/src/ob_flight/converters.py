@@ -13,6 +13,7 @@ from ob_driver_core.type_codes import (
     NUMBER,
     STRING,
 )
+from orionbelt.service.result_schema import decimal_arrow_type as _core_decimal_arrow_type
 
 
 def pep249_type_to_arrow(type_code: Any) -> pa.DataType:
@@ -53,27 +54,10 @@ def _decimal_precision_scale(value: Decimal) -> tuple[int, int]:
     return (max(ndigits, scale), scale)
 
 
-def decimal_arrow_type(precision: int, scale: int, *, exact: bool = False) -> pa.DataType:
-    """Arrow decimal type wide enough for ``(precision, scale)``.
-
-    Preserves NUMERIC precision that ``float64`` would round away past ~15-16
-    significant digits (issue #136). Prefers ``decimal128`` (max precision 38,
-    the broadest Arrow-client support — arrow-js, JDBC, ODBC), widens to
-    ``decimal256`` (max 76) once precision exceeds 38, and falls back to
-    ``float64`` beyond 76 — a width no real NUMERIC column reaches.
-
-    Unless ``exact`` is set the maximum precision of the chosen width is used, so
-    a column whose *sampled* rows under-represent its true magnitude cannot
-    overflow a later row. ``exact`` keeps the given precision and is used when it
-    comes from an authoritative declared type (the DB enforces the bound).
-    """
-    scale = max(0, scale)
-    precision = max(precision, scale, 1)
-    if precision <= _DECIMAL128_MAX_PRECISION:
-        return pa.decimal128(precision if exact else _DECIMAL128_MAX_PRECISION, scale)
-    if precision <= _DECIMAL256_MAX_PRECISION:
-        return pa.decimal256(precision if exact else _DECIMAL256_MAX_PRECISION, scale)
-    return pa.float64()
+#: Moved to ``orionbelt.service.result_schema`` - it is OBML/Arrow knowledge,
+#: not Flight knowledge, and REST and pgwire need it too. Re-exported here so
+#: the Flight call sites and their tests keep one name for it.
+decimal_arrow_type = _core_decimal_arrow_type
 
 
 def _decimal_column_type(col: tuple[Any, ...], sampled: list[Any]) -> pa.DataType | None:

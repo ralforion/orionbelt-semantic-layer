@@ -76,6 +76,7 @@ class ExecutionResult:
         row_count: int = 0,
         execution_time_ms: float = 0.0,
         tz: ZoneInfo | None = None,
+        arrow_schema: Any = None,
     ) -> None:
         self.columns = columns
         self.row_count = row_count
@@ -88,7 +89,14 @@ class ExecutionResult:
         # writers preserve declared types without having to read the table
         # before anything touches ``rows`` — an ordering hazard that would
         # otherwise be invisible at the call site.
-        self._arrow_schema = getattr(arrow_table, "schema", None)
+        # ``arrow_schema`` lets a row-backed result still carry the types its
+        # rows came from. A cache hit is rebuilt from ``raw_rows`` - because
+        # ``table_to_rows`` keeps native dates where the Arrow row builder
+        # serialises them - and without the schema the re-encode infers types
+        # from values, so an empty or all-null ``int64`` column comes back
+        # ``null``. That is the exact preservation the schema sidecar exists
+        # for, and losing it on the way out would undo it.
+        self._arrow_schema = getattr(arrow_table, "schema", None) or arrow_schema
 
     @property
     def timezone(self) -> str | None:
@@ -105,6 +113,32 @@ class ExecutionResult:
         metadata in its own envelope.
         """
         return self._arrow_schema
+
+    def reconcile_to_declared(self, declared: dict[str, Any]) -> list[tuple[str, str]]:
+        """Cast the held Arrow table to the types the model declares. Idempotent.
+
+        Must run before :attr:`rows`, which materialises and then frees the
+        table. Returns one ``(column, reason)`` pair per column left alone, so
+        the caller can report what it could not apply.
+
+        A PEP 249 result has no table to cast and is skipped: there is nothing
+        to reconcile *to* a declaration without Arrow types to compare, and the
+        coarse hint the caller has instead cannot tell a boolean from a string.
+        Since #412 that path is the exception rather than the default.
+        """
+        if self._arrow_table is None or not declared:
+            return []
+        from orionbelt.service.result_schema import reconcile_to_declared
+
+        table, skipped = reconcile_to_declared(self._arrow_table, declared)
+        self._arrow_table = table
+        self._arrow_schema = table.schema
+        by_name = {c.name: c for c in self.columns}
+        for field in table.schema:
+            column = by_name.get(field.name)
+            if column is not None:
+                column.type_hint = _arrow_type_to_hint(field.type)
+        return skipped
 
     @property
     def rows(self) -> list[list[Any]]:
@@ -268,6 +302,11 @@ def coarse_hint_from_type_name(name: str) -> str:
     ``interval`` contains ``int``) is not misclassified as a number.
     """
     lowered = (name or "").lower()
+    # Before every other test: "bool" contains none of the numeric, temporal or
+    # binary substrings, but keeping it first makes that independent of what is
+    # added to those lists later.
+    if "bool" in lowered:
+        return "boolean"
     if any(t in lowered for t in ("timestamp", "date", "time", "interval")):
         return "datetime"
     if "bytea" in lowered or "binary" in lowered:
@@ -298,6 +337,11 @@ def _arrow_type_to_hint(arrow_type: Any) -> str:
     # robust to OpaqueType subclasses, mocks, and other types that may
     # not implement the full PyArrow DataType protocol.
     try:
+        # Before the numeric branch: Arrow has no "is_numeric" that excludes
+        # bool, and a boolean folded into "string" is what made pgwire advertise
+        # a declared boolean as TEXT.
+        if pa.types.is_boolean(arrow_type):
+            return "boolean"
         if (
             pa.types.is_integer(arrow_type)
             or pa.types.is_floating(arrow_type)

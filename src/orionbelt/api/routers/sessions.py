@@ -672,6 +672,7 @@ async def execute_query(
 
     effective_format = negotiate_execute_format(format, request.headers.get("accept"))
     return await _run_with_cache(
+        query=query,
         store=store,
         model=model,
         compile_result=result,
@@ -793,6 +794,7 @@ async def execute_semantic_ql(
 
     effective_format = negotiate_execute_format(format, request.headers.get("accept"))
     return await _run_with_cache(
+        query=query,
         store=store,
         model=model,
         compile_result=result,

@@ -23,16 +23,23 @@ from orionbelt.api.schemas import (
     ExplainPlanResponse,
     QueryExecuteResponse,
     ResolvedInfoResponse,
+    StructuredWarning,
 )
 from orionbelt.api.warnings_adapter import semantic_error_to_warning
 from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.validator import format_sql
+from orionbelt.models.warnings import WarningCode
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
     resolve_timezone,
 )
 from orionbelt.service.model_store import ModelStore
+from orionbelt.service.result_schema import (
+    declared_arrow_types,
+    reconcile_to_declared,
+    reconciliation_possible,
+)
 from orionbelt.service.value_formatting import format_row, to_tsv
 
 # Column type/format helpers live in orionbelt.api.query_cache (shared with the
@@ -283,7 +290,10 @@ def _render_response(
 
 
 def _columns_and_maps(
-    model: Any, exec_columns: list[Any]
+    model: Any,
+    exec_columns: list[Any],
+    query: Any = None,
+    skipped: frozenset[str] = frozenset(),
 ) -> tuple[list[ColumnMetadata], dict[str, Any], dict[str, str]]:
     """Build ``columns_meta`` + the fmt/type maps from executor columns + model.
 
@@ -292,7 +302,7 @@ def _columns_and_maps(
     the Arrow schema via :func:`exec_columns_from_table` — yields identical
     metadata to a fresh execution.
     """
-    model_type_map = _build_type_map(model)
+    model_type_map = _build_type_map(model, query)
     fmt_map = _build_format_map(model)
     # Auto-default for columns without an explicit model-side format — the
     # executor proposes a pattern based on the column's Arrow / driver type
@@ -304,10 +314,20 @@ def _columns_and_maps(
         if fmt_map.get(c.name) is None and getattr(c, "default_format", None):
             fmt_map[c.name] = c.default_format
 
+    # A column reconciliation could not apply keeps the engine's type, so
+    # reporting the declared one makes the metadata contradict the rows beside
+    # it - `Tier -> boolean` over values 0, 1, 7. The declaration is still
+    # carried, as a DECLARED_TYPE_NOT_APPLIED warning; what the `type` field
+    # says is what the data *is*. pgwire has always worked this way, since its
+    # hint follows the Arrow type rather than the model map.
     columns_meta = [
         ColumnMetadata(
             name=c.name,
-            type=model_type_map.get(c.name, c.type_hint or "string"),
+            type=(
+                (c.type_hint or "string")
+                if c.name in skipped
+                else model_type_map.get(c.name, c.type_hint or "string")
+            ),
             format=fmt_map.get(c.name),
         )
         for c in exec_columns
@@ -319,7 +339,12 @@ def _columns_and_maps(
     # column ("decimal(18, 2)" from the driver) wouldn't be classified as
     # numeric in format_row.
     type_map: dict[str, str] = {
-        c.name: model_type_map.get(c.name, c.type_hint or "") for c in exec_columns
+        c.name: (
+            (c.type_hint or "")
+            if c.name in skipped
+            else model_type_map.get(c.name, c.type_hint or "")
+        )
+        for c in exec_columns
     }
     return columns_meta, fmt_map, type_map
 
@@ -335,6 +360,8 @@ def _build_execute_response(
     accept_encoding: str | None = None,
     cached: bool = False,
     cached_at: str | None = None,
+    declared_skips: list[tuple[str, str]] | None = None,
+    query: Any = None,
 ) -> QueryExecuteResponse | Response:
     """Build the JSON QueryExecuteResponse, or a TSV / Arrow Response.
 
@@ -343,7 +370,40 @@ def _build_execute_response(
     cache hit ``exec_result`` is reconstructed from the cached data table, with
     ``execution_time_ms`` set to the cache fetch time and ``cached=True``.
     """
-    columns_meta, fmt_map, type_map = _columns_and_maps(model, exec_result.columns)
+    # Reconcile against the declaration before anything reads ``rows``, which
+    # materialises the Arrow table and frees it. An engine answers in the types
+    # it has, and those are not always the ones the model named: MySQL has no
+    # boolean, so a declared one arrives as ``int64`` 1; Dremio returns ``date``
+    # as ``date64[ms]``. Flight has always cast to the declared schema; this is
+    # REST catching up, so a column's type is a property of the model rather
+    # than of whichever engine is behind it today.
+    # ``None`` means nobody has reconciled this result yet; a list - including
+    # an empty one - means the cache-aware path already did, before it wrote
+    # the entry. Adding to it instead of choosing would double-report: a column
+    # that could not be cast keeps its engine type, so re-running re-derives
+    # the same skip and the caller sees the warning twice.
+    #
+    # A cache *hit* deliberately passes ``None``. Its data is already
+    # reconciled, so the re-run is a no-op for every column that succeeded and
+    # re-derives the skips for the ones that did not - which is how a hit
+    # reports the same warnings as the miss that filled it, without the entry
+    # having to carry them.
+    skips = (
+        list(declared_skips)
+        if declared_skips is not None
+        else exec_result.reconcile_to_declared(declared_arrow_types(model, query))
+    )
+    declared_warnings = [
+        StructuredWarning(
+            code=WarningCode.DECLARED_TYPE_NOT_APPLIED,
+            message=f"Column '{name}' was not reconciled to its declared type: {reason}",
+            context={"column": name, "reason": reason},
+        )
+        for name, reason in skips
+    ]
+    columns_meta, fmt_map, type_map = _columns_and_maps(
+        model, exec_result.columns, query, frozenset(name for name, _ in skips)
+    )
 
     return _render_response(
         response_format=response_format,
@@ -358,7 +418,8 @@ def _build_execute_response(
         sql=format_sql(compile_result.sql, compile_result.dialect),
         dialect=compile_result.dialect,
         explain=_build_explain_response(compile_result),
-        warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
+        warnings=[semantic_error_to_warning(w) for w in compile_result.warnings]
+        + declared_warnings,
         sql_valid=compile_result.sql_valid,
         resolved=ResolvedInfoResponse(
             fact_tables=compile_result.resolved.fact_tables,
@@ -389,8 +450,13 @@ async def _run_with_cache(
     locale: str | None,
     timezone_override: str | None,
     accept_encoding: str | None = None,
+    query: Any = None,
 ) -> QueryExecuteResponse | Response:
     """Cache-aware execute pipeline shared by session and shortcut endpoints.
+
+    ``query`` is optional and used only to name the columns a query invents: a
+    coalesce entry's ``as`` alias is not a model dimension, so without it that
+    column keeps whatever type the engine returned.
 
     Looks up the cache before executing, stores on miss, and surfaces the
     ``cached`` / ``ttl_*`` metadata. The cache holds RAW, locale-neutral rows
@@ -420,7 +486,20 @@ async def _run_with_cache(
     # A raw ``format=arrow`` request (no value formatting) only needs the stored
     # blob to hand back verbatim, so tell the cache to skip the gzip + Arrow
     # decode on a hit (true zero-copy). Every other surface needs decoded rows.
-    decode_payload = not (response_format == "arrow" and not format_values)
+    # A raw-arrow response ships the stored blob verbatim, so it normally needs
+    # no decode. The exception is a model that declares a type an engine may
+    # have failed to express: the entry could have been written by a surface
+    # that does not reconcile - pgwire shares this cache and passes no declared
+    # types - and serving it verbatim hands a REST arrow client int64 data
+    # under a sidecar that says boolean. Where that is possible the blob is
+    # decoded and reconciled like any other hit; where it is not, which is
+    # almost every query, the zero-copy path is unchanged.
+    declared_for_query = declared_arrow_types(model, query)
+    decode_payload = not (
+        response_format == "arrow"
+        and not format_values
+        and not reconciliation_possible(declared_for_query)
+    )
 
     try:
         cached = await execute_query_with_cache(
@@ -435,6 +514,8 @@ async def _run_with_cache(
             override_db_tz=override_db_tz,
             cacheable=cacheable,
             decode_payload=decode_payload,
+            declared_types=declared_for_query,
+            query=query,
         )
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
@@ -455,7 +536,11 @@ async def _run_with_cache(
         # for every surface. ``execution_time_ms`` becomes the cache fetch time.
         assert cached.fetch_elapsed_ms is not None
         fetch_ms = cached.fetch_elapsed_ms
-        if response_format == "arrow" and not format_values:
+        if (
+            response_format == "arrow"
+            and not format_values
+            and not reconciliation_possible(declared_for_query)
+        ):
             # Raw-arrow hit: ship the stored DATA blob verbatim (data stays
             # zero-copy) with a fresh JSON envelope prepended. The column schema
             # + row count come from the entry sidecar, so nothing decodes the
@@ -495,8 +580,23 @@ async def _run_with_cache(
         # from the cached data table (columns from the schema sidecar, so exact
         # types survive empty / all-null results) and render like a fresh run.
         assert cached.data_table is not None
+        # Reconcile the *table*, not the rebuilt result.
+        # ``execution_result_from_data`` hands back ``raw_rows`` rather than an
+        # Arrow table - deliberately, because ``table_to_rows`` keeps native
+        # dates where the executor's own row builder serialises them to ISO
+        # strings, so swapping it would change what a hit returns. But it also
+        # leaves ``arrow_schema`` None, so reconciling the result is a no-op and
+        # a hit reported none of the warnings its miss did.
+        #
+        # The cast itself is a no-op: the entry was reconciled before it was
+        # written. What this recovers is the *skips* - the columns that could
+        # not be cast are still at their engine type in the stored table, so
+        # re-examining it names them again.
+        hit_table, hit_skips = reconcile_to_declared(
+            cached.data_table, declared_arrow_types(model, query)
+        )
         hit_exec_result = execution_result_from_data(
-            cached.data_table,
+            hit_table,
             execution_time_ms=fetch_ms,
             tz=tz,
             columns=cached.hit_columns,
@@ -505,6 +605,8 @@ async def _run_with_cache(
             compile_result=compile_result,
             exec_result=hit_exec_result,
             model=model,
+            declared_skips=hit_skips,
+            query=query,
             response_format=response_format,
             format_values=format_values,
             locale=effective_locale,
@@ -528,6 +630,7 @@ async def _run_with_cache(
         format_values=format_values,
         locale=effective_locale,
         accept_encoding=accept_encoding,
+        declared_skips=cached.declared_skips,
     )
     ttl_outcome = cached.ttl_outcome
     if (
