@@ -5,7 +5,7 @@ semantic layer's promise is that a measure declared `decimal(18, 2)` arrives as
 an exact fixed-point number; whether it does is a property of the driver and its
 cast rendering, not of the SQL.
 
-Measured **2026-09-04** with `scripts/probe_types.py`, against all eight engines
+Measured **2026-09-06** with `scripts/probe_types.py`, against all eight engines
 live. Each case is rendered through the engine's own `cast_to_obml_type`, so
 this is what OBSL emits rather than a hand-spelled approximation.
 
@@ -22,16 +22,17 @@ uv run python scripts/probe_types.py --json all   # regenerate the data below
 | `WIDENED` | Still fixed-point, at a wider precision or scale. An engine widening a `SUM` is doing the right thing; a widened *cast* is the engine's own decimal rules, recorded rather than judged. |
 | `FAMILY` | Right family, different width - an `int64` where the model said `integer`. |
 | `ZONED` | A `timestamp` came back carrying a timezone. OBML's `timestamp` is a wall clock. |
-| `LOSSY` | The fixed-point type became a float or a string. |
+| `TEXT` | A number carried as a string with every digit intact - ADBC does this for Postgres NUMERIC, whose precision Arrow's decimal cannot hold. `db_executor` parses the cells back to `Decimal`, so nothing is lost. |
+| `LOSSY` | The fixed-point type became a float, or a string that does not carry the digits. This is the one that costs data. |
 
 ## The matrix
 
 | Declared | DuckDB | Postgres | MySQL | ClickHouse | Snowflake | BigQuery | Databricks | Dremio |
 |---|---|---|---|---|---|---|---|---|
-| `decimal(18,2)` | EXACT | LOSSY | WIDENED | EXACT | WIDENED | WIDENED | EXACT | EXACT |
-| `decimal(38,9)` | EXACT | LOSSY | WIDENED | EXACT | EXACT | EXACT | EXACT | EXACT |
-| `decimal(19,2) big` | EXACT | LOSSY | WIDENED | EXACT | WIDENED | WIDENED | EXACT | EXACT |
-| `SUM decimal(18,2)` | WIDENED | LOSSY | WIDENED | WIDENED | WIDENED | WIDENED | WIDENED | WIDENED |
+| `decimal(18,2)` | EXACT | TEXT | WIDENED | EXACT | WIDENED | WIDENED | EXACT | EXACT |
+| `decimal(38,9)` | EXACT | TEXT | WIDENED | EXACT | EXACT | EXACT | EXACT | EXACT |
+| `decimal(19,2) big` | EXACT | TEXT | WIDENED | EXACT | WIDENED | WIDENED | EXACT | EXACT |
+| `SUM decimal(18,2)` | WIDENED | TEXT | WIDENED | WIDENED | WIDENED | WIDENED | WIDENED | WIDENED |
 | `integer` | EXACT | EXACT | FAMILY | EXACT | FAMILY | FAMILY | EXACT | EXACT |
 | `bigint` | EXACT | EXACT | EXACT | EXACT | EXACT | EXACT | EXACT | EXACT |
 | `double` | EXACT | EXACT | EXACT | EXACT | EXACT | EXACT | EXACT | EXACT |
@@ -62,14 +63,19 @@ Every row above is a measurement of a **driver**. That is not the same as what
 a caller receives, because OBSL reconciles a result against the type the model
 *declared* before anyone sees it. Four rows read alarming and are not.
 
-**Postgres `LOSSY string` on every decimal is correct**, and is the clearest
-reason this table is not the whole story. ADBC represents `NUMERIC` as
+**Postgres `TEXT` on every decimal costs nothing.** ADBC represents `NUMERIC` as
 `arrow.opaque[storage_type=string, type_name=numeric]` because Postgres NUMERIC
 is arbitrary precision with NaN and Infinity, Arrow's `decimal128` caps at 38
 digits and needs the scale up front, and typmod is `-1` for a computed
-expression. Preserving the exact digits as text is the faithful choice, and
+expression. Preserving the exact digits as text is the faithful choice - it is
+what lets a NUMERIC wider than Arrow's 38 digits survive at all - and
 `db_executor` parses those cells back to `Decimal` before any caller sees them.
-The driver is lossy here; **OBSL is not**.
+Measured: `12345678901234567.89::numeric(19,2)` comes back
+`Decimal('12345678901234567.89')`.
+
+This row read `LOSSY` until 2026-09-06, which contradicted this page's own
+definition of the verdict: nothing became a float, and the string carries every
+digit. It has its own verdict now.
 
 **ClickHouse `ZONED` on `timestamp` is intrinsic.** ClickHouse has no naive
 `DateTime` - the type is an instant rendered against the server timezone. Every

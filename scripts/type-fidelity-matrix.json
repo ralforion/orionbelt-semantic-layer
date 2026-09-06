@@ -346,7 +346,7 @@
       "SUM decimal(18,2)": {
         "arrow": "extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>",
         "value": "'2.55'",
-        "verdict": "LOSSY   string"
+        "verdict": "TEXT    exact digits"
       },
       "bigint": {
         "arrow": "int64",
@@ -366,17 +366,17 @@
       "decimal(18,2)": {
         "arrow": "extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>",
         "value": "'2.55'",
-        "verdict": "LOSSY   string"
+        "verdict": "TEXT    exact digits"
       },
       "decimal(19,2) big": {
         "arrow": "extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>",
         "value": "'12345678901234567.89'",
-        "verdict": "LOSSY   string"
+        "verdict": "TEXT    exact digits"
       },
       "decimal(38,9)": {
         "arrow": "extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>",
         "value": "'2.123456789'",
-        "verdict": "LOSSY   string"
+        "verdict": "TEXT    exact digits"
       },
       "double": {
         "arrow": "double",
@@ -457,5 +457,5 @@
       }
     }
   },
-  "measured": "2026-09-04"
+  "measured": "2026-09-06"
 }
