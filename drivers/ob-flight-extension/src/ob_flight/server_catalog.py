@@ -50,7 +50,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger("ob_flight.server")
 
 
-def handle_catalog_sql(server: OBFlightServer, sql: str, model: Any) -> pa.Table:
+def _dispatch_catalog_sql(
+    server: OBFlightServer, sql: str, model: Any, *, project: bool = True
+) -> tuple[pa.Table, bool]:
     """Answer a catalog/discovery SQL query from the model — no warehouse hop.
 
     Returns a :class:`pa.Table` so callers can wrap it in a
@@ -80,15 +82,15 @@ def handle_catalog_sql(server: OBFlightServer, sql: str, model: Any) -> pa.Table
     raw_upper = sql.strip().upper()
     if raw_upper.startswith(("SHOW ", "DESCRIBE ", "DESC ")):
         if raw_upper.startswith(("DESCRIBE ", "DESC ")) or "COLUMN" in raw_upper:
-            return catalog_columns_table(model)
-        return catalog_tables_table(model)
+            return catalog_columns_table(model), True
+        return catalog_tables_table(model), True
     if raw_upper.startswith(("USE ", "SET ")):
-        return catalog_empty_table()
+        return catalog_empty_table(), True
 
     try:
         ast = sqlglot.parse_one(sql)
     except Exception:
-        return catalog_empty_table()
+        return catalog_empty_table(), True
 
     kind = type(ast).__name__
 
@@ -108,13 +110,13 @@ def handle_catalog_sql(server: OBFlightServer, sql: str, model: Any) -> pa.Table
             or raw_text.startswith("DESC")
             or "SHOW COLUMN" in raw_text
         ):
-            return catalog_columns_table(model)
+            return catalog_columns_table(model), True
         # Default: list tables
-        return catalog_tables_table(model)
+        return catalog_tables_table(model), True
 
     # USE / SET — accept silently (Postgres clients send these on connect)
     if kind in {"Use", "Set"}:
-        return catalog_empty_table()
+        return catalog_empty_table(), True
 
     # SELECT against pg_catalog / information_schema or scalar probes
     if isinstance(ast, exp.Select):
@@ -126,7 +128,7 @@ def handle_catalog_sql(server: OBFlightServer, sql: str, model: Any) -> pa.Table
         from_node = ast.args.get("from") or ast.args.get("from_")
         if from_node is None:
             # Scalar probe: SELECT 1, SELECT version(), SELECT current_schema()
-            return catalog_scalar_probe_table(ast)
+            return catalog_scalar_probe_table(ast), True
         target_sql = ""
         table_node = getattr(from_node, "this", None) or (
             from_node.expressions[0] if from_node.expressions else None
@@ -142,37 +144,76 @@ def handle_catalog_sql(server: OBFlightServer, sql: str, model: Any) -> pa.Table
         # accepted and discarded, and the client is told every table matched
         # its filter and handed columns it did not ask for.
         if "information_schema.tables" in target_sql or "pg_catalog.pg_class" in target_sql:
-            return _answer_catalog_view(catalog_tables_table(model), ast)
+            return answer_catalog_view(catalog_tables_table(model), ast, project=project)
         if "information_schema.columns" in target_sql or "pg_catalog.pg_attribute" in target_sql:
-            return _answer_catalog_view(catalog_columns_table(model), ast)
+            return answer_catalog_view(catalog_columns_table(model), ast, project=project)
         if bare == "_dimensions_metadata" or bare == "dimensions":
-            return _answer_catalog_view(build_dimensions_data(model), ast)
+            return answer_catalog_view(build_dimensions_data(model), ast, project=project)
         if bare == "_measures_metadata" or bare == "measures":
-            return _answer_catalog_view(build_measures_data(model), ast)
+            return answer_catalog_view(build_measures_data(model), ast, project=project)
         if bare == "_metrics_metadata" or bare == "metrics":
-            return _answer_catalog_view(build_metrics_data(model), ast)
+            return answer_catalog_view(build_metrics_data(model), ast, project=project)
         if bare == "model":
             # ``SELECT * FROM <model>.model`` — column-shape probe
             # from a BI tool clicking the model table. Same payload
             # as the canonical ``information_schema.columns`` view
             # (one row per dim/measure/metric).
-            return catalog_columns_table(model)
+            return catalog_columns_table(model), True
 
     # Unknown catalog probe — empty result. Tool moves on.
-    return catalog_empty_table()
+    return catalog_empty_table(), True
+
+
+def handle_catalog_sql(
+    server: OBFlightServer, sql: str, model: Any, *, project: bool = True
+) -> pa.Table:
+    """Answer a catalog query from the model. See :func:`_dispatch_catalog_sql`.
+
+    ``project=False`` keeps the view's full column set. Parameter typing needs
+    it: a predicate names a column the SELECT list often does not, and typing
+    ``WHERE ordinal_position > ?`` against a table projected to
+    ``column_name`` found nothing and answered text.
+    """
+    return _dispatch_catalog_sql(server, sql, model, project=project)[0]
+
+
+def handle_catalog_sql_checked(
+    server: OBFlightServer, sql: str, model: Any
+) -> tuple[pa.Table, bool]:
+    """:func:`handle_catalog_sql`, plus whether the statement's WHERE applied.
+
+    Separate because the answer cannot be recovered from the table: filtering
+    runs before projection, so re-filtering the result would report a good
+    predicate as unevaluable after the projection dropped the column it names.
+    A branch with no predicate to evaluate reports ``True``.
+    """
+    return _dispatch_catalog_sql(server, sql, model)
+
+
+def answer_catalog_view(
+    table: pa.Table, ast: Any, *, project: bool = True
+) -> tuple[pa.Table, bool]:
+    """A canned view narrowed by the statement's WHERE and SELECT list.
+
+    Returns the table and whether the *filter* applied, because that answer
+    cannot be recovered afterwards: filtering runs first - a predicate may name
+    a column the SELECT list does not, and ``SELECT table_name ... WHERE
+    table_type = 'VIEW'`` is an ordinary thing to ask - and the projection then
+    drops that column. Re-running the filter on the result would report a
+    perfectly good predicate as unevaluable, having removed what it needs.
+    """
+    filtered, applied = filter_catalog_table(table, ast)
+    if not project:
+        # The caller wants the view's full column set - typing a parameter
+        # needs the column its predicate names, which the projection may drop.
+        return filtered, applied
+    projected, _ = project_catalog_table(filtered, ast)
+    return projected, applied
 
 
 def _answer_catalog_view(table: pa.Table, ast: Any) -> pa.Table:
-    """A canned view narrowed by the statement's WHERE and SELECT list.
-
-    Filter before project, so a predicate may name a column the SELECT list
-    does not - ``SELECT table_name ... WHERE table_type = 'VIEW'`` is an
-    ordinary thing to ask, and projecting first would throw the column the
-    filter needs.
-    """
-    filtered, _ = filter_catalog_table(table, ast)
-    projected, _ = project_catalog_table(filtered, ast)
-    return projected
+    """:func:`answer_catalog_view` for callers that only want the table."""
+    return answer_catalog_view(table, ast)[0]
 
 
 def catalog_tables_table(model: Any) -> pa.Table:
@@ -720,3 +761,40 @@ def project_catalog_table(table: pa.Table, ast: Any) -> tuple[pa.Table, bool]:
 
     projected = table.select(chosen)
     return projected.rename_columns(labels), True
+
+
+def catalog_placeholder_schema(sql: str, table: pa.Table) -> pa.Schema:
+    """The Arrow schema of *sql*'s ``?`` parameters, from the catalog view.
+
+    A catalog predicate compares against a catalog column, so the view's own
+    schema is what types the parameter. The semantic model cannot: it knows
+    nothing called ``ordinal_position``, so every catalog parameter was
+    advertised as text and a client honouring that failed a supported numeric
+    filter.
+
+    One field per placeholder, named ``$1``, ``$2``, … in binding order. An
+    unresolvable one is typed utf8 rather than dropped, so the field count
+    stays the parameter count.
+    """
+    import sqlglot
+    import sqlglot.expressions as exp
+    from sqlglot.errors import SqlglotError
+
+    try:
+        parsed = sqlglot.parse_one(sql)
+    except SqlglotError:
+        return pa.schema([])
+
+    by_lower = {name.lower(): name for name in table.column_names}
+    fields: list[pa.Field] = []
+    for index, placeholder in enumerate(parsed.find_all(exp.Placeholder), start=1):
+        arrow_type = pa.utf8()
+        parent = placeholder.parent
+        if parent is not None:
+            other = parent.expression if parent.this is placeholder else parent.this
+            if isinstance(other, exp.Column):
+                source = by_lower.get(other.name.lower())
+                if source is not None:
+                    arrow_type = table.schema.field(source).type
+        fields.append(pa.field(f"${index}", arrow_type))
+    return pa.schema(fields)

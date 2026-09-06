@@ -315,6 +315,10 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
     def _handle_catalog_sql(self, sql: str, model: Any) -> pa.Table:
         return server_catalog.handle_catalog_sql(self, sql, model)
 
+    def _handle_catalog_sql_unprojected(self, sql: str, model: Any) -> pa.Table:
+        """The catalog view with its full column set, for typing parameters."""
+        return server_catalog.handle_catalog_sql(self, sql, model, project=False)
+
     @staticmethod
     def _catalog_tables_table(model: Any) -> pa.Table:
         return server_catalog.catalog_tables_table(model)
@@ -634,12 +638,14 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             # cannot evaluate: returning the unfiltered table would be the
             # accepted-and-discarded predicate this whole path exists to stop,
             # only now with the client's own value in it.
-            import sqlglot
+            from ob_flight.server_catalog import handle_catalog_sql_checked
 
-            from ob_flight.server_catalog import filter_catalog_table
-
-            catalog_table = self._handle_catalog_sql(prepared_sql, _model)
-            _, applied = filter_catalog_table(catalog_table, sqlglot.parse_one(bound_sql))
+            # One pass, reporting as it goes. Re-running the filter over the
+            # answer refused a perfectly good predicate: filtering happens
+            # before projection, so by then the projection had dropped the
+            # column the predicate names - ``SELECT table_name ... WHERE
+            # table_type = ?`` bound fine and was rejected.
+            catalog_table, applied = handle_catalog_sql_checked(self, prepared_sql, _model)
             if not applied:
                 raise flight.FlightServerError(
                     "This catalog predicate cannot be evaluated, so the bound "
@@ -717,8 +723,20 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                         None,
                         parameter_count,
                     )
+                    # Typed from the catalog view, not the model: a catalog
+                    # predicate compares against a catalog column, and the
+                    # model knows nothing called ``ordinal_position`` - so
+                    # every catalog parameter was advertised as text, and a
+                    # client honouring that failed a supported numeric filter.
+                    from ob_flight.server_catalog import catalog_placeholder_schema
+
                     result_bytes = build_prepared_statement_result(
-                        handle, schema, placeholder_arrow_schema(sql, prep_model)
+                        handle,
+                        schema,
+                        catalog_placeholder_schema(
+                            sql,
+                            self._handle_catalog_sql_unprojected(prepared_sql, prep_model),
+                        ),
                     )
                     yield flight.Result(pa.py_buffer(result_bytes))
                     return

@@ -729,3 +729,64 @@ class TestPreparedStatementParameters:
             cur.close()
         assert everything > 0
         assert none == 0
+
+    def test_a_bound_filter_may_name_a_column_the_projection_drops(self, conn: Any) -> None:
+        """``SELECT table_name ... WHERE table_type = ?`` is an ordinary ask.
+
+        Filtering runs before projection, so the predicate is evaluable - but
+        the bind check re-ran the filter over the *answer*, by which time the
+        projection had dropped ``table_type``, and a good predicate was
+        refused as unevaluable.
+        """
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_type = ?",
+                parameters=("VIEW",),
+            )
+            views = cur.fetch_arrow_table()
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            everything = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert views.column_names == ["table_name"]
+        assert 0 < views.num_rows < everything.num_rows
+
+    def test_a_numeric_catalog_parameter_is_advertised_numeric(self, conn: Any) -> None:
+        """The model knows nothing called ``ordinal_position``, so typing the
+        parameter from it advertised text for a numeric filter - and a client
+        honouring the schema would bind a string and fail."""
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                "SELECT column_name FROM information_schema.columns WHERE ordinal_position > ?"
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert str(params.field(0).type) != "string", str(params.field(0).type)
+
+    def test_a_numeric_catalog_filter_binds_and_filters(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT column_name FROM information_schema.columns")
+            everything = cur.fetch_arrow_table().num_rows
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns WHERE ordinal_position > ?",
+                parameters=(1,),
+            )
+            some = cur.fetch_arrow_table().num_rows
+        finally:
+            cur.close()
+        assert 0 < some < everything
+
+    def test_a_string_catalog_parameter_is_still_a_string(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?"
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert str(params.field(0).type) == "string"
