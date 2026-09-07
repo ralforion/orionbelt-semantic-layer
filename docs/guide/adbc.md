@@ -100,16 +100,19 @@ A refusal arrives as an exception, not as zero rows — a client can tell
 Prepared statements bind over DoPut, and the client can discover what to bind:
 
 ```python
-with conn.cursor() as cur:
-    parameters = cur.adbc_prepare(
-        'SELECT "Customer Country", "Total Revenue" FROM sales '
-        'WHERE "Customer Country" = ?'
-    )
-    print(parameters)          # $1: string
+sql = (
+    'SELECT "Customer Country", "Total Revenue" FROM sales '
+    'WHERE "Customer Country" = ?'
+)
 
-    cur.execute(..., parameters=("US",))
+with conn.cursor() as cur:
+    parameters = cur.adbc_prepare(sql)
+    print(parameters)                        # $1: string
+
+    cur.execute(sql, parameters=("US",))
     us = cur.fetch_arrow_table()
-    cur.execute(..., parameters=("DE",))   # the same handle, bound again
+
+    cur.execute(sql, parameters=("DE",))     # the same handle, bound again
     de = cur.fetch_arrow_table()
 ```
 

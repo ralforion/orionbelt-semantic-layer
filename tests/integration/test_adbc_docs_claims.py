@@ -130,3 +130,38 @@ class TestTheCatalogSamples:
         with conn.cursor() as cur:
             cur.execute("SELECT table_name FROM information_schema.tables WHERE weird(x) = 1")
             assert cur.fetch_arrow_table().num_rows > 0
+
+
+class TestThePageItselfRuns:
+    """Executes the guide's code blocks verbatim, rather than transcribing them.
+
+    Transcribing is what let the prepared-statement sample ship broken: it
+    passed ``...`` where the SQL belongs - the Ellipsis object, not a
+    statement - while the test beside it used a real ``sql`` variable and
+    passed. Two texts claiming to be the same thing, only one of them checked.
+
+    Only blocks that drive an existing connection are run. The ones that call
+    ``dbapi.connect`` name a fixed host and port that no test server listens
+    on, and rewriting them here would put the transcription back.
+    """
+
+    GUIDE = "docs/guide/adbc.md"
+
+    def _runnable_blocks(self) -> list[str]:
+        import pathlib
+        import re
+
+        text = (pathlib.Path(__file__).resolve().parents[2] / self.GUIDE).read_text()
+        blocks = re.findall(r"```python\n(.*?)```", text, re.S)
+        return [b for b in blocks if "conn.cursor()" in b and "dbapi.connect" not in b]
+
+    def test_there_are_blocks_to_run(self) -> None:
+        """Guards the guard: a renamed page or fence would pass everything."""
+        assert self._runnable_blocks(), f"no runnable python blocks found in {self.GUIDE}"
+
+    def test_every_runnable_block_executes(self, conn: Any) -> None:
+        for index, block in enumerate(self._runnable_blocks()):
+            try:
+                exec(compile(block, f"{self.GUIDE}#block{index}", "exec"), {"conn": conn})
+            except Exception as exc:  # noqa: BLE001 — the failure *is* the result
+                pytest.fail(f"{self.GUIDE} block {index} does not run: {exc}\n\n{block}")
