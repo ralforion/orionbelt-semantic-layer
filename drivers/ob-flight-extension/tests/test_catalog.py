@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pyarrow as pa
+import pytest
 
 from ob_flight.catalog import (
     build_dimensions_data,
@@ -627,3 +629,102 @@ class TestCatalogProjection:
         )
         assert answered.column_names == ["table_name"]
         assert answered.column("table_name").to_pylist() == ["orders"]
+
+
+#: A real resolved model, not a mock: these tests build genuine Arrow tables
+#: from it, and a ``MagicMock`` attribute reaches pyarrow as an object it
+#: cannot convert.
+_GUARD_MODEL_YAML = """\
+version: 1.0
+name: sales_model
+
+dataObjects:
+  Sales:
+    code: sales
+    database: ""
+    schema: main
+    columns:
+      Region Code:
+        code: region
+        abstractType: string
+      Amount Col:
+        code: amount
+        abstractType: float
+
+dimensions:
+  Region:
+    dataObject: Sales
+    column: Region Code
+    resultType: string
+
+measures:
+  Total Sales:
+    aggregation: sum
+    columns:
+      - dataObject: Sales
+        column: Amount Col
+    resultType: float
+"""
+
+
+class TestEveryCatalogViewHonoursTheStatement:
+    """Parameterised over the entry points, not written per branch.
+
+    ``<model>.model`` shipped skipping both the filter and the projection - and
+    reporting the filter as *applied*, so the prepared-statement bind check
+    believed it. It was missed because each view is a separate branch of one
+    dispatch and the earlier fix went view by view. This asks all of them the
+    same three questions, so the next branch added has to answer them too.
+    """
+
+    #: Every SELECT-with-a-FROM branch of the dispatch.
+    VIEWS = [
+        "information_schema.tables",
+        "information_schema.columns",
+        '"sales_model"."model"',
+        "_dimensions_metadata",
+        "_measures_metadata",
+    ]
+
+    def _model(self) -> Any:
+        from orionbelt.parser.loader import TrackedLoader
+        from orionbelt.parser.resolver import ReferenceResolver
+
+        raw, source_map = TrackedLoader().load_string(_GUARD_MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return model
+
+    def _ask(self, sql: str) -> tuple[Any, bool]:
+        from ob_flight.server_catalog import handle_catalog_sql_checked
+
+        return handle_catalog_sql_checked(None, sql, self._model())
+
+    def _first_column(self, view: str) -> str:
+        whole, _ = self._ask(f"SELECT * FROM {view}")
+        return str(whole.column_names[0])
+
+    @pytest.mark.parametrize("view", VIEWS)
+    def test_a_matching_nothing_filter_returns_nothing(self, view: str) -> None:
+        column = self._first_column(view)
+        table, applied = self._ask(
+            f"SELECT {column} FROM {view} WHERE {column} = '__no_such_value__'"
+        )
+        assert applied is True
+        assert table.num_rows == 0, f"{view} ignored its WHERE"
+
+    @pytest.mark.parametrize("view", VIEWS)
+    def test_a_projection_narrows(self, view: str) -> None:
+        column = self._first_column(view)
+        one, _ = self._ask(f"SELECT {column} FROM {view}")
+        assert one.column_names == [column], f"{view} ignored its SELECT list"
+
+    @pytest.mark.parametrize("view", VIEWS)
+    def test_an_unevaluable_predicate_is_reported(self, view: str) -> None:
+        """Claiming ``applied`` when nothing was applied is the worst of the
+        three: the bind check believes it and lets a value through."""
+        column = self._first_column(view)
+        whole, _ = self._ask(f"SELECT * FROM {view}")
+        table, applied = self._ask(f"SELECT {column} FROM {view} WHERE weird(x) = 1")
+        assert applied is False, f"{view} claimed to apply a predicate it cannot evaluate"
+        assert table.num_rows == whole.num_rows

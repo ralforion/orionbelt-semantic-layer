@@ -790,3 +790,26 @@ class TestPreparedStatementParameters:
             cur.close()
         assert params is not None
         assert str(params.field(0).type) == "string"
+
+    def test_the_model_preview_honours_its_statement(self, conn: Any) -> None:
+        """``<model>.model`` is the column-shape probe a BI tool sends when it
+        clicks the model table. It answered with the whole metadata view and
+        reported the filter as applied, so a bound value passed the check and
+        was then ignored - nine columns and every row came back.
+        """
+        cur = conn.cursor()
+        try:
+            cur.execute(f'SELECT * FROM "{MODEL_NAME}"."model"')
+            everything = cur.fetch_arrow_table()
+            cur.execute(f'SELECT column_name FROM "{MODEL_NAME}"."model"')
+            projected = cur.fetch_arrow_table()
+            cur.execute(
+                f'SELECT column_name FROM "{MODEL_NAME}"."model" WHERE column_name = ?',
+                parameters=("__no_such_column__",),
+            )
+            none = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert len(everything.column_names) > 1
+        assert projected.column_names == ["column_name"]
+        assert none.num_rows == 0

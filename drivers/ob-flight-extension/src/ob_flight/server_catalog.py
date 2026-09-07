@@ -157,8 +157,12 @@ def _dispatch_catalog_sql(
             # ``SELECT * FROM <model>.model`` — column-shape probe
             # from a BI tool clicking the model table. Same payload
             # as the canonical ``information_schema.columns`` view
-            # (one row per dim/measure/metric).
-            return catalog_columns_table(model), True
+            # (one row per dim/measure/metric), and so the same
+            # treatment: it is a SELECT with a FROM, so it can carry a
+            # WHERE and a select list. Returning the view directly
+            # discarded both *and* reported the filter as applied, which
+            # is worse than either - the bind check believed it.
+            return answer_catalog_view(catalog_columns_table(model), ast, project=project)
 
     # Unknown catalog probe — empty result. Tool moves on.
     return catalog_empty_table(), True
