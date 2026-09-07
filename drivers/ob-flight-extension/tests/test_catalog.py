@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pyarrow as pa
+import pytest
 
 from ob_flight.catalog import (
     build_dimensions_data,
@@ -453,3 +455,276 @@ class TestAdvertisedSchemaMatchesStream:
             "pk_table_name",
             "pk_column_name",
         ]
+
+
+class TestCatalogWhereFiltering:
+    """A catalog WHERE used to be accepted and discarded.
+
+    ``handle_catalog_sql`` dispatched on the FROM target and returned a whole
+    canned view, so ``WHERE table_name = 'x'`` returned every table and the
+    client was told they all matched. Worse than refusing, because nothing
+    said the predicate had been dropped.
+    """
+
+    def _table(self) -> object:
+        import pyarrow as pa
+
+        return pa.table(
+            {
+                "table_name": ["model", "_dimensions_metadata", "orders"],
+                "table_type": ["TABLE", "VIEW", "TABLE"],
+                "column_size": [1, 2, 3],
+            }
+        )
+
+    def _filter(self, sql: str) -> tuple[object, bool]:
+        import sqlglot
+
+        from ob_flight.server_catalog import filter_catalog_table
+
+        return filter_catalog_table(self._table(), sqlglot.parse_one(sql))
+
+    def test_equality_selects_one_row(self) -> None:
+        table, applied = self._filter("SELECT * FROM t WHERE table_name = 'model'")
+        assert applied is True
+        assert table.column("table_name").to_pylist() == ["model"]
+
+    def test_a_column_may_be_on_either_side(self) -> None:
+        left, _ = self._filter("SELECT * FROM t WHERE table_name = 'model'")
+        right, _ = self._filter("SELECT * FROM t WHERE 'model' = table_name")
+        assert left.num_rows == right.num_rows == 1
+
+    def test_names_match_case_insensitively(self) -> None:
+        """Clients spell catalog columns both ways; the canned tables are lower."""
+        table, applied = self._filter("SELECT * FROM t WHERE TABLE_NAME = 'model'")
+        assert applied is True
+        assert table.num_rows == 1
+
+    def test_like_and_in_and_not(self) -> None:
+        assert self._filter("SELECT * FROM t WHERE table_name LIKE 'mod%'")[0].num_rows == 1
+        assert (
+            self._filter("SELECT * FROM t WHERE table_name IN ('model', 'orders')")[0].num_rows == 2
+        )
+        assert self._filter("SELECT * FROM t WHERE NOT table_name = 'model'")[0].num_rows == 2
+
+    def test_and_or_combine(self) -> None:
+        both = self._filter("SELECT * FROM t WHERE table_type = 'TABLE' AND table_name = 'orders'")[
+            0
+        ]
+        assert both.column("table_name").to_pylist() == ["orders"]
+        either = self._filter(
+            "SELECT * FROM t WHERE table_name = 'model' OR table_name = 'orders'"
+        )[0]
+        assert either.num_rows == 2
+
+    def test_comparison_operators(self) -> None:
+        assert self._filter("SELECT * FROM t WHERE column_size > 1")[0].num_rows == 2
+        assert self._filter("SELECT * FROM t WHERE column_size <= 1")[0].num_rows == 1
+
+    def test_a_predicate_it_cannot_evaluate_leaves_the_table_alone(self) -> None:
+        """The behaviour that was there before, so nothing working today stops.
+
+        The caller is told, and the prepared path uses that to refuse a
+        parameter rather than bind one into a predicate nobody can apply.
+        """
+        table, applied = self._filter("SELECT * FROM t WHERE weird(table_name) = 1")
+        assert applied is False
+        assert table.num_rows == 3
+
+    def test_a_subquery_is_not_evaluated(self) -> None:
+        table, applied = self._filter("SELECT * FROM t WHERE table_name IN (SELECT x FROM y)")
+        assert applied is False
+        assert table.num_rows == 3
+
+    def test_no_where_is_no_filter(self) -> None:
+        table, applied = self._filter("SELECT * FROM t")
+        assert applied is True
+        assert table.num_rows == 3
+
+    def test_a_false_conjunct_settles_an_unknown_one(self) -> None:
+        """``FALSE AND <unknown>`` is False in SQL, so the row is excluded and
+        the filter still counts as applied."""
+        table, applied = self._filter(
+            "SELECT * FROM t WHERE table_name = '__none__' AND weird(x) = 1"
+        )
+        assert applied is True
+        assert table.num_rows == 0
+
+
+class TestCatalogProjection:
+    """A catalog SELECT list used to be discarded along with the WHERE.
+
+    The dispatch answered with a whole canned view, so a client asking for one
+    column received four. Harmless to a tolerant client and wrong to a strict
+    one - and the advertised schema is built from these columns, so it is the
+    schema that was wide too.
+    """
+
+    def _table(self) -> object:
+        import pyarrow as pa
+
+        return pa.table(
+            {
+                "catalog_name": ["orionbelt", "orionbelt"],
+                "table_name": ["model", "orders"],
+                "table_type": ["TABLE", "VIEW"],
+            }
+        )
+
+    def _project(self, sql: str) -> tuple[object, bool]:
+        import sqlglot
+
+        from ob_flight.server_catalog import project_catalog_table
+
+        return project_catalog_table(self._table(), sqlglot.parse_one(sql))
+
+    def test_one_column_is_one_column(self) -> None:
+        table, applied = self._project("SELECT table_name FROM t")
+        assert applied is True
+        assert table.column_names == ["table_name"]
+
+    def test_columns_keep_the_order_asked_for(self) -> None:
+        table, _ = self._project("SELECT table_type, table_name FROM t")
+        assert table.column_names == ["table_type", "table_name"]
+
+    def test_an_alias_renames(self) -> None:
+        """That is the name the client will look for."""
+        table, applied = self._project("SELECT table_name AS name FROM t")
+        assert applied is True
+        assert table.column_names == ["name"]
+
+    def test_names_match_case_insensitively(self) -> None:
+        table, applied = self._project("SELECT TABLE_NAME FROM t")
+        assert applied is True
+        assert table.column_names == ["table_name"]
+
+    def test_star_is_the_whole_view(self) -> None:
+        table, applied = self._project("SELECT * FROM t")
+        assert applied is False
+        assert len(table.column_names) == 3
+
+    def test_an_unknown_column_leaves_the_view_whole(self) -> None:
+        """Rather than an empty or partial projection: the advertised schema is
+        built from these columns, and one that disagrees with the stream is
+        worse than a wide one."""
+        table, applied = self._project("SELECT no_such_column FROM t")
+        assert applied is False
+        assert len(table.column_names) == 3
+
+    def test_an_expression_leaves_the_view_whole(self) -> None:
+        table, applied = self._project("SELECT COUNT(*) FROM t")
+        assert applied is False
+        assert len(table.column_names) == 3
+
+    def test_filtering_may_use_a_column_the_projection_drops(self) -> None:
+        """``SELECT table_name ... WHERE table_type = 'VIEW'`` is ordinary, so
+        the filter has to run before the projection throws its column away."""
+        import sqlglot
+
+        from ob_flight.server_catalog import _answer_catalog_view
+
+        answered = _answer_catalog_view(
+            self._table(),
+            sqlglot.parse_one("SELECT table_name FROM t WHERE table_type = 'VIEW'"),
+        )
+        assert answered.column_names == ["table_name"]
+        assert answered.column("table_name").to_pylist() == ["orders"]
+
+
+#: A real resolved model, not a mock: these tests build genuine Arrow tables
+#: from it, and a ``MagicMock`` attribute reaches pyarrow as an object it
+#: cannot convert.
+_GUARD_MODEL_YAML = """\
+version: 1.0
+name: sales_model
+
+dataObjects:
+  Sales:
+    code: sales
+    database: ""
+    schema: main
+    columns:
+      Region Code:
+        code: region
+        abstractType: string
+      Amount Col:
+        code: amount
+        abstractType: float
+
+dimensions:
+  Region:
+    dataObject: Sales
+    column: Region Code
+    resultType: string
+
+measures:
+  Total Sales:
+    aggregation: sum
+    columns:
+      - dataObject: Sales
+        column: Amount Col
+    resultType: float
+"""
+
+
+class TestEveryCatalogViewHonoursTheStatement:
+    """Parameterised over the entry points, not written per branch.
+
+    ``<model>.model`` shipped skipping both the filter and the projection - and
+    reporting the filter as *applied*, so the prepared-statement bind check
+    believed it. It was missed because each view is a separate branch of one
+    dispatch and the earlier fix went view by view. This asks all of them the
+    same three questions, so the next branch added has to answer them too.
+    """
+
+    #: Every SELECT-with-a-FROM branch of the dispatch.
+    VIEWS = [
+        "information_schema.tables",
+        "information_schema.columns",
+        '"sales_model"."model"',
+        "_dimensions_metadata",
+        "_measures_metadata",
+    ]
+
+    def _model(self) -> Any:
+        from orionbelt.parser.loader import TrackedLoader
+        from orionbelt.parser.resolver import ReferenceResolver
+
+        raw, source_map = TrackedLoader().load_string(_GUARD_MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return model
+
+    def _ask(self, sql: str) -> tuple[Any, bool]:
+        from ob_flight.server_catalog import handle_catalog_sql_checked
+
+        return handle_catalog_sql_checked(None, sql, self._model())
+
+    def _first_column(self, view: str) -> str:
+        whole, _ = self._ask(f"SELECT * FROM {view}")
+        return str(whole.column_names[0])
+
+    @pytest.mark.parametrize("view", VIEWS)
+    def test_a_matching_nothing_filter_returns_nothing(self, view: str) -> None:
+        column = self._first_column(view)
+        table, applied = self._ask(
+            f"SELECT {column} FROM {view} WHERE {column} = '__no_such_value__'"
+        )
+        assert applied is True
+        assert table.num_rows == 0, f"{view} ignored its WHERE"
+
+    @pytest.mark.parametrize("view", VIEWS)
+    def test_a_projection_narrows(self, view: str) -> None:
+        column = self._first_column(view)
+        one, _ = self._ask(f"SELECT {column} FROM {view}")
+        assert one.column_names == [column], f"{view} ignored its SELECT list"
+
+    @pytest.mark.parametrize("view", VIEWS)
+    def test_an_unevaluable_predicate_is_reported(self, view: str) -> None:
+        """Claiming ``applied`` when nothing was applied is the worst of the
+        three: the bind check believes it and lets a value through."""
+        column = self._first_column(view)
+        whole, _ = self._ask(f"SELECT * FROM {view}")
+        table, applied = self._ask(f"SELECT {column} FROM {view} WHERE weird(x) = 1")
+        assert applied is False, f"{view} claimed to apply a predicate it cannot evaluate"
+        assert table.num_rows == whole.num_rows

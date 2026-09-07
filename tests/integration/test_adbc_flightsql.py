@@ -544,26 +544,123 @@ class TestPreparedStatementParameters:
             cur.close()
         assert params is None or len(params) == 0
 
-    def test_a_parameterised_catalog_query_is_refused(self, conn: Any) -> None:
-        """Refused rather than bound, because it could not be honoured.
+    def test_a_parameterised_catalog_query_filters(self, conn: Any) -> None:
+        """The catalog surface reads a WHERE now, so a parameter can be honoured.
 
-        The catalog surface answers from the model and never reads a WHERE
-        clause - ``server_catalog`` has no notion of one - so a bound value
-        would be silently ignored. Preparing used to materialise the
-        WHERE-stripped form as the *result*: a client that never bound got the
-        whole catalog, and one that did was told the statement takes no
-        parameters.
+        It could not before: ``server_catalog`` dispatched on the FROM target
+        and returned a whole canned view, so the predicate was accepted and
+        discarded - and preparing materialised that unfiltered form as the
+        result.
         """
         cur = conn.cursor()
         try:
-            with pytest.raises(Exception, match="(?i)parameter|catalog"):
-                cur.execute(
-                    "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
-                    parameters=("__no_such_table__",),
-                )
-                cur.fetch_arrow_table()
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            everything = cur.fetch_arrow_table()
+            first = everything.column("table_name")[0].as_py()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
+                parameters=(first,),
+            )
+            one = cur.fetch_arrow_table()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
+                parameters=("__no_such_table__",),
+            )
+            none = cur.fetch_arrow_table()
         finally:
             cur.close()
+        assert everything.num_rows > 1
+        assert one.column("table_name").to_pylist() == [first]
+        assert none.num_rows == 0
+
+    def test_a_catalog_parameter_is_typed(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?"
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert len(params) == 1
+
+    def test_a_catalog_query_binds_again(self, conn: Any) -> None:
+        """Same reuse guarantee as a semantic statement."""
+        sql = "SELECT table_name FROM information_schema.tables WHERE table_name = ?"
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            first = cur.fetch_arrow_table().column("table_name")[0].as_py()
+            cur.execute(sql, parameters=(first,))
+            hit = cur.fetch_arrow_table().num_rows
+            cur.execute(sql, parameters=("__no_such_table__",))
+            miss = cur.fetch_arrow_table().num_rows
+        finally:
+            cur.close()
+        assert hit == 1
+        assert miss == 0
+
+    def test_a_catalog_projection_returns_only_what_was_asked_for(self, conn: Any) -> None:
+        """The SELECT list was discarded with the WHERE: a client asking for
+        one column received the whole canned view, and so did the schema."""
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            one = cur.fetch_arrow_table()
+            cur.execute("SELECT * FROM information_schema.tables")
+            everything = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert one.column_names == ["table_name"]
+        assert len(everything.column_names) > 1
+
+    def test_a_projected_catalog_query_advertises_what_it_streams(self, conn: Any) -> None:
+        """The advertised schema is built from the same table, so narrowing it
+        must narrow both - or ADBC rejects the stream outright."""
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name, table_type FROM information_schema.tables")
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column_names == ["table_name", "table_type"]
+
+    def test_a_catalog_alias_is_honoured(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name AS name FROM information_schema.tables")
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column_names == ["name"]
+
+    def test_projection_and_a_bound_filter_together(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            first = cur.fetch_arrow_table().column("table_name")[0].as_py()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
+                parameters=(first,),
+            )
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column_names == ["table_name"]
+        assert table.column("table_name").to_pylist() == [first]
+
+    def test_a_literal_catalog_filter_also_applies(self, conn: Any) -> None:
+        """Not a parameter feature: the predicate was ignored either way."""
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_name = '__no_such_table__'"
+            )
+            none = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert none.num_rows == 0
 
     def test_an_unparameterised_catalog_query_still_works(self, conn: Any) -> None:
         """The refusal is scoped to parameters, not to catalog queries."""
@@ -632,3 +729,87 @@ class TestPreparedStatementParameters:
             cur.close()
         assert everything > 0
         assert none == 0
+
+    def test_a_bound_filter_may_name_a_column_the_projection_drops(self, conn: Any) -> None:
+        """``SELECT table_name ... WHERE table_type = ?`` is an ordinary ask.
+
+        Filtering runs before projection, so the predicate is evaluable - but
+        the bind check re-ran the filter over the *answer*, by which time the
+        projection had dropped ``table_type``, and a good predicate was
+        refused as unevaluable.
+        """
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_type = ?",
+                parameters=("VIEW",),
+            )
+            views = cur.fetch_arrow_table()
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            everything = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert views.column_names == ["table_name"]
+        assert 0 < views.num_rows < everything.num_rows
+
+    def test_a_numeric_catalog_parameter_is_advertised_numeric(self, conn: Any) -> None:
+        """The model knows nothing called ``ordinal_position``, so typing the
+        parameter from it advertised text for a numeric filter - and a client
+        honouring the schema would bind a string and fail."""
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                "SELECT column_name FROM information_schema.columns WHERE ordinal_position > ?"
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert str(params.field(0).type) != "string", str(params.field(0).type)
+
+    def test_a_numeric_catalog_filter_binds_and_filters(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT column_name FROM information_schema.columns")
+            everything = cur.fetch_arrow_table().num_rows
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns WHERE ordinal_position > ?",
+                parameters=(1,),
+            )
+            some = cur.fetch_arrow_table().num_rows
+        finally:
+            cur.close()
+        assert 0 < some < everything
+
+    def test_a_string_catalog_parameter_is_still_a_string(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?"
+            )
+        finally:
+            cur.close()
+        assert params is not None
+        assert str(params.field(0).type) == "string"
+
+    def test_the_model_preview_honours_its_statement(self, conn: Any) -> None:
+        """``<model>.model`` is the column-shape probe a BI tool sends when it
+        clicks the model table. It answered with the whole metadata view and
+        reported the filter as applied, so a bound value passed the check and
+        was then ignored - nine columns and every row came back.
+        """
+        cur = conn.cursor()
+        try:
+            cur.execute(f'SELECT * FROM "{MODEL_NAME}"."model"')
+            everything = cur.fetch_arrow_table()
+            cur.execute(f'SELECT column_name FROM "{MODEL_NAME}"."model"')
+            projected = cur.fetch_arrow_table()
+            cur.execute(
+                f'SELECT column_name FROM "{MODEL_NAME}"."model" WHERE column_name = ?',
+                parameters=("__no_such_column__",),
+            )
+            none = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert len(everything.column_names) > 1
+        assert projected.column_names == ["column_name"]
+        assert none.num_rows == 0
