@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -270,6 +271,10 @@ class TestDoGet:
         mock_cursor = MagicMock()
         mock_cursor.description = (("n", NUMBER, None, None, None, None, None),)
         mock_cursor.fetchmany.side_effect = [[(42.0,)], []]
+        # A driver with no Arrow of its own, so the row fallback runs. Without
+        # the delete a MagicMock answers ``fetch_arrow_table`` with a mock,
+        # which is neither a table nor an honest test.
+        del mock_cursor.fetch_arrow_table
 
         mock_conn = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
@@ -282,6 +287,75 @@ class TestDoGet:
         # Ticket should be consumed
         assert ticket_id not in server._pending
         mock_conn.close.assert_called_once()
+
+    def test_prefers_the_driver_arrow_table(self, monkeypatch) -> None:
+        """The driver's schema, not one inferred from sampled values.
+
+        ``schema_from_description`` reads Arrow types off the first rows, so
+        a decimal wider than its first batch suggests, or an all-NULL CFL
+        pad, gets a type the rest of the result then has to fit into. Seven
+        of the eight drivers already know what the warehouse said.
+        """
+        from ob_flight import server_execution
+
+        server = _make_server()
+        ticket_id = "arrow-ticket"
+        server._store_pending(ticket_id, ("sql", "SELECT amount FROM t", "duckdb"))
+
+        # decimal128(18, 2) is the case in point: inferring from a value of
+        # 1.50 sizes the column decimal128(3, 2) and loses the declared width.
+        table = pa.table({"amount": pa.array([Decimal("1.50")], pa.decimal128(18, 2))})
+
+        mock_cursor = MagicMock()
+        mock_cursor.description = (("amount", None, None, None, None, None, None),)
+        mock_cursor.fetch_arrow_table.return_value = table
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        captured: dict[str, Any] = {}
+
+        class FakeStream:
+            def __init__(self, streamed) -> None:
+                captured["table"] = streamed
+
+        monkeypatch.setattr(server_execution.flight, "RecordBatchStream", FakeStream)
+
+        with patch("ob_flight.server.db_connect", return_value=mock_conn):
+            server.do_get(MagicMock(), flight.Ticket(ticket_id.encode("utf-8")))
+
+        assert captured["table"].schema.field("amount").type == pa.decimal128(18, 2)
+        mock_cursor.fetchmany.assert_not_called()
+        mock_conn.close.assert_called_once()
+
+    def test_row_fallback_still_infers_when_a_driver_has_no_arrow(self, monkeypatch) -> None:
+        """MySQL aside, this path is now the exception - but it has to work."""
+        from ob_driver_core.type_codes import STRING
+
+        from ob_flight import server_execution
+
+        server = _make_server()
+        ticket_id = "fallback-ticket"
+        server._store_pending(ticket_id, ("sql", "SELECT name FROM t", "duckdb"))
+
+        mock_cursor = MagicMock()
+        mock_cursor.description = (("name", STRING, None, None, None, None, None),)
+        mock_cursor.fetchmany.side_effect = [[("a",)], []]
+        del mock_cursor.fetch_arrow_table
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        captured: dict[str, Any] = {}
+
+        class FakeStream:
+            def __init__(self, streamed) -> None:
+                captured["table"] = streamed
+
+        monkeypatch.setattr(server_execution.flight, "RecordBatchStream", FakeStream)
+
+        with patch("ob_flight.server.db_connect", return_value=mock_conn):
+            server.do_get(MagicMock(), flight.Ticket(ticket_id.encode("utf-8")))
+
+        assert captured["table"].column("name").to_pylist() == ["a"]
 
     def test_ddl_query_returns_ok(self):
         server = _make_server()
@@ -313,6 +387,7 @@ class TestDoGet:
         mock_cursor = MagicMock()
         mock_cursor.description = (("name", STRING, None, None, None, None, None),)
         mock_cursor.fetchmany.return_value = []  # no rows
+        del mock_cursor.fetch_arrow_table  # row fallback, as above
 
         mock_conn = MagicMock()
         mock_conn.cursor.return_value = mock_cursor

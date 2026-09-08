@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 import pyarrow.compute as pc
 from ob_driver_core.detection import is_obml, parse_obml
-from orionbelt.service.db_executor import arrow_type_to_hint
+from orionbelt.service.db_executor import arrow_type_to_hint, try_fetch_arrow
 from pyarrow import flight
 
 from ob_flight.converters import rows_to_batch, schema_from_description
@@ -677,6 +677,49 @@ def _wall_clock_where_naive(table: pa.Table, schema: pa.Schema) -> pa.Table:
     return table
 
 
+def _result_table(server: OBFlightServer, cursor: Any) -> pa.Table:
+    """The result as Arrow: the driver's own table where it has one.
+
+    Preferring the driver is the whole point. The fallback below builds a
+    schema with ``schema_from_description``, which infers Arrow types from
+    *sampled values* -- so a column the first batch under-represents gets a
+    type the rest of the result then has to fit into. That is the same
+    inference class that typed empty columns ``null`` in the cache and
+    narrowed governed decimals (#136), and part of what
+    ``align_cached_table`` exists to repair afterwards. A driver that hands
+    back Arrow has already been told the widths by the warehouse.
+
+    It also makes Flight agree with REST and pgwire by construction: they
+    ask the same cursors the same question through
+    ``db_executor.try_fetch_arrow``, and two paths inferring types two ways
+    is how one column ends up with two types.
+
+    The row path stays for a cursor that offers no Arrow at all.
+    """
+    table = try_fetch_arrow(cursor)
+    if table is not None:
+        return table
+
+    # Scan rows for type inference: UNION ALL queries may have NULL-padded
+    # columns in early rows.
+    first_rows = cursor.fetchmany(server._batch_size)
+    schema = schema_from_description(cursor.description, sample_rows=first_rows)
+
+    batches: list[pa.RecordBatch] = []
+    if first_rows:
+        batches.append(rows_to_batch(first_rows, schema))
+    while True:
+        rows = cursor.fetchmany(server._batch_size)
+        if not rows:
+            break
+        batches.append(rows_to_batch(rows, schema))
+
+    if not batches:
+        batches = [rows_to_batch([], schema)]
+
+    return pa.Table.from_batches(batches)
+
+
 def execute_sql(
     server: OBFlightServer,
     sql: str,
@@ -731,24 +774,7 @@ def execute_sql(
             table = pa.Table.from_batches([batch])
             return flight.RecordBatchStream(table)
 
-        # Fetch first batch and scan rows for Arrow type inference
-        # (UNION ALL queries may have NULL-padded columns in early rows)
-        first_rows = cursor.fetchmany(server._batch_size)
-        schema = schema_from_description(cursor.description, sample_rows=first_rows)
-
-        batches: list[pa.RecordBatch] = []
-        if first_rows:
-            batches.append(rows_to_batch(first_rows, schema))
-        while True:
-            rows = cursor.fetchmany(server._batch_size)
-            if not rows:
-                break
-            batches.append(rows_to_batch(rows, schema))
-
-        if not batches:
-            batches = [rows_to_batch([], schema)]
-
-        table = pa.Table.from_batches(batches)
+        table = _result_table(server, cursor)
 
         # Cast to the schema advertised in FlightInfo so the streamed schema
         # matches what the client was promised — e.g. a governed DECIMAL column
