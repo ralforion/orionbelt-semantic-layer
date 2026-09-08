@@ -1078,11 +1078,16 @@ def ensure_arrow() -> bool:
     return False
 
 
-def _try_fetch_arrow(cursor: Any) -> Any:
+def try_fetch_arrow(cursor: Any) -> Any:
     """Try to fetch results as an Arrow Table. Returns None on failure.
 
     Disabled when pyarrow is not loaded to avoid triggering heavy gRPC
     initialization inside uvicorn on macOS.
+
+    Public because the Flight driver asks the same question of the same
+    cursors. It used to answer it differently - by inferring Arrow types
+    from sampled row values - and two paths inferring types two ways is
+    how a column ends up with one type on REST and another on Flight.
     """
     import sys
 
@@ -1095,3 +1100,7 @@ def _try_fetch_arrow(cursor: Any) -> Any:
         return fetch_fn()
     except Exception:
         return None
+
+
+#: The historical private name, kept for the call sites in this module.
+_try_fetch_arrow = try_fetch_arrow
