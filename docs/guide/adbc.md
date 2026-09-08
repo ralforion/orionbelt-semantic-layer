@@ -148,7 +148,18 @@ SELECT column_name FROM information_schema.columns WHERE ordinal_position > ?
 
 Supported predicates are `=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `ILIKE`,
 `IN`, `IS NULL`, and `AND`/`OR`/`NOT` over them, with the column on either
-side. A predicate outside that set leaves the result unfiltered rather than
+side. `ORDER BY` applies too - by column, by select-list alias, or by ordinal
+position, ascending or descending:
+
+```sql
+SELECT table_name FROM information_schema.tables
+WHERE table_type = 'VIEW'
+ORDER BY table_name DESC
+```
+
+A sort key may name a column the SELECT list drops, because ordering runs
+before the projection. `LIMIT` and `OFFSET` apply after the sort, so which
+rows survive is decided by the order you asked for. A predicate outside that set leaves the result unfiltered rather than
 failing, since clients probe a long tail of system tables — but a *parameter*
 cannot be bound into one, because a bound value that is then ignored is worse
 than a refusal.
@@ -171,7 +182,7 @@ measurements and what is refused.
 | | |
 |---|---|
 | Parameter sets | Not implemented; refused rather than truncated to the first row. |
-| Catalog projection | Row selection and column projection apply; other clauses (`ORDER BY`, `LIMIT`) on catalog views do not. |
+| Catalog clauses | `WHERE`, the SELECT list, `ORDER BY`, `LIMIT` and `OFFSET` apply. `GROUP BY`, joins and subqueries do not - a catalog view is a list, not a query surface. |
 | `CommandGetXdbcTypeInfo` | Streams a single `info: utf8` column rather than the spec shape. ADBC accepts it because the advertised schema matches the stream. |
 | Statistics (`GetStatistics`) | Not implemented. |
 | Transactions | Flight SQL exposes no transaction to begin — OBSL is read-only. ADBC warns that autocommit cannot be disabled; the warning is expected. |

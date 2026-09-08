@@ -1006,3 +1006,45 @@ class TestPreparedStatementParameters:
         metric = next(iter(sales_model.metrics))
         schema = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{metric}" > ?', sales_model)
         assert str(schema.field(0).type) != "string"
+
+    def test_binding_order_is_the_statement_s_order_not_the_tree_s(self) -> None:
+        """The bug this ordering exists for.
+
+        ``find_all`` walks the AST, which visits LIMIT before WHERE - so
+        ``["x", 5]`` bound as ``WHERE a = 5 LIMIT 'x'``: both values accepted,
+        both in the wrong place, and nothing raised.
+        """
+        from orionbelt.compiler.sql_translator import bind_placeholders
+
+        bound = bind_placeholders("SELECT a FROM t WHERE a = ? LIMIT ?", ["x", 5])
+        assert bound == "SELECT a FROM t WHERE a = 'x' LIMIT 5"
+
+    def test_binding_order_across_several_clauses(self) -> None:
+        from orionbelt.compiler.sql_translator import bind_placeholders
+
+        bound = bind_placeholders(
+            "SELECT a FROM t WHERE a = ? AND b = ? ORDER BY a LIMIT ? OFFSET ?",
+            ["first", "second", 10, 20],
+        )
+        assert "a = 'first'" in bound
+        assert "b = 'second'" in bound
+        assert "LIMIT 10" in bound
+        assert "OFFSET 20" in bound
+
+    def test_a_question_mark_inside_a_literal_is_not_a_parameter(self) -> None:
+        """It is data. Counting or rewriting it would shift every real
+        parameter one place along."""
+        from orionbelt.compiler.sql_translator import bind_placeholders, count_placeholders
+
+        sql = "SELECT a FROM t WHERE a = ? AND b = 'has ? in it'"
+        assert count_placeholders(sql) == 1
+        assert bind_placeholders(sql, ["v"]) == (
+            "SELECT a FROM t WHERE a = 'v' AND b = 'has ? in it'"
+        )
+
+    def test_the_parameter_schema_follows_the_same_order(self, sales_model) -> None:
+        from orionbelt.compiler.sql_translator import placeholder_arrow_schema
+
+        dim = next(iter(sales_model.dimensions))
+        schema = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{dim}" = ? LIMIT ?', sales_model)
+        assert [f.name for f in schema] == ["$1", "$2"]

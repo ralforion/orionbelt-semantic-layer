@@ -813,3 +813,94 @@ class TestPreparedStatementParameters:
         assert len(everything.column_names) > 1
         assert projected.column_names == ["column_name"]
         assert none.num_rows == 0
+
+    def test_a_catalog_listing_sorts(self, conn: Any) -> None:
+        """BI tools sort catalog listings; the view's insertion order used to
+        come back whatever was asked."""
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables ORDER BY table_name")
+            ascending = cur.fetch_arrow_table().column("table_name").to_pylist()
+            cur.execute("SELECT table_name FROM information_schema.tables ORDER BY table_name DESC")
+            descending = cur.fetch_arrow_table().column("table_name").to_pylist()
+        finally:
+            cur.close()
+        assert ascending == sorted(ascending)
+        assert descending == list(reversed(ascending))
+
+    def test_a_catalog_sort_composes_with_filter_and_projection(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_type = 'VIEW' ORDER BY table_name DESC"
+            )
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        names = table.column("table_name").to_pylist()
+        assert table.column_names == ["table_name"]
+        assert names == sorted(names, reverse=True)
+
+    def test_a_catalog_listing_limits(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables ORDER BY table_name")
+            everything = cur.fetch_arrow_table().column("table_name").to_pylist()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables ORDER BY table_name LIMIT 2"
+            )
+            first_two = cur.fetch_arrow_table().column("table_name").to_pylist()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "ORDER BY table_name LIMIT 2 OFFSET 2"
+            )
+            next_two = cur.fetch_arrow_table().column("table_name").to_pylist()
+        finally:
+            cur.close()
+        assert len(everything) > 4
+        assert first_two == everything[:2]
+        assert next_two == everything[2:4], "OFFSET was ignored"
+
+    def test_a_limit_parameter_is_advertised_as_a_number(self, conn: Any) -> None:
+        """``LIMIT ?`` takes a row count, not a value compared to a column, so
+        the sibling-column rule found nothing and typed it as text. A client
+        honouring that binds ``"1"``, which the clause cannot read."""
+        cur = conn.cursor()
+        try:
+            params = cur.adbc_prepare("SELECT table_name FROM information_schema.tables LIMIT ?")
+        finally:
+            cur.close()
+        assert params is not None
+        assert "int" in str(params.field(0).type), str(params.field(0).type)
+
+    def test_a_bound_limit_actually_limits(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            everything = cur.fetch_arrow_table().num_rows
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables ORDER BY table_name LIMIT ?",
+                parameters=(2,),
+            )
+            limited = cur.fetch_arrow_table().num_rows
+        finally:
+            cur.close()
+        assert everything > 2
+        assert limited == 2
+
+    def test_parameters_bind_in_statement_order_across_clauses(self, conn: Any) -> None:
+        """The swap: the AST visits LIMIT before WHERE, so both values were
+        accepted into the wrong slots."""
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            first = cur.fetch_arrow_table().column("table_name")[0].as_py()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ? LIMIT ?",
+                parameters=(first, 5),
+            )
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column("table_name").to_pylist() == [first]

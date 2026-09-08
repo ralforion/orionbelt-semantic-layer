@@ -199,14 +199,29 @@ def answer_catalog_view(
 ) -> tuple[pa.Table, bool]:
     """A canned view narrowed by the statement's WHERE and SELECT list.
 
-    Returns the table and whether the *filter* applied, because that answer
-    cannot be recovered afterwards: filtering runs first - a predicate may name
-    a column the SELECT list does not, and ``SELECT table_name ... WHERE
-    table_type = 'VIEW'`` is an ordinary thing to ask - and the projection then
-    drops that column. Re-running the filter on the result would report a
-    perfectly good predicate as unevaluable, having removed what it needs.
+    Returns the table and whether **every clause the statement carries** was
+    applied. That answer cannot be recovered afterwards: each step runs on the
+    output of the last - filtering first, because a predicate may name a column
+    the SELECT list drops - so re-running any of them on the result would
+    report a perfectly good clause as unevaluable, having removed what it
+    needs.
+
+    The caller that cares is the prepared-statement bind: a value bound into a
+    clause that then cannot use it is accepted and discarded, which is the
+    whole failure this module exists to remove.
     """
-    filtered, applied = filter_catalog_table(table, ast)
+    filtered, filter_applied = filter_catalog_table(table, ast)
+    # Order before projecting, for the same reason as filtering: a term may
+    # name a column the SELECT list drops.
+    filtered, order_applied = order_catalog_table(filtered, ast)
+    # After the ordering, as SQL means it: which rows a limit keeps is decided
+    # by the order.
+    filtered, limit_applied = limit_catalog_table(filtered, ast)
+    # Every clause, not just the filter. Reporting only the filter let a
+    # prepared bind through for `LIMIT ?`: the value was accepted, the clause
+    # could not use it, and the whole view came back as though it had - the
+    # failure this module exists to remove, reintroduced one clause over.
+    applied = filter_applied and order_applied and limit_applied
     if not project:
         # The caller wants the view's full column set - typing a parameter
         # needs the column its predicate names, which the projection may drop.
@@ -767,6 +782,26 @@ def project_catalog_table(table: pa.Table, ast: Any) -> tuple[pa.Table, bool]:
     return projected.rename_columns(labels), True
 
 
+def _placeholder_is_a_row_count(placeholder: Any) -> bool:
+    """Whether a placeholder sits in a ``LIMIT`` or ``OFFSET`` clause.
+
+    Those take a row count, not a value compared against a column, so the
+    sibling-column rule that types every other catalog parameter finds nothing
+    and falls back to text. ``LIMIT ?`` was advertised as a string, a client
+    honouring that bound ``"1"``, and the clause then could not read it.
+    """
+    import sqlglot.expressions as exp
+
+    node = placeholder.parent
+    while node is not None:
+        if isinstance(node, exp.Limit | exp.Offset):
+            return True
+        if isinstance(node, exp.Select):
+            return False
+        node = node.parent
+    return False
+
+
 def catalog_placeholder_schema(sql: str, table: pa.Table) -> pa.Schema:
     """The Arrow schema of *sql*'s ``?`` parameters, from the catalog view.
 
@@ -776,22 +811,32 @@ def catalog_placeholder_schema(sql: str, table: pa.Table) -> pa.Schema:
     advertised as text and a client honouring that failed a supported numeric
     filter.
 
+    ``LIMIT ?`` and ``OFFSET ?`` are the exception: they take a row count
+    rather than a value compared against a column, and are typed ``int64``.
+
     One field per placeholder, named ``$1``, ``$2``, … in binding order. An
     unresolvable one is typed utf8 rather than dropped, so the field count
     stays the parameter count.
     """
     import sqlglot
     import sqlglot.expressions as exp
+    from orionbelt.compiler.sql_translator import (
+        _numbered_placeholder_sql,
+        ordered_placeholders,
+    )
     from sqlglot.errors import SqlglotError
 
     try:
-        parsed = sqlglot.parse_one(sql)
+        parsed = sqlglot.parse_one(_numbered_placeholder_sql(sql))
     except SqlglotError:
         return pa.schema([])
 
     by_lower = {name.lower(): name for name in table.column_names}
     fields: list[pa.Field] = []
-    for index, placeholder in enumerate(parsed.find_all(exp.Placeholder), start=1):
+    for index, placeholder in enumerate(ordered_placeholders(parsed), start=1):
+        if _placeholder_is_a_row_count(placeholder):
+            fields.append(pa.field(f"${index}", pa.int64()))
+            continue
         arrow_type = pa.utf8()
         parent = placeholder.parent
         if parent is not None:
@@ -802,3 +847,140 @@ def catalog_placeholder_schema(sql: str, table: pa.Table) -> pa.Schema:
                     arrow_type = table.schema.field(source).type
         fields.append(pa.field(f"${index}", arrow_type))
     return pa.schema(fields)
+
+
+def _select_alias_source(name: str, ast: Any, by_lower: dict[str, str]) -> str | None:
+    """The table column a select-list alias feeds from, or ``None``."""
+    import sqlglot.expressions as exp
+
+    for item in getattr(ast, "expressions", []) or []:
+        if isinstance(item, exp.Alias) and item.alias.lower() == name.lower():
+            inner = item.this
+            if isinstance(inner, exp.Column):
+                return by_lower.get(inner.name.lower())
+            return None
+    return None
+
+
+def _order_key_column(target: Any, ast: Any, by_lower: dict[str, str]) -> str | None:
+    """The table column an ORDER BY term names, or ``None``.
+
+    Three spellings reach here and all are ordinary for a BI tool: the column
+    itself, a select-list alias, and an ordinal - ``ORDER BY 1`` meaning "the
+    first thing I selected", resolved against the SELECT list rather than the
+    table, because those are different lists.
+
+    The alias is tried *before* the table. A bare ``ORDER BY n`` parses as a
+    column, so looking it up in the table first found nothing and dropped the
+    whole ORDER BY - the sort silently not happening, which is the failure
+    this module exists to stop.
+    """
+    import sqlglot.expressions as exp
+
+    if isinstance(target, exp.Literal) and target.is_int:
+        index = int(target.this) - 1
+        items = list(getattr(ast, "expressions", []) or [])
+        if not 0 <= index < len(items):
+            return None
+        target = items[index]
+
+    if isinstance(target, exp.Alias):
+        # ``ORDER BY <alias>`` names the output; sort by what feeds it.
+        target = target.this
+
+    name = getattr(target, "name", None)
+    if isinstance(name, str):
+        alias_source = _select_alias_source(name, ast, by_lower)
+        if alias_source is not None:
+            return alias_source
+
+    if isinstance(target, exp.Column):
+        return by_lower.get(target.name.lower())
+    if isinstance(name, str):
+        return by_lower.get(name.lower())
+    return None
+
+
+def order_catalog_table(table: pa.Table, ast: Any) -> tuple[pa.Table, bool]:
+    """Sort *table* by the statement's ORDER BY. Returns it and whether it applied.
+
+    ``False`` leaves the order untouched - the view's own, which is what every
+    catalog query got before, so nothing that works today changes. Sorting is
+    all-or-nothing: a partially applied ORDER BY is a different order from the
+    one asked for, and looks like an answer.
+
+    Runs before the projection, so a term may name a column the SELECT list
+    drops. ``SELECT table_name ... ORDER BY table_type`` is an ordinary ask.
+    """
+    import sqlglot.expressions as exp
+
+    if not isinstance(ast, exp.Select):
+        return table, True
+    order = ast.args.get("order")
+    if order is None:
+        return table, True
+
+    by_lower = {name.lower(): name for name in table.column_names}
+    keys: list[tuple[str, str]] = []
+    for term in order.expressions:
+        if not isinstance(term, exp.Ordered):
+            return table, False
+        column = _order_key_column(term.this, ast, by_lower)
+        if column is None:
+            return table, False
+        keys.append((column, "descending" if term.args.get("desc") else "ascending"))
+    if not keys:
+        return table, True
+    try:
+        return table.sort_by(keys), True
+    except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+        return table, False
+
+
+def _row_count_arg(clause: Any) -> int | None:
+    """The integer a LIMIT / OFFSET clause carries, or ``None``."""
+    import sqlglot.expressions as exp
+
+    if clause is None:
+        return None
+    value = clause.expression if hasattr(clause, "expression") else None
+    if not isinstance(value, exp.Literal) or not value.is_int:
+        return None
+    count = int(value.this)
+    return count if count >= 0 else None
+
+
+def limit_catalog_table(table: pa.Table, ast: Any) -> tuple[pa.Table, bool]:
+    """Apply the statement's LIMIT / OFFSET. Returns it and whether it applied.
+
+    ``OFFSET`` is handled with ``LIMIT`` rather than after it, because
+    supporting only the first would answer ``LIMIT 10 OFFSET 20`` with the
+    first ten rows - the right *number* of the wrong rows, which is the shape
+    of wrongness a client cannot see.
+
+    Runs after the ordering, as SQL means it: a limit over an unsorted table is
+    an arbitrary subset, and the order is what decides which rows survive.
+    """
+    import sqlglot.expressions as exp
+
+    if not isinstance(ast, exp.Select):
+        return table, True
+    limit_clause = ast.args.get("limit")
+    offset_clause = ast.args.get("offset")
+    if limit_clause is None and offset_clause is None:
+        return table, True
+
+    offset = 0
+    if offset_clause is not None:
+        parsed_offset = _row_count_arg(offset_clause)
+        if parsed_offset is None:
+            return table, False
+        offset = parsed_offset
+
+    if limit_clause is None:
+        return table.slice(offset), True
+
+    count = _row_count_arg(limit_clause)
+    if count is None:
+        return table, False
+    return table.slice(offset, count), True
