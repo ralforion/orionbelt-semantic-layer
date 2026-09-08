@@ -130,7 +130,22 @@ Every type defect OBSL has actually shipped lived between the driver and the
 caller, not in the driver - the cache codec typing a column from the values it
 happened to hold (#410), the executor never importing pyarrow so no result
 carried a schema at all (#412), the same reconciliation missing from one read
-path at a time (#414) - and a driver-level probe is blind to all of them.
+path at a time (#414), and one cache entry meaning two different things
+depending on which surface wrote it (#429) - and a driver-level probe is blind
+to all of them.
+
+## What a cache entry holds
+
+The blob is the driver's Arrow table, so a cached column has the type the
+warehouse gave it: `timestamp[us]` stays `timestamp[us]`, `date32` stays
+`date32`, `binary` stays `binary`. Serialisation to the JSON shapes below
+happens on delivery, once, in the same function for a hit and a miss.
+
+It was not always so. REST and pgwire used to encode their already-serialised
+rows, storing an ISO `string` for a timestamp and base64 for binary, while
+Flight stored its table verbatim - in the same shared key. So `format=arrow`
+returned a `string` column under an envelope that called it a datetime, and
+which types you got depended on which surface ran the query first.
 
 So `tests/integration/test_type_fidelity.py` asserts through
 `db_executor.execute_sql`, the path REST, pgwire and the CLI share, on DuckDB -

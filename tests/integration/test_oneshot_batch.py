@@ -424,12 +424,12 @@ class TestOneshotCacheSchemaPreservation:
     """The one-shot writer feeds the *shared* cache, so it must store types.
 
     Its envelope has already reduced the result to JSON rows, which cannot
-    type an empty or all-null column. Without the executor's Arrow schema the
+    type an empty or all-null column. Without the executor's Arrow table the
     blob stores ``null`` — and a later raw ``format=arrow`` hit serves that
     blob verbatim against numeric column metadata.
     """
 
-    async def test_schema_is_forwarded_to_the_encoder(self) -> None:
+    async def test_the_table_is_forwarded_to_the_encoder(self) -> None:
         pa = pytest.importorskip("pyarrow")
 
         from types import SimpleNamespace
@@ -445,9 +445,9 @@ class TestOneshotCacheSchemaPreservation:
             dialect="duckdb",
             row_count=0,
         )
-        schema = pa.schema([pa.field("n", pa.int64())])
+        table = pa.table({"n": pa.array([], pa.int64())})
 
-        async def _write(schema_arg: object) -> object:
+        async def _write(table_arg: object) -> object:
             cache = _CapturingCache()
             await _try_oneshot_cache_set(
                 cache=cache,
@@ -458,24 +458,24 @@ class TestOneshotCacheSchemaPreservation:
                 model_id="m",
                 dialect="duckdb",
                 physical_tables=[],
-                schema=schema_arg,
+                table=table_arg,
             )
             assert cache.payload is not None
             return decode_data(cache.payload).schema.field(0).type
 
-        assert str(await _write(schema)) == "int64"
-        # Guard the test itself: without the schema the defect reproduces.
+        assert str(await _write(table)) == "int64"
+        # Guard the test itself: without the table the defect reproduces.
         assert str(await _write(None)) == "null"
 
-    def test_try_cache_set_requires_schema(self) -> None:
-        """``schema`` has no default, so a new writer cannot silently omit it.
+    def test_try_cache_set_requires_the_table(self) -> None:
+        """``table`` has no default, so a new writer cannot silently omit it.
 
-        Every cache writer must decide what to pass. Defaulting it to None is
-        what let the one-shot path store null-typed payloads unnoticed.
+        Every cache writer must decide what to pass. Defaulting it is what let
+        the one-shot path store null-typed payloads unnoticed.
         """
         import inspect
 
         from orionbelt.api.query_cache import try_cache_set
 
-        param = inspect.signature(try_cache_set).parameters["schema"]
+        param = inspect.signature(try_cache_set).parameters["table"]
         assert param.default is inspect.Parameter.empty

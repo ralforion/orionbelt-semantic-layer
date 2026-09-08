@@ -291,25 +291,25 @@ class TestCoalesceAliases:
 class TestCacheHitWarnings:
     """A hit has to report the warnings its miss did.
 
-    ``execution_result_from_data`` rebuilds a hit with ``raw_rows`` rather than
-    an Arrow table - deliberately, because ``table_to_rows`` keeps native dates
-    where the executor's row builder serialises them to ISO strings, so
-    swapping it changes what a hit returns. It also leaves ``arrow_schema``
-    None, so reconciling the *result* is a no-op. The table is reconciled
-    instead, before the result is built.
+    A rebuilt hit is table-backed, like a fresh result, so reconciling it
+    works rather than silently finding nothing for want of a table. The read
+    path still reconciles the table before building the result, because the
+    response builder is handed the skips and would otherwise report each
+    uncastable column twice.
     """
 
-    def test_reconciling_the_rebuilt_result_finds_nothing(self) -> None:
-        """The failure mode, pinned so the ordering requirement is explicit."""
+    def test_reconciling_the_rebuilt_result_now_finds_the_skip(self) -> None:
+        """The trap that four read paths rediscovered, closed.
+
+        The rebuild used to hand back rows, so ``reconcile_to_declared`` had
+        no table to work on and quietly returned nothing - a hit reported none
+        of the warnings its miss did.
+        """
         from orionbelt.api.query_cache import execution_result_from_data
 
         stored = pa.table({"flag": pa.array([0, 1, 7], type=pa.int64())})
         result = execution_result_from_data(stored, execution_time_ms=1.0)
-        # The schema travels with it, so a re-encode keeps the types - but the
-        # *table* does not, and that is what reconciliation needs.
-        assert result.arrow_schema is not None
-        assert result.reconcile_to_declared({"flag": pa.bool_()}) == []
-        assert result.arrow_schema.field("flag").type == pa.int64()
+        assert [name for name, _ in result.reconcile_to_declared({"flag": pa.bool_()})] == ["flag"]
 
     def test_reconciling_the_table_recovers_the_skip(self) -> None:
         stored = pa.table({"flag": pa.array([0, 1, 7], type=pa.int64())})
@@ -322,17 +322,27 @@ class TestCacheHitWarnings:
         assert skips == []
         assert table.schema.field("flag").type == pa.bool_()
 
-    def test_the_hit_keeps_its_native_row_shape(self) -> None:
-        """``table_to_rows`` semantics must survive the reconciliation."""
+    def test_the_hit_serialises_its_rows_like_a_miss(self) -> None:
+        """The point of the change: one serialiser, so one answer.
+
+        A hit used to return whatever the stored cells happened to be, which
+        was an ISO string when REST wrote the entry and a ``date`` when Flight
+        did. Now the stored table is native either way and the executor
+        serialises it on the way out, exactly as it does for a fresh result.
+        """
         import datetime
 
         from orionbelt.api.query_cache import execution_result_from_data
+        from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
 
         stored = pa.table({"d": pa.array([datetime.date(2026, 8, 15)], type=pa.date32())})
         table, _ = reconcile_to_declared(stored, {"d": pa.date32()})
-        assert execution_result_from_data(table, execution_time_ms=1.0).rows == [
-            [datetime.date(2026, 8, 15)]
-        ]
+
+        hit = execution_result_from_data(table, execution_time_ms=1.0)
+        miss = ExecutionResult(
+            columns=[ColumnMeta(name="d", type_hint="datetime")], arrow_table=stored, row_count=1
+        )
+        assert hit.rows == miss.rows == [["2026-08-15"]]
 
 
 class TestCoalesceAliasMetadata:
@@ -591,15 +601,13 @@ class TestSkippedColumnsReportWhatTheyAre:
         assert columns[0].type == "number"
 
 
-class TestARowBackedHitKeepsItsTypes:
-    """A decoded hit is rebuilt from rows, and must still carry the schema.
+class TestARebuiltHitKeepsItsTypes:
+    """A decoded hit holds its table, so the types are the table's.
 
-    The raw-arrow path decodes when reconciliation is possible, and the rebuilt
-    result is row-backed - ``table_to_rows`` keeps native dates where the Arrow
-    row builder serialises them, so it cannot simply hold the table. Without
-    the schema travelling alongside, the re-encode on the way out infers types
-    from values and an empty or all-null ``int64`` column comes back ``null``,
-    undoing exactly what the schema sidecar exists to preserve.
+    This used to be delicate: the rebuild handed back rows and carried the
+    schema separately, so a re-encode on the way out could infer types from
+    values and collapse an empty or all-null ``int64`` column to ``null``.
+    Holding the table removes the step that could go wrong.
     """
 
     def test_an_empty_typed_column_keeps_its_type(self) -> None:
@@ -618,15 +626,16 @@ class TestARowBackedHitKeepsItsTypes:
         assert result.arrow_schema is not None
         assert result.arrow_schema.field("Amount").type == pa.int64()
 
-    def test_the_rows_are_still_the_table_to_rows_shape(self) -> None:
-        """Carrying the schema must not change what a hit returns."""
+    def test_the_table_is_held_rather_than_pre_serialised(self) -> None:
+        """What makes reconciliation and the shared serialiser possible."""
         import datetime
 
         from orionbelt.api.query_cache import execution_result_from_data
 
         table = pa.table({"d": pa.array([datetime.date(2026, 8, 15)], type=pa.date32())})
         result = execution_result_from_data(table, execution_time_ms=1.0)
-        assert result.rows == [[datetime.date(2026, 8, 15)]]
+        assert result.arrow_table is not None
+        assert result.arrow_table.schema.field("d").type == pa.date32()
 
     def test_a_real_arrow_table_still_wins(self) -> None:
         """The explicit schema is a fallback, not an override."""

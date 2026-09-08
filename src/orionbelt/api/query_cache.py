@@ -27,7 +27,7 @@ from orionbelt.api.schemas import (
 )
 from orionbelt.cache import build_datasource_key
 from orionbelt.cache.protocol import Cache
-from orionbelt.cache.result_codec import decode_data, encode_data, table_to_rows
+from orionbelt.cache.result_codec import decode_data, encode_data, encode_table
 from orionbelt.cache.ttl import TtlResult
 from orionbelt.compiler.validator import format_sql
 from orionbelt.service.db_executor import (
@@ -279,6 +279,7 @@ async def try_cache_set(
     cache: Cache,
     key: str,
     columns: list[ColumnMetadata],
+    table: Any,
     rows: list[list[Any]],
     sql: str,
     dialect: str,
@@ -287,18 +288,21 @@ async def try_cache_set(
     ttl_seconds: int,
     datasource: str,
     model_id: str,
-    schema: Any,
 ) -> None:
     """Encode and store the row data + column schema. Failures are logged.
 
-    ``schema`` is the executor's driver Arrow schema
-    (``ExecutionResult.arrow_schema``), or ``None`` when the result came from
-    a PEP 249 driver that has none. It is **required, not defaulted**: rows
-    alone cannot type an empty or all-null column, so a writer that omits it
-    silently stores an Arrow ``null`` column that a raw ``format=arrow`` hit
-    then serves verbatim against numeric column metadata. Making callers pass
-    it explicitly turns that omission into a signature error instead of a
-    payload that contradicts its own envelope.
+    ``table`` is the executor's Arrow table (``ExecutionResult.arrow_table``),
+    read before ``rows`` materialises and frees it. Where there is one it is
+    stored **verbatim**, so the blob carries the warehouse's own types.
+    ``rows`` is the fallback for a PEP 249 result that has no table - a driver
+    with no Arrow at all, or a process that never imported pyarrow - and there
+    the types are inferred from the serialised values, as they always were.
+
+    Storing the table is what makes one entry mean the same thing to every
+    surface. Encoding from serialised rows instead put an ISO ``string`` in a
+    timestamp column and base64 in a binary one, while Flight - which already
+    stored its table verbatim - put ``timestamp[us]`` and ``binary`` in the
+    same key. Whoever wrote first decided what the other read.
 
     Only the row data (blob) and the result's column schema + row count (entry
     sidecar) are cached; the response envelope (sql, explain, timing, ``cached``
@@ -312,7 +316,11 @@ async def try_cache_set(
     from orionbelt.cache import key as cache_key_mod
 
     try:
-        payload = encode_data([c.name for c in columns], rows, schema)
+        payload = (
+            encode_table(table)
+            if table is not None
+            else encode_data([c.name for c in columns], rows)
+        )
     except Exception:
         logger.debug("cache encode failed", exc_info=True)
         return
@@ -478,10 +486,11 @@ async def execute_query_with_cache(
     columns = build_result_columns(
         model, exec_result, query=query, skipped=frozenset(n for n, _ in declared_skips)
     )
-    # Read before ``rows`` is touched below; ``arrow_schema`` is captured at
-    # construction so this is safe regardless, but keeping it explicit
-    # documents that the encoders want the driver's declared types.
-    arrow_schema = exec_result.arrow_schema
+    # Read before ``rows`` is touched below, which materialises the table and
+    # frees it. The table is what gets stored: encoding from serialised rows
+    # instead is how the same key came to hold ISO strings when REST wrote it
+    # and ``timestamp[us]`` when Flight did.
+    arrow_table = exec_result.arrow_table
 
     if (
         cacheable
@@ -493,7 +502,8 @@ async def execute_query_with_cache(
             cache=cache,
             key=cache_key,
             columns=columns,
-            rows=exec_result.rows,
+            table=arrow_table,
+            rows=exec_result.rows if arrow_table is None else [],
             sql=format_sql(compile_result.sql, dialect),
             dialect=dialect,
             physical_tables=compile_result.physical_tables,
@@ -501,7 +511,6 @@ async def execute_query_with_cache(
             ttl_seconds=ttl_outcome.ttl.seconds,
             datasource=ds,
             model_id=model_id,
-            schema=arrow_schema,
         )
 
     return CachedExecution(
@@ -571,20 +580,24 @@ def execution_result_from_data(
     The blob holds only row data; columns come from the stored schema sidecar
     (``columns``) when present — preserving exact types for empty / all-null
     results — else from the Arrow schema. ``execution_time_ms`` is the
-    per-request value (cache fetch time on a hit), never a stored one. ``tz`` is
-    the resolved fallback timezone used to label the response (the stored rows
-    are already materialized, so it is a label only).
+    per-request value (cache fetch time on a hit), never a stored one.
+
+    The result is **table-backed**, like a fresh one. That is the whole point:
+    ``rows`` then runs the same ``_arrow_to_rows`` a miss runs, so a hit and
+    the miss that filled it serialise identically instead of a hit returning
+    whatever the stored cells happened to be. It also makes
+    ``reconcile_to_declared`` work on a hit rather than silently doing nothing
+    for want of a table, which is the trap four read paths rediscovered.
+
+    ``tz`` labels naive timestamps exactly as it does on a miss.
     """
     cols = exec_columns_from_sidecar(columns) if columns else exec_columns_from_table(data_table)
     return ExecutionResult(
         columns=cols,
-        raw_rows=table_to_rows(data_table),
+        arrow_table=data_table,
         row_count=data_table.num_rows,
         execution_time_ms=execution_time_ms,
         tz=tz,
-        # The table's own schema, so a re-encode on the way out keeps the types
-        # rather than re-inferring them from the rows.
-        arrow_schema=data_table.schema,
     )
 
 

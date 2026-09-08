@@ -177,7 +177,7 @@ def _render_response(
     timezone: str | None,
     cached: bool = False,
     cached_at: str | None = None,
-    arrow_schema: Any = None,
+    arrow_table: Any = None,
 ) -> QueryExecuteResponse | Response:
     """Render already-resolved columns + RAW rows into the requested surface.
 
@@ -199,6 +199,8 @@ def _render_response(
         # encoded into the Arrow data, mirroring the JSON format_values variant.
         arrow_rows: list[list[Any]]
         if format_values:
+            # Every cell is a display string by construction, so there is no
+            # driver type left to preserve and the table is the wrong source.
             arrow_rows = [
                 cast(
                     list[Any],
@@ -212,15 +214,21 @@ def _render_response(
                 )
                 for row in rows
             ]
+            gzipped_data = result_codec.encode_data(column_names, arrow_rows)
         else:
+            # The driver's table, verbatim, so the bytes a miss returns are the
+            # bytes the cache stored and a later hit hands back. Encoding from
+            # ``rows`` instead re-inferred the types from values that had
+            # already been serialised, which is how a timestamp column left as
+            # ``string`` in an Arrow response whose own envelope called it a
+            # datetime. Falls back to the rows for a result with no table (a
+            # PEP 249 driver, or a process without pyarrow).
             arrow_rows = rows
-        # ``arrow_schema`` keeps an empty / all-null column from decoding as
-        # ``null`` while the envelope's column metadata calls it numeric. It
-        # is irrelevant under format_values, where every cell is a display
-        # string by construction.
-        gzipped_data = result_codec.encode_data(
-            column_names, arrow_rows, None if format_values else arrow_schema
-        )
+            gzipped_data = (
+                result_codec.encode_table(arrow_table)
+                if arrow_table is not None
+                else result_codec.encode_data(column_names, arrow_rows)
+            )
         meta = _arrow_envelope_dict(
             columns_meta=columns_meta,
             sql=sql,
@@ -404,6 +412,8 @@ def _build_execute_response(
     columns_meta, fmt_map, type_map = _columns_and_maps(
         model, exec_result.columns, query, frozenset(name for name, _ in skips)
     )
+    # Before ``rows`` below, which materialises the table and frees it.
+    arrow_table = exec_result.arrow_table
 
     return _render_response(
         response_format=response_format,
@@ -412,7 +422,7 @@ def _build_execute_response(
         accept_encoding=accept_encoding,
         columns_meta=columns_meta,
         rows=exec_result.rows,
-        arrow_schema=exec_result.arrow_schema,
+        arrow_table=arrow_table,
         fmt_map=fmt_map,
         type_map=type_map,
         sql=format_sql(compile_result.sql, compile_result.dialect),
@@ -580,18 +590,16 @@ async def _run_with_cache(
         # from the cached data table (columns from the schema sidecar, so exact
         # types survive empty / all-null results) and render like a fresh run.
         assert cached.data_table is not None
-        # Reconcile the *table*, not the rebuilt result.
-        # ``execution_result_from_data`` hands back ``raw_rows`` rather than an
-        # Arrow table - deliberately, because ``table_to_rows`` keeps native
-        # dates where the executor's own row builder serialises them to ISO
-        # strings, so swapping it would change what a hit returns. But it also
-        # leaves ``arrow_schema`` None, so reconciling the result is a no-op and
-        # a hit reported none of the warnings its miss did.
+        # Reconcile the table here rather than leaving it to the response
+        # builder. The rebuilt result is table-backed now, so the builder
+        # *could* do it - but it is handed ``declared_skips`` and would then
+        # double-report every column it could not cast.
         #
         # The cast itself is a no-op: the entry was reconciled before it was
         # written. What this recovers is the *skips* - the columns that could
         # not be cast are still at their engine type in the stored table, so
-        # re-examining it names them again.
+        # re-examining it names them again, and a hit reports the same warnings
+        # as the miss that filled it without the entry having to carry them.
         hit_table, hit_skips = reconcile_to_declared(
             cached.data_table, declared_arrow_types(model, query)
         )

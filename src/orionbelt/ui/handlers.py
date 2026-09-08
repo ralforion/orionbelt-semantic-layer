@@ -608,19 +608,33 @@ def _decode_arrow_execute_response(resp: Any) -> Any:
     envelope is rebuilt per request, ``execution_time_ms`` / ``cached`` are
     correct even on a cache hit.
     """
+    import contextlib
     import gzip
     import json
+    from zoneinfo import ZoneInfo
 
     import pyarrow as pa
+
+    from orionbelt.service.db_executor import arrow_to_rows
 
     body = resp.content
     meta_len = int.from_bytes(body[:4], "big")
     data: dict[str, Any] = json.loads(body[4 : 4 + meta_len].decode("utf-8"))
     table = pa.ipc.open_stream(gzip.decompress(body[4 + meta_len :])).read_all()
-    names = table.column_names
-    data["rows"] = [[row.get(n) for n in names] for row in table.to_pylist()]
+    # The Arrow data carries the warehouse's own types - ``timestamp``,
+    # ``date``, ``binary`` - so the cells are serialised here with the same
+    # function the JSON surface uses, which is what keeps the promise above
+    # that the two shapes are identical. Reading the table with a bare
+    # ``to_pylist()`` handed the renderer ``datetime`` objects where JSON gives
+    # ISO strings.
+    tz_name = data.get("timezone")
+    tz = None
+    if tz_name:
+        with contextlib.suppress(Exception):
+            tz = ZoneInfo(tz_name)
+    data["rows"] = arrow_to_rows(table, tz)
     if not data.get("columns"):
-        data["columns"] = [{"name": n} for n in names]
+        data["columns"] = [{"name": n} for n in table.column_names]
     return data
 
 

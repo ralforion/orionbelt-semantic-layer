@@ -29,7 +29,12 @@ from typing import Any
 
 # v4: cache blobs hold only row data (no baked response envelope); entries
 # written under v3 recompute-miss and age out.
-KEY_VERSION = 4
+# v5: a blob holds the driver's Arrow table verbatim - native ``timestamp``,
+# ``date`` and ``binary`` - where v4 held whatever the writing surface's rows
+# looked like: ISO strings and base64 from REST and pgwire, native types from
+# Flight, in the same key. A v4 entry read as v5 would hand a string to a
+# column the sidecar calls a datetime, so the version moves and they age out.
+KEY_VERSION = 5
 
 # Separator for composite datasource keys; an ASCII unit separator that cannot
 # appear in a dialect name or a sanitized principal id.

@@ -4,6 +4,29 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **One cache entry now means the same thing to every surface (#429).** REST, pgwire and Flight
+  share a result cache - same key, same blob - but they did not share a representation. REST and
+  pgwire encoded rows that had already been serialised, so a timestamp column was stored as an ISO
+  `string`, a date as a `string` and binary as base64; Flight stored its Arrow table verbatim, so
+  the same three columns were `timestamp[us]`, `date32` and `binary`. Whichever surface ran the
+  query first decided what the others read, and each read path only understood its own writer's
+  convention.
+
+  The driver's table is what gets stored now, and a hit is materialised through the same serialiser
+  a miss is - so a hit returns what its miss returned, cell for cell, including the ADBC opaque
+  NUMERIC that arrives as a string in Arrow and a `Decimal` in a row.
+
+  Two visible consequences. `format=arrow` returns the warehouse's types instead of ISO strings
+  under an envelope that called them datetimes, and a raw-arrow cache hit therefore ships the same
+  bytes a miss does. And `reconcile_to_declared` works on a cache hit, where a row-backed rebuild
+  made it a silent no-op - the trap four read paths rediscovered one at a time.
+
+  `KEY_VERSION` moves 4 -> 5: entries written under v4 hold serialised values, miss once and age
+  out. `encode_data` stays as the fallback for a result with no Arrow table at all; the schema-hint
+  machinery it needed to approximate types from serialised rows is gone.
+
 ### Changed
 
 - **`ob-dremio` executes over ADBC Flight SQL (#427).** The driver was the only one in the set that

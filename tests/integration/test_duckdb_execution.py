@@ -1383,6 +1383,119 @@ class TestAPIExecuteEndpoint:
         finally:
             reset_session_manager()
 
+    async def test_arrow_returns_warehouse_types_and_a_hit_returns_the_same(
+        self, api_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A date column arrives as ``date32``, and the cache does not change it.
+
+        ``format=arrow`` used to encode rows that had already been serialised,
+        so a temporal column shipped as an ISO ``string`` under an envelope
+        whose own column metadata called it a datetime. The cache stored that
+        same flattening - while Flight, sharing the key, stored the native
+        type - so the answer depended on which surface ran the query first.
+
+        This asserts both halves: the fresh response carries the warehouse's
+        type, and a second identical request carries it too, with rows the
+        JSON surface agrees with.
+        """
+        pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
+        import pyarrow as pa
+
+        # Its own table and model: the shared sample fixture has no temporal
+        # column, and adding one to it would reach every other test here.
+        api_duckdb.execute(
+            """
+            CREATE OR REPLACE TABLE PUBLIC.SHIPMENTS (
+                SHIPMENT_ID VARCHAR, SHIPPED_ON DATE, WEIGHT DOUBLE
+            );
+            INSERT INTO PUBLIC.SHIPMENTS VALUES
+                ('S1', DATE '2024-01-15', 10.0),
+                ('S2', DATE '2024-02-20', 25.0);
+            """
+        )
+        model_yaml = """
+version: 1.0
+dataObjects:
+  Shipments:
+    code: SHIPMENTS
+    schema: PUBLIC
+    columns:
+      Shipment ID:
+        code: SHIPMENT_ID
+        abstractType: string
+        primaryKey: true
+      Shipped On:
+        code: SHIPPED_ON
+        abstractType: date
+      Weight:
+        code: WEIGHT
+        abstractType: float
+dimensions:
+  Shipped On:
+    dataObject: Shipments
+    column: Shipped On
+    resultType: date
+measures:
+  Total Weight:
+    resultType: float
+    aggregation: sum
+    expression: "{[Shipments].[Weight]}"
+"""
+        settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        init_session_manager(mgr, query_execute_enabled=True, db_vendor="duckdb")
+        try:
+            mock_exec = _make_execute_sql(api_duckdb)
+            body = {
+                "model_id": None,
+                "query": {
+                    "select": {"dimensions": ["Shipped On"], "measures": ["Total Weight"]},
+                    "orderBy": [{"field": "Shipped On"}],
+                },
+                "dialect": "duckdb",
+            }
+            with patch("orionbelt.api.query_cache.execute_sql", mock_exec):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as c:
+                    sid = (await c.post("/v1/sessions")).json()["session_id"]
+                    loaded = await c.post(
+                        f"/v1/sessions/{sid}/models", json={"model_yaml": model_yaml}
+                    )
+                    assert loaded.status_code == 201, loaded.text
+                    body["model_id"] = loaded.json()["model_id"]
+
+                    fresh = await c.post(
+                        f"/v1/sessions/{sid}/query/execute?format=arrow", json=body
+                    )
+                    again = await c.post(
+                        f"/v1/sessions/{sid}/query/execute?format=arrow", json=body
+                    )
+                    as_json = await c.post(f"/v1/sessions/{sid}/query/execute", json=body)
+
+            assert fresh.status_code == 200, fresh.text
+            _, fresh_table = _split_result_frame(fresh.content)
+            shipped = fresh_table.schema.field("Shipped On").type
+            assert pa.types.is_date(shipped) or pa.types.is_timestamp(shipped), (
+                f"Shipped On shipped as {shipped}"
+            )
+
+            # The second response has to agree, hit or miss - a cache that
+            # stores a different representation is exactly the defect, so this
+            # passes for the right reason either way.
+            _, again_table = _split_result_frame(again.content)
+            assert again_table.schema == fresh_table.schema
+            assert again_table.to_pylist() == fresh_table.to_pylist()
+
+            # And the JSON surface serialises the same data, as it always did.
+            json_rows = as_json.json()["rows"]
+            assert json_rows[0][0] == fresh_table.column("Shipped On")[0].as_py().isoformat()
+        finally:
+            reset_session_manager()
+
     async def test_execute_format_arrow_format_values_bakes_display_strings(
         self, api_duckdb: duckdb.DuckDBPyConnection
     ) -> None:

@@ -1,16 +1,20 @@
-"""Every rebuild of a cached result must reconcile the table first.
+"""Every rebuild of a cached result must reconcile it.
 
 This rule was rediscovered four times, once per read path, because each site
 looks correct on its own: it calls ``execution_result_from_data`` and then a
-response builder that *does* reconcile. The trap is that the rebuilt result is
-row-backed - ``table_to_rows`` keeps native dates where the Arrow row builder
-serialises them, so a hit cannot simply hold the table - and
-``ExecutionResult.reconcile_to_declared`` needs an Arrow table. Reconciling the
-result is therefore a silent no-op, and the hit returns the engine's types
-while the miss that filled the entry returned the model's.
+response builder that *does* reconcile. The trap was that the rebuilt result
+used to be row-backed while ``reconcile_to_declared`` needs an Arrow table, so
+reconciling was a silent no-op and a hit returned the engine's types while the
+miss that filled the entry returned the model's.
 
-So the invariant is checked structurally rather than left to be remembered: a
-function that rebuilds a cached result must also name ``reconcile_to_declared``.
+A rebuilt hit holds its table now, so the call works wherever it is made - but
+it still has to be *made*, and a reader who does not know the history has no
+reason to think of it. The response builder cannot be relied on either: the
+read path hands it the skips, so it takes them rather than re-deriving them.
+
+So the invariant stays checked structurally rather than left to be remembered:
+a function that rebuilds a cached result must also name
+``reconcile_to_declared``.
 """
 
 from __future__ import annotations

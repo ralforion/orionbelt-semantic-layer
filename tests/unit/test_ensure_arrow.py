@@ -87,15 +87,17 @@ class TestTheTypeThisProtects:
     def test_a_wide_declaration_survives_narrow_values(self) -> None:
         import pyarrow as pa
 
-        from orionbelt.cache.result_codec import build_result_table
+        from orionbelt.cache.result_codec import build_result_table, decode_data, encode_table
 
         rows = [[Decimal("1.50")], [Decimal("2.25")]]
-        schema = pa.schema([pa.field("amount", pa.decimal128(18, 2))])
+        table = pa.table({"amount": pa.array([r[0] for r in rows], pa.decimal128(18, 2))})
 
-        inferred = build_result_table(["amount"], rows, None)
-        carried = build_result_table(["amount"], rows, schema)
+        inferred = build_result_table(["amount"], rows)
+        stored = decode_data(encode_table(table))
 
         # Inference reads only the values present, so the same column comes
-        # back a different width for a different filter.
+        # back a different width for a different filter. Which is why the
+        # driver's table is what gets stored, rather than its rows plus a
+        # schema offered to them.
         assert inferred.schema.field(0).type == pa.decimal128(3, 2)
-        assert carried.schema.field(0).type == pa.decimal128(18, 2)
+        assert stored.schema.field(0).type == pa.decimal128(18, 2)
