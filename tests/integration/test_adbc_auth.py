@@ -11,6 +11,13 @@ whether the key was right or wrong.
 Each row here is a way a client actually sends a key, paired with its negative:
 a mechanism that accepts the right key and also accepts the wrong one is worse
 than one that accepts neither.
+
+The first version of this suite used ``NoopAuthHandler`` beside the middleware
+and passed while production - which installs the *real* handler beside it -
+refused every client. The handshake RPC carries two protocols, and each half
+was refusing the other's callers. So the fixture below builds its auth the one
+way ``app.py`` does, and :class:`TestTheProductionWiring` drives the objects
+``app.py`` actually hands to Flight.
 """
 
 # ruff: noqa: F811 — pytest fixtures are imported by name and then shadowed by
@@ -18,6 +25,7 @@ than one that accepts neither.
 # works.
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from collections.abc import Iterator
@@ -37,22 +45,21 @@ from tests.integration.test_adbc_flightsql import (  # noqa: E402
 
 #: Deliberately a length whose ``obsl:<key>`` base64 needs padding - ADBC
 #: strips it, and a key that happens to encode padding-free would let the
-#: decoder regress without a single test noticing.
-API_KEY = "obsl-test-api-key-0123456789abcdefg"
-WRONG_KEY = "obsl-test-api-key-wrong-00000000000"
+#: decoder regress without a single test noticing. Strong enough for
+#: ``API_KEYS`` to accept it, so the production wiring can be driven with it.
+API_KEY = "obsl_pat_a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c"
+WRONG_KEY = "obsl_pat_0000000000000000000000000000000000000000w"
 
 
-@pytest.fixture(scope="module")
-def authenticated_uri(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
-    """A Flight server that requires the API key, as api_key mode configures."""
-    pytest.importorskip("adbc_driver_flightsql")
+@contextlib.contextmanager
+def _serving(db_dir: Any, handler: Any, middleware: Any) -> Iterator[str]:
+    """Run a Flight server on the given auth pair and yield its URI."""
     import duckdb
-    from ob_flight.auth import AUTH_MIDDLEWARE_KEY, AuthMiddlewareFactory, NoopAuthHandler
     from ob_flight.server import OBFlightServer
 
     from orionbelt.service.session_manager import SessionManager
 
-    db_path = tmp_path_factory.mktemp("adbc-auth") / "sample.duckdb"
+    db_path = db_dir / "sample.duckdb"
     connection = duckdb.connect(str(db_path))
     connection.execute(_SETUP_SQL)
     connection.close()
@@ -66,8 +73,8 @@ def authenticated_uri(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]
         "grpc://127.0.0.1:0",
         session_manager=manager,
         default_dialect="duckdb",
-        auth_handler=NoopAuthHandler(),
-        auth_middleware={AUTH_MIDDLEWARE_KEY: AuthMiddlewareFactory(lambda key: key == API_KEY)},
+        auth_handler=handler,
+        auth_middleware=middleware,
     )
     thread = threading.Thread(target=server.serve, name="adbc-auth-flight", daemon=True)
     thread.start()
@@ -80,6 +87,18 @@ def authenticated_uri(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]
             os.environ.pop("DUCKDB_DATABASE", None)
         else:
             os.environ["DUCKDB_DATABASE"] = previous
+
+
+@pytest.fixture(scope="module")
+def authenticated_uri(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    """A Flight server that requires the API key, as api_key mode configures."""
+    pytest.importorskip("adbc_driver_flightsql")
+    from ob_flight.auth import build_api_key_auth
+
+    # The pair app.py installs, built the one way it can be built.
+    handler, middleware = build_api_key_auth(lambda key: key == API_KEY)
+    with _serving(tmp_path_factory.mktemp("adbc-auth"), handler, middleware) as uri:
+        yield uri
 
 
 def _query(uri: str, **db_kwargs: Any) -> int:
@@ -205,3 +224,97 @@ class TestTheAuthenticationGuideRecipe:
         client = flight.FlightClient(authenticated_uri)
         with pytest.raises(flight.FlightUnauthenticatedError):
             client.authenticate_basic_token(b"token", WRONG_KEY.encode())
+
+
+class TestTheLegacyHandshake:
+    """The one path that *did* work before, and must keep working.
+
+    ``AuthenticateBasicToken`` reuses the Handshake RPC but sends its key in a
+    header, leaving the stream empty. Reading that stream is how the legacy
+    protocol receives its key, so the two are told apart by whether a header
+    credential is present - not by the RPC.
+    """
+
+    def _handshake(self, uri: str, key: str) -> int:
+        import pyarrow.flight as flight
+
+        class Handshake(flight.ClientAuthHandler):  # type: ignore[misc]
+            def __init__(self) -> None:
+                super().__init__()
+                self.token = b""
+
+            def authenticate(self, outgoing: Any, incoming: Any) -> None:
+                outgoing.write(key.encode())
+                self.token = incoming.read()
+
+            def get_token(self) -> bytes:
+                return self.token
+
+        client = flight.FlightClient(uri)
+        client.authenticate(Handshake())
+        return len(list(client.list_flights()))
+
+    def test_the_right_key_is_accepted(self, authenticated_uri: str) -> None:
+        self._handshake(authenticated_uri, API_KEY)
+
+    def test_the_wrong_key_is_refused(self, authenticated_uri: str) -> None:
+        import pyarrow.flight as flight
+
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            self._handshake(authenticated_uri, WRONG_KEY)
+
+
+class TestTheProductionWiring:
+    """Drives the objects `app.py` hands to Flight, not a stand-in for them.
+
+    This is the test that was missing. Every other test here builds its own
+    auth; this one runs the real lifespan in api_key mode, takes what it passes
+    to ``start_flight_background``, and connects to a server built from exactly
+    that. The bug it guards - a handler and middleware that each work alone and
+    refuse everything together - is invisible to any test that assembles the
+    pair itself.
+    """
+
+    async def test_what_the_lifespan_installs_authenticates_a_real_client(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        pytest.importorskip("adbc_driver_flightsql")
+        import ob_flight.startup as ob_startup
+
+        from orionbelt.api.app import create_app
+        from orionbelt.api.deps import reset_session_manager
+        from orionbelt.auth import reset_auth
+        from orionbelt.settings import Settings
+
+        captured: dict[str, Any] = {}
+
+        def _recorder(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(ob_startup, "start_flight_background", _recorder)
+        settings = Settings(
+            flight_enabled=True,
+            auth_mode="api_key",
+            api_keys=API_KEY,
+            pgwire_enabled=False,
+            api_server_port=0,
+        )
+        app = create_app(settings=settings)
+        try:
+            # Inside the lifespan: the captured handler validates against the
+            # process-wide key store, which only exists while auth is live.
+            async with app.router.lifespan_context(app):
+                assert captured.get("auth_handler") is not None, "Flight was not started"
+                with _serving(
+                    tmp_path, captured["auth_handler"], captured["auth_middleware"]
+                ) as uri:
+                    assert _query(uri, db_kwargs={"username": "obsl", "password": API_KEY}) > 0
+                    # Proves the key store is enforcing, not that auth is off.
+                    with pytest.raises(Exception, match="(?i)unauth|invalid|denied"):
+                        _query(uri, db_kwargs={"username": "obsl", "password": WRONG_KEY})
+                    with pytest.raises(Exception, match="(?i)unauth|missing|invalid"):
+                        _query(uri)
+        finally:
+            reset_session_manager()
+            reset_auth()

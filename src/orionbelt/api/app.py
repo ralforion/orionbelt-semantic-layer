@@ -396,16 +396,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
             flight_auth_middleware: dict[str, Any] = {}
             if get_mode() == MODE_API_KEY:
-                from ob_flight.auth import build_auth_middleware, build_shared_key_handler
+                from ob_flight.auth import build_api_key_auth
 
-                flight_auth_handler = build_shared_key_handler()
-                # The handler alone cannot authenticate an ADBC client: it
-                # implements Flight's legacy Handshake, and every current
-                # client uses the standard AuthenticateBasicToken, which
-                # carries the credential in a header. The middleware is what
-                # reads those. Both are installed - the handler keeps the
-                # legacy path working for anything that still speaks it.
-                flight_auth_middleware = build_auth_middleware()
+                # Built as a pair, and installed as a pair. The handler alone
+                # cannot authenticate a current client - it implements Flight's
+                # legacy Handshake, while ADBC uses AuthenticateBasicToken,
+                # which carries the credential in a header - and the middleware
+                # alone would refuse the legacy handshake. Each covers what the
+                # other cannot.
+                flight_auth_handler, flight_auth_middleware = build_api_key_auth()
             elif settings.flight_auth_mode == "token":
                 # Legacy static-token auth (deprecated). Fail CLOSED if the
                 # operator asked for token auth but did not supply a token -

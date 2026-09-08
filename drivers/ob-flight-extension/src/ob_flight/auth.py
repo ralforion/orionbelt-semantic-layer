@@ -76,32 +76,50 @@ class SharedKeyAuthHandler(flight.ServerAuthHandler):  # type: ignore[misc]
     session token, which ``is_valid`` re-checks on every subsequent call.
     """
 
-    def __init__(self, validate_fn: Callable[[str], bool]) -> None:
+    def __init__(
+        self, validate_fn: Callable[[str], bool], *, header_auth_installed: bool = False
+    ) -> None:
         super().__init__()
         self._validate = validate_fn
+        self._header_auth_installed = header_auth_installed
 
     def authenticate(self, outgoing: Any, incoming: Any) -> None:
-        token = incoming.read()
+        # Two protocols arrive here. The legacy Handshake puts the key on the
+        # stream. AuthenticateBasicToken - what every current client speaks -
+        # reuses the same RPC but puts the key in a header and sends nothing,
+        # so this read fails with "Stream is closed". That error was the whole
+        # symptom: it is not a broken client, it is a client speaking the
+        # newer of the two protocols this RPC carries.
+        try:
+            token = incoming.read()
+        except OSError:
+            token = b""
+        if not token:
+            if self._header_auth_installed:
+                # The middleware read the header, validated it, and will return
+                # the bearer token in the response. Nothing to do here.
+                return
+            raise flight.FlightUnauthenticatedError(
+                "No API key on the handshake stream. This server accepts the "
+                "legacy handshake only; enable api_key mode for header auth."
+            )
         if not self._validate(_decode_token(token)):
             raise flight.FlightUnauthenticatedError("Invalid API key")
         outgoing.write(token)
 
     def is_valid(self, token: bytes) -> str:
+        if not token and self._header_auth_installed:
+            # A client that authenticated by header never handshook, so there
+            # is no token here to check. Rejecting it would veto every current
+            # client - which is exactly what this server did. The middleware
+            # has already accepted or refused this call; say nothing and let
+            # its answer stand. Never reachable unless that middleware is
+            # installed: ``build_api_key_auth`` is the only way to set this,
+            # and it builds the pair together.
+            return ""
         if not self._validate(_decode_token(token)):
             raise flight.FlightUnauthenticatedError("Invalid API key")
         return "authenticated"
-
-
-def build_shared_key_handler() -> SharedKeyAuthHandler:
-    """Build a handler bound to OBSL's shared credential validator.
-
-    Imported lazily so this module stays importable when ``orionbelt`` is not
-    installed (standalone Flight use). In practice the Flight server runs
-    in-process with the OBSL API, so the import resolves.
-    """
-    from orionbelt.auth import validate_credential
-
-    return SharedKeyAuthHandler(validate_credential)
 
 
 def create_auth_handler(
@@ -160,6 +178,17 @@ AUTH_MIDDLEWARE_KEY = "obsl_auth"
 _BEARER_PREFIX = "bearer "
 _BASIC_PREFIX = "basic "
 
+#: Where pyarrow puts the token a legacy handshake issued.
+_HANDSHAKE_TOKEN_HEADER = "auth-token-bin"
+
+
+def _is_handshake(info: Any) -> bool:
+    """Whether this call is the Handshake RPC itself."""
+    try:
+        return bool(getattr(info, "method", None) == flight.FlightMethod.HANDSHAKE)
+    except AttributeError:  # pragma: no cover - older pyarrow without the enum
+        return False
+
 
 def _credential_from_headers(headers: Mapping[str, Any]) -> str | None:
     """The API key a call carries, in whichever of the three forms it used."""
@@ -178,6 +207,14 @@ def _credential_from_headers(headers: Mapping[str, Any]) -> str | None:
     api_key = first("x-api-key")
     if api_key:
         return api_key
+
+    # What a legacy handshake issues, sent on every call after it. The token
+    # is the key itself (``authenticate`` echoes it back), so it validates the
+    # same way - without this, a handshake would succeed and every call after
+    # it would be refused.
+    handshake_token = first(_HANDSHAKE_TOKEN_HEADER)
+    if handshake_token:
+        return handshake_token
 
     authorization = first("authorization")
     if not authorization:
@@ -227,13 +264,24 @@ class AuthMiddlewareFactory(flight.ServerMiddlewareFactory):  # type: ignore[mis
     ticket issued to one caller must not be redeemable by another.
     """
 
-    def __init__(self, validate_fn: Callable[[str], bool]) -> None:
+    def __init__(
+        self, validate_fn: Callable[[str], bool], *, handshake_handler_installed: bool = False
+    ) -> None:
         super().__init__()
         self._validate = validate_fn
+        self._handshake_handler_installed = handshake_handler_installed
 
     def start_call(self, info: Any, headers: Mapping[str, Any]) -> Any:
         credential = _credential_from_headers(headers)
         if credential is None:
+            if self._handshake_handler_installed and _is_handshake(info):
+                # A handshake carrying no header is the legacy protocol, where
+                # the key travels on the stream - so there is nothing to check
+                # here yet, and the ServerAuthHandler refuses it if it is
+                # wrong. Only this one credential-less call is let through: a
+                # handshake that *does* carry a header is AuthenticateBasicToken
+                # and is validated below like any other call.
+                return None
             raise flight.FlightUnauthenticatedError(
                 "Missing API key. Send it as 'authorization: Bearer <key>', "
                 "'x-api-key: <key>', or the password of a Basic credential."
@@ -243,12 +291,28 @@ class AuthMiddlewareFactory(flight.ServerMiddlewareFactory):  # type: ignore[mis
         return _AuthMiddleware(credential)
 
 
-def build_auth_middleware() -> dict[str, Any]:
-    """Header-auth middleware bound to OBSL's shared validator.
+def build_api_key_auth(
+    validate_fn: Callable[[str], bool] | None = None,
+) -> tuple[SharedKeyAuthHandler, dict[str, Any]]:
+    """The handler and middleware for ``api_key`` mode, built as one pair.
 
-    Called only in ``api_key`` mode; every other mode passes no middleware at
-    all, so an unauthenticated Flight surface does no per-call work.
+    They are returned together because neither is correct alone here. The
+    handler must not veto calls that carry no handshake token, and the
+    middleware must not refuse the Handshake RPC - each of those concessions
+    is safe only because the other half is installed to cover it. Handing back
+    a tuple is what stops the two from drifting apart in the caller, which is
+    how the production wiring came to refuse every client while the parts
+    passed their own tests.
     """
-    from orionbelt.auth import validate_credential
+    if validate_fn is None:
+        # Imported lazily so this module stays importable when ``orionbelt``
+        # is not installed (standalone Flight use).
+        from orionbelt.auth import validate_credential
 
-    return {AUTH_MIDDLEWARE_KEY: AuthMiddlewareFactory(validate_credential)}
+        validate_fn = validate_credential
+
+    handler = SharedKeyAuthHandler(validate_fn, header_auth_installed=True)
+    middleware = {
+        AUTH_MIDDLEWARE_KEY: AuthMiddlewareFactory(validate_fn, handshake_handler_installed=True)
+    }
+    return handler, middleware

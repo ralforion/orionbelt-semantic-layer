@@ -9,11 +9,13 @@ import pytest
 from pyarrow import flight
 
 from ob_flight.auth import (
+    AUTH_MIDDLEWARE_KEY,
     AuthMiddlewareFactory,
     NoopAuthHandler,
     SharedKeyAuthHandler,
     TokenAuthHandler,
     _credential_from_headers,
+    build_api_key_auth,
     create_auth_handler,
 )
 
@@ -182,3 +184,63 @@ class TestAuthMiddlewareFactory:
         factory = AuthMiddlewareFactory(lambda key: key == "good-key")
         with pytest.raises(flight.FlightUnauthenticatedError):
             factory.start_call(MagicMock(), {})
+
+
+class TestTheHalvesAreStrictOnTheirOwn:
+    """Each half makes one concession, and only the pair makes it safe.
+
+    ``build_api_key_auth`` is the only thing that turns these on. Built alone -
+    which is what every other mode does - both must still refuse.
+    """
+
+    def test_a_handler_alone_refuses_a_call_that_never_handshook(self):
+        handler = SharedKeyAuthHandler(lambda key: key == "good-key")
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            handler.is_valid(b"")
+
+    def test_a_handler_alone_refuses_an_empty_handshake_stream(self):
+        # Without middleware there is no header to have authenticated this.
+        incoming = MagicMock()
+        incoming.read.return_value = b""
+        handler = SharedKeyAuthHandler(lambda key: True)
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            handler.authenticate(MagicMock(), incoming)
+
+    def test_middleware_alone_refuses_a_credential_less_handshake(self):
+        factory = AuthMiddlewareFactory(lambda key: True)
+        info = MagicMock()
+        info.method = flight.FlightMethod.HANDSHAKE
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            factory.start_call(info, {})
+
+
+class TestTheApiKeyPair:
+    """What ``app.py`` installs. The halves are only correct together."""
+
+    def test_the_handler_defers_and_the_middleware_admits_the_handshake(self):
+        handler, middleware = build_api_key_auth(lambda key: key == "good-key")
+        # No token: the middleware has already ruled on this call.
+        assert handler.is_valid(b"") == ""
+        info = MagicMock()
+        info.method = flight.FlightMethod.HANDSHAKE
+        assert middleware[AUTH_MIDDLEWARE_KEY].start_call(info, {}) is None
+
+    def test_the_handshake_exemption_is_not_a_way_past_a_wrong_key(self):
+        """A handshake *carrying* a credential is AuthenticateBasicToken, and
+        is checked like any other call - the exemption covers only the legacy
+        protocol, where the key is still on the wire."""
+        _, middleware = build_api_key_auth(lambda key: key == "good-key")
+        info = MagicMock()
+        info.method = flight.FlightMethod.HANDSHAKE
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            middleware[AUTH_MIDDLEWARE_KEY].start_call(info, {"x-api-key": "bad-key"})
+
+    def test_a_legacy_token_still_has_to_be_valid(self):
+        handler, _ = build_api_key_auth(lambda key: key == "good-key")
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            handler.is_valid(b"bad-key")
+
+    def test_the_token_a_handshake_issued_is_accepted_on_later_calls(self):
+        """pyarrow sends it in its own header, not ``authorization`` - without
+        this the handshake would succeed and every call after it be refused."""
+        assert _credential_from_headers({"auth-token-bin": "the-key"}) == "the-key"

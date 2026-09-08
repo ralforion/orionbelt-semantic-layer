@@ -85,6 +85,9 @@ directly, which is what a BI tool with a free-text header field can do.
 A wrong or absent key fails the call with `UNAUTHENTICATED`, naming the header
 to send — it never returns an empty result instead.
 
+Flight's older `Handshake` — where the key travels on the stream rather than in
+a header — keeps working alongside these, for clients that still speak it.
+
 ## What you can send
 
 The Flight surface takes **OBSQL** — `SELECT <dimension|measure> FROM <model>`,

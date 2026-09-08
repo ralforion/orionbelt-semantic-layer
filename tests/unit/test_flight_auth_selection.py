@@ -124,3 +124,26 @@ async def test_api_key_mode_uses_shared_handler(monkeypatch, caplog) -> None:
 
     assert isinstance(captured["auth_handler"], ob_auth.SharedKeyAuthHandler)
     assert not any("WITHOUT authentication" in r.message for r in caplog.records)
+
+    # The handler is only half of it. Header auth - what every current client
+    # speaks - lives in middleware, and the two must be installed together:
+    # alone, the handler refuses every header-authenticated call and the
+    # middleware refuses the legacy handshake. Asserting only the handler is
+    # what let that ship.
+    middleware = captured["auth_middleware"]
+    assert ob_auth.AUTH_MIDDLEWARE_KEY in middleware
+    assert isinstance(middleware[ob_auth.AUTH_MIDDLEWARE_KEY], ob_auth.AuthMiddlewareFactory)
+
+
+async def test_other_modes_install_no_auth_middleware(monkeypatch) -> None:
+    """The middleware exists for api_key mode only, so an unauthenticated
+    surface pays nothing per call."""
+    settings = Settings(
+        flight_enabled=True,
+        flight_auth_mode="none",
+        pgwire_enabled=False,
+        api_server_port=0,
+    )
+    captured = await _run_lifespan_capture(monkeypatch, settings)
+
+    assert not captured["auth_middleware"]
