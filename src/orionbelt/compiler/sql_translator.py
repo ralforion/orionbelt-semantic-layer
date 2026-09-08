@@ -1745,6 +1745,60 @@ def _nulls_position(ob: exp.Expression) -> NullsPosition | None:
 # it is inserted as a parsed literal node, never as text spliced into SQL.
 
 
+#: Prefix for the names positional ``?`` parameters are rewritten to. Chosen to
+#: be something no hand-written statement would use, since a collision would
+#: put a client's own named parameter into the binding order.
+_PLACEHOLDER_NAME = "_obsl_param_"
+
+
+def _numbered_placeholder_sql(sql: str) -> str:
+    """*sql* with each positional ``?`` rewritten to a named placeholder.
+
+    Binding order is the order the parameters appear in the *statement*, and
+    ``find_all`` walks the tree instead - which is a different order the moment
+    a statement uses more than one clause. ``WHERE a = ? LIMIT ?`` yields the
+    LIMIT first, so binding ``["x", 5]`` produced ``WHERE a = 5 LIMIT 'x'``:
+    both values accepted, both in the wrong place.
+
+    Numbering them in text order first makes every later step order-independent
+    - each placeholder carries its own index. The rewrite uses the tokenizer's
+    positions rather than a scan for ``?``, so a question mark inside a string
+    literal is left alone, being data rather than a parameter.
+    """
+    from sqlglot import TokenType
+    from sqlglot.tokens import Tokenizer
+
+    try:
+        tokens = Tokenizer().tokenize(sql)
+    except SqlglotError:
+        return sql
+    spots = [token for token in tokens if token.token_type == TokenType.PLACEHOLDER]
+    out = sql
+    for index, token in reversed(list(enumerate(spots))):
+        out = f"{out[: token.start]}:{_PLACEHOLDER_NAME}{index}{out[token.end + 1 :]}"
+    return out
+
+
+def _placeholder_index(node: Any) -> int:
+    """The binding position a numbered placeholder carries, or ``0``."""
+    name = getattr(node, "name", "") or ""
+    if isinstance(name, str) and name.startswith(_PLACEHOLDER_NAME):
+        return int(name[len(_PLACEHOLDER_NAME) :])
+    return 0
+
+
+def ordered_placeholders(parsed: Any) -> list[Any]:
+    """Every placeholder in *parsed*, in binding order.
+
+    Requires the statement to have been through
+    :func:`_numbered_placeholder_sql`; without the numbering this is AST order,
+    which is not the order values arrive in.
+    """
+    import sqlglot.expressions as exp
+
+    return sorted(parsed.find_all(exp.Placeholder), key=_placeholder_index)
+
+
 def count_placeholders(sql: str) -> int:
     """How many ``?`` parameters *sql* carries.
 
@@ -1795,8 +1849,8 @@ def bind_placeholders(sql: str, values: Sequence[Any]) -> str:
     binding the wrong number of values silently shifts every later parameter
     onto the wrong column.
     """
-    parsed = sqlglot.parse_one(sql)
-    placeholders = list(parsed.find_all(exp.Placeholder))
+    parsed = sqlglot.parse_one(_numbered_placeholder_sql(sql))
+    placeholders = ordered_placeholders(parsed)
     if len(placeholders) != len(values):
         raise SQLTranslationError(
             [
@@ -1849,12 +1903,12 @@ def placeholder_arrow_schema(sql: str, model: SemanticModel) -> Any:
     import pyarrow as pa
 
     try:
-        parsed = sqlglot.parse_one(sql)
+        parsed = sqlglot.parse_one(_numbered_placeholder_sql(sql))
     except SqlglotError:
         return pa.schema([])
 
     fields: list[Any] = []
-    for index, placeholder in enumerate(parsed.find_all(exp.Placeholder), start=1):
+    for index, placeholder in enumerate(ordered_placeholders(parsed), start=1):
         fields.append(pa.field(f"${index}", _placeholder_arrow_type(placeholder, model)))
     return pa.schema(fields)
 

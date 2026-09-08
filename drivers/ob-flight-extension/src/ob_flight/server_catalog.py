@@ -199,20 +199,29 @@ def answer_catalog_view(
 ) -> tuple[pa.Table, bool]:
     """A canned view narrowed by the statement's WHERE and SELECT list.
 
-    Returns the table and whether the *filter* applied, because that answer
-    cannot be recovered afterwards: filtering runs first - a predicate may name
-    a column the SELECT list does not, and ``SELECT table_name ... WHERE
-    table_type = 'VIEW'`` is an ordinary thing to ask - and the projection then
-    drops that column. Re-running the filter on the result would report a
-    perfectly good predicate as unevaluable, having removed what it needs.
+    Returns the table and whether **every clause the statement carries** was
+    applied. That answer cannot be recovered afterwards: each step runs on the
+    output of the last - filtering first, because a predicate may name a column
+    the SELECT list drops - so re-running any of them on the result would
+    report a perfectly good clause as unevaluable, having removed what it
+    needs.
+
+    The caller that cares is the prepared-statement bind: a value bound into a
+    clause that then cannot use it is accepted and discarded, which is the
+    whole failure this module exists to remove.
     """
-    filtered, applied = filter_catalog_table(table, ast)
+    filtered, filter_applied = filter_catalog_table(table, ast)
     # Order before projecting, for the same reason as filtering: a term may
     # name a column the SELECT list drops.
-    filtered, _ = order_catalog_table(filtered, ast)
+    filtered, order_applied = order_catalog_table(filtered, ast)
     # After the ordering, as SQL means it: which rows a limit keeps is decided
     # by the order.
-    filtered, _ = limit_catalog_table(filtered, ast)
+    filtered, limit_applied = limit_catalog_table(filtered, ast)
+    # Every clause, not just the filter. Reporting only the filter let a
+    # prepared bind through for `LIMIT ?`: the value was accepted, the clause
+    # could not use it, and the whole view came back as though it had - the
+    # failure this module exists to remove, reintroduced one clause over.
+    applied = filter_applied and order_applied and limit_applied
     if not project:
         # The caller wants the view's full column set - typing a parameter
         # needs the column its predicate names, which the projection may drop.
@@ -773,6 +782,26 @@ def project_catalog_table(table: pa.Table, ast: Any) -> tuple[pa.Table, bool]:
     return projected.rename_columns(labels), True
 
 
+def _placeholder_is_a_row_count(placeholder: Any) -> bool:
+    """Whether a placeholder sits in a ``LIMIT`` or ``OFFSET`` clause.
+
+    Those take a row count, not a value compared against a column, so the
+    sibling-column rule that types every other catalog parameter finds nothing
+    and falls back to text. ``LIMIT ?`` was advertised as a string, a client
+    honouring that bound ``"1"``, and the clause then could not read it.
+    """
+    import sqlglot.expressions as exp
+
+    node = placeholder.parent
+    while node is not None:
+        if isinstance(node, exp.Limit | exp.Offset):
+            return True
+        if isinstance(node, exp.Select):
+            return False
+        node = node.parent
+    return False
+
+
 def catalog_placeholder_schema(sql: str, table: pa.Table) -> pa.Schema:
     """The Arrow schema of *sql*'s ``?`` parameters, from the catalog view.
 
@@ -782,22 +811,32 @@ def catalog_placeholder_schema(sql: str, table: pa.Table) -> pa.Schema:
     advertised as text and a client honouring that failed a supported numeric
     filter.
 
+    ``LIMIT ?`` and ``OFFSET ?`` are the exception: they take a row count
+    rather than a value compared against a column, and are typed ``int64``.
+
     One field per placeholder, named ``$1``, ``$2``, … in binding order. An
     unresolvable one is typed utf8 rather than dropped, so the field count
     stays the parameter count.
     """
     import sqlglot
     import sqlglot.expressions as exp
+    from orionbelt.compiler.sql_translator import (
+        _numbered_placeholder_sql,
+        ordered_placeholders,
+    )
     from sqlglot.errors import SqlglotError
 
     try:
-        parsed = sqlglot.parse_one(sql)
+        parsed = sqlglot.parse_one(_numbered_placeholder_sql(sql))
     except SqlglotError:
         return pa.schema([])
 
     by_lower = {name.lower(): name for name in table.column_names}
     fields: list[pa.Field] = []
-    for index, placeholder in enumerate(parsed.find_all(exp.Placeholder), start=1):
+    for index, placeholder in enumerate(ordered_placeholders(parsed), start=1):
+        if _placeholder_is_a_row_count(placeholder):
+            fields.append(pa.field(f"${index}", pa.int64()))
+            continue
         arrow_type = pa.utf8()
         parent = placeholder.parent
         if parent is not None:
