@@ -102,10 +102,17 @@ class TestItIsActuallyADBC:
 
 
 class TestConnectIsQuiet:
-    def test_connecting_emits_no_warning(self) -> None:
+    def test_connecting_emits_no_warning(self, dremio_admin_token: str) -> None:
         """ADBC disables autocommit on connect unless told not to bother, and
         Dremio -- which has no transactions -- refuses, so every connection
-        used to warn that it "will not be DB-API 2.0 compliant"."""
+        used to warn that it "will not be DB-API 2.0 compliant".
+
+        Opens its own connection, since the warning happens at connect and
+        the shared ``dremio_conn`` is already past it. It still takes
+        ``dremio_admin_token``: that fixture carries the suite's
+        reachability skip, and a test that connects without it fails with
+        "connection refused" wherever the stack is not up.
+        """
         import warnings
 
         import ob_dremio
