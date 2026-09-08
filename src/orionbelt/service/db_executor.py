@@ -90,18 +90,28 @@ class ExecutionResult:
         # before anything touches ``rows`` — an ordering hazard that would
         # otherwise be invisible at the call site.
         # ``arrow_schema`` lets a row-backed result still carry the types its
-        # rows came from. A cache hit is rebuilt from ``raw_rows`` - because
-        # ``table_to_rows`` keeps native dates where the Arrow row builder
-        # serialises them - and without the schema the re-encode infers types
-        # from values, so an empty or all-null ``int64`` column comes back
-        # ``null``. That is the exact preservation the schema sidecar exists
-        # for, and losing it on the way out would undo it.
+        # rows came from. That is the PEP 249 path - a driver with no Arrow at
+        # all - since a cache hit is table-backed like a fresh result. Without
+        # the schema a re-encode infers types from values, so an empty or
+        # all-null ``int64`` column comes back ``null``.
         self._arrow_schema = getattr(arrow_table, "schema", None) or arrow_schema
 
     @property
     def timezone(self) -> str | None:
         """IANA timezone name used to label naive timestamps, or None."""
         return str(self._tz) if self._tz is not None else None
+
+    @property
+    def arrow_table(self) -> Any | None:
+        """The driver's Arrow table, or ``None`` once :attr:`rows` freed it.
+
+        Read it *before* ``rows``. Callers that store or re-encode the result
+        want the table itself rather than its serialised rows: the cache and
+        the ``format=arrow`` response both hold the warehouse's own types this
+        way, instead of re-inferring them from values that have already been
+        through ``_serialize_value``.
+        """
+        return self._arrow_table
 
     @property
     def arrow_schema(self) -> Any | None:
@@ -703,7 +713,7 @@ def _interval_to_timedelta(val: Any) -> Any:
     )
 
 
-def _arrow_to_rows(table: Any, tz: ZoneInfo | None = None) -> list[list[Any]]:
+def arrow_to_rows(table: Any, tz: ZoneInfo | None = None) -> list[list[Any]]:
     """Convert an Arrow Table to a list of JSON-serializable rows.
 
     String-stored numeric extension types are parsed to ``Decimal`` before
@@ -736,6 +746,15 @@ def _arrow_to_rows(table: Any, tz: ZoneInfo | None = None) -> list[list[Any]]:
             row.append(_serialize_value(val, tz))
         result.append(row)
     return result
+
+
+#: The historical private name, used throughout this module.
+#:
+#: Public because a cached result and a fresh one must serialise identically,
+#: and the UI decodes the same Arrow the cache stores - so all three go
+#: through this one function rather than each having its own idea of what a
+#: ``timestamp`` cell looks like.
+_arrow_to_rows = arrow_to_rows
 
 
 # ---------------------------------------------------------------------------

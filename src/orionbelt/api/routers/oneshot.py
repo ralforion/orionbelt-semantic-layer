@@ -424,6 +424,11 @@ async def _run_query(
                 error=OneshotBatchQueryError(code="EXECUTION_ERROR", message=str(exc)),
             )
 
+        # Before the envelope, which reads ``rows`` and frees the table. The
+        # cache stores the table itself, so a oneshot-written entry means the
+        # same thing as one written by /query/execute or by Flight.
+        arrow_table = exec_result.arrow_table
+
         # Reuse the standard execute response builder so column metadata,
         # type hints, and format strings stay consistent with /query/execute.
         envelope = _build_execute_response(
@@ -459,7 +464,7 @@ async def _run_query(
                 model_id=model_id,
                 dialect=dialect,
                 physical_tables=physical_tables,
-                schema=exec_result.arrow_schema,
+                table=arrow_table,
             )
         elif ttl_outcome.no_cache_reason is not None:
             ttl_source = (
@@ -695,21 +700,22 @@ async def _try_oneshot_cache_set(
     model_id: str,
     dialect: str,
     physical_tables: list[str],
-    schema: Any = None,
+    table: Any = None,
 ) -> None:
     """Best-effort cache set for oneshot batch entries (row data only).
 
-    ``schema`` is the executor's driver Arrow schema. The envelope has
-    already reduced the result to JSON rows, so without it an empty or
-    all-null column would be stored as Arrow ``null`` — and this writer
-    populates the *shared* cache, so a later raw ``format=arrow`` hit would
-    serve that blob verbatim against numeric column metadata.
+    ``table`` is the executor's Arrow table, read before the envelope
+    materialised its rows. This writer populates the *shared* cache, so a blob
+    it writes is one a REST arrow request or Flight will later read: storing
+    the table keeps its types the warehouse's rather than whatever the
+    envelope's already-serialised rows imply.
     """
     await try_cache_set(
         cache=cache,
         key=key,
         columns=list(envelope.columns),
-        rows=list(envelope.rows),
+        table=table,
+        rows=list(envelope.rows) if table is None else [],
         sql=envelope.sql,
         dialect=envelope.dialect,
         physical_tables=physical_tables,
@@ -717,5 +723,4 @@ async def _try_oneshot_cache_set(
         ttl_seconds=ttl_seconds,
         datasource=datasource,
         model_id=model_id,
-        schema=schema,
     )
