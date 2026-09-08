@@ -19,6 +19,7 @@ def start_flight_background(
     session_manager: Any = None,
     port: int | None = None,
     auth_handler: Any = None,
+    auth_middleware: Any = None,
     default_dialect: str | None = None,
     cache: Any = None,
     cache_config: Any = None,
@@ -52,6 +53,7 @@ def start_flight_background(
     _server = OBFlightServer(
         location,
         auth_handler=auth_handler,
+        auth_middleware=auth_middleware,
         session_manager=session_manager,
         default_dialect=default_dialect,
         cache=cache,

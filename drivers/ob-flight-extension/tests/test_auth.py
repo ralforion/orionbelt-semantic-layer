@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import base64
 from unittest.mock import MagicMock
 
 import pytest
 from pyarrow import flight
 
 from ob_flight.auth import (
+    AUTH_MIDDLEWARE_KEY,
+    AuthMiddlewareFactory,
     NoopAuthHandler,
     SharedKeyAuthHandler,
     TokenAuthHandler,
+    _credential_from_headers,
+    _presents_a_credential,
+    build_api_key_auth,
     create_auth_handler,
 )
+
+
+def _b64(raw: str) -> str:
+    """Base64 as a client sends it - unpadded, the way ADBC does."""
+    return base64.b64encode(raw.encode()).decode().rstrip("=")
 
 
 class TestNoopAuthHandler:
@@ -102,3 +113,179 @@ class TestCreateAuthHandler:
         monkeypatch.delenv("FLIGHT_API_TOKEN", raising=False)
         with pytest.raises(ValueError, match="FLIGHT_API_TOKEN"):
             create_auth_handler()
+
+
+class TestCredentialFromHeaders:
+    """The decoder behind ``AuthenticateBasicToken``.
+
+    ``SharedKeyAuthHandler`` above answers Flight's *legacy* ``Handshake``.
+    Current clients use ``AuthenticateBasicToken`` instead, which puts the
+    credential in a call header - so this is the path a real ADBC connection
+    takes, and these are the shapes it arrives in.
+    """
+
+    @pytest.mark.parametrize(
+        ("key", "padding"),
+        [("k" * 34, 0), ("k" * 33, 1), ("k" * 35, 2)],
+        ids=["no-padding", "one-pad", "two-pads"],
+    )
+    def test_basic_is_accepted_without_its_padding(self, key: str, padding: int) -> None:
+        """ADBC sends the base64 unpadded and ``b64decode`` rejects that, so a
+        correct key looked like no key at all. All three residues are covered
+        because a key whose length happens to need no padding proves nothing.
+        """
+        raw = f"obsl:{key}".encode()
+        encoded = base64.b64encode(raw).decode()
+        assert encoded.count("=") == padding, "this case does not test what it claims"
+
+        assert _credential_from_headers({"authorization": f"Basic {encoded.rstrip('=')}"}) == key
+
+    def test_the_username_is_ignored(self):
+        # OBSL has keys, not accounts - whatever the client puts before the
+        # colon is not a subject we can authenticate.
+        encoded = base64.b64encode(b"anyone-at-all:the-key").decode()
+        assert _credential_from_headers({"authorization": f"Basic {encoded}"}) == "the-key"
+
+    def test_basic_without_a_colon_is_not_a_credential(self):
+        encoded = base64.b64encode(b"no-colon-here").decode()
+        assert _credential_from_headers({"authorization": f"Basic {encoded}"}) is None
+
+    def test_undecodable_basic_is_not_a_credential(self):
+        assert _credential_from_headers({"authorization": "Basic !!!not-base64!!!"}) is None
+
+    def test_bearer_is_taken_verbatim(self):
+        assert _credential_from_headers({"authorization": "Bearer the-key"}) == "the-key"
+
+    def test_the_scheme_is_matched_case_insensitively(self):
+        # gRPC lowercases header names; clients vary on the scheme itself.
+        assert _credential_from_headers({"authorization": "bearer the-key"}) == "the-key"
+
+    def test_x_api_key_is_read(self):
+        assert _credential_from_headers({"x-api-key": "the-key"}) == "the-key"
+
+    def test_header_values_may_arrive_as_lists(self):
+        # Flight hands middleware the gRPC metadata, where each name maps to
+        # every value sent under it.
+        assert _credential_from_headers({"x-api-key": ["the-key"]}) == "the-key"
+
+    def test_no_credential_at_all(self):
+        assert _credential_from_headers({"user-agent": ["adbc"]}) is None
+
+
+class TestAuthMiddlewareFactory:
+    def test_a_valid_key_passes_and_is_echoed_back(self):
+        factory = AuthMiddlewareFactory(lambda key: key == "good-key")
+        middleware = factory.start_call(MagicMock(), {"x-api-key": "good-key"})
+        # ``AuthenticateBasicToken`` expects the token to use from here on in
+        # the response headers; without this the client reports that it never
+        # got one, even though the key was right.
+        assert middleware.sending_headers() == {"authorization": "Bearer good-key"}
+
+    def test_a_wrong_key_is_refused(self):
+        factory = AuthMiddlewareFactory(lambda key: key == "good-key")
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            factory.start_call(MagicMock(), {"x-api-key": "bad-key"})
+
+    def test_a_missing_key_is_refused(self):
+        factory = AuthMiddlewareFactory(lambda key: key == "good-key")
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            factory.start_call(MagicMock(), {})
+
+
+class TestTheHalvesAreStrictOnTheirOwn:
+    """Each half makes one concession, and only the pair makes it safe.
+
+    ``build_api_key_auth`` is the only thing that turns these on. Built alone -
+    which is what every other mode does - both must still refuse.
+    """
+
+    def test_a_handler_alone_refuses_a_call_that_never_handshook(self):
+        handler = SharedKeyAuthHandler(lambda key: key == "good-key")
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            handler.is_valid(b"")
+
+    def test_a_handler_alone_refuses_an_empty_handshake_stream(self):
+        # Without middleware there is no header to have authenticated this.
+        incoming = MagicMock()
+        incoming.read.return_value = b""
+        handler = SharedKeyAuthHandler(lambda key: True)
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            handler.authenticate(MagicMock(), incoming)
+
+    def test_middleware_alone_refuses_a_credential_less_handshake(self):
+        factory = AuthMiddlewareFactory(lambda key: True)
+        info = MagicMock()
+        info.method = flight.FlightMethod.HANDSHAKE
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            factory.start_call(info, {})
+
+
+class TestTheApiKeyPair:
+    """What ``app.py`` installs. The halves are only correct together."""
+
+    def test_the_handler_defers_and_the_middleware_admits_the_handshake(self):
+        handler, middleware = build_api_key_auth(lambda key: key == "good-key")
+        # No token: the middleware has already ruled on this call.
+        assert handler.is_valid(b"") == ""
+        info = MagicMock()
+        info.method = flight.FlightMethod.HANDSHAKE
+        assert middleware[AUTH_MIDDLEWARE_KEY].start_call(info, {}) is None
+
+    def test_the_handshake_exemption_is_not_a_way_past_a_wrong_key(self):
+        """A handshake *carrying* a credential is AuthenticateBasicToken, and
+        is checked like any other call - the exemption covers only the legacy
+        protocol, where the key is still on the wire."""
+        _, middleware = build_api_key_auth(lambda key: key == "good-key")
+        info = MagicMock()
+        info.method = flight.FlightMethod.HANDSHAKE
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            middleware[AUTH_MIDDLEWARE_KEY].start_call(info, {"x-api-key": "bad-key"})
+
+    def test_a_legacy_token_still_has_to_be_valid(self):
+        handler, _ = build_api_key_auth(lambda key: key == "good-key")
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            handler.is_valid(b"bad-key")
+
+    def test_the_token_a_handshake_issued_is_accepted_on_later_calls(self):
+        """pyarrow sends it in its own header, not ``authorization`` - without
+        this the handshake would succeed and every call after it be refused."""
+        assert _credential_from_headers({"auth-token-bin": "the-key"}) == "the-key"
+
+
+class TestOfferingNoKeyIsNotTheSameAsOfferingNothing:
+    """A credential header holding no key must be refused, not read as silence.
+
+    The handshake exemption exists for legacy clients, which send no credential
+    header at all. A client that sent ``Basic dXNlcjo=`` - user, empty password
+    - has offered something, and it was not a key. Letting that take the
+    exemption answered it with a protocol error instead of UNAUTHENTICATED.
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "headers"),
+        [
+            ("empty basic password", {"authorization": "Basic " + _b64("user:")}),
+            ("basic with no colon", {"authorization": "Basic " + _b64("nocolon")}),
+            ("undecodable basic", {"authorization": "Basic !!!"}),
+            ("bare bearer", {"authorization": "Bearer "}),
+            ("empty x-api-key", {"x-api-key": ""}),
+        ],
+    )
+    def test_it_is_refused_even_on_the_handshake(self, label: str, headers: dict) -> None:
+        _, middleware = build_api_key_auth(lambda key: True)
+        info = MagicMock()
+        info.method = flight.FlightMethod.HANDSHAKE
+        with pytest.raises(flight.FlightUnauthenticatedError, match="No API key"):
+            middleware[AUTH_MIDDLEWARE_KEY].start_call(info, headers)
+
+    def test_a_handshake_offering_nothing_still_passes(self) -> None:
+        """The exemption itself must survive: this is the legacy client."""
+        _, middleware = build_api_key_auth(lambda key: True)
+        info = MagicMock()
+        info.method = flight.FlightMethod.HANDSHAKE
+        assert middleware[AUTH_MIDDLEWARE_KEY].start_call(info, {"user-agent": "legacy"}) is None
+
+    def test_presenting_a_credential_is_about_the_header_not_its_value(self) -> None:
+        assert _presents_a_credential({"authorization": ""})
+        assert _presents_a_credential({"X-Api-Key": "anything"})
+        assert not _presents_a_credential({"user-agent": "adbc"})

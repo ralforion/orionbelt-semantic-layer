@@ -58,9 +58,17 @@ conn = dbapi.connect(
 
 ### Authenticating
 
-With `AUTH_MODE=api_key`, the Flight server validates the handshake credential
-against the same key store the REST surface uses. The key goes in as the
-Basic-auth password:
+With `AUTH_MODE=api_key`, the Flight server validates the credential against the
+same key store the REST surface uses. There is no account behind it — OBSL has
+keys, not users — so whatever a client sends as a username is ignored.
+
+Three ways to send the key, all equivalent:
+
+| How the client sends it | `db_kwargs` |
+|---|---|
+| Basic auth | `{"username": "obsl", "password": "<key>"}` |
+| `authorization` header | `{"adbc.flight.sql.authorization_header": "Bearer <key>"}` |
+| `x-api-key` call header | `{"adbc.flight.sql.rpc.call_header.x-api-key": "<key>"}` |
 
 ```python
 conn = dbapi.connect(
@@ -68,6 +76,17 @@ conn = dbapi.connect(
     db_kwargs={"username": "obsl", "password": "<your API key>"},
 )
 ```
+
+The first form is Flight SQL's `AuthenticateBasicToken`: the driver sends the key
+once, the server answers with the bearer token to use from then on, and the
+driver attaches it to every later call. The other two put the key on every call
+directly, which is what a BI tool with a free-text header field can do.
+
+A wrong or absent key fails the call with `UNAUTHENTICATED`, naming the header
+to send — it never returns an empty result instead.
+
+Flight's older `Handshake` — where the key travels on the stream rather than in
+a header — keeps working alongside these, for clients that still speak it.
 
 ## What you can send
 
