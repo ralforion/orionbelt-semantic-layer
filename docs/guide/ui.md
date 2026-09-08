@@ -1,3 +1,7 @@
+---
+description: "The bundled Gradio UI for exploring OrionBelt visually: browse loaded models, build queries, and inspect the compiled SQL for each dialect."
+---
+
 # Gradio UI
 
 OrionBelt includes an interactive web UI built with [Gradio](https://www.gradio.app/) for exploring and testing the compilation pipeline visually.

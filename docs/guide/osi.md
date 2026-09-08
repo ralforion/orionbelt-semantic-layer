@@ -1,3 +1,7 @@
+---
+description: "OSI (Open Semantic Interchange) is an open standard for portable semantic models, and OrionBelt reads and writes it, so metric and dimension definitions move between tools."
+---
+
 # OSI Interoperability
 
 **OSI (Open Semantic Interchange)** is an open standard for portable semantic models, founded with the goal of letting metric and dimension definitions move between BI tools, semantic layers, and data platforms without rewriting. See [open-semantic-interchange.org](https://open-semantic-interchange.org/) for the specification and contributor list.

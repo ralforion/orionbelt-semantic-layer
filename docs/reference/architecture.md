@@ -1,3 +1,7 @@
+---
+description: "How OrionBelt fits together: YAML models parsed into a semantic model, compiled through a typed SQL AST in a multi-phase pipeline, and served over REST, MCP, Arrow Flight SQL and Postgres wire."
+---
+
 # Architecture
 
 OrionBelt compiles YAML semantic models into dialect-specific SQL through a multi-phase pipeline.

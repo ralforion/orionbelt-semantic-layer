@@ -1,3 +1,7 @@
+---
+description: "Feature comparison between OrionBelt Semantic Layer and Cube, the open-source semantic layer from Cube Dev: modelling language, caching, APIs and multi-fact handling."
+---
+
 # OBSL vs Cube
 
 A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Cube** (formerly Cube.js — the open-source semantic layer from Cube Dev). Captured 2026-05-23, refreshed 2026-07-31 against **Cube Core v1.7** (Tesseract GA, 2026-07-08).

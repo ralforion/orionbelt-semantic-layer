@@ -1,3 +1,7 @@
+---
+description: "Feature comparison between OrionBelt Semantic Layer and LookML, the modelling language behind Looker: explores and joins against OBML models, plus governance and API access."
+---
+
 # OBSL vs LookML / Looker
 
 A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **LookML**, the modeling language behind Google Cloud's **Looker** BI platform. Captured 2026-05-23, refreshed 2026-07-31.

@@ -1,3 +1,7 @@
+---
+description: "Reference for every OrionBelt REST endpoint: sessions, model loading, query compilation and execution, validation, dialects and health, with the request and response shape of each."
+---
+
 # API Endpoints
 
 Complete reference for all OrionBelt REST API endpoints.

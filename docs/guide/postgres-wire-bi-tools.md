@@ -1,3 +1,7 @@
+---
+description: "The Postgres wire surface lets psql, JDBC, ODBC and BI tools connect to OrionBelt semantic models as though they were a Postgres database, with no BI connector to write."
+---
+
 # Connecting BI tools via the Postgres wire surface
 
 OrionBelt's Postgres wire surface (`PGWIRE_ENABLED=true`) lets any

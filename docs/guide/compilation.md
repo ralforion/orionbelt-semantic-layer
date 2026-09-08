@@ -1,3 +1,7 @@
+---
+description: "How a semantic query becomes SQL: resolution, planning, optional wrapping for period-over-period, totals and cumulative metrics, then dialect-specific code generation."
+---
+
 # Compilation Pipeline
 
 OrionBelt compiles semantic queries into SQL through a multi-phase pipeline: **Resolution**, **Planning**, optional **wrapping** (PoP, totals, cumulative), and **Code Generation**. Each phase transforms the query into a progressively more concrete representation.

@@ -1,3 +1,7 @@
+---
+description: "Which Arrow type each engine's driver returns for a declared OBML type, so a client knows what to expect across the eight supported dialects."
+---
+
 # Arrow type fidelity
 
 What Arrow type each engine's driver returns for a declared OBML type. A

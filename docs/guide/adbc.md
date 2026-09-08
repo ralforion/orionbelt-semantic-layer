@@ -1,3 +1,7 @@
+---
+description: "Query OrionBelt over Arrow Flight SQL from any ADBC client: enable the Flight surface, connect with the flightsql driver, and get Arrow back with no translation hop."
+---
+
 # Connecting via ADBC (Arrow Flight SQL)
 
 OBSL's Arrow Flight SQL surface (`FLIGHT_ENABLED=true`) speaks the protocol

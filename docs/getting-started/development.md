@@ -1,3 +1,7 @@
+---
+description: "Set up a local OrionBelt development environment: prerequisites, dependency install with uv, the pytest suite, and the docs build."
+---
+
 # Development
 
 ## Prerequisites

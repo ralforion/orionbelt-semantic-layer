@@ -1,3 +1,7 @@
+---
+description: "Artefacts Composability Resolution (ACR) reports which dimensions, measures and metrics stay composable with the current selection, powering guided query builders and safe agent composition."
+---
+
 # Artefacts Composability Resolution (ACR)
 
 **Artefacts Composability Resolution (ACR)** is a feature of the engine in OrionBelt Semantic

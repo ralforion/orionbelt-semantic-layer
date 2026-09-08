@@ -1,3 +1,7 @@
+---
+description: "OrionBelt generates interactive OpenAPI and Swagger documentation from its FastAPI routes and Pydantic schemas, served next to the running API."
+---
+
 # OpenAPI / Swagger
 
 OrionBelt auto-generates interactive API documentation from its FastAPI route definitions and Pydantic schemas.

@@ -1,3 +1,7 @@
+---
+description: "The two-tier integration suite behind the compiler: correctness tests that assert generated SQL is right, and drift tests that catch unintended changes to it."
+---
+
 # Correctness & Drift Tests
 
 OBSL ships a two-tier integration suite for the compiler. **Tier 1 —

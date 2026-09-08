@@ -1,3 +1,7 @@
+---
+description: "The result cache derives its own freshness from the refresh contracts of the tables a query touches, so one heartbeat invalidates every dependent result and no caller picks a TTL."
+---
+
 # Result cache based on freshness inheritance
 
 OrionBelt's result cache is **based on freshness inheritance**: instead of asking callers to pick a TTL, the cache derives one from the refresh contracts of the **physical source tables** a query touched. A heartbeat from the warehouse invalidates every cached query that depends on that table, regardless of how many semantic facets the model split it into.

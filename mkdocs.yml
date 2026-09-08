@@ -168,7 +168,18 @@ nav:
       - vs. Cube: comparison/cube.md
       - vs. AtScale: comparison/atscale.md
   - Reference:
-      - Python API: reference/python-api.md
+      - Python API:
+          - Overview: reference/python-api.md
+          - Service Layer: reference/api/service.md
+          - Compilation Pipeline: reference/api/compiler.md
+          - Query Resolution: reference/api/resolution.md
+          - CFL Planner: reference/api/cfl.md
+          - Dialects: reference/api/dialects.md
+          - Parser: reference/api/parser.md
+          - Semantic Validation: reference/api/validation.md
+          - Model and Query Objects: reference/api/models.md
+          - SQL AST: reference/api/ast.md
+          - API Schemas and Settings: reference/api/schemas.md
       - Architecture: reference/architecture.md
       - Configuration: reference/configuration.md
       - Arrow type fidelity: reference/type-fidelity.md
