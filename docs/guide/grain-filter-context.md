@@ -1,3 +1,7 @@
+---
+description: "Grain and filter context overrides give per-measure control over which dimensions a measure aggregates by and which query filters reach it."
+---
+
 # Grain & Filter Context Overrides
 
 Grain and filter context overrides give per-measure control over **which dimensions** the measure aggregates by and **which query filters** apply. This enables analytical patterns like percent-of-parent totals, unfiltered grand totals, and selective filter exclusion -- similar to DAX `CALCULATE`, Tableau LOD expressions, and ThoughtSpot `group_aggregate`.

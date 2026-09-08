@@ -1,3 +1,7 @@
+---
+description: "Period-over-Period metrics compare a measure against a prior time period, covering year-over-year, month-over-month and custom offsets, compiled into the query itself."
+---
+
 # Period-over-Period (PoP) Metrics
 
 Period-over-Period metrics compare a measure against a prior time period. Common use cases include Year-over-Year (YoY) revenue growth, Month-over-Month (MoM) changes, and same-period-last-year comparisons.

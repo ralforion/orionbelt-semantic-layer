@@ -1,3 +1,7 @@
+---
+description: "The obsl command-line tool runs validate, compile, describe, diagram, graph and convert in-process, so a model can be linted and its SQL previewed with no infrastructure."
+---
+
 # Command-Line Interface (`obsl`)
 
 `obsl` is the OrionBelt Semantic Layer command-line tool. It is **local-first**:

@@ -1,3 +1,7 @@
+---
+description: "Every OrionBelt environment variable and .env setting: database connections, the surfaces to enable, authentication, admin-curated mode, caching and logging."
+---
+
 # Configuration
 
 Configuration is via environment variables or a `.env` file. See `.env.template` for all options.

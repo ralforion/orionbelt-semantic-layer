@@ -1,3 +1,7 @@
+---
+description: "Every loaded model is also emitted as an RDF graph in the OBSL vocabulary and queryable with SPARQL, for semantic-layer interoperability, governance and knowledge exchange."
+---
+
 # OBSL — RDF Graph & SPARQL
 
 OBSL (OrionBelt Semantic Layer vocabulary) is an RDF-based exchange format for semantic-layer models. When you load a model, OrionBelt automatically exports it as an **OBSL-Core 0.2** RDF graph. You can retrieve the graph as Turtle or run read-only SPARQL queries against it — no extra setup required.

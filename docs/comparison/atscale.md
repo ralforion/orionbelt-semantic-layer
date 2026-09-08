@@ -1,3 +1,7 @@
+---
+description: "Feature comparison between OrionBelt Semantic Layer and AtScale, the enterprise universal semantic layer with OLAP heritage: modelling, governance, delivery surfaces and agent access."
+---
+
 # OBSL vs AtScale
 
 A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **AtScale** — the enterprise "universal semantic layer" with deep OLAP heritage and native MDX/DAX support. Captured 2026-05-23, refreshed 2026-07-31.

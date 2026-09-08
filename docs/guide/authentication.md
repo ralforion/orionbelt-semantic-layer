@@ -1,3 +1,7 @@
+---
+description: "Authentication is off by default and turns on with one environment variable that governs every surface: REST, Arrow Flight SQL, the Postgres wire protocol, the Gradio UI and MCP."
+---
+
 # Authentication
 
 OrionBelt ships with authentication **off by default** — the public demo and

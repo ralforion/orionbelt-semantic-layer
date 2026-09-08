@@ -1,3 +1,7 @@
+---
+description: "The OBML refresh: block describes how the physical table behind a dataObject refreshes, which is what lets the result cache derive freshness instead of asking callers for a TTL."
+---
+
 # Freshness contracts (the OBML `refresh:` block)
 
 A freshness contract describes how the **physical table** that a `dataObject` maps to refreshes. It's the input to OBSL's :doc:`result cache <result-cache>` TTL composition. Authored once per source table.

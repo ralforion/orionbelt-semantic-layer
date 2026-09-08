@@ -1,3 +1,7 @@
+---
+description: "Worked Composite Fact Layer example: sales and returns living in separate fact tables, combined in a single query without fan traps or double counting."
+---
+
 # Multi-Fact: Sales & Returns
 
 This example demonstrates the **Composite Fact Layer (CFL)** planner with a multi-fact scenario. When a query combines measures from different fact tables, OrionBelt uses a CTE with `UNION ALL` to stitch the fact sets together (with NULL padding), then aggregates in the outer query.

@@ -1,3 +1,7 @@
+---
+description: "Four trend-analysis primitives in OBML v2.6: partitioned rolling windows, window metrics (RANK, LAG, LEAD, NTILE, FIRST and LAST VALUE), statistical aggregates on a measure, and how they combine."
+---
+
 # Trend Analysis
 
 OBML v2.6 ships four trend-analysis primitives. Two extend existing surfaces;

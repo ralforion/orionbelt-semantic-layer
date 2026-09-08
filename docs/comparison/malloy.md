@@ -1,3 +1,7 @@
+---
+description: "Feature comparison between OrionBelt Semantic Layer and Malloy, the open-source data language and modelling tool: query semantics, model reuse, dialects and how each reaches BI tools."
+---
+
 # OBSL vs Malloy
 
 A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** (the open-source data language and semantic modeling tool from the Malloy Data project). Captured 2026-05-23, refreshed 2026-07-31.

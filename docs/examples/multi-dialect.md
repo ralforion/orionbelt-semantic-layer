@@ -1,3 +1,7 @@
+---
+description: "One semantic model and one query compiled to all eight supported SQL dialects side by side, showing how quoting, function names and syntax differ."
+---
+
 # Multi-Dialect Output
 
 This example shows how the same semantic model and query produce different SQL for each of the eight supported dialects.

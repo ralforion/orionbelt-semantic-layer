@@ -1,3 +1,7 @@
+---
+description: "Ready-made OrionBelt tools for popular AI frameworks, built on the REST shortcut endpoints and the MCP server, so agents query governed models instead of raw tables."
+---
+
 # AI Integrations
 
 OrionBelt provides ready-to-use tools for popular AI frameworks. All REST API integrations use the [shortcut endpoints](../api/endpoints.md) and work best with OrionBelt running in [admin-curated mode](../reference/configuration.md#admin-curated-mode).

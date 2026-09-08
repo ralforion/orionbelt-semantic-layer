@@ -1,3 +1,7 @@
+---
+description: "Feature comparison between OrionBelt Semantic Layer and the dbt Semantic Layer powered by MetricFlow: metric definitions, compilation, dialect coverage and delivery surfaces."
+---
+
 # OBSL vs dbt Semantic Layer (MetricFlow)
 
 A feature comparison between **OrionBelt Semantic Layer (OBSL)** and the **dbt Semantic Layer** (powered by MetricFlow). Captured 2026-05-23, refreshed 2026-07-31.

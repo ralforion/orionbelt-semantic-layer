@@ -1,3 +1,7 @@
+---
+description: "The eight SQL dialects OrionBelt compiles to and how each differs in identifier quoting, function names and syntax: PostgreSQL, Snowflake, BigQuery, ClickHouse, Databricks, DuckDB, Dremio and MySQL."
+---
+
 # SQL Dialects
 
 OrionBelt compiles semantic queries into SQL for eight database dialects. Each dialect has its own identifier quoting, function names, and SQL syntax. The plugin architecture allows adding new dialects without modifying the core compiler.
