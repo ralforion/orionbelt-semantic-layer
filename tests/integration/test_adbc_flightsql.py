@@ -46,6 +46,28 @@ INSERT INTO PUBLIC.ORDERS VALUES ('O1', 'C1', 100.0), ('O2', 'C1', 50.0), ('O3',
 """
 
 
+# Every RPC the harness server receives, in order. Middleware ``start_call``
+# runs once per call, so a test can bracket an operation and prove whether it
+# reached the wire at all -- which is the only way to tell a client-side
+# refusal from a server-side one. See ``TestStatistics``.
+_RPC_CALLS: list[str] = []
+
+
+def _rpc_counting_factory() -> Any:
+    """A middleware factory that records each incoming call and does nothing else."""
+    from pyarrow import flight
+
+    class _CountingMiddleware(flight.ServerMiddleware):  # type: ignore[misc]
+        pass
+
+    class _CountingFactory(flight.ServerMiddlewareFactory):  # type: ignore[misc]
+        def start_call(self, info: Any, headers: dict[str, list[str]]) -> Any:
+            _RPC_CALLS.append(str(getattr(info, "method", info)))
+            return _CountingMiddleware()
+
+    return _CountingFactory()
+
+
 @pytest.fixture(scope="module")
 def flight_uri(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     """A live OBFlightServer over a real DuckDB file. Yields its grpc URI."""
@@ -69,7 +91,15 @@ def flight_uri(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     mgr.get_or_create_named(MODEL_NAME).load_model(SAMPLE_MODEL_YAML, dedup=False)
 
     # Port 0 lets the OS pick a free port, so parallel runs cannot collide.
-    server = OBFlightServer("grpc://127.0.0.1:0", session_manager=mgr, default_dialect="duckdb")
+    server = OBFlightServer(
+        "grpc://127.0.0.1:0",
+        session_manager=mgr,
+        default_dialect="duckdb",
+        # ``auth_middleware`` is merged into the server's middleware dict, so
+        # it is also the way to add a non-auth observer without touching
+        # production code.
+        auth_middleware={"rpc-counter": _rpc_counting_factory()},
+    )
     thread = threading.Thread(target=server.serve, name="adbc-harness-flight", daemon=True)
     thread.start()
     try:
@@ -191,13 +221,19 @@ class TestStatistics:
     def test_statistic_names_are_refused_by_the_driver(self, conn: Any) -> None:
         from adbc_driver_manager import NotSupportedError
 
-        with pytest.raises(NotSupportedError, match="(?i)not supported"):
+        # The ADBC C-API entrypoint by name: a server message could not
+        # mention it, since no request carrying it is ever built.
+        with pytest.raises(
+            NotSupportedError, match=r"AdbcConnectionGetStatistic\w*: not supported"
+        ):
             conn.adbc_get_statistic_names()
 
     def test_statistics_are_refused_by_the_driver(self, conn: Any) -> None:
         from adbc_driver_manager import NotSupportedError
 
-        with pytest.raises(NotSupportedError, match="(?i)not supported"):
+        with pytest.raises(
+            NotSupportedError, match=r"AdbcConnectionGetStatistic\w*: not supported"
+        ):
             conn.adbc_get_statistics(
                 catalog_filter="orionbelt",
                 db_schema_filter=MODEL_NAME,
@@ -205,17 +241,43 @@ class TestStatistics:
                 approximate=True,
             )
 
-    def test_the_refusal_is_the_driver_and_not_the_server(self, conn: Any) -> None:
-        """A server-side gap would arrive as an ``UNIMPLEMENTED`` gRPC status.
+    def test_no_request_reaches_the_server(self, conn: Any) -> None:
+        """The distinction the other two rest on: nothing is put on the wire.
 
-        This one names the driver, which is what makes it undecidable here
-        rather than a missing feature.
+        A ``[FlightSQL]`` prefix proves nothing by itself -- the driver stamps
+        it on server-originated errors too, so a rejected query surfaces as
+        ``UNKNOWN: [FlightSQL] [RAW_SQL_REJECTED] ...``. What separates the
+        two is that this call never becomes an RPC: the driver has no Flight
+        SQL command to translate it into, so it declines locally.
+
+        The counting middleware sees every call the server receives, so
+        bracketing the operation settles it by observation rather than by
+        reading the message.
         """
         from adbc_driver_manager import NotSupportedError
 
-        with pytest.raises(NotSupportedError) as excinfo:
+        before = len(_RPC_CALLS)
+        with pytest.raises(NotSupportedError):
             conn.adbc_get_statistic_names()
-        assert "FlightSQL" in str(excinfo.value), str(excinfo.value)
+        assert _RPC_CALLS[before:] == [], (
+            f"statistics reached the server as {_RPC_CALLS[before:]}, so the refusal is "
+            "the server's and OBSL could answer it after all"
+        )
+
+    def test_a_server_side_failure_looks_different(self, conn: Any) -> None:
+        """The contrast, so the two are pinned apart rather than asserted apart.
+
+        A refused query does reach the server, and comes back as a different
+        exception class carrying the server's own error code.
+        """
+        from adbc_driver_manager import NotSupportedError
+
+        before = len(_RPC_CALLS)
+        with pytest.raises(Exception) as excinfo, conn.cursor() as cur:
+            cur.execute(f"SELECT * FROM {MODEL_NAME}")
+            cur.fetch_arrow_table()
+        assert not isinstance(excinfo.value, NotSupportedError), str(excinfo.value)
+        assert _RPC_CALLS[before:], "the rejected query never reached the server either"
 
 
 # ---------------------------------------------------------------------------
