@@ -97,7 +97,12 @@ def connect(
     if db_kwargs:
         options.update(db_kwargs)
 
-    native: Any = adbc_driver_flightsql.dbapi.connect(uri, db_kwargs=options)
+    # ``autocommit=True`` states what is already true rather than enabling
+    # anything: ADBC otherwise tries to *disable* autocommit on connect, and
+    # Dremio -- which has no transactions -- refuses, so every connection
+    # warned "conn will not be DB-API 2.0 compliant". Same reason
+    # ``Connection.commit()`` and ``rollback()`` are no-ops.
+    native: Any = adbc_driver_flightsql.dbapi.connect(uri, db_kwargs=options, autocommit=True)
 
     return Connection(
         native,

@@ -101,6 +101,27 @@ class TestItIsActuallyADBC:
             assert len(cur.fetchall()) == 1
 
 
+class TestConnectIsQuiet:
+    def test_connecting_emits_no_warning(self) -> None:
+        """ADBC disables autocommit on connect unless told not to bother, and
+        Dremio -- which has no transactions -- refuses, so every connection
+        used to warn that it "will not be DB-API 2.0 compliant"."""
+        import warnings
+
+        import ob_dremio
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            connection = ob_dremio.connect(
+                host=DREMIO_FLIGHT_HOST,
+                port=DREMIO_FLIGHT_PORT,
+                username=DREMIO_ADMIN_USER,
+                password=DREMIO_ADMIN_PASS,
+            )
+            connection.close()
+        assert [str(w.message) for w in caught] == []
+
+
 class TestPep249Surface:
     """The published surface has to survive the swap unchanged."""
 

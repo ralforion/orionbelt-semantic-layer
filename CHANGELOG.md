@@ -6,7 +6,7 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Changed
 
-- **`ob-dremio` executes over ADBC Flight SQL (#TBD).** The driver was the only one in the set that
+- **`ob-dremio` executes over ADBC Flight SQL (#427).** The driver was the only one in the set that
   spoke a wire protocol by hand: a `pyarrow.flight` client that built descriptors, called
   `get_flight_info` + `do_get`, and threaded the bearer token from `authenticate_basic_token()`
   through every RPC because a Cython `FlightClient` refuses ad-hoc attributes. Dremio serves Flight

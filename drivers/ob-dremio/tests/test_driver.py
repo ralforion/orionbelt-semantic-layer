@@ -119,7 +119,9 @@ def test_connect_returns_connection() -> None:
         mock_adbc_connect.return_value = _make_mock_connection()
         conn = ob_dremio.connect(host="dremio-host", port=32010)
         assert isinstance(conn, Connection)
-        mock_adbc_connect.assert_called_once_with("grpc://dremio-host:32010", db_kwargs={})
+        mock_adbc_connect.assert_called_once_with(
+            "grpc://dremio-host:32010", db_kwargs={}, autocommit=True
+        )
 
 
 def test_connect_with_tls() -> None:
@@ -143,6 +145,15 @@ def test_connect_with_auth() -> None:
             "username": "user",
             "password": "pass",
         }
+
+
+def test_connect_declares_autocommit() -> None:
+    """Otherwise ADBC tries to *disable* autocommit, Dremio refuses, and every
+    connection warns "conn will not be DB-API 2.0 compliant"."""
+    with patch(_ADBC_CONNECT) as mock_adbc_connect:
+        mock_adbc_connect.return_value = _make_mock_connection()
+        ob_dremio.connect()
+        assert mock_adbc_connect.call_args.kwargs["autocommit"] is True
 
 
 def test_connect_omits_absent_credentials() -> None:
