@@ -169,6 +169,56 @@ class TestCatalog:
 
 
 # ---------------------------------------------------------------------------
+# Statistics — Track II-4
+# ---------------------------------------------------------------------------
+
+
+class TestStatistics:
+    """ADBC 1.1 defines ``GetStatistics``; over Flight SQL nobody can answer it.
+
+    The question was whether OBSL should compute cardinality estimates for
+    client planners. It cannot matter either way: Flight SQL carries no
+    statistics command, so the ``flightsql`` driver refuses both entrypoints
+    in the client, before a request is ever put on the wire. Nothing a server
+    implements can reach a caller.
+
+    These assert the refusal rather than skip it. If a future driver starts
+    answering, they fail, and that failure is the signal to revisit II-4 --
+    the model has the inputs (per-artefact distinct counts, ``dataObject``
+    row counts) the moment there is a way to deliver them.
+    """
+
+    def test_statistic_names_are_refused_by_the_driver(self, conn: Any) -> None:
+        from adbc_driver_manager import NotSupportedError
+
+        with pytest.raises(NotSupportedError, match="(?i)not supported"):
+            conn.adbc_get_statistic_names()
+
+    def test_statistics_are_refused_by_the_driver(self, conn: Any) -> None:
+        from adbc_driver_manager import NotSupportedError
+
+        with pytest.raises(NotSupportedError, match="(?i)not supported"):
+            conn.adbc_get_statistics(
+                catalog_filter="orionbelt",
+                db_schema_filter=MODEL_NAME,
+                table_name_filter="model",
+                approximate=True,
+            )
+
+    def test_the_refusal_is_the_driver_and_not_the_server(self, conn: Any) -> None:
+        """A server-side gap would arrive as an ``UNIMPLEMENTED`` gRPC status.
+
+        This one names the driver, which is what makes it undecidable here
+        rather than a missing feature.
+        """
+        from adbc_driver_manager import NotSupportedError
+
+        with pytest.raises(NotSupportedError) as excinfo:
+            conn.adbc_get_statistic_names()
+        assert "FlightSQL" in str(excinfo.value), str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
 
