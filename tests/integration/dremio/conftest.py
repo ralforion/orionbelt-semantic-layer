@@ -47,6 +47,12 @@ OBSL_MODEL_NAME = os.environ.get("OBSL_MODEL_NAME", "orionbelt_1_commerce")
 # back against the same Dremio container via the ob-dremio Flight driver.
 OBSL_STAGE2_MODEL_NAME = os.environ.get("OBSL_STAGE2_MODEL_NAME", "dremio_info_schema")
 
+# Dremio's Arrow Flight SQL endpoint, host side. The compose file publishes
+# the container's :32010 unchanged; ``ob_dremio`` connects here directly,
+# without going through OBSL.
+DREMIO_FLIGHT_HOST = os.environ.get("DREMIO_FLIGHT_HOST", "localhost")
+DREMIO_FLIGHT_PORT = int(os.environ.get("DREMIO_FLIGHT_PORT", "32010"))
+
 # Dremio first-user bootstrap. The container has no preexisting admin
 # until the very first PUT /apiv2/bootstrap/firstuser succeeds.
 DREMIO_ADMIN_USER = "obsl_admin"
@@ -158,8 +164,14 @@ def _ensure_postgres_source(client: httpx.Client, token: str) -> None:
 
 
 @pytest.fixture(scope="session")
-def dremio_session() -> Iterator[DremioSession]:
-    """Wait for Dremio + OBSL, bootstrap the admin user, register the source."""
+def dremio_admin_token() -> str:
+    """Wait for Dremio, bootstrap its first admin user, return a login token.
+
+    Held apart from :func:`dremio_session` because not every test needs the
+    OBSL Postgres source: the ob-dremio driver suite talks straight to
+    Dremio's Flight SQL port and would otherwise be coupled to the OBSL
+    container being up.
+    """
 
     with httpx.Client(base_url=DREMIO_REST_URL) as client:
         # Fast probe first so a default ``pytest`` run with no stack up
@@ -180,12 +192,19 @@ def dremio_session() -> Iterator[DremioSession]:
                 pytest.fail(f"Dremio at {DREMIO_REST_URL} stopped responding mid-bootstrap")
             time.sleep(_BOOTSTRAP_POLL_INTERVAL)
 
-        token = _bootstrap_first_user(client)
-        _ensure_postgres_source(client, token)
+        return _bootstrap_first_user(client)
+
+
+@pytest.fixture(scope="session")
+def dremio_session(dremio_admin_token: str) -> Iterator[DremioSession]:
+    """Wait for Dremio + OBSL, bootstrap the admin user, register the source."""
+
+    with httpx.Client(base_url=DREMIO_REST_URL) as client:
+        _ensure_postgres_source(client, dremio_admin_token)
 
         yield DremioSession(
             base_url=DREMIO_REST_URL,
-            token=token,
+            token=dremio_admin_token,
             source_name=DREMIO_SOURCE_NAME,
         )
 

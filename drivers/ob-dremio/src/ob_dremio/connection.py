@@ -1,37 +1,35 @@
-"""PEP 249 Connection wrapping a pyarrow Flight client for Dremio.
+"""PEP 249 Connection wrapping ``adbc_driver_flightsql.dbapi.Connection``.
 
 Dremio has no transactions — ``commit()`` and ``rollback()`` are no-ops
-that simply verify the connection is still open.
+that simply verify the connection is still open. ADBC exposes both, but
+calling them would ask Dremio to manage a transaction it does not have.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any
 
 from ob_dremio.cursor import Cursor
 from ob_dremio.exceptions import ProgrammingError
 
-if TYPE_CHECKING:
-    import pyarrow.flight
-
 
 class Connection:
-    """DB-API 2.0 connection wrapping a pyarrow FlightClient for Dremio.
+    """DB-API 2.0 connection that wraps an ADBC Flight SQL connection.
 
+    Dremio serves Arrow Flight SQL natively, so results arrive as Arrow and
+    cursors expose ``fetch_arrow_table()`` without a conversion hop.
     OBML queries are compiled to SQL via the OrionBelt REST API
     (single-model mode, ``/v1/query/sql`` shortcut).
     """
 
     def __init__(
         self,
-        client: pyarrow.flight.FlightClient,
+        native: Any,
         *,
-        call_options: pyarrow.flight.FlightCallOptions | None = None,
         ob_api_url: str = "http://localhost:8000",
         ob_timeout: int = 30,
     ) -> None:
-        self._client = client
-        self._call_options = call_options
+        self._native = native
         self._closed = False
         self._ob_api_url = ob_api_url
         self._ob_timeout = ob_timeout
@@ -41,15 +39,15 @@ class Connection:
             raise ProgrammingError("Connection is closed.")
 
     def cursor(self) -> Cursor:
-        """Return a new Cursor backed by the shared FlightClient.
+        """Return a new Cursor bound to this connection.
 
-        pyarrow FlightClient does not have its own cursor concept — our
-        ``Cursor`` wraps the client directly.
+        The native statement is created per execution rather than per cursor
+        — see :meth:`Cursor._execute_sql` for why reuse is unsafe against
+        Dremio.
         """
         self._check_open()
         return Cursor(
-            self._client,
-            call_options=self._call_options,
+            self._native,
             ob_api_url=self._ob_api_url,
             ob_timeout=self._ob_timeout,
         )
@@ -63,9 +61,9 @@ class Connection:
         self._check_open()
 
     def close(self) -> None:
-        """Close the connection and the underlying FlightClient."""
+        """Close the connection and the underlying ADBC connection."""
         if not self._closed:
-            self._client.close()
+            self._native.close()
             self._closed = True
 
     def __enter__(self) -> Connection:

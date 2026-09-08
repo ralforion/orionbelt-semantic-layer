@@ -4,6 +4,32 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **`ob-dremio` executes over ADBC Flight SQL (#TBD).** The driver was the only one in the set that
+  spoke a wire protocol by hand: a `pyarrow.flight` client that built descriptors, called
+  `get_flight_info` + `do_get`, and threaded the bearer token from `authenticate_basic_token()`
+  through every RPC because a Cython `FlightClient` refuses ad-hoc attributes. Dremio serves Flight
+  SQL natively, so `adbc-driver-flightsql` is its driver, and all of that protocol code is deleted
+  rather than replaced. The PEP 249 surface is unchanged - `rowcount`, `description` type
+  constants, `fetch_arrow_table()` and the Arrow types (`date64[ms]`, `timestamp[ms]`,
+  `decimal128(18, 2)`) are what they were, verified against a live Dremio container.
+
+  Two things get better. `?` parameters now bind: before, the statement went to Dremio with its
+  placeholders intact and came back as a Calcite `RexDynamicParam` internal error, which is why the
+  driver documented parameters as unsupported. And a failing statement raises a DB-API error
+  instead of `pyarrow.lib.ArrowInvalid`.
+
+  One hazard is deliberately designed around: ADBC skips re-preparing when the SQL text has not
+  changed, and Dremio then answers the second execution with the **first** execution's rows, with
+  new parameters bound and no error. The driver therefore opens one statement per execution, which
+  is also what the hand-rolled client effectively did. A live test pins it, because the failure is
+  a wrong number rather than an exception.
+
+  Two Dremio-side limits are now documented rather than discovered: a *prepared* `COUNT` is refused
+  because Dremio describes it `NOT NULL` and streams it nullable, and `executemany` over `DoPut` is
+  not implemented. Neither is reachable from OBSL, which compiles literals and never binds.
+
 ## [2.26.0] - 2026-08-25
 
 ### Upgrading

@@ -1,7 +1,11 @@
 """Unit tests for the ob-dremio DB-API 2.0 driver.
 
-All tests mock pyarrow.flight — no live Dremio needed.
+All tests mock the ADBC Flight SQL connection — no live Dremio needed.
 OBML tests additionally mock the REST API call to ``/v1/query/sql``.
+
+The live counterpart is ``tests/integration/dremio/test_dremio_adbc_driver.py``
+in the repository root, which runs this driver against a real Dremio
+container. Mocks prove the wiring; only Dremio proves the protocol.
 """
 
 from __future__ import annotations
@@ -16,18 +20,20 @@ from ob_dremio.cursor import Cursor
 from ob_dremio.exceptions import NotSupportedError, ProgrammingError
 from ob_dremio.type_codes import BINARY, DATETIME, NUMBER, STRING
 
+_ADBC_CONNECT = "adbc_driver_flightsql.dbapi.connect"
+
+
 # ---------------------------------------------------------------------------
-# Helpers to build mock pyarrow Flight objects
+# Helpers to build a mock ADBC connection and Arrow objects
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_client() -> MagicMock:
-    """Return a mock pyarrow.flight.FlightClient."""
-    client = MagicMock()
+def _make_mock_connection() -> MagicMock:
+    """Return a mock ``adbc_driver_flightsql.dbapi.Connection``."""
+    native = MagicMock()
     # Default: return empty table
-    table = _make_arrow_table([], [], [])
-    _setup_flight_response(client, table)
-    return client
+    _set_result(native, _make_arrow_table([], [], []))
+    return native
 
 
 def _make_arrow_field(name: str, type_str: str) -> MagicMock:
@@ -67,19 +73,15 @@ def _make_arrow_table(
     return table
 
 
-def _setup_flight_response(client: MagicMock, table: MagicMock) -> None:
-    """Configure a mock FlightClient to return the given table on do_get."""
-    # get_flight_info returns FlightInfo with endpoints
-    info = MagicMock()
-    endpoint = MagicMock()
-    endpoint.ticket = MagicMock()
-    info.endpoints = [endpoint]
-    client.get_flight_info.return_value = info
+def _set_result(native: MagicMock, table: MagicMock) -> None:
+    """Configure a mock ADBC connection so its cursor yields the given table."""
+    native.cursor.return_value.fetch_arrow_table.return_value = table
 
-    # do_get returns a reader whose read_all() returns the table
-    reader = MagicMock()
-    reader.read_all.return_value = table
-    client.do_get.return_value = reader
+
+def _native_cursor(native: MagicMock) -> MagicMock:
+    """The single mock cursor ``Connection.cursor()`` hands out."""
+    cursor: MagicMock = native.cursor.return_value
+    return cursor
 
 
 def _mock_api_response(sql: str) -> MagicMock:
@@ -113,54 +115,75 @@ def test_paramstyle() -> None:
 
 
 def test_connect_returns_connection() -> None:
-    with patch("pyarrow.flight.FlightClient") as mock_flight_cls:
-        mock_client = _make_mock_client()
-        mock_flight_cls.return_value = mock_client
+    with patch(_ADBC_CONNECT) as mock_adbc_connect:
+        mock_adbc_connect.return_value = _make_mock_connection()
         conn = ob_dremio.connect(host="dremio-host", port=32010)
         assert isinstance(conn, Connection)
-        mock_flight_cls.assert_called_once_with("grpc://dremio-host:32010")
+        mock_adbc_connect.assert_called_once_with("grpc://dremio-host:32010", db_kwargs={})
 
 
 def test_connect_with_tls() -> None:
-    with patch("pyarrow.flight.FlightClient") as mock_flight_cls:
-        mock_client = _make_mock_client()
-        mock_flight_cls.return_value = mock_client
+    with patch(_ADBC_CONNECT) as mock_adbc_connect:
+        mock_adbc_connect.return_value = _make_mock_connection()
         ob_dremio.connect(host="dremio-host", port=32010, tls=True)
-        mock_flight_cls.assert_called_once_with("grpc+tls://dremio-host:32010")
+        assert mock_adbc_connect.call_args.args == ("grpc+tls://dremio-host:32010",)
 
 
 def test_connect_with_auth() -> None:
-    with (
-        patch("pyarrow.flight.FlightClient") as mock_flight_cls,
-        patch("pyarrow.flight.FlightCallOptions") as mock_opts_cls,
-    ):
-        mock_client = _make_mock_client()
-        mock_client.authenticate_basic_token.return_value = (
-            b"authorization",
-            b"Bearer token123",
-        )
-        mock_flight_cls.return_value = mock_client
-        mock_opts_cls.return_value = MagicMock()
+    """Credentials become ADBC options; the driver runs the token exchange.
+
+    The hand-rolled client called ``authenticate_basic_token`` and then had
+    to attach the returned bearer to every later RPC by hand.
+    """
+    with patch(_ADBC_CONNECT) as mock_adbc_connect:
+        mock_adbc_connect.return_value = _make_mock_connection()
         conn = ob_dremio.connect(host="dremio-host", username="user", password="pass")
         assert isinstance(conn, Connection)
-        mock_client.authenticate_basic_token.assert_called_once_with("user", "pass")
+        assert mock_adbc_connect.call_args.kwargs["db_kwargs"] == {
+            "username": "user",
+            "password": "pass",
+        }
+
+
+def test_connect_omits_absent_credentials() -> None:
+    """An anonymous connection must not send an empty username."""
+    with patch(_ADBC_CONNECT) as mock_adbc_connect:
+        mock_adbc_connect.return_value = _make_mock_connection()
+        ob_dremio.connect(host="dremio-host")
+        assert mock_adbc_connect.call_args.kwargs["db_kwargs"] == {}
+
+
+def test_connect_db_kwargs_override_derived_options() -> None:
+    """The escape hatch for Dremio's routing headers, and it wins."""
+    with patch(_ADBC_CONNECT) as mock_adbc_connect:
+        mock_adbc_connect.return_value = _make_mock_connection()
+        ob_dremio.connect(
+            username="user",
+            db_kwargs={
+                "username": "override",
+                "adbc.flight.sql.rpc.call_header.routing_queue": "bi",
+            },
+        )
+        assert mock_adbc_connect.call_args.kwargs["db_kwargs"] == {
+            "username": "override",
+            "adbc.flight.sql.rpc.call_header.routing_queue": "bi",
+        }
 
 
 def test_connect_custom_port() -> None:
-    with patch("pyarrow.flight.FlightClient") as mock_flight_cls:
-        mock_client = _make_mock_client()
-        mock_flight_cls.return_value = mock_client
+    with patch(_ADBC_CONNECT) as mock_adbc_connect:
+        mock_adbc_connect.return_value = _make_mock_connection()
         ob_dremio.connect(port=443, tls=True)
-        mock_flight_cls.assert_called_once_with("grpc+tls://localhost:443")
+        assert mock_adbc_connect.call_args.args == ("grpc+tls://localhost:443",)
 
 
 def test_connect_context_manager() -> None:
-    with patch("pyarrow.flight.FlightClient") as mock_flight_cls:
-        mock_client = _make_mock_client()
-        mock_flight_cls.return_value = mock_client
+    with patch(_ADBC_CONNECT) as mock_adbc_connect:
+        mock_conn = _make_mock_connection()
+        mock_adbc_connect.return_value = mock_conn
         with ob_dremio.connect() as conn:
             assert isinstance(conn, Connection)
-        mock_client.close.assert_called_once()
+        mock_conn.close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -169,16 +192,16 @@ def test_connect_context_manager() -> None:
 
 
 def test_connection_close_is_idempotent() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     conn.close()
     conn.close()  # should not raise
-    mock_client.close.assert_called_once()
+    mock_conn.close.assert_called_once()
 
 
 def test_connection_cursor_after_close_raises() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     conn.close()
     with pytest.raises(ProgrammingError, match="closed"):
         conn.cursor()
@@ -186,14 +209,14 @@ def test_connection_cursor_after_close_raises() -> None:
 
 def test_connection_commit_noop() -> None:
     """commit() is a no-op — Dremio has no transactions."""
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     conn.commit()  # should not raise
 
 
 def test_connection_commit_after_close_raises() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     conn.close()
     with pytest.raises(ProgrammingError, match="closed"):
         conn.commit()
@@ -201,29 +224,29 @@ def test_connection_commit_after_close_raises() -> None:
 
 def test_connection_rollback_noop() -> None:
     """rollback() is a no-op — Dremio has no transactions."""
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     conn.rollback()  # should not raise
 
 
 def test_connection_rollback_after_close_raises() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     conn.close()
     with pytest.raises(ProgrammingError, match="closed"):
         conn.rollback()
 
 
 def test_connection_cursor_returns_cursor() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     assert isinstance(cur, Cursor)
 
 
 def test_connection_passes_ob_params_to_cursor() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client, ob_api_url="http://my-api:9000", ob_timeout=60)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn, ob_api_url="http://my-api:9000", ob_timeout=60)
     cur = conn.cursor()
     assert cur._ob_api_url == "http://my-api:9000"
     assert cur._ob_timeout == 60
@@ -234,32 +257,83 @@ def test_connection_passes_ob_params_to_cursor() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cursor_execute_calls_flight() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+def test_cursor_execute_runs_on_the_native_cursor() -> None:
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     with conn.cursor() as cur:
         cur.execute("SELECT 1")
-        mock_client.get_flight_info.assert_called_once()
-        mock_client.do_get.assert_called_once()
+        _native_cursor(mock_conn).execute.assert_called_once_with("SELECT 1")
+        _native_cursor(mock_conn).fetch_arrow_table.assert_called_once()
+
+
+def test_cursor_execute_binds_parameters() -> None:
+    """Placeholders reach the native cursor instead of Dremio's parser.
+
+    The Flight client this driver used to hold had nowhere to put bound
+    values, so the statement went out with its ``?`` intact and Dremio
+    failed it with a Calcite ``RexDynamicParam`` error.
+    """
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT x FROM t WHERE y = ?", ("US",))
+    _native_cursor(mock_conn).execute.assert_called_once_with(
+        "SELECT x FROM t WHERE y = ?", ("US",)
+    )
+
+
+def test_cursor_execute_without_parameters_passes_none_along() -> None:
+    """A statement with no parameters must not send an empty binding."""
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1")
+    _native_cursor(mock_conn).execute.assert_called_once_with("SELECT 1")
+
+
+def test_each_execute_gets_its_own_native_cursor() -> None:
+    """Re-preparing per execution, deliberately.
+
+    ADBC skips re-preparing when the SQL text is unchanged, and Dremio then
+    answers the second execution with the first one's rows even though new
+    parameters were bound. Silent, wrong, and only reachable through reuse.
+    """
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT x FROM t WHERE y = ?", ("a",))
+        cur.execute("SELECT x FROM t WHERE y = ?", ("b",))
+    assert mock_conn.cursor.call_count == 2
+    # And each is released as soon as its table is in hand.
+    assert _native_cursor(mock_conn).close.call_count == 2
+
+
+def test_a_statement_is_released_even_when_it_fails() -> None:
+    mock_conn = _make_mock_connection()
+    _native_cursor(mock_conn).execute.side_effect = RuntimeError("boom")
+    conn = Connection(mock_conn)
+    with conn.cursor() as cur, pytest.raises(RuntimeError, match="boom"):
+        cur.execute("SELECT 1")
+    _native_cursor(mock_conn).close.assert_called_once()
 
 
 def test_cursor_execute_returns_self() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     with conn.cursor() as cur:
         result = cur.execute("SELECT 1")
         assert result is cur
 
 
 def test_cursor_description_with_arrow_types() -> None:
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[(42, "hello", "2024-01-15")],
         column_names=["num", "txt", "dt"],
         column_types=["int64", "utf8", "timestamp[ns]"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT 1")
     desc = cur.description
@@ -276,14 +350,14 @@ def test_cursor_description_with_arrow_types() -> None:
 
 def test_cursor_description_decimal_with_params() -> None:
     """decimal128(18, 2) should map to NUMBER after stripping params."""
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[(3.14,)],
         column_names=["price"],
         column_types=["decimal128(18, 2)"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT 1")
     desc = cur.description
@@ -292,42 +366,42 @@ def test_cursor_description_decimal_with_params() -> None:
 
 
 def test_cursor_description_none_before_execute() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     assert cur.description is None
 
 
 def test_cursor_rowcount_after_execute() -> None:
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[(1,), (2,), (3,)],
         column_names=["id"],
         column_types=["int32"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT id FROM t")
     assert cur.rowcount == 3
 
 
 def test_cursor_rowcount_default() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     assert cur.rowcount == -1
 
 
 def test_cursor_fetchone() -> None:
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[(42, "hello")],
         column_names=["a", "b"],
         column_types=["int32", "utf8"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT 1")
     row = cur.fetchone()
@@ -335,8 +409,8 @@ def test_cursor_fetchone() -> None:
 
 
 def test_cursor_fetchone_exhausted() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT 1")  # empty result
     assert cur.fetchone() is None
@@ -344,14 +418,14 @@ def test_cursor_fetchone_exhausted() -> None:
 
 def test_cursor_fetchone_sequential() -> None:
     """fetchone() should advance through rows one at a time."""
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[(1,), (2,), (3,)],
         column_names=["id"],
         column_types=["int32"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT id FROM t")
     assert cur.fetchone() == (1,)
@@ -361,14 +435,14 @@ def test_cursor_fetchone_sequential() -> None:
 
 
 def test_cursor_fetchall() -> None:
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[(1, "a"), (2, "b"), (3, "c")],
         column_names=["id", "name"],
         column_types=["int32", "utf8"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT 1")
     rows = cur.fetchall()
@@ -379,14 +453,14 @@ def test_cursor_fetchall() -> None:
 
 def test_cursor_fetchall_after_fetchone() -> None:
     """fetchall() should return only remaining rows."""
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[(1,), (2,), (3,)],
         column_names=["id"],
         column_types=["int32"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT 1")
     cur.fetchone()  # consume first row
@@ -396,14 +470,14 @@ def test_cursor_fetchall_after_fetchone() -> None:
 
 
 def test_cursor_fetchmany() -> None:
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[(1,), (2,), (3,), (4,), (5,)],
         column_names=["id"],
         column_types=["int32"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT 1")
     batch = cur.fetchmany(3)
@@ -416,14 +490,14 @@ def test_cursor_fetchmany() -> None:
 
 
 def test_cursor_fetchmany_default_arraysize() -> None:
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[(1,), (2,), (3,)],
         column_names=["id"],
         column_types=["int32"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.arraysize = 2
     cur.execute("SELECT 1")
@@ -432,14 +506,14 @@ def test_cursor_fetchmany_default_arraysize() -> None:
 
 
 def test_cursor_iteration() -> None:
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[(0,), (1,), (2,)],
         column_names=["id"],
         column_types=["int32"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT 1")
     rows = list(cur)
@@ -449,8 +523,8 @@ def test_cursor_iteration() -> None:
 
 
 def test_cursor_close_then_fetch_raises() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.close()
     with pytest.raises(ProgrammingError, match="closed"):
@@ -458,8 +532,8 @@ def test_cursor_close_then_fetch_raises() -> None:
 
 
 def test_cursor_close_then_fetchall_raises() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.close()
     with pytest.raises(ProgrammingError, match="closed"):
@@ -467,8 +541,8 @@ def test_cursor_close_then_fetchall_raises() -> None:
 
 
 def test_cursor_close_then_fetchmany_raises() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.close()
     with pytest.raises(ProgrammingError, match="closed"):
@@ -476,8 +550,8 @@ def test_cursor_close_then_fetchmany_raises() -> None:
 
 
 def test_cursor_close_then_execute_raises() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.close()
     with pytest.raises(ProgrammingError, match="closed"):
@@ -485,8 +559,8 @@ def test_cursor_close_then_execute_raises() -> None:
 
 
 def test_cursor_executemany_obml_raises() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     obml = "select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n"
     with pytest.raises(NotSupportedError, match="executemany"):
@@ -494,38 +568,40 @@ def test_cursor_executemany_obml_raises() -> None:
 
 
 def test_cursor_executemany_plain_sql() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.executemany("INSERT INTO t VALUES (?)", [("a",), ("b",)])
-    # Two calls to get_flight_info (one per iteration)
-    assert mock_client.get_flight_info.call_count == 2
+    # One statement per parameter set — ADBC's own executemany binds the
+    # batch over DoPut, which Dremio answers with "acceptPut is not
+    # implemented".
+    assert _native_cursor(mock_conn).execute.call_count == 2
 
 
 def test_cursor_setinputsizes_noop() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.setinputsizes([])  # should not raise
 
 
 def test_cursor_setoutputsize_noop() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.setoutputsize(1000)  # should not raise
 
 
 def test_cursor_lastrowid_is_none() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     assert cur.lastrowid is None
 
 
 def test_cursor_context_manager() -> None:
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     with conn.cursor() as cur:
         assert isinstance(cur, Cursor)
     # After exiting, cursor should be closed
@@ -540,28 +616,28 @@ def test_cursor_context_manager() -> None:
 
 def test_obml_compile_and_execute() -> None:
     """OBML query is compiled via REST API then executed on Dremio Flight."""
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     compiled_sql = "SELECT region, sum(amount) AS revenue FROM orders GROUP BY region"
     table = _make_arrow_table(
         rows=[("EMEA", 300.0), ("APAC", 150.0), ("AMER", 550.0)],
         column_names=["region", "revenue"],
         column_types=["utf8", "double"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)):
         with conn.cursor() as cur:
             cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
             rows = cur.fetchall()
             assert len(rows) == 3
-            # Verify get_flight_info was called (i.e., Flight execution happened)
-            mock_client.get_flight_info.assert_called_once()
+            # Verify the compiled SQL reached the native cursor
+            _native_cursor(mock_conn).execute.assert_called_once()
 
 
 def test_obml_rest_dialect_is_dremio() -> None:
     """REST API is called with dialect=dremio."""
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     compiled_sql = "SELECT 1"
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)) as mock_post:
         with conn.cursor() as cur:
@@ -573,8 +649,8 @@ def test_obml_rest_dialect_is_dremio() -> None:
 
 def test_obml_custom_api_url() -> None:
     """Custom ob_api_url is forwarded to the REST call."""
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client, ob_api_url="http://my-api:9000")
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn, ob_api_url="http://my-api:9000")
     compiled_sql = "SELECT 1"
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)) as mock_post:
         with conn.cursor() as cur:
@@ -585,25 +661,25 @@ def test_obml_custom_api_url() -> None:
 
 def test_plain_sql_passthrough() -> None:
     """Plain SQL is passed through without OBML compilation — no REST call."""
-    mock_client = _make_mock_client()
-    conn = Connection(mock_client)
+    mock_conn = _make_mock_connection()
+    conn = Connection(mock_conn)
     with patch("httpx.post") as mock_post, conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM orders")
         mock_post.assert_not_called()
-        mock_client.get_flight_info.assert_called_once()
+        _native_cursor(mock_conn).execute.assert_called_once()
 
 
 def test_obml_execute_with_description() -> None:
     """After OBML execute, description should reflect compiled result columns."""
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     compiled_sql = "SELECT region, sum(amount) AS revenue FROM orders GROUP BY region"
     table = _make_arrow_table(
         rows=[("EMEA", 300.0)],
         column_names=["region", "revenue"],
         column_types=["utf8", "double"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)):
         with conn.cursor() as cur:
             cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
@@ -623,14 +699,14 @@ def test_obml_execute_with_description() -> None:
 
 def test_unknown_type_defaults_to_string() -> None:
     """Unknown Arrow types should default to STRING."""
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[([1, 2, 3],)],
         column_names=["arr"],
         column_types=["list<int32>"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT 1")
     desc = cur.description
@@ -661,14 +737,14 @@ def test_type_map_covers_common_arrow_types() -> None:
 
 def test_timestamp_with_params_maps_to_datetime() -> None:
     """timestamp[ns, tz=UTC] should map to DATETIME after stripping params."""
-    mock_client = _make_mock_client()
+    mock_conn = _make_mock_connection()
     table = _make_arrow_table(
         rows=[("2024-01-15T10:30:00",)],
         column_names=["ts"],
         column_types=["timestamp[ns, tz=UTC]"],
     )
-    _setup_flight_response(mock_client, table)
-    conn = Connection(mock_client)
+    _set_result(mock_conn, table)
+    conn = Connection(mock_conn)
     cur = conn.cursor()
     cur.execute("SELECT 1")
     desc = cur.description

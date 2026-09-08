@@ -2,10 +2,10 @@
 
 ## Purpose
 
-PEP 249 DB-API 2.0 driver wrapping `pyarrow = ">=16.0"
-pyarrow-hotfix = ">=0.6"` that intercepts OBML YAML
-queries, compiles them to dremio SQL via the OrionBelt CompilationPipeline
-(direct import) or OB REST API (standalone), and executes them natively.
+PEP 249 DB-API 2.0 driver wrapping `adbc-driver-flightsql` that intercepts
+OBML YAML queries, compiles them to dremio SQL via the OrionBelt
+CompilationPipeline (direct import) or OB REST API (standalone), and
+executes them natively.
 
 **OB dialect string:** `"dremio"`
 **Author:** Ralf Becher / RALFORION d.o.o. (info@orionbelt.ai)
@@ -31,6 +31,7 @@ queries, compiles them to dremio SQL via the OrionBelt CompilationPipeline
 ### dremio-specific
 | host | str | Dremio host |
 | port | int | Arrow Flight port (default: 32010) |
+| db_kwargs | dict | Extra ADBC options (e.g. Dremio routing headers); merged last |
 | username | str | Dremio username |
 | password | str | Dremio password |
 | schema | str | Space/schema path (e.g. "@user.myspace") |
@@ -68,10 +69,35 @@ def compile_obml(obml: dict, model, dialect: str) -> str:
 
 ## Vendor-Specific Notes
 
-- Dremio connects via Arrow Flight (port 32010), NOT JDBC/ODBC
-- Use pyarrow.flight.FlightClient with BasicAuth middleware for auth
-- execute() sends query via do_get() with TicketStatementQuery
-- This driver is unique: it IS already a Flight client internally
+- Dremio connects via Arrow Flight SQL (port 32010), NOT JDBC/ODBC
+- Dremio speaks Flight SQL natively, so the generic `adbc-driver-flightsql`
+  **is** the Dremio driver — there is no vendor SDK in this path
+- Auth is `AuthenticateBasicToken`, run by the driver: pass `username` /
+  `password` as ADBC options and the bearer token is attached to every call.
+  The old hand-rolled client called `authenticate_basic_token()` itself and
+  threaded `FlightCallOptions` through every RPC
+- `?` parameters bind as prepared-statement values. They could not before:
+  the statement went out with placeholders intact and Dremio answered with a
+  Calcite `RexDynamicParam` error
+- **One native cursor per execution, never reused.** ADBC skips re-preparing
+  when the SQL text is unchanged, and Dremio then answers the second
+  execution with the *first* execution's rows even though new parameters
+  were bound - silently, no error. The same reuse against OBSL's own Flight
+  server rebinds correctly, which puts the fault on Dremio's side. This is
+  also what the hand-rolled client effectively did: one `get_flight_info` +
+  `do_get` per statement
+- `executemany()` runs one statement per parameter set. ADBC's own
+  `executemany` binds the batch over `DoPut`, which Dremio refuses with
+  `acceptPut is not implemented`
+- A **prepared** `COUNT` is refused: Dremio describes it as `int64` NOT NULL
+  and streams it nullable, and ADBC compares the two. `SUM` / `MAX` and an
+  unparameterised `COUNT` are fine, and OBSL only ever emits the latter
+- `description` is built from the Arrow schema, not from the native cursor's
+  own `description` — ADBC reports PyArrow `DataType` objects where PEP 249
+  expects a type constant
+- Dremio answers `GetSqlInfo` with an empty endpoint list, so
+  `adbc_get_info()` raises and `adbc_get_objects()` returns no catalogs.
+  Nothing in this driver calls them
 - COPY INTO SQL with German locale formatting was a prior pain point — always use . as decimal separator
 - Space paths use dot notation: SELECT * FROM "myspace"."mytable"
 
@@ -79,7 +105,10 @@ def compile_obml(obml: dict, model, dialect: str) -> str:
 
 ## Type System
 
-Dremio uses Arrow Flight natively — cursor maps Arrow schema directly.
+Dremio uses Arrow Flight SQL natively — cursor maps Arrow schema directly.
+The Arrow types are identical to what the hand-rolled Flight client
+returned, verified against a live Dremio container: `date64[ms]`,
+`timestamp[ms]`, `decimal128(18, 2)`, `int32`.
 pa.int32() → int, pa.float64() → float, pa.utf8() → str, pa.timestamp() → datetime.
 
 ---
@@ -97,8 +126,8 @@ Session 4: SQLAlchemy dialect (ob+dremio:// URL scheme)
 
 ```toml
 [project.dependencies]
+adbc-driver-flightsql = ">=1.0"
 pyarrow = ">=16.0"
-pyarrow-hotfix = ">=0.6"
 pyyaml = ">=6.0"
 
 [project.optional-dependencies]
