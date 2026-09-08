@@ -15,9 +15,15 @@ from ob_flight.auth import (
     SharedKeyAuthHandler,
     TokenAuthHandler,
     _credential_from_headers,
+    _presents_a_credential,
     build_api_key_auth,
     create_auth_handler,
 )
+
+
+def _b64(raw: str) -> str:
+    """Base64 as a client sends it - unpadded, the way ADBC does."""
+    return base64.b64encode(raw.encode()).decode().rstrip("=")
 
 
 class TestNoopAuthHandler:
@@ -244,3 +250,42 @@ class TestTheApiKeyPair:
         """pyarrow sends it in its own header, not ``authorization`` - without
         this the handshake would succeed and every call after it be refused."""
         assert _credential_from_headers({"auth-token-bin": "the-key"}) == "the-key"
+
+
+class TestOfferingNoKeyIsNotTheSameAsOfferingNothing:
+    """A credential header holding no key must be refused, not read as silence.
+
+    The handshake exemption exists for legacy clients, which send no credential
+    header at all. A client that sent ``Basic dXNlcjo=`` - user, empty password
+    - has offered something, and it was not a key. Letting that take the
+    exemption answered it with a protocol error instead of UNAUTHENTICATED.
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "headers"),
+        [
+            ("empty basic password", {"authorization": "Basic " + _b64("user:")}),
+            ("basic with no colon", {"authorization": "Basic " + _b64("nocolon")}),
+            ("undecodable basic", {"authorization": "Basic !!!"}),
+            ("bare bearer", {"authorization": "Bearer "}),
+            ("empty x-api-key", {"x-api-key": ""}),
+        ],
+    )
+    def test_it_is_refused_even_on_the_handshake(self, label: str, headers: dict) -> None:
+        _, middleware = build_api_key_auth(lambda key: True)
+        info = MagicMock()
+        info.method = flight.FlightMethod.HANDSHAKE
+        with pytest.raises(flight.FlightUnauthenticatedError, match="No API key"):
+            middleware[AUTH_MIDDLEWARE_KEY].start_call(info, headers)
+
+    def test_a_handshake_offering_nothing_still_passes(self) -> None:
+        """The exemption itself must survive: this is the legacy client."""
+        _, middleware = build_api_key_auth(lambda key: True)
+        info = MagicMock()
+        info.method = flight.FlightMethod.HANDSHAKE
+        assert middleware[AUTH_MIDDLEWARE_KEY].start_call(info, {"user-agent": "legacy"}) is None
+
+    def test_presenting_a_credential_is_about_the_header_not_its_value(self) -> None:
+        assert _presents_a_credential({"authorization": ""})
+        assert _presents_a_credential({"X-Api-Key": "anything"})
+        assert not _presents_a_credential({"user-agent": "adbc"})

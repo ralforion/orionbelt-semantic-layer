@@ -318,3 +318,32 @@ class TestTheProductionWiring:
         finally:
             reset_session_manager()
             reset_auth()
+
+
+class TestAnEmptyCredentialIsRefusedAsOne:
+    """A client that offers a credential and no key gets UNAUTHENTICATED.
+
+    It used to take the legacy-handshake exemption - which exists for clients
+    that offer *nothing* - and so was answered with a protocol error the page
+    does not promise, rather than the refusal it does.
+    """
+
+    def test_an_empty_basic_password_is_refused(self, authenticated_uri: str) -> None:
+        with pytest.raises(Exception, match="(?i)unauth|no api key"):
+            _query(authenticated_uri, db_kwargs={"username": "obsl", "password": ""})
+
+    def test_pyarrow_will_not_hand_back_an_empty_token(self, authenticated_uri: str) -> None:
+        import pyarrow.flight as flight
+
+        client = flight.FlightClient(authenticated_uri)
+        with pytest.raises(flight.FlightUnauthenticatedError):
+            client.authenticate_basic_token(b"user", b"")
+
+    def test_the_refusal_is_the_documented_one(self, authenticated_uri: str) -> None:
+        """`docs/guide/adbc.md` promises UNAUTHENTICATED naming the header, for
+        a wrong *or absent* key. An empty one is absent."""
+        with pytest.raises(Exception) as raised:
+            _query(authenticated_uri, db_kwargs={"username": "obsl", "password": ""})
+        message = str(raised.value).lower()
+        assert "unauthenticated" in message
+        assert "authorization" in message or "x-api-key" in message

@@ -190,8 +190,30 @@ def _is_handshake(info: Any) -> bool:
         return False
 
 
+#: The headers a client puts a credential in. Offering one of these and no key
+#: is a different thing from offering nothing, and must not be read as silence.
+_CREDENTIAL_HEADERS = ("x-api-key", "authorization", _HANDSHAKE_TOKEN_HEADER)
+
+
+def _presents_a_credential(headers: Mapping[str, Any]) -> bool:
+    """Whether the call offered a credential at all, valid or not.
+
+    An ``authorization: Basic`` whose password is empty parses to no key, the
+    same as a call that sent no header - but the two mean opposite things. One
+    is a client that tried and has nothing; the other is a legacy client about
+    to send its key on the handshake stream. Only the second may pass.
+    """
+    lowered = {str(k).lower() for k in headers}
+    return any(name in lowered for name in _CREDENTIAL_HEADERS)
+
+
 def _credential_from_headers(headers: Mapping[str, Any]) -> str | None:
-    """The API key a call carries, in whichever of the three forms it used."""
+    """The API key a call carries, in whichever of the three forms it used.
+
+    ``None`` means no key could be read - which is not the same as no key
+    having been offered. Callers that care about the difference ask
+    :func:`_presents_a_credential`.
+    """
     lowered: dict[str, Any] = {str(k).lower(): v for k, v in headers.items()}
 
     def first(name: str) -> str | None:
@@ -220,7 +242,7 @@ def _credential_from_headers(headers: Mapping[str, Any]) -> str | None:
     if not authorization:
         return None
     if authorization.lower().startswith(_BEARER_PREFIX):
-        return authorization[len(_BEARER_PREFIX) :].strip()
+        return authorization[len(_BEARER_PREFIX) :].strip() or None
     if authorization.lower().startswith(_BASIC_PREFIX):
         encoded = authorization[len(_BASIC_PREFIX) :].strip()
         # ADBC sends this unpadded, which ``b64decode`` rejects outright - so
@@ -274,13 +296,23 @@ class AuthMiddlewareFactory(flight.ServerMiddlewareFactory):  # type: ignore[mis
     def start_call(self, info: Any, headers: Mapping[str, Any]) -> Any:
         credential = _credential_from_headers(headers)
         if credential is None:
+            if _presents_a_credential(headers):
+                # A credential header holding no key - an empty Basic password,
+                # a bare "Bearer", undecodable base64. The client offered
+                # something and it was not a key; saying so beats letting it
+                # through as though it had offered nothing.
+                raise flight.FlightUnauthenticatedError(
+                    "No API key in the credential header. Send it as "
+                    "'authorization: Bearer <key>', 'x-api-key: <key>', or the "
+                    "password of a Basic credential."
+                )
             if self._handshake_handler_installed and _is_handshake(info):
-                # A handshake carrying no header is the legacy protocol, where
-                # the key travels on the stream - so there is nothing to check
-                # here yet, and the ServerAuthHandler refuses it if it is
-                # wrong. Only this one credential-less call is let through: a
-                # handshake that *does* carry a header is AuthenticateBasicToken
-                # and is validated below like any other call.
+                # A handshake offering no credential at all is the legacy
+                # protocol, where the key travels on the stream - so there is
+                # nothing to check here yet, and the ServerAuthHandler refuses
+                # it if it is wrong. Only this one call is let through: a
+                # handshake that carries a credential header is
+                # AuthenticateBasicToken and is validated like any other call.
                 return None
             raise flight.FlightUnauthenticatedError(
                 "Missing API key. Send it as 'authorization: Bearer <key>', "
