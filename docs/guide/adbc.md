@@ -207,5 +207,5 @@ measurements and what is refused.
 | Parameter sets | Not implemented; refused rather than truncated to the first row. |
 | Catalog clauses | `WHERE`, the SELECT list, `ORDER BY`, `LIMIT` and `OFFSET` apply. `GROUP BY`, joins and subqueries do not - a catalog view is a list, not a query surface. |
 | `CommandGetXdbcTypeInfo` | Streams a single `info: utf8` column rather than the spec shape. ADBC accepts it because the advertised schema matches the stream. |
-| Statistics (`GetStatistics`) | Not implemented. |
+| Statistics (`GetStatistics`) | Unreachable, not merely absent. Flight SQL carries no statistics command, so the `flightsql` driver refuses `adbc_get_statistics` and `adbc_get_statistic_names` in the client, before a request is put on the wire - nothing a server implements can answer them. A client planner that wants cardinalities has to get them from the warehouse. |
 | Transactions | Flight SQL exposes no transaction to begin — OBSL is read-only. ADBC warns that autocommit cannot be disabled; the warning is expected. |
