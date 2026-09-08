@@ -813,3 +813,51 @@ class TestPreparedStatementParameters:
         assert len(everything.column_names) > 1
         assert projected.column_names == ["column_name"]
         assert none.num_rows == 0
+
+    def test_a_catalog_listing_sorts(self, conn: Any) -> None:
+        """BI tools sort catalog listings; the view's insertion order used to
+        come back whatever was asked."""
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables ORDER BY table_name")
+            ascending = cur.fetch_arrow_table().column("table_name").to_pylist()
+            cur.execute("SELECT table_name FROM information_schema.tables ORDER BY table_name DESC")
+            descending = cur.fetch_arrow_table().column("table_name").to_pylist()
+        finally:
+            cur.close()
+        assert ascending == sorted(ascending)
+        assert descending == list(reversed(ascending))
+
+    def test_a_catalog_sort_composes_with_filter_and_projection(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_type = 'VIEW' ORDER BY table_name DESC"
+            )
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        names = table.column("table_name").to_pylist()
+        assert table.column_names == ["table_name"]
+        assert names == sorted(names, reverse=True)
+
+    def test_a_catalog_listing_limits(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables ORDER BY table_name")
+            everything = cur.fetch_arrow_table().column("table_name").to_pylist()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables ORDER BY table_name LIMIT 2"
+            )
+            first_two = cur.fetch_arrow_table().column("table_name").to_pylist()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "ORDER BY table_name LIMIT 2 OFFSET 2"
+            )
+            next_two = cur.fetch_arrow_table().column("table_name").to_pylist()
+        finally:
+            cur.close()
+        assert len(everything) > 4
+        assert first_two == everything[:2]
+        assert next_two == everything[2:4], "OFFSET was ignored"

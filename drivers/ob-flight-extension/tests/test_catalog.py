@@ -728,3 +728,162 @@ class TestEveryCatalogViewHonoursTheStatement:
         table, applied = self._ask(f"SELECT {column} FROM {view} WHERE weird(x) = 1")
         assert applied is False, f"{view} claimed to apply a predicate it cannot evaluate"
         assert table.num_rows == whole.num_rows
+
+
+class TestCatalogOrdering:
+    """``ORDER BY`` was the third clause accepted and discarded.
+
+    BI tools sort catalog listings, and the view's insertion order came back
+    whatever was asked - including ``DESC``, which is the case where a client
+    can least tell it was ignored.
+    """
+
+    def _table(self) -> Any:
+        import pyarrow as pa
+
+        return pa.table(
+            {
+                "table_name": ["model", "_meta", "orders"],
+                "table_type": ["TABLE", "VIEW", "TABLE"],
+            }
+        )
+
+    def _order(self, sql: str) -> tuple[Any, bool]:
+        import sqlglot
+
+        from ob_flight.server_catalog import order_catalog_table
+
+        return order_catalog_table(self._table(), sqlglot.parse_one(sql))
+
+    def _names(self, sql: str) -> list[str]:
+        return list(self._order(sql)[0].column("table_name").to_pylist())
+
+    def test_ascending_is_the_default(self) -> None:
+        assert self._names("SELECT table_name FROM t ORDER BY table_name") == [
+            "_meta",
+            "model",
+            "orders",
+        ]
+
+    def test_descending_reverses_it(self) -> None:
+        """The case a client can least tell was ignored: unsorted data often
+        looks plausible ascending, never plausible descending."""
+        assert self._names("SELECT table_name FROM t ORDER BY table_name DESC") == [
+            "orders",
+            "model",
+            "_meta",
+        ]
+
+    def test_an_ordinal_names_the_select_list(self) -> None:
+        """``ORDER BY 1`` is the first thing *selected*, not the first column
+        of the view - different lists."""
+        assert self._names("SELECT table_name FROM t ORDER BY 1") == [
+            "_meta",
+            "model",
+            "orders",
+        ]
+
+    def test_an_ordinal_past_the_select_list_is_refused(self) -> None:
+        _, applied = self._order("SELECT table_name FROM t ORDER BY 9")
+        assert applied is False
+
+    def test_an_alias_sorts_by_what_feeds_it(self) -> None:
+        """A bare ``ORDER BY n`` parses as a column, so looking it up in the
+        table first found nothing and dropped the whole sort."""
+        table, applied = self._order("SELECT table_name AS n FROM t ORDER BY n")
+        assert applied is True
+        assert table.column("table_name").to_pylist() == ["_meta", "model", "orders"]
+
+    def test_several_keys_apply_in_order(self) -> None:
+        assert self._names("SELECT table_name FROM t ORDER BY table_type, table_name DESC") == [
+            "orders",
+            "model",
+            "_meta",
+        ]
+
+    def test_a_key_the_projection_drops_still_sorts(self) -> None:
+        """Ordering runs before projection, so this is an ordinary ask."""
+        import sqlglot
+
+        from ob_flight.server_catalog import answer_catalog_view
+
+        answered, _ = answer_catalog_view(
+            self._table(),
+            sqlglot.parse_one("SELECT table_name FROM t ORDER BY table_type, table_name"),
+        )
+        assert answered.column_names == ["table_name"]
+        assert answered.column("table_name").to_pylist() == ["model", "orders", "_meta"]
+
+    def test_an_unsupported_term_leaves_the_order_alone(self) -> None:
+        """All or nothing: a partly applied sort is a different order from the
+        one asked for, and looks like an answer."""
+        table, applied = self._order("SELECT table_name FROM t ORDER BY weird(x)")
+        assert applied is False
+        assert table.column("table_name").to_pylist() == ["model", "_meta", "orders"]
+
+    def test_no_order_by_is_no_sort(self) -> None:
+        table, applied = self._order("SELECT table_name FROM t")
+        assert applied is True
+        assert table.column("table_name").to_pylist() == ["model", "_meta", "orders"]
+
+
+class TestCatalogLimit:
+    """``LIMIT`` / ``OFFSET``, the last of the four discarded clauses."""
+
+    def _table(self) -> Any:
+        import pyarrow as pa
+
+        return pa.table({"n": ["a", "b", "c", "d", "e"]})
+
+    def _limit(self, sql: str) -> tuple[Any, bool]:
+        import sqlglot
+
+        from ob_flight.server_catalog import limit_catalog_table
+
+        return limit_catalog_table(self._table(), sqlglot.parse_one(sql))
+
+    def _rows(self, sql: str) -> list[str]:
+        return list(self._limit(sql)[0].column("n").to_pylist())
+
+    def test_limit_takes_the_first_rows(self) -> None:
+        assert self._rows("SELECT n FROM t LIMIT 2") == ["a", "b"]
+
+    def test_offset_skips(self) -> None:
+        assert self._rows("SELECT n FROM t OFFSET 3") == ["d", "e"]
+
+    def test_offset_applies_with_limit(self) -> None:
+        """Supporting only ``LIMIT`` would answer this with the first two rows -
+        the right *number* of the wrong rows, which a client cannot see."""
+        assert self._rows("SELECT n FROM t LIMIT 2 OFFSET 2") == ["c", "d"]
+
+    def test_a_limit_past_the_end_is_everything(self) -> None:
+        assert self._rows("SELECT n FROM t LIMIT 99") == ["a", "b", "c", "d", "e"]
+
+    def test_limit_zero_is_nothing(self) -> None:
+        """Distinct from no limit at all, and a real thing clients send to
+        probe a schema."""
+        table, applied = self._limit("SELECT n FROM t LIMIT 0")
+        assert applied is True
+        assert table.num_rows == 0
+
+    def test_no_limit_is_everything(self) -> None:
+        table, applied = self._limit("SELECT n FROM t")
+        assert applied is True
+        assert table.num_rows == 5
+
+    def test_a_non_literal_limit_is_refused(self) -> None:
+        table, applied = self._limit("SELECT n FROM t LIMIT (SELECT 2)")
+        assert applied is False
+        assert table.num_rows == 5
+
+    def test_it_runs_after_the_ordering(self) -> None:
+        """A limit over an unsorted table is an arbitrary subset; the order is
+        what decides which rows survive."""
+        import sqlglot
+
+        from ob_flight.server_catalog import answer_catalog_view
+
+        answered, _ = answer_catalog_view(
+            self._table(), sqlglot.parse_one("SELECT n FROM t ORDER BY n DESC LIMIT 2")
+        )
+        assert answered.column("n").to_pylist() == ["e", "d"]

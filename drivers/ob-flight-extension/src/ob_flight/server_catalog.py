@@ -207,6 +207,12 @@ def answer_catalog_view(
     perfectly good predicate as unevaluable, having removed what it needs.
     """
     filtered, applied = filter_catalog_table(table, ast)
+    # Order before projecting, for the same reason as filtering: a term may
+    # name a column the SELECT list drops.
+    filtered, _ = order_catalog_table(filtered, ast)
+    # After the ordering, as SQL means it: which rows a limit keeps is decided
+    # by the order.
+    filtered, _ = limit_catalog_table(filtered, ast)
     if not project:
         # The caller wants the view's full column set - typing a parameter
         # needs the column its predicate names, which the projection may drop.
@@ -802,3 +808,140 @@ def catalog_placeholder_schema(sql: str, table: pa.Table) -> pa.Schema:
                     arrow_type = table.schema.field(source).type
         fields.append(pa.field(f"${index}", arrow_type))
     return pa.schema(fields)
+
+
+def _select_alias_source(name: str, ast: Any, by_lower: dict[str, str]) -> str | None:
+    """The table column a select-list alias feeds from, or ``None``."""
+    import sqlglot.expressions as exp
+
+    for item in getattr(ast, "expressions", []) or []:
+        if isinstance(item, exp.Alias) and item.alias.lower() == name.lower():
+            inner = item.this
+            if isinstance(inner, exp.Column):
+                return by_lower.get(inner.name.lower())
+            return None
+    return None
+
+
+def _order_key_column(target: Any, ast: Any, by_lower: dict[str, str]) -> str | None:
+    """The table column an ORDER BY term names, or ``None``.
+
+    Three spellings reach here and all are ordinary for a BI tool: the column
+    itself, a select-list alias, and an ordinal - ``ORDER BY 1`` meaning "the
+    first thing I selected", resolved against the SELECT list rather than the
+    table, because those are different lists.
+
+    The alias is tried *before* the table. A bare ``ORDER BY n`` parses as a
+    column, so looking it up in the table first found nothing and dropped the
+    whole ORDER BY - the sort silently not happening, which is the failure
+    this module exists to stop.
+    """
+    import sqlglot.expressions as exp
+
+    if isinstance(target, exp.Literal) and target.is_int:
+        index = int(target.this) - 1
+        items = list(getattr(ast, "expressions", []) or [])
+        if not 0 <= index < len(items):
+            return None
+        target = items[index]
+
+    if isinstance(target, exp.Alias):
+        # ``ORDER BY <alias>`` names the output; sort by what feeds it.
+        target = target.this
+
+    name = getattr(target, "name", None)
+    if isinstance(name, str):
+        alias_source = _select_alias_source(name, ast, by_lower)
+        if alias_source is not None:
+            return alias_source
+
+    if isinstance(target, exp.Column):
+        return by_lower.get(target.name.lower())
+    if isinstance(name, str):
+        return by_lower.get(name.lower())
+    return None
+
+
+def order_catalog_table(table: pa.Table, ast: Any) -> tuple[pa.Table, bool]:
+    """Sort *table* by the statement's ORDER BY. Returns it and whether it applied.
+
+    ``False`` leaves the order untouched - the view's own, which is what every
+    catalog query got before, so nothing that works today changes. Sorting is
+    all-or-nothing: a partially applied ORDER BY is a different order from the
+    one asked for, and looks like an answer.
+
+    Runs before the projection, so a term may name a column the SELECT list
+    drops. ``SELECT table_name ... ORDER BY table_type`` is an ordinary ask.
+    """
+    import sqlglot.expressions as exp
+
+    if not isinstance(ast, exp.Select):
+        return table, True
+    order = ast.args.get("order")
+    if order is None:
+        return table, True
+
+    by_lower = {name.lower(): name for name in table.column_names}
+    keys: list[tuple[str, str]] = []
+    for term in order.expressions:
+        if not isinstance(term, exp.Ordered):
+            return table, False
+        column = _order_key_column(term.this, ast, by_lower)
+        if column is None:
+            return table, False
+        keys.append((column, "descending" if term.args.get("desc") else "ascending"))
+    if not keys:
+        return table, True
+    try:
+        return table.sort_by(keys), True
+    except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+        return table, False
+
+
+def _row_count_arg(clause: Any) -> int | None:
+    """The integer a LIMIT / OFFSET clause carries, or ``None``."""
+    import sqlglot.expressions as exp
+
+    if clause is None:
+        return None
+    value = clause.expression if hasattr(clause, "expression") else None
+    if not isinstance(value, exp.Literal) or not value.is_int:
+        return None
+    count = int(value.this)
+    return count if count >= 0 else None
+
+
+def limit_catalog_table(table: pa.Table, ast: Any) -> tuple[pa.Table, bool]:
+    """Apply the statement's LIMIT / OFFSET. Returns it and whether it applied.
+
+    ``OFFSET`` is handled with ``LIMIT`` rather than after it, because
+    supporting only the first would answer ``LIMIT 10 OFFSET 20`` with the
+    first ten rows - the right *number* of the wrong rows, which is the shape
+    of wrongness a client cannot see.
+
+    Runs after the ordering, as SQL means it: a limit over an unsorted table is
+    an arbitrary subset, and the order is what decides which rows survive.
+    """
+    import sqlglot.expressions as exp
+
+    if not isinstance(ast, exp.Select):
+        return table, True
+    limit_clause = ast.args.get("limit")
+    offset_clause = ast.args.get("offset")
+    if limit_clause is None and offset_clause is None:
+        return table, True
+
+    offset = 0
+    if offset_clause is not None:
+        parsed_offset = _row_count_arg(offset_clause)
+        if parsed_offset is None:
+            return table, False
+        offset = parsed_offset
+
+    if limit_clause is None:
+        return table.slice(offset), True
+
+    count = _row_count_arg(limit_clause)
+    if count is None:
+        return table, False
+    return table.slice(offset, count), True
