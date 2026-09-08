@@ -1,10 +1,11 @@
-"""PEP 249 Cursor wrapping a pyarrow Flight client for Dremio.
+"""PEP 249 Cursor executing over an ADBC Flight SQL connection to Dremio.
 
-Dremio exposes query execution via Arrow Flight.  This cursor wraps a
-``pyarrow.flight.FlightClient`` and adapts it to PEP 249 semantics.
+Dremio exposes query execution via Arrow Flight SQL, so the generic
+``adbc-driver-flightsql`` driver is its driver.  This cursor adapts that
+to PEP 249 semantics.
 
 Each ``execute()`` fetches the entire result set into memory (client-side
-buffering) by converting the Arrow table to Python tuples.
+buffering) and converts the Arrow table to Python tuples on first fetch.
 """
 
 from __future__ import annotations
@@ -18,29 +19,30 @@ from ob_dremio.type_codes import ARROW_TYPE_MAP, STRING
 
 if TYPE_CHECKING:
     import pyarrow as pa
-    import pyarrow.flight
 
 
 class Cursor:
-    """DB-API 2.0 cursor wrapping a pyarrow Flight client for Dremio.
+    """DB-API 2.0 cursor executing over an ADBC Flight SQL connection.
 
-    The underlying ``FlightClient.get_flight_info()`` + ``do_get()`` returns
-    an Arrow record batch reader.  This cursor reads the full table, converts
-    it to rows, and exposes them through the standard ``fetch*()`` methods.
+    Each statement runs on its own native cursor, so the result is Arrow and
+    the table is kept here; ``description`` comes from its schema and rows
+    are materialised lazily for the standard ``fetch*()`` methods.
+
+    ``description`` is derived from the Arrow schema rather than from the
+    native cursor's own ``description``, which reports PyArrow ``DataType``
+    objects in the type-code slot where PEP 249 expects a type constant.
     """
 
     arraysize: int = 1
 
     def __init__(
         self,
-        client: pyarrow.flight.FlightClient,
+        native_connection: Any,
         *,
-        call_options: pyarrow.flight.FlightCallOptions | None = None,
         ob_api_url: str = "http://localhost:8000",
         ob_timeout: int = 30,
     ) -> None:
-        self._client = client
-        self._call_options = call_options
+        self._native_connection = native_connection
         self._closed = False
         self._ob_api_url = ob_api_url
         self._ob_timeout = ob_timeout
@@ -87,24 +89,34 @@ class Cursor:
             ob_timeout=self._ob_timeout,
         )
 
-    def _execute_sql(self, sql: str) -> pa.Table:
-        """Execute SQL via Arrow Flight and return the result as an Arrow Table.
+    def _execute_sql(self, sql: str, parameters: Sequence[object] | None = None) -> pa.Table:
+        """Execute SQL over Flight SQL and return the result as an Arrow Table.
 
-        Uses ``FlightDescriptor.for_command()`` + ``get_flight_info()`` +
-        ``do_get()`` to retrieve results.
+        Auth is the driver's problem now: ADBC exchanges the credentials for
+        a bearer token during the handshake and attaches it to every call,
+        which this driver used to carry ``FlightCallOptions`` to do by hand.
+
+        One native cursor per statement, closed as soon as the table is in
+        hand. Reusing it would be the natural thing to do, and against Dremio
+        it is wrong: ADBC skips re-preparing when the SQL text has not
+        changed, and Dremio then answers the second execution with the
+        **first** execution's rows -- silently, with different parameters
+        bound. The same reuse against OBSL's own Flight server rebinds
+        correctly, which is what places the fault on Dremio's side of the
+        wire. A fresh statement per execution is also exactly what the
+        hand-rolled Flight client did, one ``get_flight_info`` + ``do_get``
+        at a time.
         """
-        import pyarrow.flight as _pf
-
-        descriptor = _pf.FlightDescriptor.for_command(sql.encode("utf-8"))
-        # When the connection was authenticated, every Flight RPC needs the
-        # bearer token in its call options — Dremio rejects unauthenticated
-        # do_get with `UNAUTHENTICATED` otherwise.
-        rpc_args: tuple[_pf.FlightCallOptions, ...] = (
-            (self._call_options,) if self._call_options is not None else ()
-        )
-        info = self._client.get_flight_info(descriptor, *rpc_args)
-        reader = self._client.do_get(info.endpoints[0].ticket, *rpc_args)
-        return reader.read_all()
+        native = self._native_connection.cursor()
+        try:
+            if parameters is not None:
+                native.execute(sql, parameters)
+            else:
+                native.execute(sql)
+            table: pa.Table = native.fetch_arrow_table()
+            return table
+        finally:
+            native.close()
 
     def _build_description(self, schema: pa.Schema) -> None:
         """Build PEP 249 description from an Arrow schema."""
@@ -134,13 +146,14 @@ class Cursor:
     def execute(self, operation: str, parameters: Sequence[object] | None = None) -> Cursor:
         """Execute a query — OBML YAML or plain SQL.
 
-        Parameters are not supported for Dremio Flight queries.  If
-        ``parameters`` is provided it is ignored (Dremio Flight SQL does
-        not support parameterised queries via this interface).
+        ``parameters`` bind as Flight SQL prepared-statement values.  The
+        hand-rolled Flight client had nowhere to put them, so it passed the
+        statement through with its placeholders intact and Dremio answered
+        with a Calcite internal error about ``RexDynamicParam``.
         """
         self._check_open()
         sql = self._resolve_sql(operation)
-        table = self._execute_sql(sql)
+        table = self._execute_sql(sql, parameters)
         self._arrow_table = table  # keep Arrow — converted lazily
         self._rows = []
         self._pos = 0
@@ -157,13 +170,17 @@ class Cursor:
     def executemany(self, operation: str, seq_of_parameters: Sequence[Sequence[object]]) -> None:
         """Execute against all parameter sequences.
 
+        Executed one statement per parameter set rather than through ADBC's
+        ``executemany``, which binds a whole batch over ``DoPut`` — Dremio
+        answers that with ``acceptPut is not implemented``.
+
         OBML queries are not supported with executemany — raises NotSupportedError.
         """
         self._check_open()
         if is_obml(operation):
             raise NotSupportedError("executemany() is not supported for OBML queries.")
-        for _params in seq_of_parameters:
-            self._execute_sql(operation)
+        for params in seq_of_parameters:
+            self._execute_sql(operation, params)
         self._description = None
         self._rows = []
         self._pos = 0
@@ -224,8 +241,10 @@ class Cursor:
     def close(self) -> None:
         """Close the cursor.
 
-        Does **not** close the underlying FlightClient — the client is owned
-        by the Connection and shared across cursors.
+        The native statement is already closed — ``_execute_sql`` opens one
+        per execution and releases it as soon as the Arrow table is in hand.
+        The connection stays open: it is owned by :class:`Connection` and
+        shared across cursors.
         """
         if not self._closed:
             self._closed = True

@@ -18,7 +18,7 @@ All drivers work against the **OrionBelt REST API in admin-curated mode** (`MODE
 | `ob-postgres`         | PostgreSQL              | `adbc-driver-postgresql`     | `postgres`   | `qmark`    | ADBC native           |
 | `ob-snowflake`        | Snowflake               | `snowflake-connector-python` | `snowflake`  | `pyformat` | `fetch_arrow_all()`   |
 | `ob-clickhouse`       | ClickHouse              | `clickhouse-connect`         | `clickhouse` | `pyformat` | `query_arrow()`       |
-| `ob-dremio`           | Dremio                  | `pyarrow.flight`             | `dremio`     | `qmark`    | Flight native         |
+| `ob-dremio`           | Dremio                  | `adbc-driver-flightsql`      | `dremio`     | `qmark`    | ADBC native           |
 | `ob-databricks`       | Databricks              | `databricks-sql-connector`   | `databricks` | `pyformat` | `fetchall_arrow()`    |
 | `ob-flight-extension` | Arrow Flight SQL server | `pyarrow.flight`             | all          | —          | —                     |
 
@@ -197,7 +197,7 @@ conn = ob_duckdb.connect(ob_api_url="http://my-api:9000")
 | `ob-postgres`   | `dsn`, `host`, `port`, `dbname`, `user`, `password`, `sslmode`                            |
 | `ob-snowflake`  | `account`, `user`, `password`, `database`, `schema`, `warehouse`, `role`, `authenticator` |
 | `ob-clickhouse` | `host`, `port`, `username`, `password`, `database`, `secure`                              |
-| `ob-dremio`     | `host`, `port`, `username`, `password`, `tls`                                             |
+| `ob-dremio`     | `host`, `port`, `username`, `password`, `tls`, `db_kwargs`                                |
 | `ob-databricks` | `server_hostname`, `http_path`, `access_token`, `catalog`, `schema`                       |
 
 ## Running Driver Tests

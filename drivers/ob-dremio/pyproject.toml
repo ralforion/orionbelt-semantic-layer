@@ -14,6 +14,7 @@ keywords = ["dremio", "semantic-layer", "obml", "db-api", "orionbelt"]
 requires-python = ">=3.12"
 dependencies = [
     "ob-driver-core>=0.1",
+    "adbc-driver-flightsql>=1.0",
     "pyarrow>=16.0",
 ]
 
@@ -58,7 +59,7 @@ files = ["src/ob_dremio"]
 
 # Untyped upstream - neither ships a py.typed marker.
 [[tool.mypy.overrides]]
-module = ["pyarrow.*"]
+module = ["pyarrow.*", "adbc_driver_flightsql.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

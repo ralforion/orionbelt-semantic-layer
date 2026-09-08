@@ -2268,6 +2268,7 @@ name = "ob-dremio"
 version = "2.6.1"
 source = { editable = "drivers/ob-dremio" }
 dependencies = [
+    { name = "adbc-driver-flightsql" },
     { name = "ob-driver-core" },
     { name = "pyarrow" },
 ]
@@ -2286,6 +2287,7 @@ sqlalchemy = [
 
 [package.metadata]
 requires-dist = [
+    { name = "adbc-driver-flightsql", specifier = ">=1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "ob-driver-core", editable = "drivers/ob-driver-core" },
     { name = "pyarrow", specifier = ">=16.0" },

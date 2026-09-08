@@ -75,6 +75,10 @@ services:
     ports:
       - "19047:9047"
       - "31010:31010"
+      # Arrow Flight SQL. Published so the ob-dremio driver suite can reach
+      # Dremio from the host, the same way ob_dremio reaches it from inside
+      # the OBSL container.
+      - "32010:32010"
     environment:
       DREMIO_JAVA_SERVER_EXTRA_OPTS: -Xms1g -Xmx2g
     volumes:

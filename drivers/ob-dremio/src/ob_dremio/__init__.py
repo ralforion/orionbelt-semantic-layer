@@ -3,7 +3,9 @@
 Requires the OrionBelt REST API running in single-model mode (MODEL_FILE set).
 OBML queries are compiled to SQL via ``POST /v1/query/sql``.
 
-Dremio is accessed via Arrow Flight protocol using ``pyarrow.flight``.
+Dremio is reached over Arrow Flight SQL through ``adbc-driver-flightsql``.
+Dremio speaks Flight SQL natively, so the generic driver *is* the Dremio
+driver -- there is no vendor SDK in this path, and none to maintain.
 
 Usage::
 
@@ -16,6 +18,10 @@ Usage::
 """
 
 from __future__ import annotations
+
+from typing import Any
+
+import adbc_driver_flightsql.dbapi
 
 from ob_dremio.connection import Connection
 from ob_dremio.exceptions import (
@@ -44,11 +50,12 @@ def connect(
     username: str | None = None,
     password: str | None = None,
     tls: bool = False,
+    db_kwargs: dict[str, str] | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
     ob_timeout: int = 30,
 ) -> Connection:
-    """Open a Dremio connection via Arrow Flight with OBML support.
+    """Open a Dremio connection over Arrow Flight SQL with OBML support.
 
     Parameters
     ----------
@@ -62,32 +69,43 @@ def connect(
         Dremio password for authentication.
     tls : bool
         Use TLS for the Flight connection (default: ``False``).
+    db_kwargs : dict, optional
+        Extra ADBC database options, e.g.
+        ``{"adbc.flight.sql.rpc.call_header.routing_queue": "…"}`` for
+        Dremio's workload-management headers. Merged last, so a caller can
+        override anything derived from the arguments above.
     ob_api_url : str
         OrionBelt REST API URL (must be running in single-model mode).
     ob_timeout : int
         HTTP timeout in seconds for OBML compilation.
+
+    Notes
+    -----
+    Authentication is Flight SQL's ``AuthenticateBasicToken``: the driver
+    exchanges the credentials for a bearer token once and attaches it to
+    every later call. Doing that by hand is what this driver used to carry
+    a ``FlightCallOptions`` field for.
     """
-    import pyarrow.flight
-
     scheme = "grpc+tls" if tls else "grpc"
-    location = f"{scheme}://{host}:{port}"
-    client = pyarrow.flight.FlightClient(location)
+    uri = f"{scheme}://{host}:{port}"
 
-    call_options: pyarrow.flight.FlightCallOptions | None = None
-    if username is not None and password is not None:
-        token_pair = client.authenticate_basic_token(username, password)
-        # The bearer token returned by authenticate_basic_token must be
-        # attached to every subsequent get_flight_info / do_get call.
-        # pyarrow's FlightClient is a Cython object that rejects ad-hoc
-        # attribute writes (`AttributeError: 'pyarrow._flight.FlightClient'
-        # object has no attribute '_ob_call_options'`) — so we stash the
-        # options on our Python-owned Connection/Cursor wrappers instead
-        # and pass them through to each RPC.
-        call_options = pyarrow.flight.FlightCallOptions(headers=[token_pair])
+    options: dict[str, str] = {}
+    if username is not None:
+        options["username"] = username
+    if password is not None:
+        options["password"] = password
+    if db_kwargs:
+        options.update(db_kwargs)
+
+    # ``autocommit=True`` states what is already true rather than enabling
+    # anything: ADBC otherwise tries to *disable* autocommit on connect, and
+    # Dremio -- which has no transactions -- refuses, so every connection
+    # warned "conn will not be DB-API 2.0 compliant". Same reason
+    # ``Connection.commit()`` and ``rollback()`` are no-ops.
+    native: Any = adbc_driver_flightsql.dbapi.connect(uri, db_kwargs=options, autocommit=True)
 
     return Connection(
-        client,
-        call_options=call_options,
+        native,
         ob_api_url=ob_api_url,
         ob_timeout=ob_timeout,
     )
