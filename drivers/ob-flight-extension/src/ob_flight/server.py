@@ -154,16 +154,23 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         location: str = "grpc://0.0.0.0:8815",
         *,
         auth_handler: flight.ServerAuthHandler | None = None,
+        auth_middleware: dict[str, Any] | None = None,
         session_manager: Any = None,
         default_dialect: str = "duckdb",
         batch_size: int = 1024,
         cache: Any = None,
         cache_config: Any = None,
     ) -> None:
+        # Header auth is middleware, not a ``ServerAuthHandler``: the standard
+        # ``AuthenticateBasicToken`` carries the credential in a header and
+        # expects the issued token back in one, and a handshake handler can do
+        # neither. See ``ob_flight.auth``.
+        middleware: dict[str, Any] = {_ROUTING_MIDDLEWARE_KEY: _SessionRoutingFactory()}
+        middleware.update(auth_middleware or {})
         super().__init__(
             location,
             auth_handler=auth_handler,
-            middleware={_ROUTING_MIDDLEWARE_KEY: _SessionRoutingFactory()},
+            middleware=middleware,
         )
         self._session_manager = session_manager
         self._default_dialect = default_dialect

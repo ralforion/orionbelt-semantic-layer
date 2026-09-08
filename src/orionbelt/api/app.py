@@ -394,10 +394,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             #   3. otherwise            -> no auth (NoopAuthHandler) + warning
             from orionbelt.auth import MODE_API_KEY, get_mode
 
+            flight_auth_middleware: dict[str, Any] = {}
             if get_mode() == MODE_API_KEY:
-                from ob_flight.auth import build_shared_key_handler
+                from ob_flight.auth import build_auth_middleware, build_shared_key_handler
 
                 flight_auth_handler = build_shared_key_handler()
+                # The handler alone cannot authenticate an ADBC client: it
+                # implements Flight's legacy Handshake, and every current
+                # client uses the standard AuthenticateBasicToken, which
+                # carries the credential in a header. The middleware is what
+                # reads those. Both are installed - the handler keeps the
+                # legacy path working for anything that still speaks it.
+                flight_auth_middleware = build_auth_middleware()
             elif settings.flight_auth_mode == "token":
                 # Legacy static-token auth (deprecated). Fail CLOSED if the
                 # operator asked for token auth but did not supply a token -
@@ -433,6 +441,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 session_manager=mgr,
                 port=settings.flight_port,
                 auth_handler=flight_auth_handler,
+                auth_middleware=flight_auth_middleware,
                 default_dialect=settings.db_vendor,
                 cache=cache,
                 cache_config=cache_config,
