@@ -42,6 +42,7 @@ from ob_flight.flight_sql import (
     build_sql_info_table,
     build_table_types_table,
     build_tables_table,
+    parse_include_schema,
 )
 
 if TYPE_CHECKING:
@@ -415,6 +416,7 @@ def build_tables_from_model(
     table_filter: str | None = None,
     catalog_filter: str | None = None,
     db_schema_filter: str | None = None,
+    include_schema: bool = True,
 ) -> pa.Table:
     """Build the CommandGetTables response.
 
@@ -430,7 +432,7 @@ def build_tables_from_model(
     model = resolve_model_for_catalog(
         server, catalog_filter, context, db_schema_filter=db_schema_filter
     )
-    return build_tables_table(model, table_filter=table_filter)
+    return build_tables_table(model, table_filter=table_filter, include_schema=include_schema)
 
 
 def build_columns_from_model(
@@ -516,6 +518,7 @@ def build_catalog_table(
             table_filter=table_filter,
             catalog_filter=catalog_filter,
             db_schema_filter=db_schema_filter,
+            include_schema=parse_include_schema(cmd_value),
         )
     elif type_url == CMD_GET_COLUMNS:
         table = server._build_columns_from_model(

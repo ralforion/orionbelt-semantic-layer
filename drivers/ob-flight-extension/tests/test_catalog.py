@@ -430,6 +430,68 @@ class TestAdvertisedSchemaMatchesStream:
                 )
         assert not mismatches, "\n".join(mismatches)
 
+    def test_get_tables_streams_the_shape_the_request_asked_for(self) -> None:
+        """``CommandGetTables`` has two, chosen by ``include_schema``.
+
+        Answering with the five-column shape regardless is how DuckDB's
+        ``adbc_scanner`` failed to list tables: the driver compares the stream
+        against the four columns it asked for and rejects the endpoint. Every
+        other client we test with happened to ask for five.
+        """
+        import threading
+
+        from ob_flight.flight_sql import (
+            CMD_GET_TABLES,
+            TABLE_SCHEMA,
+            TABLE_SCHEMA_NO_SCHEMA,
+        )
+        from ob_flight.server import OBFlightServer
+        from ob_flight.server_catalog import build_catalog_table
+
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._session_manager = None
+        server._default_dialect = "duckdb"
+        server._lock = threading.Lock()
+        server._pending = {}
+        server._prepared = {}
+        server._pending_ttl = 300
+        server._batch_size = 1024
+        server._cache = None
+        server._cache_config = None
+
+        # field 5 (include_schema), varint: tag 0x28 then the value.
+        without = build_catalog_table(server, CMD_GET_TABLES, b"")
+        explicit_false = build_catalog_table(server, CMD_GET_TABLES, b"\x28\x00")
+        with_schema = build_catalog_table(server, CMD_GET_TABLES, b"\x28\x01")
+
+        assert without.schema == TABLE_SCHEMA_NO_SCHEMA, "absent must mean false"
+        assert explicit_false.schema == TABLE_SCHEMA_NO_SCHEMA
+        assert with_schema.schema == TABLE_SCHEMA
+        assert "table_schema" not in without.column_names
+
+    def test_get_tables_advertises_the_shape_it_will_stream(self) -> None:
+        """The two halves have to agree per request, not just per command."""
+        from ob_flight.flight_sql import (
+            TABLE_SCHEMA,
+            TABLE_SCHEMA_NO_SCHEMA,
+            parse_include_schema,
+            tables_response_schema,
+        )
+
+        assert parse_include_schema(b"") is False
+        assert parse_include_schema(b"\x28\x01") is True
+        assert tables_response_schema(False) == TABLE_SCHEMA_NO_SCHEMA
+        assert tables_response_schema(True) == TABLE_SCHEMA
+
+    def test_a_table_name_filter_survives_the_include_schema_flag(self) -> None:
+        """Both live in the same body; parsing one must not consume the other."""
+        from ob_flight.flight_sql import parse_include_schema, parse_table_filter
+
+        # field 3 (table_name_filter_pattern) = "model", then field 5 = true.
+        body = b"\x1a\x05model\x28\x01"
+        assert parse_table_filter(body) == "model"
+        assert parse_include_schema(body) is True
+
     def test_foreign_key_commands_share_one_schema(self) -> None:
         """FlightSql.proto gives all three the same thirteen columns.
 
