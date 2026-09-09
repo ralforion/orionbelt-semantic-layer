@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.27.1] - 2026-09-09
+
 ### Added
 
 - **Documented DuckDB as a client of the layer.** `docs/guide/adbc.md` gains a `From DuckDB`
