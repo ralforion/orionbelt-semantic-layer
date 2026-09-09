@@ -199,6 +199,34 @@ jobs:
   # from its __init__ passes every other job here and still exits(1) on
   # startup. That shipped: 2.22.0's UI image could not boot. This job is the
   # only one that resolves the same set the container does.
+  ui-renders:
+    name: UI renders in a browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras --all-groups
+
+      # The suite skips without a browser, so installing one is what makes
+      # this job an assertion rather than a green no-op.
+      - name: Install chromium
+        run: uv run playwright install --with-deps chromium
+
+      # Guards what no server-side assertion can see: Gradio 6 stopped
+      # rendering the ```mermaid fences Gradio 5 rendered, and the ER diagram
+      # shipped as its own source text.
+      - name: Drive the UI in a real browser
+        run: uv run pytest -m ui tests/ui/ -v
+
   ui-shipped-deps:
     name: UI imports on shipped deps
     runs-on: ubuntu-latest

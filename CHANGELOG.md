@@ -4,6 +4,34 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The ER diagram rendered as its own source text (#436).** Gradio 6 parses a ```` ```mermaid ````
+  fence into `<div class="mermaid">` and stops there; Gradio 5 rendered it. So the gradio 6 bump
+  (#396) shipped a UI whose ER Diagram tab showed 129 lines of mermaid source, visually collapsed
+  into one paragraph, and whose zoom control was silently dead alongside it - it polls for an `svg`
+  nothing would ever produce. The UI now loads mermaid and runs it over the markup Gradio emits.
+
+  The loader lives in `frontend_assets()` rather than on the `Blocks` constructor, because that is
+  the one place all three serving modes agree on: standalone `launch`, the standalone mount, and
+  the API's `/ui`.
+
+- **The action buttons spanned the row and wrapped their labels (#436).** `Compile SQL` had
+  Gradio's default scale, so it absorbed the row's spare width, and a 140px `min_width` was
+  narrower than "Validate Model" renders. All three are now `scale=0` with a width that fits their
+  label, and `white-space: nowrap` so a narrow button can never break across two lines again.
+
+### Added
+
+- **A browser test suite for the UI (#436).** Every other test here asserts what the server
+  *sends*; the mermaid regression was in what the browser *does* with it, and the markup was
+  correct at every layer we test. `pytest -m ui` drives a real Gradio app in a real Chromium and
+  asserts the diagram becomes an `svg` and the buttons stay on one line. Opt-in like the docker and
+  dremio suites, and it runs in CI, where a job installs chromium so the suite is an assertion
+  rather than a green skip.
+
+  Verified against the defect: reverting the loader fails two of the four tests.
+
 ## [2.27.1] - 2026-09-09
 
 ### Added
