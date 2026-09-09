@@ -105,3 +105,13 @@ td code {
   opacity: 0.7;
   line-height: 1.6;
 }
+
+/* Cookie consent overlay: drop Material's backdrop blur. The overlay is a
+   fixed, full-viewport layer that stays up until the visitor answers the
+   banner, so the blur makes the browser re-filter the whole viewport on
+   every scroll and repaint underneath it. The dark background already
+   separates the banner from the page, so only the filter goes. */
+.md-consent__overlay {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
