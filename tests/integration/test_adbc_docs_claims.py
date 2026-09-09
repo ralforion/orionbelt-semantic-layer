@@ -132,6 +132,71 @@ class TestTheCatalogSamples:
             assert cur.fetch_arrow_table().num_rows > 0
 
 
+class TestTheDuckDBRecipe:
+    """The `From DuckDB` section, run as written.
+
+    Skipped where the community extension cannot be installed - it is fetched
+    over the network, unlike everything else this suite needs. The recipe is
+    the one claim on the page that depends on a third-party extension, so it
+    gets a skip rather than a hard requirement.
+    """
+
+    @staticmethod
+    def _duckdb_with_adbc() -> Any:
+        duckdb = pytest.importorskip("duckdb", reason="duckdb required")
+        connection = duckdb.connect()
+        try:
+            connection.execute("INSTALL adbc_scanner FROM community")
+            connection.execute("LOAD adbc_scanner")
+        except Exception as exc:  # noqa: BLE001 - network or unavailable build
+            pytest.skip(f"adbc_scanner community extension unavailable: {exc}")
+        return connection
+
+    @staticmethod
+    def _handle(connection: Any, uri: str) -> Any:
+        driver = pytest.importorskip("adbc_driver_flightsql")._driver_path()
+        return connection.execute(
+            "SELECT adbc_connect(MAP {'driver': ?, 'uri': ?})", [driver, uri]
+        ).fetchone()[0]
+
+    def test_a_duckdb_shell_queries_the_model(self, flight_uri: str) -> None:
+        connection = self._duckdb_with_adbc()
+        handle = self._handle(connection, flight_uri)
+        rows = connection.execute(
+            "SELECT * FROM adbc_scan(?, ?)",
+            [handle, f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME}'],
+        ).fetchall()
+        assert {r[0] for r in rows} == {"US", "UK"}
+        assert all(isinstance(r[1], float) for r in rows)
+
+    def test_the_catalog_functions_answer(self, flight_uri: str) -> None:
+        """``adbc_tables`` is the one that failed before #433: DuckDB asks for
+        the four-column ``CommandGetTables`` shape and OBSL always sent five."""
+        connection = self._duckdb_with_adbc()
+        handle = self._handle(connection, flight_uri)
+        tables = connection.execute("SELECT * FROM adbc_tables(?)", [handle]).fetchall()
+        assert "model" in {r[2] for r in tables}
+
+        columns = connection.execute(
+            "SELECT * FROM adbc_schema(?, 'model', schema := ?) LIMIT 20",
+            [handle, MODEL_NAME],
+        ).fetchall()
+        assert "Customer Country" in {r[0] for r in columns}
+
+    def test_the_result_composes_with_local_sql(self, flight_uri: str) -> None:
+        """The page claims filtering, aggregating and CREATE TABLE AS."""
+        connection = self._duckdb_with_adbc()
+        handle = self._handle(connection, flight_uri)
+        query = f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME}'
+
+        total = connection.execute(
+            'SELECT sum("Total Revenue") FROM adbc_scan(?, ?)', [handle, query]
+        ).fetchone()[0]
+        connection.execute("CREATE TABLE local AS SELECT * FROM adbc_scan(?, ?)", [handle, query])
+        materialised = connection.execute('SELECT sum("Total Revenue") FROM local').fetchone()[0]
+        assert materialised == total
+
+
 class TestThePageItselfRuns:
     """Executes the guide's code blocks verbatim, rather than transcribing them.
 

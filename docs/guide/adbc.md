@@ -88,6 +88,53 @@ to send — it never returns an empty result instead.
 Flight's older `Handshake` — where the key travels on the stream rather than in
 a header — keeps working alongside these, for clients that still speak it.
 
+## From DuckDB
+
+DuckDB can be the client. The `adbc_scanner` community extension makes it an
+ADBC client, and the semantic layer is an ADBC server, so a plain DuckDB shell
+queries governed measures and joins the result to local tables:
+
+```sql
+INSTALL adbc_scanner FROM community;
+LOAD adbc_scanner;
+
+CREATE OR REPLACE TABLE h AS
+SELECT adbc_connect(MAP {
+    'driver': '/path/to/libadbc_driver_flightsql.so',
+    'uri':    'grpc://127.0.0.1:8815'
+}) AS handle;
+
+SELECT * FROM adbc_scan(
+    (SELECT handle FROM h),
+    'SELECT "Customer Country", "Total Revenue" FROM sales'
+);
+```
+
+Two things it needs that the Python recipe does not: `adbc_scanner` is a
+**community** extension rather than a bundled one, and `adbc_connect` wants a
+filesystem path to the Flight SQL driver library. Any ADBC install has one —
+`python -c "import adbc_driver_flightsql as d; print(d._driver_path())"` prints
+it — but it is a path, not a package name.
+
+What works from there:
+
+| | |
+|---|---|
+| `adbc_scan(handle, '<OBSQL>')` | The point. Governed measures, resolved joins, typed columns. |
+| `adbc_tables(handle)` | Lists `model` and the `dimensions` / `measures` / `metrics` views. |
+| `adbc_schema(handle, 'model', schema := 'sales')` | Column names and types without executing anything. |
+| Filtering, grouping, joining to local tables | Ordinary DuckDB SQL over the scan. |
+| `CREATE TABLE local AS SELECT * FROM adbc_scan(…)` | Materialises the result locally. |
+
+The scan is a table function, so DuckDB treats its output as any other
+relation: the semantic layer resolves the model and returns Arrow, and DuckDB
+does whatever you ask on top.
+
+Note the division of labour. Predicates written *outside* `adbc_scan` are
+DuckDB's, applied after the rows arrive; predicates inside the OBSQL string are
+the semantic layer's, compiled into the warehouse query. For anything
+selective, put them in the OBSQL.
+
 ## What you can send
 
 The Flight surface takes **OBSQL** — `SELECT <dimension|measure> FROM <model>`,
