@@ -292,6 +292,14 @@ _CSS = """\
   min-height: 0 !important;
 }
 
+/* Action row: three compact buttons, each sized to its own label.
+   Without ``nowrap`` a button narrower than its text wraps to two lines,
+   which is what "Execute Query" and "Validate Model" were doing. */
+.action-btn {
+  white-space: nowrap !important;
+  flex-grow: 0 !important;
+}
+
 /* purple primary button — compact */
 .purple-btn {
   background: linear-gradient(135deg, #7c3aed, #9333ea) !important;
@@ -1152,15 +1160,52 @@ _IMPORT_OSI_JS = """
 """
 
 
+#: Gradio 6 parses a ```mermaid fence into ``<div class="mermaid">`` and stops
+#: there - it no longer runs mermaid over the markup the way Gradio 5 did. So
+#: the ER diagram rendered as its own source text, and the zoom control was
+#: silently dead with it, polling for an ``svg`` nothing would ever produce.
+#:
+#: The bundle is vendored under ``ui/static`` and inlined, exactly as
+#: vis-network is for the ontology graph: the UI loads no external asset, so an
+#: air-gapped deployment needs nothing it does not already have in the wheel.
+def _mermaid_head() -> str:
+    """A ``<head>`` fragment that installs mermaid and a render hook."""
+    from orionbelt.ui.rendering import _get_mermaid_b64
+
+    return f"""
+<script>
+(function () {{
+  // atob yields a binary string; the bundle is UTF-8, so decode it as such
+  // rather than letting the bytes be read as Latin-1.
+  var bytes = Uint8Array.from(atob("{_get_mermaid_b64()}"), function (c) {{
+    return c.charCodeAt(0);
+  }});
+  var el = document.createElement("script");
+  el.textContent = new TextDecoder("utf-8").decode(bytes);
+  document.head.appendChild(el);
+  window.mermaid.initialize({{ startOnLoad: false }});
+  window.__obRenderMermaid = async function () {{
+    var nodes = document.querySelectorAll("#er-diagram .mermaid:not([data-processed])");
+    if (nodes.length) {{ await window.mermaid.run({{ nodes: nodes }}); }}
+    return document.querySelectorAll("#er-diagram svg").length;
+  }};
+}})();
+</script>
+"""
+
+
 def frontend_assets(head_html: str | None = None) -> dict[str, str]:
     """The css/js/head every way of serving this app has to pass along.
 
     Gradio 6 takes these on ``launch()`` and ``mount_gradio_app()`` rather than
-    on the ``Blocks`` constructor.
+    on the ``Blocks`` constructor, so this is the single place all three
+    serving modes agree on: standalone ``launch``, the standalone mount, and
+    the API's ``/ui``. The mermaid loader belongs here for that reason - put on
+    the constructor it reaches only whichever mode happens to look there.
     """
     assets = {"css": _CSS, "js": _DARK_MODE_INIT_JS}
-    if head_html:
-        assets["head"] = head_html
+    mermaid = _mermaid_head()
+    assets["head"] = f"{head_html}\n{mermaid}" if head_html else mermaid
     return assets
 
 
@@ -1545,23 +1590,33 @@ def create_blocks(
                     outputs=[dim_picker, meas_picker],
                 )
 
+                # ``scale=0`` on all three: a button with the default scale
+                # absorbs the row's spare width, which is how "Compile SQL"
+                # came to span the whole editor. ``min_width`` is per label -
+                # 140 was narrower than "Validate Model" renders, so it broke
+                # across two lines.
                 with gr.Row(equal_height=True):
                     compile_btn = gr.Button(
-                        "Compile SQL", variant="primary", elem_classes=["purple-btn"]
+                        "Compile SQL",
+                        variant="primary",
+                        scale=0,
+                        min_width=150,
+                        elem_classes=["purple-btn", "action-btn"],
                     )
                     execute_btn = gr.Button(
                         "Execute Query",
                         variant="primary",
                         scale=0,
-                        min_width=140,
+                        min_width=160,
                         visible=query_exec_enabled,
-                        elem_classes=["orange-btn"],
+                        elem_classes=["orange-btn", "action-btn"],
                     )
                     validate_btn = gr.Button(
                         "Validate Model",
                         variant="secondary",
                         scale=0,
-                        min_width=140,
+                        min_width=160,
+                        elem_classes=["action-btn"],
                     )
 
                 with gr.Row(elem_classes=["output-row"]):
@@ -1988,9 +2043,14 @@ def create_blocks(
 
                 # After diagram generation, Mermaid renders the SVG asynchronously.
                 # Poll until the SVG appears, then apply the zoom transform.
+                # Render, then scale. The markup arrives from Gradio
+                # unprocessed (see ``mermaid_head``), so the poll has to run
+                # mermaid itself rather than wait for an ``svg`` that nothing
+                # else will produce.
                 _apply_zoom_deferred_js = """(zoom) => {
                     let tries = 0;
-                    const t = setInterval(() => {
+                    const t = setInterval(async () => {
+                        if (window.__obRenderMermaid) { await window.__obRenderMermaid(); }
                         const el = document.querySelector('#er-diagram svg');
                         if (el) {
                             el.style.transform = 'scale(' + (zoom / 100) + ')';

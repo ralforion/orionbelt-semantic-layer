@@ -69,11 +69,16 @@ os.environ.setdefault("PGWIRE_PORT", TEST_PGWIRE_PORT)
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip ``docker`` and ``adbc`` marked tests unless explicitly selected.
+    """Skip ``docker``, ``adbc`` and ``ui`` marked tests unless selected.
 
     ``adbc`` tests need a real Postgres reachable via ``OB_PG_URI`` (default
     ``postgresql://postgres:postgres@localhost:5432/postgres``). Run with
     ``pytest -m adbc`` to opt in.
+
+    ``ui`` tests drive a real browser and need a downloaded chromium. They
+    skip themselves without one, but a machine that *has* one would otherwise
+    run them on every plain ``pytest`` - which is not what "opt-in" means, and
+    makes the default suite depend on a browser install.
     """
     marker_expr = str(config.getoption("-m", default=""))
     if "docker" not in marker_expr:
@@ -88,6 +93,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         for item in items:
             if "adbc" in item.keywords:
                 item.add_marker(skip_adbc)
+    if "ui" not in marker_expr:
+        skip_ui = pytest.mark.skip(reason="UI browser tests not selected — run with: pytest -m ui")
+        for item in items:
+            if "ui" in item.keywords:
+                item.add_marker(skip_ui)
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"

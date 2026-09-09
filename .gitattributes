@@ -1,3 +1,9 @@
 *.ipynb filter=nbstripout
 *.zpln filter=nbstripout
 *.ipynb diff=ipynb
+
+# Vendored third-party bundles: exact upstream bytes, not ours to reformat.
+# ``-whitespace`` stops ``git diff --check`` reporting the trailing whitespace
+# minified JS legitimately carries inside template literals; ``linguist-vendored``
+# keeps 3.5 MB of mermaid out of the language stats and collapses it in diffs.
+src/orionbelt/ui/static/*.min.js -whitespace linguist-vendored
