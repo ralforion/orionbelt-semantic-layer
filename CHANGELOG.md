@@ -4,6 +4,22 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`CommandGetTables` ignored `include_schema`, so DuckDB could not list tables (#432).** Flight
+  SQL defines two response shapes for that command: four columns, or five with the serialised table
+  schema appended, chosen by a flag on the request. OBSL always answered with five. Every client
+  tested until now happened to ask for the five-column form, so it went unnoticed; DuckDB's
+  `adbc_scanner` extension asks for four and the driver rejects the endpoint outright -
+  `Invalid schema returned for: expected schema: fields: 4 ... got schema: fields: 5`.
+
+  The flag is parsed now and both the streamed table and the schema advertised in `FlightInfo`
+  follow it. With that, a plain DuckDB shell can list, describe and query a model over Flight SQL,
+  join the result to local tables and materialise it with `CREATE TABLE AS`.
+
+  Same class as the two catalog defects the ADBC conformance harness found in #382, and caught the
+  same way: by driving the server with a client nobody had pointed at it before.
+
 ## [2.27.0] - 2026-09-09
 
 ### Fixed

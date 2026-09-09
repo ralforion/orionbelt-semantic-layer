@@ -42,14 +42,16 @@ from ob_flight.flight_sql import (
     FOREIGN_KEYS_SCHEMA,
     PRIMARY_KEYS_SCHEMA,
     SQL_INFO_SCHEMA,
-    TABLE_SCHEMA,
+    TABLE_SCHEMA_NO_SCHEMA,
     TABLE_TYPES_SCHEMA,
     build_prepared_statement_result,
     is_flight_sql_command,
     parse_any,
     parse_create_prepared_statement,
+    parse_include_schema,
     parse_prepared_statement_handle,
     parse_statement_query,
+    tables_response_schema,
 )
 from ob_flight.server_routing import (
     _ROUTING_MIDDLEWARE_KEY,
@@ -84,7 +86,10 @@ __all__ = [
 _CATALOG_COMMAND_SCHEMAS = {
     CMD_GET_CATALOGS: CATALOG_SCHEMA,
     CMD_GET_DB_SCHEMAS: DB_SCHEMA_SCHEMA,
-    CMD_GET_TABLES: TABLE_SCHEMA,
+    # ``CommandGetTables`` alone has two shapes. The map holds the default
+    # (``include_schema`` absent, so false); ``get_flight_info`` overrides it
+    # per request via ``tables_response_schema``.
+    CMD_GET_TABLES: TABLE_SCHEMA_NO_SCHEMA,
     CMD_GET_TABLE_TYPES: TABLE_TYPES_SCHEMA,
     CMD_GET_SQL_INFO: SQL_INFO_SCHEMA,
     CMD_GET_XDBC_TYPE_INFO: pa.schema([pa.field("info", pa.utf8())]),
@@ -372,6 +377,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         table_filter: str | None = None,
         catalog_filter: str | None = None,
         db_schema_filter: str | None = None,
+        include_schema: bool = True,
     ) -> pa.Table:
         return server_catalog.build_tables_from_model(
             self,
@@ -379,6 +385,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             table_filter=table_filter,
             catalog_filter=catalog_filter,
             db_schema_filter=db_schema_filter,
+            include_schema=include_schema,
         )
 
     def _build_columns_from_model(
@@ -505,6 +512,11 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 # already has its spec schema as a constant, so there is no
                 # reason to guess.
                 schema = _CATALOG_COMMAND_SCHEMAS.get(type_url)
+                if type_url == CMD_GET_TABLES:
+                    # Two shapes, chosen by the request. Advertising the
+                    # five-column one for a four-column request is the same
+                    # inconsistency this block exists to avoid, one level in.
+                    schema = tables_response_schema(parse_include_schema(value))
                 if schema is None:
                     raise flight.FlightServerError(
                         f"No advertised schema for catalog command: {type_url}"

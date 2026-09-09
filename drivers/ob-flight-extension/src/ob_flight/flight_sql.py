@@ -50,15 +50,31 @@ DB_SCHEMA_SCHEMA = pa.schema(
     ]
 )
 
+# ``CommandGetTables`` has two response shapes, chosen by the request's
+# ``include_schema`` flag: four columns without it, five with the serialised
+# table schema appended. It is not optional decoration - a client that asked
+# for four columns and is handed five refuses the stream, which is how DuckDB's
+# adbc_scanner failed to list tables while every other client worked.
+TABLE_SCHEMA_FIELDS = [
+    pa.field("catalog_name", pa.utf8()),
+    pa.field("db_schema_name", pa.utf8()),
+    pa.field("table_name", pa.utf8(), nullable=False),
+    pa.field("table_type", pa.utf8(), nullable=False),
+]
+
+#: ``include_schema = false``, the Flight SQL default.
+TABLE_SCHEMA_NO_SCHEMA = pa.schema(TABLE_SCHEMA_FIELDS)
+
+#: ``include_schema = true``.
 TABLE_SCHEMA = pa.schema(
-    [
-        pa.field("catalog_name", pa.utf8()),
-        pa.field("db_schema_name", pa.utf8()),
-        pa.field("table_name", pa.utf8(), nullable=False),
-        pa.field("table_type", pa.utf8(), nullable=False),
-        pa.field("table_schema", pa.binary(), nullable=False),
-    ]
+    [*TABLE_SCHEMA_FIELDS, pa.field("table_schema", pa.binary(), nullable=False)]
 )
+
+
+def tables_response_schema(include_schema: bool) -> pa.Schema:
+    """The ``CommandGetTables`` response schema for a request's flag."""
+    return TABLE_SCHEMA if include_schema else TABLE_SCHEMA_NO_SCHEMA
+
 
 TABLE_TYPES_SCHEMA = pa.schema([pa.field("table_type", pa.utf8(), nullable=False)])
 
@@ -318,6 +334,34 @@ def parse_db_schema_filter(value: bytes) -> str | None:
     return _parse_filter_field(value, target_field=2)
 
 
+def parse_include_schema(value: bytes) -> bool:
+    """Extract ``include_schema`` (field 5, a bool) from a ``CommandGetTables``.
+
+    Absent means false, which is the protobuf default and what most clients
+    send. Answering with the five-column shape regardless is what made
+    ``adbc_tables`` fail on DuckDB: the driver compares the streamed schema
+    against the four columns it asked for and rejects the endpoint.
+    """
+    try:
+        offset = 0
+        while offset < len(value):
+            tag, offset = _read_varint(value, offset)
+            field_number = tag >> 3
+            wire_type = tag & 0x07
+            if wire_type == 0:  # varint (bool / int)
+                parsed, offset = _read_varint(value, offset)
+                if field_number == 5:
+                    return bool(parsed)
+            elif wire_type == 2:  # length-delimited (string / bytes)
+                length, offset = _read_varint(value, offset)
+                offset += length
+            else:
+                break
+    except Exception:
+        pass
+    return False
+
+
 def _parse_filter_field(value: bytes, *, target_field: int) -> str | None:
     """Scan a Flight SQL command body for one length-delimited string field."""
     try:
@@ -415,6 +459,7 @@ def build_tables_table(
     *,
     expose_data_objects: bool = False,
     table_filter: str | None = None,
+    include_schema: bool = True,
 ) -> pa.Table:
     """Build response for CommandGetTables from the semantic model.
 
@@ -487,16 +532,15 @@ def build_tables_table(
     for vt_name in METADATA_VIEW_NAMES:
         _emit(vt_name, "VIEW", virtual_view_schema(model, vt_name))
 
-    return pa.table(
-        {
-            "catalog_name": catalogs,
-            "db_schema_name": schemas,
-            "table_name": names,
-            "table_type": types,
-            "table_schema": table_schemas,
-        },
-        schema=TABLE_SCHEMA,
-    )
+    columns: dict[str, Any] = {
+        "catalog_name": catalogs,
+        "db_schema_name": schemas,
+        "table_name": names,
+        "table_type": types,
+    }
+    if include_schema:
+        columns["table_schema"] = table_schemas
+    return pa.table(columns, schema=tables_response_schema(include_schema))
 
 
 def build_table_types_table() -> pa.Table:
