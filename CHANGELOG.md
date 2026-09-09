@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.27.0] - 2026-09-09
+
 ### Fixed
 
 - **The Flight executor takes the driver's Arrow schema instead of guessing one (#428).** It built
