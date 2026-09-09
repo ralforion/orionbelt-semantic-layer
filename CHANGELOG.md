@@ -6,6 +6,26 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Fixed
 
+- **The Flight executor takes the driver's Arrow schema instead of guessing one (#428).** It built
+  every result by pulling tuples out of a PEP 249 cursor and inferring Arrow types from the values
+  in the first batch, so the one surface whose protocol is made of record batches was the one that
+  never asked a driver for Arrow: a Postgres or Dremio result that arrived as Arrow was torn down
+  into Python objects and rebuilt with re-inferred types, while REST and pgwire asked the same
+  cursors for the table directly.
+
+  Inference from sampled values is the class of defect that typed empty columns `null` in the cache
+  and narrowed governed decimals (#136). Measured on a real DuckDB cursor, `CAST(1.50 AS
+  DECIMAL(18,2))` was sized `decimal128(3, 2)` from the value and now keeps `decimal128(18, 2)`.
+  The row path remains for a cursor with no Arrow at all.
+
+  Calling it surfaced a second thing: `ob_duckdb.fetch_arrow_table()` called DuckDB's *deprecated*
+  `fetch_arrow_table`, so every Flight query on DuckDB emitted a `DeprecationWarning`. It prefers
+  `to_arrow_table` where the installed duckdb has it.
+
+  Not a performance change, though it is one: on DuckDB the two paths are within noise below ~10k
+  rows, which is where semantic-layer aggregations live, and the gap only opens at 100k (8.6x) and
+  1M (31x).
+
 - **One cache entry now means the same thing to every surface (#429).** REST, pgwire and Flight
   share a result cache - same key, same blob - but they did not share a representation. REST and
   pgwire encoded rows that had already been serialised, so a timestamp column was stored as an ISO
