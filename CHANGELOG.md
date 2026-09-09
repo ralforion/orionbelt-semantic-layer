@@ -4,6 +4,20 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Documented DuckDB as a client of the layer.** `docs/guide/adbc.md` gains a `From DuckDB`
+  section: with the `adbc_scanner` community extension, a plain DuckDB shell connects to the Flight
+  SQL surface and `adbc_scan` turns a governed query into a relation, so it joins to local tables,
+  aggregates, and materialises with `CREATE TABLE AS`. The recipe is asserted like every other
+  sample on that page - `tests/integration/test_adbc_docs_claims.py` runs it against a live server,
+  skipping only where the community extension cannot be fetched.
+
+  Two caveats the page states plainly: `adbc_scanner` is a community extension, not a bundled one,
+  and `adbc_connect` needs a filesystem path to the Flight SQL driver library rather than a package
+  name. It also names the division of labour - predicates inside the OBSQL string are compiled into
+  the warehouse query, predicates outside the scan are DuckDB's and run after the rows arrive.
+
 ### Fixed
 
 - **`CommandGetTables` ignored `include_schema`, so DuckDB could not list tables (#433).** Flight
