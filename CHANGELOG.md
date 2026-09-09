@@ -6,7 +6,7 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Fixed
 
-- **`CommandGetTables` ignored `include_schema`, so DuckDB could not list tables (#432).** Flight
+- **`CommandGetTables` ignored `include_schema`, so DuckDB could not list tables (#433).** Flight
   SQL defines two response shapes for that command: four columns, or five with the serialised table
   schema appended, chosen by a flag on the request. OBSL always answered with five. Every client
   tested until now happened to ask for the five-column form, so it went unnoticed; DuckDB's
