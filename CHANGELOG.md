@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.27.2] - 2026-09-09
+
 ### Fixed
 
 - **The ER diagram rendered as its own source text (#436).** Gradio 6 parses a ```` ```mermaid ````

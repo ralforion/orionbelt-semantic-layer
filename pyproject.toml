@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-semantic-layer"
-version = "2.27.1"
+version = "2.27.2"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
 license = "BUSL-1.1"
 license-files = ["LICENSE"]
