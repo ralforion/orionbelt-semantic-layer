@@ -14,7 +14,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
   The loader lives in `frontend_assets()` rather than on the `Blocks` constructor, because that is
   the one place all three serving modes agree on: standalone `launch`, the standalone mount, and
-  the API's `/ui`.
+  the API's `/ui`. The bundle is **vendored** under `ui/static` and inlined, exactly as
+  vis-network already is for the ontology graph, so the UI still loads no external asset: an
+  air-gapped install needs nothing beyond the wheel, and `/ui`'s CSP - which allows scripts from
+  `'self'` and inline only - would have blocked a CDN import while bare Gradio allowed it.
 
 - **The action buttons spanned the row and wrapped their labels (#436).** `Compile SQL` had
   Gradio's default scale, so it absorbed the row's spare width, and a 140px `min_width` was
@@ -30,7 +33,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   dremio suites, and it runs in CI, where a job installs chromium so the suite is an assertion
   rather than a green skip.
 
-  Verified against the defect: reverting the loader fails two of the four tests.
+  It covers both serving modes, because they differ in the way that matters: bare Gradio has no
+  CSP, while the API's `/ui` does. Verified against both defects rather than assumed - reverting
+  the loader fails two of the standalone tests, and putting the CDN import back fails the embedded
+  one.
 
 ## [2.27.1] - 2026-09-09
 

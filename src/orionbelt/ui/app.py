@@ -1165,17 +1165,31 @@ _IMPORT_OSI_JS = """
 #: the ER diagram rendered as its own source text, and the zoom control was
 #: silently dead with it, polling for an ``svg`` nothing would ever produce.
 #:
-#: Pinned to a major version. It is the one external asset this UI loads, which
-#: an air-gapped deployment would have to vendor.
-_MERMAID_HEAD = """
-<script type="module">
-  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-  mermaid.initialize({ startOnLoad: false });
-  window.__obRenderMermaid = async () => {
-    const nodes = document.querySelectorAll('#er-diagram .mermaid:not([data-processed])');
-    if (nodes.length) { await mermaid.run({ nodes }); }
-    return document.querySelectorAll('#er-diagram svg').length;
-  };
+#: The bundle is vendored under ``ui/static`` and inlined, exactly as
+#: vis-network is for the ontology graph: the UI loads no external asset, so an
+#: air-gapped deployment needs nothing it does not already have in the wheel.
+def _mermaid_head() -> str:
+    """A ``<head>`` fragment that installs mermaid and a render hook."""
+    from orionbelt.ui.rendering import _get_mermaid_b64
+
+    return f"""
+<script>
+(function () {{
+  // atob yields a binary string; the bundle is UTF-8, so decode it as such
+  // rather than letting the bytes be read as Latin-1.
+  var bytes = Uint8Array.from(atob("{_get_mermaid_b64()}"), function (c) {{
+    return c.charCodeAt(0);
+  }});
+  var el = document.createElement("script");
+  el.textContent = new TextDecoder("utf-8").decode(bytes);
+  document.head.appendChild(el);
+  window.mermaid.initialize({{ startOnLoad: false }});
+  window.__obRenderMermaid = async function () {{
+    var nodes = document.querySelectorAll("#er-diagram .mermaid:not([data-processed])");
+    if (nodes.length) {{ await window.mermaid.run({{ nodes: nodes }}); }}
+    return document.querySelectorAll("#er-diagram svg").length;
+  }};
+}})();
 </script>
 """
 
@@ -1190,7 +1204,8 @@ def frontend_assets(head_html: str | None = None) -> dict[str, str]:
     the constructor it reaches only whichever mode happens to look there.
     """
     assets = {"css": _CSS, "js": _DARK_MODE_INIT_JS}
-    assets["head"] = f"{head_html}\n{_MERMAID_HEAD}" if head_html else _MERMAID_HEAD
+    mermaid = _mermaid_head()
+    assets["head"] = f"{head_html}\n{mermaid}" if head_html else mermaid
     return assets
 
 

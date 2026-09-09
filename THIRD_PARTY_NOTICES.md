@@ -16,6 +16,7 @@ of `orionbelt-semantic-layer`.
 | Shipped as | Upstream | Version | Licence | Text |
 |---|---|---|---|---|
 | `orionbelt/ui/static/vis-network.min.js` | [vis-network](https://visjs.github.io/vis-network/) | 9.1.2 | Apache-2.0 OR MIT (redistributed under MIT) | `orionbelt/ui/static/vis-network.LICENSE.txt` |
+| `orionbelt/ui/static/mermaid.min.js` | [mermaid](https://mermaid.js.org/) | 11.17.2 | MIT | `orionbelt/ui/static/mermaid.LICENSE.txt` |
 
 vis-network is dual licensed and may be distributed under either licence;
 OrionBelt redistributes it under the MIT License. The minified file carries a
@@ -133,12 +134,16 @@ docker run --rm ralforion/orionbelt-semantic-layer-api \
 
 Installing `orionbelt-semantic-layer` from PyPI pulls its dependencies from
 PyPI directly — OrionBelt does not vendor or re-publish them, so that path
-redistributes nothing but OrionBelt's own code and the one bundled file above.
+redistributes nothing but OrionBelt's own code and the two bundled files above.
 
 ## Where these terms came from
 
 - vis-network: the `@license` header of the bundled `vis-network.min.js`
   (version 9.1.2, dated 2022-03-28) and the upstream project page.
+- mermaid: the `LICENSE` file published beside the bundle on npm, vendored
+  alongside it as `mermaid.LICENSE.txt`. The UMD build is bundled rather than
+  the ESM one: the ESM entry point loads its own chunks at runtime, which a
+  vendored copy could not satisfy.
 - Python packages: the `License-Expression`, `License`, and `License ::`
   classifier fields of each installed distribution's metadata, read from the
   resolved environment rather than transcribed by hand.

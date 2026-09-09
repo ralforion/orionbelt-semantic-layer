@@ -26,6 +26,27 @@ def _get_vis_network_b64() -> str:
     return _VIS_NETWORK_B64
 
 
+_MERMAID_B64: str | None = None
+
+
+def _get_mermaid_b64() -> str:
+    """Return base64-encoded mermaid.min.js (cached).
+
+    The UMD build, not ``mermaid.esm.min.mjs``: the ESM entry is 30 KB and
+    imports ``./chunks/mermaid.esm.min/*.mjs`` at runtime, so vendoring it
+    alone would send the browser looking for files we do not ship. The UMD
+    bundle is self-contained and defines ``window.mermaid``.
+    """
+    import base64
+    from pathlib import Path
+
+    global _MERMAID_B64  # noqa: PLW0603
+    if _MERMAID_B64 is None:
+        js_path = Path(__file__).parent / "static" / "mermaid.min.js"
+        _MERMAID_B64 = base64.b64encode(js_path.read_bytes()).decode("ascii")
+    return _MERMAID_B64
+
+
 def _format_convert_status(
     direction: str,
     warnings: list[str],

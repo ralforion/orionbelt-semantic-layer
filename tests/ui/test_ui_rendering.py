@@ -104,6 +104,77 @@ def page(ui_url: str) -> Iterator[Any]:
             browser.close()
 
 
+@pytest.fixture(scope="module")
+def embedded_ui_url() -> Iterator[str]:
+    """The UI as the API serves it, at ``/ui``, with the CSP middleware on.
+
+    The standalone fixture above launches bare Gradio, which no middleware
+    touches. That is the mode the mermaid loader was first written against,
+    and it hid a real problem: ``/ui``'s CSP allows scripts from ``'self'``
+    and inline only, so a loader importing from a CDN would have been blocked
+    here while passing there. Vendoring removed the CDN, and this makes the
+    stricter of the two modes the one under test.
+    """
+    pytest.importorskip("gradio", reason="gradio required for the UI suite")
+    pytest.importorskip("playwright", reason="playwright required")
+    uvicorn = pytest.importorskip("uvicorn", reason="uvicorn required")
+
+    from orionbelt.api.app import create_app
+    from orionbelt.settings import Settings
+
+    app = create_app(settings=Settings(ui_enabled=True))
+    port = _free_port()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    threading.Thread(target=server.run, daemon=True).start()
+
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                break
+        except OSError:
+            time.sleep(0.5)
+    else:
+        pytest.fail("embedded UI did not start")
+
+    try:
+        yield f"http://127.0.0.1:{port}/ui"
+    finally:
+        server.should_exit = True
+
+
+class TestTheEmbeddedUI:
+    """``/ui`` inside the API, where the CSP applies."""
+
+    def test_the_diagram_renders_under_the_csp(self, embedded_ui_url: str) -> None:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.launch()
+            except Exception as exc:  # noqa: BLE001 - browser binary not installed
+                pytest.skip(f"no chromium available: {exc}")
+            page = browser.new_page()
+            violations: list[str] = []
+            # A CSP block surfaces as a console error, not an exception.
+            page.on(
+                "console",
+                lambda m: (
+                    violations.append(m.text) if "Content Security Policy" in m.text else None
+                ),
+            )
+            try:
+                page.goto(embedded_ui_url, wait_until="domcontentloaded")
+                page.wait_for_selector("role=tab[name='ER Diagram']", timeout=60_000)
+                page.get_by_role("tab", name="ER Diagram").click()
+                page.wait_for_selector("#er-diagram svg", timeout=30_000)
+                assert page.evaluate("() => typeof window.__obRenderMermaid") == "function"
+                assert not violations, f"CSP blocked something: {violations}"
+            finally:
+                browser.close()
+
+
 class TestTheERDiagramRenders:
     """The regression a Gradio bump shipped: markup, no diagram."""
 
