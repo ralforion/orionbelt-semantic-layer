@@ -20,18 +20,23 @@ the semantic surface has no reason to implement - see
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import pathlib
 import threading
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
+from orionbelt.auth import init_auth, reset_auth
 from orionbelt.pgwire.router import SemanticRouter
 from orionbelt.pgwire.server import PgWireServer
 from orionbelt.service.session_manager import SessionManager
+from orionbelt.service.tls import load_listener_tls
 from tests.conftest import SAMPLE_MODEL_YAML
 from tests.integration.test_adbc_flightsql import _SETUP_SQL
+from tests.integration.test_pgwire_tls import _pki
 
 duckdb = pytest.importorskip("duckdb", reason="duckdb required to drive the client side")
 
@@ -210,3 +215,233 @@ def test_binary_copy_is_the_setting_that_matters(pg_extension: Any, pgwire_liste
             conn.execute('SELECT "Customer Country" FROM obsl.sales.model').fetchall()
     finally:
         conn.close()
+
+
+@pytest.fixture(scope="module")
+def tls_listener(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[tuple[int, dict[str, str]]]:
+    pytest.importorskip("cryptography", reason="cryptography required to mint test certs")
+    out = tmp_path_factory.mktemp("pgwire-duckdb-tls")
+    pki = _pki(out)
+
+    db_path = out / "warehouse.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(_SETUP_SQL)
+    conn.close()
+
+    prev = os.environ.get("DUCKDB_DATABASE")
+    os.environ["DUCKDB_DATABASE"] = str(db_path)
+
+    manager = SessionManager(ttl_seconds=3600, cleanup_interval=9999)
+    manager.get_or_create_named("sales").load_model(SAMPLE_MODEL_YAML, dedup=False)
+    router = SemanticRouter(session_manager=manager, default_dialect="duckdb")
+    server = PgWireServer(
+        host="127.0.0.1",
+        port=0,
+        auth_mode="trust",
+        max_connections=16,
+        tls=load_listener_tls(pki["cert"], pki["key"], prefix="PGWIRE"),
+        query_handler=router.handle,
+    )
+
+    ready = threading.Event()
+    bound: dict[str, int] = {}
+    loop = asyncio.new_event_loop()
+
+    def run() -> None:
+        asyncio.set_event_loop(loop)
+        bound["port"] = loop.run_until_complete(server.start())
+        ready.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=run, name="pgwire-duckdb-tls-test", daemon=True)
+    thread.start()
+    assert ready.wait(30), "TLS pgwire listener did not start"
+    try:
+        yield bound["port"], pki
+    finally:
+        asyncio.run_coroutine_threadsafe(server.stop(), loop).result(timeout=5)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        manager.stop()
+        if prev is None:
+            os.environ.pop("DUCKDB_DATABASE", None)
+        else:
+            os.environ["DUCKDB_DATABASE"] = prev
+
+
+class TestOverTLS:
+    """``ATTACH`` against a TLS listener, which needs nothing added to it.
+
+    The extension is libpq underneath and passes the whole connection string
+    through, so ``sslmode`` and ``sslrootcert`` work exactly as they do for
+    ``psql``. Worth pinning rather than assuming: it is the difference between
+    the surface being usable from DuckDB over an untrusted network and not.
+    """
+
+    def _read(self, port: int, extra: str) -> list[tuple[Any, ...]]:
+        conn = duckdb.connect()
+        try:
+            conn.execute("INSTALL postgres")
+            conn.execute("LOAD postgres")
+            conn.execute("SET pg_use_text_protocol = true")
+            conn.execute(
+                f"ATTACH 'host=127.0.0.1 port={port} dbname=sales user=obsl {extra}' "
+                f"AS obsl (TYPE postgres, READ_ONLY)"
+            )
+            return conn.execute(
+                'SELECT "Customer Country", "Total Revenue" FROM obsl.sales.model ORDER BY 1'
+            ).fetchall()
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize("sslmode", ["disable", "prefer", "require"])
+    def test_the_modes_that_need_no_certificate(
+        self, pg_extension: Any, tls_listener: tuple[int, dict[str, str]], sslmode: str
+    ) -> None:
+        port, _ = tls_listener
+        assert self._read(port, f"sslmode={sslmode}") == [("UK", 75.0), ("US", 150.0)]
+
+    @pytest.mark.parametrize("sslmode", ["verify-ca", "verify-full"])
+    def test_the_modes_that_verify(
+        self, pg_extension: Any, tls_listener: tuple[int, dict[str, str]], sslmode: str
+    ) -> None:
+        port, pki = tls_listener
+        extra = f"sslmode={sslmode} sslrootcert={pki['ca']}"
+        assert self._read(port, extra) == [("UK", 75.0), ("US", 150.0)]
+
+    def test_the_wrong_trust_anchor_is_refused(
+        self, pg_extension: Any, tls_listener: tuple[int, dict[str, str]]
+    ) -> None:
+        """What makes the five above mean something: verification is real."""
+        port, pki = tls_listener
+        with pytest.raises(Exception, match="(?i)certificate|ssl"):
+            self._read(port, f"sslmode=verify-ca sslrootcert={pki['other_ca']}")
+
+
+# A well-formed key: ``init_auth`` refuses short or low-entropy ones, because a
+# weak key is attackable offline from a captured SCRAM transcript.
+_API_KEY = "obsl_pat_" + "a3f9" * 10
+
+
+@pytest.fixture
+def api_key_auth() -> Iterator[str]:
+    reset_auth()
+    init_auth(auth_mode="api_key", api_keys=_API_KEY)
+    try:
+        yield _API_KEY
+    finally:
+        reset_auth()
+
+
+@contextlib.contextmanager
+def _listener(auth_mode: str) -> Iterator[int]:
+    """A listener in *auth_mode*, yielding its port. Shared by the auth tests."""
+    manager = SessionManager(ttl_seconds=3600, cleanup_interval=9999)
+    manager.get_or_create_named("sales").load_model(SAMPLE_MODEL_YAML, dedup=False)
+    router = SemanticRouter(session_manager=manager, default_dialect="duckdb")
+    server = PgWireServer(
+        host="127.0.0.1",
+        port=0,
+        auth_mode=auth_mode,
+        max_connections=16,
+        query_handler=router.handle,
+    )
+    ready = threading.Event()
+    bound: dict[str, int] = {}
+    loop = asyncio.new_event_loop()
+
+    def run() -> None:
+        asyncio.set_event_loop(loop)
+        bound["port"] = loop.run_until_complete(server.start())
+        ready.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=run, name=f"pgwire-{auth_mode}-test", daemon=True)
+    thread.start()
+    assert ready.wait(30), "pgwire listener did not start"
+    try:
+        yield bound["port"]
+    finally:
+        asyncio.run_coroutine_threadsafe(server.stop(), loop).result(timeout=5)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        manager.stop()
+
+
+class TestAuthentication:
+    """The API key is the password, and DuckDB has nothing special to do.
+
+    ``AUTH_MODE=api_key`` makes the listener demand a credential; the mechanism
+    is SCRAM-SHA-256 unless an operator opts down to cleartext. Both are libpq's
+    to perform, so ``password=<key>`` in the connection string is the whole of
+    the client side - which is worth pinning, because SCRAM is the default and
+    a client that could not do it would be locked out of an authenticated
+    deployment entirely.
+    """
+
+    @pytest.fixture
+    def warehouse(self, tmp_path: pathlib.Path) -> Iterator[pathlib.Path]:
+        db_path = tmp_path / "warehouse.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute(_SETUP_SQL)
+        conn.close()
+        prev = os.environ.get("DUCKDB_DATABASE")
+        os.environ["DUCKDB_DATABASE"] = str(db_path)
+        try:
+            yield db_path
+        finally:
+            if prev is None:
+                os.environ.pop("DUCKDB_DATABASE", None)
+            else:
+                os.environ["DUCKDB_DATABASE"] = prev
+
+    def _read(self, port: int, extra: str) -> list[tuple[Any, ...]]:
+        conn = duckdb.connect()
+        try:
+            conn.execute("INSTALL postgres")
+            conn.execute("LOAD postgres")
+            conn.execute("SET pg_use_text_protocol = true")
+            conn.execute(
+                f"ATTACH 'host=127.0.0.1 port={port} dbname=sales user=obsl {extra}' "
+                f"AS obsl (TYPE postgres, READ_ONLY)"
+            )
+            return conn.execute('SELECT "Customer Country" FROM obsl.sales.model').fetchall()
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize("auth_mode", ["scram", "password"])
+    def test_the_api_key_is_the_password(
+        self,
+        pg_extension: Any,
+        api_key_auth: str,
+        warehouse: pathlib.Path,
+        auth_mode: str,
+    ) -> None:
+        """``scram`` is the default; ``password`` is the cleartext opt-in."""
+        with _listener(auth_mode) as port:
+            assert len(self._read(port, f"password={api_key_auth}")) == 2
+
+    @pytest.mark.parametrize("auth_mode", ["scram", "password"])
+    def test_a_wrong_key_is_refused(
+        self,
+        pg_extension: Any,
+        api_key_auth: str,
+        warehouse: pathlib.Path,
+        auth_mode: str,
+    ) -> None:
+        with (
+            _listener(auth_mode) as port,
+            pytest.raises(Exception, match="(?i)authentication failed|invalid api key"),
+        ):
+            self._read(port, "password=wrong")
+
+    def test_no_password_is_refused(
+        self, pg_extension: Any, api_key_auth: str, warehouse: pathlib.Path
+    ) -> None:
+        with (
+            _listener("scram") as port,
+            pytest.raises(Exception, match="(?i)authentication failed"),
+        ):
+            self._read(port, "")

@@ -83,7 +83,7 @@ Every client uses the same connection details:
 | Port | `PGWIRE_PORT` (default `5432`) |
 | Database | the model addressing name — the OBML `name:` field or, lacking that, the file stem (e.g. `orionbelt_1_commerce`) |
 | Username | any non-empty string (`obsl`, the tool's default — ignored in `trust` mode) |
-| Password | leave empty in `trust` mode (auth lands in Step 6) |
+| Password | leave empty in `trust` mode; with `AUTH_MODE=api_key` the API key is the password (SCRAM-SHA-256 by default) |
 | TLS / SSL | `disable` unless the server was started with `PGWIRE_TLS_CERT` / `PGWIRE_TLS_KEY` - see [TLS](#tls) above |
 
 To list available model names, query the REST `GET /v1/models`
@@ -333,6 +333,37 @@ filter on the model.
 `SELECT count(*) FROM obsl.<schema>.model` counts rows at the model's grain,
 one per dimension combination, which is what `SELECT *` over it returns.
 
+### TLS and authentication
+
+The extension is libpq underneath, so the whole connection string reaches it
+and `sslmode`, `sslrootcert` and `password` behave exactly as they do for
+`psql`. Nothing about the DuckDB side is special.
+
+Against a listener started with `PGWIRE_TLS_CERT` / `PGWIRE_TLS_KEY`:
+
+```sql
+ATTACH 'host=obsl.internal port=5432 dbname=commerce user=obsl
+        sslmode=verify-full sslrootcert=/etc/ssl/certs/obsl-ca.crt'
+    AS obsl (TYPE postgres, READ_ONLY);
+```
+
+All four modes negotiate (`disable`, `prefer`, `require`, `verify-ca`,
+`verify-full`), and `verify-ca` against the wrong trust anchor is refused,
+which is what makes the others mean anything.
+
+With `AUTH_MODE=api_key`, the API key **is** the password:
+
+```sql
+ATTACH 'host=obsl.internal port=5432 dbname=commerce user=obsl
+        password=obsl_pat_...  sslmode=require'
+    AS obsl (TYPE postgres, READ_ONLY);
+```
+
+The mechanism is SCRAM-SHA-256 by default, which libpq performs on DuckDB's
+behalf; `PGWIRE_AUTH_MODE=password` drops to cleartext for clients that lack
+SCRAM, and DuckDB is not one of them. Send the key over TLS either way: with
+SCRAM the key never crosses the wire, but the query results do.
+
 ### Compared to the ADBC route
 
 The [ADBC guide](adbc.md#from-duckdb) shows the same idea over Arrow Flight
@@ -357,8 +388,8 @@ These constraints are documented in
 | Limitation | Reason | Workaround |
 |---|---|---|
 | `psql \d <table>` partially works (psql 16 RLS-policy probe hits DuckDB's correlated-UNNEST limit) | DuckDB engine, not the wire protocol | Use BI tools (they query `information_schema`) or `\dt` |
-| Binary-format Bind parameters rejected | Step 4 ships text format only | Force text format if a driver supports it; binary lands in Step 7 |
-| No authentication | `trust` mode only until Step 6 lands | Run behind a network boundary or skip pgwire on public deploys |
+| Binary-format Bind parameters decode for the common scalar OIDs only (bool, bytea, int2/4/8, float4/8, text, varchar, name, bpchar) | Anything else would be mangled bytes, so it raises instead | Force text format if the driver supports it; the error names the OID |
+| DuckDB `ATTACH` needs `SET pg_use_text_protocol = true` | The default reads with `COPY ... TO STDOUT (FORMAT binary)`, which the semantic surface does not implement | Set it once per session, before the first read - see [7. DuckDB](#7-duckdb) |
 | Write operations (`INSERT` / `UPDATE` / `DELETE` / DDL) | Read-only semantic layer | Use the REST API for model management; data writes go to the warehouse, not OBSL |
 
 ## Reporting a tool that fails

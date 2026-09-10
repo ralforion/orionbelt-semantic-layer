@@ -21,8 +21,13 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   Each returned an empty catalog or a message about something else.
 
   One client setting is required: `SET pg_use_text_protocol = true`, because the default reads data
-  with `COPY ... TO STDOUT (FORMAT binary)`. See
-  [the guide](https://ralforion.com/orionbelt-semantic-layer/guide/postgres-wire-bi-tools/#7-duckdb).
+  with `COPY ... TO STDOUT (FORMAT binary)`.
+
+  TLS and authentication need nothing added on either side. The extension is libpq underneath, so
+  `sslmode` / `sslrootcert` / `password` reach it verbatim: all five `sslmode` values negotiate
+  against a `PGWIRE_TLS_CERT` listener and the wrong trust anchor is refused, and under
+  `AUTH_MODE=api_key` the API key is the password over SCRAM-SHA-256 (libpq performs the exchange).
+  See [the guide](https://ralforion.com/orionbelt-semantic-layer/guide/postgres-wire-bi-tools/#7-duckdb).
 
 - **Multi-statement simple queries.** One `Query` message carrying several statements separated by
   semicolons now runs each in order and replies with one result set per statement, as Postgres

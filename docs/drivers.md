@@ -217,6 +217,38 @@ done
 
 ---
 
+## DuckDB as a client
+
+Besides being one of the eight warehouses OBSL compiles *to*, DuckDB can sit in
+front of it and query the model. Two routes, both giving you a relation you can
+join to local files:
+
+```sql
+-- Postgres wire: the model becomes a table
+INSTALL postgres; LOAD postgres;
+SET pg_use_text_protocol = true;
+ATTACH 'host=localhost port=5432 dbname=commerce user=obsl'
+    AS obsl (TYPE postgres, READ_ONLY);
+
+SELECT "Country Name", "Total Sales" FROM obsl.commerce.model;
+```
+
+```sql
+-- Arrow Flight SQL: OBSQL through a table function, Arrow end to end
+INSTALL adbc_scanner FROM community; LOAD adbc_scanner;
+CREATE OR REPLACE TABLE h AS SELECT adbc_connect(MAP {
+    'driver': '/path/to/libadbc_driver_flightsql.so',
+    'uri':    'grpc://localhost:8815'
+}) AS handle;
+
+SELECT * FROM adbc_scan((SELECT handle FROM h),
+    'SELECT "Country Name", "Total Sales" FROM commerce');
+```
+
+See [7. DuckDB](guide/postgres-wire-bi-tools.md#7-duckdb) for the `ATTACH` route
+(including TLS and authentication) and [From DuckDB](guide/adbc.md#from-duckdb)
+for the ADBC one.
+
 ## Arrow Flight SQL Server
 
 The `ob-flight-extension` package adds an Arrow Flight SQL endpoint to the OrionBelt API. This enables BI tools that support the Arrow Flight protocol — DBeaver, Tableau (via JDBC), Power BI (via ODBC bridge) — to run OBML queries directly.
