@@ -110,7 +110,7 @@ The same model serves every surface you already use:
 - **Your BI tool**, over the PostgreSQL wire protocol on `:5432`. Tableau, Power BI, Superset, DBeaver, and `psql` connect with the Postgres driver they already ship. Dremio federates it as a Postgres source.
 - **Your [AI agents](https://ralforion.com/agentic-ai-data-access.html)**, over MCP. Works with Claude, Cursor, Copilot, and Windsurf.
 - **Your code**, over REST, Arrow Flight SQL, or PEP 249 drivers.
-- **Your DuckDB**, over Arrow Flight SQL. `LOAD adbc_scanner`, connect, and `adbc_scan` a governed query into a DuckDB relation you can join, filter, and materialise locally. See [Connecting via ADBC](https://ralforion.com/orionbelt-semantic-layer/guide/adbc/#from-duckdb).
+- **Your DuckDB**, two ways. `ATTACH 'host=... dbname=...' AS obsl (TYPE postgres)` makes the model a table you query as `obsl.<model>.model` ([guide](https://ralforion.com/orionbelt-semantic-layer/guide/postgres-wire-bi-tools/#7-duckdb)); `adbc_scanner` does the same over Arrow Flight SQL and keeps Arrow end to end ([guide](https://ralforion.com/orionbelt-semantic-layer/guide/adbc/#from-duckdb)). Either way it joins to local files and lands in `CREATE TABLE AS`.
 
 Compiles to BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, PostgreSQL, and Snowflake.
 
@@ -402,7 +402,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **AI Integrations** — LangChain, OpenAI Agents SDK, CrewAI, Google ADK, Vercel AI SDK, n8n, ChatGPT
 - **Gradio UI** — interactive web interface for model editing, query testing, and ER diagrams
 - **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI; ships with `examples/obsql.py`, a tiny terminal CLI for testing the Flight surface without a BI tool
-- **DuckDB as a client** (v2.27.1+) — with the `adbc_scanner` community extension, a plain DuckDB shell queries the layer over Flight SQL: `adbc_scan` returns a relation, so governed measures join to local tables and land in `CREATE TABLE AS`. Arrow the whole way, no conversion at either end
+- **DuckDB as a client** (v2.27.1+) - a plain DuckDB shell queries the layer, over either surface. `ATTACH ... (TYPE postgres)` mounts the model as a table (`SELECT ... FROM obsl.sales.model`, one `SET pg_use_text_protocol = true` first); the `adbc_scanner` community extension does it over Flight SQL with Arrow the whole way. Governed measures join to local tables and land in `CREATE TABLE AS`
 - **PostgreSQL Wire Protocol** (v2.5.0+) — native Postgres-protocol surface on `:5432`. Every BI tool already ships a Postgres ODBC/JDBC driver, so the user side is "point your existing connection at OBSL and go" — Tableau, DBeaver, Superset, Power BI, plain `psql`, and **Dremio as a federated Postgres source** (Dremio → OBSL → optionally back to Dremio's lakehouse, full circle)
 
 ### Agent-Facing API

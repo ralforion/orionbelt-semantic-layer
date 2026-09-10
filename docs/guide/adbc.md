@@ -250,6 +250,12 @@ The scan is a table function, so DuckDB treats its output as any other
 relation: the semantic layer resolves the model and returns Arrow, and DuckDB
 does whatever you ask on top.
 
+DuckDB can also reach the model over the [Postgres wire
+surface](postgres-wire-bi-tools.md#7-duckdb), where `ATTACH ... (TYPE postgres)`
+mounts it as a real table (`FROM obsl.sales.model`) rather than a string passed
+to a table function. That route needs no driver path and no community
+extension; this one keeps Arrow end to end.
+
 Note the division of labour. Predicates written *outside* `adbc_scan` are
 DuckDB's, applied after the rows arrive; predicates inside the OBSQL string are
 the semantic layer's, compiled into the warehouse query. For anything

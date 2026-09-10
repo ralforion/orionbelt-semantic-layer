@@ -84,7 +84,7 @@ Every client uses the same connection details:
 | Database | the model addressing name — the OBML `name:` field or, lacking that, the file stem (e.g. `orionbelt_1_commerce`) |
 | Username | any non-empty string (`obsl`, the tool's default — ignored in `trust` mode) |
 | Password | leave empty in `trust` mode (auth lands in Step 6) |
-| TLS / SSL | disable; the server has no built-in TLS today |
+| TLS / SSL | `disable` unless the server was started with `PGWIRE_TLS_CERT` / `PGWIRE_TLS_KEY` - see [TLS](#tls) above |
 
 To list available model names, query the REST `GET /v1/models`
 endpoint or check the server startup log.
@@ -281,6 +281,74 @@ Dremio, three options:
    ships and Dremio picks it up, semantic-aware aggregation through
    Calcite is blocked upstream.
 
+## 7. DuckDB
+
+DuckDB can be a client of the wire surface as well as a warehouse behind it.
+Its `postgres` extension attaches the semantic layer as a catalog, so the model
+becomes an ordinary table in a local DuckDB session:
+
+```sql
+INSTALL postgres;
+LOAD postgres;
+
+SET pg_use_text_protocol = true;   -- required, see below
+
+ATTACH 'host=127.0.0.1 port=5432 dbname=commerce user=obsl'
+    AS obsl (TYPE postgres, READ_ONLY);
+
+SELECT "Country Name", "Total Sales" FROM obsl.commerce.model;
+```
+
+Everything downstream is ordinary DuckDB. The model joins to local Parquet and
+CSV, aggregates further, and materialises:
+
+```sql
+CREATE TABLE snapshot AS SELECT * FROM obsl.commerce.model;
+
+SELECT m."Country Name", m."Total Sales" > t.target AS beat
+FROM   obsl.commerce.model m
+JOIN   read_csv('targets.csv') t ON m."Country Name" = t.country;
+```
+
+### `pg_use_text_protocol` is not optional
+
+Left at its default, the extension reads data with
+`COPY ... TO STDOUT (FORMAT binary)`. The semantic surface answers queries, not
+binary bulk exports, so the read fails with a parse error naming `COPY` - the
+catalog browses fine, which makes it look like a broken query rather than a
+missing feature. Set the flag once per session, before the first read.
+
+Two other settings are worth knowing but need no change: `pg_use_ctid_scan` and
+`pg_experimental_filter_pushdown` both work as-is, because a model has neither
+physical row ids nor a plan the extension can push into.
+
+### What the division of labour is
+
+Predicates written against `obsl.<schema>.model` are pushed to the semantic
+layer as OBSQL and compiled into the warehouse query. Anything you wrap around
+the result - a join to a local file, a window function, a second aggregation -
+is DuckDB's own work on rows that have already arrived. For anything selective,
+filter on the model.
+
+`SELECT count(*) FROM obsl.<schema>.model` counts rows at the model's grain,
+one per dimension combination, which is what `SELECT *` over it returns.
+
+### Compared to the ADBC route
+
+The [ADBC guide](adbc.md#from-duckdb) shows the same idea over Arrow Flight
+SQL, through `adbc_scan(handle, '<OBSQL>')`. The difference is addressing:
+
+| | Postgres wire (`ATTACH`) | ADBC (`adbc_scan`) |
+|---|---|---|
+| Query shape | `FROM obsl.commerce.model` - a real table | `adbc_scan(handle, 'SELECT ... FROM commerce')` - OBSQL in a string |
+| Extension | `postgres` (bundled) | `adbc_scanner` (community) plus a driver library path |
+| Transport | Postgres text protocol | Arrow, end to end |
+| Setup | one `SET`, one `ATTACH` | a driver path and a handle table |
+
+Use `ATTACH` when you want the model to look like a table and compose with the
+rest of your SQL. Use ADBC when the result is large enough that the Arrow path
+is worth the extra setup.
+
 ## Known limitations
 
 These constraints are documented in
@@ -291,7 +359,6 @@ These constraints are documented in
 | `psql \d <table>` partially works (psql 16 RLS-policy probe hits DuckDB's correlated-UNNEST limit) | DuckDB engine, not the wire protocol | Use BI tools (they query `information_schema`) or `\dt` |
 | Binary-format Bind parameters rejected | Step 4 ships text format only | Force text format if a driver supports it; binary lands in Step 7 |
 | No authentication | `trust` mode only until Step 6 lands | Run behind a network boundary or skip pgwire on public deploys |
-| No TLS | Native TLS comes in a later step | Front with nginx / Cloud Run TLS termination |
 | Write operations (`INSERT` / `UPDATE` / `DELETE` / DDL) | Read-only semantic layer | Use the REST API for model management; data writes go to the warehouse, not OBSL |
 
 ## Reporting a tool that fails

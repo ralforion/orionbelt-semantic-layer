@@ -314,3 +314,61 @@ def test_catalog_type_uses_default_numeric_data_type() -> None:
     assert _measure_sql_type(explicit, "decimal(18, 2)") == "DECIMAL(10, 4)"
     # No default + no dataType -> coarse DOUBLE.
     assert _measure_sql_type(no_dt, None) == "DOUBLE"
+
+
+class TestTypeNamespaceResolves:
+    """``pg_type.typnamespace`` has to point at a namespace that exists.
+
+    DuckDB's ``postgres`` extension enumerates an attached catalog with one
+    query that inner-joins ``pg_type.typnamespace`` to ``pg_namespace.oid``.
+    An oid with no row behind it is not an error - the join simply matches
+    nothing, the whole enumeration comes back empty, and DuckDB reports an
+    attached database with no tables in it. Nothing anywhere says why.
+    """
+
+    def test_pg_catalog_is_a_namespace(self, manager_with_model: SessionManager) -> None:
+        """DuckDB has no ``pg_catalog`` row of its own; Postgres always does."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute("SELECT oid FROM pg_namespace WHERE nspname = 'pg_catalog'")
+        assert [row[0] for row in result.rows] == [11]
+
+    def test_every_type_resolves_to_a_namespace(self, manager_with_model: SessionManager) -> None:
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute(
+            "SELECT t.typname, n.nspname FROM pg_type t "
+            "JOIN pg_namespace n ON t.typnamespace = n.oid"
+        )
+        resolved = {row[0]: row[1] for row in result.rows}
+        total = emu.execute("SELECT count(*) FROM pg_type").rows[0][0]
+        assert len(resolved) == total, "a type's namespace did not resolve"
+        assert set(resolved.values()) == {"pg_catalog"}
+
+    def test_the_enumeration_duckdb_actually_sends(
+        self, manager_with_model: SessionManager
+    ) -> None:
+        """Verbatim in shape from the ``postgres`` extension's ATTACH probe.
+
+        The ``type_ns`` join is the one that used to empty the result; the
+        rest is here so the test fails for the same reason the extension
+        would, rather than for a simplification of it.
+        """
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute(
+            "SELECT pg_namespace.oid AS namespace_id, relname, attname, "
+            "pg_type.typname AS type_name, attnum, type_ns.nspname AS type_schema "
+            "FROM pg_class "
+            "JOIN pg_namespace ON relnamespace = pg_namespace.oid "
+            "JOIN pg_attribute ON pg_class.oid = pg_attribute.attrelid "
+            "JOIN pg_type ON atttypid = pg_type.oid "
+            "JOIN pg_namespace type_ns ON pg_type.typnamespace = type_ns.oid "
+            "WHERE attnum > 0 AND relkind IN ('r', 'v', 'm', 'f', 'p') "
+            "AND pg_namespace.nspname IN ('commerce') AND relname = 'model' "
+            "ORDER BY attnum"
+        )
+        columns = [row[2] for row in result.rows]
+        assert "Customer Country" in columns
+        assert "Total Revenue" in columns
+        assert {row[5] for row in result.rows} == {"pg_catalog"}
