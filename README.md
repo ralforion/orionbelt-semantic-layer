@@ -28,6 +28,23 @@ OrionBelt is a **[semantic sidecar](https://ralforion.com/semantic-sidecar.html)
 
 No BI tool in the middle. No runtime lock-in. Point it at what you already have.
 
+## Four ways in
+
+The same model serves every surface you already use. Four of them, and one model behind all four:
+
+| Surface | Port | Speaks | Connect with |
+|---|---|---|---|
+| **PostgreSQL wire** | `5432` | Postgres protocol | [DuckDB](https://ralforion.com/orionbelt-semantic-layer/guide/duckdb/) via `ATTACH`, Tableau, [Dremio](https://ralforion.com/orionbelt-semantic-layer/guide/postgres-wire-bi-tools/#6-dremio-sql-runner-catalog-flip-calcite-quirks) as a federated source, Power BI, Superset, DBeaver, Metabase, `psql` |
+| **Arrow Flight SQL** | `8815` | gRPC + Arrow | [DuckDB](https://ralforion.com/orionbelt-semantic-layer/guide/duckdb/) via `adbc_scanner`, Tableau and Power BI through the Flight SQL JDBC/ODBC drivers, [ADBC](https://ralforion.com/orionbelt-semantic-layer/guide/adbc/) clients (Python, Go, Java) |
+| **REST** | `8000` | HTTP + JSON | your code, notebooks, `curl`, and the [8 PEP 249 drivers](https://ralforion.com/orionbelt-semantic-layer/drivers/) (which compile here, then execute on the warehouse directly) |
+| **MCP** | stdio / HTTP | Model Context Protocol | [AI agents](https://ralforion.com/agentic-ai-data-access.html): Claude, Cursor, Copilot, Windsurf |
+
+Both SQL surfaces speak [OBSQL](https://ralforion.com/orionbelt-semantic-layer/guide/semantic-ql/), so `SELECT "Region", "Total Sales" FROM sales_model` is the same query whichever one you came in through. ADBC is how you *use* the Flight SQL surface rather than a fifth surface of its own, and DuckDB is a client that can take either SQL surface.
+
+## Eight ways out
+
+Compiles to **BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, PostgreSQL, and Snowflake.** The warehouse behind the model is independent of the surface in front of it: any of the four surfaces, against any of the eight dialects.
+
 Here is TPC-DS query 98. Two measures over the same column, identical but for one line: `Class Revenue` is pinned to a coarser grain than the query asks for.
 
 ```yaml
@@ -105,24 +122,6 @@ You did not write the join path, the window function over an aggregate, the `NUL
 
 **This is checked, not asserted.** 40 TPC-DS queries are built against a single OBML model and compared row by row against each engine's own reference SQL: 39 of 40 match on DuckDB at sf=1, 37 of 40 on ClickHouse at sf=10. Every one of the remaining differences traces to a reference variant rather than a compilation error, and each is documented. See [the sweep](https://ralforion.com/orionbelt-semantic-layer/examples/tpcds-sweep/), or the queries in [`examples/tpcds_queries/`](examples/tpcds_queries/).
 
-### Four ways in
-
-The same model serves every surface you already use. Four of them, and one
-model behind all four:
-
-| Surface | Port | Speaks | Connect with |
-|---|---|---|---|
-| **REST** | `8000` | HTTP + JSON | your code, notebooks, `curl`, and the [8 PEP 249 drivers](https://ralforion.com/orionbelt-semantic-layer/drivers/) (which compile here, then execute on the warehouse directly) |
-| **PostgreSQL wire** | `5432` | Postgres protocol | Tableau, Power BI, Superset, DBeaver, Metabase, `psql`, [Dremio](https://ralforion.com/orionbelt-semantic-layer/guide/postgres-wire-bi-tools/#6-dremio-sql-runner-catalog-flip-calcite-quirks) as a federated source, [DuckDB](https://ralforion.com/orionbelt-semantic-layer/guide/duckdb/) via `ATTACH` |
-| **Arrow Flight SQL** | `8815` | gRPC + Arrow | [ADBC](https://ralforion.com/orionbelt-semantic-layer/guide/adbc/) clients (Python, Go, Java), the Flight SQL JDBC/ODBC drivers, [DuckDB](https://ralforion.com/orionbelt-semantic-layer/guide/duckdb/) via `adbc_scanner` |
-| **MCP** | stdio / HTTP | Model Context Protocol | [AI agents](https://ralforion.com/agentic-ai-data-access.html): Claude, Cursor, Copilot, Windsurf |
-
-Both SQL surfaces speak [OBSQL](https://ralforion.com/orionbelt-semantic-layer/guide/semantic-ql/), so `SELECT "Region", "Total Sales" FROM sales_model` is the same query whichever one you came in through. ADBC is how you *use* the Flight SQL surface rather than a fifth surface of its own, and DuckDB is a client that can take either SQL surface.
-
-### Eight ways out
-
-Compiles to **BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, PostgreSQL, and Snowflake.** The warehouse behind the model is independent of the surface in front of it: any of the four above, against any of the eight below.
-
 ## Where OrionBelt fits
 
 OrionBelt is a sidecar, not a platform. It compiles a YAML model into correct SQL and exposes it over the protocols you already use. It does not run a cluster, own your cache, or ask you to adopt a cloud.
@@ -144,7 +143,7 @@ OrionBelt is a sidecar, not a platform. It compiles a YAML model into correct SQ
 
 ## Contents
 
-[Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
+[Four ways in](#four-ways-in) · [Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
 
 ---
 
