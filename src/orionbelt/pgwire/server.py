@@ -214,11 +214,20 @@ class PgWireServer:
         reply.
         """
         statements = split_statements(sql)
-        if len(statements) <= 1:
-            # The overwhelmingly common case, and the empty one: an empty
-            # message still gets a reply, which is what the handler produces
-            # for it today.
-            return bytes(await self._handler(sql, database))
+        if not statements:
+            # Nothing to run: an empty message, or one that is only comments.
+            # The handler's blank-query path answers with CommandComplete,
+            # which is what a client expects for a message carrying no
+            # statement. Passing the text through instead would hand a comment
+            # to the translator, which rejects it as SQL the client never sent.
+            return bytes(await self._handler("", database))
+        if len(statements) == 1:
+            # The *cleaned* statement, not the original. The splitter has
+            # already removed trailing comments, and routing reads the text it
+            # is given: ``SELECT 1; -- from the dashboard`` still contains the
+            # word ``from``, which is enough to stop it looking table-less and
+            # send it to the semantic translator instead of the catalog.
+            return bytes(await self._handler(statements[0], database))
 
         frames = bytearray()
         for statement in statements:

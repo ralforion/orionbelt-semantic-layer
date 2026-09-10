@@ -40,7 +40,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   escape string, a quoted identifier, a dollar-quoted body, a line comment or a nested block
   comment is data, not a boundary. A fragment that is only comments is dropped rather than
   dispatched, so `SELECT 1; -- done` is one statement with a trailing remark and not a result
-  followed by an error. Execution stops at the first statement that errors.
+  followed by an error, and a message of nothing but comments is an empty query rather than a
+  parse failure. Routing sees the cleaned statement, since a word inside a discarded comment
+  (`-- from the dashboard`) would otherwise steer it. Execution stops at the first statement that
+  errors.
 
 - **TLS on the Postgres wire surface.** `PGWIRE_TLS_CERT` + `PGWIRE_TLS_KEY` (and
   `PGWIRE_TLS_CLIENT_CA`) make the listener answer `S` to an `SSLRequest` and upgrade the socket,

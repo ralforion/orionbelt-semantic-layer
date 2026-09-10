@@ -203,6 +203,33 @@ class TestMultiStatementSimpleQuery:
             assert cur.nextset() is None, "the comment must not produce a second result"
         assert rows == [(1,)]
 
+    def test_a_trailing_comment_does_not_steer_routing(
+        self, pgwire_with_router_psycopg: tuple[PgWireServer, int]
+    ) -> None:
+        """The cleaned statement is what runs, not the text the client sent.
+
+        Routing reads the SQL it is given, and a word inside a discarded
+        comment is still in that text. ``-- from client`` contains ``from``,
+        which is enough to stop ``SELECT 1`` looking table-less and send it to
+        the semantic translator, which has no model for it. The comment is
+        removed before the split *and* before the dispatch, or removing it
+        achieves nothing.
+        """
+        _, port = pgwire_with_router_psycopg
+        with psycopg.connect(_dsn(port), autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1; -- from client")
+            assert cur.fetchall() == [(1,)]
+
+    def test_a_message_of_only_comments_is_an_empty_query(
+        self, pgwire_with_router_psycopg: tuple[PgWireServer, int]
+    ) -> None:
+        """No statement means no result, not an error about SQL never sent."""
+        _, port = pgwire_with_router_psycopg
+        with psycopg.connect(_dsn(port), autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("-- just a note")
+            assert cur.pgresult is not None
+            assert cur.rowcount in (-1, 0)
+
     def test_a_failing_statement_stops_the_batch(
         self, pgwire_with_router_psycopg: tuple[PgWireServer, int]
     ) -> None:
