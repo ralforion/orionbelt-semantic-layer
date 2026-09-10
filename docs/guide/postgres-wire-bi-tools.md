@@ -26,6 +26,41 @@ queries OBSL via Postgres, OBSL compiles to Dremio's SQL dialect,
 ob-dremio's Arrow Flight driver streams the result back through
 Dremio's own execution engine. Governed semantics, no extra hop.
 
+## TLS
+
+The pgwire surface takes the same two settings the Flight one does, read by the
+same loader:
+
+```bash
+PGWIRE_ENABLED=true \
+PGWIRE_TLS_CERT=/certs/server.crt \
+PGWIRE_TLS_KEY=/certs/server.key \
+uv run orionbelt-api
+```
+
+Postgres does not start encrypted. The client sends an `SSLRequest`, the server
+answers `S` or `N`, and only then is the socket upgraded — so configuring a
+certificate makes the server *offer* TLS rather than demand it, and
+`sslmode=disable` still connects. That is the protocol's own semantics, not a
+weakening.
+
+Measured against libpq (psycopg 3):
+
+| `sslmode` | Result |
+|---|---|
+| `disable` | connects in the clear |
+| `prefer` | encrypted when a certificate is configured, plaintext when not |
+| `require` | encrypted, certificate not checked |
+| `verify-ca` with `sslrootcert` | encrypted, certificate chain checked |
+| `verify-full` | as above, plus the hostname |
+| `verify-ca` with the wrong CA | **refused** |
+
+Both settings or neither, and the same non-root file-permission caveat applies
+as for Flight — see [Connecting via ADBC](adbc.md#from-docker). A
+misconfiguration stops startup rather than silently answering `N` to every
+`SSLRequest`, which would leave clients in the clear against a configuration
+that reads as encrypted.
+
 ## 1. Common configuration
 
 Start the OBSL server with the wire surface enabled:

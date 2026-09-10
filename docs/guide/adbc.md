@@ -27,7 +27,127 @@ uv run orionbelt-api
 ```
 
 `FLIGHT_ENABLED` implies `QUERY_EXECUTE`. The gRPC URI is then
-`grpc://<host>:8815` — or `grpc+tls://` behind TLS.
+`grpc://<host>:8815`, or `grpc+tls://` with TLS configured — see below.
+
+## TLS
+
+Point the server at a certificate and key and it serves `grpc+tls` instead:
+
+```bash
+FLIGHT_ENABLED=true \
+FLIGHT_TLS_CERT=/certs/server.crt \
+FLIGHT_TLS_KEY=/certs/server.key \
+uv run orionbelt-api
+```
+
+Both or neither. Setting one without the other refuses to start rather than
+falling back to plaintext, because a deployment that reads as encrypted and is
+not is worse than one that does not come up. The startup line says which
+transport is live, so confirming it needs no packet capture.
+
+Worth stating plainly: **the Flight surface authenticates before it encrypts.**
+Without TLS, an API key sent by any of the mechanisms above crosses the wire in
+clear text. Configuring auth without TLS logs a warning for that reason.
+
+### From Docker
+
+Certificates are files, so they arrive by mount:
+
+```bash
+docker run -p 8080:8080 -p 8815:8815 \
+  -v /host/certs:/certs:ro \
+  -e FLIGHT_ENABLED=true \
+  -e FLIGHT_TLS_CERT=/certs/server.crt \
+  -e FLIGHT_TLS_KEY=/certs/server.key \
+  ralforion/orionbelt-semantic-layer-api:latest
+```
+
+**The image runs as a non-root user**, so a key mounted from the host as
+`root:root 0600` is present, correctly named, and unreadable inside the
+container. Make it readable by the container's user; in Kubernetes set
+`defaultMode: 0444` on the secret volume, or an `fsGroup`. The server names
+this case in its error rather than reporting a missing file.
+
+### Trusting the certificate, client side
+
+A self-signed or private-CA certificate has to be trusted explicitly, and a
+client that will not check it is **refused rather than downgraded**. Both
+options below are measured against a live server, not read from a driver's
+README:
+
+| Client | Trust a specific certificate | Skip verification |
+|---|---|---|
+| Python ADBC | `adbc.flight.sql.client_option.tls_root_certs` (PEM text) | `...tls_skip_verify` = `"true"` |
+| DuckDB `adbc_scanner` | the same keys, in the `adbc_connect` MAP | as above |
+| Flight SQL JDBC | `trustStore` **plus `useSystemTrustStore=false`** | `disableCertificateVerification=true` |
+
+The JDBC row carries a trap worth reading twice: **`trustStore` on its own does
+nothing.** Without `useSystemTrustStore=false` the driver keeps consulting the
+system store, ignores the one you named, and fails with `unable to find valid
+certification path` — the same error as passing no trust configuration at all,
+so the setting looks unread rather than overridden. Measured against driver
+19.0.0; setting `javax.net.ssl.trustStore` on the JVM does not work either,
+because the driver shades its own TLS stack.
+
+```
+jdbc:arrow-flight-sql://obsl.example.com:8815
+    ?useEncryption=true
+    &useSystemTrustStore=false
+    &trustStore=/path/to/truststore.jks
+    &trustStorePassword=<password>
+```
+
+A JKS is built from the server's certificate (or its CA) with the JDK's own
+tool:
+
+```bash
+keytool -importcert -alias obsl -file server.crt \
+        -keystore truststore.jks -storepass changeit -noprompt
+```
+
+```python
+conn = dbapi.connect(
+    "grpc+tls://obsl.example.com:8815",
+    db_kwargs={"adbc.flight.sql.client_option.tls_root_certs": open("server.crt").read()},
+)
+```
+
+From DuckDB, the option key must be a **literal** in the MAP — only values can
+be bound, and a parameterised key scrambles the pairs into an error about
+failing to load the driver:
+
+```sql
+SELECT adbc_connect(MAP {
+    'driver': '/path/to/libadbc_driver_flightsql.so',
+    'uri':    'grpc+tls://obsl.example.com:8815',
+    'adbc.flight.sql.client_option.tls_root_certs': '<PEM text>'
+});
+```
+
+`tls_skip_verify` exists and works, and it verifies nothing: it accepts any
+certificate, including one presented by whoever is between you and the server.
+Reach for `tls_root_certs` unless you are debugging.
+
+### Mutual TLS
+
+`FLIGHT_TLS_CLIENT_CA=/certs/ca.crt` additionally requires each client to
+present a certificate signed by that CA. It needs the server's own certificate
+too — setting it alone is refused.
+
+A client then supplies its own certificate and key alongside the trust
+material. Trusting the server is no longer sufficient on its own: without a
+client certificate the connection is dropped.
+
+```python
+conn = dbapi.connect(
+    "grpc+tls://obsl.example.com:8815",
+    db_kwargs={
+        "adbc.flight.sql.client_option.tls_root_certs": open("ca.crt").read(),
+        "adbc.flight.sql.client_option.mtls_cert_chain": open("client.crt").read(),
+        "adbc.flight.sql.client_option.mtls_private_key": open("client.key").read(),
+    },
+)
+```
 
 ## Connect
 

@@ -4,6 +4,54 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **TLS on the Postgres wire surface.** `PGWIRE_TLS_CERT` + `PGWIRE_TLS_KEY` (and
+  `PGWIRE_TLS_CLIENT_CA`) make the listener answer `S` to an `SSLRequest` and upgrade the socket,
+  where it previously always answered `N`. Postgres negotiates rather than starting encrypted, so
+  configuring a certificate makes the server *offer* TLS: `sslmode=disable` still connects, which
+  is the protocol's semantics rather than a weakening.
+
+  Verified against libpq: `require`, `verify-ca` and `verify-full` all negotiate, and `verify-ca`
+  against the wrong trust anchor is refused - the assertion that makes the other three mean
+  something.
+
+  The certificate loader is shared with the Flight surface and lives in `orionbelt.service.tls`,
+  because pgwire is core and the Flight extension is an optional extra: core cannot depend on it.
+  Each surface keeps its own setting names in every error message, since one naming the other
+  surface's setting would be worse than none.
+
+- **TLS on the Arrow Flight SQL surface.** `FLIGHT_TLS_CERT` + `FLIGHT_TLS_KEY` make the listener
+  serve `grpc+tls` instead of `grpc`, and `FLIGHT_TLS_CLIENT_CA` additionally requires a client
+  certificate signed by that CA. Until now the surface had authentication and no transport
+  security, so an API key crossed the wire in clear text; configuring auth without TLS now logs a
+  warning saying so.
+
+  Both settings or neither: one alone refuses to start rather than falling back to plaintext,
+  because a deployment that reads as encrypted and is not is worse than one that does not come up.
+  The startup line reports the transport, so confirming TLS is live needs no packet capture.
+
+  Every configuration failure names the setting it is about, and one case gets its own message: the
+  published image runs as a non-root user, so a key bind-mounted from the host as `root:root 0600`
+  is present, correctly named, and unreadable - which reads as a wrong path until someone thinks to
+  check the mode.
+
+  Client trust was measured rather than read from driver documentation, against Python ADBC,
+  DuckDB's `adbc_scanner` and the Flight SQL JDBC driver. All three are **refused rather than
+  downgraded** when told to trust nothing. Two traps came out of it, both now in the guide: from
+  DuckDB the option key must be a literal in the `adbc_connect` MAP, since a parameterised key
+  scrambles the pairs into an error about failing to load the driver; and from JDBC, `trustStore`
+  does nothing without `useSystemTrustStore=false` beside it - it keeps consulting the system store
+  and fails with the same message as no trust configuration at all, so the setting reads as unread
+  rather than overridden.
+
+  Mutual TLS is tested rather than merely wired: a client that trusts the server but presents no
+  certificate is dropped, and one presenting a certificate signed by `FLIGHT_TLS_CLIENT_CA` is
+  served.
+
+  Unchanged for the demo: `FLIGHT_ENABLED` still defaults false in the image, and Cloud Run cannot
+  reach the Flight port anyway.
+
 ## [2.27.2] - 2026-09-09
 
 ### Fixed

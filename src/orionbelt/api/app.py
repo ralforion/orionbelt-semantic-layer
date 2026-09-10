@@ -384,6 +384,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     if settings.flight_enabled:
         try:
             from ob_flight.startup import start_flight_background
+            from ob_flight.tls import FlightTLSConfigError, load_flight_tls
+
+            # Read the TLS material before anything else: a misconfiguration
+            # here stops startup rather than quietly serving plaintext, which
+            # would leave the deployment believing it was encrypted.
+            try:
+                flight_tls = load_flight_tls(
+                    settings.flight_tls_cert,
+                    settings.flight_tls_key,
+                    settings.flight_tls_client_ca,
+                )
+            except FlightTLSConfigError as exc:
+                raise RuntimeError(f"Flight TLS configuration is unusable: {exc}") from None
 
             # Decide the Flight auth handler here, from Settings, and always
             # pass it explicitly so the handler matches what we report and so
@@ -441,10 +454,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 port=settings.flight_port,
                 auth_handler=flight_auth_handler,
                 auth_middleware=flight_auth_middleware,
+                tls=flight_tls,
                 default_dialect=settings.db_vendor,
                 cache=cache,
                 cache_config=cache_config,
             )
+            # Imported here rather than reused from the branch above, which
+            # only runs in the no-auth case - exactly the case this warning
+            # does not fire for.
+            from ob_flight.auth import NoopAuthHandler as _NoopAuthHandler
+
+            if flight_tls is None and not isinstance(flight_auth_handler, _NoopAuthHandler):
+                logger.warning(
+                    "Flight SQL is authenticating over plaintext gRPC on port %d: "
+                    "credentials cross the wire in the clear. Set FLIGHT_TLS_CERT "
+                    "and FLIGHT_TLS_KEY, or terminate TLS in front of it.",
+                    settings.flight_port,
+                )
+
             settings.flight_enabled = True
             logger.info(
                 "Flight SQL server started on port %d (vendor=%s)",

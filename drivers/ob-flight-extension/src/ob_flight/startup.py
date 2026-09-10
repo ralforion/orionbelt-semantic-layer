@@ -20,6 +20,7 @@ def start_flight_background(
     port: int | None = None,
     auth_handler: Any = None,
     auth_middleware: Any = None,
+    tls: Any = None,
     default_dialect: str | None = None,
     cache: Any = None,
     cache_config: Any = None,
@@ -48,7 +49,19 @@ def start_flight_background(
 
     if default_dialect is None:
         default_dialect = os.getenv("DB_VENDOR", "duckdb")
-    location = f"grpc://0.0.0.0:{port}"
+
+    # The scheme follows the certificate: a listener with TLS material serves
+    # grpc+tls and a client connecting with grpc:// is refused at the
+    # handshake rather than downgraded.
+    scheme = tls.scheme if tls is not None else "grpc"
+    location = f"{scheme}://0.0.0.0:{port}"
+    tls_kwargs: dict[str, Any] = {}
+    if tls is not None:
+        tls_kwargs = {
+            "tls_certificates": tls.certificates,
+            "verify_client": tls.verify_client,
+            "root_certificates": tls.root_certificates,
+        }
 
     _server = OBFlightServer(
         location,
@@ -58,6 +71,7 @@ def start_flight_background(
         default_dialect=default_dialect,
         cache=cache,
         cache_config=cache_config,
+        **tls_kwargs,
     )
 
     _thread = threading.Thread(
@@ -66,7 +80,20 @@ def start_flight_background(
         daemon=True,
     )
     _thread.start()
-    logger.info("Flight SQL server started on port %d (dialect=%s)", port, default_dialect)
+    # Say which. "Is TLS actually on" should not need a packet capture, and
+    # mutual TLS is worth distinguishing from ordinary TLS in the log.
+    if tls is None:
+        transport = "plaintext"
+    elif tls.verify_client:
+        transport = "TLS (mutual)"
+    else:
+        transport = "TLS"
+    logger.info(
+        "Flight SQL server started on port %d (dialect=%s, transport=%s)",
+        port,
+        default_dialect,
+        transport,
+    )
     return _thread
 
 
