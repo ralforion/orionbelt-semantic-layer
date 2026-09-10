@@ -45,6 +45,13 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   (`-- from the dashboard`) would otherwise steer it. Execution stops at the first statement that
   errors.
 
+- **The TLS suites are pinned to a declared dependency.** They mint their certificates with
+  `cryptography` and guard themselves with `importorskip`, but nothing declared it: it arrived
+  transitively through `google-auth` / `pymysql` / `pyopenssl` / `snowflake-connector-python`. Any
+  of those dropping it would not have failed anything, it would have skipped every TLS test green -
+  on both surfaces and for the DuckDB client. It is a dev dependency now, so the lock file pins it
+  directly.
+
 - **TLS on the Postgres wire surface.** `PGWIRE_TLS_CERT` + `PGWIRE_TLS_KEY` (and
   `PGWIRE_TLS_CLIENT_CA`) make the listener answer `S` to an `SSLRequest` and upgrade the socket,
   where it previously always answered `N`. Postgres negotiates rather than starting encrypted, so

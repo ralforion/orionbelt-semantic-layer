@@ -88,6 +88,12 @@ dev = [
     "psycopg2-binary>=2.9",
     "psycopg[binary]>=3.2",
     "pymysql[rsa]>=1.0",
+    # Mints the certificates the TLS suites need (pgwire, Flight, and the
+    # DuckDB client). Declared rather than leaned on: it arrives transitively
+    # through google-auth / pymysql / pyopenssl / snowflake-connector-python
+    # today, and those suites guard themselves with importorskip - so losing it
+    # would not fail anything, it would skip every TLS test green.
+    "cryptography>=42.0",
     "clickhouse-connect>=0.7",
 ]
 # Local Spark execution for the Databricks dialect. Databricks SQL *is* Spark
