@@ -121,6 +121,13 @@ class Settings(BaseSettings):
     pgwire_host: str = "0.0.0.0"  # noqa: S104 — server bind address
     pgwire_port: int = 5432
     pgwire_auth_mode: str = "trust"  # "trust" (Step 1) | "password" | "scram-sha-256" (Step 6)
+    # TLS for the pgwire listener, same shape as the Flight settings and read
+    # by the same loader. Postgres negotiates with an SSLRequest rather than
+    # starting encrypted, so with these set the server answers ``S`` and
+    # upgrades the socket; without them it answers ``N`` as before.
+    pgwire_tls_cert: str | None = None
+    pgwire_tls_key: str | None = None
+    pgwire_tls_client_ca: str | None = None
     pgwire_max_connections: int = 64
     pgwire_query_timeout_seconds: int = 60
     # Hard deadline for the pre-auth handshake (startup + password/SCRAM

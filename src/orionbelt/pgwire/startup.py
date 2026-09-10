@@ -65,6 +65,21 @@ async def start_pgwire(
         )
         handler = router.handle
 
+    # Before the listener binds: a misconfiguration stops startup rather than
+    # quietly answering ``N`` to every SSLRequest, which would leave clients
+    # connecting in the clear against a configuration that reads as encrypted.
+    from orionbelt.service.tls import TLSConfigError, load_listener_tls
+
+    try:
+        tls = load_listener_tls(
+            settings.pgwire_tls_cert,
+            settings.pgwire_tls_key,
+            settings.pgwire_tls_client_ca,
+            prefix="PGWIRE",
+        )
+    except TLSConfigError as exc:
+        raise RuntimeError(f"pgwire TLS configuration is unusable: {exc}") from None
+
     server = PgWireServer(
         host=settings.pgwire_host,
         port=settings.pgwire_port,
@@ -73,6 +88,7 @@ async def start_pgwire(
         query_timeout_seconds=float(settings.pgwire_query_timeout_seconds),
         auth_timeout_seconds=float(settings.pgwire_auth_timeout_seconds),
         query_handler=handler,
+        tls=tls,
     )
     bound = await server.start()
     task = asyncio.create_task(server.serve_forever(), name="pgwire-server")

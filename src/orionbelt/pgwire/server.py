@@ -21,6 +21,7 @@ import logging
 import secrets
 import struct
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.auth import (
@@ -97,7 +98,10 @@ class PgWireServer:
         query_timeout_seconds: float = 60.0,
         auth_timeout_seconds: float = 10.0,
         query_handler: QueryHandler | None = None,
+        tls: Any = None,
     ) -> None:
+        self._tls = tls
+        self._ssl_context = tls.ssl_context() if tls is not None else None
         self.host = host
         self.port = port
         self.auth_mode = auth_mode
@@ -132,7 +136,21 @@ class PgWireServer:
             self._handle_connection, host=self.host, port=self.port
         )
         bound = self.bound_port
-        logger.info("pgwire listening on %s:%d (auth=%s)", self.host, bound, self.auth_mode)
+        # Say the transport, for the reason the Flight listener does: "is TLS
+        # actually on" should not need a packet capture.
+        if self._tls is None:
+            transport = "plaintext"
+        elif self._tls.verify_client:
+            transport = "TLS (mutual)"
+        else:
+            transport = "TLS"
+        logger.info(
+            "pgwire listening on %s:%d (auth=%s, transport=%s)",
+            self.host,
+            bound,
+            self.auth_mode,
+            transport,
+        )
         return bound
 
     async def serve_forever(self) -> None:
@@ -189,9 +207,17 @@ class PgWireServer:
         """
         startup = await protocol.read_startup_message(reader.readexactly)
         if startup is None:
-            # SSLRequest — reject (no in-process TLS), then read the real one.
-            writer.write(b"N")
-            await self._drain(writer)
+            # SSLRequest. Postgres negotiates rather than starting encrypted:
+            # ``S`` means "proceed, upgrade this socket", ``N`` means "carry on
+            # in the clear". The client then re-sends its StartupMessage over
+            # whichever transport resulted, which is why the read repeats.
+            if self._ssl_context is not None:
+                writer.write(b"S")
+                await self._drain(writer)
+                await writer.start_tls(self._ssl_context)
+            else:
+                writer.write(b"N")
+                await self._drain(writer)
             startup = await protocol.read_startup_message(reader.readexactly)
             if startup is None:
                 raise protocol.ProtocolError("Repeated SSLRequest on same socket")

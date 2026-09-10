@@ -6,6 +6,21 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **TLS on the Postgres wire surface.** `PGWIRE_TLS_CERT` + `PGWIRE_TLS_KEY` (and
+  `PGWIRE_TLS_CLIENT_CA`) make the listener answer `S` to an `SSLRequest` and upgrade the socket,
+  where it previously always answered `N`. Postgres negotiates rather than starting encrypted, so
+  configuring a certificate makes the server *offer* TLS: `sslmode=disable` still connects, which
+  is the protocol's semantics rather than a weakening.
+
+  Verified against libpq: `require`, `verify-ca` and `verify-full` all negotiate, and `verify-ca`
+  against the wrong trust anchor is refused - the assertion that makes the other three mean
+  something.
+
+  The certificate loader is shared with the Flight surface and lives in `orionbelt.service.tls`,
+  because pgwire is core and the Flight extension is an optional extra: core cannot depend on it.
+  Each surface keeps its own setting names in every error message, since one naming the other
+  surface's setting would be worse than none.
+
 - **TLS on the Arrow Flight SQL surface.** `FLIGHT_TLS_CERT` + `FLIGHT_TLS_KEY` make the listener
   serve `grpc+tls` instead of `grpc`, and `FLIGHT_TLS_CLIENT_CA` additionally requires a client
   certificate signed by that CA. Until now the surface had authentication and no transport
