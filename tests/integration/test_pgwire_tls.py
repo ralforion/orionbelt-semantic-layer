@@ -132,7 +132,11 @@ def tls_pgwire(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[int, 
         asyncio.set_event_loop(loop)
         bound["port"] = loop.run_until_complete(server.start())
         ready.set()
-        loop.run_until_complete(server.serve_forever())
+        # ``run_forever``, not ``serve_forever``: ``start()`` is already
+        # accepting connections, and stopping the loop out from under
+        # ``serve_forever`` leaves its future pending, which pytest reports as
+        # an unraisable thread exception against an unrelated test.
+        loop.run_forever()
 
     thread = threading.Thread(target=run, name="pgwire-tls-test", daemon=True)
     thread.start()
@@ -141,6 +145,7 @@ def tls_pgwire(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[int, 
     try:
         yield bound["port"], pki
     finally:
+        asyncio.run_coroutine_threadsafe(server.stop(), loop).result(timeout=5)
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=5)
 
@@ -205,7 +210,7 @@ class TestWithoutTLS:
             asyncio.set_event_loop(loop)
             bound["port"] = loop.run_until_complete(server.start())
             ready.set()
-            loop.run_until_complete(server.serve_forever())
+            loop.run_forever()  # see the module fixture
 
         thread = threading.Thread(target=run, name="pgwire-plain-test", daemon=True)
         thread.start()
@@ -215,5 +220,6 @@ class TestWithoutTLS:
             # negotiation working, not failing.
             assert _encrypted(bound["port"], sslmode="prefer") is False
         finally:
+            asyncio.run_coroutine_threadsafe(server.stop(), loop).result(timeout=5)
             loop.call_soon_threadsafe(loop.stop)
             thread.join(timeout=5)

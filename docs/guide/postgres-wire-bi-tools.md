@@ -83,8 +83,8 @@ Every client uses the same connection details:
 | Port | `PGWIRE_PORT` (default `5432`) |
 | Database | the model addressing name — the OBML `name:` field or, lacking that, the file stem (e.g. `orionbelt_1_commerce`) |
 | Username | any non-empty string (`obsl`, the tool's default — ignored in `trust` mode) |
-| Password | leave empty in `trust` mode (auth lands in Step 6) |
-| TLS / SSL | disable; the server has no built-in TLS today |
+| Password | leave empty in `trust` mode; with `AUTH_MODE=api_key` the API key is the password (SCRAM-SHA-256 by default) |
+| TLS / SSL | `disable` unless the server was started with `PGWIRE_TLS_CERT` / `PGWIRE_TLS_KEY` - see [TLS](#tls) above |
 
 To list available model names, query the REST `GET /v1/models`
 endpoint or check the server startup log.
@@ -281,6 +281,33 @@ Dremio, three options:
    ships and Dremio picks it up, semantic-aware aggregation through
    Calcite is blocked upstream.
 
+## 7. DuckDB
+
+DuckDB's bundled `postgres` extension attaches the wire surface as a catalog,
+so the model becomes an ordinary table in a local DuckDB session:
+
+```sql
+INSTALL postgres;
+LOAD postgres;
+
+SET pg_use_text_protocol = true;   -- required; the default reads with binary COPY
+
+ATTACH 'host=127.0.0.1 port=5432 dbname=commerce user=obsl'
+    AS obsl (TYPE postgres, READ_ONLY);
+
+SELECT "Country Name", "Total Sales" FROM obsl.commerce.model;
+```
+
+From there it is ordinary DuckDB: the model joins to local Parquet and CSV,
+aggregates further, and lands in `CREATE TABLE AS`.
+
+`sslmode`, `sslrootcert` and `password` work exactly as they do for `psql`,
+because the extension is libpq underneath.
+
+See **[Using DuckDB as a client](duckdb.md)** for the full guide: both routes
+(this one and Arrow Flight SQL), TLS and authentication, which predicates reach
+the warehouse, and the limitations of each.
+
 ## Known limitations
 
 These constraints are documented in
@@ -289,9 +316,9 @@ These constraints are documented in
 | Limitation | Reason | Workaround |
 |---|---|---|
 | `psql \d <table>` partially works (psql 16 RLS-policy probe hits DuckDB's correlated-UNNEST limit) | DuckDB engine, not the wire protocol | Use BI tools (they query `information_schema`) or `\dt` |
-| Binary-format Bind parameters rejected | Step 4 ships text format only | Force text format if a driver supports it; binary lands in Step 7 |
-| No authentication | `trust` mode only until Step 6 lands | Run behind a network boundary or skip pgwire on public deploys |
-| No TLS | Native TLS comes in a later step | Front with nginx / Cloud Run TLS termination |
+| Binary-format Bind parameters decode for the common scalar OIDs only (bool, bytea, int2/4/8, float4/8, text, varchar, name, bpchar) | Anything else would be mangled bytes, so it raises instead | Force text format if the driver supports it; the error names the OID |
+| Authentication is off by default (`trust`) | `AUTH_MODE` governs every surface and ships as `none` | Set `AUTH_MODE=api_key` and `API_KEYS=<key>`; clients then send the key as the **password**, over SCRAM-SHA-256. `PGWIRE_AUTH_MODE=password` drops to cleartext for clients without SCRAM, so pair it with TLS |
+| DuckDB `ATTACH` needs `SET pg_use_text_protocol = true` | The default reads with `COPY ... TO STDOUT (FORMAT binary)`, which the semantic surface does not implement | Set it once per session, before the first read - see [7. DuckDB](#7-duckdb) |
 | Write operations (`INSERT` / `UPDATE` / `DELETE` / DDL) | Read-only semantic layer | Use the REST API for model management; data writes go to the warehouse, not OBSL |
 
 ## Reporting a tool that fails

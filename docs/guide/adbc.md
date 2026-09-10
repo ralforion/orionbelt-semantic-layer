@@ -232,28 +232,17 @@ SELECT * FROM adbc_scan(
 
 Two things it needs that the Python recipe does not: `adbc_scanner` is a
 **community** extension rather than a bundled one, and `adbc_connect` wants a
-filesystem path to the Flight SQL driver library. Any ADBC install has one —
+filesystem path to the Flight SQL driver library. Any ADBC install has one -
 `python -c "import adbc_driver_flightsql as d; print(d._driver_path())"` prints
-it — but it is a path, not a package name.
+it - but it is a path, not a package name.
 
-What works from there:
+`adbc_tables(handle)` lists the model and its metadata views, and
+`adbc_schema(handle, 'model', schema := 'sales')` gives column types without
+executing anything.
 
-| | |
-|---|---|
-| `adbc_scan(handle, '<OBSQL>')` | The point. Governed measures, resolved joins, typed columns. |
-| `adbc_tables(handle)` | Lists `model` and the `dimensions` / `measures` / `metrics` views. |
-| `adbc_schema(handle, 'model', schema := 'sales')` | Column names and types without executing anything. |
-| Filtering, grouping, joining to local tables | Ordinary DuckDB SQL over the scan. |
-| `CREATE TABLE local AS SELECT * FROM adbc_scan(…)` | Materialises the result locally. |
-
-The scan is a table function, so DuckDB treats its output as any other
-relation: the semantic layer resolves the model and returns Arrow, and DuckDB
-does whatever you ask on top.
-
-Note the division of labour. Predicates written *outside* `adbc_scan` are
-DuckDB's, applied after the rows arrive; predicates inside the OBSQL string are
-the semantic layer's, compiled into the warehouse query. For anything
-selective, put them in the OBSQL.
+See **[Using DuckDB as a client](duckdb.md)** for the full guide, including the
+`ATTACH ... (TYPE postgres)` route that addresses the model as a table rather
+than a string in a table function, and which predicates reach the warehouse.
 
 ## What you can send
 

@@ -6,6 +6,52 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **DuckDB queries the semantic layer as an attached catalog.** `ATTACH 'host=... dbname=<model>'
+  AS obsl (TYPE postgres)` in a plain DuckDB shell mounts the model as `obsl.<model>.model`, so
+  governed measures join to local Parquet and CSV and land in `CREATE TABLE AS` with no
+  OBSL-specific client. This is the same capability the `adbc_scanner` route already offered over
+  Flight SQL, addressed as a table rather than a string in a table function.
+
+  Four gaps had to close for it, none of which raised an error. The extension enumerates a catalog
+  with a single batch of statements in one simple-query message, and the surface answered only the
+  first; it joins `pg_type.typnamespace` to `pg_namespace.oid`, and there was neither the column
+  nor a `pg_catalog` row to land on, so the whole enumeration matched nothing; it probes with
+  table-less `SELECT`s that the semantic translator has no model to resolve; and it asks for a row
+  count by projecting `SELECT NULL FROM t`, which read as a literal projection and was rejected.
+  Each returned an empty catalog or a message about something else.
+
+  The row count is answered by projecting every column of the model, not just its dimensions.
+  Dimensions alone need no fact table, so the compiler picks a different base object and a
+  dimension value with no facts behind it (a customer who has never ordered) becomes a row:
+  `count(*)` then exceeded what `SELECT *` returned, which is the one number it has to agree with.
+
+  One client setting is required: `SET pg_use_text_protocol = true`, because the default reads data
+  with `COPY ... TO STDOUT (FORMAT binary)`.
+
+  TLS and authentication need nothing added on either side. The extension is libpq underneath, so
+  `sslmode` / `sslrootcert` / `password` reach it verbatim: all five `sslmode` values negotiate
+  against a `PGWIRE_TLS_CERT` listener and the wrong trust anchor is refused, and under
+  `AUTH_MODE=api_key` the API key is the password over SCRAM-SHA-256 (libpq performs the exchange).
+  See [the guide](https://ralforion.com/orionbelt-semantic-layer/guide/postgres-wire-bi-tools/#7-duckdb).
+
+- **Multi-statement simple queries.** One `Query` message carrying several statements separated by
+  semicolons now runs each in order and replies with one result set per statement, as Postgres
+  does. The splitter is a scanner rather than `sql.split(";")`: a semicolon inside a string, an
+  escape string, a quoted identifier, a dollar-quoted body, a line comment or a nested block
+  comment is data, not a boundary. A fragment that is only comments is dropped rather than
+  dispatched, so `SELECT 1; -- done` is one statement with a trailing remark and not a result
+  followed by an error, and a message of nothing but comments is an empty query rather than a
+  parse failure. Routing sees the cleaned statement, since a word inside a discarded comment
+  (`-- from the dashboard`) would otherwise steer it. Execution stops at the first statement that
+  errors.
+
+- **The TLS suites are pinned to a declared dependency.** They mint their certificates with
+  `cryptography` and guard themselves with `importorskip`, but nothing declared it: it arrived
+  transitively through `google-auth` / `pymysql` / `pyopenssl` / `snowflake-connector-python`. Any
+  of those dropping it would not have failed anything, it would have skipped every TLS test green -
+  on both surfaces and for the DuckDB client. It is a dev dependency now, so the lock file pins it
+  directly.
+
 - **TLS on the Postgres wire surface.** `PGWIRE_TLS_CERT` + `PGWIRE_TLS_KEY` (and
   `PGWIRE_TLS_CLIENT_CA`) make the listener answer `S` to an `SSLRequest` and upgrade the socket,
   where it previously always answered `N`. Postgres negotiates rather than starting encrypted, so

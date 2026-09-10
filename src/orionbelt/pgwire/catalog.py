@@ -161,6 +161,11 @@ _OID_TRANSLATION_CASE = """
         END
 """
 
+#: The oid Postgres gives ``pg_catalog``. Fixed since forever, and every
+#: base type in the shadow ``pg_type`` claims it as its namespace.
+_PG_CATALOG_OID = 11
+
+
 _SHADOW_VIEWS: tuple[str, ...] = (
     # Empty stubs for pg_catalog tables DuckDB doesn't expose but
     # DBeaver / pgAdmin / pg_dump probe during schema-tree refresh.
@@ -289,8 +294,22 @@ _SHADOW_VIEWS: tuple[str, ...] = (
     # ``LEFT JOIN pg_type et ON et.oid = t.typelem`` to resolve array
     # element types and fails the bind without ``typelem``. Both are
     # 0 for every base scalar we expose here.
-    """CREATE OR REPLACE TEMP VIEW _obsl_pg_type AS
-        SELECT * FROM (VALUES
+    # ``typnamespace``: every base type below lives in ``pg_catalog``, as in
+    # Postgres, and DuckDB's own ``postgres`` extension joins on it to
+    # enumerate a catalog. Without the column the bind fails with "does not
+    # have a column named typnamespace", which reads as a missing table
+    # rather than a missing field.
+    #
+    # The literal ``_PG_CATALOG_OID``, not a lookup. Deriving it from
+    # DuckDB's own pg_namespace was the first attempt and it dangled:
+    # DuckDB has no ``pg_catalog`` row there at all, so the lookup found
+    # nothing every time and the fallback pointed at a namespace that did
+    # not exist. Any client joining ``pg_type.typnamespace`` to
+    # ``pg_namespace.oid`` then matched no row and got an empty result with
+    # no error. The ``pg_catalog`` row the shadow below adds is what makes
+    # this oid resolve.
+    f"""CREATE OR REPLACE TEMP VIEW _obsl_pg_type AS
+        SELECT t.*, {_PG_CATALOG_OID} AS typnamespace FROM (VALUES
             -- columns: oid, typname, typcategory, typlen, typtype,
             --          typnotnull, typtypmod, typbasetype, typelem, typrelid
             (16,   'bool',        'B', 1,   'b', false, -1, 0, 0, 0),
@@ -341,14 +360,22 @@ _SHADOW_VIEWS: tuple[str, ...] = (
     # ``aclitem[]``: "Cannot invoke java.lang.CharSequence.toString()
     # because <parameter1> is null". Empty ``{}`` keeps the column
     # non-NULL without granting any privileges.
-    """CREATE OR REPLACE TEMP VIEW _obsl_pg_namespace AS
+    #
+    # The ``pg_catalog`` row is synthesized, because DuckDB does not have
+    # one and Postgres always does. Clients that resolve a type's schema -
+    # DuckDB's own ``postgres`` extension among them - join
+    # ``pg_type.typnamespace`` to ``pg_namespace.oid``, and with no row to
+    # land on that inner join discards the whole catalog silently.
+    f"""CREATE OR REPLACE TEMP VIEW _obsl_pg_namespace AS
         SELECT
             oid,
             nspname,
             COALESCE(nspowner, 10) AS nspowner,
-            COALESCE(CAST(nspacl AS VARCHAR), '{}') AS nspacl
+            COALESCE(CAST(nspacl AS VARCHAR), '{{}}') AS nspacl
         FROM pg_catalog.pg_namespace
-        WHERE nspname NOT IN ('main', 'temp', 'pg_temp')""",
+        WHERE nspname NOT IN ('main', 'temp', 'pg_temp')
+        UNION ALL
+        SELECT {_PG_CATALOG_OID}, 'pg_catalog', 10, '{{}}'""",
     # Shadow information_schema.schemata. DuckDB auto-creates a ``main``
     # schema in every attached database (``orionbelt.main``, plus
     # ``memory.main`` / ``system.main`` / ``temp.main``), so the raw view

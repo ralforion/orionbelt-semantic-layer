@@ -33,6 +33,7 @@ from orionbelt.pgwire.auth import (
 )
 from orionbelt.pgwire.extended import ExtendedSession
 from orionbelt.pgwire.scram import SCRAM_SHA_256, ScramError, ScramServerExchange
+from orionbelt.pgwire.statements import split_statements
 from orionbelt.service import db_executor
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,26 @@ logger = logging.getLogger(__name__)
 # reply (CommandComplete or ErrorResponse). The caller appends
 # ReadyForQuery. Steps 3+ extend this signature (parameters, portals).
 QueryHandler = Callable[..., Awaitable[bytes]]
+
+
+def _has_error_response(frames: bytes) -> bool:
+    """Whether a reply contains an ``ErrorResponse``.
+
+    Walks the frame headers rather than searching for ``b"E"``: that byte
+    occurs inside row data constantly, and a substring match would abandon a
+    batch on the letter E in someone's country name.
+    """
+    i = 0
+    n = len(frames)
+    while i + 5 <= n:
+        tag = frames[i : i + 1]
+        length = int.from_bytes(frames[i + 1 : i + 5], "big")
+        if length < 4:
+            break  # malformed; stop rather than loop forever
+        if tag == b"E":
+            return True
+        i += 1 + length
+    return False
 
 
 async def _hello_world_handler(
@@ -176,6 +197,45 @@ class PgWireServer:
     # event loop indefinitely without this — and the process becomes
     # unresponsive to Ctrl+C until the socket OS-timeouts.
     _WRITE_DRAIN_TIMEOUT_SECONDS: float = 10.0
+
+    async def _run_simple_query(self, sql: str, database: str | None) -> bytes:
+        """Run every statement in one simple-query message, in order.
+
+        The protocol allows a ``Query`` to carry several statements separated
+        by semicolons, and expects **one result set per statement** followed by
+        a single ``ReadyForQuery`` (which the caller appends). A client that
+        sends three and receives one does not report a protocol error - it
+        reads a result that is not there. DuckDB's ``postgres`` extension
+        enumerates catalogs with exactly such a batch and dies with an internal
+        error about a vector index, naming nothing that would lead you here.
+
+        On failure the rest of the batch is skipped, as Postgres does: the
+        statements after a failed one are not attempted, and the error is the
+        reply.
+        """
+        statements = split_statements(sql)
+        if not statements:
+            # Nothing to run: an empty message, or one that is only comments.
+            # The handler's blank-query path answers with CommandComplete,
+            # which is what a client expects for a message carrying no
+            # statement. Passing the text through instead would hand a comment
+            # to the translator, which rejects it as SQL the client never sent.
+            return bytes(await self._handler("", database))
+        if len(statements) == 1:
+            # The *cleaned* statement, not the original. The splitter has
+            # already removed trailing comments, and routing reads the text it
+            # is given: ``SELECT 1; -- from the dashboard`` still contains the
+            # word ``from``, which is enough to stop it looking table-less and
+            # send it to the semantic translator instead of the catalog.
+            return bytes(await self._handler(statements[0], database))
+
+        frames = bytearray()
+        for statement in statements:
+            reply = bytes(await self._handler(statement, database))
+            frames += reply
+            if _has_error_response(reply):
+                break
+        return bytes(frames)
 
     async def _drain(self, writer: asyncio.StreamWriter) -> None:
         """``writer.drain()`` with a hard timeout so a dead client
@@ -419,7 +479,7 @@ class PgWireServer:
                 query = protocol.parse_query(body)
                 try:
                     reply = await asyncio.wait_for(
-                        self._handler(query.sql, startup.database),
+                        self._run_simple_query(query.sql, startup.database),
                         timeout=self.query_timeout,
                     )
                     writer.write(reply)

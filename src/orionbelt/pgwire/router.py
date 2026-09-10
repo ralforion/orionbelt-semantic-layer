@@ -52,6 +52,7 @@ from orionbelt.pgwire.types import (
     oid_for_type_hint,
 )
 from orionbelt.service.db_executor import (
+    ColumnMeta,
     ExecutionError,
     ExecutionResult,
     ExecutionUnavailableError,
@@ -191,6 +192,7 @@ class SemanticRouter:
             references_catalog(sql)
             or references_temp_table(sql)
             or is_metadata_probe(sql)
+            or is_tableless_select(sql)
             or self._references_model_schema(sql)
         ):
             try:
@@ -221,8 +223,21 @@ class SemanticRouter:
                 message=str(exc),
             )
 
+        # DuckDB counts a table's rows by selecting nothing from it. Answer
+        # from every dimension - the model's own grain - and hand back a
+        # projection of the same shape it asked for. See
+        # ``null_projection_arity``.
+        null_arity = null_projection_arity(sql)
+        semantic_sql = sql
+        if null_arity is not None:
+            rewritten = project_the_whole_model(sql, target.model)
+            if rewritten is None:
+                null_arity = None
+            else:
+                semantic_sql = rewritten
+
         try:
-            query = translate_sql_to_query(_normalize_for_obsql(sql), target.model)
+            query = translate_sql_to_query(_normalize_for_obsql(semantic_sql), target.model)
         except SQLTranslationError as exc:
             return _encode_translation_error(exc)
         except Exception as exc:  # noqa: BLE001 — broad guard at protocol boundary
@@ -354,6 +369,14 @@ class SemanticRouter:
                 code=SQLSTATE_SYSTEM_ERROR,
                 message=f"executor error: {exc}",
             )
+
+        if null_arity is not None:
+            # A row count, asked for as a projection of nothing. The values
+            # were only ever the means of counting: the client bound its
+            # result to the NULL it projected and cannot read anything else
+            # back, so neither decimal reporting nor alias recovery below has
+            # a column to apply to.
+            return _encode_result(_null_columns(len(result.rows), null_arity), result_formats)
 
         # Tableau (and other BI tools) wrap measures in expressions like
         # ``SUM("Total Sales") AS "sum:Total Sales:ok"``. The translator
@@ -970,6 +993,38 @@ def _unwrap_model_qualifier(sql: str) -> str:
 _RE_SELECT_STAR = re.compile(r"^\s*select\s+\*", re.IGNORECASE)
 
 
+#: A ``SELECT`` with no ``FROM`` at all. ``FROM`` is matched at a word
+#: boundary so ``SELECT from_date`` and ``SELECT x AS fromage`` are not
+#: mistaken for one, and a subquery's own ``FROM`` is why this is a search
+#: rather than a structural check: a literal-only projection has no subquery
+#: to confuse it, and anything with a ``FROM`` anywhere falls through to the
+#: paths that were already handling it.
+_RE_HAS_FROM = re.compile(r"\bfrom\b", re.IGNORECASE)
+
+
+def is_tableless_select(sql: str) -> bool:
+    """Whether this is a ``SELECT`` that names no table.
+
+    DuckDB's ``postgres`` extension probes for enum support with
+
+        SELECT 0 AS oid, 0 AS enumtypid, '' AS typname, '' AS enumlabel LIMIT 0
+
+    which asks only "what shape would these columns be". It references no
+    catalog table, so the catalog gate does not claim it, and it then reaches
+    the semantic translator - which rejects literal projections, correctly,
+    since a measure cannot be a string constant.
+
+    A query with no ``FROM`` cannot be a semantic query: there is no model to
+    resolve against. Answering it from the embedded DuckDB is both correct and
+    what every other engine does, and it covers the family of shape probes BI
+    tools send rather than this one query.
+    """
+    stripped = sql.strip().lstrip("(").lstrip()
+    if stripped[:6].lower() != "select":
+        return False
+    return _RE_HAS_FROM.search(stripped) is None
+
+
 def is_metadata_probe(sql: str) -> bool:
     """Return ``True`` for ``SELECT *`` column-discovery probes.
 
@@ -1329,3 +1384,78 @@ def _log_data_row(
         else:
             parts.append(f"{col.name}={raw_value!r}(hint={col.type_hint}) -> text({enc!r})")
     logger.debug("pgwire DataRow[%d]: %s", row_idx, " | ".join(parts))
+
+
+def null_projection_arity(sql: str) -> int | None:
+    """How many ``NULL`` literals a ``SELECT`` projects, when it projects only those.
+
+    DuckDB's ``postgres`` extension asks a table for its row count by
+    projecting nothing from it: ``SELECT count(*) FROM t`` leaves the client
+    as ``SELECT NULL FROM t``, and the count is taken from how many rows come
+    back. There is no column to resolve, so the semantic translator rejects it
+    - correctly, on its own terms - and every ``count(*)`` over a model fails
+    with a message about bare column references.
+
+    The count is well defined even though the projection is empty: it is the
+    number of rows a ``SELECT *`` over the virtual table returns. So the query
+    is answered by projecting exactly that and discarding the values - see
+    ``project_the_whole_model``, and note that "exactly that" is load-bearing.
+
+    Returns ``None`` for anything else, table-less ``SELECT NULL`` included -
+    that one has no model to count and the catalog gate has already claimed it.
+    """
+    try:
+        parsed = sqlglot.parse_one(sql, read="postgres")
+    except Exception:  # noqa: BLE001 - unparseable is "not this shape"
+        return None
+    # ``from_``, not ``from`` - sqlglot 30 renamed the arg (see
+    # ``_FLATTEN_ALLOWED_ARGS``). The old key reads as absent, which would
+    # make every SELECT look table-less and answer a count with no rows.
+    if not isinstance(parsed, exp.Select) or not parsed.args.get("from_"):
+        return None
+    if not parsed.expressions:
+        return None
+    for item in parsed.expressions:
+        node = item.this if isinstance(item, exp.Alias) else item
+        if not isinstance(_flatten_unwrap(node), exp.Null):
+            return None
+    return len(parsed.expressions)
+
+
+def project_the_whole_model(sql: str, model: SemanticModel) -> str | None:
+    """Rewrite a NULL-only projection to select every column of the model.
+
+    Every column, not just the dimensions. Dimensions alone were the first
+    attempt and they count a different thing: a dimension-only query needs no
+    fact table, so the compiler picks a different base object and a narrower
+    join scope, and a dimension value with no facts behind it - a customer who
+    has never ordered - becomes a row. ``count(*)`` then exceeded what
+    ``SELECT *`` returned, which is the one number it has to agree with.
+
+    Projecting dimensions + measures + metrics is exactly what ``SELECT *``
+    over the virtual table expands to (see ``catalog._model_columns``), so the
+    count matches it by construction rather than by coincidence.
+
+    ``WHERE`` / ``ORDER BY`` / ``LIMIT`` are left alone, so a filtered count
+    still counts the filtered rows. Returns ``None`` when the model exposes no
+    columns at all, which leaves the translator to reject the query as before
+    rather than inventing an answer.
+    """
+    names = [*model.dimensions, *model.effective_measures, *model.metrics]
+    if not names:
+        return None
+    try:
+        parsed = sqlglot.parse_one(sql, read="postgres")
+    except Exception:  # noqa: BLE001
+        return None
+    parsed.set("expressions", [exp.column(name, quoted=True) for name in names])
+    return parsed.sql(dialect="postgres")
+
+
+def _null_columns(row_count: int, arity: int) -> ExecutionResult:
+    """A result of *row_count* rows, each *arity* NULLs wide."""
+    return ExecutionResult(
+        columns=[ColumnMeta("NULL", "string") for _ in range(arity)],
+        raw_rows=[[None] * arity for _ in range(row_count)],
+        row_count=row_count,
+    )
