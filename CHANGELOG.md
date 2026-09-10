@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.28.1] - 2026-09-10
+
 ### Fixed
 
 - **A DECIMAL measure could not be read over the DuckDB `ATTACH` route.** The catalog advertised
