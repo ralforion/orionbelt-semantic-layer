@@ -281,7 +281,11 @@ def tls_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, 
     thread = threading.Thread(target=server.serve, name="adbc-harness-tls", daemon=True)
     thread.start()
     try:
-        yield f"grpc+tls://localhost:{server.port}", cert_pem
+        # 127.0.0.1, not localhost: on CI that name resolves to ::1 first
+        # while the listener binds IPv4, so the client never reaches the
+        # server and a "must be refused" test passes for the wrong reason.
+        # Both test certificates carry 127.0.0.1 as an IP SAN.
+        yield f"grpc+tls://127.0.0.1:{server.port}", cert_pem
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -408,7 +412,7 @@ def mtls_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, 
     thread = threading.Thread(target=server.serve, name="adbc-harness-mtls", daemon=True)
     thread.start()
     try:
-        yield {"uri": f"grpc+tls://localhost:{server.port}", **pki}
+        yield {"uri": f"grpc+tls://127.0.0.1:{server.port}", **pki}
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -495,10 +499,21 @@ class TestTLS:
         self, tls_server: tuple[str, bytes]
     ) -> None:
         """The property that makes TLS worth offering rather than merely
-        available: the connection fails rather than quietly downgrading."""
+        available: the connection fails rather than quietly downgrading.
+
+        The assertion names the *reason*, not just the failure. A test happy
+        with any exception passes when the client cannot reach the server at
+        all - which is precisely what happened on CI when this connected to
+        ``localhost`` and got ``::1`` while the listener bound IPv4.
+        """
         uri, _ = tls_server
-        with pytest.raises(Exception, match="(?i)certificate|handshake|tls"):
+        with pytest.raises(Exception) as excinfo:
             self._rows(uri, {})
+        message = str(excinfo.value).lower()
+        assert "certificate" in message or "handshake" in message, message
+        assert "connection refused" not in message, (
+            f"the client never reached the server, so nothing about TLS was tested: {message}"
+        )
 
 
 # ---------------------------------------------------------------------------
