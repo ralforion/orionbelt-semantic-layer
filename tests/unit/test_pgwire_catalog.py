@@ -17,6 +17,33 @@ def manager_with_model() -> SessionManager:
     return mgr
 
 
+#: The sample model with its revenue measure declared as a fixed-scale decimal.
+#: The default fixture types every measure as float, which is exactly why the
+#: typmod defect below survived: nothing in the suite produced a NUMERIC column.
+DECIMAL_MODEL_YAML = SAMPLE_MODEL_YAML.replace(
+    """  Total Revenue:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    resultType: float
+    aggregation: sum""",
+    """  Total Revenue:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    resultType: float
+    dataType: decimal(18,2)
+    aggregation: sum""",
+)
+
+
+@pytest.fixture
+def manager_with_decimal_measure() -> SessionManager:
+    mgr = SessionManager()
+    mgr.get_or_create_named("commerce").load_model(DECIMAL_MODEL_YAML)
+    return mgr
+
+
 def test_refresh_creates_one_table_per_model(manager_with_model: SessionManager) -> None:
     """v2.5.0 layout: database=orionbelt, schema=<model>, table='model'."""
 
@@ -372,3 +399,61 @@ class TestTypeNamespaceResolves:
         assert "Customer Country" in columns
         assert "Total Revenue" in columns
         assert {row[5] for row in result.rows} == {"pg_catalog"}
+
+
+class TestDecimalTypeModifier:
+    """``atttypmod`` has to be in Postgres's encoding, not DuckDB's.
+
+    The two disagree and nothing announces it: DuckDB packs a decimal as
+    ``precision * 1000 + scale``, Postgres as ``((precision << 16) | scale) + 4``.
+    Passing DuckDB's number through is not a wrong number, it is a number in the
+    wrong encoding, so a client that decodes it gets a type nobody declared -
+    DuckDB's own ``postgres`` extension read 18002 as ``DECIMAL(0, 78)`` and then
+    refused every real value with a conversion error naming a perfectly valid
+    string.
+    """
+
+    @staticmethod
+    def _decode(typmod: int) -> tuple[int, int]:
+        """Postgres's own numeric typmod decoding."""
+        assert typmod > 0, "a declared decimal must carry a modifier"
+        packed = typmod - 4
+        return (packed >> 16) & 0xFFFF, packed & 0xFFFF
+
+    def test_a_declared_decimal_decodes_to_its_precision_and_scale(
+        self, manager_with_decimal_measure: SessionManager
+    ) -> None:
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_decimal_measure)
+        result = emu.execute(
+            "SELECT a.attname, a.atttypmod FROM pg_attribute a "
+            "JOIN pg_class c ON a.attrelid = c.oid "
+            "WHERE c.relname = 'model' AND a.attname = 'Total Revenue'"
+        )
+        assert result.rows, "the decimal measure must be in the catalog"
+        assert self._decode(result.rows[0][1]) == (18, 2)
+
+    def test_it_is_not_duckdbs_encoding(self, manager_with_decimal_measure: SessionManager) -> None:
+        """The specific wrong value, named so a regression is unmistakable."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_decimal_measure)
+        typmod = emu.execute(
+            "SELECT a.atttypmod FROM pg_attribute a JOIN pg_class c ON a.attrelid = c.oid "
+            "WHERE c.relname = 'model' AND a.attname = 'Total Revenue'"
+        ).rows[0][0]
+        assert typmod != 18002, "DuckDB's precision*1000+scale reached the wire"
+        assert typmod == ((18 << 16) | 2) + 4
+
+    def test_a_non_decimal_column_still_reports_no_modifier(
+        self, manager_with_decimal_measure: SessionManager
+    ) -> None:
+        """-1 means the same thing in both encodings, so it must pass through."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_decimal_measure)
+        rows = emu.execute(
+            "SELECT a.attname, a.atttypmod FROM pg_attribute a "
+            "JOIN pg_class c ON a.attrelid = c.oid "
+            "WHERE c.relname = 'model' AND a.attname IN ('Customer Country', 'Order Count')"
+        ).rows
+        assert len(rows) == 2
+        assert all(row[1] == -1 for row in rows), dict(rows)
