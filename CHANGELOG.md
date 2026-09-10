@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.28.0] - 2026-09-10
+
 ### Added
 
 - **DuckDB queries the semantic layer as an attached catalog.** `ATTACH 'host=... dbname=<model>'
