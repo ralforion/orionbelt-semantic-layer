@@ -161,6 +161,34 @@ _OID_TRANSLATION_CASE = """
         END
 """
 
+#: DuckDB's internal type id for DECIMAL, which ``_OID_TRANSLATION_CASE``
+#: maps to Postgres NUMERIC (1700). Named because the typmod rewrite below
+#: has to test the *untranslated* id.
+_DUCKDB_DECIMAL_TYPE_ID = 21
+
+#: ``atttypmod`` for a DECIMAL, translated from DuckDB's encoding to
+#: Postgres's.
+#:
+#: The two disagree, and nothing says so: DuckDB packs a decimal as
+#: ``precision * 1000 + scale`` (18002 for DECIMAL(18,2)), Postgres as
+#: ``((precision << 16) | scale) + 4`` (1179654 for the same type). Passing
+#: DuckDB's number through unchanged is not a wrong number, it is a number in
+#: the wrong encoding, so a client that decodes it gets a plausible-looking
+#: type nobody declared - DuckDB's own ``postgres`` extension read 18002 as
+#: DECIMAL(0,78) and then failed to fit any real value into it, reporting a
+#: conversion error against a string that was perfectly valid.
+#:
+#: Every other DuckDB type reports -1 here, which is Postgres's "no modifier"
+#: too, so only the decimal case needs translating.
+_TYPMOD_TRANSLATION_CASE = f"""
+        CASE
+            WHEN atttypid = {_DUCKDB_DECIMAL_TYPE_ID} AND atttypmod > 0
+            THEN ((((atttypmod / 1000)::INTEGER) << 16)
+                  | ((atttypmod % 1000)::INTEGER)) + 4
+            ELSE atttypmod
+        END
+"""
+
 #: The oid Postgres gives ``pg_catalog``. Fixed since forever, and every
 #: base type in the shadow ``pg_type`` claims it as its namespace.
 _PG_CATALOG_OID = 11
@@ -265,7 +293,7 @@ _SHADOW_VIEWS: tuple[str, ...] = (
             attnum,
             attndims,
             attcacheoff,
-            atttypmod,
+            {_TYPMOD_TRANSLATION_CASE} AS atttypmod,
             attbyval,
             attstorage,
             attalign,

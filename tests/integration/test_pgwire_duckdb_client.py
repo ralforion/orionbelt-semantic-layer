@@ -489,3 +489,113 @@ class TestAuthentication:
             pytest.raises(Exception, match="(?i)authentication failed|no password supplied"),
         ):
             self._read(port, "")
+
+
+#: The sample model with its revenue measure declared as a fixed-scale decimal.
+#: Every measure in the default fixture is a float, which is why the typmod
+#: defect below shipped: no test in the suite produced a NUMERIC column, and a
+#: real model almost always has one.
+DECIMAL_MODEL_YAML = SAMPLE_MODEL_YAML.replace(
+    """  Total Revenue:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    resultType: float
+    aggregation: sum""",
+    """  Total Revenue:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    resultType: float
+    dataType: decimal(18,2)
+    aggregation: sum""",
+)
+
+
+@pytest.fixture(scope="module")
+def decimal_listener(tmp_path_factory: pytest.TempPathFactory) -> Iterator[int]:
+    """A listener whose model declares a DECIMAL measure."""
+    db_path = tmp_path_factory.mktemp("pgwire-duckdb-decimal") / "warehouse.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(_SETUP_SQL)
+    conn.close()
+
+    prev = os.environ.get("DUCKDB_DATABASE")
+    os.environ["DUCKDB_DATABASE"] = str(db_path)
+
+    manager = SessionManager(ttl_seconds=3600, cleanup_interval=9999)
+    manager.get_or_create_named("sales").load_model(DECIMAL_MODEL_YAML, dedup=False)
+    router = SemanticRouter(session_manager=manager, default_dialect="duckdb")
+    server = PgWireServer(
+        host="127.0.0.1",
+        port=0,
+        auth_mode="trust",
+        max_connections=16,
+        query_handler=router.handle,
+    )
+
+    ready = threading.Event()
+    bound: dict[str, int] = {}
+    loop = asyncio.new_event_loop()
+
+    def run() -> None:
+        asyncio.set_event_loop(loop)
+        bound["port"] = loop.run_until_complete(server.start())
+        ready.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=run, name="pgwire-decimal-test", daemon=True)
+    thread.start()
+    assert ready.wait(30), "pgwire listener did not start"
+    try:
+        yield bound["port"]
+    finally:
+        asyncio.run_coroutine_threadsafe(server.stop(), loop).result(timeout=5)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        manager.stop()
+        if prev is None:
+            os.environ.pop("DUCKDB_DATABASE", None)
+        else:
+            os.environ["DUCKDB_DATABASE"] = prev
+
+
+class TestADecimalMeasure:
+    """A governed DECIMAL has to survive the wire, and it did not.
+
+    ``atttypmod`` reached the client in DuckDB's encoding rather than
+    Postgres's, so the extension decoded ``DECIMAL(18, 2)`` as
+    ``DECIMAL(0, 78)`` and then could not fit a single real value into it. The
+    catalog browsed perfectly; only reading failed, with a conversion error
+    naming a string that was entirely valid::
+
+        Could not convert string "1936466.31" to DECIMAL(0,78)
+
+    Nothing in the suite had a decimal measure before this, which is why it
+    shipped. Most real models have one.
+    """
+
+    @pytest.fixture
+    def attached_decimal(self, pg_extension: Any, decimal_listener: int) -> Iterator[Any]:
+        conn = _attach(decimal_listener)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def test_the_declared_precision_and_scale_arrive(self, attached_decimal: Any) -> None:
+        types = dict(
+            attached_decimal.execute(
+                "SELECT column_name, data_type FROM duckdb_columns() WHERE table_name = 'model'"
+            ).fetchall()
+        )
+        assert types["Total Revenue"] == "DECIMAL(18,2)"
+
+    def test_the_values_can_actually_be_read(self, attached_decimal: Any) -> None:
+        """The assertion the bug report was made of: browsing worked, reading did not."""
+        from decimal import Decimal
+
+        rows = attached_decimal.execute(
+            'SELECT "Customer Country", "Total Revenue" FROM obsl.sales.model ORDER BY 1'
+        ).fetchall()
+        assert rows == [("UK", Decimal("75.00")), ("US", Decimal("150.00"))]

@@ -4,6 +4,28 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A DECIMAL measure could not be read over the DuckDB `ATTACH` route.** The catalog advertised
+  `numeric` correctly and then attached a type modifier in the wrong encoding: `pg_attribute`
+  translated the type *id* from DuckDB's numbering to Postgres's but passed `atttypmod` straight
+  through, and the two engines pack it differently. DuckDB writes `precision * 1000 + scale`
+  (18002 for `DECIMAL(18,2)`); Postgres writes `((precision << 16) | scale) + 4` (1179654).
+
+  Decoded per Postgres, 18002 reads as `DECIMAL(0, 78)` - zero total digits, 78 decimal places -
+  so no real value fits and the extension refused each one with a conversion error naming a string
+  that was perfectly valid: `Could not convert string "1936466.31" to DECIMAL(0,78)`. Browsing the
+  catalog worked throughout, because the modifier only matters once DuckDB allocates a vector to
+  hold values, so the failure looked like bad data rather than a bad type.
+
+  The per-query `RowDescription` had always packed it the Postgres way, which is why `psql` and
+  every BI tool were unaffected; only the catalog path disagreed, and only clients that build
+  typed containers from `atttypmod` could see it. Both paths now agree.
+
+  It shipped because no test model had a decimal measure: every measure in the fixtures was a
+  float, so the suite never produced a NUMERIC column at all. Both pgwire suites now carry a
+  decimal variant.
+
 ## [2.28.0] - 2026-09-10
 
 ### Added
