@@ -147,6 +147,7 @@ nav:
       - AI Integrations: guide/integrations.md
       - Postgres Wire (BI Tools): guide/postgres-wire-bi-tools.md
       - ADBC / Arrow Flight SQL: guide/adbc.md
+      - DuckDB as a Client: guide/duckdb.md
       - Authentication: guide/authentication.md
       - OSI Interoperability: guide/osi.md
   - API:

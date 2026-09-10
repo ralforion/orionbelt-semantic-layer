@@ -220,8 +220,7 @@ done
 ## DuckDB as a client
 
 Besides being one of the eight warehouses OBSL compiles *to*, DuckDB can sit in
-front of it and query the model. Two routes, both giving you a relation you can
-join to local files:
+front of it and query the model, over either surface:
 
 ```sql
 -- Postgres wire: the model becomes a table
@@ -233,21 +232,8 @@ ATTACH 'host=localhost port=5432 dbname=commerce user=obsl'
 SELECT "Country Name", "Total Sales" FROM obsl.commerce.model;
 ```
 
-```sql
--- Arrow Flight SQL: OBSQL through a table function, Arrow end to end
-INSTALL adbc_scanner FROM community; LOAD adbc_scanner;
-CREATE OR REPLACE TABLE h AS SELECT adbc_connect(MAP {
-    'driver': '/path/to/libadbc_driver_flightsql.so',
-    'uri':    'grpc://localhost:8815'
-}) AS handle;
-
-SELECT * FROM adbc_scan((SELECT handle FROM h),
-    'SELECT "Country Name", "Total Sales" FROM commerce');
-```
-
-See [7. DuckDB](guide/postgres-wire-bi-tools.md#7-duckdb) for the `ATTACH` route
-(including TLS and authentication) and [From DuckDB](guide/adbc.md#from-duckdb)
-for the ADBC one.
+Both routes, with TLS, authentication and their limitations, are covered in
+**[Using DuckDB as a client](guide/duckdb.md)**.
 
 ## Arrow Flight SQL Server
 

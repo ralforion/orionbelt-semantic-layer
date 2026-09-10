@@ -283,15 +283,14 @@ Dremio, three options:
 
 ## 7. DuckDB
 
-DuckDB can be a client of the wire surface as well as a warehouse behind it.
-Its `postgres` extension attaches the semantic layer as a catalog, so the model
-becomes an ordinary table in a local DuckDB session:
+DuckDB's bundled `postgres` extension attaches the wire surface as a catalog,
+so the model becomes an ordinary table in a local DuckDB session:
 
 ```sql
 INSTALL postgres;
 LOAD postgres;
 
-SET pg_use_text_protocol = true;   -- required, see below
+SET pg_use_text_protocol = true;   -- required; the default reads with binary COPY
 
 ATTACH 'host=127.0.0.1 port=5432 dbname=commerce user=obsl'
     AS obsl (TYPE postgres, READ_ONLY);
@@ -299,86 +298,15 @@ ATTACH 'host=127.0.0.1 port=5432 dbname=commerce user=obsl'
 SELECT "Country Name", "Total Sales" FROM obsl.commerce.model;
 ```
 
-Everything downstream is ordinary DuckDB. The model joins to local Parquet and
-CSV, aggregates further, and materialises:
+From there it is ordinary DuckDB: the model joins to local Parquet and CSV,
+aggregates further, and lands in `CREATE TABLE AS`.
 
-```sql
-CREATE TABLE snapshot AS SELECT * FROM obsl.commerce.model;
+`sslmode`, `sslrootcert` and `password` work exactly as they do for `psql`,
+because the extension is libpq underneath.
 
-SELECT m."Country Name", m."Total Sales" > t.target AS beat
-FROM   obsl.commerce.model m
-JOIN   read_csv('targets.csv') t ON m."Country Name" = t.country;
-```
-
-### `pg_use_text_protocol` is not optional
-
-Left at its default, the extension reads data with
-`COPY ... TO STDOUT (FORMAT binary)`. The semantic surface answers queries, not
-binary bulk exports, so the read fails with a parse error naming `COPY` - the
-catalog browses fine, which makes it look like a broken query rather than a
-missing feature. Set the flag once per session, before the first read.
-
-Two other settings are worth knowing but need no change: `pg_use_ctid_scan` and
-`pg_experimental_filter_pushdown` both work as-is, because a model has neither
-physical row ids nor a plan the extension can push into.
-
-### What the division of labour is
-
-Predicates written against `obsl.<schema>.model` are pushed to the semantic
-layer as OBSQL and compiled into the warehouse query. Anything you wrap around
-the result - a join to a local file, a window function, a second aggregation -
-is DuckDB's own work on rows that have already arrived. For anything selective,
-filter on the model.
-
-`SELECT count(*) FROM obsl.<schema>.model` counts rows at the model's grain,
-one per dimension combination, which is what `SELECT *` over it returns.
-
-### TLS and authentication
-
-The extension is libpq underneath, so the whole connection string reaches it
-and `sslmode`, `sslrootcert` and `password` behave exactly as they do for
-`psql`. Nothing about the DuckDB side is special.
-
-Against a listener started with `PGWIRE_TLS_CERT` / `PGWIRE_TLS_KEY`:
-
-```sql
-ATTACH 'host=obsl.internal port=5432 dbname=commerce user=obsl
-        sslmode=verify-full sslrootcert=/etc/ssl/certs/obsl-ca.crt'
-    AS obsl (TYPE postgres, READ_ONLY);
-```
-
-All four modes negotiate (`disable`, `prefer`, `require`, `verify-ca`,
-`verify-full`), and `verify-ca` against the wrong trust anchor is refused,
-which is what makes the others mean anything.
-
-With `AUTH_MODE=api_key`, the API key **is** the password:
-
-```sql
-ATTACH 'host=obsl.internal port=5432 dbname=commerce user=obsl
-        password=obsl_pat_...  sslmode=require'
-    AS obsl (TYPE postgres, READ_ONLY);
-```
-
-The mechanism is SCRAM-SHA-256 by default, which libpq performs on DuckDB's
-behalf; `PGWIRE_AUTH_MODE=password` drops to cleartext for clients that lack
-SCRAM, and DuckDB is not one of them. Send the key over TLS either way: with
-SCRAM the key never crosses the wire, but the query results do.
-
-### Compared to the ADBC route
-
-The [ADBC guide](adbc.md#from-duckdb) shows the same idea over Arrow Flight
-SQL, through `adbc_scan(handle, '<OBSQL>')`. The difference is addressing:
-
-| | Postgres wire (`ATTACH`) | ADBC (`adbc_scan`) |
-|---|---|---|
-| Query shape | `FROM obsl.commerce.model` - a real table | `adbc_scan(handle, 'SELECT ... FROM commerce')` - OBSQL in a string |
-| Extension | `postgres` (bundled) | `adbc_scanner` (community) plus a driver library path |
-| Transport | Postgres text protocol | Arrow, end to end |
-| Setup | one `SET`, one `ATTACH` | a driver path and a handle table |
-
-Use `ATTACH` when you want the model to look like a table and compose with the
-rest of your SQL. Use ADBC when the result is large enough that the Arrow path
-is worth the extra setup.
+See **[Using DuckDB as a client](duckdb.md)** for the full guide: both routes
+(this one and Arrow Flight SQL), TLS and authentication, which predicates reach
+the warehouse, and the limitations of each.
 
 ## Known limitations
 

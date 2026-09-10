@@ -72,7 +72,7 @@ OBSQL flows over **Apache Arrow Flight SQL** (v2.4+) and **PostgreSQL wire** (v2
 | Custom Extensions   | Vendor-specific metadata at all model levels (model, data object, column, dimension, measure, metric)           |
 | DB-API 2.0 Drivers  | PEP 249 drivers for all 8 databases with transparent OBML compilation                                          |
 | Arrow Flight SQL    | Embedded gRPC server for DBeaver, Tableau, Power BI — single container, two ports                               |
-| DuckDB as a Client  | A plain DuckDB shell queries the layer: `ATTACH ... (TYPE postgres)` mounts a model as a table, or `adbc_scanner` scans it over Flight SQL. Governed measures join to local Parquet and CSV |
+| DuckDB as a Client  | A plain DuckDB shell queries the layer: `ATTACH ... (TYPE postgres)` mounts a model as a table, or `adbc_scanner` scans it over Flight SQL. Governed measures join to local Parquet and CSV. See [Using DuckDB as a client](guide/duckdb.md) |
 | PostgreSQL Wire     | Native Postgres-protocol surface (v2.5.0+) — Tableau, DBeaver, Superset, Power BI, `psql`, and **Dremio as a federated Postgres source** connect via their built-in Postgres ODBC/JDBC driver; no new connector to install |
 | OBSL Graph & SPARQL | Every loaded model is exported as an OBSL-Core 0.2 RDF graph (Turtle) with a read-only SPARQL (SELECT/ASK) endpoint |
 | Plugin Architecture | Extensible dialect system with capability flags                                                                 |
