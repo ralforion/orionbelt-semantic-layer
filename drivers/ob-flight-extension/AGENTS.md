@@ -210,6 +210,20 @@ def stop_flight_server() -> None:
 daemon=True is critical — ensures the Flight server thread dies cleanly
 when the FastAPI process exits or is killed by Docker.
 
+## TLS
+
+`ob_flight/tls.py` reads the certificate material; `FlightServerBase` does the
+rest (`tls_certificates`, `verify_client`, `root_certificates`). The listener's
+scheme follows the config — `grpc+tls://` with a certificate, `grpc://`
+without — so a plaintext client is refused at the handshake rather than
+downgraded.
+
+Every failure in that module is a *configuration* failure and says which
+setting is wrong. The one worth knowing: the published image runs as a non-root
+user, so a key bind-mounted as root-owned 0600 is present, correctly named and
+unreadable, which reads as a wrong path until someone checks the mode. The
+error names that case.
+
 ---
 
 ## Environment Variables
@@ -220,6 +234,9 @@ when the FastAPI process exits or is killed by Docker.
 | FLIGHT_PORT | 8815 | gRPC listen port |
 | FLIGHT_AUTH_MODE | none | "none" or "token" |
 | FLIGHT_API_TOKEN | | Static token for auth mode "token" |
+| FLIGHT_TLS_CERT | | PEM certificate path; with the key, serves grpc+tls |
+| FLIGHT_TLS_KEY | | PEM private key path. Both or neither - one alone refuses to start rather than serving plaintext |
+| FLIGHT_TLS_CLIENT_CA | | PEM CA path; turns on mutual TLS (requires cert + key) |
 | FLIGHT_DEFAULT_MODEL | | Fallback model_id if path empty |
 | FLIGHT_PRELOAD_MODELS | | Comma-sep .obml.yaml paths, loaded at startup |
 | DB_VENDOR | snowflake | Default vendor for db_router |

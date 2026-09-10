@@ -4,6 +4,32 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **TLS on the Arrow Flight SQL surface.** `FLIGHT_TLS_CERT` + `FLIGHT_TLS_KEY` make the listener
+  serve `grpc+tls` instead of `grpc`, and `FLIGHT_TLS_CLIENT_CA` additionally requires a client
+  certificate signed by that CA. Until now the surface had authentication and no transport
+  security, so an API key crossed the wire in clear text; configuring auth without TLS now logs a
+  warning saying so.
+
+  Both settings or neither: one alone refuses to start rather than falling back to plaintext,
+  because a deployment that reads as encrypted and is not is worse than one that does not come up.
+  The startup line reports the transport, so confirming TLS is live needs no packet capture.
+
+  Every configuration failure names the setting it is about, and one case gets its own message: the
+  published image runs as a non-root user, so a key bind-mounted from the host as `root:root 0600`
+  is present, correctly named, and unreadable - which reads as a wrong path until someone thinks to
+  check the mode.
+
+  Client trust was measured rather than read from driver documentation. Python ADBC and DuckDB's
+  `adbc_scanner` both accept `tls_root_certs` and `tls_skip_verify`, and both are **refused rather
+  than downgraded** when told to trust nothing. From DuckDB the option key must be a literal in the
+  `adbc_connect` MAP - a parameterised key scrambles the pairs into an error about failing to load
+  the driver. The Flight SQL JDBC driver is documented as untested here rather than assumed.
+
+  Unchanged for the demo: `FLIGHT_ENABLED` still defaults false in the image, and Cloud Run cannot
+  reach the Flight port anyway.
+
 ## [2.27.2] - 2026-09-09
 
 ### Fixed

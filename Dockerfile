@@ -88,6 +88,9 @@ ENV PORT=8080 \
     MODEL_FILES=orionbelt_1_commerce.yaml
 
 EXPOSE ${PORT}
+# Arrow Flight SQL, when FLIGHT_ENABLED=true. Documentation only - the image
+# advertised just the HTTP port while being able to serve this one too.
+EXPOSE 8815
 
 # Health check for local Docker / Compose (Cloud Run uses its own probes)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

@@ -199,6 +199,137 @@ class TestCatalog:
 
 
 # ---------------------------------------------------------------------------
+# TLS — Track T-2 of design/PLAN_flight_tls.md
+# ---------------------------------------------------------------------------
+
+
+def _self_signed(tmp: Any) -> tuple[bytes, bytes]:
+    """A certificate for localhost / 127.0.0.1, valid for a day."""
+    import datetime as dt
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = dt.datetime.now(dt.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(minutes=5))
+        .not_valid_after(now + dt.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
+            ),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    return (
+        cert.public_bytes(serialization.Encoding.PEM),
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ),
+    )
+
+
+@pytest.fixture(scope="module")
+def tls_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, bytes]]:
+    """A Flight server serving ``grpc+tls`` with a self-signed certificate.
+
+    Yields ``(uri, cert_pem)`` - the certificate so a client can be told to
+    trust it, which is the whole question a self-signed deployment raises.
+    """
+    pytest.importorskip("adbc_driver_flightsql", reason="ADBC Flight SQL driver not installed")
+    pytest.importorskip("cryptography", reason="cryptography required to mint a test cert")
+    duckdb = pytest.importorskip("duckdb")
+    pytest.importorskip("ob_flight", reason="ob-flight-extension not installed")
+
+    from ob_flight.server import OBFlightServer
+
+    from orionbelt.service.session_manager import SessionManager
+
+    tmp = tmp_path_factory.mktemp("flight-tls")
+    cert_pem, key_pem = _self_signed(tmp)
+
+    db_path = tmp / "sample.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(_SETUP_SQL)
+    conn.close()
+
+    prev = os.environ.get("DUCKDB_DATABASE")
+    os.environ["DUCKDB_DATABASE"] = str(db_path)
+
+    mgr = SessionManager(ttl_seconds=3600, cleanup_interval=9999)
+    mgr.get_or_create_named(MODEL_NAME).load_model(SAMPLE_MODEL_YAML, dedup=False)
+
+    server = OBFlightServer(
+        "grpc+tls://127.0.0.1:0",
+        session_manager=mgr,
+        default_dialect="duckdb",
+        tls_certificates=[(cert_pem, key_pem)],
+    )
+    thread = threading.Thread(target=server.serve, name="adbc-harness-tls", daemon=True)
+    thread.start()
+    try:
+        yield f"grpc+tls://localhost:{server.port}", cert_pem
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        if prev is None:
+            os.environ.pop("DUCKDB_DATABASE", None)
+        else:
+            os.environ["DUCKDB_DATABASE"] = prev
+
+
+class TestTLS:
+    """Serving over TLS, and refusing a client that will not check it."""
+
+    QUERY = f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME}'
+
+    @staticmethod
+    def _rows(uri: str, options: dict[str, str]) -> int:
+        from adbc_driver_flightsql import dbapi
+
+        connection = dbapi.connect(uri, db_kwargs=options)
+        try:
+            with connection.cursor() as cur:
+                cur.execute(TestTLS.QUERY)
+                return int(cur.fetch_arrow_table().num_rows)
+        finally:
+            connection.close()
+
+    def test_a_client_trusting_the_cert_is_served(self, tls_server: tuple[str, bytes]) -> None:
+        uri, cert_pem = tls_server
+        options = {"adbc.flight.sql.client_option.tls_root_certs": cert_pem.decode()}
+        assert self._rows(uri, options) == 2
+
+    def test_skip_verify_also_works(self, tls_server: tuple[str, bytes]) -> None:
+        """The option a first-time operator reaches for. It has to work, and
+        the docs have to be honest that it checks nothing."""
+        uri, _ = tls_server
+        assert self._rows(uri, {"adbc.flight.sql.client_option.tls_skip_verify": "true"}) == 2
+
+    def test_a_client_that_will_not_trust_it_is_refused(
+        self, tls_server: tuple[str, bytes]
+    ) -> None:
+        """The property that makes TLS worth offering rather than merely
+        available: the connection fails rather than quietly downgrading."""
+        uri, _ = tls_server
+        with pytest.raises(Exception, match="(?i)certificate|handshake|tls"):
+            self._rows(uri, {})
+
+
+# ---------------------------------------------------------------------------
 # Statistics — Track II-4
 # ---------------------------------------------------------------------------
 

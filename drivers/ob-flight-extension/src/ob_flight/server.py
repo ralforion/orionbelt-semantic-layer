@@ -160,6 +160,9 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         *,
         auth_handler: flight.ServerAuthHandler | None = None,
         auth_middleware: dict[str, Any] | None = None,
+        tls_certificates: list[tuple[bytes, bytes]] | None = None,
+        verify_client: bool = False,
+        root_certificates: bytes | None = None,
         session_manager: Any = None,
         default_dialect: str = "duckdb",
         batch_size: int = 1024,
@@ -172,10 +175,23 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         # neither. See ``ob_flight.auth``.
         middleware: dict[str, Any] = {_ROUTING_MIDDLEWARE_KEY: _SessionRoutingFactory()}
         middleware.update(auth_middleware or {})
+        # TLS is pyarrow's to implement; ours to configure. ``tls_certificates``
+        # is a list of (cert, key) byte pairs, and ``verify_client`` +
+        # ``root_certificates`` turn on mutual TLS. Passed only when set, so a
+        # plaintext server constructs exactly as it did before.
+        tls_kwargs: dict[str, Any] = {}
+        if tls_certificates:
+            tls_kwargs["tls_certificates"] = tls_certificates
+        if verify_client:
+            tls_kwargs["verify_client"] = True
+        if root_certificates is not None:
+            tls_kwargs["root_certificates"] = root_certificates
+
         super().__init__(
             location,
             auth_handler=auth_handler,
             middleware=middleware,
+            **tls_kwargs,
         )
         self._session_manager = session_manager
         self._default_dialect = default_dialect
