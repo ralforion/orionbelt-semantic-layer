@@ -475,8 +475,17 @@ class TestAuthentication:
     def test_no_password_is_refused(
         self, pg_extension: Any, api_key_auth: str, warehouse: pathlib.Path
     ) -> None:
+        """Refused - by whichever side gets there first.
+
+        Some libpq builds decline to send an empty credential for SCRAM at all
+        (``fe_sendauth: no password supplied``) rather than letting the server
+        answer; others complete the exchange and are rejected. Both are the
+        same outcome, and which one happens is a property of the client build
+        rather than of this surface. Asserting only the server's message passed
+        locally and failed on CI.
+        """
         with (
             _listener("scram") as port,
-            pytest.raises(Exception, match="(?i)authentication failed"),
+            pytest.raises(Exception, match="(?i)authentication failed|no password supplied"),
         ):
             self._read(port, "")
