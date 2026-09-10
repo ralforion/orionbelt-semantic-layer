@@ -21,11 +21,18 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   is present, correctly named, and unreadable - which reads as a wrong path until someone thinks to
   check the mode.
 
-  Client trust was measured rather than read from driver documentation. Python ADBC and DuckDB's
-  `adbc_scanner` both accept `tls_root_certs` and `tls_skip_verify`, and both are **refused rather
-  than downgraded** when told to trust nothing. From DuckDB the option key must be a literal in the
-  `adbc_connect` MAP - a parameterised key scrambles the pairs into an error about failing to load
-  the driver. The Flight SQL JDBC driver is documented as untested here rather than assumed.
+  Client trust was measured rather than read from driver documentation, against Python ADBC,
+  DuckDB's `adbc_scanner` and the Flight SQL JDBC driver. All three are **refused rather than
+  downgraded** when told to trust nothing. Two traps came out of it, both now in the guide: from
+  DuckDB the option key must be a literal in the `adbc_connect` MAP, since a parameterised key
+  scrambles the pairs into an error about failing to load the driver; and from JDBC, `trustStore`
+  does nothing without `useSystemTrustStore=false` beside it - it keeps consulting the system store
+  and fails with the same message as no trust configuration at all, so the setting reads as unread
+  rather than overridden.
+
+  Mutual TLS is tested rather than merely wired: a client that trusts the server but presents no
+  certificate is dropped, and one presenting a certificate signed by `FLIGHT_TLS_CLIENT_CA` is
+  served.
 
   Unchanged for the demo: `FLIGHT_ENABLED` still defaults false in the image, and Cloud Run cannot
   reach the Flight port anyway.
