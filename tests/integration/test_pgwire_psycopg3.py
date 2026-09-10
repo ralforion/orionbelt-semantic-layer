@@ -165,3 +165,52 @@ def test_psycopg3_semantic_query_returns_rows(
     assert rows == [("DE", 1234), ("US", 9876)]
     assert description is not None
     assert [d.name for d in description] == ["Customer Country", "Total Revenue"]
+
+
+class TestMultiStatementSimpleQuery:
+    """One ``Query`` message carrying several statements, driven by libpq.
+
+    The protocol allows it and expects one result set per statement, then a
+    single ``ReadyForQuery``. psycopg exposes the sequence through
+    ``nextset()``, which is the only way to see from a client whether the
+    server ran all of them or quietly ran the first.
+    """
+
+    def test_every_statement_produces_a_result(
+        self, pgwire_with_router_psycopg: tuple[PgWireServer, int]
+    ) -> None:
+        _, port = pgwire_with_router_psycopg
+        with psycopg.connect(_dsn(port), autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1; SELECT 2; SELECT 3")
+            seen = [cur.fetchall()]
+            while cur.nextset():
+                seen.append(cur.fetchall())
+        assert seen == [[(1,)], [(2,)], [(3,)]]
+
+    def test_a_trailing_comment_is_not_a_statement(
+        self, pgwire_with_router_psycopg: tuple[PgWireServer, int]
+    ) -> None:
+        """``SELECT 1; -- done`` is one statement with a remark, not two.
+
+        Dispatching the remark made the client read a successful result and
+        then an ``ErrorResponse`` for something it never sent. libpq raises on
+        that error, so a clean ``fetchall`` here is the assertion.
+        """
+        _, port = pgwire_with_router_psycopg
+        with psycopg.connect(_dsn(port), autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1; -- trailing comment")
+            rows = cur.fetchall()
+            assert cur.nextset() is None, "the comment must not produce a second result"
+        assert rows == [(1,)]
+
+    def test_a_failing_statement_stops_the_batch(
+        self, pgwire_with_router_psycopg: tuple[PgWireServer, int]
+    ) -> None:
+        """Postgres abandons the rest of the batch, and so do we."""
+        _, port = pgwire_with_router_psycopg
+        with (
+            psycopg.connect(_dsn(port), autocommit=True) as conn,
+            conn.cursor() as cur,
+            pytest.raises(psycopg.Error),
+        ):
+            cur.execute("SELECT 1; SELECT nonsense FROM nowhere; SELECT 3")

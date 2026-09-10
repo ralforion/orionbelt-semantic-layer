@@ -22,6 +22,12 @@ What it understands, all of which appear in real client traffic:
 * ``--`` line comments
 * ``/* ... */`` block comments, **nested**, which Postgres allows and most
   splitters get wrong
+
+A fragment that is only comments and whitespace is dropped rather than
+returned. ``SELECT 1; -- done`` is one statement with a trailing remark, not
+two, and dispatching the remark as a second statement made the client read a
+successful result followed by an error. Comments *attached* to a statement stay
+attached: stripping them is the parser's business, not the splitter's.
 """
 
 from __future__ import annotations
@@ -72,17 +78,45 @@ def split_statements(sql: str) -> list[str]:
             continue
 
         if ch == ";":
-            fragment = sql[start:i].strip()
-            if fragment:
-                statements.append(fragment)
+            _append(statements, sql[start:i])
             start = i + 1
 
         i += 1
 
-    tail = sql[start:].strip()
-    if tail:
-        statements.append(tail)
+    _append(statements, sql[start:])
     return statements
+
+
+def _append(statements: list[str], fragment: str) -> None:
+    """Add *fragment* unless it is empty or holds nothing but comments."""
+    fragment = fragment.strip()
+    if fragment and _has_code(fragment):
+        statements.append(fragment)
+
+
+def _has_code(fragment: str) -> bool:
+    """Whether *fragment* contains anything outside comments and whitespace.
+
+    The scan mirrors :func:`split_statements` for the two comment forms and
+    stops at the first character that is neither - it does not need to
+    understand quoting, because a quote *is* such a character.
+    """
+    i = 0
+    n = len(fragment)
+    while i < n:
+        ch = fragment[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch == "-" and fragment.startswith("--", i):
+            newline = fragment.find("\n", i)
+            i = n if newline == -1 else newline + 1
+            continue
+        if ch == "/" and fragment.startswith("/*", i):
+            i = _skip_block_comment(fragment, i)
+            continue
+        return True
+    return False
 
 
 def _skip_quoted(sql: str, i: int, quote: str) -> int:

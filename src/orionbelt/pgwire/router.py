@@ -230,7 +230,7 @@ class SemanticRouter:
         null_arity = null_projection_arity(sql)
         semantic_sql = sql
         if null_arity is not None:
-            rewritten = project_every_dimension(sql, target.model)
+            rewritten = project_the_whole_model(sql, target.model)
             if rewritten is None:
                 null_arity = None
             else:
@@ -1396,10 +1396,10 @@ def null_projection_arity(sql: str) -> int | None:
     - correctly, on its own terms - and every ``count(*)`` over a model fails
     with a message about bare column references.
 
-    The count is well defined even though the projection is empty: the model's
-    virtual table has one row per combination of its dimensions, which is the
-    grain a ``SELECT *`` over it already returns. So the query is answered by
-    selecting every dimension and then discarding the values.
+    The count is well defined even though the projection is empty: it is the
+    number of rows a ``SELECT *`` over the virtual table returns. So the query
+    is answered by projecting exactly that and discarding the values - see
+    ``project_the_whole_model``, and note that "exactly that" is load-bearing.
 
     Returns ``None`` for anything else, table-less ``SELECT NULL`` included -
     that one has no model to count and the catalog gate has already claimed it.
@@ -1422,15 +1422,26 @@ def null_projection_arity(sql: str) -> int | None:
     return len(parsed.expressions)
 
 
-def project_every_dimension(sql: str, model: SemanticModel) -> str | None:
-    """Rewrite a NULL-only projection to select every dimension instead.
+def project_the_whole_model(sql: str, model: SemanticModel) -> str | None:
+    """Rewrite a NULL-only projection to select every column of the model.
+
+    Every column, not just the dimensions. Dimensions alone were the first
+    attempt and they count a different thing: a dimension-only query needs no
+    fact table, so the compiler picks a different base object and a narrower
+    join scope, and a dimension value with no facts behind it - a customer who
+    has never ordered - becomes a row. ``count(*)`` then exceeded what
+    ``SELECT *`` returned, which is the one number it has to agree with.
+
+    Projecting dimensions + measures + metrics is exactly what ``SELECT *``
+    over the virtual table expands to (see ``catalog._model_columns``), so the
+    count matches it by construction rather than by coincidence.
 
     ``WHERE`` / ``ORDER BY`` / ``LIMIT`` are left alone, so a filtered count
-    still counts the filtered rows. Returns ``None`` when the model declares no
-    dimensions, which leaves the translator to reject the query as before
+    still counts the filtered rows. Returns ``None`` when the model exposes no
+    columns at all, which leaves the translator to reject the query as before
     rather than inventing an answer.
     """
-    names = list(model.dimensions)
+    names = [*model.dimensions, *model.effective_measures, *model.metrics]
     if not names:
         return None
     try:

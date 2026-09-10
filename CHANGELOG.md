@@ -20,6 +20,11 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   count by projecting `SELECT NULL FROM t`, which read as a literal projection and was rejected.
   Each returned an empty catalog or a message about something else.
 
+  The row count is answered by projecting every column of the model, not just its dimensions.
+  Dimensions alone need no fact table, so the compiler picks a different base object and a
+  dimension value with no facts behind it (a customer who has never ordered) becomes a row:
+  `count(*)` then exceeded what `SELECT *` returned, which is the one number it has to agree with.
+
   One client setting is required: `SET pg_use_text_protocol = true`, because the default reads data
   with `COPY ... TO STDOUT (FORMAT binary)`.
 
@@ -33,7 +38,9 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   semicolons now runs each in order and replies with one result set per statement, as Postgres
   does. The splitter is a scanner rather than `sql.split(";")`: a semicolon inside a string, an
   escape string, a quoted identifier, a dollar-quoted body, a line comment or a nested block
-  comment is data, not a boundary. Execution stops at the first statement that errors.
+  comment is data, not a boundary. A fragment that is only comments is dropped rather than
+  dispatched, so `SELECT 1; -- done` is one statement with a trailing remark and not a result
+  followed by an error. Execution stops at the first statement that errors.
 
 - **TLS on the Postgres wire surface.** `PGWIRE_TLS_CERT` + `PGWIRE_TLS_KEY` (and
   `PGWIRE_TLS_CLIENT_CA`) make the listener answer `S` to an `SSLRequest` and upgrade the socket,

@@ -69,6 +69,12 @@ def pgwire_listener(tmp_path_factory: pytest.TempPathFactory) -> Iterator[int]:
     db_path = tmp_path_factory.mktemp("pgwire-duckdb") / "warehouse.duckdb"
     conn = duckdb.connect(str(db_path))
     conn.execute(_SETUP_SQL)
+    # A customer who has never ordered: a dimension value with no facts behind
+    # it. ``SELECT *`` does not return a row for it, so nothing else in this
+    # file changes - but a row count taken over the dimensions alone does, and
+    # that is exactly the bug ``test_count_star_agrees_with_select_star``
+    # exists to catch.
+    conn.execute("INSERT INTO PUBLIC.CUSTOMERS VALUES ('C3', 'DE')")
     conn.close()
 
     prev = os.environ.get("DUCKDB_DATABASE")
@@ -190,13 +196,42 @@ class TestQueryingTheModel:
         attached.execute("CREATE TABLE snapshot AS SELECT * FROM obsl.sales.model")
         assert attached.execute("SELECT count(*) FROM snapshot").fetchone() == (2,)
 
-    def test_count_star(self, attached: Any) -> None:
+    def test_count_star_agrees_with_select_star(self, attached: Any) -> None:
         """DuckDB sends this as ``SELECT NULL FROM model`` and counts the rows.
 
-        The answer is the model's own grain - one row per dimension
-        combination - which is what ``SELECT *`` over it returns.
+        Asserted against ``SELECT *`` rather than a literal, because agreeing
+        with it is the whole requirement and a literal cannot express that. The
+        warehouse holds a customer with no orders precisely so the two can
+        disagree: answering the count from the dimensions alone drops the fact
+        table from the query, and that customer becomes a third row that
+        ``SELECT *`` never returns.
         """
-        assert attached.execute("SELECT count(*) FROM obsl.sales.model").fetchone() == (2,)
+        star = attached.execute("SELECT * FROM obsl.sales.model").fetchall()
+        counted = attached.execute("SELECT count(*) FROM obsl.sales.model").fetchone()
+        assert counted == (len(star),)
+        assert counted == (2,), "the dangling dimension value must not be counted"
+
+    def test_a_dimension_only_query_counts_something_else(self, attached: Any) -> None:
+        """The asymmetry that makes the count above easy to get wrong.
+
+        ``SELECT "Customer Country"`` alone needs no fact table, so it lists
+        every country including the one with no orders - which is right, as a
+        list of countries. ``SELECT *`` asks for measures too, which anchors
+        the query to the facts and drops that country. Both are correct; they
+        are simply not the same question, and a row count answered from the
+        dimensions is answering the second one with the first.
+        """
+        dims_only = {
+            row[0]
+            for row in attached.execute(
+                'SELECT "Customer Country" FROM obsl.sales.model'
+            ).fetchall()
+        }
+        whole_model = {
+            row[0] for row in attached.execute("SELECT * FROM obsl.sales.model").fetchall()
+        }
+        assert dims_only == {"UK", "US", "DE"}
+        assert whole_model == {"UK", "US"}
 
 
 def test_binary_copy_is_the_setting_that_matters(pg_extension: Any, pgwire_listener: int) -> None:

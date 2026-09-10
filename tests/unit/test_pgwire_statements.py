@@ -121,3 +121,39 @@ class TestUnterminatedInput:
     )
     def test_the_remainder_stays_one_statement(self, sql: str) -> None:
         assert len(split_statements(sql)) == 1
+
+
+class TestCommentOnlyFragments:
+    """A trailing remark is not a statement.
+
+    ``SELECT 1; -- done`` used to split into two, and the second was dispatched
+    like any other statement: the client read a successful result and then an
+    ErrorResponse for a fragment it never meant to send.
+    """
+
+    def test_a_trailing_line_comment_is_dropped(self) -> None:
+        assert split_statements("SELECT 1; -- trailing comment") == ["SELECT 1"]
+
+    def test_a_trailing_block_comment_is_dropped(self) -> None:
+        assert split_statements("SELECT 1; /* tail */") == ["SELECT 1"]
+
+    def test_a_trailing_nested_block_comment_is_dropped(self) -> None:
+        assert split_statements("SELECT 1; /* /* nested */ */") == ["SELECT 1"]
+
+    def test_a_semicolon_inside_the_trailing_comment_does_not_revive_it(self) -> None:
+        assert split_statements("SELECT 1; -- a; b") == ["SELECT 1"]
+
+    def test_a_message_of_nothing_but_comments(self) -> None:
+        assert split_statements("-- just a note") == []
+        assert split_statements("/* just a note */ ;") == []
+
+    def test_a_leading_comment_stays_with_its_statement(self) -> None:
+        """The other half of the rule: attached comments are not stripped."""
+        parts = split_statements("SELECT 1;\n-- about the next one\nSELECT 2")
+        assert len(parts) == 2
+        assert parts[1].endswith("SELECT 2")
+        assert "about the next one" in parts[1]
+
+    def test_a_comment_marker_inside_a_literal_is_not_a_comment(self) -> None:
+        sql = "SELECT '-- not a comment'"
+        assert split_statements(sql) == [sql]

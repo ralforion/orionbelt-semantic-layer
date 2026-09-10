@@ -16,7 +16,7 @@ from orionbelt.pgwire.router import (
     _strip_collate_annotations,
     _unwrap_model_qualifier,
     null_projection_arity,
-    project_every_dimension,
+    project_the_whole_model,
 )
 from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
 from orionbelt.service.session_manager import SessionManager
@@ -790,28 +790,56 @@ class TestCountingRowsThroughAnEmptyProjection:
     def test_unparseable_sql_is_not(self) -> None:
         assert null_projection_arity("SELECT NULL FROM (((") is None
 
-    def test_the_rewrite_selects_every_dimension_and_keeps_the_filter(self) -> None:
+    def test_the_rewrite_selects_the_whole_model_and_keeps_the_filter(self) -> None:
+        """Every column, because the count has to agree with ``SELECT *``."""
         mgr, model_id = _make_manager_with_model()
         try:
             model = mgr.get_or_create_named("commerce").get_model(model_id)
-            rewritten = project_every_dimension(
+            rewritten = project_the_whole_model(
                 'SELECT NULL FROM "commerce"."model" WHERE "Customer Country" = \'US\'',
                 model,
             )
             assert rewritten is not None
-            for name in model.dimensions:
+            for name in (*model.dimensions, *model.effective_measures, *model.metrics):
                 assert f'"{name}"' in rewritten
             assert "NULL" not in rewritten
             assert "'US'" in rewritten
         finally:
             mgr.stop()
 
-    def test_a_model_with_no_dimensions_is_left_to_the_translator(self) -> None:
+    def test_the_rewrite_keeps_the_measures_that_anchor_the_grain(self) -> None:
+        """The measures are not decoration; they decide what is counted.
+
+        A dimension-only query needs no fact table, so the compiler picks a
+        different base object and a narrower join scope, and a dimension value
+        with no facts behind it becomes a row that ``SELECT *`` would never
+        return. Pinned as a column-set identity here; the row-count difference
+        it causes needs a warehouse holding such a value, and is covered in the
+        DuckDB client suite.
+        """
+        mgr, model_id = _make_manager_with_model()
+        try:
+            model = mgr.get_or_create_named("commerce").get_model(model_id)
+            assert model.effective_measures, "fixture must expose measures"
+            rewritten = project_the_whole_model("SELECT NULL FROM t", model)
+            assert rewritten is not None
+            for name in model.effective_measures:
+                assert f'"{name}"' in rewritten
+        finally:
+            mgr.stop()
+
+    def test_a_model_with_no_columns_is_left_to_the_translator(self) -> None:
         """Better a clear rejection than a count of a grain we invented."""
         mgr, model_id = _make_manager_with_model()
         try:
             model = mgr.get_or_create_named("commerce").get_model(model_id).model_copy(deep=True)
             model.dimensions = {}
-            assert project_every_dimension("SELECT NULL FROM t", model) is None
+            model.measures = {}
+            model.metrics = {}
+            # ``effective_measures`` synthesizes a row count per countable data
+            # object, so clearing ``measures`` is not enough to empty it.
+            model.data_objects = {}
+            assert not model.effective_measures
+            assert project_the_whole_model("SELECT NULL FROM t", model) is None
         finally:
             mgr.stop()

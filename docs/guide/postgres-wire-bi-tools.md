@@ -389,6 +389,7 @@ These constraints are documented in
 |---|---|---|
 | `psql \d <table>` partially works (psql 16 RLS-policy probe hits DuckDB's correlated-UNNEST limit) | DuckDB engine, not the wire protocol | Use BI tools (they query `information_schema`) or `\dt` |
 | Binary-format Bind parameters decode for the common scalar OIDs only (bool, bytea, int2/4/8, float4/8, text, varchar, name, bpchar) | Anything else would be mangled bytes, so it raises instead | Force text format if the driver supports it; the error names the OID |
+| Authentication is off by default (`trust`) | `AUTH_MODE` governs every surface and ships as `none` | Set `AUTH_MODE=api_key` and `API_KEYS=<key>`; clients then send the key as the **password**, over SCRAM-SHA-256. `PGWIRE_AUTH_MODE=password` drops to cleartext for clients without SCRAM, so pair it with TLS |
 | DuckDB `ATTACH` needs `SET pg_use_text_protocol = true` | The default reads with `COPY ... TO STDOUT (FORMAT binary)`, which the semantic surface does not implement | Set it once per session, before the first read - see [7. DuckDB](#7-duckdb) |
 | Write operations (`INSERT` / `UPDATE` / `DELETE` / DDL) | Read-only semantic layer | Use the REST API for model management; data writes go to the warehouse, not OBSL |
 
