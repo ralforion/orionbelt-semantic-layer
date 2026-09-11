@@ -4,6 +4,35 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Zoned timestamps and times advertised an OID that meant something else.** `pg_attribute`
+  translates DuckDB's internal type ids to Postgres OIDs with a `CASE` whose `ELSE` passes the id
+  through unchanged, and two types were missing from it: DuckDB's `TIMESTAMPTZ` is 32, which
+  Postgres uses for `pg_ddl_command`, and its `TIMETZ` is 34, which is not a type OID at all. Both
+  went out dressed as Postgres OIDs. The shadow `pg_type` had declared 1184 and 1266 correctly the
+  whole time; nothing pointed at them.
+
+  Latent rather than live - no shipped model uses either type - but both are legal OBML, and
+  `timestamp_tz` is a first-class time dimension type. Zoned timestamps are the norm on Postgres
+  and Snowflake.
+
+### Added
+
+- **A sweep over the whole type surface, so this class of defect cannot recur.** Three defects of
+  one shape had now shipped: a type whose id or modifier translated for some values and silently
+  fell through for others. None was visible, because the test models only ever used string, int,
+  float and date - the suite tested the types the fixtures happened to use.
+
+  `TestEveryDataTypeMaps` asserts, for every member of `DataType` plus both decimal widths, that
+  the advertised OID is one the shadow `pg_type` declares and that the modifier is either `-1` or a
+  correctly packed decimal. A new `DataType` cannot be added without mapping it.
+
+  It reads back through the emulator rather than re-applying the translation expressions itself.
+  The first version did the latter and was worth less than it looked: it caught a wrong `CASE` but
+  not a correct `CASE` the view forgot to apply, which is exactly one of the defects it exists for.
+  Verified by reverting each fix in turn and watching the right assertion fail.
+
 ## [2.28.1] - 2026-09-10
 
 ### Fixed

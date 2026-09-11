@@ -151,12 +151,20 @@ _STUB_MACROS: tuple[str, ...] = (
 #   25 → 25   (TEXT — already matches)
 #   26 → 17   (BYTEA)
 #   27 → 1186 (INTERVAL)
+#: DuckDB's internal type id -> the Postgres OID for the same type.
+#:
+#: The ``ELSE`` is the dangerous half: an unmapped id leaves as itself, dressed
+#: as a Postgres OID. DuckDB's TIMESTAMPTZ is 32, which Postgres uses for
+#: ``pg_ddl_command``; TIMETZ is 34, which is not a type OID at all. Both were
+#: advertised that way until a sweep over every ``DataType`` found them - see
+#: ``TestEveryDataTypeMaps``, which is what keeps the ``ELSE`` honest now.
 _OID_TRANSLATION_CASE = """
         CASE atttypid
             WHEN 10 THEN 16    WHEN 12 THEN 21    WHEN 13 THEN 23
             WHEN 14 THEN 20    WHEN 15 THEN 1082  WHEN 16 THEN 1083
             WHEN 19 THEN 1114  WHEN 21 THEN 1700  WHEN 22 THEN 700
             WHEN 23 THEN 701   WHEN 26 THEN 17    WHEN 27 THEN 1186
+            WHEN 32 THEN 1184  WHEN 34 THEN 1266
             ELSE atttypid::INTEGER
         END
 """
