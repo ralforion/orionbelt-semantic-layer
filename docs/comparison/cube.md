@@ -157,7 +157,9 @@ Cube has first-class multi-tenancy:
 - **Member-level access control** via `public: false` on dimensions/measures, conditional masking in Twig.
 - **JWT-based authentication** built into the API gateway.
 
-**OBSL** has session-scoped models (TTL, max-age, rate limits) but no first-class user/auth model. Authn/authz is the host application's job.
+**OBSL** has session-scoped models (TTL, max-age, rate limits) and no first-class *user* model: there is no logged-in identity whose attributes filter rows, so per-user authorization and row-level security remain the host application's job.
+
+It does authenticate the *caller*, which is a different axis: `AUTH_MODE=api_key` requires a credential on every surface - pgwire over SCRAM-SHA-256, so the key never crosses the wire, Flight over a bearer token - and both wire listeners take TLS and mutual TLS ([below](#transport-security-specifically)). Every authenticated caller still sees the same rows; what Cube's JWT gateway adds on top is the per-user security context that drives `query_rewrite`.
 
 ### 3.5 Caching: different goals, different shapes
 

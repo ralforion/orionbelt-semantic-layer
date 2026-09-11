@@ -94,7 +94,9 @@ AtScale ships first-class enterprise primitives:
 - **Lineage and impact analysis** baked into the platform
 - **SAML, OAuth, AD integration**
 
-**OBSL** has session-scoped models (TTL, max-age, rate limits) but no first-class user/auth model.
+**OBSL** has session-scoped models (TTL, max-age, rate limits) and no first-class *user* model: no directory integration, no logged-in identity, so nothing corresponds to SAML / OAuth / AD or to per-user authorization. That remains the host application's job.
+
+Caller-level authentication is a separate axis and does exist: `AUTH_MODE=api_key` requires a credential on every surface (pgwire over SCRAM-SHA-256, Flight over a bearer token), and both wire listeners take TLS and mutual TLS. It authenticates the connection, not the person.
 
 ---
 
