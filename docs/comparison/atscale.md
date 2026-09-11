@@ -49,6 +49,7 @@ AtScale is the only peer in this comparison set that natively speaks **MDX**, th
 | `QueryObject` JSON | Queries arrive via MDX, DAX, SQL, or REST | |
 | `Filter` (named, reusable) | Perspectives (curated subsets of a model) + named sets | Conceptually similar |
 | OBSL session-scoped REST | AtScale Engine + JDBC/ODBC/MDX/DAX endpoints | |
+| OBSL `PGWIRE_TLS_*` / `FLIGHT_TLS_*` (TLS + mutual TLS on both wire listeners, v2.28.0+) | AtScale TLS on ODBC/JDBC (SQL engine) and XMLA (MDX) | Parity. Both terminate TLS in the listener rather than relying on a proxy in front |
 
 ---
 

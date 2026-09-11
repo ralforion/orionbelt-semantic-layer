@@ -96,7 +96,38 @@ Both projects expose a SQL wire protocol so BI tools can connect to the semantic
 | Apache Arrow Flight SQL | ✅ gRPC port 8815 — columnar transport, JDBC/ODBC via Flight SQL drivers, `pyarrow.flight` programmatic | ❌ |
 | DB-API 2.0 drivers (PEP 249) | ✅ 8 first-party packages (`ob-{bigquery,snowflake,postgres,mysql,duckdb,clickhouse,databricks,dremio}`) for direct programmatic access | ❌ (SQL API supplants this) |
 | Read-only governance | Closed by design: raw SQL → `RAW_SQL_REJECTED`, DDL/DML → `WRITE_OPERATION_REJECTED`, catalog probes answered from the model | Cube SQL API rejects writes; raw SELECTs flow through |
+| Transport security on the wire surface | ✅ TLS on both, and **mutual TLS** on both: pgwire answers the `SSLRequest` and upgrades the socket (`PGWIRE_TLS_CERT` / `_KEY` / `_CLIENT_CA`), Flight serves `grpc+tls` (`FLIGHT_TLS_*`). One setting alone refuses to start rather than falling back to plaintext | ❌ on the listener itself — see below |
+| Local analytical engine as a client (DuckDB) | ✅ `ATTACH … (TYPE postgres)` mounts a model as a table, or `adbc_scanner` over Flight SQL; documented and tested against the real extension | Plausible, untested by us, undocumented by Cube — the catalog surface is there |
 | Self-hostable | Postgres wire is built into the API process; Flight SQL via `ob-flight-extension` daemon thread | Built into Cube core |
+
+### Transport security, specifically
+
+Cube's SQL API speaks the Postgres wire protocol, so the client asks for TLS the
+same way it would of any Postgres server: an `SSLRequest`, answered `S` to
+upgrade the socket or `N` to decline. `cubesql` answers `N` unconditionally.
+There is no branch to `S` - the response type is defined as
+
+```rust
+impl Serialize for SSLResponse {
+    const CODE: u8 = b'N';
+```
+
+in [`rust/cubesql/pg-srv/src/protocol.rs`](https://github.com/cube-js/cube/blob/master/rust/cubesql/pg-srv/src/protocol.rs),
+and the SQL API reference documents `CUBEJS_SQL_PASSWORD` and `checkSqlAuth`
+for authentication while never mentioning TLS, SSL or encryption at all.
+
+This is not a criticism of the deployment model: Cube Cloud terminates TLS at
+its edge, and a self-hosted Cube behind a reverse proxy or inside a service mesh
+is encrypted by the thing in front of it. It is a difference in *where* the
+boundary sits. OBSL ships the boundary in the listener, which matters when there
+is no proxy to put in front - a LAN deployment, a BI tool connecting directly,
+or a mutual-TLS requirement that needs the client certificate to reach the
+server that checks it.
+
+Worth being precise about the credential too: OBSL's pgwire uses SCRAM-SHA-256
+by default under `AUTH_MODE=api_key`, so the key is not sent in the clear even
+without TLS. The query results still are, which is why the guide says to pair
+them.
 
 So OBSL covers the **same broad-BI-tool surface** as Cube (Postgres wire is everywhere), **plus** Arrow Flight SQL for consumers that benefit from modern columnar transport (cheaper round-trips for analytical payloads), **plus** DB-API drivers for Python-native programmatic access. Pick the wire that matches the consumer — for an existing Tableau farm, point it at OBSL's pgwire and it just works.
 
