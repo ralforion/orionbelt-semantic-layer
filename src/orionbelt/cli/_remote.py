@@ -93,15 +93,23 @@ def resolve_tls(client_cert: str | None, client_key: str | None, ca_cert: str | 
     if expanded["cert"] is None and expanded["ca"] is None:
         return ClientTLS()
 
-    # ``httpx.create_ssl_context``, not ``ssl.create_default_context``. They do
-    # not trust the same things: httpx falls back to the certifi bundle (and
-    # honours SSL_CERT_FILE / SSL_CERT_DIR before it), while ssl's default is
-    # OpenSSL's own store, which on some platforms is close to empty. Building
-    # our own would have meant that adding --client-cert silently changed which
-    # authorities the *server* is checked against, so a server that verified
-    # before could start failing for an unrelated reason.
+    # Two paths, and the split is the point.
+    #
+    # With no --ca-cert we must land on *httpx's* default trust, not ssl's:
+    # httpx falls back to the certifi bundle (honouring SSL_CERT_FILE /
+    # SSL_CERT_DIR first), while ssl's default is OpenSSL's own store, which on
+    # some platforms is close to empty. Building our own there would have meant
+    # that adding --client-cert silently changed which authorities the *server*
+    # is checked against.
+    #
+    # With --ca-cert we are replacing that store deliberately, so there is no
+    # default to preserve and we build the context directly. httpx deprecates
+    # ``verify=<str>`` and points at exactly this construction.
     try:
-        context = httpx.create_ssl_context(verify=expanded["ca"] or True)
+        if expanded["ca"]:
+            context = ssl.create_default_context(cafile=expanded["ca"])
+        else:
+            context = httpx.create_ssl_context(verify=True)
     except (ssl.SSLError, OSError) as exc:
         raise CliError(
             f"--ca-cert: not a usable PEM CA bundle ({path_reason(exc)}): {expanded['ca']}"

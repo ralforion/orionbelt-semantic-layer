@@ -656,6 +656,26 @@ class TestClientCertificates:
         assert ours.get_ca_certs() != httpx.create_ssl_context(verify=True).get_ca_certs()
         assert len(ours.get_ca_certs()) == 1, "only the bundle we named should be trusted"
 
+    def test_no_path_uses_a_deprecated_httpx_api(self, tmp_path: Path) -> None:
+        """Both context constructions must be current API.
+
+        ``verify=<str>`` is deprecated in httpx 0.28 and would eventually stop
+        working; ``cert=`` already did, which is how the first version of this
+        code got caught. Pinned as an error so the next deprecation surfaces
+        here rather than in a release.
+        """
+        import warnings
+
+        from orionbelt.cli._remote import resolve_tls
+
+        ca_cert, _ = self._pem(tmp_path, ca=True)
+        cert, key = self._pem(tmp_path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            resolve_tls(cert, key, None)
+            resolve_tls(None, None, ca_cert)
+            resolve_tls(cert, key, ca_cert)
+
     def test_a_tilde_path_is_expanded_before_openssl_sees_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

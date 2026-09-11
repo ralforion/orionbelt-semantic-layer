@@ -56,15 +56,15 @@ For `compile` and `execute` you supply the query one of two ways (exactly one):
 
 | Command | Options |
 | --- | --- |
-| _common (where remote-capable)_ | `-f, --format {table,json,csv,tsv}` · `-s, --server URL` (env `OBSL_SERVER`) · `--api-key KEY` (env `OBSL_API_KEY`) |
-| `validate` | `--online` · `-d/--dialect NAME` (with `--online`; defaults to `DB_VENDOR`) · `-f/--format` · `-s/--server` · `--api-key` |
-| `compile` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--explain` · `--pretty/--no-pretty` (default pretty) · `-f/--format` · `-s/--server` · `--api-key` |
-| `execute` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--limit N` (default 1000; see note) · `-f/--format` · `-s/--server` · `--api-key` |
+| _common (where remote-capable)_ | `-f, --format {table,json,csv,tsv}` · `-s, --server URL` (env `OBSL_SERVER`) · `--api-key KEY` (env `OBSL_API_KEY`) · `--ca-cert PATH` (env `OBSL_CA_CERT`) · `--client-cert PATH` (env `OBSL_CLIENT_CERT`) · `--client-key PATH` (env `OBSL_CLIENT_KEY`) - see [TLS in remote mode](#tls-in-remote-mode) |
+| `validate` | `--online` · `-d/--dialect NAME` (with `--online`; defaults to `DB_VENDOR`) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
+| `compile` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--explain` · `--pretty/--no-pretty` (default pretty) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
+| `execute` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--limit N` (default 1000; see note) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `describe` | `-f/--format` |
 | `diagram` | `--columns/--no-columns` (default columns) · `--theme NAME` (Mermaid theme, default `default`) |
 | `graph` | _(none)_ |
-| `convert` | `DIRECTION` (`osi-to-obml`\|`obml-to-osi`) · `INPUT` · `--name NAME` (OSI model name, obml-to-osi) · `-s/--server` · `--api-key` |
-| `dialects` | `-f/--format` · `-s/--server` · `--api-key` |
+| `convert` | `DIRECTION` (`osi-to-obml`\|`obml-to-osi`) · `INPUT` · `--name NAME` (OSI model name, obml-to-osi) · `-s/--server` · `--api-key` · TLS options above |
+| `dialects` | `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 
 Global: `-V/--version`, `--install-completion`, `--show-completion`.
 
