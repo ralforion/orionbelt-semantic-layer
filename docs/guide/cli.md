@@ -56,15 +56,15 @@ For `compile` and `execute` you supply the query one of two ways (exactly one):
 
 | Command | Options |
 | --- | --- |
-| _common (where remote-capable)_ | `-f, --format {table,json,csv,tsv}` · `-s, --server URL` (env `OBSL_SERVER`) · `--api-key KEY` (env `OBSL_API_KEY`) |
-| `validate` | `--online` · `-d/--dialect NAME` (with `--online`; defaults to `DB_VENDOR`) · `-f/--format` · `-s/--server` · `--api-key` |
-| `compile` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--explain` · `--pretty/--no-pretty` (default pretty) · `-f/--format` · `-s/--server` · `--api-key` |
-| `execute` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--limit N` (default 1000; see note) · `-f/--format` · `-s/--server` · `--api-key` |
+| _common (where remote-capable)_ | `-f, --format {table,json,csv,tsv}` · `-s, --server URL` (env `OBSL_SERVER`) · `--api-key KEY` (env `OBSL_API_KEY`) · `--ca-cert PATH` (env `OBSL_CA_CERT`) · `--client-cert PATH` (env `OBSL_CLIENT_CERT`) · `--client-key PATH` (env `OBSL_CLIENT_KEY`) - see [TLS in remote mode](#tls-in-remote-mode) |
+| `validate` | `--online` · `-d/--dialect NAME` (with `--online`; defaults to `DB_VENDOR`) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
+| `compile` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--explain` · `--pretty/--no-pretty` (default pretty) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
+| `execute` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--limit N` (default 1000; see note) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `describe` | `-f/--format` |
 | `diagram` | `--columns/--no-columns` (default columns) · `--theme NAME` (Mermaid theme, default `default`) |
 | `graph` | _(none)_ |
-| `convert` | `DIRECTION` (`osi-to-obml`\|`obml-to-osi`) · `INPUT` · `--name NAME` (OSI model name, obml-to-osi) · `-s/--server` · `--api-key` |
-| `dialects` | `-f/--format` · `-s/--server` · `--api-key` |
+| `convert` | `DIRECTION` (`osi-to-obml`\|`obml-to-osi`) · `INPUT` · `--name NAME` (OSI model name, obml-to-osi) · `-s/--server` · `--api-key` · TLS options above |
+| `dialects` | `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 
 Global: `-V/--version`, `--install-completion`, `--show-completion`.
 
@@ -212,12 +212,59 @@ go to **stderr** — so `obsl ... -f json | jq` and redirects work cleanly.
 | --- | --- | --- |
 | `--server URL` | `OBSL_SERVER` | Target a deployed OrionBelt REST API |
 | `--api-key KEY` | `OBSL_API_KEY` | API key for that server |
+| `--ca-cert PATH` | `OBSL_CA_CERT` | PEM CA bundle for a private or self-signed authority |
+| `--client-cert PATH` | `OBSL_CLIENT_CERT` | PEM client certificate, when an ingress requires one |
+| `--client-key PATH` | `OBSL_CLIENT_KEY` | Its private key, when they are separate files |
 
 `compile` and `execute` in remote mode run the query against the **server's
 curated model** (via the `/v1/query/sql` and `/v1/query/execute` shortcuts that
 auto-resolve the deployed model) — no model is uploaded, so `MODEL` is omitted
 and governed single-model deployments (where ad-hoc model upload is disabled)
 are respected. `validate` and `convert` operate on the model you pass.
+
+### TLS in remote mode
+
+`--server` speaks HTTP to the REST API, so an `https://` URL is encrypted and
+**verified**: the certificate chain and the hostname are both checked, and an
+expired or untrusted certificate is refused rather than warned about.
+
+`--ca-cert` **replaces** the default trust store rather than adding to it, and
+there is deliberately no flag to disable verification: a CLI that can be told to
+trust anything gets told to trust anything.
+
+```bash
+obsl validate model.yaml --server https://obsl.internal \
+  --ca-cert /etc/ssl/certs/internal-ca.crt
+```
+
+Against a gateway that requires mutual TLS:
+
+```bash
+obsl execute --sql 'SELECT "Region", "Sales" FROM model' \
+  --server https://obsl.internal \
+  --ca-cert     /etc/ssl/certs/internal-ca.crt \
+  --client-cert /etc/ssl/certs/obsl-client.crt \
+  --client-key  /etc/ssl/private/obsl-client.key
+```
+
+Omit `--client-key` when the certificate and key live in one PEM.
+
+Every failure names the setting it is about: a path that is missing, unreadable,
+or present but not what it claims fails when the flags are resolved rather than
+as an SSL error from inside the HTTP client mentioning neither the flag nor the
+file.
+
+!!! note "What this does and does not do"
+
+    These make the CLI *able to satisfy* mutual TLS. They do not make OBSL
+    *serve* it: the REST API does not terminate TLS itself, so `https://` is
+    provided by whatever sits in front of it, and `--client-cert` matters only
+    when that thing asks for a certificate.
+
+    The wire-surface settings are separate and do not apply here. `obsl
+    --server` is a REST client; it never connects over pgwire or Flight SQL.
+    For those see [Postgres wire](postgres-wire-bi-tools.md) and
+    [ADBC / Arrow Flight SQL](adbc.md#tls).
 
 ```bash
 export OBSL_SERVER=https://your-host

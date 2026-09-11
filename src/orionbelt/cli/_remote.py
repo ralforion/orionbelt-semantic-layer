@@ -13,6 +13,10 @@ endpoints.
 
 from __future__ import annotations
 
+import os
+import ssl
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -25,11 +29,114 @@ from orionbelt.models.query import QueryObject
 _TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 
 
+@dataclass(frozen=True)
+class ClientTLS:
+    """Certificate material for the ``--server`` connection.
+
+    Only the ``--server`` path uses this. Local mode opens no HTTP connection at
+    all, and a local ``execute`` reaches the warehouse through its vendor
+    driver, whose TLS is that driver's business.
+
+    Holds the *built* context rather than the paths: httpx 0.28 deprecates
+    ``cert=`` in favour of ``verify=<ssl_context>``, and building once means the
+    material validated at flag-resolution time is the same object that goes on
+    the wire.
+    """
+
+    context: ssl.SSLContext | None = None
+
+    @property
+    def verify(self) -> Any:
+        """The value for httpx's ``verify``.
+
+        ``True`` keeps the default trust store and full verification. A context
+        carries whatever was configured; it is never ``False``, because there is
+        deliberately no flag for that - a CLI that can be told to trust anything
+        gets told to trust anything.
+        """
+        return self.context if self.context is not None else True
+
+
+def resolve_tls(client_cert: str | None, client_key: str | None, ca_cert: str | None) -> ClientTLS:
+    """Validate the three settings and build a :class:`ClientTLS`.
+
+    Every failure here is a configuration failure and says which setting is
+    wrong, for the same reason the listener loaders do: a path that is missing,
+    unreadable, or present but not what it claims otherwise surfaces as an SSL
+    error from inside the HTTP client, naming none of them.
+    """
+    if client_key and not client_cert:
+        raise CliError(
+            "--client-key was given without --client-cert. A private key alone "
+            "cannot identify a client; supply the certificate too."
+        )
+
+    # Expand here and use the expanded form everywhere below. Checking
+    # ``~/ca.pem`` and then handing the literal string to OpenSSL would pass
+    # this validation and fail in the handshake, which is the opposite of what
+    # validating early is for.
+    expanded: dict[str, str | None] = {"cert": None, "key": None, "ca": None}
+    for slot, label, value in (
+        ("cert", "--client-cert", client_cert),
+        ("key", "--client-key", client_key),
+        ("ca", "--ca-cert", ca_cert),
+    ):
+        if value is None:
+            continue
+        path = Path(value).expanduser()
+        if not path.is_file():
+            raise CliError(f"{label}: no such file: {path}")
+        if not os.access(path, os.R_OK):
+            raise CliError(f"{label}: not readable: {path}")
+        expanded[slot] = str(path)
+
+    if expanded["cert"] is None and expanded["ca"] is None:
+        return ClientTLS()
+
+    # Two paths, and the split is the point.
+    #
+    # With no --ca-cert we must land on *httpx's* default trust, not ssl's:
+    # httpx falls back to the certifi bundle (honouring SSL_CERT_FILE /
+    # SSL_CERT_DIR first), while ssl's default is OpenSSL's own store, which on
+    # some platforms is close to empty. Building our own there would have meant
+    # that adding --client-cert silently changed which authorities the *server*
+    # is checked against.
+    #
+    # With --ca-cert we are replacing that store deliberately, so there is no
+    # default to preserve and we build the context directly. httpx deprecates
+    # ``verify=<str>`` and points at exactly this construction.
+    try:
+        if expanded["ca"]:
+            context = ssl.create_default_context(cafile=expanded["ca"])
+        else:
+            context = httpx.create_ssl_context(verify=True)
+    except (ssl.SSLError, OSError) as exc:
+        raise CliError(
+            f"--ca-cert: not a usable PEM CA bundle ({path_reason(exc)}): {expanded['ca']}"
+        ) from None
+    if expanded["cert"]:
+        try:
+            context.load_cert_chain(expanded["cert"], expanded["key"])
+        except (ssl.SSLError, OSError) as exc:
+            flag = "--client-cert/--client-key" if expanded["key"] else "--client-cert"
+            raise CliError(f"{flag}: could not load the certificate ({path_reason(exc)})") from None
+    return ClientTLS(context=context)
+
+
+def path_reason(exc: BaseException) -> str:
+    """The useful half of an ssl/OS error, without the file path repeated."""
+    reason = getattr(exc, "reason", None) or getattr(exc, "strerror", None)
+    return str(reason or exc).strip() or exc.__class__.__name__
+
+
 class RemoteClient:
     """Thin wrapper over the OrionBelt REST API for the CLI's remote path."""
 
-    def __init__(self, server: str, api_key: str | None = None) -> None:
+    def __init__(
+        self, server: str, api_key: str | None = None, tls: ClientTLS | None = None
+    ) -> None:
         self.base = server.rstrip("/")
+        self._tls = tls if tls is not None else ClientTLS()
         # Identify as obsl rather than the default "python-httpx/..." — some
         # WAFs (e.g. Cloud Armor in front of the demo deployment) deny the
         # generic httpx agent.
@@ -59,9 +166,15 @@ class RemoteClient:
     ) -> Any:
         url = f"{self.base}/v1{path}"
         try:
-            resp = httpx.request(
-                method, url, json=json, params=params, headers=self._headers, timeout=_TIMEOUT
-            )
+            # A Client rather than ``httpx.request``: the module-level helper
+            # cannot take a prepared SSL context, and the client certificate
+            # lives on that context.
+            with httpx.Client(
+                headers=self._headers,
+                timeout=_TIMEOUT,
+                verify=self._tls.verify,
+            ) as client:
+                resp = client.request(method, url, json=json, params=params)
         except httpx.RequestError as exc:
             raise CliError(f"Could not reach server {self.base}: {exc}") from None
         if resp.status_code >= 400:

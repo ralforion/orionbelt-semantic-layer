@@ -4,6 +4,24 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`obsl --server` can present a client certificate.** `--client-cert` / `--client-key` /
+  `--ca-cert` (and `OBSL_CLIENT_CERT` / `OBSL_CLIENT_KEY` / `OBSL_CA_CERT`) let the CLI reach a REST
+  API behind a gateway that requires mutual TLS, which it previously could not connect to at all.
+
+  This makes the CLI *able to satisfy* mTLS; it does not make OBSL serve it. The REST API does not
+  terminate TLS itself, so `https://` comes from whatever sits in front of it, and the client
+  certificate matters only when that thing asks for one. The wire-surface settings
+  (`PGWIRE_TLS_*`, `FLIGHT_TLS_*`) are a different surface and do not apply: `obsl --server` is a
+  REST client and never connects over pgwire or Flight SQL.
+
+  `--ca-cert` replaces the default trust store rather than adding to it, and there is deliberately
+  no flag to disable verification. Certificate material is loaded when the flags are resolved, not
+  when the request is made, so a path that is missing, unreadable, or present but not what it
+  claims names the setting and the file instead of surfacing as an SSL error from inside the HTTP
+  client that names neither.
+
 ## [2.28.2] - 2026-09-11
 
 ### Fixed

@@ -78,6 +78,64 @@ ApiKeyOpt = Annotated[
     str | None,
     typer.Option("--api-key", envvar="OBSL_API_KEY", help="API key for the remote server."),
 ]
+#: Client certificate material for ``--server``. Per-command rather than
+#: global, so it sits beside ``--server`` and ``--api-key`` where a reader
+#: expects it: a global flag would have to precede the subcommand while its two
+#: companions follow it.
+ClientCertOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--client-cert",
+        envvar="OBSL_CLIENT_CERT",
+        help=(
+            "PEM client certificate for --server, when an ingress in front of the REST "
+            "API requires one (mutual TLS). Holds the key too unless --client-key is given."
+        ),
+    ),
+]
+ClientKeyOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--client-key",
+        envvar="OBSL_CLIENT_KEY",
+        help="PEM private key for --client-cert, when the two are separate files.",
+    ),
+]
+CaCertOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--ca-cert",
+        envvar="OBSL_CA_CERT",
+        help=(
+            "PEM CA bundle used to verify the --server certificate, for a private or "
+            "self-signed authority. Replaces the default trust store; it never disables "
+            "verification."
+        ),
+    ),
+]
+
+
+def _remote_client(
+    server: str,
+    api_key: str | None,
+    client_cert: str | None,
+    client_key: str | None,
+    ca_cert: str | None,
+) -> Any:
+    """Build a ``RemoteClient``, failing on bad certificate paths first.
+
+    Every failure names the setting it is about, for the same reason the
+    listener loaders do: a missing or unreadable path otherwise surfaces as a
+    TLS handshake error mentioning none of them.
+    """
+    from orionbelt.cli._local import CliError
+    from orionbelt.cli._remote import RemoteClient, resolve_tls
+
+    try:
+        tls = resolve_tls(client_cert, client_key, ca_cert)
+    except CliError as exc:
+        raise _fail(str(exc)) from None
+    return RemoteClient(server, api_key, tls=tls)
 
 
 class ConvertDirection(enum.StrEnum):
@@ -186,6 +244,9 @@ def validate(
     dialect: ProbeDialectOpt = None,
     server: ServerOpt = None,
     api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
 ) -> None:
     """Validate an OBML model. Exits non-zero when the model is invalid.
 
@@ -197,10 +258,9 @@ def validate(
     model_yaml = _io.read_text(model)
     if server:
         from orionbelt.cli._local import CliError
-        from orionbelt.cli._remote import RemoteClient
 
         try:
-            data = RemoteClient(server, api_key).validate(
+            data = _remote_client(server, api_key, client_cert, client_key, ca_cert).validate(
                 model_yaml, online=online, dialect=dialect
             )
         except CliError as exc:
@@ -254,6 +314,9 @@ def compile(  # noqa: A001 — "compile" is the natural verb for this command
     fmt: FormatOpt = OutputFormat.table,
     server: ServerOpt = None,
     api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
 ) -> None:
     """Compile a query to SQL from a query document (-q) or an OBSQL string (--sql).
 
@@ -270,9 +333,8 @@ def compile(  # noqa: A001 — "compile" is the natural verb for this command
         # Remote only when no local model is given: a provided MODEL is
         # authoritative (compiled locally), so an ambient OBSL_SERVER never
         # silently redirects an explicit `obsl compile model.yaml`.
-        from orionbelt.cli._remote import RemoteClient
 
-        client = RemoteClient(server, api_key)
+        client = _remote_client(server, api_key, client_cert, client_key, ca_cert)
         try:
             if sql:
                 item = client.compile_obsql(sql, dialect)
@@ -358,6 +420,9 @@ def execute(
     fmt: FormatOpt = OutputFormat.table,
     server: ServerOpt = None,
     api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
 ) -> None:
     """Execute a query (from -q or --sql) against the configured warehouse.
 
@@ -373,14 +438,12 @@ def execute(
     from orionbelt.cli._local import CliError
 
     if server and not model:
-        from orionbelt.cli._remote import RemoteClient
-
         if sql and limit is not None:
             _render.warn(
                 "--limit cannot be applied to --sql in remote mode; include LIMIT in the "
                 "query (the server applies its own default row limit otherwise)."
             )
-        client = RemoteClient(server, api_key)
+        client = _remote_client(server, api_key, client_cert, client_key, ca_cert)
         try:
             if sql:
                 item = client.execute_obsql(sql, dialect)
@@ -530,6 +593,9 @@ def convert(
     ] = "semantic_model",
     server: ServerOpt = None,
     api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
 ) -> None:
     """Convert between OSI and OBML model formats."""
     input_yaml = _io.read_text(input_file)
@@ -538,10 +604,10 @@ def convert(
     warnings: list[Any]
     if direction is ConvertDirection.osi_to_obml:
         if server:
-            from orionbelt.cli._remote import RemoteClient
-
             try:
-                data = RemoteClient(server, api_key).convert_osi_to_obml(input_yaml)
+                data = _remote_client(
+                    server, api_key, client_cert, client_key, ca_cert
+                ).convert_osi_to_obml(input_yaml)
             except CliError as exc:
                 raise _fail(str(exc)) from None
             output = data.get("output_yaml", "")
@@ -562,12 +628,10 @@ def convert(
 
     # obml-to-osi
     if server:
-        from orionbelt.cli._remote import RemoteClient
-
         try:
-            data = RemoteClient(server, api_key).convert_obml_to_osi(
-                input_yaml, model_name=model_name
-            )
+            data = _remote_client(
+                server, api_key, client_cert, client_key, ca_cert
+            ).convert_obml_to_osi(input_yaml, model_name=model_name)
         except CliError as exc:
             raise _fail(str(exc)) from None
         output = data.get("output_yaml", "")
@@ -591,14 +655,16 @@ def dialects(
     fmt: FormatOpt = OutputFormat.table,
     server: ServerOpt = None,
     api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
 ) -> None:
     """List the supported SQL dialects."""
     if server:
         from orionbelt.cli._local import CliError
-        from orionbelt.cli._remote import RemoteClient
 
         try:
-            names = RemoteClient(server, api_key).dialects()
+            names = _remote_client(server, api_key, client_cert, client_key, ca_cert).dialects()
         except CliError as exc:
             raise _fail(str(exc)) from None
     else:

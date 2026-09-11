@@ -8,6 +8,7 @@ so no live server is required.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -476,3 +477,220 @@ def test_validate_offline_sends_no_params(monkeypatch):
     monkeypatch.setattr(RemoteClient, "_request", fake_request)
     RemoteClient("http://example", None).validate("version: 1.0")
     assert seen["params"] is None
+
+
+class TestClientCertificates:
+    """``--client-cert`` / ``--client-key`` / ``--ca-cert`` on the remote path.
+
+    These exist for one deployment shape: an ingress in front of the REST API
+    that requires a client certificate. OBSL does not serve TLS on REST itself,
+    so there is nothing here that makes the *server* do mutual TLS - what these
+    do is let the CLI satisfy a gateway that already demands it, where before
+    it could not connect at all.
+
+    Every assertion is about the error, because that is the whole value: a path
+    that is missing, unreadable or not what it claims otherwise surfaces as an
+    SSL exception from inside the HTTP client, naming neither the flag nor the
+    file.
+    """
+
+    @staticmethod
+    def _pem(tmp_path: Path, *, ca: bool = False) -> tuple[str, str]:
+        """A self-signed certificate and its key, as separate PEM files.
+
+        ``ca=True`` adds the basic constraint that makes it usable as a trust
+        anchor - without it ``SSLContext.get_ca_certs()`` reports nothing,
+        because a leaf certificate loaded as a CA bundle anchors nothing.
+        """
+        pytest.importorskip("cryptography", reason="cryptography required to mint a test cert")
+        import datetime as dt
+
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "obsl-cli-test")])
+        now = dt.datetime.now(dt.UTC)
+        builder = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - dt.timedelta(minutes=5))
+            .not_valid_after(now + dt.timedelta(days=1))
+        )
+        if ca:
+            builder = builder.add_extension(
+                x509.BasicConstraints(ca=True, path_length=None), critical=True
+            )
+        cert = builder.sign(key, hashes.SHA256())
+        cert_path = tmp_path / "client.crt"
+        key_path = tmp_path / "client.key"
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        key_path.write_bytes(
+            key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption(),
+            )
+        )
+        return str(cert_path), str(key_path)
+
+    def test_a_key_without_a_certificate_is_refused(self, tmp_path: Path) -> None:
+        _, key = self._pem(tmp_path)
+        result = runner.invoke(
+            app, ["dialects", "--server", "https://example.invalid", "--client-key", key]
+        )
+        assert result.exit_code != 0
+        assert "--client-cert" in result.output
+
+    def test_a_missing_path_names_the_flag_and_the_file(self, tmp_path: Path) -> None:
+        missing = str(tmp_path / "nope.crt")
+        result = runner.invoke(
+            app, ["dialects", "--server", "https://example.invalid", "--ca-cert", missing]
+        )
+        assert result.exit_code != 0
+        assert "--ca-cert" in result.output
+        assert "no such file" in result.output.lower()
+
+    def test_a_file_that_is_not_a_ca_bundle_is_caught_before_the_request(
+        self, tmp_path: Path
+    ) -> None:
+        """Readable and present is not the same as usable.
+
+        Without this check the failure came out of the HTTP client as an
+        unhandled SSL exception mentioning neither the flag nor the path.
+        """
+        junk = tmp_path / "not-a-ca.pem"
+        junk.write_text("this is not a certificate\n")
+        result = runner.invoke(
+            app, ["dialects", "--server", "https://example.invalid", "--ca-cert", str(junk)]
+        )
+        assert result.exit_code != 0
+        assert "--ca-cert" in result.output
+        assert "not a usable" in result.output.lower()
+
+    def test_a_mismatched_certificate_and_key_are_caught(self, tmp_path: Path) -> None:
+        cert, _ = self._pem(tmp_path)
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        _, other_key = self._pem(other_dir)
+        result = runner.invoke(
+            app,
+            [
+                "dialects",
+                "--server",
+                "https://example.invalid",
+                "--client-cert",
+                cert,
+                "--client-key",
+                other_key,
+            ],
+        )
+        assert result.exit_code != 0
+        assert "--client-cert" in result.output
+
+    def test_valid_material_reaches_the_request(self, tmp_path: Path) -> None:
+        """The material loads, so the command fails on the *connection* instead.
+
+        ``example.invalid`` cannot resolve, so reaching a connection error is
+        proof the certificate checks passed rather than short-circuited.
+        """
+        cert, key = self._pem(tmp_path)
+        result = runner.invoke(
+            app,
+            [
+                "dialects",
+                "--server",
+                "https://example.invalid",
+                "--client-cert",
+                cert,
+                "--client-key",
+                key,
+            ],
+        )
+        assert result.exit_code != 0
+        assert "could not reach server" in result.output.lower()
+
+    def test_the_flags_are_inert_without_a_server(self, tmp_path: Path) -> None:
+        """Local mode opens no HTTP connection, so there is nothing to apply them to."""
+        result = runner.invoke(app, ["dialects", "--ca-cert", str(tmp_path / "nope.crt")])
+        assert result.exit_code == 0, result.output
+        assert "duckdb" in result.output
+
+    def test_a_client_certificate_alone_keeps_httpxs_default_trust(self, tmp_path: Path) -> None:
+        """Adding --client-cert must not change who the *server* is checked against.
+
+        The two defaults are not the same: httpx falls back to the certifi
+        bundle, while ``ssl.create_default_context()`` uses OpenSSL's own store,
+        which on some platforms is close to empty. Building our own context
+        therefore made ``--client-cert`` silently swap the trust anchors, so a
+        server that verified before could start failing for a reason having
+        nothing to do with the client certificate.
+
+        Compared by the actual CA set rather than by construction, because the
+        defect was that two plausible-looking constructions disagree.
+        """
+        import httpx
+
+        from orionbelt.cli._remote import resolve_tls
+
+        cert, key = self._pem(tmp_path)
+        ours = resolve_tls(cert, key, None).context
+        assert ours is not None
+        httpx_default = httpx.create_ssl_context(verify=True)
+        assert ours.get_ca_certs() == httpx_default.get_ca_certs()
+
+    def test_a_ca_bundle_replaces_that_trust_rather_than_adding_to_it(self, tmp_path: Path) -> None:
+        """The other half: --ca-cert is an override, and must actually override."""
+        import httpx
+
+        from orionbelt.cli._remote import resolve_tls
+
+        ca_cert, _ = self._pem(tmp_path, ca=True)
+        ours = resolve_tls(None, None, ca_cert).context
+        assert ours is not None
+        assert ours.get_ca_certs() != httpx.create_ssl_context(verify=True).get_ca_certs()
+        assert len(ours.get_ca_certs()) == 1, "only the bundle we named should be trusted"
+
+    def test_no_path_uses_a_deprecated_httpx_api(self, tmp_path: Path) -> None:
+        """Both context constructions must be current API.
+
+        ``verify=<str>`` is deprecated in httpx 0.28 and would eventually stop
+        working; ``cert=`` already did, which is how the first version of this
+        code got caught. Pinned as an error so the next deprecation surfaces
+        here rather than in a release.
+        """
+        import warnings
+
+        from orionbelt.cli._remote import resolve_tls
+
+        ca_cert, _ = self._pem(tmp_path, ca=True)
+        cert, key = self._pem(tmp_path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            resolve_tls(cert, key, None)
+            resolve_tls(None, None, ca_cert)
+            resolve_tls(cert, key, ca_cert)
+
+    def test_a_tilde_path_is_expanded_before_openssl_sees_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``~/ca.pem`` passed the existence check and then failed in the handshake.
+
+        The check expanded the path and the SSL call did not, so validating
+        early achieved the opposite of what it is for.
+        """
+        from orionbelt.cli._remote import resolve_tls
+
+        home = tmp_path / "home"
+        home.mkdir()
+        cert, key = self._pem(home)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+        tls = resolve_tls(f"~/{Path(cert).name}", f"~/{Path(key).name}", None)
+        assert tls.context is not None
