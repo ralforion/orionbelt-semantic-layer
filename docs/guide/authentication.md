@@ -89,6 +89,10 @@ when there is no proxy (a LAN or on-premise deployment), when the hop between
 the proxy and OrionBelt must be encrypted too, or when you want mutual TLS all
 the way to the application rather than to the edge.
 
+The [CLI](cli.md#tls-in-remote-mode) can present a client certificate with
+`--client-cert` / `--client-key`, so `obsl --server` works against a listener
+configured with `API_TLS_CLIENT_CA`.
+
 ## Generating keys
 
 Out-of-band — there is no in-app key generation endpoint. Use any secure RNG:
