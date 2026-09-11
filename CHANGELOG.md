@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.29.0] - 2026-09-11
+
 ### Added
 
 - **TLS on the REST surface.** `API_TLS_CERT` + `API_TLS_KEY` (and `API_TLS_CLIENT_CA` for mutual
