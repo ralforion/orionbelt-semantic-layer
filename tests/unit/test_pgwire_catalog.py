@@ -457,3 +457,118 @@ class TestDecimalTypeModifier:
         ).rows
         assert len(rows) == 2
         assert all(row[1] == -1 for row in rows), dict(rows)
+
+
+class TestEveryDataTypeMaps:
+    """A sweep over the whole type surface, not the types a fixture happens to use.
+
+    Two defects of the same shape shipped before this existed, and both were
+    silent. ``atttypid`` is translated from DuckDB's numbering to Postgres's by
+    a CASE whose ``ELSE`` passes the id through unchanged, and ``atttypmod`` by
+    another; a type missing from either leaves as a plausible-looking number
+    that means something else. DuckDB's TIMESTAMPTZ is 32, which is Postgres's
+    ``pg_ddl_command``; its TIMETZ is 34, which is not a type OID at all; and
+    DECIMAL's modifier used a different packing entirely.
+
+    None of that was visible because the test models only ever used string,
+    int, float and date. So this asserts the property for *every* member of
+    ``DataType`` plus decimal, and a new one cannot be added without mapping
+    it.
+    """
+
+    #: The OIDs the shadow ``pg_type`` declares. An advertised OID outside this
+    #: set is one no client can resolve.
+    DECLARED_OIDS = frozenset(
+        {
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            23,
+            25,
+            26,
+            700,
+            701,
+            1042,
+            1043,
+            1082,
+            1083,
+            1114,
+            1184,
+            1186,
+            1266,
+            1700,
+            2950,
+        }
+    )
+
+    @staticmethod
+    def _probe(sql_types: dict[str, str]) -> list[tuple[str, int, int]]:
+        """(label, advertised oid, advertised typmod) for each SQL type.
+
+        Read back through the emulator, so this exercises the ``pg_attribute``
+        a client is actually served. Applying the translation expressions
+        directly here was the first attempt and it was worth less than it
+        looked: it would have caught a wrong CASE, but not a correct CASE that
+        the view forgot to apply - which is one of the two defects this class
+        exists for.
+        """
+        emu = CatalogEmulator()
+        cols = ", ".join(f'"c{i}" {sql}' for i, sql in enumerate(sql_types.values()))
+        emu.execute(f"CREATE TABLE probe ({cols})")
+        result = emu.execute(
+            "SELECT a.atttypid, a.atttypmod FROM pg_attribute a "
+            "JOIN pg_class c ON a.attrelid = c.oid "
+            "WHERE c.relname = 'probe' ORDER BY a.attnum"
+        )
+        return [(label, row[0], row[1]) for label, row in zip(sql_types, result.rows, strict=True)]
+
+    @staticmethod
+    def _all_types() -> dict[str, str]:
+        from orionbelt.pgwire.catalog import _DATATYPE_TO_DUCKDB
+
+        types = {dt.value: sql for dt, sql in _DATATYPE_TO_DUCKDB.items()}
+        types["decimal(18,2)"] = "DECIMAL(18, 2)"
+        types["decimal(38,6)"] = "DECIMAL(38, 6)"
+        return types
+
+    def test_every_type_advertises_an_oid_the_catalog_declares(self) -> None:
+        unknown = {
+            label: oid
+            for label, oid, _ in self._probe(self._all_types())
+            if oid not in self.DECLARED_OIDS
+        }
+        assert not unknown, (
+            f"these types advertise an OID no client can resolve: {unknown}. "
+            "Add the mapping to _OID_TRANSLATION_CASE, and the type to the "
+            "shadow pg_type if it is not there."
+        )
+
+    def test_the_zoned_time_types_specifically(self) -> None:
+        """Named, because they were wrong and the wrong values were plausible."""
+        by_label = {label: oid for label, oid, _ in self._probe(self._all_types())}
+        assert by_label["timestamp_tz"] == 1184, "32 is pg_ddl_command, not timestamptz"
+        assert by_label["time_tz"] == 1266, "34 is not a type OID at all"
+
+    def test_no_type_carries_a_modifier_it_should_not(self) -> None:
+        """Only decimals declare one; everything else must say -1.
+
+        A non -1 modifier on a type that has none is the decimal defect in its
+        general form: a number in an encoding the reader does not share.
+        """
+        stray = {
+            label: mod
+            for label, oid, mod in self._probe(self._all_types())
+            if mod != -1 and oid != 1700
+        }
+        assert not stray, f"non-decimal types carrying a type modifier: {stray}"
+
+    def test_a_decimal_modifier_round_trips(self) -> None:
+        probed = {label: mod for label, oid, mod in self._probe(self._all_types()) if oid == 1700}
+        assert len(probed) == 2, "both decimal widths must be probed"
+        for label, mod in probed.items():
+            precision, scale = ((mod - 4) >> 16) & 0xFFFF, (mod - 4) & 0xFFFF
+            expected = label[len("decimal(") : -1].split(",")
+            assert (precision, scale) == (int(expected[0]), int(expected[1])), label
