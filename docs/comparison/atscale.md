@@ -49,7 +49,7 @@ AtScale is the only peer in this comparison set that natively speaks **MDX**, th
 | `QueryObject` JSON | Queries arrive via MDX, DAX, SQL, or REST | |
 | `Filter` (named, reusable) | Perspectives (curated subsets of a model) + named sets | Conceptually similar |
 | OBSL session-scoped REST | AtScale Engine + JDBC/ODBC/MDX/DAX endpoints | |
-| OBSL `PGWIRE_TLS_*` / `FLIGHT_TLS_*` (TLS + mutual TLS on both wire listeners, v2.28.0+) | AtScale TLS on ODBC/JDBC (SQL engine) and XMLA (MDX) | Parity. Both terminate TLS in the listener rather than relying on a proxy in front |
+| OBSL `PGWIRE_TLS_*` / `FLIGHT_TLS_*` / `API_TLS_*` (TLS + mutual TLS on all three surfaces) | AtScale TLS on ODBC/JDBC (SQL engine) and XMLA (MDX) | Parity. Both terminate TLS in the listener rather than relying on a proxy in front |
 
 ---
 
@@ -96,7 +96,7 @@ AtScale ships first-class enterprise primitives:
 
 **OBSL** has session-scoped models (TTL, max-age, rate limits) and no first-class *user* model: no directory integration, no logged-in identity, so nothing corresponds to SAML / OAuth / AD or to per-user authorization. That remains the host application's job.
 
-Caller-level authentication is a separate axis and does exist: `AUTH_MODE=api_key` requires a credential on every surface (pgwire over SCRAM-SHA-256, Flight over a bearer token), and both wire listeners take TLS and mutual TLS. It authenticates the connection, not the person.
+Caller-level authentication is a separate axis and does exist: `AUTH_MODE=api_key` requires a credential on every surface (pgwire over SCRAM-SHA-256, Flight over a bearer token), and all three surfaces take TLS and mutual TLS. It authenticates the connection, not the person.
 
 ---
 

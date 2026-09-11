@@ -113,7 +113,7 @@ LookML has fine-grained row-level security baked into the model: `access_filter:
 
 **OBSL** has no first-class *user* model, and that is the real gap here: there is no notion of a logged-in user whose attributes filter rows, so nothing corresponds to `access_filter` or `required_access_grants`. Per-user row-level security is the host application's job.
 
-What OBSL does have is *transport-level* authentication and encryption, which is a different axis and worth not conflating: `AUTH_MODE=api_key` requires a credential on every surface (pgwire over SCRAM-SHA-256, so the key never crosses the wire; Flight over a bearer token), and v2.28.0 added TLS and mutual TLS to both wire listeners. That authenticates the *caller*, not the *person* - every authenticated caller sees the same rows. (The public demo runs with no auth by design.)
+What OBSL does have is *transport-level* authentication and encryption, which is a different axis and worth not conflating: `AUTH_MODE=api_key` requires a credential on every surface (pgwire over SCRAM-SHA-256, so the key never crosses the wire; Flight over a bearer token), and TLS with mutual TLS is available on all three surfaces. That authenticates the *caller*, not the *person* - every authenticated caller sees the same rows. (The public demo runs with no auth by design.)
 
 ### 3.6 Drill fields and visualization metadata
 

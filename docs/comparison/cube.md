@@ -96,7 +96,7 @@ Both projects expose a SQL wire protocol so BI tools can connect to the semantic
 | Apache Arrow Flight SQL | ✅ gRPC port 8815 — columnar transport, JDBC/ODBC via Flight SQL drivers, `pyarrow.flight` programmatic | ❌ |
 | DB-API 2.0 drivers (PEP 249) | ✅ 8 first-party packages (`ob-{bigquery,snowflake,postgres,mysql,duckdb,clickhouse,databricks,dremio}`) for direct programmatic access | ❌ (SQL API supplants this) |
 | Read-only governance | Closed by design: raw SQL → `RAW_SQL_REJECTED`, DDL/DML → `WRITE_OPERATION_REJECTED`, catalog probes answered from the model | Cube SQL API rejects writes; raw SELECTs flow through |
-| Transport security on the wire surface | ✅ TLS on both, and **mutual TLS** on both: pgwire answers the `SSLRequest` and upgrades the socket (`PGWIRE_TLS_CERT` / `_KEY` / `_CLIENT_CA`), Flight serves `grpc+tls` (`FLIGHT_TLS_*`). One setting alone refuses to start rather than falling back to plaintext | ❌ on the listener itself — see below |
+| Transport security on the wire surface | ✅ TLS and **mutual TLS** on all three surfaces: pgwire answers the `SSLRequest` and upgrades the socket (`PGWIRE_TLS_CERT` / `_KEY` / `_CLIENT_CA`), Flight serves `grpc+tls` (`FLIGHT_TLS_*`), and REST serves HTTPS (`API_TLS_*`). One setting alone refuses to start rather than falling back to plaintext | ❌ on the listener itself — see below |
 | Local analytical engine as a client (DuckDB) | ✅ `ATTACH … (TYPE postgres)` mounts a model as a table, or `adbc_scanner` over Flight SQL; documented and tested against the real extension | Plausible, untested by us, undocumented by Cube — the catalog surface is there |
 | Self-hostable | Postgres wire is built into the API process; Flight SQL via `ob-flight-extension` daemon thread | Built into Cube core |
 
@@ -159,7 +159,7 @@ Cube has first-class multi-tenancy:
 
 **OBSL** has session-scoped models (TTL, max-age, rate limits) and no first-class *user* model: there is no logged-in identity whose attributes filter rows, so per-user authorization and row-level security remain the host application's job.
 
-It does authenticate the *caller*, which is a different axis: `AUTH_MODE=api_key` requires a credential on every surface - pgwire over SCRAM-SHA-256, so the key never crosses the wire, Flight over a bearer token - and both wire listeners take TLS and mutual TLS ([below](#transport-security-specifically)). Every authenticated caller still sees the same rows; what Cube's JWT gateway adds on top is the per-user security context that drives `query_rewrite`.
+It does authenticate the *caller*, which is a different axis: `AUTH_MODE=api_key` requires a credential on every surface - pgwire over SCRAM-SHA-256, so the key never crosses the wire, Flight over a bearer token - and all three surfaces take TLS and mutual TLS ([below](#transport-security-specifically)). Every authenticated caller still sees the same rows; what Cube's JWT gateway adds on top is the per-user security context that drives `query_rewrite`.
 
 ### 3.5 Caching: different goals, different shapes
 
