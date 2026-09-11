@@ -854,4 +854,54 @@ def main() -> None:
         log_config=None,
         access_log=access_log,
         timeout_graceful_shutdown=3,
+        **_rest_tls_kwargs(settings),
     )
+
+
+def _rest_tls_kwargs(settings: Any) -> dict[str, Any]:
+    """uvicorn's TLS arguments, or an empty dict when TLS is not configured.
+
+    Loaded before the socket binds, through the same loader the Flight and
+    pgwire listeners use, so a misconfiguration stops startup with the
+    operator's message instead of serving plaintext on a deployment whose
+    configuration reads as encrypted. That failure mode is the whole reason
+    both other surfaces refuse to start on a half-configured pair.
+
+    uvicorn takes paths rather than PEM bytes, which is why ``ListenerTLS``
+    carries both.
+    """
+    from orionbelt.service.tls import TLSConfigError, load_listener_tls
+
+    try:
+        tls = load_listener_tls(
+            settings.api_tls_cert,
+            settings.api_tls_key,
+            settings.api_tls_client_ca,
+            prefix="API",
+        )
+    except TLSConfigError as exc:
+        raise RuntimeError(f"REST TLS configuration is unusable: {exc}") from None
+    if tls is None:
+        logger.info(
+            "REST API serving plaintext HTTP on %s:%s",
+            settings.api_server_host,
+            settings.effective_port,
+        )
+        return {}
+
+    kwargs: dict[str, Any] = {
+        "ssl_certfile": tls.cert_path,
+        "ssl_keyfile": tls.key_path,
+    }
+    if tls.client_ca_path is not None:
+        import ssl
+
+        kwargs["ssl_ca_certs"] = tls.client_ca_path
+        kwargs["ssl_cert_reqs"] = ssl.CERT_REQUIRED
+    logger.info(
+        "REST API serving HTTPS on %s:%s (client certificates %s)",
+        settings.api_server_host,
+        settings.effective_port,
+        "required" if tls.client_ca_path else "not required",
+    )
+    return kwargs

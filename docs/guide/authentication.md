@@ -47,6 +47,52 @@ with a comma-separated second key.
 Startup fails fast (refuses to boot) if `AUTH_MODE=api_key` with an empty
 `API_KEYS`, or if any key is shorter than 16 characters.
 
+## Transport security (TLS)
+
+Authentication proves *who* is calling; TLS stops anyone else reading what they
+said. They are separate settings and both matter: SCRAM keeps a pgwire key off
+the wire even without TLS, but the query results still cross it in the clear.
+
+All three surfaces take the same three settings, read by the same loader, and
+each names its own prefix in every error message:
+
+| Surface | Certificate | Key | Client CA (mutual TLS) |
+|---|---|---|---|
+| REST | `API_TLS_CERT` | `API_TLS_KEY` | `API_TLS_CLIENT_CA` |
+| Postgres wire | `PGWIRE_TLS_CERT` | `PGWIRE_TLS_KEY` | `PGWIRE_TLS_CLIENT_CA` |
+| Arrow Flight SQL | `FLIGHT_TLS_CERT` | `FLIGHT_TLS_KEY` | `FLIGHT_TLS_CLIENT_CA` |
+
+```bash
+API_TLS_CERT=/certs/server.crt \
+API_TLS_KEY=/certs/server.key \
+API_TLS_CLIENT_CA=/certs/ca.crt \
+uv run orionbelt-api
+```
+
+The startup line says which you got, so confirming TLS is live needs no packet
+capture:
+
+```
+REST API serving HTTPS on 0.0.0.0:8000 (client certificates required)
+```
+
+**Both settings or neither.** A certificate without its key refuses to start
+rather than falling back to plaintext, because a deployment that reads as
+encrypted and is not is worse than one that does not come up. A client CA
+without a server certificate is refused for the same reason: mutual TLS needs
+both halves.
+
+**When you need this and when you do not.** Behind Cloud Run, an ingress or
+nginx, TLS is already terminated at the edge and these can stay unset - that is
+why they default to off and why every existing deployment is unchanged. Set them
+when there is no proxy (a LAN or on-premise deployment), when the hop between
+the proxy and OrionBelt must be encrypted too, or when you want mutual TLS all
+the way to the application rather than to the edge.
+
+The [CLI](cli.md#tls-in-remote-mode) can present a client certificate with
+`--client-cert` / `--client-key`, so `obsl --server` works against a listener
+configured this way.
+
 ## Generating keys
 
 Out-of-band — there is no in-app key generation endpoint. Use any secure RNG:
@@ -192,6 +238,6 @@ deployment:
 - [ ] `AUTH_MODE=api_key`
 - [ ] `API_KEYS` set to at least one random key (≥40 chars recommended)
 - [ ] Keys stored in your platform's secret manager, not committed to a repo
-- [ ] HTTPS / TLS terminating in front of OrionBelt (reverse proxy or platform)
+- [ ] TLS on every exposed surface: either terminated in front (reverse proxy or platform) or served by OrionBelt itself with `API_TLS_*` / `PGWIRE_TLS_*` / `FLIGHT_TLS_*` - see [Transport security](#transport-security-tls)
 - [ ] Rotation cadence documented (90 days is a reasonable default)
 - [ ] Public demo deployments use a separate key set from production

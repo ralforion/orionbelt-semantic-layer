@@ -125,6 +125,14 @@ class Settings(BaseSettings):
     # by the same loader. Postgres negotiates with an SSLRequest rather than
     # starting encrypted, so with these set the server answers ``S`` and
     # upgrades the socket; without them it answers ``N`` as before.
+    # TLS for the REST listener, same shape and same loader as the two wire
+    # surfaces. Unlike those, REST is usually behind something that terminates
+    # TLS already (Cloud Run, an ingress, nginx) - these are for when it is not:
+    # a LAN or on-premise deployment with no proxy, or a requirement that the
+    # internal hop be encrypted too rather than only the edge.
+    api_tls_cert: str | None = None
+    api_tls_key: str | None = None
+    api_tls_client_ca: str | None = None
     pgwire_tls_cert: str | None = None
     pgwire_tls_key: str | None = None
     pgwire_tls_client_ca: str | None = None

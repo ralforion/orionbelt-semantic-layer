@@ -6,15 +6,32 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **TLS on the REST surface.** `API_TLS_CERT` + `API_TLS_KEY` (and `API_TLS_CLIENT_CA` for mutual
+  TLS) make the API serve HTTPS, through the same loader and the same rules as the two wire
+  surfaces: both settings or neither, a client CA refused without a server certificate, and every
+  error naming `API_TLS_*` rather than another surface's settings.
+
+  REST was the one surface that could not encrypt itself. The implicit reasoning was that it is
+  always behind something that terminates TLS - but that applied equally to pgwire, which shipped
+  TLS in 2.28.0 anyway, precisely because there is not always a proxy. Leaving REST out was an
+  inconsistency rather than a decision; `design/PLAN_flight_tls.md` scoped T-0 to T-4 to the wire
+  surfaces and recorded no rationale for excluding this one.
+
+  Defaults are unchanged: unset means plaintext, so no existing deployment moves. Set them when
+  there is no proxy, when the hop behind the proxy must be encrypted too, or when mutual TLS should
+  reach the application rather than stop at the edge. The startup line reports which you got.
+
+  Verified end to end with a real client rather than only in unit tests: HTTPS served and validated
+  against the issuing CA, plain HTTP refused, an untrusted CA refused, and under
+  `API_TLS_CLIENT_CA` a client with no certificate refused while one signed by that CA is served.
+
 - **`obsl --server` can present a client certificate.** `--client-cert` / `--client-key` /
   `--ca-cert` (and `OBSL_CLIENT_CERT` / `OBSL_CLIENT_KEY` / `OBSL_CA_CERT`) let the CLI reach a REST
-  API behind a gateway that requires mutual TLS, which it previously could not connect to at all.
+  API that requires mutual TLS, which it previously could not connect to at all.
 
-  This makes the CLI *able to satisfy* mTLS; it does not make OBSL serve it. The REST API does not
-  terminate TLS itself, so `https://` comes from whatever sits in front of it, and the client
-  certificate matters only when that thing asks for one. The wire-surface settings
-  (`PGWIRE_TLS_*`, `FLIGHT_TLS_*`) are a different surface and do not apply: `obsl --server` is a
-  REST client and never connects over pgwire or Flight SQL.
+  With `API_TLS_CLIENT_CA` above, that is OBSL itself; it equally satisfies a gateway in front that
+  asks for a certificate. The wire-surface settings remain a different surface and do not apply:
+  `obsl --server` is a REST client and never connects over pgwire or Flight SQL.
 
   `--ca-cert` replaces the default trust store rather than adding to it, and there is deliberately
   no flag to disable verification. Certificate material is loaded when the flags are resolved, not
