@@ -70,10 +70,16 @@ def resolve_tls(client_cert: str | None, client_key: str | None, ca_cert: str | 
             "--client-key was given without --client-cert. A private key alone "
             "cannot identify a client; supply the certificate too."
         )
-    for label, value in (
-        ("--client-cert", client_cert),
-        ("--client-key", client_key),
-        ("--ca-cert", ca_cert),
+
+    # Expand here and use the expanded form everywhere below. Checking
+    # ``~/ca.pem`` and then handing the literal string to OpenSSL would pass
+    # this validation and fail in the handshake, which is the opposite of what
+    # validating early is for.
+    expanded: dict[str, str | None] = {"cert": None, "key": None, "ca": None}
+    for slot, label, value in (
+        ("cert", "--client-cert", client_cert),
+        ("key", "--client-key", client_key),
+        ("ca", "--ca-cert", ca_cert),
     ):
         if value is None:
             continue
@@ -82,21 +88,29 @@ def resolve_tls(client_cert: str | None, client_key: str | None, ca_cert: str | 
             raise CliError(f"{label}: no such file: {path}")
         if not os.access(path, os.R_OK):
             raise CliError(f"{label}: not readable: {path}")
+        expanded[slot] = str(path)
 
-    if client_cert is None and ca_cert is None:
+    if expanded["cert"] is None and expanded["ca"] is None:
         return ClientTLS()
 
+    # ``httpx.create_ssl_context``, not ``ssl.create_default_context``. They do
+    # not trust the same things: httpx falls back to the certifi bundle (and
+    # honours SSL_CERT_FILE / SSL_CERT_DIR before it), while ssl's default is
+    # OpenSSL's own store, which on some platforms is close to empty. Building
+    # our own would have meant that adding --client-cert silently changed which
+    # authorities the *server* is checked against, so a server that verified
+    # before could start failing for an unrelated reason.
     try:
-        context = ssl.create_default_context(cafile=ca_cert)
+        context = httpx.create_ssl_context(verify=expanded["ca"] or True)
     except (ssl.SSLError, OSError) as exc:
         raise CliError(
-            f"--ca-cert: not a usable PEM CA bundle ({path_reason(exc)}): {ca_cert}"
+            f"--ca-cert: not a usable PEM CA bundle ({path_reason(exc)}): {expanded['ca']}"
         ) from None
-    if client_cert:
+    if expanded["cert"]:
         try:
-            context.load_cert_chain(client_cert, client_key)
+            context.load_cert_chain(expanded["cert"], expanded["key"])
         except (ssl.SSLError, OSError) as exc:
-            flag = "--client-cert/--client-key" if client_key else "--client-cert"
+            flag = "--client-cert/--client-key" if expanded["key"] else "--client-cert"
             raise CliError(f"{flag}: could not load the certificate ({path_reason(exc)})") from None
     return ClientTLS(context=context)
 

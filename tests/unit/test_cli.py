@@ -495,8 +495,13 @@ class TestClientCertificates:
     """
 
     @staticmethod
-    def _pem(tmp_path: Path) -> tuple[str, str]:
-        """A self-signed certificate and its key, as separate PEM files."""
+    def _pem(tmp_path: Path, *, ca: bool = False) -> tuple[str, str]:
+        """A self-signed certificate and its key, as separate PEM files.
+
+        ``ca=True`` adds the basic constraint that makes it usable as a trust
+        anchor - without it ``SSLContext.get_ca_certs()`` reports nothing,
+        because a leaf certificate loaded as a CA bundle anchors nothing.
+        """
         pytest.importorskip("cryptography", reason="cryptography required to mint a test cert")
         import datetime as dt
 
@@ -508,7 +513,7 @@ class TestClientCertificates:
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "obsl-cli-test")])
         now = dt.datetime.now(dt.UTC)
-        cert = (
+        builder = (
             x509.CertificateBuilder()
             .subject_name(name)
             .issuer_name(name)
@@ -516,8 +521,12 @@ class TestClientCertificates:
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - dt.timedelta(minutes=5))
             .not_valid_after(now + dt.timedelta(days=1))
-            .sign(key, hashes.SHA256())
         )
+        if ca:
+            builder = builder.add_extension(
+                x509.BasicConstraints(ca=True, path_length=None), critical=True
+            )
+        cert = builder.sign(key, hashes.SHA256())
         cert_path = tmp_path / "client.crt"
         key_path = tmp_path / "client.key"
         cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
@@ -611,3 +620,57 @@ class TestClientCertificates:
         result = runner.invoke(app, ["dialects", "--ca-cert", str(tmp_path / "nope.crt")])
         assert result.exit_code == 0, result.output
         assert "duckdb" in result.output
+
+    def test_a_client_certificate_alone_keeps_httpxs_default_trust(self, tmp_path: Path) -> None:
+        """Adding --client-cert must not change who the *server* is checked against.
+
+        The two defaults are not the same: httpx falls back to the certifi
+        bundle, while ``ssl.create_default_context()`` uses OpenSSL's own store,
+        which on some platforms is close to empty. Building our own context
+        therefore made ``--client-cert`` silently swap the trust anchors, so a
+        server that verified before could start failing for a reason having
+        nothing to do with the client certificate.
+
+        Compared by the actual CA set rather than by construction, because the
+        defect was that two plausible-looking constructions disagree.
+        """
+        import httpx
+
+        from orionbelt.cli._remote import resolve_tls
+
+        cert, key = self._pem(tmp_path)
+        ours = resolve_tls(cert, key, None).context
+        assert ours is not None
+        httpx_default = httpx.create_ssl_context(verify=True)
+        assert ours.get_ca_certs() == httpx_default.get_ca_certs()
+
+    def test_a_ca_bundle_replaces_that_trust_rather_than_adding_to_it(self, tmp_path: Path) -> None:
+        """The other half: --ca-cert is an override, and must actually override."""
+        import httpx
+
+        from orionbelt.cli._remote import resolve_tls
+
+        ca_cert, _ = self._pem(tmp_path, ca=True)
+        ours = resolve_tls(None, None, ca_cert).context
+        assert ours is not None
+        assert ours.get_ca_certs() != httpx.create_ssl_context(verify=True).get_ca_certs()
+        assert len(ours.get_ca_certs()) == 1, "only the bundle we named should be trusted"
+
+    def test_a_tilde_path_is_expanded_before_openssl_sees_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``~/ca.pem`` passed the existence check and then failed in the handshake.
+
+        The check expanded the path and the SSL call did not, so validating
+        early achieved the opposite of what it is for.
+        """
+        from orionbelt.cli._remote import resolve_tls
+
+        home = tmp_path / "home"
+        home.mkdir()
+        cert, key = self._pem(home)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+        tls = resolve_tls(f"~/{Path(cert).name}", f"~/{Path(key).name}", None)
+        assert tls.context is not None
