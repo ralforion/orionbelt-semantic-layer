@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.28.2] - 2026-09-11
+
 ### Fixed
 
 - **Zoned timestamps and times advertised an OID that meant something else.** `pg_attribute`
