@@ -254,16 +254,17 @@ or present but not what it claims fails when the flags are resolved rather than
 as an SSL error from inside the HTTP client mentioning neither the flag nor the
 file.
 
-!!! note "What this does and does not do"
+!!! note "Which end these are"
 
-    These make the CLI *able to satisfy* mutual TLS. They do not make OBSL
-    *serve* it: the REST API does not terminate TLS itself, so `https://` is
-    provided by whatever sits in front of it, and `--client-cert` matters only
-    when that thing asks for a certificate.
+    These are the *client* half. The server half is
+    [`API_TLS_CLIENT_CA`](authentication.md#transport-security-tls), which makes
+    the REST API demand a certificate; `--client-cert` is how `obsl` presents
+    one. They also work against a gateway in front of OBSL that asks for a
+    certificate, in which case nothing on the server needs configuring at all.
 
-    The wire-surface settings are separate and do not apply here. `obsl
-    --server` is a REST client; it never connects over pgwire or Flight SQL.
-    For those see [Postgres wire](postgres-wire-bi-tools.md) and
+    The wire-surface settings are a different surface and do not apply here.
+    `obsl --server` is a REST client; it never connects over pgwire or Flight
+    SQL. For those see [Postgres wire](postgres-wire-bi-tools.md) and
     [ADBC / Arrow Flight SQL](adbc.md#tls).
 
 ```bash

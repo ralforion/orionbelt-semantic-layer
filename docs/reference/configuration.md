@@ -36,6 +36,15 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `PGWIRE_AUTH_MODE`         | `trust`     | `trust` today; `password` / `scram-sha-256` planned alongside the unified-auth subsystem |
 | `PGWIRE_MAX_CONNECTIONS`   | `64`        | Concurrent connection cap                 |
 | `PGWIRE_QUERY_TIMEOUT_SECONDS` | `60`    | Per-query wall-clock timeout              |
+| `API_TLS_CERT`             | —           | PEM certificate; with `API_TLS_KEY` the REST API serves HTTPS (v2.29.0+) |
+| `API_TLS_KEY`              | —           | PEM private key. Both or neither: one alone refuses to start rather than serving plaintext |
+| `API_TLS_CLIENT_CA`        | —           | PEM CA for client certificates; turns on mutual TLS (needs cert + key) |
+| `PGWIRE_TLS_CERT`          | —           | PEM certificate; with the key, pgwire answers `S` to an `SSLRequest` and upgrades the socket (v2.28.0+) |
+| `PGWIRE_TLS_KEY`           | —           | PEM private key. Both or neither                  |
+| `PGWIRE_TLS_CLIENT_CA`     | —           | PEM CA for client certificates; turns on mutual TLS |
+| `FLIGHT_TLS_CERT`          | —           | PEM certificate; with the key, Flight serves `grpc+tls` instead of `grpc` (v2.28.0+) |
+| `FLIGHT_TLS_KEY`           | —           | PEM private key. Both or neither                  |
+| `FLIGHT_TLS_CLIENT_CA`     | —           | PEM CA for client certificates; turns on mutual TLS |
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution       |
 
 ## Admin-Curated Mode
