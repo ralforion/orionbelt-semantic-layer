@@ -640,6 +640,36 @@ class TestInheritsMerge:
         [m] = model.measures["Order Count"].external_concept_mappings
         assert m.expanded_iri == "http://purl.org/goodrelations/v1#Offering"
 
+    @pytest.mark.parametrize("bad_block", ["ontology: []\n", "ontology:\n  prefixes: [corp]\n"])
+    def test_malformed_parent_ontology_reaches_the_resolver(self, bad_block: str) -> None:
+        """The merger leaves a malformed block alone; the resolver reports it."""
+        parent_raw, _ = TrackedLoader().load_string(
+            _BASE.replace(
+                'ontology:\n  prefixes:\n    corp: "https://ontology.example.com/business/"\n'
+                '    fibo: "https://spec.edmcouncil.org/fibo/ontology/"\n',
+                bad_block,
+            )
+        )
+        child_raw, _ = TrackedLoader().load_string(
+            f"version: 1.0\nontology:\n  prefixes:\n    corp: '{CORP}'\n"
+        )
+        merged, _ = ExtendsMerger().merge_from_strings(child_raw, inherits_raw=parent_raw)
+        _, result = ReferenceResolver().resolve(merged)
+        assert _codes(result.errors) == ["ONTOLOGY_PARSE_ERROR"]
+
+    def test_malformed_base_ontology_with_extension_reaches_the_resolver(self) -> None:
+        base_raw, _ = TrackedLoader().load_string(
+            _BASE.replace(
+                'ontology:\n  prefixes:\n    corp: "https://ontology.example.com/business/"\n'
+                '    fibo: "https://spec.edmcouncil.org/fibo/ontology/"\n',
+                "ontology: []\n",
+            )
+        )
+        extension = f"version: 1.0\nontology:\n  prefixes:\n    corp: '{CORP}'\n"
+        merged, _ = ExtendsMerger().merge_from_strings(base_raw, [extension])
+        _, result = ReferenceResolver().resolve(merged)
+        assert _codes(result.errors) == ["ONTOLOGY_PARSE_ERROR"]
+
     def test_child_rebinding_a_parent_prefix_is_an_error(self) -> None:
         parent_raw, _ = TrackedLoader().load_string(_BASE)
         child_raw, _ = TrackedLoader().load_string(

@@ -347,8 +347,20 @@ class ExtendsMerger:
         src_prefixes = src_ontology.get("prefixes") if isinstance(src_ontology, dict) else None
         if not isinstance(src_prefixes, dict) or not src_prefixes:
             return
-        tgt_ontology = target.setdefault("ontology", {})
-        tgt_prefixes = tgt_ontology.setdefault("prefixes", {})
+        # A malformed block on either side (``ontology: []``, ``prefixes: [..]``)
+        # is left exactly as authored: the resolver reports it as
+        # ONTOLOGY_PARSE_ERROR with a source span, which is better than
+        # anything the merger could say about it. Nothing is merged into it.
+        tgt_ontology = target.get("ontology")
+        if tgt_ontology is None:
+            tgt_ontology = target["ontology"] = {}
+        if not isinstance(tgt_ontology, dict):
+            return
+        tgt_prefixes = tgt_ontology.get("prefixes")
+        if tgt_prefixes is None:
+            tgt_prefixes = tgt_ontology["prefixes"] = {}
+        if not isinstance(tgt_prefixes, dict):
+            return
         for name, namespace in src_prefixes.items():
             bound = tgt_prefixes.get(name)
             if bound is not None and bound != namespace:
