@@ -4,7 +4,6 @@
 @prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
 @prefix dcterms: <http://purl.org/dc/terms/> .
 @prefix vann:    <http://purl.org/vocab/vann/> .
-@prefix skos:    <http://www.w3.org/2004/02/skos/core#> .
 @prefix obsl:    <https://ralforion.com/ns/obsl#> .
 
 # =============================================================================
@@ -688,9 +687,8 @@ obsl:sourceObject a owl:ObjectProperty ;
 
 obsl:targetConcept a owl:ObjectProperty ;
     rdfs:label "target concept" ;
-    rdfs:comment "The external concept the mapping points at, as an absolute IRI (the authored compact IRI expanded with the model's ontology prefixes)." ;
-    rdfs:domain obsl:ExternalConceptMapping ;
-    rdfs:range skos:Concept .
+    rdfs:comment "The external concept the mapping points at, as an absolute IRI (the authored compact IRI expanded with the model's ontology prefixes).  Deliberately without a range: targets are whatever the external ontology declares them to be (a skos:Concept in a glossary, an owl:Class in FIBO, a schema.org type), and a range would make a reasoner type every one of them." ;
+    rdfs:domain obsl:ExternalConceptMapping .
 
 obsl:authoredConcept a owl:DatatypeProperty ;
     rdfs:label "authored concept" ;

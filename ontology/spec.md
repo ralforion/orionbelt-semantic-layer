@@ -67,7 +67,7 @@ Final prefixes:
 @prefix obsl: <https://ralforion.com/ns/obsl#> .
 ```
 
-`skos:` is used only for the mapping predicates (`skos:exactMatch`, `skos:closeMatch`, `skos:broadMatch`, `skos:narrowMatch`, `skos:relatedMatch`) that link modeling elements to external concepts, and for `skos:Concept` as the range of `obsl:targetConcept`. External ontologies are referenced by IRI; OBSL never imports or restates them.
+`skos:` is used only for the mapping predicates (`skos:exactMatch`, `skos:closeMatch`, `skos:broadMatch`, `skos:narrowMatch`, `skos:relatedMatch`) that link modeling elements to external concepts. `obsl:targetConcept` declares no range: a target is whatever the external ontology says it is (a `skos:Concept`, an `owl:Class`, a schema.org type), and OBSL never imports or restates it.
 
 The `obsl:` namespace is frozen for `OBSL-Core 0.2` as:
 - `https://ralforion.com/ns/obsl#`

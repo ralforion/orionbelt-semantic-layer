@@ -35,7 +35,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
 )
 from orionbelt.parser.loader import TrackedLoader
-from orionbelt.parser.merger import ExtendsMerger
+from orionbelt.parser.merger import ExtendsMerger, MergeError
 from orionbelt.parser.resolver import ReferenceResolver
 
 _SCHEMA = json.loads(
@@ -593,12 +593,61 @@ class TestExtendsMerge:
         [m] = model.measures["Order Count"].external_concept_mappings
         assert m.expanded_iri == "http://purl.org/goodrelations/v1#Offering"
 
-    def test_conflicting_prefix_is_warned_and_overridden(self) -> None:
-        base_raw, _ = TrackedLoader().load_string(_BASE)
+    def test_rebinding_a_prefix_in_an_extension_is_an_error(self) -> None:
+        """A rebinding would silently expand the base file's mappings elsewhere."""
+        base_raw, _ = TrackedLoader().load_string(
+            _BASE + "externalConceptMappings:\n  - concept: corp:Base\n    relation: exact\n"
+        )
         extension = "version: 1.0\nontology:\n  prefixes:\n    corp: 'https://other.example/'\n"
+        with pytest.raises(MergeError) as exc:
+            ExtendsMerger().merge_from_strings(base_raw, [extension])
+        assert exc.value.code == "ONTOLOGY_PREFIX_CONFLICT"
+        assert "corp" in exc.value.message
+
+    def test_redeclaring_a_prefix_verbatim_in_an_extension_is_fine(self) -> None:
+        base_raw, _ = TrackedLoader().load_string(_BASE)
+        extension = f"version: 1.0\nontology:\n  prefixes:\n    corp: '{CORP}'\n"
         merged, warnings = ExtendsMerger().merge_from_strings(base_raw, [extension])
-        assert any("corp" in w for w in warnings)
-        assert merged["ontology"]["prefixes"]["corp"] == "https://other.example/"
+        assert warnings == []
+        assert merged["ontology"]["prefixes"]["corp"] == CORP
+
+
+class TestInheritsMerge:
+    def test_child_prefixes_and_mappings_survive_inherits(self) -> None:
+        parent_raw, _ = TrackedLoader().load_string(
+            _BASE + "externalConceptMappings:\n  - concept: corp:Parent\n    relation: exact\n"
+        )
+        child_raw, _ = TrackedLoader().load_string(
+            "version: 1.0\n"
+            "ontology:\n  prefixes:\n    gr: 'http://purl.org/goodrelations/v1#'\n"
+            "measures:\n  Order Count:\n    aggregation: count\n"
+            "    columns: [{dataObject: Orders, column: ID}]\n"
+            "    externalConceptMappings:\n"
+            "      - concept: gr:Offering\n        relation: related\n"
+            "externalConceptMappings:\n"
+            "  - concept: gr:BusinessEntity\n    relation: related\n"
+        )
+        merged, warnings = ExtendsMerger().merge_from_strings(child_raw, inherits_raw=parent_raw)
+        assert warnings == []
+        model, result = ReferenceResolver().resolve(merged)
+        assert result.errors == []
+        assert model.ontology is not None
+        assert set(model.ontology.prefixes) == {"corp", "fibo", "gr"}
+        assert [m.concept for m in model.external_concept_mappings] == [
+            "corp:Parent",
+            "gr:BusinessEntity",
+        ]
+        [m] = model.measures["Order Count"].external_concept_mappings
+        assert m.expanded_iri == "http://purl.org/goodrelations/v1#Offering"
+
+    def test_child_rebinding_a_parent_prefix_is_an_error(self) -> None:
+        parent_raw, _ = TrackedLoader().load_string(_BASE)
+        child_raw, _ = TrackedLoader().load_string(
+            "version: 1.0\nontology:\n  prefixes:\n    corp: 'https://other.example/'\n"
+        )
+        with pytest.raises(MergeError) as exc:
+            ExtendsMerger().merge_from_strings(child_raw, inherits_raw=parent_raw)
+        assert exc.value.code == "ONTOLOGY_PREFIX_CONFLICT"
 
 
 # ────────────────────────────── JSON schema ─────────────────────────────

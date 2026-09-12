@@ -279,11 +279,15 @@ class ExtendsMerger:
         if parent_filters or child_filters:
             merged["filters"] = parent_filters + child_filters
 
-        # customExtensions: concatenate
-        parent_exts = list(merged.get("customExtensions") or [])
-        child_exts = list(child.get("customExtensions") or [])
-        if parent_exts or child_exts:
-            merged["customExtensions"] = parent_exts + child_exts
+        # customExtensions / externalConceptMappings: concatenate
+        for list_key in ("customExtensions", "externalConceptMappings"):
+            parent_items = list(merged.get(list_key) or [])
+            child_items = list(child.get(list_key) or [])
+            if parent_items or child_items:
+                merged[list_key] = parent_items + child_items
+
+        # ontology.prefixes: union; a rebinding is an error, see _merge_prefixes
+        self._merge_prefixes(merged, child, origin)
 
         # Owner: child wins if present
         if child.get("owner"):
@@ -319,22 +323,39 @@ class ExtendsMerger:
             if src_items:
                 target.setdefault(list_key, []).extend(src_items)
 
-        # ontology.prefixes: union, source wins on conflict like the
-        # analytical keys. An extension's measures expand their compact
-        # concept IRIs with the prefixes the extension declares, so dropping
-        # them would fail every such mapping with UNKNOWN_ONTOLOGY_PREFIX.
-        src_ontology = source.get("ontology")
-        src_prefixes = src_ontology.get("prefixes") if isinstance(src_ontology, dict) else None
-        if isinstance(src_prefixes, dict) and src_prefixes:
-            tgt_ontology = target.setdefault("ontology", {})
-            tgt_prefixes = tgt_ontology.setdefault("prefixes", {})
-            for name, namespace in src_prefixes.items():
-                if name in tgt_prefixes and tgt_prefixes[name] != namespace:
-                    warnings.append(f"Ontology prefix '{name}' overridden by '{origin}'")
-                tgt_prefixes[name] = namespace
+        ExtendsMerger._merge_prefixes(target, source, origin)
 
         # description: last non-None wins
         if source.get("description"):
             target["description"] = source["description"]
 
         return warnings
+
+    @staticmethod
+    def _merge_prefixes(target: dict[str, Any], source: dict[str, Any], origin: str) -> None:
+        """Union ``source``'s ``ontology.prefixes`` into ``target``.
+
+        A fragment's compact concept IRIs expand with the prefixes the
+        fragment declares, so they have to survive the merge. But every
+        mapping in the merged document expands against one prefix map, so
+        rebinding a name that is already bound would silently rewrite the
+        other fragment's mappings to a different namespace. That is an
+        error, not a warning: ``corp:Base`` must not become
+        ``https://child.example/Base`` because a later file reused ``corp``.
+        """
+        src_ontology = source.get("ontology")
+        src_prefixes = src_ontology.get("prefixes") if isinstance(src_ontology, dict) else None
+        if not isinstance(src_prefixes, dict) or not src_prefixes:
+            return
+        tgt_ontology = target.setdefault("ontology", {})
+        tgt_prefixes = tgt_ontology.setdefault("prefixes", {})
+        for name, namespace in src_prefixes.items():
+            bound = tgt_prefixes.get(name)
+            if bound is not None and bound != namespace:
+                raise MergeError(
+                    "ONTOLOGY_PREFIX_CONFLICT",
+                    f"Ontology prefix '{name}' is bound to <{bound}> and '{origin}' binds it "
+                    f"to <{namespace}>; a prefix must expand to one namespace across all "
+                    "merged fragments",
+                )
+            tgt_prefixes[name] = namespace

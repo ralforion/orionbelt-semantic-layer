@@ -16,8 +16,12 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   `INVALID_CONCEPT_MAPPING`, `DUPLICATE_CONCEPT_MAPPING` and `CONFLICTING_CONCEPT_MAPPING` as
   structured errors with source spans. Mappings are descriptive metadata: compiled SQL and result
   cache keys are identical with and without them. The JSON schema, contract manifest and OBSL
-  ontology vocabulary (`obsl:ExternalConceptMapping` and its properties) are extended; the RDF
-  exporter, discovery API and OSI round-trip follow in later PRs of the same plan.
+  ontology vocabulary (`obsl:ExternalConceptMapping` and its properties) are extended, and the
+  OSI converter (osi-orionbelt 0.3.1) carries `ontology` and every object's mappings through
+  the OBSL vendor extension so OBML -> OSI -> OBML is lossless. `extends` and `inherits` merge
+  `ontology.prefixes` and model-level mappings; rebinding an already-bound prefix in another
+  fragment is `ONTOLOGY_PREFIX_CONFLICT` rather than a silent rewrite. The RDF exporter and the
+  discovery API follow in later PRs of the same plan.
 
 ## [2.29.0] - 2026-09-11
 
