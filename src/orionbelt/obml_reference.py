@@ -349,6 +349,43 @@ customExtensions:
 Each entry has `vendor` (identifier string) and `data` (opaque JSON string).
 OrionBelt preserves these during parsing but does not interpret them.
 
+## 7. externalConceptMappings — links to governed business concepts (optional)
+
+The model, a dataObject, a dimension, a measure or a metric may link to
+concepts in an external ontology (a corporate glossary, FIBO, schema.org).
+Descriptive metadata only: mappings never change SQL, execution or caching.
+
+```yaml
+ontology:
+  prefixes:
+    corp: "https://ontology.example.com/business/"
+
+measures:
+  Revenue:
+    aggregation: sum
+    expression: "{[Orders].[Amount]}"
+    externalConceptMappings:
+      - concept: "corp:NetRevenue"          # compact IRI, or a full https://... IRI
+        relation: exact                     # required: exact | close | broader | narrower | related
+        justification: curated              # optional: curated | imported | generated | inferred | lexical
+        source: "enterprise-finance-ontology"
+        ontologyVersion: "2026.1"
+        confidence: 1.0
+        comment: "Approved by Finance Data Governance"
+```
+
+- `concept` is a compact IRI (`prefix:LocalName`, expanded with `ontology.prefixes`; \
+`rdf`, `rdfs`, `owl`, `skos`, `xsd` are built in) or a full IRI (`https://...`, `urn:...`). \
+An undeclared prefix is `UNKNOWN_ONTOLOGY_PREFIX`; a blank node, relative reference or \
+malformed value is `INVALID_CONCEPT_IRI`.
+- `relation` reads artifact-first in the SKOS direction: `broader` means the external \
+concept is the *broader* one (the artifact is a narrower notion of it); `narrower` \
+means the external concept is the narrower one. There is no implicit `exact`.
+- One IRI carries one relation per object: the same expanded IRI twice is \
+`DUPLICATE_CONCEPT_MAPPING`; twice with different relations is `CONFLICTING_CONCEPT_MAPPING`.
+- Not on columns or joins: `customer_id` *identifies* a Customer rather than *being* one, \
+which needs a more precise relation than this vocabulary offers.
+
 {FUNCTION_CATALOG_SECTION}
 
 ## Key Rules

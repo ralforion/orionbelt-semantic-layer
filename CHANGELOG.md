@@ -4,6 +4,21 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **External concept mappings (OBML mapping foundation).** A model, data object, dimension,
+  measure or metric may carry `externalConceptMappings`: qualified links to concepts in an
+  external ontology (`concept` as a compact or full IRI, a required SKOS-style `relation`, and
+  optional `justification`, `source`, `ontologyVersion`, `confidence`, `comment`). A top-level
+  `ontology.prefixes` block declares the prefixes compact IRIs expand with; `rdf`, `rdfs`, `owl`,
+  `skos` and `xsd` are built in. The resolver expands every concept to an absolute IRI and reports
+  `INVALID_ONTOLOGY_PREFIX`, `UNKNOWN_ONTOLOGY_PREFIX`, `INVALID_CONCEPT_IRI`,
+  `INVALID_CONCEPT_MAPPING`, `DUPLICATE_CONCEPT_MAPPING` and `CONFLICTING_CONCEPT_MAPPING` as
+  structured errors with source spans. Mappings are descriptive metadata: compiled SQL and result
+  cache keys are identical with and without them. The JSON schema, contract manifest and OBSL
+  ontology vocabulary (`obsl:ExternalConceptMapping` and its properties) are extended; the RDF
+  exporter, discovery API and OSI round-trip follow in later PRs of the same plan.
+
 ## [2.29.0] - 2026-09-11
 
 ### Added

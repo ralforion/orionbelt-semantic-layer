@@ -313,10 +313,25 @@ class ExtendsMerger:
                     warnings.append(f"{key[:-1].title()} '{name}' overridden by '{origin}'")
                 tgt_section[name] = defn
 
-        # customExtensions: concatenate lists
-        src_exts = source.get("customExtensions")
-        if src_exts:
-            target.setdefault("customExtensions", []).extend(src_exts)
+        # customExtensions / externalConceptMappings: concatenate lists
+        for list_key in ("customExtensions", "externalConceptMappings"):
+            src_items = source.get(list_key)
+            if src_items:
+                target.setdefault(list_key, []).extend(src_items)
+
+        # ontology.prefixes: union, source wins on conflict like the
+        # analytical keys. An extension's measures expand their compact
+        # concept IRIs with the prefixes the extension declares, so dropping
+        # them would fail every such mapping with UNKNOWN_ONTOLOGY_PREFIX.
+        src_ontology = source.get("ontology")
+        src_prefixes = src_ontology.get("prefixes") if isinstance(src_ontology, dict) else None
+        if isinstance(src_prefixes, dict) and src_prefixes:
+            tgt_ontology = target.setdefault("ontology", {})
+            tgt_prefixes = tgt_ontology.setdefault("prefixes", {})
+            for name, namespace in src_prefixes.items():
+                if name in tgt_prefixes and tgt_prefixes[name] != namespace:
+                    warnings.append(f"Ontology prefix '{name}' overridden by '{origin}'")
+                tgt_prefixes[name] = namespace
 
         # description: last non-None wins
         if source.get("description"):

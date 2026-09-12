@@ -251,6 +251,42 @@ class FilterLogic(StrEnum):
     OR = "or"
 
 
+class ExternalConceptRelation(StrEnum):
+    """How an OBML artifact relates to an external ontology concept.
+
+    The values follow the SKOS mapping vocabulary and read in the SKOS
+    direction, artifact first: ``exact`` is ``skos:exactMatch``, ``close`` is
+    ``skos:closeMatch``, ``broader`` is ``skos:broadMatch`` (the external
+    concept is the *broader* one, so the artifact is a narrower notion of it),
+    ``narrower`` is ``skos:narrowMatch`` (the external concept is the
+    *narrower* one) and ``related`` is ``skos:relatedMatch``. A measure
+    ``Net Revenue`` mapped ``broader`` to ``corp:Revenue`` says corp:Revenue
+    is broader than Net Revenue.
+    """
+
+    EXACT = "exact"
+    CLOSE = "close"
+    BROADER = "broader"
+    NARROWER = "narrower"
+    RELATED = "related"
+
+
+class MappingJustification(StrEnum):
+    """How an external concept mapping came to exist.
+
+    ``curated`` is a human decision; ``imported`` came from another catalog
+    or format (an OSI / Ossie ``maps_to_concept``); ``generated`` and
+    ``inferred`` were produced by tooling, from structure or from reasoning;
+    ``lexical`` rests on a name match only.
+    """
+
+    CURATED = "curated"
+    IMPORTED = "imported"
+    GENERATED = "generated"
+    INFERRED = "inferred"
+    LEXICAL = "lexical"
+
+
 class CustomExtension(BaseModel):
     """Vendor-keyed extension data — opaque to OrionBelt.
 
@@ -260,6 +296,49 @@ class CustomExtension(BaseModel):
 
     vendor: str
     data: str
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
+class OntologyConfig(BaseModel):
+    """Model-level ontology settings: the prefixes compact concept IRIs expand with.
+
+    ``prefixes`` maps a prefix name to an absolute namespace IRI. A mapping's
+    ``concept: "corp:NetRevenue"`` expands to the namespace followed by the
+    local name. The RDF, RDFS, OWL, SKOS and XSD prefixes are built in
+    (:data:`orionbelt.models.concept_links.BUILTIN_PREFIXES`) and cannot be
+    rebound to another namespace.
+    """
+
+    prefixes: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
+class ExternalConceptMapping(BaseModel):
+    """A qualified link from an OBML artifact to a concept in an external ontology.
+
+    Descriptive metadata only: it says what governed business concept a
+    model, data object, dimension, measure or metric stands for. It never
+    changes SQL planning, execution, cache keys, join selection or metric
+    expansion.
+
+    ``concept`` is the authored value, a compact IRI (``corp:NetRevenue``,
+    expanded with the model's ``ontology.prefixes``) or a full IRI. The
+    resolver stores the absolute form in ``expanded_iri``; it is derived, so
+    authoring ``expandedIri`` in YAML is an ``UNKNOWN_PROPERTY`` error.
+    ``relation`` is required (there is no implicit ``exact``) and reads in the
+    SKOS direction, see :class:`ExternalConceptRelation`.
+    """
+
+    concept: str
+    expanded_iri: str | None = Field(None, alias="expandedIri")
+    relation: ExternalConceptRelation
+    justification: MappingJustification | None = None
+    source: str | None = None
+    ontology_version: str | None = Field(None, alias="ontologyVersion")
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    comment: str | None = None
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -501,6 +580,9 @@ class DataObject(BaseModel):
     )
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
+    external_concept_mappings: list[ExternalConceptMapping] = Field(
+        default_factory=list, alias="externalConceptMappings"
+    )
     refresh: RefreshPolicy | None = Field(
         default=None,
         description=(
@@ -606,6 +688,9 @@ class Dimension(BaseModel):
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
+    external_concept_mappings: list[ExternalConceptMapping] = Field(
+        default_factory=list, alias="externalConceptMappings"
+    )
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -734,6 +819,9 @@ class Measure(BaseModel):
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
+    external_concept_mappings: list[ExternalConceptMapping] = Field(
+        default_factory=list, alias="externalConceptMappings"
+    )
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -925,6 +1013,9 @@ class Metric(BaseModel):
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
+    external_concept_mappings: list[ExternalConceptMapping] = Field(
+        default_factory=list, alias="externalConceptMappings"
+    )
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -1201,6 +1292,16 @@ class SemanticModel(BaseModel):
         ),
     )
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
+    ontology: OntologyConfig | None = Field(
+        default=None,
+        description=(
+            "Ontology settings: the prefixes that compact concept IRIs in "
+            "externalConceptMappings expand with."
+        ),
+    )
+    external_concept_mappings: list[ExternalConceptMapping] = Field(
+        default_factory=list, alias="externalConceptMappings"
+    )
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 

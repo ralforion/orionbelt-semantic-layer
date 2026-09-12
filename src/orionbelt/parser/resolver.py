@@ -9,6 +9,14 @@ from typing import Any
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
+from orionbelt.models.concept_links import (
+    BUILTIN_PREFIXES,
+    PREFIX_NAME_RE,
+    ConceptIriError,
+    effective_prefixes,
+    expand_concept,
+    is_absolute_iri,
+)
 from orionbelt.models.errors import SemanticError, ValidationResult
 from orionbelt.models.expressions import find_malformed_measure_refs, find_qualified_refs
 from orionbelt.models.semantic import (
@@ -18,6 +26,7 @@ from orionbelt.models.semantic import (
     DataObjectColumn,
     DataObjectJoin,
     Dimension,
+    ExternalConceptMapping,
     FilterContext,
     FilterContextFilter,
     FilterValue,
@@ -32,6 +41,7 @@ from orionbelt.models.semantic import (
     ModelFilter,
     ModelSettings,
     NestedSource,
+    OntologyConfig,
     PeriodOverPeriod,
     RefreshPolicy,
     SemanticModel,
@@ -130,6 +140,11 @@ _MODEL_FILTER_KEYS = _allowed_keys(ModelFilter)
 _MODEL_SETTINGS_KEYS = _allowed_keys(ModelSettings)
 _MODEL_EXAMPLE_KEYS = _allowed_keys(ModelExample)
 _CUSTOM_EXTENSION_KEYS = _allowed_keys(CustomExtension)
+_ONTOLOGY_KEYS = _allowed_keys(OntologyConfig)
+# ``expandedIri`` is derived by the resolver, never authored.
+_EXTERNAL_CONCEPT_MAPPING_KEYS = _allowed_keys(
+    ExternalConceptMapping, exclude=("expanded_iri", "expandedIri")
+)
 # Period-over-period / Window / Cumulative metric blocks share the Metric
 # field set, but the inner periodOverPeriod block has its own shape.
 _PERIOD_OVER_PERIOD_KEYS = _allowed_keys(PeriodOverPeriod)
@@ -169,6 +184,171 @@ def _parse_extensions(
                     source_map,
                 )
     return [CustomExtension(vendor=e.get("vendor", ""), data=e.get("data", "")) for e in exts]
+
+
+def _parse_ontology(
+    raw: object,
+    errors: list[SemanticError],
+    source_map: SourceMap | None = None,
+) -> OntologyConfig | None:
+    """Parse the top-level ``ontology`` block.
+
+    Every prefix is checked on its own (a conservative identifier as the
+    name, an absolute IRI as the namespace, no rebinding of a built-in) and
+    a bad one is reported and dropped, so the rest of the model still
+    resolves and every problem is listed at once.
+    """
+    if raw is None:
+        return None
+    span = source_map.get("ontology") if source_map else None
+    if not isinstance(raw, dict):
+        errors.append(
+            SemanticError(
+                code="ONTOLOGY_PARSE_ERROR",
+                message="'ontology' must be a mapping with a 'prefixes' block",
+                path="ontology",
+                span=span,
+            )
+        )
+        return None
+    _check_unknown_keys(raw, _ONTOLOGY_KEYS, "ontology", errors, source_map)
+    raw_prefixes = raw.get("prefixes", {})
+    if raw_prefixes is None:
+        raw_prefixes = {}
+    if not isinstance(raw_prefixes, dict):
+        errors.append(
+            SemanticError(
+                code="ONTOLOGY_PARSE_ERROR",
+                message="'ontology.prefixes' must be a mapping of prefix name to namespace IRI",
+                path="ontology.prefixes",
+                span=source_map.get("ontology.prefixes") if source_map else span,
+            )
+        )
+        return OntologyConfig()
+    prefixes: dict[str, str] = {}
+    for name, namespace in raw_prefixes.items():
+        path = f"ontology.prefixes.{name}"
+        pspan = source_map.get(path) if source_map else None
+        problem: str | None = None
+        if not isinstance(name, str) or not PREFIX_NAME_RE.match(name):
+            problem = (
+                f"Prefix name {name!r} is not a valid identifier "
+                "(letters, digits, '_', '-' and '.', starting with a letter or '_')"
+            )
+        elif not is_absolute_iri(namespace):
+            problem = f"Prefix '{name}' must map to an absolute IRI, got {namespace!r}"
+        elif name in BUILTIN_PREFIXES and namespace != BUILTIN_PREFIXES[name]:
+            problem = (
+                f"Prefix '{name}' is built in as <{BUILTIN_PREFIXES[name]}> "
+                "and cannot be bound to another namespace"
+            )
+        if problem is not None:
+            errors.append(
+                SemanticError(
+                    code="INVALID_ONTOLOGY_PREFIX", message=problem, path=path, span=pspan
+                )
+            )
+            continue
+        prefixes[name] = namespace
+    return OntologyConfig(prefixes=prefixes)
+
+
+def _parse_concept_mappings(
+    raw: dict[str, Any],
+    path: str,
+    prefixes: dict[str, str],
+    errors: list[SemanticError],
+    source_map: SourceMap | None = None,
+) -> list[ExternalConceptMapping]:
+    """Parse ``externalConceptMappings`` on one object and expand each concept.
+
+    Returns only the mappings that survive validation, each with its
+    ``expanded_iri`` set. A malformed entry, an unexpandable concept, or a
+    repeat of an already-mapped IRI is reported as a structured error and
+    dropped; the owning object is still built, so one bad mapping does not
+    hide every other error on it.
+    """
+    entries = raw.get("externalConceptMappings")
+    if entries is None:
+        return []
+    list_path = f"{path}.externalConceptMappings" if path else "externalConceptMappings"
+    if not isinstance(entries, list):
+        errors.append(
+            SemanticError(
+                code="INVALID_CONCEPT_MAPPING",
+                message=f"'{list_path}' must be a list of mapping entries",
+                path=list_path,
+                span=source_map.get(list_path) if source_map else None,
+            )
+        )
+        return []
+    out: list[ExternalConceptMapping] = []
+    seen: dict[str, tuple[str, int]] = {}
+    for i, entry in enumerate(entries):
+        epath = f"{list_path}[{i}]"
+        span = source_map.get(epath) if source_map else None
+        if not isinstance(entry, dict):
+            errors.append(
+                SemanticError(
+                    code="INVALID_CONCEPT_MAPPING",
+                    message=f"{epath} must be a mapping with 'concept' and 'relation'",
+                    path=epath,
+                    span=span,
+                )
+            )
+            continue
+        _check_unknown_keys(entry, _EXTERNAL_CONCEPT_MAPPING_KEYS, epath, errors, source_map)
+        known = {k: v for k, v in entry.items() if k in _EXTERNAL_CONCEPT_MAPPING_KEYS}
+        try:
+            mapping = ExternalConceptMapping(**known)
+        except PydanticValidationError as exc:
+            for detail in exc.errors():
+                field = ".".join(str(part) for part in detail["loc"]) or "entry"
+                errors.append(
+                    SemanticError(
+                        code="INVALID_CONCEPT_MAPPING",
+                        message=f"{epath}.{field}: {detail['msg']}",
+                        path=epath,
+                        span=span,
+                    )
+                )
+            continue
+        try:
+            expanded = expand_concept(mapping.concept, prefixes)
+        except ConceptIriError as exc:
+            errors.append(
+                SemanticError(
+                    code=exc.code,
+                    message=f"{epath}: {exc.message}",
+                    path=epath,
+                    span=span,
+                    suggestions=exc.suggestions,
+                )
+            )
+            continue
+        previous = seen.get(expanded)
+        if previous is not None:
+            prior_relation, prior_index = previous
+            same = prior_relation == mapping.relation.value
+            errors.append(
+                SemanticError(
+                    code="DUPLICATE_CONCEPT_MAPPING" if same else "CONFLICTING_CONCEPT_MAPPING",
+                    message=(
+                        f"{epath} maps <{expanded}> again with the same relation "
+                        f"'{mapping.relation.value}' as entry [{prior_index}]"
+                        if same
+                        else f"{epath} maps <{expanded}> as '{mapping.relation.value}' but "
+                        f"entry [{prior_index}] maps it as '{prior_relation}'; one IRI "
+                        "carries one relation"
+                    ),
+                    path=epath,
+                    span=span,
+                )
+            )
+            continue
+        seen[expanded] = (mapping.relation.value, i)
+        out.append(mapping.model_copy(update={"expanded_iri": expanded}))
+    return out
 
 
 def _parse_settings(
@@ -409,6 +589,11 @@ class ReferenceResolver:
         # ``dataObjekt:`` that would silently be dropped by ``raw.get(...)``).
         _check_unknown_keys(raw, _TOP_LEVEL_KEYS, "", errors, source_map)
 
+        # Ontology prefixes come first: every object's externalConceptMappings
+        # expand against them.
+        ontology = _parse_ontology(raw.get("ontology"), errors, source_map)
+        prefixes = effective_prefixes(ontology.prefixes if ontology else None)
+
         # Parse data objects
         data_objects: dict[str, DataObject] = {}
         raw_objects = raw.get("dataObjects", {})
@@ -487,6 +672,9 @@ class ReferenceResolver:
                     count_label=raw_obj.get("countLabel"),
                     synonyms=raw_obj.get("synonyms", []),
                     custom_extensions=_parse_extensions(raw_obj),
+                    external_concept_mappings=_parse_concept_mappings(
+                        raw_obj, f"dataObjects.{name}", prefixes, errors, source_map
+                    ),
                     refresh=_parse_refresh(raw_obj.get("refresh"), name, errors),
                     nested_in=_parse_nested_in(raw_obj.get("nestedIn")),
                 )
@@ -586,6 +774,9 @@ class ReferenceResolver:
                     owner=raw_dim.get("owner"),
                     synonyms=raw_dim.get("synonyms", []),
                     custom_extensions=_parse_extensions(raw_dim),
+                    external_concept_mappings=_parse_concept_mappings(
+                        raw_dim, f"dimensions.{name}", prefixes, errors, source_map
+                    ),
                 )
             except Exception as e:
                 span = source_map.get(f"dimensions.{name}") if source_map else None
@@ -796,6 +987,9 @@ class ReferenceResolver:
                     owner=raw_meas.get("owner"),
                     synonyms=raw_meas.get("synonyms", []),
                     custom_extensions=_parse_extensions(raw_meas),
+                    external_concept_mappings=_parse_concept_mappings(
+                        raw_meas, f"measures.{name}", prefixes, errors, source_map
+                    ),
                 )
             except Exception as e:
                 span = source_map.get(f"measures.{name}") if source_map else None
@@ -880,6 +1074,9 @@ class ReferenceResolver:
                         source_map,
                     )
                 metric_type = raw_metric.get("type", "derived")
+                concept_links = _parse_concept_mappings(
+                    raw_metric, f"metrics.{name}", prefixes, errors, source_map
+                )
 
                 if metric_type == MetricType.CUMULATIVE:
                     # Cumulative metric: validate measure reference exists
@@ -936,6 +1133,7 @@ class ReferenceResolver:
                         owner=raw_metric.get("owner"),
                         synonyms=raw_metric.get("synonyms", []),
                         custom_extensions=_parse_extensions(raw_metric),
+                        external_concept_mappings=concept_links,
                     )
                 elif metric_type == MetricType.PERIOD_OVER_PERIOD:
                     # Period-over-period metric: validate expression + PoP config.
@@ -1008,6 +1206,7 @@ class ReferenceResolver:
                         owner=raw_metric.get("owner"),
                         synonyms=raw_metric.get("synonyms", []),
                         custom_extensions=_parse_extensions(raw_metric),
+                        external_concept_mappings=concept_links,
                     )
                 elif metric_type == MetricType.WINDOW:
                     # Window metric (rank/lag/lead/ntile/first_value/last_value)
@@ -1065,6 +1264,7 @@ class ReferenceResolver:
                         owner=raw_metric.get("owner"),
                         synonyms=raw_metric.get("synonyms", []),
                         custom_extensions=_parse_extensions(raw_metric),
+                        external_concept_mappings=concept_links,
                     )
                 else:
                     # Derived metric (default). It may reference another derived
@@ -1093,6 +1293,7 @@ class ReferenceResolver:
                         owner=raw_metric.get("owner"),
                         synonyms=raw_metric.get("synonyms", []),
                         custom_extensions=_parse_extensions(raw_metric),
+                        external_concept_mappings=concept_links,
                     )
             except Exception as e:
                 span = source_map.get(f"metrics.{name}") if source_map else None
@@ -1192,6 +1393,10 @@ class ReferenceResolver:
             expose_counts=_expose_counts,
             count_label_pattern=_count_pattern,
             custom_extensions=_parse_extensions(raw, "", errors, source_map),
+            ontology=ontology,
+            external_concept_mappings=_parse_concept_mappings(
+                raw, "", prefixes, errors, source_map
+            ),
             settings=settings,
         )
 

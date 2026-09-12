@@ -42,6 +42,7 @@ OBSL-Core is not intended to represent:
 - window metric metadata (window function, offset, buckets, order direction, default value, `partitionBy`)
 - canonical example queries (`ModelExample` with name, description, query payload, intent tags)
 - vendor-keyed `CustomExtension` blocks attached to any modeling element (model, data object, column, dimension, measure, metric)
+- `ExternalConceptMapping` links from a model, data object, dimension, measure or metric to a concept in an external ontology (SKOS mapping relation plus provenance)
 - expression strings
 - labels, descriptions, and synonyms
 - SHACL validation shapes
@@ -62,8 +63,11 @@ Final prefixes:
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 @prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix obsl: <https://ralforion.com/ns/obsl#> .
 ```
+
+`skos:` is used only for the mapping predicates (`skos:exactMatch`, `skos:closeMatch`, `skos:broadMatch`, `skos:narrowMatch`, `skos:relatedMatch`) that link modeling elements to external concepts, and for `skos:Concept` as the range of `obsl:targetConcept`. External ontologies are referenced by IRI; OBSL never imports or restates them.
 
 The `obsl:` namespace is frozen for `OBSL-Core 0.2` as:
 - `https://ralforion.com/ns/obsl#`
@@ -266,6 +270,38 @@ Additional required:
 - `obsl:offsetGrain`
 - `obsl:comparison`
 
+### 5.10 ExternalConceptMapping
+Represents a qualified link from a modeling element to a concept in an external ontology (a corporate glossary, FIBO, schema.org). Descriptive metadata only: it never affects SQL planning or execution.
+
+The element itself is the subject of a direct SKOS mapping triple:
+
+```ttl
+<model#measure/Revenue> skos:exactMatch <https://ontology.example.com/business/NetRevenue> .
+```
+
+An `obsl:ExternalConceptMapping` resource is emitted alongside it when the mapping carries more than concept and relation.
+
+Required:
+- `obsl:sourceObject` — the modeled element (inverse of `obsl:hasExternalConceptMapping`)
+- `obsl:targetConcept` — the external concept as an absolute IRI (the authored compact IRI expanded with the model's `ontology.prefixes`)
+- `obsl:mappingRelation` — `exact`, `close`, `broader`, `narrower` or `related`
+
+Optional:
+- `obsl:authoredConcept` — the concept as written in OBML (compact or full IRI)
+- `obsl:mappingJustification` — `curated`, `imported`, `generated`, `inferred` or `lexical`
+- `obsl:mappingSource` — catalog, ontology or process the mapping comes from
+- `obsl:ontologyVersion` — version of the external ontology
+- `obsl:confidence` — decimal in [0, 1]
+- `obsl:mappingComment` — free-text note
+
+Direction: the relation reads source-first in the SKOS direction. `broader` (`skos:broadMatch`) means the external concept is the broader one, so the modeling element is a narrower notion of it; `narrower` (`skos:narrowMatch`) means the external concept is the narrower one.
+
+Cardinality:
+- exactly one `obsl:sourceObject`, `obsl:targetConcept` and `obsl:mappingRelation`
+- at most one of each optional property
+
+Domain of `obsl:hasExternalConceptMapping`: `obsl:SemanticModel`, `obsl:DataObject`, `obsl:Dimension`, `obsl:Measure`, `obsl:Metric`. Columns and joins are out of scope until the relation vocabulary can say *identifies* or *references* rather than *is*.
+
 ## 6. Expressions
 In `OBSL-Core 0.2`, the normative expression representation is:
 - `obsl:expressionSource`
@@ -378,6 +414,13 @@ Recommended practice:
 - `metrics` -> `obsl:hasMetric`
 - `description` -> `rdfs:comment`
 
+Any of model, data object, dimension, measure, metric:
+- `externalConceptMappings[]` -> `obsl:hasExternalConceptMapping` (plus a direct `skos:*Match` triple per entry)
+- `externalConceptMappings[].concept` -> `obsl:authoredConcept`; expanded with `ontology.prefixes` -> `obsl:targetConcept`
+- `externalConceptMappings[].relation` -> `obsl:mappingRelation` and the SKOS predicate: `exact` -> `skos:exactMatch`, `close` -> `skos:closeMatch`, `broader` -> `skos:broadMatch`, `narrower` -> `skos:narrowMatch`, `related` -> `skos:relatedMatch`
+- `externalConceptMappings[].justification` / `source` / `ontologyVersion` / `confidence` / `comment` -> `obsl:mappingJustification` / `obsl:mappingSource` / `obsl:ontologyVersion` / `obsl:confidence` / `obsl:mappingComment`
+- `ontology.prefixes` -> namespace bindings of the exported graph (not described as triples)
+
 ### 10.2 Data Objects
 - `code` -> `obsl:code`
 - `database` -> `obsl:database`
@@ -467,6 +510,7 @@ Properties constrained to at most one value are declared `owl:FunctionalProperty
 - Expression: `obsl:expressionSource`, `obsl:filterExpression`
 - Cumulative: `obsl:cumulativeType`, `obsl:window`, `obsl:grainToDate`
 - Period-over-period: `obsl:offset`, `obsl:offsetGrain`, `obsl:comparison`
+- External concept mapping: `obsl:sourceObject`, `obsl:targetConcept`, `obsl:authoredConcept`, `obsl:mappingRelation`, `obsl:mappingJustification`, `obsl:mappingSource`, `obsl:ontologyVersion`, `obsl:confidence`, `obsl:mappingComment`
 
 This mirrors the `sh:maxCount 1` constraints in SHACL but at the ontology level, enabling OWL-aware tools to enforce cardinality without loading the SHACL shapes.
 
@@ -531,6 +575,7 @@ Core object properties:
 - `obsl:referencesMeasure`
 - `obsl:timeDimension`
 - `obsl:belongsToModel` (inverse of `obsl:hasDataObject`)
+- `obsl:hasExternalConceptMapping`, `obsl:sourceObject` (functional, inverse of `obsl:hasExternalConceptMapping`), `obsl:targetConcept` (functional)
 
 Core datatype properties:
 - `obsl:code` (functional)

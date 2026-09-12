@@ -60,6 +60,12 @@ enums:
   WindowFunctionKind:
     python: orionbelt.models.semantic.WindowFunctionKind
     values: ['rank', 'dense_rank', 'row_number', 'ntile', 'lag', 'lead', 'first_value', 'last_value']
+  ExternalConceptRelation:
+    python: orionbelt.models.semantic.ExternalConceptRelation
+    values: ['exact', 'close', 'broader', 'narrower', 'related']
+  MappingJustification:
+    python: orionbelt.models.semantic.MappingJustification
+    values: ['curated', 'imported', 'generated', 'inferred', 'lexical']
 
 classes:
   CustomExtension:
@@ -179,6 +185,12 @@ classes:
         json_schema: true
         ontology_property: null
         osi_roundtrip: true
+      external_concept_mappings:
+        alias: externalConceptMappings
+        type: "list[ExternalConceptMapping]"
+        json_schema: true
+        ontology_property: hasExternalConceptMapping
+        osi_roundtrip: false
       refresh:
         alias: refresh
         type: "RefreshPolicy | None"
@@ -420,6 +432,65 @@ classes:
         json_schema: true
         ontology_property: null
         osi_roundtrip: true
+      external_concept_mappings:
+        alias: externalConceptMappings
+        type: "list[ExternalConceptMapping]"
+        json_schema: true
+        ontology_property: hasExternalConceptMapping
+        osi_roundtrip: false
+  ExternalConceptMapping:
+    python: orionbelt.models.semantic.ExternalConceptMapping
+    json_schema_def: externalConceptMapping
+    ontology_class: ExternalConceptMapping
+    fields:
+      concept:
+        alias: concept
+        type: "str"
+        json_schema: true
+        ontology_property: authoredConcept
+        osi_roundtrip: false
+      expanded_iri:
+        alias: expandedIri
+        type: "str | None"
+        json_schema: false
+        ontology_property: targetConcept
+        osi_roundtrip: false
+      relation:
+        alias: relation
+        type: "ExternalConceptRelation"
+        json_schema: true
+        ontology_property: mappingRelation
+        osi_roundtrip: false
+      justification:
+        alias: justification
+        type: "MappingJustification | None"
+        json_schema: true
+        ontology_property: mappingJustification
+        osi_roundtrip: false
+      source:
+        alias: source
+        type: "str | None"
+        json_schema: true
+        ontology_property: mappingSource
+        osi_roundtrip: false
+      ontology_version:
+        alias: ontologyVersion
+        type: "str | None"
+        json_schema: true
+        ontology_property: ontologyVersion
+        osi_roundtrip: false
+      confidence:
+        alias: confidence
+        type: "float | None"
+        json_schema: true
+        ontology_property: confidence
+        osi_roundtrip: false
+      comment:
+        alias: comment
+        type: "str | None"
+        json_schema: true
+        ontology_property: mappingComment
+        osi_roundtrip: false
   FilterContext:
     python: orionbelt.models.semantic.FilterContext
     json_schema_def: filterContext
@@ -684,6 +755,12 @@ classes:
         json_schema: true
         ontology_property: null
         osi_roundtrip: true
+      external_concept_mappings:
+        alias: externalConceptMappings
+        type: "list[ExternalConceptMapping]"
+        json_schema: true
+        ontology_property: hasExternalConceptMapping
+        osi_roundtrip: false
   MeasureFilter:
     python: orionbelt.models.semantic.MeasureFilter
     json_schema_def: filter
@@ -863,6 +940,12 @@ classes:
         json_schema: true
         ontology_property: null
         osi_roundtrip: true
+      external_concept_mappings:
+        alias: externalConceptMappings
+        type: "list[ExternalConceptMapping]"
+        json_schema: true
+        ontology_property: hasExternalConceptMapping
+        osi_roundtrip: false
   ModelExample:
     python: orionbelt.models.semantic.ModelExample
     json_schema_pointer: properties/examples/items
@@ -980,6 +1063,17 @@ classes:
         json_schema: true
         ontology_property: null
         osi_roundtrip: true
+  OntologyConfig:
+    python: orionbelt.models.semantic.OntologyConfig
+    json_schema_def: ontologyConfig
+    ontology_class: null
+    fields:
+      prefixes:
+        alias: prefixes
+        type: "dict[str, str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: false
   PeriodOverPeriod:
     python: orionbelt.models.semantic.PeriodOverPeriod
     json_schema_def: periodOverPeriod
@@ -1151,6 +1245,18 @@ classes:
         json_schema: true
         ontology_property: null
         osi_roundtrip: true
+      ontology:
+        alias: ontology
+        type: "OntologyConfig | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: false
+      external_concept_mappings:
+        alias: externalConceptMappings
+        type: "list[ExternalConceptMapping]"
+        json_schema: true
+        ontology_property: hasExternalConceptMapping
+        osi_roundtrip: false
   WithinGroup:
     python: orionbelt.models.semantic.WithinGroup
     json_schema_pointer: definitions/measure/properties/withinGroup
