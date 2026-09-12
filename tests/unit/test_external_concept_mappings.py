@@ -670,6 +670,27 @@ class TestInheritsMerge:
         _, result = ReferenceResolver().resolve(merged)
         assert _codes(result.errors) == ["ONTOLOGY_PARSE_ERROR"]
 
+    @pytest.mark.parametrize("bad_block", ["ontology: []\n", "ontology:\n  prefixes: [corp]\n"])
+    def test_malformed_fragment_ontology_is_a_merge_error(self, bad_block: str) -> None:
+        """A fragment's block is never copied whole, so it cannot be left to the resolver."""
+        base_raw, _ = TrackedLoader().load_string(_BASE)
+        fragment = "version: 1.0\n" + bad_block
+        with pytest.raises(MergeError) as exc:
+            ExtendsMerger().merge_from_strings(base_raw, [fragment])
+        assert exc.value.code == "ONTOLOGY_PARSE_ERROR"
+        child_raw, _ = TrackedLoader().load_string(fragment)
+        with pytest.raises(MergeError) as exc:
+            ExtendsMerger().merge_from_strings(child_raw, inherits_raw=base_raw)
+        assert exc.value.code == "ONTOLOGY_PARSE_ERROR"
+
+    def test_empty_fragment_ontology_is_fine(self) -> None:
+        base_raw, _ = TrackedLoader().load_string(_BASE)
+        merged, warnings = ExtendsMerger().merge_from_strings(
+            base_raw, ["version: 1.0\nontology: {}\n", "version: 1.0\nontology:\n  prefixes: {}\n"]
+        )
+        assert warnings == []
+        assert merged["ontology"]["prefixes"]["corp"] == CORP
+
     def test_child_rebinding_a_parent_prefix_is_an_error(self) -> None:
         parent_raw, _ = TrackedLoader().load_string(_BASE)
         child_raw, _ = TrackedLoader().load_string(

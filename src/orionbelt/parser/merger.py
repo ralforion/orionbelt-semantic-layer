@@ -344,12 +344,26 @@ class ExtendsMerger:
         ``https://child.example/Base`` because a later file reused ``corp``.
         """
         src_ontology = source.get("ontology")
-        src_prefixes = src_ontology.get("prefixes") if isinstance(src_ontology, dict) else None
-        if not isinstance(src_prefixes, dict) or not src_prefixes:
+        if src_ontology is None:
             return
-        # A malformed block on either side (``ontology: []``, ``prefixes: [..]``)
-        # is left exactly as authored: the resolver reports it as
-        # ONTOLOGY_PARSE_ERROR with a source span, which is better than
+        src_prefixes = src_ontology.get("prefixes") if isinstance(src_ontology, dict) else None
+        if not isinstance(src_ontology, dict) or (
+            src_prefixes is not None and not isinstance(src_prefixes, dict)
+        ):
+            # The fragment's block is not copied into the merged document (only
+            # its prefixes are), so a malformed one would vanish without a
+            # trace if it were skipped here. Refuse the merge instead; the
+            # resolver never sees fragment sources, so this is the only place
+            # that can name the file.
+            raise MergeError(
+                "ONTOLOGY_PARSE_ERROR",
+                f"'ontology' in '{origin}' must be a mapping with a 'prefixes' mapping",
+            )
+        if not src_prefixes:
+            return
+        # A malformed block on the target side (``ontology: []``,
+        # ``prefixes: [..]``) is left exactly as authored: the resolver reports
+        # it as ONTOLOGY_PARSE_ERROR with a source span, which is better than
         # anything the merger could say about it. Nothing is merged into it.
         tgt_ontology = target.get("ontology")
         if tgt_ontology is None:
