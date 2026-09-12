@@ -683,6 +683,39 @@ class TestInheritsMerge:
             ExtendsMerger().merge_from_strings(child_raw, inherits_raw=base_raw)
         assert exc.value.code == "ONTOLOGY_PARSE_ERROR"
 
+    @pytest.mark.parametrize(
+        "bad_block",
+        [
+            "ontology:\n  prefix: {}\n",
+            f"ontology:\n  prefixes:\n    corp: '{CORP}'\n  imports: []\n",
+        ],
+        ids=["typo", "extra-key"],
+    )
+    def test_unknown_key_in_fragment_ontology_is_a_merge_error(self, bad_block: str) -> None:
+        """Fragments are as strict as a top-level block: only ``prefixes`` is read from them."""
+        base_raw, _ = TrackedLoader().load_string(_BASE)
+        fragment = "version: 1.0\n" + bad_block
+        with pytest.raises(MergeError) as exc:
+            ExtendsMerger().merge_from_strings(base_raw, [fragment])
+        assert exc.value.code == "UNKNOWN_PROPERTY"
+        child_raw, _ = TrackedLoader().load_string(fragment)
+        with pytest.raises(MergeError) as exc:
+            ExtendsMerger().merge_from_strings(child_raw, inherits_raw=base_raw)
+        assert exc.value.code == "UNKNOWN_PROPERTY"
+
+    @pytest.mark.parametrize("bad_value", ["{}", "corp:Thing", "{concept: corp:Thing}"])
+    def test_non_list_fragment_mappings_are_a_merge_error(self, bad_value: str) -> None:
+        """``externalConceptMappings: {}`` on a fragment used to be dropped as falsy."""
+        base_raw, _ = TrackedLoader().load_string(_BASE)
+        fragment = f"version: 1.0\nexternalConceptMappings: {bad_value}\n"
+        with pytest.raises(MergeError) as exc:
+            ExtendsMerger().merge_from_strings(base_raw, [fragment])
+        assert exc.value.code == "INVALID_CONCEPT_MAPPING"
+        child_raw, _ = TrackedLoader().load_string(fragment)
+        with pytest.raises(MergeError) as exc:
+            ExtendsMerger().merge_from_strings(child_raw, inherits_raw=base_raw)
+        assert exc.value.code == "INVALID_CONCEPT_MAPPING"
+
     def test_empty_fragment_ontology_is_fine(self) -> None:
         base_raw, _ = TrackedLoader().load_string(_BASE)
         merged, warnings = ExtendsMerger().merge_from_strings(

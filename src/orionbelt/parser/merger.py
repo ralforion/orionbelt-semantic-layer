@@ -9,9 +9,17 @@ from typing import Any
 
 import yaml
 
+from orionbelt.models.semantic import OntologyConfig
+
 logger = logging.getLogger("orionbelt.parser.merger")
 
 MAX_EXTENDS_DEPTH = 5
+
+
+# Keys a fragment's ``ontology`` block may carry, from the model it becomes.
+_ONTOLOGY_KEYS = frozenset(OntologyConfig.model_fields)
+# Origin label for the child side of an ``inherits`` merge in error messages.
+_INHERITING_MODEL = "inheriting model"
 
 
 class MergeError(Exception):
@@ -279,15 +287,21 @@ class ExtendsMerger:
         if parent_filters or child_filters:
             merged["filters"] = parent_filters + child_filters
 
-        # customExtensions / externalConceptMappings: concatenate
-        for list_key in ("customExtensions", "externalConceptMappings"):
-            parent_items = list(merged.get(list_key) or [])
-            child_items = list(child.get(list_key) or [])
-            if parent_items or child_items:
-                merged[list_key] = parent_items + child_items
+        # customExtensions: concatenate
+        parent_exts = list(merged.get("customExtensions") or [])
+        child_exts = list(child.get("customExtensions") or [])
+        if parent_exts or child_exts:
+            merged["customExtensions"] = parent_exts + child_exts
+
+        # externalConceptMappings: concatenate (the child's are type-checked,
+        # see _fragment_mappings)
+        parent_links = list(merged.get("externalConceptMappings") or [])
+        child_links = self._fragment_mappings(child, _INHERITING_MODEL)
+        if parent_links or child_links:
+            merged["externalConceptMappings"] = parent_links + child_links
 
         # ontology.prefixes: union; a rebinding is an error, see _merge_prefixes
-        self._merge_prefixes(merged, child, origin)
+        self._merge_prefixes(merged, child, _INHERITING_MODEL)
 
         # Owner: child wins if present
         if child.get("owner"):
@@ -317,11 +331,15 @@ class ExtendsMerger:
                     warnings.append(f"{key[:-1].title()} '{name}' overridden by '{origin}'")
                 tgt_section[name] = defn
 
-        # customExtensions / externalConceptMappings: concatenate lists
-        for list_key in ("customExtensions", "externalConceptMappings"):
-            src_items = source.get(list_key)
-            if src_items:
-                target.setdefault(list_key, []).extend(src_items)
+        # customExtensions: concatenate lists
+        src_exts = source.get("customExtensions")
+        if src_exts:
+            target.setdefault("customExtensions", []).extend(src_exts)
+
+        # externalConceptMappings: concatenate lists (type-checked first)
+        src_links = ExtendsMerger._fragment_mappings(source, origin)
+        if src_links:
+            target.setdefault("externalConceptMappings", []).extend(src_links)
 
         ExtendsMerger._merge_prefixes(target, source, origin)
 
@@ -330,6 +348,24 @@ class ExtendsMerger:
             target["description"] = source["description"]
 
         return warnings
+
+    @staticmethod
+    def _fragment_mappings(source: dict[str, Any], origin: str) -> list[Any]:
+        """A fragment's model-level ``externalConceptMappings``, or a MergeError.
+
+        Only a list can be concatenated into the target; anything else
+        (``externalConceptMappings: {}``) would otherwise be dropped here
+        without the resolver ever seeing it.
+        """
+        items = source.get("externalConceptMappings")
+        if items is None:
+            return []
+        if not isinstance(items, list):
+            raise MergeError(
+                "INVALID_CONCEPT_MAPPING",
+                f"'externalConceptMappings' in '{origin}' must be a list of mapping entries",
+            )
+        return items
 
     @staticmethod
     def _merge_prefixes(target: dict[str, Any], source: dict[str, Any], origin: str) -> None:
@@ -359,6 +395,14 @@ class ExtendsMerger:
                 "ONTOLOGY_PARSE_ERROR",
                 f"'ontology' in '{origin}' must be a mapping with a 'prefixes' mapping",
             )
+        # Same strictness as the resolver's UNKNOWN_PROPERTY check on a
+        # top-level block: a typo in a fragment must not pass because only
+        # ``prefixes`` is ever read from it.
+        for key in src_ontology:
+            if key not in _ONTOLOGY_KEYS:
+                raise MergeError(
+                    "UNKNOWN_PROPERTY", f"Unknown property '{key}' at ontology in '{origin}'"
+                )
         if not src_prefixes:
             return
         # A malformed block on the target side (``ontology: []``,
