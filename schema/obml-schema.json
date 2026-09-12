@@ -92,6 +92,13 @@
             "$ref": "#/definitions/customExtension"
           }
         },
+        "externalConceptMappings": {
+          "type": "array",
+          "description": "Links to concepts in external ontologies (SKOS-style, descriptive only)",
+          "items": {
+            "$ref": "#/definitions/externalConceptMapping"
+          }
+        },
         "refresh": {
           "type": "object",
           "description": "Freshness contract for the physical table this dataObject maps to. Drives result-cache TTL composition and heartbeat invalidation. See PLAN_freshness_driven_cache.md \u00a75.",
@@ -542,6 +549,13 @@
           "items": {
             "$ref": "#/definitions/customExtension"
           }
+        },
+        "externalConceptMappings": {
+          "type": "array",
+          "description": "Links to concepts in external ontologies (SKOS-style, descriptive only)",
+          "items": {
+            "$ref": "#/definitions/externalConceptMapping"
+          }
         }
       },
       "required": [
@@ -796,6 +810,13 @@
           "items": {
             "$ref": "#/definitions/customExtension"
           }
+        },
+        "externalConceptMappings": {
+          "type": "array",
+          "description": "Links to concepts in external ontologies (SKOS-style, descriptive only)",
+          "items": {
+            "$ref": "#/definitions/externalConceptMapping"
+          }
         }
       },
       "required": [
@@ -985,6 +1006,13 @@
           "items": {
             "$ref": "#/definitions/customExtension"
           }
+        },
+        "externalConceptMappings": {
+          "type": "array",
+          "description": "Links to concepts in external ontologies (SKOS-style, descriptive only)",
+          "items": {
+            "$ref": "#/definitions/externalConceptMapping"
+          }
         }
       },
       "allOf": [
@@ -1090,6 +1118,87 @@
         "dataObject",
         "column"
       ],
+      "additionalProperties": false
+    },
+    "externalConceptRelation": {
+      "type": "string",
+      "description": "SKOS mapping relation, read artifact-first: exact (skos:exactMatch), close (skos:closeMatch), broader (skos:broadMatch: the external concept is the broader one), narrower (skos:narrowMatch: the external concept is the narrower one), related (skos:relatedMatch).",
+      "enum": [
+        "exact",
+        "close",
+        "broader",
+        "narrower",
+        "related"
+      ]
+    },
+    "mappingJustification": {
+      "type": "string",
+      "description": "How the mapping came to exist: curated (human decision), imported (from another catalog or format), generated or inferred (by tooling), lexical (name match only).",
+      "enum": [
+        "curated",
+        "imported",
+        "generated",
+        "inferred",
+        "lexical"
+      ]
+    },
+    "externalConceptMapping": {
+      "type": "object",
+      "description": "A qualified link from an OBML artifact to a concept in an external ontology. Descriptive metadata only: it never changes SQL, execution, cache keys or join selection.",
+      "properties": {
+        "concept": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The external concept: a compact IRI (prefix:LocalName, expanded with ontology.prefixes or a built-in prefix) or a full IRI (https://... or urn:...). Blank nodes and relative references are rejected at load."
+        },
+        "relation": {
+          "$ref": "#/definitions/externalConceptRelation",
+          "description": "Required. How the artifact relates to the concept; there is no implicit exact."
+        },
+        "justification": {
+          "$ref": "#/definitions/mappingJustification"
+        },
+        "source": {
+          "type": "string",
+          "description": "Where the mapping comes from (a catalog, ontology or process name)"
+        },
+        "ontologyVersion": {
+          "type": "string",
+          "description": "Version of the external ontology the concept was taken from"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence in the mapping, 0 to 1"
+        },
+        "comment": {
+          "type": "string",
+          "description": "Free-text note (approval, caveat, rationale)"
+        }
+      },
+      "required": [
+        "concept",
+        "relation"
+      ],
+      "additionalProperties": false
+    },
+    "ontologyConfig": {
+      "type": "object",
+      "description": "Ontology settings for the model: the prefixes that compact concept IRIs expand with. rdf, rdfs, owl, skos and xsd are built in and cannot be bound to another namespace.",
+      "properties": {
+        "prefixes": {
+          "type": "object",
+          "description": "Prefix name to absolute namespace IRI (e.g. corp: https://ontology.example.com/business/)",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
       "additionalProperties": false
     }
   },
@@ -1328,11 +1437,22 @@
       },
       "additionalProperties": false
     },
+    "ontology": {
+      "$ref": "#/definitions/ontologyConfig",
+      "description": "Ontology settings (prefixes for compact concept IRIs)"
+    },
     "customExtensions": {
       "type": "array",
       "description": "Vendor-keyed extension data at model level",
       "items": {
         "$ref": "#/definitions/customExtension"
+      }
+    },
+    "externalConceptMappings": {
+      "type": "array",
+      "description": "Links from the model as a whole to concepts in external ontologies",
+      "items": {
+        "$ref": "#/definitions/externalConceptMapping"
       }
     }
   },

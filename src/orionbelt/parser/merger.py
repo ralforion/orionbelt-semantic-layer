@@ -9,9 +9,17 @@ from typing import Any
 
 import yaml
 
+from orionbelt.models.semantic import OntologyConfig
+
 logger = logging.getLogger("orionbelt.parser.merger")
 
 MAX_EXTENDS_DEPTH = 5
+
+
+# Keys a fragment's ``ontology`` block may carry, from the model it becomes.
+_ONTOLOGY_KEYS = frozenset(OntologyConfig.model_fields)
+# Origin label for the child side of an ``inherits`` merge in error messages.
+_INHERITING_MODEL = "inheriting model"
 
 
 class MergeError(Exception):
@@ -285,6 +293,16 @@ class ExtendsMerger:
         if parent_exts or child_exts:
             merged["customExtensions"] = parent_exts + child_exts
 
+        # externalConceptMappings: concatenate (the child's are type-checked,
+        # see _fragment_mappings)
+        parent_links = list(merged.get("externalConceptMappings") or [])
+        child_links = self._fragment_mappings(child, _INHERITING_MODEL)
+        if parent_links or child_links:
+            merged["externalConceptMappings"] = parent_links + child_links
+
+        # ontology.prefixes: union; a rebinding is an error, see _merge_prefixes
+        self._merge_prefixes(merged, child, _INHERITING_MODEL)
+
         # Owner: child wins if present
         if child.get("owner"):
             merged["owner"] = child["owner"]
@@ -318,8 +336,96 @@ class ExtendsMerger:
         if src_exts:
             target.setdefault("customExtensions", []).extend(src_exts)
 
+        # externalConceptMappings: concatenate lists (type-checked first)
+        src_links = ExtendsMerger._fragment_mappings(source, origin)
+        if src_links:
+            target.setdefault("externalConceptMappings", []).extend(src_links)
+
+        ExtendsMerger._merge_prefixes(target, source, origin)
+
         # description: last non-None wins
         if source.get("description"):
             target["description"] = source["description"]
 
         return warnings
+
+    @staticmethod
+    def _fragment_mappings(source: dict[str, Any], origin: str) -> list[Any]:
+        """A fragment's model-level ``externalConceptMappings``, or a MergeError.
+
+        Only a list can be concatenated into the target; anything else
+        (``externalConceptMappings: {}``) would otherwise be dropped here
+        without the resolver ever seeing it.
+        """
+        items = source.get("externalConceptMappings")
+        if items is None:
+            return []
+        if not isinstance(items, list):
+            raise MergeError(
+                "INVALID_CONCEPT_MAPPING",
+                f"'externalConceptMappings' in '{origin}' must be a list of mapping entries",
+            )
+        return items
+
+    @staticmethod
+    def _merge_prefixes(target: dict[str, Any], source: dict[str, Any], origin: str) -> None:
+        """Union ``source``'s ``ontology.prefixes`` into ``target``.
+
+        A fragment's compact concept IRIs expand with the prefixes the
+        fragment declares, so they have to survive the merge. But every
+        mapping in the merged document expands against one prefix map, so
+        rebinding a name that is already bound would silently rewrite the
+        other fragment's mappings to a different namespace. That is an
+        error, not a warning: ``corp:Base`` must not become
+        ``https://child.example/Base`` because a later file reused ``corp``.
+        """
+        src_ontology = source.get("ontology")
+        if src_ontology is None:
+            return
+        src_prefixes = src_ontology.get("prefixes") if isinstance(src_ontology, dict) else None
+        if not isinstance(src_ontology, dict) or (
+            src_prefixes is not None and not isinstance(src_prefixes, dict)
+        ):
+            # The fragment's block is not copied into the merged document (only
+            # its prefixes are), so a malformed one would vanish without a
+            # trace if it were skipped here. Refuse the merge instead; the
+            # resolver never sees fragment sources, so this is the only place
+            # that can name the file.
+            raise MergeError(
+                "ONTOLOGY_PARSE_ERROR",
+                f"'ontology' in '{origin}' must be a mapping with a 'prefixes' mapping",
+            )
+        # Same strictness as the resolver's UNKNOWN_PROPERTY check on a
+        # top-level block: a typo in a fragment must not pass because only
+        # ``prefixes`` is ever read from it.
+        for key in src_ontology:
+            if key not in _ONTOLOGY_KEYS:
+                raise MergeError(
+                    "UNKNOWN_PROPERTY", f"Unknown property '{key}' at ontology in '{origin}'"
+                )
+        if not src_prefixes:
+            return
+        # A malformed block on the target side (``ontology: []``,
+        # ``prefixes: [..]``) is left exactly as authored: the resolver reports
+        # it as ONTOLOGY_PARSE_ERROR with a source span, which is better than
+        # anything the merger could say about it. Nothing is merged into it.
+        tgt_ontology = target.get("ontology")
+        if tgt_ontology is None:
+            tgt_ontology = target["ontology"] = {}
+        if not isinstance(tgt_ontology, dict):
+            return
+        tgt_prefixes = tgt_ontology.get("prefixes")
+        if tgt_prefixes is None:
+            tgt_prefixes = tgt_ontology["prefixes"] = {}
+        if not isinstance(tgt_prefixes, dict):
+            return
+        for name, namespace in src_prefixes.items():
+            bound = tgt_prefixes.get(name)
+            if bound is not None and bound != namespace:
+                raise MergeError(
+                    "ONTOLOGY_PREFIX_CONFLICT",
+                    f"Ontology prefix '{name}' is bound to <{bound}> and '{origin}' binds it "
+                    f"to <{namespace}>; a prefix must expand to one namespace across all "
+                    "merged fragments",
+                )
+            tgt_prefixes[name] = namespace

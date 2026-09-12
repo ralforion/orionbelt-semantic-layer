@@ -21,6 +21,19 @@ from osi_orionbelt._common import (
 )
 
 
+def _stash_concept_links(
+    obml_obj: dict, extras: dict, key: str = "obml_external_concept_mappings"
+) -> None:
+    """Copy an OBML object's ``externalConceptMappings`` into an extras payload.
+
+    The links have no OSI slot; they ride in the OBSL-vendor extension of
+    the entity the object became and are restored verbatim on the way back.
+    """
+    links = obml_obj.get("externalConceptMappings")
+    if links:
+        extras[key] = links
+
+
 class OBMLtoOSI:
     """Convert an OBML semantic model YAML to OSI format."""
 
@@ -114,6 +127,12 @@ class OBMLtoOSI:
         count_label_pattern = self.obml.get("countLabelPattern")
         if count_label_pattern is not None:
             roundtrip_data["obml_count_label_pattern"] = count_label_pattern
+        # Ontology prefixes and model-level external concept links. OSI has
+        # no slot for either, and the links are only meaningful together with
+        # the prefixes their compact IRIs expand with.
+        if self.obml.get("ontology"):
+            roundtrip_data["obml_ontology"] = self.obml["ontology"]
+        _stash_concept_links(self.obml, roundtrip_data)
         sem_model["custom_extensions"] = [
             {
                 "vendor_name": _VENDOR_OBML,
@@ -266,6 +285,7 @@ class OBMLtoOSI:
         # object into a table with an empty name.
         if do_obj.get("nestedIn"):
             do_extras["obml_nested_in"] = do_obj["nestedIn"]
+        _stash_concept_links(do_obj, do_extras)
         if do_extras:
             ds_exts = dataset.setdefault("custom_extensions", [])
             ds_exts.append(
@@ -440,6 +460,7 @@ class OBMLtoOSI:
                     ext_data["obml_dimension_synonyms"] = dim_obj["synonyms"]
                 if dim_obj.get("customExtensions"):
                     ext_data["obml_dimension_custom_extensions"] = dim_obj["customExtensions"]
+                _stash_concept_links(dim_obj, ext_data, "obml_dimension_external_concept_mappings")
             else:
                 descriptor: dict[str, Any] = {"name": _dim_name}
                 for prop in ("resultType", "timeGrain", "format", "description", "owner", "via"):
@@ -451,6 +472,7 @@ class OBMLtoOSI:
                     descriptor["synonyms"] = dim_obj["synonyms"]
                 if dim_obj.get("customExtensions"):
                     descriptor["customExtensions"] = dim_obj["customExtensions"]
+                _stash_concept_links(dim_obj, descriptor, "externalConceptMappings")
                 extra_dims.append(descriptor)
         if extra_dims:
             ext_data["obml_extra_dimensions"] = extra_dims
@@ -587,6 +609,7 @@ class OBMLtoOSI:
         for measure_name, measure_obj in obml_measures.items():
             osi_metric = self._convert_measure(measure_name, measure_obj, data_objects)
             if osi_metric:
+                self._carry_concept_links_to_osi_metric(measure_obj, osi_metric)
                 self._carry_foreign_to_osi_metric(measure_obj, osi_metric)
                 self._emit_osi_metric_datatype(measure_obj, osi_metric)
                 osi_metrics.append(osi_metric)
@@ -610,11 +633,38 @@ class OBMLtoOSI:
                     metric_name, metric_obj, obml_measures, data_objects
                 )
             if osi_metric:
+                self._carry_concept_links_to_osi_metric(metric_obj, osi_metric)
                 self._carry_foreign_to_osi_metric(metric_obj, osi_metric)
                 self._emit_osi_metric_datatype(metric_obj, osi_metric)
                 osi_metrics.append(osi_metric)
 
         return osi_metrics
+
+    @staticmethod
+    def _carry_concept_links_to_osi_metric(obml_obj: dict, osi_metric: dict) -> None:
+        """Stash an OBML measure/metric's ``externalConceptMappings`` on the OSI metric.
+
+        Every conversion path emits at most one OBSL-vendor extension per
+        metric, and the reverse direction reads only the first one it finds,
+        so the links are merged into that payload rather than appended as a
+        second extension.
+        """
+        links = obml_obj.get("externalConceptMappings")
+        if not links:
+            return
+        exts = osi_metric.setdefault("custom_extensions", [])
+        for ext in exts:
+            if ext.get("vendor_name") == _VENDOR_OBML:
+                data = json.loads(ext.get("data") or "{}")
+                data["obml_external_concept_mappings"] = links
+                ext["data"] = json.dumps(data)
+                return
+        exts.append(
+            {
+                "vendor_name": _VENDOR_OBML,
+                "data": json.dumps({"obml_external_concept_mappings": links}),
+            }
+        )
 
     def _carry_foreign_to_osi_metric(self, obml_obj: dict, osi_metric: dict) -> None:
         """Re-emit third-party vendor extensions on an OBML measure/metric to

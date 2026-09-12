@@ -544,3 +544,77 @@ obsl:WithinGroupShape a sh:NodeShape ;
         sh:message "WithinGroup order must be exactly one of 'ASC' or 'DESC'."
     ] .
 
+# -----------------------------------------------------------------------------
+# ExternalConceptMapping --- link to a concept in an external ontology
+# -----------------------------------------------------------------------------
+
+obsl:ExternalConceptMappingShape a sh:NodeShape ;
+    sh:targetClass obsl:ExternalConceptMapping ;
+    rdfs:label "OBSL External Concept Mapping Shape" ;
+    rdfs:comment "Validates that every external concept mapping names exactly one absolute target IRI and one SKOS mapping relation, and that its provenance fields are single-valued." ;
+    sh:property [
+        sh:path obsl:sourceObject ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+        sh:name "source object" ;
+        sh:message "Every ExternalConceptMapping must point back at exactly one modeled element via obsl:sourceObject."
+    ] ;
+    sh:property [
+        sh:path obsl:targetConcept ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+        sh:name "target concept" ;
+        sh:message "Every ExternalConceptMapping must have exactly one obsl:targetConcept, an absolute IRI."
+    ] ;
+    sh:property [
+        sh:path obsl:authoredConcept ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "authored concept"
+    ] ;
+    sh:property [
+        sh:path obsl:mappingRelation ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:in ( "exact" "close" "broader" "narrower" "related" ) ;
+        sh:name "mapping relation" ;
+        sh:message "ExternalConceptMapping relation must be exactly one of 'exact', 'close', 'broader', 'narrower' or 'related'."
+    ] ;
+    sh:property [
+        sh:path obsl:mappingJustification ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:in ( "curated" "imported" "generated" "inferred" "lexical" ) ;
+        sh:name "mapping justification" ;
+        sh:message "ExternalConceptMapping justification must be one of 'curated', 'imported', 'generated', 'inferred' or 'lexical'."
+    ] ;
+    sh:property [
+        sh:path obsl:mappingSource ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "mapping source"
+    ] ;
+    sh:property [
+        sh:path obsl:ontologyVersion ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "ontology version"
+    ] ;
+    sh:property [
+        sh:path obsl:confidence ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:decimal ;
+        sh:minInclusive 0 ;
+        sh:maxInclusive 1 ;
+        sh:name "confidence" ;
+        sh:message "ExternalConceptMapping confidence must be a decimal between 0 and 1."
+    ] ;
+    sh:property [
+        sh:path obsl:mappingComment ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "mapping comment"
+    ] .

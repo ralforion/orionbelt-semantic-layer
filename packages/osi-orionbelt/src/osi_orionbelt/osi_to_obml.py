@@ -73,6 +73,22 @@ _FLOAT_RESULT_AGGS = frozenset(
 )
 
 
+def _restore_concept_links(
+    extras: dict, target: dict, key: str = "obml_external_concept_mappings"
+) -> None:
+    """Put stashed ``externalConceptMappings`` back on an OBML object.
+
+    Extension data is opaque to ``validate_osi``, so a foreign payload may
+    put anything under the key: only a list of mappings is accepted, and
+    only its mapping-shaped entries. The OBML parser validates the rest.
+    """
+    links = extras.get(key)
+    if isinstance(links, list):
+        clean = [entry for entry in links if isinstance(entry, dict)]
+        if clean:
+            target["externalConceptMappings"] = clean
+
+
 class OSItoOBML:
     """Convert an OSI semantic model YAML to OBML format."""
 
@@ -233,6 +249,9 @@ class OSItoOBML:
                         obml["exposeCounts"] = ext_data["obml_expose_counts"]
                     if ext_data.get("obml_count_label_pattern") is not None:
                         obml["countLabelPattern"] = ext_data["obml_count_label_pattern"]
+                    if isinstance(ext_data.get("obml_ontology"), dict):
+                        obml["ontology"] = ext_data["obml_ontology"]
+                    _restore_concept_links(ext_data, obml)
                 except (json.JSONDecodeError, TypeError):
                     pass
                 break
@@ -365,6 +384,7 @@ class OSItoOBML:
                         do["countLabel"] = ext_data["obml_count_label"]
                     if ext_data.get("obml_nested_in"):
                         do["nestedIn"] = ext_data["obml_nested_in"]
+                    _restore_concept_links(ext_data, do)
                 except (json.JSONDecodeError, TypeError):
                     pass
                 break
@@ -726,6 +746,9 @@ class OSItoOBML:
                                 clean_exts = [e for e in _exts if isinstance(e, dict)]
                                 if clean_exts:
                                     dim_def["customExtensions"] = clean_exts
+                            _restore_concept_links(
+                                ext_data, dim_def, "obml_dimension_external_concept_mappings"
+                            )
                             # Additional dimensions over the same column, preserved
                             # by the export because OSI has no slot for them.
                             _extras = ext_data.get("obml_extra_dimensions")
@@ -776,6 +799,7 @@ class OSItoOBML:
                         clean_exts = [e for e in exts if isinstance(e, dict)]
                         if clean_exts:
                             extra_def["customExtensions"] = clean_exts
+                    _restore_concept_links(desc, extra_def, "externalConceptMappings")
                     self._insert_dimension(dimensions, ds_name, dname, extra_def)
         return dimensions
 
@@ -1003,6 +1027,8 @@ class OSItoOBML:
             target = metrics.get(m["name"]) or measures.get(m["name"])
             if target is not None:
                 self._carry_foreign_extensions(m.get("custom_extensions"), target)
+                # External concept links, whichever OBML entity the metric became.
+                _restore_concept_links(self._extract_obml_extras(m), target)
                 # Apache Ossie v0.2+ metric `datatype` -> OBML exact `dataType`
                 # (its natural home; `Decimal` -> decimal(p, s)). Don't override a
                 # dataType already restored from an OBML-origin extension, and

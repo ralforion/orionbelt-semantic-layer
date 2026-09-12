@@ -48,6 +48,8 @@ _MODELED_CLASSES = (
     semantic_models.FilterValue,
     semantic_models.ModelFilter,
     semantic_models.ModelSettings,
+    semantic_models.ExternalConceptMapping,
+    semantic_models.OntologyConfig,
 )
 
 # Fields that intentionally have no ontology property:
@@ -152,6 +154,11 @@ _EXCLUDED_FIELDS = frozenset(
         "filterContext",
         "grain",
         "columns",
+        # ontology.prefixes is authoring sugar: compact concept IRIs are
+        # expanded at load time and the exporter binds the namespaces on the
+        # graph rather than describing them as triples.
+        "ontology",
+        "prefixes",
     }
 )
 
@@ -240,6 +247,22 @@ _NAME_REMAP = {
     "order": "withinGroupOrder",
     # query (on ModelExample) → exampleQuery
     "query": "exampleQuery",
+    # ExternalConceptMapping
+    "external_concept_mappings": "hasExternalConceptMapping",
+    "externalConceptMappings": "hasExternalConceptMapping",
+    "concept": "authoredConcept",
+    "expanded_iri": "targetConcept",
+    "expandedIri": "targetConcept",
+    "relation": "mappingRelation",
+    "justification": "mappingJustification",
+    "source": "mappingSource",
+    "ontology_version": "ontologyVersion",
+    "ontologyVersion": "ontologyVersion",
+    "confidence": "confidence",
+    # ``comment`` on a mapping is obsl:mappingComment; the generic
+    # ``comment`` (DataObject) stays excluded above, so this remap only
+    # ever resolves for ExternalConceptMapping.
+    "comment": "mappingComment",
 }
 
 

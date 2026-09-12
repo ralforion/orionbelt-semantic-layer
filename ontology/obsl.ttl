@@ -92,6 +92,10 @@ obsl:WithinGroup a owl:Class ;
     rdfs:label "Within Group" ;
     rdfs:comment "Ordering clause for ordered-set aggregates (LISTAGG).  Names a column and an ASC/DESC direction." .
 
+obsl:ExternalConceptMapping a owl:Class ;
+    rdfs:label "External Concept Mapping" ;
+    rdfs:comment "A qualified link from a modeling element (SemanticModel, DataObject, Dimension, Measure, Metric) to a concept in an external ontology, with the SKOS mapping relation and its provenance (justification, source, ontology version, confidence).  Descriptive metadata: it never affects SQL planning or execution.  The exporter also states the link directly as a skos:*Match triple from the element to the external IRI." .
+
 # =============================================================================
 # 2. OBJECT PROPERTIES --- Model composition
 # =============================================================================
@@ -660,6 +664,75 @@ obsl:intentTag a owl:DatatypeProperty ;
     rdfs:range xsd:string .
 
 # =============================================================================
+# 8.8 EXTERNAL CONCEPT MAPPINGS --- links to governed business concepts
+# =============================================================================
+# An OBML element may map to concepts in external ontologies (a corporate
+# business glossary, FIBO, schema.org).  OBSL states each link twice: as a
+# direct skos:exactMatch / closeMatch / broadMatch / narrowMatch /
+# relatedMatch triple from the element to the external IRI, and, when the
+# mapping carries more than concept + relation, as an ExternalConceptMapping
+# resource that holds the provenance.  External ontologies are linked by
+# IRI, never imported or rewritten.
+
+obsl:hasExternalConceptMapping a owl:ObjectProperty ;
+    rdfs:label "has external concept mapping" ;
+    rdfs:comment "Links a modeled element (SemanticModel, DataObject, Dimension, Measure, Metric) to one of its external concept mappings." ;
+    rdfs:range obsl:ExternalConceptMapping .
+
+obsl:sourceObject a owl:ObjectProperty ;
+    rdfs:label "source object" ;
+    rdfs:comment "The modeled element an ExternalConceptMapping describes (the subject of the skos mapping triple).  Inverse of hasExternalConceptMapping." ;
+    rdfs:domain obsl:ExternalConceptMapping ;
+    owl:inverseOf obsl:hasExternalConceptMapping .
+
+obsl:targetConcept a owl:ObjectProperty ;
+    rdfs:label "target concept" ;
+    rdfs:comment "The external concept the mapping points at, as an absolute IRI (the authored compact IRI expanded with the model's ontology prefixes).  Deliberately without a range: targets are whatever the external ontology declares them to be (a skos:Concept in a glossary, an owl:Class in FIBO, a schema.org type), and a range would make a reasoner type every one of them." ;
+    rdfs:domain obsl:ExternalConceptMapping .
+
+obsl:authoredConcept a owl:DatatypeProperty ;
+    rdfs:label "authored concept" ;
+    rdfs:comment "The concept exactly as written in OBML: a compact IRI such as 'corp:NetRevenue' or a full IRI.  Preserved for round-trip and display; targetConcept holds the expanded form." ;
+    rdfs:domain obsl:ExternalConceptMapping ;
+    rdfs:range xsd:string .
+
+obsl:mappingRelation a owl:DatatypeProperty ;
+    rdfs:label "mapping relation" ;
+    rdfs:comment "How the source object relates to the target concept, read source-first in the SKOS direction: 'exact' (skos:exactMatch), 'close' (skos:closeMatch), 'broader' (skos:broadMatch --- the external concept is the broader one), 'narrower' (skos:narrowMatch --- the external concept is the narrower one), 'related' (skos:relatedMatch)." ;
+    rdfs:domain obsl:ExternalConceptMapping ;
+    rdfs:range xsd:string .
+
+obsl:mappingJustification a owl:DatatypeProperty ;
+    rdfs:label "mapping justification" ;
+    rdfs:comment "How the mapping came to exist: 'curated', 'imported', 'generated', 'inferred' or 'lexical'." ;
+    rdfs:domain obsl:ExternalConceptMapping ;
+    rdfs:range xsd:string .
+
+obsl:mappingSource a owl:DatatypeProperty ;
+    rdfs:label "mapping source" ;
+    rdfs:comment "Where the mapping comes from: a catalog, ontology or process name." ;
+    rdfs:domain obsl:ExternalConceptMapping ;
+    rdfs:range xsd:string .
+
+obsl:ontologyVersion a owl:DatatypeProperty ;
+    rdfs:label "ontology version" ;
+    rdfs:comment "Version of the external ontology the target concept was taken from." ;
+    rdfs:domain obsl:ExternalConceptMapping ;
+    rdfs:range xsd:string .
+
+obsl:confidence a owl:DatatypeProperty ;
+    rdfs:label "confidence" ;
+    rdfs:comment "Confidence in the mapping, a decimal between 0 and 1." ;
+    rdfs:domain obsl:ExternalConceptMapping ;
+    rdfs:range xsd:decimal .
+
+obsl:mappingComment a owl:DatatypeProperty ;
+    rdfs:label "mapping comment" ;
+    rdfs:comment "Free-text note on the mapping (approval, caveat, rationale)." ;
+    rdfs:domain obsl:ExternalConceptMapping ;
+    rdfs:range xsd:string .
+
+# =============================================================================
 # 9. OWL AXIOMS
 # =============================================================================
 
@@ -678,7 +751,8 @@ obsl:intentTag a owl:DatatypeProperty ;
                   obsl:RefreshPolicy
                   obsl:CustomExtension
                   obsl:ModelExample
-                  obsl:WithinGroup ) .
+                  obsl:WithinGroup
+                  obsl:ExternalConceptMapping ) .
 
 # Metric subtypes are disjoint with each other.
 obsl:CumulativeMetric owl:disjointWith obsl:PeriodOverPeriodMetric .
@@ -727,6 +801,16 @@ obsl:extensionData a owl:FunctionalProperty .
 obsl:exampleName a owl:FunctionalProperty .
 obsl:exampleDescription a owl:FunctionalProperty .
 obsl:exampleQuery a owl:FunctionalProperty .
+
+obsl:sourceObject a owl:FunctionalProperty .
+obsl:targetConcept a owl:FunctionalProperty .
+obsl:authoredConcept a owl:FunctionalProperty .
+obsl:mappingRelation a owl:FunctionalProperty .
+obsl:mappingJustification a owl:FunctionalProperty .
+obsl:mappingSource a owl:FunctionalProperty .
+obsl:ontologyVersion a owl:FunctionalProperty .
+obsl:confidence a owl:FunctionalProperty .
+obsl:mappingComment a owl:FunctionalProperty .
 
 # -----------------------------------------------------------------------------
 # 9.3 Inverse properties
