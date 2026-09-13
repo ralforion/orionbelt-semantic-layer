@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.30.0] - 2026-09-13
+
 ### Added
 
 - **Business Rules tab: select a rule by clicking its row, and show its definition.** The rule
