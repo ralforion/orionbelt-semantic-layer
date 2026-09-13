@@ -138,7 +138,7 @@ Each rule is an `obsl:Rule` in the [OBSL RDF graph](obsl.md): its type, severity
 
 ## In the UI
 
-The [Gradio UI](ui.md) has a Business Rules tab: the model's rules with statistics, a **Show rule definition** toggle that displays the picked rule's OBML as YAML, a **Test Rule** button that lists one rule's findings, and **Test All Rules** for the report.
+The [Gradio UI](ui.md) has a Business Rules tab: the model's rules with statistics, a click on a row to select a rule, a **Show rule definition** toggle that displays the selected rule's OBML as YAML, a **Test Rule** button that lists the selected rule's findings, and **Test All Rules** for the report.
 
 ## What is next
 

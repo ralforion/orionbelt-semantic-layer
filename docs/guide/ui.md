@@ -17,7 +17,7 @@ OrionBelt includes an interactive web UI built with [Gradio](https://www.gradio.
 - **Jump-to navigator** — Scroll the model editor to any section or artefact (dataObject, dimension, measure, metric, ...) from a filterable dropdown
 - **Response metadata** — Collapsible panel showing execution metadata as YAML: dialect, row count, timing, timezone, column types and format patterns, and resolved query plan (fact tables, dimensions, measures)
 - **ER Diagram tab** — Visualize the semantic model as a Mermaid ER diagram with left-to-right layout, FK annotations, dotted lines for secondary joins, and an adjustable zoom slider
-- **Business Rules tab** — Lists the rules declared in the model's `rules:` block with statistics (by type, level, severity, executable), shows the picked rule's OBML definition on request (Show rule definition), tests one rule (its findings: members or violations) or all rules (a report with per-rule status, counts and errors); runs through the API's evaluate endpoints, so it needs query execution enabled
+- **Business Rules tab** — Lists the rules declared in the model's `rules:` block with statistics (by type, level, severity, executable), selects a rule by clicking its row, shows the selected rule's OBML definition on request (Show rule definition), tests that rule (its findings: members or violations) or all rules (a report with per-rule status, counts and errors); runs through the API's evaluate endpoints, so it needs query execution enabled
 - **SPARQL tab** — Run read-only SPARQL (`SELECT` / `ASK`) over the loaded model's OBSL graph in an editor with SPARQL syntax highlighting, line numbers and folding (the vendored ACE editor, light and dark themes), with a gallery of ready-to-run examples (artefacts by type, measures and their columns, joins, external concept mappings and their provenance). `SELECT` bindings render as a table, `ASK` as a boolean; update operations are refused, as at the API
 - **OSI Import / Export** — Import OSI format models (converted to OBML) and export OBML models to OSI format, with validation feedback
 - **Dark / light mode** — Toggle via the header button; all inputs and UI state are persisted across mode switches
@@ -32,7 +32,7 @@ The ER diagram is also available as download (MD or PNG) or via the REST API.
 
 ![Business Rules](../assets/ui-business-rules-dark.png)
 
-The Business Rules tab lists the model's rules with statistics; Test Rule shows one rule's findings, Test All Rules the report. See [Business Rules](business-rules.md).
+The Business Rules tab lists the model's rules with statistics; click a row to select a rule, Test Rule shows its findings, Test All Rules the report. See [Business Rules](business-rules.md).
 
 ![SPARQL](../assets/ui-sparql-dark.png)
 

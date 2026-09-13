@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +17,8 @@ from orionbelt.ui.handlers import (  # noqa: E402
     load_rules,
     rule_definition,
     rule_definition_yaml,
+    select_rule,
+    selected_rule_label,
 )
 
 _MODEL = "version: 1.0\ndataObjects: {}\n"
@@ -99,17 +102,14 @@ class TestLoad:
         frame = table["value"]
         assert list(frame["rule"]) == ["High Return Rate", "Broken"]
         assert frame.iloc[1]["executable"] == "no: Unknown dimension X"
-        assert (
-            picker["choices"] == ["High Return Rate", "Broken"]
-            and picker["value"] == "High Return Rate"
-        )
+        assert picker["value"] == "High Return Rate"
         assert session == {"session_id": "s1"} and model == {"model_id": "m1"}
 
     def test_no_rules(self) -> None:
         with _with(_client(200, {"dialect": "duckdb", "rules": [], "statistics": {"total": 0}})):
             stats, table, picker, _, _ = load_rules(_MODEL, "http://api", "", None, None)
         assert "declares no rules" in stats
-        assert not _visible(table) and picker["choices"] == []
+        assert not _visible(table) and picker["value"] == ""
 
     def test_api_error_is_shown(self) -> None:
         with _with(_client(404, {"detail": "Model 'm1' not found"})):
@@ -321,3 +321,28 @@ class TestRuleDefinition:
         assert (
             _visible(update) and update["value"].startswith("# ") and "not found" in update["value"]
         )
+
+
+class TestSelectRule:
+    def _table(self):
+        import pandas as pd
+
+        return pd.DataFrame({"rule": ["Electronics Sale", "High Return Rate"], "type": ["c", "c"]})
+
+    def _evt(self, data: dict | None):
+        evt = SimpleNamespace()
+        evt._data = data
+        return evt
+
+    def test_row_click_selects_that_rule_from_any_column(self) -> None:
+        update = select_rule(self._table(), self._evt({"index": [1, 1], "value": "c"}))
+        assert update["value"] == "High Return Rate"
+
+    def test_events_without_a_row_leave_the_selection(self) -> None:
+        for data in (None, {}, {"index": None}, {"index": [5, 0]}, {"index": [[0, 0], [1, 0]]}):
+            assert "value" not in select_rule(self._table(), self._evt(data))
+        assert "value" not in select_rule(None, self._evt({"index": [0, 0]}))
+
+    def test_label_names_the_selection_or_says_how_to_make_one(self) -> None:
+        assert selected_rule_label("High Return Rate") == "Selected rule: **High Return Rate**"
+        assert "click a row" in selected_rule_label("")

@@ -57,6 +57,8 @@ from orionbelt.ui.handlers import (
     model_jump_targets,
     rule_definition,
     run_sparql,
+    select_rule,
+    selected_rule_label,
     sort_and_execute,
     sort_state_str,
     sparql_example_query,
@@ -101,6 +103,8 @@ __all__ = [
     "load_rules",
     "rule_definition",
     "run_sparql",
+    "select_rule",
+    "selected_rule_label",
     "sparql_example_query",
     "evaluate_all_rules_ui",
     "evaluate_rule_ui",
@@ -487,7 +491,19 @@ _CSS = """\
 .rules-table .table-wrap, .findings-table .table-wrap {
   overflow: auto !important; min-height: 100px;
 }
+/* A click selects a rule (a row), so no cell ring, no cell flash, no cell menu:
+   the whole clicked row is tinted instead. */
+.rules-table .body-cell.cell-selected { box-shadow: none !important; animation: none !important; }
+.rules-table .body-cell.cell-solo .cell-wrap > span {
+  box-shadow: none !important; background: transparent !important;
+  position: static !important; padding: 0 !important; white-space: nowrap !important;
+}
+.rules-table .cell-menu-button, .rules-table .selection-button { display: none !important; }
+.rules-table .virtual-row:has(.cell-selected) .body-cell {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent) !important;
+}
 #ob-rules-stats { margin-bottom: -6px; }
+#ob-rules-selected-label { align-self: center; }
 #ob-rules-status { margin-bottom: -14px; }
 /* ── SPARQL tab: the ACE editor and its hidden bridge textbox ── */
 #ob-sparql-ace { height: 240px; border: 1px solid var(--border-color-primary, #555);
@@ -2415,13 +2431,18 @@ def create_blocks(
                     visible=False,
                 )
                 with gr.Row():
-                    rule_picker = gr.Dropdown(
-                        choices=[],
-                        value=None,
-                        label="Rule",
-                        filterable=False,
+                    # The selected rule: set by clicking a row of the rules table
+                    # (the first rule after a load), shown as a label. The value
+                    # itself rides in a hidden textbox rather than a dropdown or
+                    # gr.State: the browser keeps it, so it survives a UI restart
+                    # or a new instance (a dropdown validates against the choices
+                    # the server process knows, which are empty again then).
+                    selected_rule = gr.Textbox(visible=False, elem_id="ob-rules-selected")
+                    selected_rule_md = gr.Markdown(
+                        selected_rule_label(None),
                         scale=3,
                         min_width=280,
+                        elem_id="ob-rules-selected-label",
                     )
                     show_definition_cb = gr.Checkbox(
                         value=False,
@@ -2474,7 +2495,7 @@ def create_blocks(
                 _rules_load_outputs = [
                     rules_stats,
                     rules_table,
-                    rule_picker,
+                    selected_rule,
                     session_state,
                     model_state,
                 ]
@@ -2482,21 +2503,25 @@ def create_blocks(
                     model_input,
                     api_url,
                     dialect,
-                    rule_picker,
+                    selected_rule,
                     show_definition_cb,
                     session_state,
                     model_state,
                 ]
                 _definition_outputs = [rule_definition_code, session_state, model_state]
-                # The definition follows the picked rule and the checkbox; after a
-                # (re)load it follows the picker's new value too.
+                # The definition follows the selected rule and the checkbox; after a
+                # (re)load it is re-rendered for the (possibly edited) model too.
                 rules_tab.select(
                     fn=load_rules, inputs=_rules_inputs, outputs=_rules_load_outputs
                 ).then(fn=rule_definition, inputs=_definition_inputs, outputs=_definition_outputs)
                 rules_refresh_btn.click(
                     fn=load_rules, inputs=_rules_inputs, outputs=_rules_load_outputs
                 ).then(fn=rule_definition, inputs=_definition_inputs, outputs=_definition_outputs)
-                rule_picker.change(
+                rules_table.select(fn=select_rule, inputs=[rules_table], outputs=[selected_rule])
+                selected_rule.change(
+                    fn=selected_rule_label, inputs=[selected_rule], outputs=[selected_rule_md]
+                )
+                selected_rule.change(
                     fn=rule_definition, inputs=_definition_inputs, outputs=_definition_outputs
                 )
                 show_definition_cb.change(
@@ -2504,7 +2529,14 @@ def create_blocks(
                 )
                 test_rule_btn.click(
                     fn=evaluate_rule_ui,
-                    inputs=[model_input, api_url, dialect, rule_picker, session_state, model_state],
+                    inputs=[
+                        model_input,
+                        api_url,
+                        dialect,
+                        selected_rule,
+                        session_state,
+                        model_state,
+                    ],
                     outputs=[rules_status, findings_table, session_state, model_state],
                 )
                 test_all_btn.click(

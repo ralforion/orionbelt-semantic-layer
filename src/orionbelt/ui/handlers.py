@@ -1347,7 +1347,11 @@ def load_rules(
     session_state: dict[str, str] | None,
     model_state: dict[str, str] | None,
 ) -> tuple[str, object, object, dict[str, str] | None, dict[str, str] | None]:
-    """Refresh callback: ``(statistics markdown, table, rule dropdown, session, model)``."""
+    """Refresh callback: ``(statistics markdown, table, selected rule, session, model)``.
+
+    The first rule is selected after a load; clicking a table row changes it
+    (see :func:`select_rule`).
+    """
     from orionbelt.ui.api_client import _rules_request
 
     suffix = f"?dialect={dialect}" if dialect else ""
@@ -1358,7 +1362,7 @@ def load_rules(
         return (
             f"**Error:** {error}",
             gr.update(visible=False),
-            gr.update(choices=[], value=None),
+            gr.update(value=""),
             session_state,
             model_state,
         )
@@ -1368,7 +1372,7 @@ def load_rules(
             "This model declares no rules. Add a `rules:` block to the OBML "
             "(see the Business Rules guide) and refresh.",
             gr.update(visible=False),
-            gr.update(choices=[], value=None),
+            gr.update(value=""),
             session_state,
             model_state,
         )
@@ -1376,10 +1380,34 @@ def load_rules(
     return (
         _statistics_markdown(body.get("statistics") or {}, body.get("dialect", dialect)),
         gr.update(value=_rules_frame(rules), visible=True),
-        gr.update(choices=names, value=names[0]),
+        gr.update(value=names[0]),
         session_state,
         model_state,
     )
+
+
+def selected_rule_label(rule_name: str | None) -> str:
+    """The "Selected rule" line above the rule buttons."""
+    if not rule_name:
+        return "Selected rule: none (click a row in the rules table)"
+    return f"Selected rule: **{rule_name}**"
+
+
+def select_rule(table: object, evt: gr.EventData) -> object:
+    """Rules-table click: the clicked row's rule name for the selected-rule box.
+
+    Takes the base ``gr.EventData`` for the reason given on
+    :func:`filter_and_execute`; a click anywhere on a row selects that rule,
+    and events without a row index leave the selection as it is.
+    """
+    import pandas as pd
+
+    data = getattr(evt, "_data", None) or {}
+    idx = data.get("index")
+    row = idx[0] if isinstance(idx, (list, tuple)) and len(idx) == 2 else None
+    if not isinstance(row, int) or not isinstance(table, pd.DataFrame) or not 0 <= row < len(table):
+        return gr.update()
+    return gr.update(value=str(table.iloc[row, 0]))
 
 
 def evaluate_rule_ui(
