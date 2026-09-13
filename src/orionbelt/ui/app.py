@@ -482,6 +482,10 @@ _CSS = """\
   overflow: auto !important; min-height: 100px;
 }
 #ob-rules-stats, #ob-rules-status { margin-bottom: -6px; }
+/* ── SPARQL tab: the ACE editor and its hidden bridge textbox ── */
+#ob-sparql-ace { height: 240px; border: 1px solid var(--border-color-primary, #555);
+  border-radius: 8px; font-family: Menlo, Consolas, monospace; }
+#ob-sparql-bridge { display: none !important; }
 /* ── SPARQL tab: results sized to the viewport so the table always ends above
    the fold and scrolls inside itself. Gradio 6 scrolls the inner
    .virtual-table-viewport (capped by max_height, a fixed pixel count that ran
@@ -1231,6 +1235,94 @@ def _mermaid_head() -> str:
 """
 
 
+#: The SPARQL editor. Gradio's Code component is CodeMirror with a fixed set of
+#: languages and no way to add one, so the SPARQL tab hosts an ACE editor (the
+#: one the ontology builder uses) in a plain div and bridges its text into a
+#: hidden Gradio textbox that the Run button reads. Everything ACE needs is
+#: inlined from the vendored bundle, the same way mermaid is.
+def _ace_head() -> str:
+    """A ``<head>`` fragment that installs ACE and the SPARQL editor glue."""
+    from orionbelt.ui.rendering import _get_ace_b64
+
+    return f"""
+<script>
+(function () {{
+  var bytes = Uint8Array.from(atob("{_get_ace_b64()}"), function (c) {{
+    return c.charCodeAt(0);
+  }});
+  var el = document.createElement("script");
+  el.textContent = new TextDecoder("utf-8").decode(bytes);
+  document.head.appendChild(el);
+
+  var editor = null;
+  function bridgeInput() {{
+    var host = document.getElementById("ob-sparql-bridge");
+    return host ? (host.querySelector("textarea") || host.querySelector("input")) : null;
+  }}
+  function isDark() {{
+    return document.documentElement.classList.contains("dark")
+      || document.body.classList.contains("dark");
+  }}
+  function applyTheme() {{
+    if (editor) editor.setTheme(isDark() ? "ace/theme/tomorrow_night" : "ace/theme/textmate");
+  }}
+  function pushToBridge() {{
+    var ta = bridgeInput();
+    if (!ta || !editor) return;
+    var value = editor.getValue();
+    if (ta.value === value) return;
+    ta.value = value;
+    ta.dispatchEvent(new Event("input", {{ bubbles: true }}));
+  }}
+  window.__obSparql = {{
+    // Create the editor once its container is on screen (ACE measures the
+    // element), seeded from the bridge; on later calls just re-measure.
+    ensure: function () {{
+      var container = document.getElementById("ob-sparql-ace");
+      if (!container || !window.ace) return false;
+      if (!editor) {{
+        editor = window.ace.edit(container, {{
+          mode: "ace/mode/sparql",
+          showPrintMargin: false,
+          fontSize: 13,
+          tabSize: 2,
+          useSoftTabs: true,
+          wrap: true,
+        }});
+        var ta = bridgeInput();
+        editor.setValue(ta ? ta.value : "", -1);
+        var timer = null;
+        editor.session.on("change", function () {{
+          clearTimeout(timer);
+          timer = setTimeout(pushToBridge, 150);
+        }});
+        applyTheme();
+        new MutationObserver(applyTheme).observe(document.documentElement, {{
+          attributes: true, attributeFilter: ["class"]
+        }});
+        new MutationObserver(applyTheme).observe(document.body, {{
+          attributes: true, attributeFilter: ["class"]
+        }});
+      }}
+      editor.resize();
+      return true;
+    }},
+    // The example dropdown writes the query into the bridge through Python;
+    // this copies it into the editor.
+    pull: function () {{
+      if (!window.__obSparql.ensure()) return;
+      var ta = bridgeInput();
+      if (ta && editor.getValue() !== ta.value) editor.setValue(ta.value, -1);
+    }},
+    // Editor text goes to the bridge on every change (debounced); the Run
+    // button flushes once more so a keystroke in the last 150 ms is not lost.
+    flush: pushToBridge,
+  }};
+}})();
+</script>
+"""
+
+
 def frontend_assets(head_html: str | None = None) -> dict[str, str]:
     """The css/js/head every way of serving this app has to pass along.
 
@@ -1241,8 +1333,8 @@ def frontend_assets(head_html: str | None = None) -> dict[str, str]:
     the constructor it reaches only whichever mode happens to look there.
     """
     assets = {"css": _CSS, "js": _DARK_MODE_INIT_JS}
-    mermaid = _mermaid_head()
-    assets["head"] = f"{head_html}\n{mermaid}" if head_html else mermaid
+    vendored = _mermaid_head() + _ace_head()
+    assets["head"] = f"{head_html}\n{vendored}" if head_html else vendored
     return assets
 
 
@@ -2341,7 +2433,7 @@ def create_blocks(
                     outputs=[rules_status, findings_table, session_state, model_state],
                 )
 
-            with gr.Tab("SPARQL", id=5):
+            with gr.Tab("SPARQL", id=5) as sparql_tab:
                 from orionbelt.obsl.sparql_examples import EXAMPLE_TITLES, example_query
 
                 with gr.Row():
@@ -2359,15 +2451,19 @@ def create_blocks(
                         scale=1,
                         min_width=160,
                     )
-                sparql_code = gr.Code(
+                # The visible editor is ACE (see _ace_head): SPARQL grammar,
+                # line numbers, folding. Its text lives in the hidden bridge
+                # textbox, which is what Python reads and writes.
+                gr.HTML(
+                    '<div id="ob-sparql-ace" aria-label="SPARQL query editor"></div>',
+                    padding=False,
+                )
+                sparql_code = gr.Textbox(
                     value=example_query(EXAMPLE_TITLES[0]),
-                    # Gradio has no SPARQL mode; SQL shares enough keywords
-                    # (SELECT, WHERE, ORDER BY, FILTER, strings, comments) to
-                    # colour a query usefully rather than leave it monochrome.
-                    language="sql",
-                    lines=10,
                     label="SPARQL (SELECT or ASK; read-only)",
-                    elem_id="ob-sparql-code",
+                    lines=10,
+                    elem_id="ob-sparql-bridge",
+                    interactive=True,
                 )
                 sparql_status = gr.Markdown(
                     "Pick an example or write a query over the model's OBSL graph, "
@@ -2387,8 +2483,15 @@ def create_blocks(
                     fn=sparql_example_query,
                     inputs=[sparql_example_dd],
                     outputs=[sparql_code],
+                ).then(fn=None, js="() => window.__obSparql && window.__obSparql.pull()")
+                # ACE can only measure a container that is on screen, so the
+                # editor is created (or re-measured) when the tab is shown.
+                sparql_tab.select(
+                    fn=None, js="() => window.__obSparql && window.__obSparql.ensure()"
                 )
                 sparql_btn.click(
+                    fn=None, js="() => window.__obSparql && window.__obSparql.flush()"
+                ).then(
                     fn=run_sparql,
                     inputs=[model_input, api_url, sparql_code, session_state, model_state],
                     outputs=[sparql_table, sparql_status, session_state, model_state],

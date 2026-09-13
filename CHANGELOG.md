@@ -6,6 +6,12 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **SPARQL syntax highlighting in the UI.** The SPARQL tab's editor is now ACE (vendored under
+  `ui/static` like vis-network and mermaid, so nothing is fetched from a CDN) with its SPARQL
+  grammar, line numbers, folding, and a light and a dark theme that follow the UI's mode.
+  Gradio's own code editor has no SPARQL mode and cannot take one. The editor is bridged into a
+  hidden textbox that the Run button reads, so the example gallery and the query flow are
+  unchanged.
 - **Rule evaluation and the Business Rules tab.** `POST .../rules/{name}/evaluate` runs one rule
   through the same cache-aware pipeline as `query/execute` and returns its findings (members for
   classification and eligibility rules, violations for validation and constraint rules);

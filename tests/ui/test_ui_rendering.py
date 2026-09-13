@@ -301,6 +301,8 @@ class TestTheSparqlTab:
     def test_an_example_renders_rows(self, embedded_page: Any) -> None:
         page = embedded_page
         page.get_by_role("tab", name="SPARQL").click()
+        # The editor is ACE with the SPARQL grammar: keywords are tokenised.
+        page.wait_for_selector(".ace_editor .ace_keyword", timeout=30_000)
         page.get_by_role("button", name="Run Query").click()
         page.wait_for_function(
             "() => document.querySelector('#ob-sparql-status')?.innerText.startsWith('SELECT:')",

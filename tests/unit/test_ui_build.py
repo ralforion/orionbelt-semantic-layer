@@ -41,3 +41,17 @@ def test_create_blocks_with_embedded_settings() -> None:
             default_api_url="http://example.invalid", embedded_settings=embedded
         )
     assert blocks is not None
+
+
+def test_frontend_head_installs_ace_for_the_sparql_editor() -> None:
+    """The SPARQL editor is ACE, inlined from the vendored bundle like mermaid.
+
+    Every serving mode gets the head from ``frontend_assets``; a loader put
+    anywhere else reaches only the mode that happens to look there.
+    """
+    from orionbelt.ui.rendering import _get_ace_b64
+
+    head = ui_app.frontend_assets()["head"]
+    assert "window.__obSparql" in head
+    assert _get_ace_b64()[:64] in head
+    assert 'mode: "ace/mode/sparql"' in head
