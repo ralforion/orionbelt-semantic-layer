@@ -1445,6 +1445,13 @@ class SPARQLResponse(BaseModel):
         default_factory=list, description="Rows of variable bindings"
     )
     boolean: bool | None = Field(default=None, description="ASK query result")
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Non-fatal findings, e.g. a variable ordered by or projected but never bound "
+            "(valid SPARQL, almost always a typo)"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

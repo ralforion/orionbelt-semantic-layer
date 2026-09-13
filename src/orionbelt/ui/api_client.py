@@ -326,6 +326,7 @@ def _run_sparql_locally(model_yaml: str, query: str) -> dict[str, Any] | None:
         "variables": outcome.variables,
         "results": outcome.results,
         "boolean": outcome.boolean,
+        "warnings": outcome.warnings,
     }
 
 

@@ -1263,16 +1263,17 @@ def run_sparql(
     if result is None:
         message = error or "The model does not validate; fix it in the SQL Compiler tab first."
         return gr.update(visible=False), f"**Error:** {message}", session_state, model_state
+    caveats = "".join(f"  \n**Warning:** {w}" for w in result.get("warnings") or [])
     if result.get("type") == "ask":
         answer = "true" if result.get("boolean") else "false"
-        return gr.update(visible=False), f"**ASK:** `{answer}`", session_state, model_state
+        return gr.update(visible=False), f"**ASK:** `{answer}`{caveats}", session_state, model_state
     variables = list(result.get("variables") or [])
     rows = [[row.get(var) for var in variables] for row in result.get("results") or []]
     frame = pd.DataFrame(rows, columns=variables)
     noun = "row" if len(rows) == 1 else "rows"
     return (
         gr.update(value=frame, visible=True),
-        f"**SELECT:** {len(rows)} {noun}",
+        f"**SELECT:** {len(rows)} {noun}{caveats}",
         session_state,
         model_state,
     )

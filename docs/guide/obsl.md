@@ -244,6 +244,9 @@ SELECT ?measure ?relation ?concept WHERE {
 }
 ```
 
+!!! tip "Unbound variables are warned about"
+    `ORDER BY ?lable` for a query that binds `?label` is valid SPARQL: an unbound variable compares equal everywhere, so nothing is ordered and no engine complains. Since that is nearly always a typo, the endpoint (and the UI) returns a `warnings` entry for a variable that is ordered by or projected but never bound in a triple pattern, `BIND` or `VALUES`.
+
 !!! warning "Read-only"
     Only `SELECT` and `ASK` queries are allowed. Update operations (`INSERT`, `DELETE`, `LOAD`, `DROP`, etc.) return HTTP 400.
 

@@ -82,4 +82,5 @@ async def sparql_query(
         variables=result.variables,
         results=result.results,
         boolean=result.boolean,
+        warnings=result.warnings,
     )

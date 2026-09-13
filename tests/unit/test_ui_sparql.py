@@ -45,6 +45,19 @@ class TestLocalFallback:
         assert not _visible(table)
         assert status == "**ASK:** `true`"
 
+    def test_unbound_variable_warning_is_shown(self) -> None:
+        table, status, _, _ = run_sparql(
+            _MODEL_YAML,
+            _UNREACHABLE,
+            "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\n"
+            "SELECT ?label WHERE { ?x rdfs:label ?label } ORDER BY ?lal",
+            None,
+            None,
+        )
+        assert _visible(table)
+        assert status.startswith("**SELECT:**")
+        assert "**Warning:** ORDER BY ?lal: the variable is never bound" in status
+
     def test_update_operation_is_refused(self) -> None:
         table, status, _, _ = run_sparql(
             _MODEL_YAML, _UNREACHABLE, "DELETE WHERE { ?s ?p ?o }", None, None
