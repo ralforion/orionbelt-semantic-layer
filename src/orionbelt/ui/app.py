@@ -2452,19 +2452,14 @@ def create_blocks(
                         scale=2,
                         min_width=240,
                     )
-                    ontology_btn = gr.Button(
-                        "Render Graph",
-                        variant="primary",
-                        elem_classes=["purple-btn"],
-                        scale=1,
-                        min_width=160,
-                    )
-                    export_onto_btn = gr.Button(
-                        "Export Onto",
-                        elem_classes=["green-btn"],
-                        scale=1,
-                        min_width=160,
-                    )
+                    # Stacked at the right of the controls: render above, export below.
+                    with gr.Column(scale=1, min_width=160):
+                        ontology_btn = gr.Button(
+                            "Render Graph",
+                            variant="primary",
+                            elem_classes=["purple-btn"],
+                        )
+                        export_onto_btn = gr.Button("Export Onto", elem_classes=["green-btn"])
 
                 ontology_output = gr.HTML(
                     value=(

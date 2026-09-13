@@ -21,6 +21,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   caps it there (never less than a few rows, lines, or a usable canvas), re-fitting on resize and
   on every layout change. Maximising a table lifts the cap, so the fullscreen view fills the
   screen instead of staying at the fitted height.
+- **Ontology Graph tab: Export Onto sits under Render Graph, and Render Graph lays out anew.** The
+  export button no longer spans the page as a green bar. Each render now uses a fresh layout seed,
+  so clicking Render Graph rearranges the graph (before, the regenerated page was identical and
+  the click changed nothing).
 
 ## [2.29.0] - 2026-09-11
 

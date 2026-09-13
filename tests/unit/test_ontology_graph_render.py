@@ -211,3 +211,14 @@ def test_sibling_reference_draws_no_edge() -> None:
 def test_computed_columns_follow_the_data_object_filter() -> None:
     nodes, _ = _render_computed(show_data_objects=False)
     assert "Store.Zip Matches" not in {n["label"] for n in nodes}
+
+
+def test_render_graph_lays_out_anew_each_time() -> None:
+    """Two renders of the same model differ (a fresh layout seed), so a click on
+    Render Graph re-renders the iframe and moves the nodes."""
+    first = _generate_ontology_graph_html(_MODEL_YAML)
+    second = _generate_ontology_graph_html(_MODEL_YAML)
+    seeds = [re.search(r"&quot;randomSeed&quot;: (\d+)", h) for h in (first, second)]
+    assert all(seeds)
+    assert seeds[0].group(1) != seeds[1].group(1)
+    assert _parse(first) == _parse(second)  # only the seed differs
