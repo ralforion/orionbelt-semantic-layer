@@ -486,6 +486,31 @@ _CSS = """\
 #ob-sparql-ace { height: 240px; border: 1px solid var(--border-color-primary, #555);
   border-radius: 8px; font-family: Menlo, Consolas, monospace; }
 #ob-sparql-bridge { display: none !important; }
+/* Token palette. Gradio paints every descendant of an HTML component with
+   the body text colour (".prose *"), at a specificity ACE's theme rules lose
+   to, so the colours are ours, scoped and !important: purple keywords, teal
+   variables, blue prefixed names, green IRIs and strings, grey comments. The
+   ACE theme still supplies background, gutter and selection. */
+#ob-sparql-ace .ace_line, #ob-sparql-ace .ace_gutter-cell,
+#ob-sparql-ace .ace_paren, #ob-sparql-ace .ace_punctuation { color: #383a42 !important; }
+#ob-sparql-ace .ace_gutter-cell { color: #9d9d9f !important; }
+#ob-sparql-ace .ace_keyword { color: #a626a4 !important; }
+#ob-sparql-ace .ace_variable { color: #0184bc !important; }
+#ob-sparql-ace .ace_entity { color: #4078f2 !important; }
+#ob-sparql-ace .ace_support { color: #2b8a8a !important; }
+#ob-sparql-ace .ace_string, #ob-sparql-ace .ace_constant { color: #50a14f !important; }
+#ob-sparql-ace .ace_comment { color: #a0a1a7 !important; font-style: italic; }
+#ob-sparql-ace .ace_invalid { color: #e45649 !important; }
+.dark #ob-sparql-ace .ace_line, .dark #ob-sparql-ace .ace_paren,
+.dark #ob-sparql-ace .ace_punctuation { color: #c5c8c6 !important; }
+.dark #ob-sparql-ace .ace_gutter-cell { color: #6b7280 !important; }
+.dark #ob-sparql-ace .ace_keyword { color: #c678dd !important; }
+.dark #ob-sparql-ace .ace_variable { color: #56b6c2 !important; }
+.dark #ob-sparql-ace .ace_entity { color: #61afef !important; }
+.dark #ob-sparql-ace .ace_support { color: #e5c07b !important; }
+.dark #ob-sparql-ace .ace_string, .dark #ob-sparql-ace .ace_constant { color: #98c379 !important; }
+.dark #ob-sparql-ace .ace_comment { color: #7f848e !important; }
+.dark #ob-sparql-ace .ace_invalid { color: #e06c75 !important; }
 /* ── SPARQL tab: results sized to the viewport so the table always ends above
    the fold and scrolls inside itself. Gradio 6 scrolls the inner
    .virtual-table-viewport (capped by max_height, a fixed pixel count that ran
