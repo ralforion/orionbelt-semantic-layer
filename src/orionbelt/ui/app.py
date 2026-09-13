@@ -491,6 +491,9 @@ _CSS = """\
 #ob-sparql-ace { height: 240px; border: 1px solid var(--border-color-primary, #555);
   border-radius: 8px; font-family: Menlo, Consolas, monospace; }
 #ob-sparql-bridge { display: none !important; }
+/* The caret is a 2px left border that Gradio's stylesheet zeroes; restore it
+   in the text colour so it shows in both modes. */
+#ob-sparql-ace .ace_cursor { border-left: 2px solid currentColor !important; }
 /* Token palette. Gradio paints every descendant of an HTML component with
    the body text colour (".prose *"), at a specificity ACE's theme rules lose
    to, so the colours are ours, scoped and !important: purple keywords, teal
