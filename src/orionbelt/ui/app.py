@@ -462,8 +462,19 @@ _CSS = """\
   overflow: auto;
   border-radius: 8px;
 }
-/* ── SPARQL tab: results scroll horizontally like the query results table ── */
-.sparql-table .table-wrap { overflow-x: auto !important; }
+/* ── SPARQL tab: results sized to the viewport so the table always ends above
+   the fold and scrolls inside itself. Gradio 6 scrolls the inner
+   .virtual-table-viewport (capped by max_height, a fixed pixel count that ran
+   off the bottom of shorter windows), so the cap goes on both wrappers. The
+   copy/fullscreen toolbar row is hidden: it only added a gap under the status
+   line, which already carries the row count. ── */
+.sparql-table .header-row { display: none !important; }
+.sparql-table .table-wrap,
+.sparql-table .virtual-table-viewport {
+  max-height: calc(100dvh - 540px) !important;
+}
+.sparql-table .table-wrap { overflow: auto !important; min-height: 140px; }
+#ob-sparql-status { margin-bottom: -6px; }
 .ob-cb-do label span::before { content: '● '; color: #9E9E9E; }
 .ob-cb-dim label span::before { content: '● '; color: #4CAF50; }
 .ob-cb-meas label span::before { content: '● '; color: #2196F3; }
@@ -2257,7 +2268,7 @@ def create_blocks(
                     # (SELECT, WHERE, ORDER BY, FILTER, strings, comments) to
                     # colour a query usefully rather than leave it monochrome.
                     language="sql",
-                    lines=12,
+                    lines=10,
                     label="SPARQL (SELECT or ASK; read-only)",
                     elem_id="ob-sparql-code",
                 )
@@ -2271,7 +2282,6 @@ def create_blocks(
                     show_label=False,
                     interactive=False,
                     wrap=True,
-                    max_height=700,
                     elem_classes=["sparql-table"],
                     visible=False,
                 )
