@@ -17,6 +17,7 @@ OrionBelt includes an interactive web UI built with [Gradio](https://www.gradio.
 - **Jump-to navigator** — Scroll the model editor to any section or artefact (dataObject, dimension, measure, metric, ...) from a filterable dropdown
 - **Response metadata** — Collapsible panel showing execution metadata as YAML: dialect, row count, timing, timezone, column types and format patterns, and resolved query plan (fact tables, dimensions, measures)
 - **ER Diagram tab** — Visualize the semantic model as a Mermaid ER diagram with left-to-right layout, FK annotations, dotted lines for secondary joins, and an adjustable zoom slider
+- **SPARQL tab** — Run read-only SPARQL (`SELECT` / `ASK`) over the loaded model's OBSL graph, with a gallery of ready-to-run examples (artefacts by type, measures and their columns, joins, external concept mappings and their provenance). `SELECT` bindings render as a table, `ASK` as a boolean; update operations are refused, as at the API
 - **OSI Import / Export** — Import OSI format models (converted to OBML) and export OBML models to OSI format, with validation feedback
 - **Dark / light mode** — Toggle via the header button; all inputs and UI state are persisted across mode switches
 

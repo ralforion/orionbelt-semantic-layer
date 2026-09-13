@@ -78,6 +78,8 @@ The response is `text/turtle`:
 
 ## SPARQL Queries
 
+The [Gradio UI](ui.md) has a SPARQL tab with a gallery of the examples below, run against whatever model is loaded in the editor.
+
 Run read-only SPARQL (`SELECT` and `ASK`) against any loaded model:
 
 === "curl"

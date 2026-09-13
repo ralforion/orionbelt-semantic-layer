@@ -52,8 +52,10 @@ from orionbelt.ui.handlers import (
     filter_and_execute,
     filter_chip_update,
     model_jump_targets,
+    run_sparql,
     sort_and_execute,
     sort_state_str,
+    sparql_example_query,
     validate_model,
 )
 from orionbelt.ui.rendering import (
@@ -92,6 +94,8 @@ __all__ = [
     "_load_example_model",
     "_render_ontology_graph",
     "_resolve_execution_dialect",
+    "run_sparql",
+    "sparql_example_query",
     "_warn_if_auth_required_without_key",
     "compile_sql",
     "create_blocks",
@@ -458,6 +462,19 @@ _CSS = """\
   overflow: auto;
   border-radius: 8px;
 }
+/* ── SPARQL tab: results sized to the viewport so the table always ends above
+   the fold and scrolls inside itself. Gradio 6 scrolls the inner
+   .virtual-table-viewport (capped by max_height, a fixed pixel count that ran
+   off the bottom of shorter windows), so the cap goes on both wrappers. The
+   copy/fullscreen toolbar row is hidden: it only added a gap under the status
+   line, which already carries the row count. ── */
+.sparql-table .header-row { display: none !important; }
+.sparql-table .table-wrap,
+.sparql-table .virtual-table-viewport {
+  max-height: calc(100dvh - 540px) !important;
+}
+.sparql-table .table-wrap { overflow: auto !important; min-height: 140px; }
+#ob-sparql-status { margin-bottom: -6px; }
 .ob-cb-do label span::before { content: '● '; color: #9E9E9E; }
 .ob-cb-dim label span::before { content: '● '; color: #4CAF50; }
 .ob-cb-meas label span::before { content: '● '; color: #2196F3; }
@@ -2225,6 +2242,59 @@ def create_blocks(
                     fn=None,
                     inputs=[obsl_turtle_state],
                     js=_DOWNLOAD_TTL_JS,
+                )
+
+            with gr.Tab("SPARQL", id=5):
+                from orionbelt.obsl.sparql_examples import EXAMPLE_TITLES, example_query
+
+                with gr.Row():
+                    sparql_example_dd = gr.Dropdown(
+                        choices=list(EXAMPLE_TITLES),
+                        value=EXAMPLE_TITLES[0],
+                        label="Example query",
+                        scale=3,
+                        min_width=280,
+                    )
+                    sparql_btn = gr.Button(
+                        "Run Query",
+                        variant="primary",
+                        elem_classes=["purple-btn"],
+                        scale=1,
+                        min_width=160,
+                    )
+                sparql_code = gr.Code(
+                    value=example_query(EXAMPLE_TITLES[0]),
+                    # Gradio has no SPARQL mode; SQL shares enough keywords
+                    # (SELECT, WHERE, ORDER BY, FILTER, strings, comments) to
+                    # colour a query usefully rather than leave it monochrome.
+                    language="sql",
+                    lines=10,
+                    label="SPARQL (SELECT or ASK; read-only)",
+                    elem_id="ob-sparql-code",
+                )
+                sparql_status = gr.Markdown(
+                    "Pick an example or write a query over the model's OBSL graph, "
+                    "then click Run Query.",
+                    elem_id="ob-sparql-status",
+                )
+                sparql_table = gr.Dataframe(
+                    label="Results",
+                    show_label=False,
+                    interactive=False,
+                    wrap=True,
+                    elem_classes=["sparql-table"],
+                    visible=False,
+                )
+
+                sparql_example_dd.change(
+                    fn=sparql_example_query,
+                    inputs=[sparql_example_dd],
+                    outputs=[sparql_code],
+                )
+                sparql_btn.click(
+                    fn=run_sparql,
+                    inputs=[model_input, api_url, sparql_code, session_state, model_state],
+                    outputs=[sparql_table, sparql_status, session_state, model_state],
                 )
 
             with gr.Tab("Settings", id=4) as settings_tab:
