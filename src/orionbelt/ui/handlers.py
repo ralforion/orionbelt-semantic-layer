@@ -1246,7 +1246,7 @@ def run_sparql(
     session_state: dict[str, str] | None,
     model_state: dict[str, str] | None,
 ) -> tuple[object, str, dict[str, str] | None, dict[str, str] | None]:
-    """Run Query callback: ``(table update, status markdown, session, model)``.
+    """Execute Query callback: ``(table update, status markdown, session, model)``.
 
     A SELECT shows its bindings as a table and the row count in the status
     line; an ASK shows only the status line, with the boolean. Any failure
