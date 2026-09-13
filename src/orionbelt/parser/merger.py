@@ -293,12 +293,9 @@ class ExtendsMerger:
         if parent_exts or child_exts:
             merged["customExtensions"] = parent_exts + child_exts
 
-        # externalConceptMappings: concatenate (the child's are type-checked,
-        # see _fragment_mappings)
-        parent_links = list(merged.get("externalConceptMappings") or [])
-        child_links = self._fragment_mappings(child, _INHERITING_MODEL)
-        if parent_links or child_links:
-            merged["externalConceptMappings"] = parent_links + child_links
+        # externalConceptMappings: the child's are type-checked and appended
+        # to the parent's (``merged`` is already a copy of the parent)
+        self._append_mappings(merged, self._fragment_mappings(child, _INHERITING_MODEL))
 
         # ontology.prefixes: union; a rebinding is an error, see _merge_prefixes
         self._merge_prefixes(merged, child, _INHERITING_MODEL)
@@ -337,9 +334,7 @@ class ExtendsMerger:
             target.setdefault("customExtensions", []).extend(src_exts)
 
         # externalConceptMappings: concatenate lists (type-checked first)
-        src_links = ExtendsMerger._fragment_mappings(source, origin)
-        if src_links:
-            target.setdefault("externalConceptMappings", []).extend(src_links)
+        ExtendsMerger._append_mappings(target, ExtendsMerger._fragment_mappings(source, origin))
 
         ExtendsMerger._merge_prefixes(target, source, origin)
 
@@ -366,6 +361,23 @@ class ExtendsMerger:
                 f"'externalConceptMappings' in '{origin}' must be a list of mapping entries",
             )
         return items
+
+    @staticmethod
+    def _append_mappings(target: dict[str, Any], items: list[Any]) -> None:
+        """Append fragment mappings to the target's model-level list.
+
+        A malformed target value (``externalConceptMappings: {}``) is left
+        exactly as authored and nothing is appended, so the resolver reports
+        it as INVALID_CONCEPT_MAPPING with a source span instead of the merge
+        crashing on it or overwriting it.
+        """
+        if not items:
+            return
+        existing = target.get("externalConceptMappings")
+        if existing is None:
+            target["externalConceptMappings"] = list(items)
+        elif isinstance(existing, list):
+            existing.extend(items)
 
     @staticmethod
     def _merge_prefixes(target: dict[str, Any], source: dict[str, Any], origin: str) -> None:

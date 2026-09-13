@@ -716,6 +716,22 @@ class TestInheritsMerge:
             ExtendsMerger().merge_from_strings(child_raw, inherits_raw=base_raw)
         assert exc.value.code == "INVALID_CONCEPT_MAPPING"
 
+    def test_malformed_target_mappings_reach_the_resolver(self) -> None:
+        """A malformed base/parent list is neither extended nor overwritten."""
+        bad_raw, _ = TrackedLoader().load_string(_BASE + "externalConceptMappings: {}\n")
+        fragment = (
+            "version: 1.0\nexternalConceptMappings:\n  - concept: corp:Thing\n    relation: exact\n"
+        )
+        merged, _ = ExtendsMerger().merge_from_strings(bad_raw, [fragment])
+        assert merged["externalConceptMappings"] == {}
+        _, result = ReferenceResolver().resolve(merged)
+        assert _codes(result.errors) == ["INVALID_CONCEPT_MAPPING"]
+        child_raw, _ = TrackedLoader().load_string(fragment)
+        merged, _ = ExtendsMerger().merge_from_strings(child_raw, inherits_raw=bad_raw)
+        assert merged["externalConceptMappings"] == {}
+        _, result = ReferenceResolver().resolve(merged)
+        assert _codes(result.errors) == ["INVALID_CONCEPT_MAPPING"]
+
     def test_empty_fragment_ontology_is_fine(self) -> None:
         base_raw, _ = TrackedLoader().load_string(_BASE)
         merged, warnings = ExtendsMerger().merge_from_strings(
