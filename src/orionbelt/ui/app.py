@@ -1774,10 +1774,10 @@ def create_blocks(
                     )
                     validate_btn = gr.Button(
                         "Validate Model",
-                        variant="secondary",
+                        variant="primary",
                         scale=0,
                         min_width=160,
-                        elem_classes=["action-btn"],
+                        elem_classes=["action-btn", "green-btn"],
                     )
 
                 with gr.Row(elem_classes=["output-row"]):
