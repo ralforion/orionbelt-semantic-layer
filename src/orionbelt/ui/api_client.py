@@ -202,6 +202,86 @@ def _fetch_obsl_turtle(
         return "", session_state, model_state
 
 
+def _run_sparql(
+    model_yaml: str,
+    api_url: str,
+    query: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[dict[str, Any] | None, str, dict[str, str] | None, dict[str, str] | None]:
+    """Run a read-only SPARQL query against the current model's OBSL graph.
+
+    Returns ``(result, error, session_state, model_state)``: ``result`` is the
+    API's SPARQL response body (``type``, ``variables``, ``results``,
+    ``boolean``) and ``error`` is empty on success, or ``result`` is ``None``
+    and ``error`` says why. A model that fails validation and a query the
+    endpoint refuses (update operations, syntax) both come back as errors.
+    Falls back to exporting and querying the graph locally when the API is
+    unreachable, so the standalone UI still answers.
+    """
+    # A comment-only editor is the "API unreachable" placeholder, not a model.
+    if not model_yaml or not any(
+        line.strip() and not line.lstrip().startswith("#") for line in model_yaml.splitlines()
+    ):
+        return None, "No model loaded.", session_state, model_state
+    if not query or not query.strip():
+        return None, "Enter a SPARQL query or pick an example.", session_state, model_state
+
+    try:
+        client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
+            model_yaml, api_url, session_state, model_state
+        )
+        path = f"/v1/sessions/{session_id}/models/{model_id}/sparql"
+        resp = client.post(path, json={"query": query})
+        if resp.status_code == 404:
+            client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
+                model_yaml, api_url, None, None
+            )
+            resp = client.post(
+                f"/v1/sessions/{session_id}/models/{model_id}/sparql", json={"query": query}
+            )
+        if resp.status_code in (400, 422):
+            detail = resp.json().get("detail", resp.text)
+            return None, _format_api_errors(detail), session_state, model_state
+        resp.raise_for_status()
+        return resp.json(), "", session_state, model_state
+    except _ModelValidationError as exc:
+        return None, _format_api_errors(exc.detail), session_state, model_state
+    except httpx.ConnectError:
+        # API not available: export and query the graph in-process. The same
+        # refusals apply (update operations, syntax), reported the same way.
+        try:
+            return _run_sparql_locally(model_yaml, query), "", session_state, model_state
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user, never raised into Gradio
+            return None, str(exc), session_state, model_state
+    except Exception as exc:  # noqa: BLE001 - surfaced to the user, never raised into Gradio
+        return None, f"SPARQL request failed: {exc}", session_state, model_state
+
+
+def _run_sparql_locally(model_yaml: str, query: str) -> dict[str, Any] | None:
+    """Export the graph in-process and query it: the API-unreachable path.
+
+    Same read-only rule as the endpoint: :func:`execute_sparql` refuses
+    update operations, and that refusal is reported like any other error.
+    """
+    from orionbelt.obsl.exporter import export_obsl
+    from orionbelt.obsl.sparql import execute_sparql
+    from orionbelt.parser.loader import TrackedLoader
+    from orionbelt.parser.resolver import ReferenceResolver
+
+    raw, sm = TrackedLoader().load_string(model_yaml)
+    model, result = ReferenceResolver().resolve(raw, sm)
+    if not result.valid:
+        return None
+    outcome = execute_sparql(export_obsl(model, "model"), query)
+    return {
+        "type": outcome.type,
+        "variables": outcome.variables,
+        "results": outcome.results,
+        "boolean": outcome.boolean,
+    }
+
+
 def _fetch_diagram_er(
     model_yaml: str,
     show_columns: bool,

@@ -85,23 +85,39 @@ def ui_url() -> Iterator[str]:
 
 
 @pytest.fixture(scope="module")
-def page(ui_url: str) -> Iterator[Any]:
+def playwright() -> Iterator[Any]:
+    """One sync Playwright driver for the module.
+
+    The sync API refuses to start while another sync driver is alive in the
+    thread, so every page fixture below shares this one instead of opening
+    its own.
+    """
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        try:
-            browser = p.chromium.launch()
-        except Exception as exc:  # noqa: BLE001 - browser binary not installed
-            pytest.skip(f"no chromium available: {exc}")
-        context = browser.new_page()
-        # Not ``networkidle``: Gradio holds an SSE connection open, so the
-        # network never goes idle and the wait times out.
-        context.goto(ui_url, wait_until="domcontentloaded")
-        context.wait_for_selector("role=tab[name='ER Diagram']", timeout=60_000)
-        try:
-            yield context
-        finally:
-            browser.close()
+        yield p
+
+
+def _open_page(playwright: Any, url: str, ready_tab: str) -> tuple[Any, Any]:
+    try:
+        browser = playwright.chromium.launch()
+    except Exception as exc:  # noqa: BLE001 - browser binary not installed
+        pytest.skip(f"no chromium available: {exc}")
+    page = browser.new_page()
+    # Not ``networkidle``: Gradio holds an SSE connection open, so the
+    # network never goes idle and the wait times out.
+    page.goto(url, wait_until="domcontentloaded")
+    page.wait_for_selector(f"role=tab[name='{ready_tab}']", timeout=60_000)
+    return browser, page
+
+
+@pytest.fixture(scope="module")
+def page(playwright: Any, ui_url: str) -> Iterator[Any]:
+    browser, page = _open_page(playwright, ui_url, "ER Diagram")
+    try:
+        yield page
+    finally:
+        browser.close()
 
 
 @pytest.fixture(scope="module")
@@ -261,3 +277,52 @@ class TestTheActionButtons:
         assert widths["buttons"], "no action buttons found"
         for w in widths["buttons"]:
             assert w < widths["viewport"] * 0.5, f"a button spans {w}px of the row"
+
+
+@pytest.fixture(scope="module")
+def embedded_page(playwright: Any, embedded_ui_url: str) -> Iterator[Any]:
+    """A page on the embedded UI, sharing the module's driver with ``page``."""
+    browser, page = _open_page(playwright, embedded_ui_url, "SPARQL")
+    try:
+        yield page
+    finally:
+        browser.close()
+
+
+class TestTheSparqlTab:
+    """The SPARQL tab runs a gallery example and shows its bindings as a table.
+
+    On the embedded UI, because that is the mode with a model in the editor:
+    the API is up, so the UI seeds the commerce starter and the tab goes
+    through ``POST .../sparql``. The standalone fixture has no API and
+    deliberately shows an "API unreachable" placeholder instead of a model.
+    """
+
+    def test_an_example_renders_rows(self, embedded_page: Any) -> None:
+        page = embedded_page
+        page.get_by_role("tab", name="SPARQL").click()
+        page.get_by_role("button", name="Run Query").click()
+        page.wait_for_function(
+            "() => document.querySelector('#ob-sparql-status')?.innerText.startsWith('SELECT:')",
+            timeout=60_000,
+        )
+        # Gradio virtualises the Dataframe body, so rows are attached but may
+        # report as hidden until scrolled into view: count them, do not wait
+        # for visibility.
+        page.wait_for_selector(".sparql-table table tbody tr", state="attached", timeout=30_000)
+        assert page.locator(".sparql-table table tbody tr").count() > 0
+        assert page.locator(".sparql-table").is_visible()
+
+    def test_the_ask_example_shows_a_boolean(self, embedded_page: Any) -> None:
+        page = embedded_page
+        page.get_by_role("tab", name="SPARQL").click()
+        combo = page.get_by_label("Example query")
+        combo.click()
+        combo.fill("schema.org")
+        page.get_by_role("option", name="Does the model link into schema.org? (ASK)").click()
+        page.get_by_role("button", name="Run Query").click()
+        page.wait_for_function(
+            "() => document.querySelector('#ob-sparql-status')?.innerText.includes('ASK:')",
+            timeout=60_000,
+        )
+        assert "true" in page.locator("#ob-sparql-status").inner_text()

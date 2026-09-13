@@ -24,6 +24,14 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   derived level, grain, serialized condition, what they read, dependencies), ride through OSI in
   the ORIONBELT extension, can carry `externalConceptMappings`, and the commerce demo ships six.
   Docs: `docs/guide/business-rules.md`. Evaluation endpoints and the UI tab follow.
+- **SPARQL tab in the Gradio UI.** Read-only `SELECT` / `ASK` over the loaded model's OBSL graph,
+  with a gallery of seven ready-to-run examples (artefacts by type, measures and their columns,
+  metrics and their measures, joins, external concept mappings, mappings with provenance, and an
+  ASK) that a test keeps working against the commerce demo's graph. `SELECT` bindings render as a
+  table with a row count, `ASK` as a boolean; a model that does not validate, an update operation
+  or a syntax error is reported in the status line. Goes through `POST .../sparql` when an API is
+  configured and falls back to exporting and querying the graph in-process when it is not, so the
+  standalone UI answers too. The Playwright suite covers both a SELECT and the ASK example.
 - **Commerce demo links into a business ontology.** `examples/orionbelt_1_commerce.yaml`, the
   model the public playground loads, now declares `ontology.prefixes` (a synthetic `commerce:`
   glossary plus schema.org, GoodRelations and FIBO) and `externalConceptMappings` on its
