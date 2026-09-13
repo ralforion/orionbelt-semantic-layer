@@ -2401,7 +2401,12 @@ def create_blocks(
                 )
                 with gr.Row():
                     rule_picker = gr.Dropdown(
-                        choices=[], value=None, label="Rule", scale=3, min_width=280
+                        choices=[],
+                        value=None,
+                        label="Rule",
+                        filterable=False,
+                        scale=3,
+                        min_width=280,
                     )
                     rules_refresh_btn = gr.Button(
                         "Refresh Rules", scale=1, min_width=150, elem_classes=["green-btn"]
