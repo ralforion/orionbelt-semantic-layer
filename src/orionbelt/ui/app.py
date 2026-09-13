@@ -264,6 +264,7 @@ _CSS = """\
   min-height: 240px !important;
 }
 .output-row {
+  /* Pre-script fallback: _fit_head() sizes the row to what is left of the window. */
   height: 32dvh !important;
   max-height: 32dvh !important;
   min-height: 140px !important;
@@ -484,15 +485,10 @@ _CSS = """\
 .rules-table .table-wrap, .rules-table .virtual-table-viewport {
   max-height: 320px !important;
 }
-/* Same rule for the findings: below the rule list, controls and toolbar (~655px). */
+/* The findings end above the fold: _fit_head() measures what is left of the
+   window below them and sets the cap live (this is only the pre-script fallback). */
 .findings-table .table-wrap, .findings-table .virtual-table-viewport {
-  max-height: max(196px, calc(100dvh - 705px)) !important;
-}
-/* With the rule definition shown (Gradio only renders it then, so its presence
-   is the switch), the findings get ~215px less: the block is capped at ten lines. */
-.tabitem:has(#ob-rule-definition) .findings-table .table-wrap,
-.tabitem:has(#ob-rule-definition) .findings-table .virtual-table-viewport {
-  max-height: max(196px, calc(100dvh - 920px)) !important;
+  max-height: 320px !important;
 }
 .rules-table .table-wrap, .findings-table .table-wrap {
   overflow: auto !important; min-height: 100px;
@@ -507,6 +503,13 @@ _CSS = """\
 .rules-table .cell-menu-button, .rules-table .selection-button { display: none !important; }
 .rules-table .virtual-row:has(.cell-selected) .body-cell {
   background: color-mix(in srgb, var(--color-accent) 22%, transparent) !important;
+}
+/* The toolbar's maximize puts the table block into Gradio's fixed fullscreen
+   layout (outside the app container); none of the fitted heights above may
+   cap it there. */
+.block.fullscreen .table-wrap,
+.block.fullscreen .virtual-table-viewport {
+  max-height: none !important;
 }
 #ob-rules-stats { margin-bottom: -6px; }
 #ob-rules-selected-label { align-self: center; }
@@ -550,12 +553,11 @@ _CSS = """\
    copy + fullscreen toolbar stays, like the query results, pulled up tight
    under the status line. ── */
 .sparql-table .header-row { margin-bottom: 0 !important; min-height: 0 !important; }
-/* Fill what is left of the window below the editor and the toolbar (the table
-   top sits at ~610px),
-   never less than a few rows: a tall window shows more, a short one scrolls. */
+/* Fill what is left of the window below the editor and the toolbar: set live by
+   _fit_head() (this is only the pre-script fallback). */
 .sparql-table .table-wrap,
 .sparql-table .virtual-table-viewport {
-  max-height: max(220px, calc(100dvh - 660px)) !important;
+  max-height: 320px !important;
 }
 .sparql-table .table-wrap { overflow: auto !important; min-height: 140px; }
 #ob-sparql-status { margin-bottom: -14px; }
@@ -1383,6 +1385,82 @@ def _ace_head() -> str:
 """
 
 
+_FIT_JS = """
+<script>
+(function () {
+  // Size the last block of a tab to what is left of the window below it, so
+  // it ends above the fold and scrolls inside itself. Fixed offsets cannot do
+  // this: what sits above (a rule definition, an editor) varies in height.
+  var RESERVE = 92;        // footer and the page's bottom padding
+  var FLOOR_TABLE = 120;   // never less than the header and a couple of rows
+  var FLOOR_ROW = 140;     // never less than a few lines of SQL
+  var pending = false;
+
+  function setPx(el, prop, value) {
+    var px = Math.round(value) + 'px';
+    if (el.style.getPropertyValue(prop) !== px) el.style.setProperty(prop, px, 'important');
+  }
+  function setNone(el, prop) {
+    if (el.style.getPropertyValue(prop) !== 'none') el.style.setProperty(prop, 'none', 'important');
+  }
+  function remaining(el, floor, outer) {
+    var rect = el.getBoundingClientRect();
+    var top = rect.top + window.scrollY;
+    // What the enclosing block adds below the element (a border Gradio leaves
+    // behind after fullscreen, padding) comes off the budget too.
+    var below = outer ? Math.max(0, outer.getBoundingClientRect().bottom - rect.bottom) : 0;
+    return Math.max(floor, window.innerHeight - top - RESERVE - below);
+  }
+  function fitTable(block) {
+    var wrap = block.querySelector('.table-wrap');
+    if (!wrap) return;
+    var viewports = block.querySelectorAll('.virtual-table-viewport');
+    var targets = [wrap].concat(Array.prototype.slice.call(viewports));
+    // Maximised (Gradio's fixed fullscreen layout): no cap at all.
+    if (block.classList.contains('fullscreen') || block.closest('.fullscreen')) {
+      targets.forEach(function (t) { setNone(t, 'max-height'); });
+      return;
+    }
+    var h = remaining(wrap, FLOOR_TABLE, block);
+    targets.forEach(function (t) { setPx(t, 'max-height', h); });
+  }
+  function fitRow(row) {
+    var h = remaining(row, FLOOR_ROW, null);
+    setPx(row, 'height', h);
+    setPx(row, 'max-height', h);
+  }
+  function fit() {
+    pending = false;
+    // Document order: sizing a block only moves what is below it.
+    document.querySelectorAll('.ob-fit-table, .ob-fit-row').forEach(function (block) {
+      var r = block.getBoundingClientRect();
+      if (!r.width && !r.height) return;   // hidden tab or hidden block
+      if (block.classList.contains('ob-fit-row')) fitRow(block); else fitTable(block);
+    });
+  }
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    window.requestAnimationFrame(fit);
+  }
+  window.addEventListener('resize', schedule);
+  window.addEventListener('load', schedule);
+  // Style writes above only happen when the value changes, so the observer
+  // settles after one extra pass rather than looping.
+  new MutationObserver(schedule).observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style']
+  });
+  schedule();
+})();
+</script>
+"""
+
+
+def _fit_head() -> str:
+    """The viewport fitter for the tables and editor rows that end a tab."""
+    return _FIT_JS
+
+
 def frontend_assets(head_html: str | None = None) -> dict[str, str]:
     """The css/js/head every way of serving this app has to pass along.
 
@@ -1393,7 +1471,7 @@ def frontend_assets(head_html: str | None = None) -> dict[str, str]:
     the constructor it reaches only whichever mode happens to look there.
     """
     assets = {"css": _CSS, "js": _DARK_MODE_INIT_JS}
-    vendored = _mermaid_head() + _ace_head()
+    vendored = _mermaid_head() + _ace_head() + _fit_head()
     assets["head"] = f"{head_html}\n{vendored}" if head_html else vendored
     return assets
 
@@ -1810,7 +1888,7 @@ def create_blocks(
                         elem_classes=["orange-btn", "action-btn"],
                     )
 
-                with gr.Row(elem_classes=["output-row"]):
+                with gr.Row(elem_classes=["output-row", "ob-fit-row"]):
                     sql_output = gr.Code(
                         language="sql",
                         label="Generated SQL",
@@ -2494,7 +2572,7 @@ def create_blocks(
                     show_label=False,
                     interactive=False,
                     wrap=True,
-                    elem_classes=["findings-table"],
+                    elem_classes=["findings-table", "ob-fit-table"],
                     visible=False,
                 )
 
@@ -2596,7 +2674,7 @@ def create_blocks(
                     show_label=False,
                     interactive=False,
                     wrap=True,
-                    elem_classes=["sparql-table"],
+                    elem_classes=["sparql-table", "ob-fit-table"],
                     visible=False,
                 )
 
