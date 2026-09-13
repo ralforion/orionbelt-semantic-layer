@@ -478,9 +478,9 @@ _CSS = """\
 .rules-table .table-wrap, .rules-table .virtual-table-viewport {
   max-height: 320px !important;
 }
-/* Same rule for the findings: below the rule list and the controls (~660px). */
+/* Same rule for the findings: below the rule list, controls and toolbar (~655px). */
 .findings-table .table-wrap, .findings-table .virtual-table-viewport {
-  max-height: max(220px, calc(100dvh - 665px)) !important;
+  max-height: max(196px, calc(100dvh - 705px)) !important;
 }
 .rules-table .table-wrap, .findings-table .table-wrap {
   overflow: auto !important; min-height: 100px;
@@ -523,11 +523,12 @@ _CSS = """\
    copy + fullscreen toolbar stays, like the query results, pulled up tight
    under the status line. ── */
 .sparql-table .header-row { margin-bottom: 0 !important; min-height: 0 !important; }
-/* Fill what is left of the window below the editor (its top sits at ~575px),
+/* Fill what is left of the window below the editor and the toolbar (the table
+   top sits at ~610px),
    never less than a few rows: a tall window shows more, a short one scrolls. */
 .sparql-table .table-wrap,
 .sparql-table .virtual-table-viewport {
-  max-height: max(220px, calc(100dvh - 620px)) !important;
+  max-height: max(220px, calc(100dvh - 660px)) !important;
 }
 .sparql-table .table-wrap { overflow: auto !important; min-height: 140px; }
 #ob-sparql-status { margin-bottom: -14px; }
