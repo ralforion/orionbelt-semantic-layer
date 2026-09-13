@@ -307,7 +307,7 @@ class TestTheSparqlTab:
         page.get_by_role("tab", name="SPARQL").click()
         # The editor is ACE with the SPARQL grammar: keywords are tokenised.
         page.wait_for_selector(".ace_editor .ace_keyword", timeout=30_000)
-        page.get_by_role("button", name="Run Query").click()
+        page.get_by_role("button", name="Execute Query").click()
         page.wait_for_function(
             "() => document.querySelector('#ob-sparql-status')?.innerText.startsWith('SELECT:')",
             timeout=60_000,
@@ -325,7 +325,7 @@ class TestTheSparqlTab:
         # A plain select (not filterable): open it and pick the option.
         page.get_by_label("Example query").click()
         page.get_by_role("option", name="Does the model link into schema.org? (ASK)").click()
-        page.get_by_role("button", name="Run Query").click()
+        page.get_by_role("button", name="Execute Query").click()
         page.wait_for_function(
             "() => document.querySelector('#ob-sparql-status')?.innerText.includes('ASK:')",
             timeout=60_000,

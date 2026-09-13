@@ -2486,9 +2486,9 @@ def create_blocks(
                         min_width=280,
                     )
                     sparql_btn = gr.Button(
-                        "Run Query",
+                        "Execute Query",
                         variant="primary",
-                        elem_classes=["purple-btn"],
+                        elem_classes=["orange-btn"],
                         scale=1,
                         min_width=160,
                     )
@@ -2508,7 +2508,7 @@ def create_blocks(
                 )
                 sparql_status = gr.Markdown(
                     "Pick an example or write a query over the model's OBSL graph, "
-                    "then click Run Query.",
+                    "then click Execute Query.",
                     elem_id="ob-sparql-status",
                 )
                 sparql_table = gr.Dataframe(
