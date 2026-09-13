@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 pytest.importorskip("gradio", reason="gradio required for the UI handlers")
 pytest.importorskip("pandas", reason="pandas required for the results table")
@@ -261,7 +262,16 @@ class TestRuleDefinition:
             ]
         },
         "external_concept_mappings": [
-            {"concept": "corp:HealthyCategory", "relation": "exact", "justification": "curated"}
+            {
+                "concept": "corp:HealthyCategory",
+                "expanded_iri": "https://corp.example/HealthyCategory",
+                "relation": "exact",
+                "justification": "curated",
+                "source": None,
+                "ontology_version": "2026.1",
+                "confidence": 0.9,
+                "comment": "",
+            }
         ],
     }
 
@@ -282,7 +292,14 @@ class TestRuleDefinition:
             "externalConceptMappings",
         ]
         assert "- not:\n        rule: High Return Rate" in text
-        assert "justification" not in text  # concept + relation only
+        mapping = yaml.safe_load(text)["Healthy Category"]["externalConceptMappings"][0]
+        assert mapping == {
+            "concept": "corp:HealthyCategory",
+            "relation": "exact",
+            "justification": "curated",
+            "ontologyVersion": "2026.1",
+            "confidence": 0.9,
+        }  # authored fields kept, empty ones and the derived expanded_iri dropped
 
     def test_default_type_is_omitted(self) -> None:
         text = rule_definition_yaml(

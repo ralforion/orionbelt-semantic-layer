@@ -1506,6 +1506,27 @@ _RULE_DEFINITION_KEYS = (
 )
 
 
+# The authored mapping fields, API name -> OBML key; ``expanded_iri`` is derived.
+_MAPPING_DEFINITION_KEYS = (
+    ("concept", "concept"),
+    ("relation", "relation"),
+    ("justification", "justification"),
+    ("source", "source"),
+    ("ontology_version", "ontologyVersion"),
+    ("confidence", "confidence"),
+    ("comment", "comment"),
+)
+
+
+def _mapping_definition(mapping: dict[str, Any]) -> dict[str, Any]:
+    """One ``externalConceptMappings`` entry as authored, provenance included."""
+    return {
+        obml_key: mapping[api_key]
+        for api_key, obml_key in _MAPPING_DEFINITION_KEYS
+        if mapping.get(api_key) not in (None, "")
+    }
+
+
 def rule_definition_yaml(detail: dict[str, Any]) -> str:
     """The rule's OBML definition, rebuilt from the detail response in OBML key order."""
     import yaml
@@ -1520,10 +1541,7 @@ def rule_definition_yaml(detail: dict[str, Any]) -> str:
         body[key] = value
     mappings = detail.get("external_concept_mappings") or []
     if mappings:
-        body["externalConceptMappings"] = [
-            {k: v for k, v in {"concept": m.get("concept"), "relation": m.get("relation")}.items()}
-            for m in mappings
-        ]
+        body["externalConceptMappings"] = [_mapping_definition(m) for m in mappings]
     return yaml.safe_dump({detail["name"]: body}, sort_keys=False, allow_unicode=True, width=100)
 
 

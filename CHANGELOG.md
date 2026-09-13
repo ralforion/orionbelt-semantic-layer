@@ -8,8 +8,9 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 - **Business Rules tab: select a rule by clicking its row, and show its definition.** The rule
   dropdown is gone; clicking a row of the rules table selects that rule (the first rule after a
-  load), tinted as a whole row and named in a Selected rule label. A "Show rule definition" toggle displays the selected rule's
-  OBML as YAML (type, description, severity, grain, condition, owner, synonyms, concept mappings),
+  load), tinted as a whole row and named in a Selected rule label. A "Show rule definition"
+  toggle displays the selected rule's OBML as YAML (type, description, severity, grain, condition,
+  owner, synonyms, concept mappings with their provenance),
   following the selection and the refresh, so a rule can be read next to its findings without
   scrolling the model editor. The dropdown also broke after a UI restart or on a new instance,
   because it validated the picked value against choices the new process did not have.
@@ -25,6 +26,100 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   export button no longer spans the page as a green bar. Each render now uses a fresh layout seed,
   so clicking Render Graph rearranges the graph (before, the regenerated page was identical and
   the click changed nothing).
+- **SPARQL syntax highlighting in the UI.** The SPARQL tab's editor is now ACE (vendored under
+  `ui/static` like vis-network and mermaid, so nothing is fetched from a CDN) with its SPARQL
+  grammar, line numbers, folding, and a light and a dark theme that follow the UI's mode.
+  Gradio's own code editor has no SPARQL mode and cannot take one. The editor is bridged into a
+  hidden textbox that the Run button reads, so the example gallery and the query flow are
+  unchanged.
+- **Rule evaluation and the Business Rules tab.** `POST .../rules/{name}/evaluate` runs one rule
+  through the same cache-aware pipeline as `query/execute` and returns its findings (members for
+  classification and eligibility rules, violations for validation and constraint rules);
+  `POST .../rules/evaluate` runs every rule, or a subset by `types` / `severities` /
+  `executable_only` / `max_rules`, into a report with per-rule status (`executed`, `compiled` on a
+  `dry_run`, `skipped`, `failed`), finding counts, sample rows and errors, never hiding a failure;
+  both have top-level shortcuts. The Gradio UI gains a Business Rules tab, left of SPARQL: the
+  model's rules with statistics by type, level, severity and executability, **Test Rule** for one
+  rule's findings and **Test All Rules** for the report.
+- **Business rules in OBML.** A top-level `rules` block declares business rules as conditions over
+  dimensions, measures and metrics, without SQL: a comparison in the query filter shape
+  (`field` / `op` / `value`), `all` / `any` / `not` composition, and `rule` references that inline
+  another rule's condition. A rule over dimensions only is row-level and compiles to a `WHERE`
+  predicate; one over a measure or metric is aggregate, must declare its `grain`, and compiles to a
+  query with the condition as `HAVING`, so multi-fact rules reuse the CFL planner. `classification`
+  and `eligibility` rules describe members; `validation` and `constraint` rules (with a `severity`)
+  state an invariant whose violations the compiled query returns. References must match level and
+  grain and form a DAG; every problem is a structured error with a source span
+  (`UNKNOWN_RULE_FIELD`, `UNKNOWN_RULE`, `UNKNOWN_RULE_GRAIN`, `RULE_GRAIN_REQUIRED`,
+  `RULE_GRAIN_NOT_ALLOWED`, `RULE_DIMENSION_OUTSIDE_GRAIN`, `RULE_REFERENCE_MISMATCH`,
+  `CYCLIC_RULE_REFERENCE`,
+  `INVALID_RULE_CONDITION`, `INVALID_RULE_SEVERITY`, `RULE_PARSE_ERROR`). New endpoints
+  `GET .../rules` (with statistics by type, level, severity and executability), `GET .../rules/{name}`,
+  `POST .../rules/{name}/compile` and `POST .../rules/compile` (per-rule status, never hiding a
+  failure), each with a top-level shortcut. Rules are `obsl:Rule` in the RDF graph (type, severity,
+  derived level, grain, serialized condition, what they read, dependencies), ride through OSI in
+  the ORIONBELT extension, can carry `externalConceptMappings`, and the commerce demo ships six.
+  Docs: `docs/guide/business-rules.md`. Evaluation endpoints and the UI tab follow.
+- **SPARQL tab in the Gradio UI.** Read-only `SELECT` / `ASK` over the loaded model's OBSL graph,
+  with a gallery of seven ready-to-run examples (artefacts by type, measures and their columns,
+  metrics and their measures, joins, external concept mappings, mappings with provenance, and an
+  ASK) that a test keeps working against the commerce demo's graph. `SELECT` bindings render as a
+  table with a row count, `ASK` as a boolean; a model that does not validate, an update operation
+  or a syntax error is reported in the status line. Goes through `POST .../sparql` when an API is
+  configured and falls back to exporting and querying the graph in-process when it is not, so the
+  standalone UI answers too. The Playwright suite covers both a SELECT and the ASK example.
+- **Commerce demo links into a business ontology.** `examples/orionbelt_1_commerce.yaml`, the
+  model the public playground loads, now declares `ontology.prefixes` (a synthetic `commerce:`
+  glossary plus schema.org, GoodRelations and FIBO) and `externalConceptMappings` on its
+  high-value artefacts: the transactional and master-data objects, the customer, country, product
+  category and channel dimensions, the sales, returns and purchases measures, and the return rate,
+  gross margin and YoY growth metrics, including two `broader` links that show the direction. All
+  links are marked synthetic in the file. The OBSL guide gains three more ready-to-run SPARQL
+  examples (artefacts by type, measures and their columns, links into one namespace with
+  provenance), and a test runs every example in the guide against the demo's exported graph.
+- **External concept mappings guide.** `docs/guide/concept-mappings.md` explains the OBML model
+  ontology versus an external business ontology, why mappings never affect SQL, the prefix and
+  IRI rules, the relation vocabulary with its direction (`broader` means the external concept is the
+  broader one), the resolver's error codes, and how mappings surface over REST, RDF/SPARQL and OSI.
+  The OBML reference tables, the OBSL and OSI guides, the sales-model walkthrough, the docs index
+  and the README point at it.
+- **External concept mapping discovery API.** `GET .../concept-mappings` lists every mapping in a
+  model with the artefact it sits on and the concept expanded to an absolute IRI, filtered by
+  `concept` (compact or full IRI), `namespace` (prefix name or IRI), `relation` and `types`;
+  `.../concept-mappings/namespaces` reports which external namespaces a model links into, most used
+  first; `.../concept-mappings/unmapped` lists the artefacts in the mappable scope still without a
+  mapping. All three have top-level shortcuts. The `schema`, `dimensions/{name}`,
+  `measures/{name}` and `metrics/{name}` responses carry each artefact's mappings under
+  `external_concept_mappings`, and `schema` adds `ontology_prefixes`. Backed by a model-local index
+  (`service/concept_index.py`) built on demand, so model load is unchanged.
+- **External concept mappings in the RDF graph.** The OBSL exporter states every
+  `externalConceptMappings` entry as a direct `skos:exactMatch` / `closeMatch` / `broadMatch` /
+  `narrowMatch` / `relatedMatch` triple from the model, data object, dimension, measure or metric
+  to the expanded external IRI, and adds an `obsl:ExternalConceptMapping` resource (source object,
+  target concept, authored form, relation, justification, source, ontology version, confidence,
+  comment) at a deterministic IRI for every mapping that carries provenance. The model's
+  `ontology.prefixes` and `skos` are bound on the graph, the mapping vocabulary is embedded so the
+  graph stays self-contained, and external ontologies are referenced by IRI only, never imported.
+  `/graph` and `/sparql` see the links immediately; `ontology/example-sales.ttl` and the OBSL guide
+  carry an example and a query.
+- **External concept mappings (OBML mapping foundation).** A model, data object, dimension,
+  measure or metric may carry `externalConceptMappings`: qualified links to concepts in an
+  external ontology (`concept` as a compact or full IRI, a required SKOS-style `relation`, and
+  optional `justification`, `source`, `ontologyVersion`, `confidence`, `comment`). A top-level
+  `ontology.prefixes` block declares the prefixes compact IRIs expand with; `rdf`, `rdfs`, `owl`,
+  `skos` and `xsd` are built in. The resolver expands every concept to an absolute IRI and reports
+  `INVALID_ONTOLOGY_PREFIX`, `UNKNOWN_ONTOLOGY_PREFIX`, `INVALID_CONCEPT_IRI`,
+  `INVALID_CONCEPT_MAPPING`, `DUPLICATE_CONCEPT_MAPPING` and `CONFLICTING_CONCEPT_MAPPING` as
+  structured errors with source spans. Mappings are descriptive metadata: compiled SQL, join
+  paths and planner warnings are identical with and without them (a shared model id is a content
+  hash, so a mapping edit is a model edit for the result cache like any other). The JSON schema,
+  contract manifest and OBSL
+  ontology vocabulary (`obsl:ExternalConceptMapping` and its properties) are extended, and the
+  OSI converter (osi-orionbelt 0.3.1) carries `ontology` and every object's mappings through
+  the OBSL vendor extension so OBML -> OSI -> OBML is lossless. `extends` and `inherits` merge
+  `ontology.prefixes` and model-level mappings; rebinding an already-bound prefix in another
+  fragment is `ONTOLOGY_PREFIX_CONFLICT` rather than a silent rewrite. The RDF exporter and the
+  discovery API follow in later PRs of the same plan.
 
 ## [2.29.0] - 2026-09-11
 
