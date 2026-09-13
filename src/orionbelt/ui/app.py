@@ -488,6 +488,12 @@ _CSS = """\
 .findings-table .table-wrap, .findings-table .virtual-table-viewport {
   max-height: max(196px, calc(100dvh - 705px)) !important;
 }
+/* With the rule definition shown (Gradio only renders it then, so its presence
+   is the switch), the findings get ~215px less: the block is capped at ten lines. */
+.tabitem:has(#ob-rule-definition) .findings-table .table-wrap,
+.tabitem:has(#ob-rule-definition) .findings-table .virtual-table-viewport {
+  max-height: max(196px, calc(100dvh - 920px)) !important;
+}
 .rules-table .table-wrap, .findings-table .table-wrap {
   overflow: auto !important; min-height: 100px;
 }
@@ -2472,6 +2478,7 @@ def create_blocks(
                     language="yaml",
                     interactive=False,
                     lines=6,
+                    max_lines=10,
                     label="Rule definition (OBML)",
                     elem_id="ob-rule-definition",
                     visible=False,
