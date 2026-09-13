@@ -6,6 +6,15 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **External concept mapping discovery API.** `GET .../concept-mappings` lists every mapping in a
+  model with the artefact it sits on and the concept expanded to an absolute IRI, filtered by
+  `concept` (compact or full IRI), `namespace` (prefix name or IRI), `relation` and `types`;
+  `.../concept-mappings/namespaces` reports which external namespaces a model links into, most used
+  first; `.../concept-mappings/unmapped` lists the artefacts in the mappable scope still without a
+  mapping. All three have top-level shortcuts. The `schema`, `dimensions/{name}`,
+  `measures/{name}` and `metrics/{name}` responses carry each artefact's mappings under
+  `external_concept_mappings`, and `schema` adds `ontology_prefixes`. Backed by a model-local index
+  (`service/concept_index.py`) built on demand, so model load is unchanged.
 - **External concept mappings in the RDF graph.** The OBSL exporter states every
   `externalConceptMappings` entry as a direct `skos:exactMatch` / `closeMatch` / `broadMatch` /
   `narrowMatch` / `relatedMatch` triple from the model, data object, dimension, measure or metric

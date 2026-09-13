@@ -12,6 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from orionbelt.api.deps import get_session_manager
 from orionbelt.api.schemas import (
     ColumnDetail,
+    ConceptMappingDetail,
+    ConceptMappingItem,
+    ConceptMappingListResponse,
+    ConceptNamespacesResponse,
+    ConceptNamespaceUsage,
     DataObjectDetail,
     DimensionDetail,
     ExampleDetail,
@@ -28,9 +33,13 @@ from orionbelt.api.schemas import (
     SearchRequest,
     SearchResponse,
     SearchResultItem,
+    SemanticObjectRefResponse,
+    UnmappedObjectsResponse,
 )
+from orionbelt.models.concept_links import ConceptIriError
 from orionbelt.models.expressions import find_qualified_refs
-from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.semantic import ExternalConceptMapping, ExternalConceptRelation, SemanticModel
+from orionbelt.service.concept_index import MAPPABLE_TYPES, ConceptLink, ConceptMappingIndex
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.session_manager import (
     SessionExpiredError,
@@ -59,6 +68,22 @@ def _get_model(session_id: str, model_id: str, mgr: SessionManager) -> SemanticM
         return store.get_model(model_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found") from None
+
+
+def _concept_mappings(mappings: list[ExternalConceptMapping]) -> list[ConceptMappingDetail]:
+    return [
+        ConceptMappingDetail(
+            concept=m.concept,
+            expanded_iri=m.expanded_iri,
+            relation=m.relation.value,
+            justification=m.justification.value if m.justification else None,
+            source=m.source,
+            ontology_version=m.ontology_version,
+            confidence=m.confidence,
+            comment=m.comment,
+        )
+        for m in mappings
+    ]
 
 
 def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
@@ -90,6 +115,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
                 comment=obj.comment,
                 owner=obj.owner,
                 synonyms=obj.synonyms,
+                external_concept_mappings=_concept_mappings(obj.external_concept_mappings),
             )
         )
 
@@ -105,6 +131,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
             format=dim.format,
             owner=dim.owner,
             synonyms=dim.synonyms,
+            external_concept_mappings=_concept_mappings(dim.external_concept_mappings),
         )
         for name, dim in model.dimensions.items()
     ]
@@ -124,6 +151,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
             data_type=m.data_type,
             owner=m.owner,
             synonyms=m.synonyms,
+            external_concept_mappings=_concept_mappings(m.external_concept_mappings),
         )
         for name, m in model.effective_measures.items()
     ]
@@ -144,6 +172,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
                 data_type=met.data_type,
                 owner=met.owner,
                 synonyms=met.synonyms,
+                external_concept_mappings=_concept_mappings(met.external_concept_mappings),
             )
         )
 
@@ -170,6 +199,8 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
         filters=filters,
         extends=model.extends_sources,
         inherits=model.inherits_source,
+        ontology_prefixes=dict(model.ontology.prefixes) if model.ontology else {},
+        external_concept_mappings=_concept_mappings(model.external_concept_mappings),
     )
 
 
@@ -410,6 +441,7 @@ async def get_dimension(
         format=dim.format,
         owner=dim.owner,
         synonyms=dim.synonyms,
+        external_concept_mappings=_concept_mappings(dim.external_concept_mappings),
     )
 
 
@@ -457,6 +489,7 @@ async def get_measure(
         data_type=m.data_type,
         owner=m.owner,
         synonyms=m.synonyms,
+        external_concept_mappings=_concept_mappings(m.external_concept_mappings),
     )
 
 
@@ -504,6 +537,7 @@ async def get_metric(
         data_type=met.data_type,
         owner=met.owner,
         synonyms=met.synonyms,
+        external_concept_mappings=_concept_mappings(met.external_concept_mappings),
     )
 
 
@@ -557,6 +591,149 @@ async def get_join_graph(
     """Return the join graph as an adjacency list."""
     model = _get_model(session_id, model_id, mgr)
     return _build_join_graph(model)
+
+
+# -- external concept mappings ----------------------------------------------
+
+
+def _concept_item(link: ConceptLink) -> ConceptMappingItem:
+    [detail] = _concept_mappings([link.mapping])
+    return ConceptMappingItem(
+        object=SemanticObjectRefResponse(type=link.object.type, name=link.object.name),
+        **detail.model_dump(),
+    )
+
+
+def _parse_types(types: str | None) -> list[str] | None:
+    if not types:
+        return None
+    wanted = [t.strip() for t in types.split(",") if t.strip()]
+    unknown = [t for t in wanted if t not in MAPPABLE_TYPES]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown object type(s) {unknown}; expected one of {list(MAPPABLE_TYPES)}",
+        )
+    return wanted
+
+
+def _build_concept_mapping_list(
+    model: SemanticModel,
+    model_id: str,
+    concept: str | None,
+    namespace: str | None,
+    relation: str | None,
+    types: str | None,
+) -> ConceptMappingListResponse:
+    index = ConceptMappingIndex(model, model.name or model_id)
+    if relation is not None and relation not in {r.value for r in ExternalConceptRelation}:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown relation '{relation}'; expected one of "
+            f"{[r.value for r in ExternalConceptRelation]}",
+        )
+    expanded: str | None = None
+    if concept:
+        try:
+            expanded = index.expand(concept)
+        except ConceptIriError as exc:
+            raise HTTPException(status_code=422, detail=exc.message) from None
+    links = index.find(
+        concept=concept or None, namespace=namespace, relation=relation, types=_parse_types(types)
+    )
+    return ConceptMappingListResponse(
+        mappings=[_concept_item(link) for link in links], total=len(links), concept=expanded
+    )
+
+
+@router.get(
+    "/{session_id}/models/{model_id}/concept-mappings",
+    response_model=ConceptMappingListResponse,
+    tags=["model-discovery"],
+)
+async def list_concept_mappings(
+    session_id: str,
+    model_id: str,
+    concept: str | None = None,
+    namespace: str | None = None,
+    relation: str | None = None,
+    types: str | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ConceptMappingListResponse:
+    """List the model's links to external ontology concepts.
+
+    Every ``externalConceptMappings`` entry on the model, its data objects,
+    dimensions, measures and metrics, with the artefact it sits on and the
+    concept expanded to an absolute IRI. Filters combine: ``concept`` (a
+    compact IRI using the model's prefixes, or a full IRI) returns the
+    artefacts mapped to that concept; ``namespace`` is a prefix name or a
+    namespace IRI; ``relation`` is one of exact, close, broader, narrower,
+    related; ``types`` is a comma-separated subset of model, dataObject,
+    dimension, measure, metric.
+    """
+    model = _get_model(session_id, model_id, mgr)
+    return _build_concept_mapping_list(model, model_id, concept, namespace, relation, types)
+
+
+@router.get(
+    "/{session_id}/models/{model_id}/concept-mappings/namespaces",
+    response_model=ConceptNamespacesResponse,
+    tags=["model-discovery"],
+)
+async def list_concept_namespaces(
+    session_id: str,
+    model_id: str,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ConceptNamespacesResponse:
+    """The external namespaces the model links into, most used first.
+
+    Also returns the model's declared ``ontology.prefixes``. A namespace is
+    attributed to the longest declared or built-in prefix that covers it;
+    a full-IRI mapping outside every prefix is grouped by the IRI up to its
+    last ``#`` or ``/``.
+    """
+    model = _get_model(session_id, model_id, mgr)
+    index = ConceptMappingIndex(model, model.name or model_id)
+    return ConceptNamespacesResponse(
+        prefixes=index.declared_prefixes,
+        namespaces=[
+            ConceptNamespaceUsage(
+                prefix=row.prefix,
+                namespace=row.namespace,
+                mapping_count=row.mapping_count,
+                object_count=row.object_count,
+            )
+            for row in index.namespaces()
+        ],
+    )
+
+
+@router.get(
+    "/{session_id}/models/{model_id}/concept-mappings/unmapped",
+    response_model=UnmappedObjectsResponse,
+    tags=["model-discovery"],
+)
+async def list_unmapped_objects(
+    session_id: str,
+    model_id: str,
+    types: str | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> UnmappedObjectsResponse:
+    """Artefacts in the mappable scope that carry no external concept mapping.
+
+    Covers the model itself, data objects, dimensions, declared measures and
+    metrics (synthesized count measures cannot carry mappings and are not
+    listed). ``types`` narrows the report to a comma-separated subset.
+    """
+    model = _get_model(session_id, model_id, mgr)
+    index = ConceptMappingIndex(model, model.name or model_id)
+    wanted = _parse_types(types) or list(MAPPABLE_TYPES)
+    refs = index.unmapped(wanted)
+    return UnmappedObjectsResponse(
+        objects=[SemanticObjectRefResponse(type=r.type, name=r.name) for r in refs],
+        total=len(refs),
+        types=wanted,
+    )
 
 
 # -- examples ----------------------------------------------------------------

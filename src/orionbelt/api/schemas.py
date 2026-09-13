@@ -929,6 +929,81 @@ class OSIModelLoadResponse(ModelLoadResponse):
 # ---------------------------------------------------------------------------
 
 
+class ConceptMappingDetail(BaseModel):
+    """One external concept mapping as authored on a model artefact."""
+
+    concept: str = Field(description="The concept as authored: a compact or full IRI")
+    expanded_iri: str | None = Field(
+        default=None, description="The concept as an absolute IRI (compact form expanded)"
+    )
+    relation: str = Field(
+        description=(
+            "SKOS mapping relation, artifact first: exact, close, broader (the external "
+            "concept is the broader one), narrower (the external concept is the narrower "
+            "one), related"
+        )
+    )
+    justification: str | None = None
+    source: str | None = None
+    ontology_version: str | None = None
+    confidence: float | None = None
+    comment: str | None = None
+
+
+class SemanticObjectRefResponse(BaseModel):
+    """A model artefact by kind and name."""
+
+    type: str = Field(description="model, dataObject, dimension, measure or metric")
+    name: str
+
+
+class ConceptMappingItem(ConceptMappingDetail):
+    """A mapping together with the artefact it sits on."""
+
+    object: SemanticObjectRefResponse
+
+
+class ConceptMappingListResponse(BaseModel):
+    """Response for GET /concept-mappings."""
+
+    mappings: list[ConceptMappingItem] = Field(default_factory=list)
+    total: int = 0
+    concept: str | None = Field(
+        default=None,
+        description="When filtered by concept: the absolute IRI the filter expanded to",
+    )
+
+
+class ConceptNamespaceUsage(BaseModel):
+    """How much of a model links into one external namespace."""
+
+    prefix: str | None = Field(
+        default=None, description="Declared or built-in prefix covering the namespace, if any"
+    )
+    namespace: str
+    mapping_count: int
+    object_count: int
+
+
+class ConceptNamespacesResponse(BaseModel):
+    """Response for GET /concept-mappings/namespaces."""
+
+    prefixes: dict[str, str] = Field(
+        default_factory=dict, description="The model's declared ontology.prefixes"
+    )
+    namespaces: list[ConceptNamespaceUsage] = Field(default_factory=list)
+
+
+class UnmappedObjectsResponse(BaseModel):
+    """Response for GET /concept-mappings/unmapped."""
+
+    objects: list[SemanticObjectRefResponse] = Field(default_factory=list)
+    total: int = 0
+    types: list[str] = Field(
+        default_factory=list, description="The artefact kinds the report covers"
+    )
+
+
 class ColumnDetail(BaseModel):
     """Detail of a data object column."""
 
@@ -955,6 +1030,7 @@ class DataObjectDetail(BaseModel):
     comment: str | None = None
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
+    external_concept_mappings: list[ConceptMappingDetail] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
 
@@ -972,6 +1048,7 @@ class DimensionDetail(BaseModel):
     format: str | None = None
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
+    external_concept_mappings: list[ConceptMappingDetail] = Field(default_factory=list)
 
 
 class MeasureDetail(BaseModel):
@@ -999,6 +1076,7 @@ class MeasureDetail(BaseModel):
     data_type: str | None = Field(default=None, alias="dataType")
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
+    external_concept_mappings: list[ConceptMappingDetail] = Field(default_factory=list)
 
 
 class MetricDetail(BaseModel):
@@ -1015,6 +1093,7 @@ class MetricDetail(BaseModel):
     data_type: str | None = Field(default=None, alias="dataType")
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
+    external_concept_mappings: list[ConceptMappingDetail] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
 
@@ -1043,6 +1122,8 @@ class SchemaResponse(BaseModel):
     filters: list[ModelFilterDetail] = Field(default_factory=list)
     extends: list[str] = Field(default_factory=list)
     inherits: str | None = None
+    ontology_prefixes: dict[str, str] = Field(default_factory=dict)
+    external_concept_mappings: list[ConceptMappingDetail] = Field(default_factory=list)
 
 
 class ExplainLineageItem(BaseModel):

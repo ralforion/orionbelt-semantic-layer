@@ -1014,6 +1014,80 @@ Return the join graph as nodes and edges.
 
 ---
 
+## External Concept Mappings
+
+Links from model artefacts to concepts in external ontologies, authored in OBML as `ontology.prefixes` plus `externalConceptMappings` on the model, a data object, a dimension, a measure or a metric. Descriptive metadata only: nothing here changes SQL. The describe endpoints above (`schema`, `dimensions/{name}`, `measures/{name}`, `metrics/{name}`) carry each artefact's mappings under `external_concept_mappings`; these endpoints answer the cross-cutting questions.
+
+### `GET /v1/sessions/{session_id}/models/{model_id}/concept-mappings`
+
+Every mapping in the model, with the artefact it sits on and the concept expanded to an absolute IRI. Filters combine.
+
+| Param | Description |
+|-------|-------------|
+| `concept` | A compact IRI using the model's prefixes (`corp:NetRevenue`) or a full IRI. Returns the artefacts mapped to that concept; the response echoes the expanded IRI in `concept`. An undeclared prefix or a malformed IRI is **422**. |
+| `namespace` | A prefix name (`corp`) or a namespace IRI the target must start with. |
+| `relation` | One of `exact`, `close`, `broader`, `narrower`, `related`. |
+| `types` | Comma-separated subset of `model`, `dataObject`, `dimension`, `measure`, `metric`. |
+
+**Response (200):**
+
+```json
+{
+ "mappings": [
+ {
+ "object": {"type": "measure", "name": "Revenue"},
+ "concept": "corp:NetRevenue",
+ "expanded_iri": "https://ontology.example.com/business/NetRevenue",
+ "relation": "exact",
+ "justification": "curated",
+ "source": "enterprise-finance-ontology",
+ "ontology_version": "2026.1",
+ "confidence": 1.0,
+ "comment": "Approved by Finance Data Governance"
+ }
+ ],
+ "total": 1,
+ "concept": "https://ontology.example.com/business/NetRevenue"
+}
+```
+
+`relation` reads artefact first, in the SKOS direction: `broader` means the external concept is the broader one (the artefact is a narrower notion of it), `narrower` means the external concept is the narrower one.
+
+### `GET /v1/sessions/{session_id}/models/{model_id}/concept-mappings/namespaces`
+
+The external namespaces the model links into, most used first, plus the declared `ontology.prefixes`. A target is attributed to the longest declared or built-in prefix that covers it; a full-IRI mapping outside every prefix is grouped by the IRI up to its last `#` or `/` (`prefix` is then `null`).
+
+**Response (200):**
+
+```json
+{
+ "prefixes": {"corp": "https://ontology.example.com/business/"},
+ "namespaces": [
+ {"prefix": "corp", "namespace": "https://ontology.example.com/business/", "mapping_count": 5, "object_count": 4},
+ {"prefix": null, "namespace": "https://schema.org/", "mapping_count": 1, "object_count": 1}
+ ]
+}
+```
+
+### `GET /v1/sessions/{session_id}/models/{model_id}/concept-mappings/unmapped`
+
+Artefacts in the mappable scope that carry no mapping yet: the model itself, data objects, dimensions, declared measures and metrics. Synthesized count measures cannot carry mappings and are not listed. `types` (comma-separated) narrows the report.
+
+**Response (200):**
+
+```json
+{
+ "objects": [
+ {"type": "dataObject", "name": "Customers"},
+ {"type": "measure", "name": "Order Total"}
+ ],
+ "total": 2,
+ "types": ["model", "dataObject", "dimension", "measure", "metric"]
+}
+```
+
+---
+
 ## Model Examples
 
 Canonical example queries authored alongside the model in OBML's optional `examples:` block. Surfaced through these endpoints so agents can discover what kinds of questions a model is designed to answer in one round trip.
@@ -1273,6 +1347,9 @@ Returns **404** if no sessions exist, **409 Conflict** if multiple sessions or m
 | `GET /v1/explain/{name}` | `GET /v1/sessions/{id}/models/{mid}/explain/{name}` |
 | `POST /v1/find` | `POST /v1/sessions/{id}/models/{mid}/find` |
 | `GET /v1/join-graph` | `GET /v1/sessions/{id}/models/{mid}/join-graph` |
+| `GET /v1/concept-mappings` | `GET /v1/sessions/{id}/models/{mid}/concept-mappings` |
+| `GET /v1/concept-mappings/namespaces` | `GET /v1/sessions/{id}/models/{mid}/concept-mappings/namespaces` |
+| `GET /v1/concept-mappings/unmapped` | `GET /v1/sessions/{id}/models/{mid}/concept-mappings/unmapped` |
 | `GET /v1/graph` | `GET /v1/sessions/{id}/models/{mid}/graph` |
 | `POST /v1/sparql` | `POST /v1/sessions/{id}/models/{mid}/sparql` |
 | `POST /v1/query/sql` | `POST /v1/sessions/{id}/query/sql` (auto-resolves model_id) |

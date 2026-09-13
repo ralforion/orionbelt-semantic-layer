@@ -27,6 +27,8 @@ from orionbelt.api.routers.model_api import (
 from orionbelt.api.schema_guards import validate_query_body
 from orionbelt.api.schemas import (
     ComposablesResponse,
+    ConceptMappingListResponse,
+    ConceptNamespacesResponse,
     DiagramResponse,
     DimensionDetail,
     ExampleDetail,
@@ -50,6 +52,7 @@ from orionbelt.api.schemas import (
     SemanticQLRequest,
     SPARQLRequest,
     SPARQLResponse,
+    UnmappedObjectsResponse,
     ValidateRequest,
     ValidateResponse,
 )
@@ -831,6 +834,58 @@ async def shortcut_plan_query(
     body.model_id = model_id
     session_id = _session_id_for_store(mgr, _resolve_store_and_model(mgr)[0])
     return await plan_query(session_id, body, mgr)
+
+
+@router.get(
+    "/concept-mappings",
+    response_model=ConceptMappingListResponse,
+    tags=["model-discovery"],
+)
+async def shortcut_concept_mappings(
+    concept: str | None = None,
+    namespace: str | None = None,
+    relation: str | None = None,
+    types: str | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ConceptMappingListResponse:
+    """List external concept mappings (auto-resolves session/model)."""
+    from orionbelt.api.routers.model_api import list_concept_mappings
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await list_concept_mappings(
+        session_id, model_id, concept, namespace, relation, types, mgr
+    )
+
+
+@router.get(
+    "/concept-mappings/namespaces",
+    response_model=ConceptNamespacesResponse,
+    tags=["model-discovery"],
+)
+async def shortcut_concept_namespaces(
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ConceptNamespacesResponse:
+    """External namespaces the model links into (auto-resolves session/model)."""
+    from orionbelt.api.routers.model_api import list_concept_namespaces
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await list_concept_namespaces(session_id, model_id, mgr)
+
+
+@router.get(
+    "/concept-mappings/unmapped",
+    response_model=UnmappedObjectsResponse,
+    tags=["model-discovery"],
+)
+async def shortcut_unmapped_objects(
+    types: str | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> UnmappedObjectsResponse:
+    """Artefacts without an external concept mapping (auto-resolves session/model)."""
+    from orionbelt.api.routers.model_api import list_unmapped_objects
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await list_unmapped_objects(session_id, model_id, types, mgr)
 
 
 @router.get(
