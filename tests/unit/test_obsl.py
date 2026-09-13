@@ -829,8 +829,10 @@ class TestUnboundVariableWarnings:
         )
         assert unbound_variable_warnings(query) == []
 
-    def test_ask_and_unparseable_queries_are_quiet(self) -> None:
+    def test_ask_is_quiet_and_a_broken_query_still_raises(self, sales_model: SemanticModel) -> None:
         from orionbelt.obsl.sparql import unbound_variable_warnings
 
         assert unbound_variable_warnings("ASK { ?x ?p ?o }") == []
-        assert unbound_variable_warnings("SELECT WHERE ?broken") == []
+        g = export_obsl(sales_model, "t1")
+        with pytest.raises(Exception, match="(?i)expected|parse|syntax"):
+            execute_sparql(g, "SELECT WHERE ?broken")

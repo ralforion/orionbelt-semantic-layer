@@ -55,9 +55,11 @@ def execute_sparql(graph: Graph, query: str) -> SPARQLResult:
     if _FORBIDDEN.search(query):
         raise SPARQLUpdateError("SPARQL update operations are not allowed")
 
-    warnings = unbound_variable_warnings(query)
     result = graph.query(query)
     result_any: Any = result
+    # After graph.query: the query is known to parse, so the warning pass
+    # needs no error handling of its own.
+    warnings = unbound_variable_warnings(query)
 
     if result_any.type == "ASK":
         return SPARQLResult(type="ask", boolean=bool(result_any.askAnswer), warnings=warnings)
@@ -89,17 +91,14 @@ def unbound_variable_warnings(query: str) -> list[str]:
     and says nothing. It is nearly always a typo, so it is reported here as
     a warning rather than left silent. A variable counts as bound when it
     appears in a triple pattern, a ``BIND``, or a ``VALUES`` block anywhere
-    in the query. Returns nothing for a query rdflib cannot parse; the
-    executor raises for that on its own.
+    in the query. Expects a query that parses: :func:`execute_sparql` calls
+    it after ``graph.query`` has accepted the text.
     """
     from rdflib.plugins.sparql import prepareQuery
     from rdflib.plugins.sparql.parserutils import CompValue
     from rdflib.term import Variable
 
-    try:
-        algebra = prepareQuery(query).algebra
-    except Exception:  # noqa: BLE001 - parse errors surface from graph.query
-        return []
+    algebra = prepareQuery(query).algebra
 
     bound: set[str] = set()
     ordered: list[str] = []
