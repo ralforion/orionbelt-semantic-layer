@@ -632,15 +632,16 @@ def _build_concept_mapping_list(
             detail=f"Unknown relation '{relation}'; expected one of "
             f"{[r.value for r in ExternalConceptRelation]}",
         )
-    expanded: str | None = None
-    if concept:
-        try:
-            expanded = index.expand(concept)
-        except ConceptIriError as exc:
-            raise HTTPException(status_code=422, detail=exc.message) from None
-    links = index.find(
-        concept=concept or None, namespace=namespace, relation=relation, types=_parse_types(types)
-    )
+    try:
+        expanded = index.expand(concept) if concept else None
+        links = index.find(
+            concept=concept or None,
+            namespace=namespace or None,
+            relation=relation,
+            types=_parse_types(types),
+        )
+    except ConceptIriError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from None
     return ConceptMappingListResponse(
         mappings=[_concept_item(link) for link in links], total=len(links), concept=expanded
     )

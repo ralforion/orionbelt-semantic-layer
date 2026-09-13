@@ -194,6 +194,7 @@ class TestListAndFilter:
         [
             ({"concept": "acme:Thing"}, "Unknown prefix"),
             ({"concept": "_:b0"}, "blank node"),
+            ({"namespace": "acme"}, "neither a declared prefix"),
             ({"relation": "same"}, "Unknown relation"),
             ({"types": "column"}, "Unknown object type"),
         ],
@@ -290,6 +291,17 @@ class TestShortcuts:
         assert r.status_code == 200 and r.json()["namespaces"][0]["prefix"] == "corp"
         r = await client.get("/v1/concept-mappings/unmapped", params={"types": "dimension"})
         assert r.status_code == 200 and r.json()["total"] == 1
+
+    async def test_detail_shortcuts_carry_mappings(self, client: AsyncClient) -> None:
+        """The shortcut detail routes delegate to the session-scoped ones."""
+        await _load(client)
+        dim = (await client.get("/v1/dimensions/Order ID")).json()
+        assert dim["external_concept_mappings"][0]["concept"] == "corp:OrderIdentifier"
+        meas = (await client.get("/v1/measures/Revenue")).json()
+        assert len(meas["external_concept_mappings"]) == 3
+        met = (await client.get("/v1/metrics/Revenue Doubled")).json()
+        assert met["external_concept_mappings"][0]["relation"] == "narrower"
+        assert (await client.get("/v1/measures/Nope")).status_code == 404
 
     async def test_shortcut_without_a_model_is_404(self, client: AsyncClient) -> None:
         r = await client.get("/v1/concept-mappings")

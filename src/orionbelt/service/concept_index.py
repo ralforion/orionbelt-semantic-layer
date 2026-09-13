@@ -17,7 +17,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from orionbelt.models.concept_links import effective_prefixes, expand_concept
+from orionbelt.models.concept_links import (
+    ConceptIriError,
+    effective_prefixes,
+    expand_concept,
+    is_absolute_iri,
+)
 from orionbelt.models.semantic import ExternalConceptMapping, SemanticModel
 
 MAPPABLE_TYPES: tuple[str, ...] = ("model", "dataObject", "dimension", "measure", "metric")
@@ -114,10 +119,24 @@ class ConceptMappingIndex:
                 best = (prefix, namespace)
         return best if best is not None else (None, _split_namespace(iri))
 
-    def _namespace_matches(self, iri: str, wanted: str) -> bool:
-        """``wanted`` is a prefix name, or a namespace IRI the target starts with."""
+    def resolve_namespace(self, wanted: str) -> str:
+        """The namespace IRI a ``namespace`` filter denotes.
+
+        A declared or built-in prefix name resolves to its namespace; an
+        absolute IRI is taken as written. Anything else is refused the way an
+        unexpandable concept is, so a typo (``acme`` for ``corp``) is an error
+        rather than a silently empty result.
+        """
         declared = self.prefixes.get(wanted)
-        return iri.startswith(declared) if declared is not None else iri.startswith(wanted)
+        if declared is not None:
+            return declared
+        if is_absolute_iri(wanted):
+            return wanted
+        raise ConceptIriError(
+            "UNKNOWN_ONTOLOGY_PREFIX",
+            f"'{wanted}' is neither a declared prefix nor an absolute namespace IRI",
+            suggestions=sorted(self.prefixes),
+        )
 
     def find(
         self,
@@ -127,13 +146,19 @@ class ConceptMappingIndex:
         relation: str | None = None,
         types: Iterable[str] | None = None,
     ) -> list[ConceptLink]:
-        """Mappings matching every given filter, in model order."""
+        """Mappings matching every given filter, in model order.
+
+        Raises :class:`~orionbelt.models.concept_links.ConceptIriError` for a
+        ``concept`` that cannot expand or a ``namespace`` that is neither a
+        known prefix nor an absolute IRI.
+        """
         links = self._by_iri.get(self.expand(concept), []) if concept else self._links
+        namespace_iri = self.resolve_namespace(namespace) if namespace else None
         wanted_types = set(types) if types else None
         return [
             link
             for link in links
-            if (namespace is None or self._namespace_matches(link.expanded_iri, namespace))
+            if (namespace_iri is None or link.expanded_iri.startswith(namespace_iri))
             and (relation is None or link.mapping.relation.value == relation)
             and (wanted_types is None or link.object.type in wanted_types)
         ]

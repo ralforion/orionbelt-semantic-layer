@@ -100,6 +100,18 @@ def test_find_rejects_an_unexpandable_concept(index: ConceptMappingIndex) -> Non
         index.find(concept="nope:Thing")
 
 
+def test_find_rejects_a_namespace_that_is_neither_prefix_nor_iri(
+    index: ConceptMappingIndex,
+) -> None:
+    """A typo must not read as "nothing in that namespace"."""
+    with pytest.raises(ConceptIriError) as exc:
+        index.find(namespace="acme")
+    assert exc.value.code == "UNKNOWN_ONTOLOGY_PREFIX"
+    assert "corp" in exc.value.suggestions
+    assert index.resolve_namespace("corp") == CORP
+    assert index.resolve_namespace("https://schema.org/") == "https://schema.org/"
+
+
 def test_unmapped_skips_synthesized_counts(index: ConceptMappingIndex) -> None:
     assert index.unmapped() == [
         SemanticObjectRef("model", "m"),

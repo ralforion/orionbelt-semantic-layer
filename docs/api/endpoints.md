@@ -1025,7 +1025,7 @@ Every mapping in the model, with the artefact it sits on and the concept expande
 | Param | Description |
 |-------|-------------|
 | `concept` | A compact IRI using the model's prefixes (`corp:NetRevenue`) or a full IRI. Returns the artefacts mapped to that concept; the response echoes the expanded IRI in `concept`. An undeclared prefix or a malformed IRI is **422**. |
-| `namespace` | A prefix name (`corp`) or a namespace IRI the target must start with. |
+| `namespace` | A declared or built-in prefix name (`corp`) or an absolute namespace IRI the target must start with. Anything else is **422**. |
 | `relation` | One of `exact`, `close`, `broader`, `narrower`, `related`. |
 | `types` | Comma-separated subset of `model`, `dataObject`, `dimension`, `measure`, `metric`. |
 
