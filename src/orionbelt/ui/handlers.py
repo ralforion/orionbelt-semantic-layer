@@ -1225,3 +1225,54 @@ def _load_example_model() -> str:
         if p.is_file():
             return p.read_text(encoding="utf-8")
     return "# Place your OBML model YAML here\n"
+
+
+# ---------------------------------------------------------------------------
+# SPARQL tab
+# ---------------------------------------------------------------------------
+
+
+def sparql_example_query(title: str) -> str:
+    """Dropdown callback: the gallery query for the chosen title."""
+    from orionbelt.obsl.sparql_examples import example_query
+
+    return example_query(title)
+
+
+def run_sparql(
+    model_yaml: str,
+    api_url: str,
+    query: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[object, str, dict[str, str] | None, dict[str, str] | None]:
+    """Run Query callback: ``(table update, status markdown, session, model)``.
+
+    A SELECT shows its bindings as a table and the row count in the status
+    line; an ASK shows only the status line, with the boolean. Any failure
+    (a model that does not validate, an update operation, a syntax error)
+    hides the table and puts the reason in the status line.
+    """
+    import pandas as pd
+
+    from orionbelt.ui.api_client import _run_sparql
+
+    result, error, session_state, model_state = _run_sparql(
+        model_yaml, api_url, query, session_state, model_state
+    )
+    if result is None:
+        message = error or "The model does not validate; fix it in the SQL Compiler tab first."
+        return gr.update(visible=False), f"**Error:** {message}", session_state, model_state
+    if result.get("type") == "ask":
+        answer = "true" if result.get("boolean") else "false"
+        return gr.update(visible=False), f"**ASK:** `{answer}`", session_state, model_state
+    variables = list(result.get("variables") or [])
+    rows = [[row.get(var) for var in variables] for row in result.get("results") or []]
+    frame = pd.DataFrame(rows, columns=variables)
+    noun = "row" if len(rows) == 1 else "rows"
+    return (
+        gr.update(value=frame, visible=True),
+        f"**SELECT:** {len(rows)} {noun}",
+        session_state,
+        model_state,
+    )
