@@ -462,7 +462,7 @@ document.getElementById('rot-r').onclick=function(){{rotate(15);}};
     srcdoc = inner_html.replace("&", "&amp;").replace('"', "&quot;")
     return (
         f'<iframe srcdoc="{srcdoc}" '
-        f'style="width:100%;height:calc(100dvh - 310px);'
+        f'class="ob-fit-box" style="width:100%;height:calc(100dvh - 310px);'
         f"border:1px solid #555;"
         f'border-radius:8px" sandbox="allow-scripts allow-downloads"></iframe>'
     )

@@ -14,12 +14,13 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   scrolling the model editor. The dropdown also broke after a UI restart or on a new instance,
   because it validated the picked value against choices the new process did not have.
 - **UI blocks that end a tab are sized to the window live.** The findings table, the SPARQL
-  results and the SQL Compiler output row used fixed viewport fractions and offsets, which added
-  up only on tall windows: on shorter ones they ran past the fold, and with the rule definition
-  open the findings could not be seen at all. A small script now measures what is left of the
-  window below each such block and caps it there (never less than a few rows or lines), re-fitting
-  on resize and on every layout change. Maximising a table lifts the cap, so the fullscreen view
-  fills the screen instead of staying at the fitted height.
+  results, the SQL Compiler output row, the ER diagram and the ontology graph canvas used fixed
+  viewport fractions and offsets, which added up only on tall windows: on shorter ones they ran
+  past the fold, and with the rule definition open the findings could not be seen at all. A small
+  script now measures what is left of the window below each such block, footer included, and
+  caps it there (never less than a few rows, lines, or a usable canvas), re-fitting on resize and
+  on every layout change. Maximising a table lifts the cap, so the fullscreen view fills the
+  screen instead of staying at the fitted height.
 
 ## [2.29.0] - 2026-09-11
 

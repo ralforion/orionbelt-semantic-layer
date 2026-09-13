@@ -442,7 +442,7 @@ _CSS = """\
   border: 1px solid var(--border-color-primary);
   border-radius: 8px;
   padding: 8px;
-  height: calc(100dvh - 220px);
+  height: calc(100dvh - 220px); /* pre-script fallback: _fit_head() sizes it live */
   min-height: 400px;
 }
 #er-diagram svg {
@@ -1391,9 +1391,11 @@ _FIT_JS = """
   // Size the last block of a tab to what is left of the window below it, so
   // it ends above the fold and scrolls inside itself. Fixed offsets cannot do
   // this: what sits above (a rule definition, an editor) varies in height.
-  var RESERVE = 92;        // footer and the page's bottom padding
+  var RESERVE = 92;        // below the block, when the footer cannot be measured
+  var TAIL = 20;           // the container's padding under the footer
   var FLOOR_TABLE = 120;   // never less than the header and a couple of rows
   var FLOOR_ROW = 140;     // never less than a few lines of SQL
+  var FLOOR_BOX = 300;     // a diagram or graph canvas
   var pending = false;
 
   function setPx(el, prop, value) {
@@ -1406,10 +1408,22 @@ _FIT_JS = """
   function remaining(el, floor, outer) {
     var rect = el.getBoundingClientRect();
     var top = rect.top + window.scrollY;
-    // What the enclosing block adds below the element (a border Gradio leaves
-    // behind after fullscreen, padding) comes off the budget too.
-    var below = outer ? Math.max(0, outer.getBoundingClientRect().bottom - rect.bottom) : 0;
-    return Math.max(floor, window.innerHeight - top - RESERVE - below);
+    // What the enclosing block adds below the element (padding, a border
+    // Gradio leaves behind after fullscreen) comes off the budget too.
+    var blockBottom = rect.bottom;
+    if (outer) blockBottom = Math.max(blockBottom, outer.getBoundingClientRect().bottom);
+    var extra = blockBottom - rect.bottom;
+    // Measure what the page puts under the block (gaps, the footer) rather
+    // than guessing: the distance to the footer does not depend on the
+    // block's own height, so the fit settles in one pass.
+    var below = RESERVE;
+    var footer = document.querySelector('.gradio-container footer');
+    if (footer) {
+      var f = footer.getBoundingClientRect();
+      var gap = f.top - blockBottom;
+      if (gap >= 0 && gap <= 200) below = gap + f.height + TAIL;
+    }
+    return Math.max(floor, window.innerHeight - top - extra - below);
   }
   function fitTable(block) {
     var wrap = block.querySelector('.table-wrap');
@@ -1429,13 +1443,25 @@ _FIT_JS = """
     setPx(row, 'height', h);
     setPx(row, 'max-height', h);
   }
+  function fitBox(box) {
+    // A diagram or graph canvas: the block itself, or an element inside one.
+    var outer = box.classList.contains('block') ? null : box.closest('.block');
+    var h = remaining(box, FLOOR_BOX, outer);
+    setPx(box, 'height', h);
+    setPx(box, 'max-height', h);
+  }
   function fit() {
     pending = false;
     // Document order: sizing a block only moves what is below it.
-    document.querySelectorAll('.ob-fit-table, .ob-fit-row').forEach(function (block) {
+    document.querySelectorAll('.ob-fit-table, .ob-fit-row, .ob-fit-box').forEach(function (block) {
       var r = block.getBoundingClientRect();
       if (!r.width && !r.height) return;   // hidden tab or hidden block
-      if (block.classList.contains('ob-fit-row')) fitRow(block); else fitTable(block);
+      // Gradio repeats elem_classes on a component's inner element: the
+      // outermost tagged element is the one to size.
+      if (block.parentElement.closest('.ob-fit-table, .ob-fit-row, .ob-fit-box')) return;
+      if (block.classList.contains('ob-fit-row')) fitRow(block);
+      else if (block.classList.contains('ob-fit-box')) fitBox(block);
+      else fitTable(block);
     });
   }
   function schedule() {
@@ -2303,6 +2329,7 @@ def create_blocks(
                     value="*Click 'Refresh Diagram' to generate the ER diagram "
                     "from the model YAML.*",
                     elem_id="er-diagram",
+                    elem_classes=["ob-fit-box"],
                 )
 
                 _apply_zoom_js = """(zoom) => {
