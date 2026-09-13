@@ -318,9 +318,8 @@ class TestTheSparqlTab:
     def test_the_ask_example_shows_a_boolean(self, embedded_page: Any) -> None:
         page = embedded_page
         page.get_by_role("tab", name="SPARQL").click()
-        combo = page.get_by_label("Example query")
-        combo.click()
-        combo.fill("schema.org")
+        # A plain select (not filterable): open it and pick the option.
+        page.get_by_label("Example query").click()
         page.get_by_role("option", name="Does the model link into schema.org? (ASK)").click()
         page.get_by_role("button", name="Run Query").click()
         page.wait_for_function(

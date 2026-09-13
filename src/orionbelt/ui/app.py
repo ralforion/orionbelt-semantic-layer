@@ -2466,6 +2466,8 @@ def create_blocks(
                         choices=list(EXAMPLE_TITLES),
                         value=EXAMPLE_TITLES[0],
                         label="Example query",
+                        # A short fixed gallery: a plain select, not a type-to-filter box.
+                        filterable=False,
                         scale=3,
                         min_width=280,
                     )
