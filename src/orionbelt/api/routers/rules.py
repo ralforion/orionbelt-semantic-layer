@@ -8,24 +8,42 @@ these endpoints show that query and its SQL. Evaluation is a separate step.
 
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from orionbelt.api.deps import get_db_vendor, get_session_manager
+from orionbelt.api.deps import (
+    CacheRuntimeConfig,
+    get_cache,
+    get_cache_config,
+    get_db_vendor,
+    get_query_default_limit,
+    get_session_manager,
+    is_query_execute_enabled,
+)
 from orionbelt.api.routers.model_api import _concept_mappings, _get_model, _get_store
 from orionbelt.api.schemas import (
+    QueryExecuteResponse,
     RuleCompileAllResponse,
     RuleCompileRequest,
     RuleCompileResponse,
     RuleCompileStatus,
     RuleDetail,
+    RuleEvaluateRequest,
+    RuleEvaluateResponse,
     RuleListResponse,
+    RuleReportItem,
+    RuleReportRequest,
+    RuleReportResponse,
     RuleStatistics,
     RuleSummary,
 )
 from orionbelt.api.services.query_compilation import _resolve_dialect, compile_query_or_raise
+from orionbelt.api.services.query_execution import _run_with_cache
 from orionbelt.api.warnings_adapter import semantic_error_to_warning
+from orionbelt.cache import Cache
 from orionbelt.compiler.rules import RuleCompiler, RulePlan
 from orionbelt.models.semantic import Rule, SemanticModel
 from orionbelt.service.model_store import ModelStore
@@ -167,6 +185,195 @@ def build_rule_compile_all(
     return out
 
 
+def _require_execution() -> None:
+    if not is_query_execute_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Query execution is not available. Set QUERY_EXECUTE=true "
+            "and configure DB_VENDOR + credentials.",
+        )
+
+
+async def _execute_plan(
+    *,
+    store: ModelStore,
+    model: SemanticModel,
+    session_id: str,
+    model_id: str,
+    plan: RulePlan,
+    dialect: str,
+    limit: int,
+    format_values: bool,
+    cache: Cache,
+    cache_config: CacheRuntimeConfig,
+) -> tuple[Any, QueryExecuteResponse]:
+    """Run a rule's query through the same cache-aware pipeline as query/execute."""
+    query = plan.query.model_copy(update={"limit": limit})
+    result = compile_query_or_raise(store=store, model_id=model_id, query=query, dialect=dialect)
+    response = await _run_with_cache(
+        query=query,
+        store=store,
+        model=model,
+        compile_result=result,
+        session_id=session_id,
+        model_id=model_id,
+        dialect=dialect,
+        cache=cache,
+        cache_config=cache_config,
+        response_format="json",
+        format_values=format_values,
+        locale=None,
+        timezone_override=None,
+    )
+    if not isinstance(response, QueryExecuteResponse):  # pragma: no cover - json format only
+        raise HTTPException(status_code=500, detail="Unexpected execute response format")
+    return result, response
+
+
+async def build_rule_evaluate(
+    *,
+    store: ModelStore,
+    model: SemanticModel,
+    session_id: str,
+    model_id: str,
+    name: str,
+    body: RuleEvaluateRequest,
+    dialect: str,
+    cache: Cache,
+    cache_config: CacheRuntimeConfig,
+) -> RuleEvaluateResponse:
+    rule = model.rules.get(name)
+    if rule is None:
+        raise HTTPException(status_code=404, detail=f"Rule '{name}' not found")
+    plan = RuleCompiler(model).plan(rule)
+    limit = body.limit or get_query_default_limit()
+    _, response = await _execute_plan(
+        store=store,
+        model=model,
+        session_id=session_id,
+        model_id=model_id,
+        plan=plan,
+        dialect=dialect,
+        limit=limit,
+        format_values=body.format_values,
+        cache=cache,
+        cache_config=cache_config,
+    )
+    return RuleEvaluateResponse(
+        name=name,
+        type=rule.type.value,
+        level=plan.level,
+        findings=plan.findings,
+        severity=rule.severity.value if rule.severity else None,
+        dialect=dialect,
+        sql=response.sql,
+        columns=response.columns,
+        rows=response.rows,
+        row_count=response.row_count,
+        limit=limit,
+        execution_time_ms=response.execution_time_ms,
+        cached=response.cached,
+        warnings=response.warnings,
+    )
+
+
+def _selected_rules(model: SemanticModel, body: RuleReportRequest) -> list[Rule]:
+    rules = list(model.rules.values())
+    if body.types:
+        rules = [r for r in rules if r.type.value in body.types]
+    if body.severities:
+        rules = [r for r in rules if r.severity and r.severity.value in body.severities]
+    if body.max_rules:
+        rules = rules[: body.max_rules]
+    return rules
+
+
+async def build_rule_report(
+    *,
+    store: ModelStore,
+    model: SemanticModel,
+    session_id: str,
+    model_id: str,
+    body: RuleReportRequest,
+    dialect: str,
+    cache: Cache,
+    cache_config: CacheRuntimeConfig,
+) -> RuleReportResponse:
+    """Evaluate every selected rule; each gets a row with its status, nothing is hidden."""
+    started = time.perf_counter()
+    compiler = RuleCompiler(model)
+    report = RuleReportResponse(
+        model_id=model_id,
+        dialect=dialect,
+        generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        filters=body.model_dump(exclude_none=True, exclude={"include_sql", "include_rows"}),
+    )
+    summary = report.summary
+    for rule in _selected_rules(model, body):
+        plan = compiler.plan(rule)
+        item = RuleReportItem(
+            name=rule.name,
+            type=rule.type.value,
+            level=plan.level,
+            findings=plan.findings,
+            severity=rule.severity.value if rule.severity else None,
+            status="skipped",
+        )
+        summary.total += 1
+        rule_started = time.perf_counter()
+        compiled, error = _try_compile(store, model_id, plan, dialect)
+        if compiled is None:
+            if body.executable_only:
+                item.error = error
+                summary.skipped += 1
+            else:
+                item.status, item.error = "failed", error
+                summary.failed += 1
+        elif body.dry_run:
+            item.status = "compiled"
+            summary.compiled += 1
+            if body.include_sql:
+                item.sql = compiled.sql
+        else:
+            try:
+                _, response = await _execute_plan(
+                    store=store,
+                    model=model,
+                    session_id=session_id,
+                    model_id=model_id,
+                    plan=plan,
+                    dialect=dialect,
+                    limit=body.limit,
+                    format_values=body.format_values,
+                    cache=cache,
+                    cache_config=cache_config,
+                )
+            except HTTPException as exc:
+                item.status, item.error = "failed", _error_text(exc)
+                summary.failed += 1
+            except Exception as exc:  # noqa: BLE001 - a driver failure is this rule's row, not a 500
+                item.status, item.error = "failed", str(exc)
+                summary.failed += 1
+            else:
+                item.status = "executed"
+                item.finding_count = response.row_count
+                item.cached = response.cached
+                item.columns = [c.name for c in response.columns]
+                if body.include_rows:
+                    item.rows = response.rows
+                if body.include_sql:
+                    item.sql = response.sql
+                summary.executed += 1
+                if response.row_count:
+                    summary.with_findings += 1
+        item.elapsed_ms = round((time.perf_counter() - rule_started) * 1000, 2)
+        report.results.append(item)
+        if item.status == "failed" and body.stop_on_first_failure:
+            break
+    report.elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    return report
+
+
 @router.get(
     "/{session_id}/models/{model_id}/rules",
     response_model=RuleListResponse,
@@ -211,6 +418,47 @@ async def compile_all_rules(
     return build_rule_compile_all(store, model_id, model, _dialect_for(model, requested, db_vendor))
 
 
+@router.post(
+    "/{session_id}/models/{model_id}/rules/evaluate",
+    response_model=RuleReportResponse,
+    tags=["rules"],
+)
+async def evaluate_all_rules(
+    session_id: str,
+    model_id: str,
+    body: RuleReportRequest | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    db_vendor: str | None = Depends(get_db_vendor),  # noqa: B008
+    cache: Cache = Depends(get_cache),  # noqa: B008
+    cache_config: CacheRuntimeConfig = Depends(get_cache_config),  # noqa: B008
+) -> RuleReportResponse:
+    """Evaluate every rule (or a filtered subset) and return a report.
+
+    A report, not one result: each rule is a row with its status
+    (``executed``, ``compiled`` on a dry run, ``skipped``, ``failed``), its
+    finding count, a sample of findings, and the reason when it failed.
+    Filters: ``types``, ``severities``, ``executable_only``, ``max_rules``.
+    Controls: ``limit`` (sample size per rule), ``dry_run``,
+    ``stop_on_first_failure``, ``include_sql``, ``include_rows``.
+    Requires ``QUERY_EXECUTE=true`` unless ``dry_run``.
+    """
+    body = body or RuleReportRequest()
+    if not body.dry_run:
+        _require_execution()
+    store = _get_store(session_id, mgr)
+    model = _get_model(session_id, model_id, mgr)
+    return await build_rule_report(
+        store=store,
+        model=model,
+        session_id=session_id,
+        model_id=model_id,
+        body=body,
+        dialect=_dialect_for(model, body.dialect, db_vendor),
+        cache=cache,
+        cache_config=cache_config,
+    )
+
+
 @router.get(
     "/{session_id}/models/{model_id}/rules/{name}",
     response_model=RuleDetail,
@@ -253,4 +501,42 @@ async def compile_rule(
     requested = body.dialect if body else None
     return build_rule_compile(
         store, model_id, model, name, _dialect_for(model, requested, db_vendor)
+    )
+
+
+@router.post(
+    "/{session_id}/models/{model_id}/rules/{name}/evaluate",
+    response_model=RuleEvaluateResponse,
+    tags=["rules"],
+)
+async def evaluate_rule(
+    session_id: str,
+    model_id: str,
+    name: str,
+    body: RuleEvaluateRequest | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    db_vendor: str | None = Depends(get_db_vendor),  # noqa: B008
+    cache: Cache = Depends(get_cache),  # noqa: B008
+    cache_config: CacheRuntimeConfig = Depends(get_cache_config),  # noqa: B008
+) -> RuleEvaluateResponse:
+    """Run one rule and return its findings.
+
+    Members for classification and eligibility rules, violations for
+    validation and constraint rules. Goes through the same cache-aware
+    pipeline as ``query/execute``; requires ``QUERY_EXECUTE=true``.
+    """
+    _require_execution()
+    body = body or RuleEvaluateRequest()
+    store = _get_store(session_id, mgr)
+    model = _get_model(session_id, model_id, mgr)
+    return await build_rule_evaluate(
+        store=store,
+        model=model,
+        session_id=session_id,
+        model_id=model_id,
+        name=name,
+        body=body,
+        dialect=_dialect_for(model, body.dialect, db_vendor),
+        cache=cache,
+        cache_config=cache_config,
     )

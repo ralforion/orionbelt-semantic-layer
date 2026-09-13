@@ -15,7 +15,13 @@ from typing import Annotated, Literal, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from orionbelt.api.deps import get_db_vendor, get_session_manager
+from orionbelt.api.deps import (
+    CacheRuntimeConfig,
+    get_cache,
+    get_cache_config,
+    get_db_vendor,
+    get_session_manager,
+)
 from orionbelt.api.routers.composables import build_composables
 from orionbelt.api.routers.model_api import (
     _build_explain,
@@ -48,7 +54,11 @@ from orionbelt.api.schemas import (
     RuleCompileRequest,
     RuleCompileResponse,
     RuleDetail,
+    RuleEvaluateRequest,
+    RuleEvaluateResponse,
     RuleListResponse,
+    RuleReportRequest,
+    RuleReportResponse,
     SchemaResponse,
     SearchRequest,
     SearchResponse,
@@ -61,6 +71,7 @@ from orionbelt.api.schemas import (
     ValidateResponse,
 )
 from orionbelt.api.warnings_adapter import error_info_to_detail, semantic_error_to_warning
+from orionbelt.cache import Cache
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
@@ -825,6 +836,39 @@ async def shortcut_compile_all_rules(
 
     session_id, model_id, _ = _resolve_single_model(mgr)
     return await compile_all_rules(session_id, model_id, body, mgr, db_vendor)
+
+
+@router.post("/rules/evaluate", response_model=RuleReportResponse, tags=["rules"])
+async def shortcut_evaluate_all_rules(
+    body: RuleReportRequest | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    db_vendor: str | None = Depends(get_db_vendor),  # noqa: B008
+    cache: Cache = Depends(get_cache),  # noqa: B008
+    cache_config: CacheRuntimeConfig = Depends(get_cache_config),  # noqa: B008
+) -> RuleReportResponse:
+    """Evaluate every rule into a report (auto-resolves session/model)."""
+    from orionbelt.api.routers.rules import evaluate_all_rules
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await evaluate_all_rules(session_id, model_id, body, mgr, db_vendor, cache, cache_config)
+
+
+@router.post("/rules/{name}/evaluate", response_model=RuleEvaluateResponse, tags=["rules"])
+async def shortcut_evaluate_rule(
+    name: str,
+    body: RuleEvaluateRequest | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    db_vendor: str | None = Depends(get_db_vendor),  # noqa: B008
+    cache: Cache = Depends(get_cache),  # noqa: B008
+    cache_config: CacheRuntimeConfig = Depends(get_cache_config),  # noqa: B008
+) -> RuleEvaluateResponse:
+    """Run one rule and return its findings (auto-resolves session/model)."""
+    from orionbelt.api.routers.rules import evaluate_rule
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await evaluate_rule(
+        session_id, model_id, name, body, mgr, db_vendor, cache, cache_config
+    )
 
 
 @router.get("/rules/{name}", response_model=RuleDetail, tags=["rules"])

@@ -1098,6 +1098,96 @@ class RuleCompileAllResponse(BaseModel):
     failed: int = 0
 
 
+class RuleEvaluateRequest(BaseModel):
+    """Request body for POST /rules/{name}/evaluate."""
+
+    dialect: str | None = None
+    limit: int | None = Field(
+        default=None, ge=1, le=10_000, description="Max findings to return (default: API limit)"
+    )
+    format_values: bool = Field(
+        default=False, description="Render numeric cells with their display format"
+    )
+
+
+class RuleEvaluateResponse(BaseModel):
+    """Response for POST /rules/{name}/evaluate: the rule's findings."""
+
+    name: str
+    type: str
+    level: str
+    findings: str
+    severity: str | None = None
+    dialect: str
+    sql: str
+    columns: list[ColumnMetadata] = Field(default_factory=list)
+    rows: list[list[object]] = Field(default_factory=list)
+    row_count: int = 0
+    limit: int | None = None
+    execution_time_ms: float = 0.0
+    cached: bool = False
+    warnings: list[StructuredWarning] = Field(default_factory=list)
+
+
+class RuleReportRequest(BaseModel):
+    """Request body for POST /rules/evaluate: which rules, how, and what to include."""
+
+    dialect: str | None = None
+    types: list[str] | None = Field(default=None, description="Only these rule types")
+    severities: list[str] | None = Field(default=None, description="Only these severities")
+    executable_only: bool = Field(
+        default=False, description="Skip rules whose query does not compile instead of failing them"
+    )
+    max_rules: int | None = Field(default=None, ge=1, description="Stop after this many rules")
+    limit: int = Field(default=20, ge=1, le=1_000, description="Sample findings per rule")
+    dry_run: bool = Field(default=False, description="Compile only; report status without running")
+    stop_on_first_failure: bool = False
+    include_sql: bool = False
+    include_rows: bool = True
+    format_values: bool = False
+
+
+class RuleReportItem(BaseModel):
+    """One rule's outcome in an all-rules evaluation."""
+
+    name: str
+    type: str
+    level: str
+    findings: str
+    severity: str | None = None
+    status: str = Field(description="executed, compiled (dry run), skipped, or failed")
+    finding_count: int | None = Field(
+        default=None, description="Findings returned (capped by limit); null unless executed"
+    )
+    columns: list[str] = Field(default_factory=list)
+    rows: list[list[object]] = Field(default_factory=list)
+    sql: str | None = None
+    error: str | None = None
+    cached: bool = False
+    elapsed_ms: float = 0.0
+
+
+class RuleReportSummary(BaseModel):
+    total: int = 0
+    executed: int = 0
+    compiled: int = 0
+    skipped: int = 0
+    failed: int = 0
+    with_findings: int = 0
+
+
+class RuleReportResponse(BaseModel):
+    """Response for POST /rules/evaluate: every selected rule, nothing hidden."""
+
+    model_id: str
+    dialect: str
+    generated_at: str
+    filters: dict[str, Any] = Field(default_factory=dict)
+    summary: RuleReportSummary = Field(default_factory=RuleReportSummary)
+    results: list[RuleReportItem] = Field(default_factory=list)
+    elapsed_ms: float = 0.0
+
+
 class ColumnDetail(BaseModel):
     """Detail of a data object column."""
 
