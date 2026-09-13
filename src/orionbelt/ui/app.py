@@ -475,8 +475,9 @@ _CSS = """\
 .rules-table .table-wrap, .rules-table .virtual-table-viewport {
   max-height: 320px !important;
 }
+/* Same rule for the findings: below the rule list and the controls (~660px). */
 .findings-table .table-wrap, .findings-table .virtual-table-viewport {
-  max-height: 340px !important;
+  max-height: max(220px, calc(100dvh - 665px)) !important;
 }
 .rules-table .table-wrap, .findings-table .table-wrap {
   overflow: auto !important; min-height: 100px;
@@ -518,11 +519,11 @@ _CSS = """\
    copy/fullscreen toolbar row is hidden: it only added a gap under the status
    line, which already carries the row count. ── */
 .sparql-table .header-row { display: none !important; }
-/* Fixed height, like the rule list: the editor above it already takes its
-   share of the window, and a viewport-relative cap kept overrunning the fold. */
+/* Fill what is left of the window below the editor (its top sits at ~575px),
+   never less than a few rows: a tall window shows more, a short one scrolls. */
 .sparql-table .table-wrap,
 .sparql-table .virtual-table-viewport {
-  max-height: 340px !important;
+  max-height: max(220px, calc(100dvh - 620px)) !important;
 }
 .sparql-table .table-wrap { overflow: auto !important; min-height: 140px; }
 #ob-sparql-status { margin-bottom: -6px; }
