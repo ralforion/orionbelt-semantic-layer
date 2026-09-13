@@ -109,3 +109,8 @@ def test_every_guide_query_runs_against_the_demo_graph(graph: Graph, query: str)
     elif "skos:" in query:
         # The mapping examples exist to show the demo's links: they must find them.
         assert result.results, "a mapping example should find the demo's links"
+        if "https://example.com/ontology/commerce/" in query:
+            # The namespace example must follow every SKOS relation, not just exact:
+            # the demo's 'broader' link to commerce:RevenueGrowth is in that namespace.
+            concepts = {row["concept"] for row in result.results}
+            assert COMMERCE + "RevenueGrowth" in concepts

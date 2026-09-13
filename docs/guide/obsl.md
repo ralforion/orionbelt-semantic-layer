@@ -209,9 +209,11 @@ SELECT ?measure ?aggregation ?column WHERE {
 PREFIX obsl: <https://ralforion.com/ns/obsl#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
-SELECT ?label ?concept ?justification ?source WHERE {
+SELECT ?label ?relation ?concept ?justification ?source WHERE {
     ?x rdfs:label ?label ;
-       skos:exactMatch ?concept .
+       ?relation ?concept .
+    FILTER(?relation IN (skos:exactMatch, skos:closeMatch, skos:broadMatch,
+                         skos:narrowMatch, skos:relatedMatch))
     FILTER(STRSTARTS(STR(?concept), "https://example.com/ontology/commerce/"))
     OPTIONAL {
         ?x obsl:hasExternalConceptMapping ?mapping .
