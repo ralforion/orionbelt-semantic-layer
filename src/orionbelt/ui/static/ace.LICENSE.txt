@@ -1,5 +1,7 @@
 ace-builds 1.44.0 (https://github.com/ajaxorg/ace-builds), src-min-noconflict build: ace.js + mode-sparql.js + theme-textmate.js + theme-tomorrow_night.js concatenated into ace-sparql.min.js.
 
+Local patch to mode-sparql.js: the keyword alternation (token keyword.other.sparql) had no word boundaries, so a keyword that is a prefix of a longer one matched first (AS inside ASK, leaving K as a separate token); it is now wrapped in \b(?:...)\b, and two upstream typos in it ([As][Ss][Cc], [Ww][He][Ee]) are corrected.
+
 Copyright (c) 2010, Ajax.org B.V.
 All rights reserved.
 
