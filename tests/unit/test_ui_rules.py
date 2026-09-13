@@ -10,7 +10,13 @@ pytest.importorskip("gradio", reason="gradio required for the UI handlers")
 pytest.importorskip("pandas", reason="pandas required for the results table")
 
 from orionbelt.ui import api_client  # noqa: E402
-from orionbelt.ui.handlers import evaluate_all_rules_ui, evaluate_rule_ui, load_rules  # noqa: E402
+from orionbelt.ui.handlers import (  # noqa: E402
+    evaluate_all_rules_ui,
+    evaluate_rule_ui,
+    load_rules,
+    rule_definition,
+    rule_definition_yaml,
+)
 
 _MODEL = "version: 1.0\ndataObjects: {}\n"
 
@@ -237,3 +243,81 @@ class TestTestAll:
             text, table, _, _ = evaluate_all_rules_ui(_MODEL, "http://nope:1", "", None, None)
         assert text == "**Error:** API unreachable at http://nope:1."
         assert not _visible(table)
+
+
+class TestRuleDefinition:
+    _DETAIL = {
+        "name": "Healthy Category",
+        "type": "validation",
+        "severity": "warning",
+        "grain": ["Product Category"],
+        "description": "A category that sells must not be a high-return one",
+        "owner": None,
+        "synonyms": [],
+        "condition": {
+            "all": [
+                {"field": "Total Sales", "op": ">", "value": 0},
+                {"not": {"rule": "High Return Rate"}},
+            ]
+        },
+        "external_concept_mappings": [
+            {"concept": "corp:HealthyCategory", "relation": "exact", "justification": "curated"}
+        ],
+    }
+
+    def test_yaml_is_the_obml_definition_in_key_order(self) -> None:
+        text = rule_definition_yaml(self._DETAIL)
+        assert text.startswith("Healthy Category:\n  type: validation\n")
+        keys = [
+            line[2:].split(":")[0]
+            for line in text.splitlines()
+            if line.startswith("  ") and line[2] not in " -"
+        ]
+        assert keys == [
+            "type",
+            "description",
+            "severity",
+            "grain",
+            "condition",
+            "externalConceptMappings",
+        ]
+        assert "- not:\n        rule: High Return Rate" in text
+        assert "justification" not in text  # concept + relation only
+
+    def test_default_type_is_omitted(self) -> None:
+        text = rule_definition_yaml(
+            {
+                "name": "R",
+                "type": "classification",
+                "condition": {"field": "A", "op": "=", "value": 1},
+            }
+        )
+        assert text == "R:\n  condition:\n    field: A\n    op: '='\n    value: 1\n"
+
+    def test_hidden_unless_shown_and_picked(self) -> None:
+        update, _, _ = rule_definition(_MODEL, "http://api", "", "R", False, None, None)
+        assert not _visible(update)
+        update, _, _ = rule_definition(_MODEL, "http://api", "", None, True, None, None)
+        assert not _visible(update)
+
+    def test_fetches_and_renders_the_picked_rule(self) -> None:
+        client = _client(200, self._DETAIL)
+        with _with(client):
+            update, session, model = rule_definition(
+                _MODEL, "http://api", "duckdb", "Healthy Category", True, None, None
+            )
+        client.request.assert_called_once_with(
+            "GET",
+            "/v1/sessions/s1/models/m1/rules/Healthy Category?dialect=duckdb",
+            json=None,
+            timeout=300,
+        )
+        assert _visible(update) and update["value"].startswith("Healthy Category:\n")
+        assert session == {"session_id": "s1"} and model == {"model_id": "m1"}
+
+    def test_error_is_shown_as_a_comment(self) -> None:
+        with _with(_client(404, {"detail": "Rule 'Nope' not found"})):
+            update, _, _ = rule_definition(_MODEL, "http://api", "", "Nope", True, None, None)
+        assert (
+            _visible(update) and update["value"].startswith("# ") and "not found" in update["value"]
+        )

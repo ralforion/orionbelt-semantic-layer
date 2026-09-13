@@ -1465,3 +1465,63 @@ def evaluate_all_rules_ui(
     )
     frame = pd.DataFrame(rows, columns=_REPORT_COLUMNS)
     return text, gr.update(value=frame, visible=True), session_state, model_state
+
+
+_RULE_DEFINITION_KEYS = (
+    "type",
+    "description",
+    "severity",
+    "grain",
+    "condition",
+    "owner",
+    "synonyms",
+)
+
+
+def rule_definition_yaml(detail: dict[str, Any]) -> str:
+    """The rule's OBML definition, rebuilt from the detail response in OBML key order."""
+    import yaml
+
+    body: dict[str, Any] = {}
+    for key in _RULE_DEFINITION_KEYS:
+        value = detail.get(key)
+        if value in (None, [], ""):
+            continue
+        if key == "type" and value == "classification":
+            continue  # the default; an author would not usually write it
+        body[key] = value
+    mappings = detail.get("external_concept_mappings") or []
+    if mappings:
+        body["externalConceptMappings"] = [
+            {k: v for k, v in {"concept": m.get("concept"), "relation": m.get("relation")}.items()}
+            for m in mappings
+        ]
+    return yaml.safe_dump({detail["name"]: body}, sort_keys=False, allow_unicode=True, width=100)
+
+
+def rule_definition(
+    model_yaml: str,
+    api_url: str,
+    dialect: str,
+    rule_name: str | None,
+    show: bool,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[object, dict[str, str] | None, dict[str, str] | None]:
+    """Show-definition callback: ``(definition code update, session, model)``.
+
+    Hidden unless the checkbox is on and a rule is picked; otherwise the
+    picked rule's OBML definition as YAML, or the reason it could not be
+    fetched.
+    """
+    from orionbelt.ui.api_client import _rules_request
+
+    if not show or not rule_name:
+        return gr.update(visible=False), session_state, model_state
+    suffix = f"/{rule_name}" + (f"?dialect={dialect}" if dialect else "")
+    body, error, session_state, model_state = _rules_request(
+        model_yaml, api_url, session_state, model_state, "GET", suffix
+    )
+    if body is None:
+        return gr.update(value=f"# {error}", visible=True), session_state, model_state
+    return gr.update(value=rule_definition_yaml(body), visible=True), session_state, model_state

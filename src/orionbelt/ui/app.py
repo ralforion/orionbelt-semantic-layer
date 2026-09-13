@@ -55,6 +55,7 @@ from orionbelt.ui.handlers import (
     filter_chip_update,
     load_rules,
     model_jump_targets,
+    rule_definition,
     run_sparql,
     sort_and_execute,
     sort_state_str,
@@ -98,6 +99,7 @@ __all__ = [
     "_render_ontology_graph",
     "_resolve_execution_dialect",
     "load_rules",
+    "rule_definition",
     "run_sparql",
     "sparql_example_query",
     "evaluate_all_rules_ui",
@@ -2421,6 +2423,13 @@ def create_blocks(
                         scale=3,
                         min_width=280,
                     )
+                    show_definition_cb = gr.Checkbox(
+                        value=False,
+                        label="Show rule definition",
+                        scale=1,
+                        min_width=220,
+                        elem_id="ob-rules-show-definition",
+                    )
                     rules_refresh_btn = gr.Button(
                         "Refresh Rules", scale=1, min_width=150, elem_classes=["green-btn"]
                     )
@@ -2438,6 +2447,14 @@ def create_blocks(
                         scale=1,
                         min_width=150,
                     )
+                rule_definition_code = gr.Code(
+                    language="yaml",
+                    interactive=False,
+                    lines=6,
+                    label="Rule definition (OBML)",
+                    elem_id="ob-rule-definition",
+                    visible=False,
+                )
                 rules_status = gr.Markdown(
                     "Test Rule runs one rule and lists its findings (members for a "
                     "classification or eligibility rule, violations for a validation or "
@@ -2461,9 +2478,29 @@ def create_blocks(
                     session_state,
                     model_state,
                 ]
-                rules_tab.select(fn=load_rules, inputs=_rules_inputs, outputs=_rules_load_outputs)
+                _definition_inputs = [
+                    model_input,
+                    api_url,
+                    dialect,
+                    rule_picker,
+                    show_definition_cb,
+                    session_state,
+                    model_state,
+                ]
+                _definition_outputs = [rule_definition_code, session_state, model_state]
+                # The definition follows the picked rule and the checkbox; after a
+                # (re)load it follows the picker's new value too.
+                rules_tab.select(
+                    fn=load_rules, inputs=_rules_inputs, outputs=_rules_load_outputs
+                ).then(fn=rule_definition, inputs=_definition_inputs, outputs=_definition_outputs)
                 rules_refresh_btn.click(
                     fn=load_rules, inputs=_rules_inputs, outputs=_rules_load_outputs
+                ).then(fn=rule_definition, inputs=_definition_inputs, outputs=_definition_outputs)
+                rule_picker.change(
+                    fn=rule_definition, inputs=_definition_inputs, outputs=_definition_outputs
+                )
+                show_definition_cb.change(
+                    fn=rule_definition, inputs=_definition_inputs, outputs=_definition_outputs
                 )
                 test_rule_btn.click(
                     fn=evaluate_rule_ui,

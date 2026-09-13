@@ -376,3 +376,20 @@ class TestTheBusinessRulesTab:
         )
         status = page.locator("#ob-rules-status").inner_text()
         assert "Error" in status or "Electronics Sale" in status
+
+    def test_show_definition_reveals_the_picked_rules_yaml(self, embedded_page: Any) -> None:
+        page = embedded_page
+        page.get_by_role("tab", name="Business Rules").click()
+        page.wait_for_function(
+            "() => /\\d+ rules on|Error|declares no rules/.test("
+            "document.querySelector('#ob-rules-stats')?.innerText || '')",
+            timeout=60_000,
+        )
+        page.get_by_label("Show rule definition").check()
+        page.wait_for_function(
+            "() => (document.querySelector('#ob-rule-definition')?.innerText || '')"
+            ".includes('condition')",
+            timeout=60_000,
+        )
+        text = page.locator("#ob-rule-definition").inner_text()
+        assert "Electronics Sale" in text and "Product Category" in text

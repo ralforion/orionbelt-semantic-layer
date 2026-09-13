@@ -6,6 +6,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **Business Rules tab shows a rule's definition.** A "Show rule definition" toggle beside the rule
+  picker displays the picked rule's OBML as YAML (type, description, severity, grain, condition,
+  owner, synonyms, concept mappings), following the picker and the refresh, so a rule can be read
+  next to its findings without scrolling the model editor.
 - **SPARQL syntax highlighting in the UI.** The SPARQL tab's editor is now ACE (vendored under
   `ui/static` like vis-network and mermaid, so nothing is fetched from a CDN) with its SPARQL
   grammar, line numbers, folding, and a light and a dark theme that follow the UI's mode.
