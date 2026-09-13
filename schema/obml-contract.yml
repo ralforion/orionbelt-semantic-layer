@@ -66,6 +66,12 @@ enums:
   MappingJustification:
     python: orionbelt.models.semantic.MappingJustification
     values: ['curated', 'imported', 'generated', 'inferred', 'lexical']
+  RuleType:
+    python: orionbelt.models.semantic.RuleType
+    values: ['classification', 'validation', 'constraint', 'eligibility']
+  RuleSeverity:
+    python: orionbelt.models.semantic.RuleSeverity
+    values: ['info', 'warning', 'error']
 
 classes:
   CustomExtension:
@@ -1144,6 +1150,118 @@ classes:
         json_schema: true
         ontology_property: maxStaleness
         osi_roundtrip: true
+  Rule:
+    python: orionbelt.models.semantic.Rule
+    json_schema_def: rule
+    ontology_class: Rule
+    fields:
+      name:
+        alias: name
+        type: "str"
+        json_schema: false
+        ontology_property: null
+        osi_roundtrip: true
+      type:
+        alias: type
+        type: "RuleType"
+        json_schema: true
+        ontology_property: ruleType
+        osi_roundtrip: true
+      condition:
+        alias: condition
+        type: "RuleCondition"
+        json_schema: true
+        ontology_property: ruleCondition
+        osi_roundtrip: true
+      grain:
+        alias: grain
+        type: "list[str]"
+        json_schema: true
+        ontology_property: ruleGrain
+        osi_roundtrip: true
+      severity:
+        alias: severity
+        type: "RuleSeverity | None"
+        json_schema: true
+        ontology_property: ruleSeverity
+        osi_roundtrip: true
+      description:
+        alias: description
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      owner:
+        alias: owner
+        type: "str | None"
+        json_schema: true
+        ontology_property: owner
+        osi_roundtrip: true
+      synonyms:
+        alias: synonyms
+        type: "list[str]"
+        json_schema: true
+        ontology_property: synonym
+        osi_roundtrip: true
+      custom_extensions:
+        alias: customExtensions
+        type: "list[CustomExtension]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      external_concept_mappings:
+        alias: externalConceptMappings
+        type: "list[ExternalConceptMapping]"
+        json_schema: true
+        ontology_property: hasExternalConceptMapping
+        osi_roundtrip: true
+  RuleCondition:
+    python: orionbelt.models.semantic.RuleCondition
+    json_schema_def: ruleCondition
+    ontology_class: null
+    fields:
+      field:
+        alias: field
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      op:
+        alias: op
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      value:
+        alias: value
+        type: "Any"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      all_:
+        alias: all
+        type: "list[RuleCondition] | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      any_:
+        alias: any
+        type: "list[RuleCondition] | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      not_:
+        alias: not
+        type: "RuleCondition | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      rule:
+        alias: rule
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
   SemanticModel:
     python: orionbelt.models.semantic.SemanticModel
     json_schema_root: true
@@ -1202,6 +1320,12 @@ classes:
         type: "list[ModelFilter]"
         json_schema: true
         ontology_property: null
+        osi_roundtrip: true
+      rules:
+        alias: rules
+        type: "dict[str, Rule]"
+        json_schema: true
+        ontology_property: hasRule
         osi_roundtrip: true
       examples:
         alias: examples

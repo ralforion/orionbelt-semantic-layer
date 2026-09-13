@@ -1088,6 +1088,86 @@ Artefacts in the mappable scope that carry no mapping yet: the model itself, dat
 
 ---
 
+## Business Rules
+
+Declarative rules from the OBML `rules` block (see the [Business Rules guide](../guide/business-rules.md)). A rule compiles to an ordinary query whose rows are its findings: members for `classification` and `eligibility`, violations for `validation` and `constraint`.
+
+### `GET /v1/sessions/{session_id}/models/{model_id}/rules`
+
+Every rule with its derived facts and whether it compiles, plus statistics. `?dialect=` overrides the dialect (defaults like `query/sql`: model default, then `DB_VENDOR`).
+
+**Response (200):**
+
+```json
+{
+ "dialect": "duckdb",
+ "rules": [
+ {
+ "name": "High Return Rate",
+ "type": "classification",
+ "level": "aggregate",
+ "findings": "matches",
+ "severity": null,
+ "grain": ["Product Category"],
+ "description": "Product categories returning more than a tenth of what they sell",
+ "owner": null,
+ "dimensions": ["Product Category"],
+ "measures": ["Return Rate"],
+ "depends_on": [],
+ "executable": true,
+ "error": null
+ }
+ ],
+ "statistics": {
+ "total": 6,
+ "by_type": {"classification": 3, "eligibility": 1, "validation": 2},
+ "by_level": {"row": 1, "aggregate": 5},
+ "by_severity": {"error": 1, "warning": 1},
+ "executable": 6,
+ "not_executable": 0
+ }
+}
+```
+
+### `GET /v1/sessions/{session_id}/models/{model_id}/rules/{name}`
+
+One rule: everything the list carries plus `condition` (as authored), `synonyms`, `external_concept_mappings` and `query` (the QueryObject whose rows are the findings). **404** for an unknown rule.
+
+### `POST /v1/sessions/{session_id}/models/{model_id}/rules/{name}/compile`
+
+Compile one rule. Body: `{"dialect": "postgres"}`, optional.
+
+**Response (200):**
+
+```json
+{
+ "name": "High Return Rate",
+ "level": "aggregate",
+ "findings": "matches",
+ "dialect": "postgres",
+ "sql": "SELECT ... GROUP BY ... HAVING ...",
+ "query": {"select": {"dimensions": ["Product Category"], "measures": ["Return Rate"]}, "having": [{"field": "Return Rate", "op": ">", "value": 0.1}]},
+ "warnings": []
+}
+```
+
+Compile failures are reported the way `query/sql` reports them: **422** with structured errors, **400** for an unsupported dialect.
+
+### `POST /v1/sessions/{session_id}/models/{model_id}/rules/compile`
+
+Compile every rule. A rule that fails is a row with `status: "failed"` and its `error`; the response is always **200**.
+
+```json
+{
+ "dialect": "duckdb",
+ "results": [{"name": "Electronics Sale", "status": "compiled", "level": "row", "findings": "matches", "sql": "SELECT ...", "error": null}],
+ "compiled": 6,
+ "failed": 0
+}
+```
+
+---
+
 ## Model Examples
 
 Canonical example queries authored alongside the model in OBML's optional `examples:` block. Surfaced through these endpoints so agents can discover what kinds of questions a model is designed to answer in one round trip.
@@ -1350,6 +1430,10 @@ Returns **404** if no sessions exist, **409 Conflict** if multiple sessions or m
 | `GET /v1/concept-mappings` | `GET /v1/sessions/{id}/models/{mid}/concept-mappings` |
 | `GET /v1/concept-mappings/namespaces` | `GET /v1/sessions/{id}/models/{mid}/concept-mappings/namespaces` |
 | `GET /v1/concept-mappings/unmapped` | `GET /v1/sessions/{id}/models/{mid}/concept-mappings/unmapped` |
+| `GET /v1/rules` | `GET /v1/sessions/{id}/models/{mid}/rules` |
+| `GET /v1/rules/{name}` | `GET /v1/sessions/{id}/models/{mid}/rules/{name}` |
+| `POST /v1/rules/{name}/compile` | `POST /v1/sessions/{id}/models/{mid}/rules/{name}/compile` |
+| `POST /v1/rules/compile` | `POST /v1/sessions/{id}/models/{mid}/rules/compile` |
 | `GET /v1/graph` | `GET /v1/sessions/{id}/models/{mid}/graph` |
 | `POST /v1/sparql` | `POST /v1/sessions/{id}/models/{mid}/sparql` |
 | `POST /v1/query/sql` | `POST /v1/sessions/{id}/query/sql` (auto-resolves model_id) |

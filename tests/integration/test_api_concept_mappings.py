@@ -240,7 +240,7 @@ class TestUnmapped:
         r = await client.get(f"{base}/concept-mappings/unmapped")
         assert r.status_code == 200
         data = r.json()
-        assert data["types"] == ["model", "dataObject", "dimension", "measure", "metric"]
+        assert data["types"] == ["model", "dataObject", "dimension", "measure", "metric", "rule"]
         assert [(o["type"], o["name"]) for o in data["objects"]] == [
             ("dataObject", "Customers"),
             ("dimension", "Customer ID"),

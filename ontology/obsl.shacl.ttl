@@ -618,3 +618,63 @@ obsl:ExternalConceptMappingShape a sh:NodeShape ;
         sh:datatype xsd:string ;
         sh:name "mapping comment"
     ] .
+
+# -----------------------------------------------------------------------------
+# Rule --- declarative business rule
+# -----------------------------------------------------------------------------
+
+obsl:RuleShape a sh:NodeShape ;
+    sh:targetClass obsl:Rule ;
+    rdfs:label "OBSL Rule Shape" ;
+    rdfs:comment "Validates that every rule has a label, one type, one level, one serialized condition, and at most one severity." ;
+    sh:property [
+        sh:path rdfs:label ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "label" ;
+        sh:message "Every Rule must have exactly one rdfs:label."
+    ] ;
+    sh:property [
+        sh:path obsl:ruleType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:in ( "classification" "validation" "constraint" "eligibility" ) ;
+        sh:name "rule type" ;
+        sh:message "Rule type must be exactly one of 'classification', 'validation', 'constraint' or 'eligibility'."
+    ] ;
+    sh:property [
+        sh:path obsl:ruleLevel ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:in ( "row" "aggregate" ) ;
+        sh:name "rule level" ;
+        sh:message "Rule level must be exactly one of 'row' or 'aggregate'."
+    ] ;
+    sh:property [
+        sh:path obsl:ruleSeverity ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:in ( "info" "warning" "error" ) ;
+        sh:name "rule severity" ;
+        sh:message "Rule severity must be one of 'info', 'warning' or 'error'."
+    ] ;
+    sh:property [
+        sh:path obsl:ruleCondition ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "rule condition" ;
+        sh:message "Every Rule must carry exactly one serialized obsl:ruleCondition."
+    ] ;
+    sh:property [
+        sh:path obsl:ruleGrain ;
+        sh:class obsl:Dimension ;
+        sh:name "rule grain"
+    ] ;
+    sh:property [
+        sh:path obsl:dependsOnRule ;
+        sh:class obsl:Rule ;
+        sh:name "depends on rule"
+    ] .

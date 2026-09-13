@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -251,6 +252,29 @@ class FilterLogic(StrEnum):
     OR = "or"
 
 
+class RuleType(StrEnum):
+    """What a business rule is for.
+
+    ``classification`` and ``eligibility`` rules describe members: the rows
+    or groups the condition holds for. ``validation`` and ``constraint``
+    rules state an invariant: the condition should hold everywhere, and an
+    evaluation reports where it does not.
+    """
+
+    CLASSIFICATION = "classification"
+    VALIDATION = "validation"
+    CONSTRAINT = "constraint"
+    ELIGIBILITY = "eligibility"
+
+
+class RuleSeverity(StrEnum):
+    """How serious a violated validation or constraint rule is."""
+
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
 class ExternalConceptRelation(StrEnum):
     """How an OBML artifact relates to an external ontology concept.
 
@@ -296,6 +320,103 @@ class CustomExtension(BaseModel):
 
     vendor: str
     data: str
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
+class RuleCondition(BaseModel):
+    """One node of a rule's condition tree.
+
+    Exactly one form per node: a comparison (``field`` + ``op`` + optional
+    ``value``, the same shape as a query filter), a Boolean composition
+    (``all`` / ``any`` over child nodes, ``not`` over one), or a reference to
+    another rule (``rule``), which is inlined when the rule compiles. No SQL,
+    no code.
+    """
+
+    field: str | None = None
+    op: str | None = None
+    value: Any = None
+    all_: list[RuleCondition] | None = Field(None, alias="all")
+    any_: list[RuleCondition] | None = Field(None, alias="any")
+    not_: RuleCondition | None = Field(None, alias="not")
+    rule: str | None = None
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _exactly_one_form(self) -> RuleCondition:
+        from orionbelt.models.query import FilterOperator
+
+        forms = [
+            name
+            for name, present in (
+                ("field", self.field is not None),
+                ("all", self.all_ is not None),
+                ("any", self.any_ is not None),
+                ("not", self.not_ is not None),
+                ("rule", self.rule is not None),
+            )
+            if present
+        ]
+        if len(forms) != 1:
+            raise ValueError(
+                "a condition is exactly one of: a comparison (field + op), all, any, not, rule"
+                + (f"; got {forms}" if forms else "")
+            )
+        if self.field is not None:
+            if self.op is None:
+                raise ValueError(f"comparison on '{self.field}' needs an 'op'")
+            try:
+                op = FilterOperator(self.op)
+            except ValueError:
+                raise ValueError(f"unknown operator '{self.op}'") from None
+            if op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
+                raise ValueError(f"operator '{self.op}' is not allowed in a rule condition")
+        elif self.op is not None or self.value is not None:
+            raise ValueError("'op' and 'value' belong to a comparison (with 'field')")
+        for name, children in (("all", self.all_), ("any", self.any_)):
+            if children is not None and not children:
+                raise ValueError(f"'{name}' needs at least one condition")
+        return self
+
+    @property
+    def kind(self) -> str:
+        """``comparison``, ``all``, ``any``, ``not`` or ``rule``."""
+        if self.field is not None:
+            return "comparison"
+        if self.all_ is not None:
+            return "all"
+        if self.any_ is not None:
+            return "any"
+        if self.not_ is not None:
+            return "not"
+        return "rule"
+
+
+class Rule(BaseModel):
+    """A declarative business rule over the model's dimensions, measures and metrics.
+
+    A rule whose condition reads only dimensions is *row-level*: it compiles
+    to a WHERE predicate. One that reads a measure or metric is *aggregate*:
+    it must declare the ``grain`` (dimensions) it is evaluated at and
+    compiles to a query with the condition as HAVING. Rules reference other
+    rules of the same level (and, for aggregate rules, the same grain);
+    references form a DAG.
+    """
+
+    name: str
+    type: RuleType = RuleType.CLASSIFICATION
+    condition: RuleCondition
+    grain: list[str] = Field(default_factory=list)
+    severity: RuleSeverity | None = None
+    description: str | None = None
+    owner: str | None = None
+    synonyms: list[str] = Field(default_factory=list)
+    custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
+    external_concept_mappings: list[ExternalConceptMapping] = Field(
+        default_factory=list, alias="externalConceptMappings"
+    )
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -1268,6 +1389,7 @@ class SemanticModel(BaseModel):
     measures: dict[str, Measure] = {}
     metrics: dict[str, Metric] = {}
     filters: list[ModelFilter] = Field(default_factory=list)
+    rules: dict[str, Rule] = {}
     examples: list[ModelExample] = Field(default_factory=list)
     extends_sources: list[str] = Field(default_factory=list)
     inherits_source: str | None = None

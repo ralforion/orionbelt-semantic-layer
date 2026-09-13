@@ -53,6 +53,9 @@ from orionbelt.api.routers import (
 from orionbelt.api.routers import (
     models as models_router,
 )
+from orionbelt.api.routers import (
+    rules as rules_router,
+)
 from orionbelt.api.routers import settings as settings_router
 from orionbelt.api.schemas import HealthResponse
 from orionbelt.cache.factory import build_cache
@@ -669,6 +672,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(sessions.router, tags=["sessions"])
     v1.include_router(model_api.router, prefix="/sessions", tags=["model-discovery"])
     v1.include_router(composables.router, prefix="/sessions", tags=["model-discovery"])
+    v1.include_router(rules_router.router, prefix="/sessions", tags=["rules"])
     v1.include_router(graph.router, prefix="/sessions", tags=["graph"])
     v1.include_router(shortcuts.router, tags=["model-discovery"])
     v1.include_router(convert.router, prefix="/convert", tags=["convert"])

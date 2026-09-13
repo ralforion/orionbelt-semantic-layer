@@ -6,6 +6,24 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **Business rules in OBML.** A top-level `rules` block declares business rules as conditions over
+  dimensions, measures and metrics, without SQL: a comparison in the query filter shape
+  (`field` / `op` / `value`), `all` / `any` / `not` composition, and `rule` references that inline
+  another rule's condition. A rule over dimensions only is row-level and compiles to a `WHERE`
+  predicate; one over a measure or metric is aggregate, must declare its `grain`, and compiles to a
+  query with the condition as `HAVING`, so multi-fact rules reuse the CFL planner. `classification`
+  and `eligibility` rules describe members; `validation` and `constraint` rules (with a `severity`)
+  state an invariant whose violations the compiled query returns. References must match level and
+  grain and form a DAG; every problem is a structured error with a source span
+  (`UNKNOWN_RULE_FIELD`, `UNKNOWN_RULE`, `UNKNOWN_RULE_GRAIN`, `RULE_GRAIN_REQUIRED`,
+  `RULE_GRAIN_NOT_ALLOWED`, `RULE_REFERENCE_MISMATCH`, `CYCLIC_RULE_REFERENCE`,
+  `INVALID_RULE_CONDITION`, `INVALID_RULE_SEVERITY`, `RULE_PARSE_ERROR`). New endpoints
+  `GET .../rules` (with statistics by type, level, severity and executability), `GET .../rules/{name}`,
+  `POST .../rules/{name}/compile` and `POST .../rules/compile` (per-rule status, never hiding a
+  failure), each with a top-level shortcut. Rules are `obsl:Rule` in the RDF graph (type, severity,
+  derived level, grain, serialized condition, what they read, dependencies), ride through OSI in
+  the ORIONBELT extension, can carry `externalConceptMappings`, and the commerce demo ships six.
+  Docs: `docs/guide/business-rules.md`. Evaluation endpoints and the UI tab follow.
 - **Commerce demo links into a business ontology.** `examples/orionbelt_1_commerce.yaml`, the
   model the public playground loads, now declares `ontology.prefixes` (a synthetic `commerce:`
   glossary plus schema.org, GoodRelations and FIBO) and `externalConceptMappings` on its

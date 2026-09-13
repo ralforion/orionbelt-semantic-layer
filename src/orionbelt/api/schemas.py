@@ -1004,6 +1004,100 @@ class UnmappedObjectsResponse(BaseModel):
     )
 
 
+class RuleSummary(BaseModel):
+    """A business rule as listed: what it is, what it reads, whether it compiles."""
+
+    name: str
+    type: str = Field(description="classification, validation, constraint or eligibility")
+    level: str = Field(description="row (dimensions only, WHERE) or aggregate (HAVING at grain)")
+    findings: str = Field(
+        description="What an evaluation returns: matches (members) or violations (invariant)"
+    )
+    severity: str | None = None
+    grain: list[str] = Field(default_factory=list)
+    description: str | None = None
+    owner: str | None = None
+    dimensions: list[str] = Field(
+        default_factory=list, description="Dimensions the rule's query selects"
+    )
+    measures: list[str] = Field(
+        default_factory=list, description="Measures and metrics the rule reads"
+    )
+    depends_on: list[str] = Field(
+        default_factory=list, description="Rules the condition references"
+    )
+    executable: bool = Field(description="Whether the rule's query compiles for the dialect")
+    error: str | None = Field(default=None, description="Why it does not compile, if it does not")
+
+
+class RuleStatistics(BaseModel):
+    """Counts over a model's rules."""
+
+    total: int = 0
+    by_type: dict[str, int] = Field(default_factory=dict)
+    by_level: dict[str, int] = Field(default_factory=dict)
+    by_severity: dict[str, int] = Field(default_factory=dict)
+    executable: int = 0
+    not_executable: int = 0
+
+
+class RuleListResponse(BaseModel):
+    """Response for GET /rules."""
+
+    dialect: str
+    rules: list[RuleSummary] = Field(default_factory=list)
+    statistics: RuleStatistics = Field(default_factory=RuleStatistics)
+
+
+class RuleDetail(RuleSummary):
+    """One rule with its authored condition and the query it compiles to."""
+
+    condition: dict[str, Any] = Field(description="The condition tree as authored (OBML shape)")
+    synonyms: list[str] = Field(default_factory=list)
+    external_concept_mappings: list[ConceptMappingDetail] = Field(default_factory=list)
+    query: dict[str, Any] = Field(description="The QueryObject whose rows are the findings")
+
+
+class RuleCompileRequest(BaseModel):
+    """Request body for POST /rules/{name}/compile and /rules/compile."""
+
+    dialect: str | None = Field(
+        default=None, description="Target dialect; defaults like query/sql (model, then DB_VENDOR)"
+    )
+
+
+class RuleCompileResponse(BaseModel):
+    """Response for POST /rules/{name}/compile."""
+
+    name: str
+    level: str
+    findings: str
+    dialect: str
+    sql: str
+    query: dict[str, Any]
+    warnings: list[StructuredWarning] = Field(default_factory=list)
+
+
+class RuleCompileStatus(BaseModel):
+    """One rule's outcome in an all-rules compile."""
+
+    name: str
+    status: str = Field(description="compiled or failed")
+    level: str
+    findings: str
+    sql: str | None = None
+    error: str | None = None
+
+
+class RuleCompileAllResponse(BaseModel):
+    """Response for POST /rules/compile: every rule, nothing hidden."""
+
+    dialect: str
+    results: list[RuleCompileStatus] = Field(default_factory=list)
+    compiled: int = 0
+    failed: int = 0
+
+
 class ColumnDetail(BaseModel):
     """Detail of a data object column."""
 

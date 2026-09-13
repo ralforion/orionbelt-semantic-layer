@@ -8,6 +8,7 @@ graph for a loaded semantic model.  Expression strings are preserved as
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from decimal import Decimal
 from typing import Any
@@ -17,6 +18,11 @@ from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
 
 from orionbelt.models.concept_links import effective_prefixes, expand_concept
 from orionbelt.models.expressions import find_placeholders, find_qualified_refs
+from orionbelt.models.rules import (
+    condition_rule_refs,
+    rule_level,
+    transitive_fields,
+)
 from orionbelt.models.semantic import (
     ExternalConceptMapping,
     ExternalConceptRelation,
@@ -78,6 +84,10 @@ def _measure_uri(model_id: str, name: str) -> URIRef:
 
 def _metric_uri(model_id: str, name: str) -> URIRef:
     return URIRef(f"{BASE}{model_id}/metric/{_slug(name)}")
+
+
+def _rule_uri(model_id: str, name: str) -> URIRef:
+    return URIRef(f"{BASE}{model_id}/rule/{_slug(name)}")
 
 
 def _concept_mapping_uri(subject_uri: URIRef, target_iri: str) -> URIRef:
@@ -381,8 +391,36 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
     _add_union_domain(
         g,
         OBSL.hasExternalConceptMapping,
-        [OBSL.SemanticModel, OBSL.DataObject, OBSL.Dimension, OBSL.Measure, OBSL.Metric],
+        [
+            OBSL.SemanticModel,
+            OBSL.DataObject,
+            OBSL.Dimension,
+            OBSL.Measure,
+            OBSL.Metric,
+            OBSL.Rule,
+        ],
     )
+
+    # -- Business rule vocabulary ---------------------------------------------
+    g.add((OBSL.Rule, RDF.type, OWL.Class))
+    g.add((OBSL.Rule, RDFS.label, Literal("Rule")))
+    for prop, range_ in (
+        (OBSL.hasRule, OBSL.Rule),
+        (OBSL.ruleGrain, OBSL.Dimension),
+        (OBSL.dependsOnRule, OBSL.Rule),
+    ):
+        g.add((prop, RDF.type, OWL.ObjectProperty))
+        g.add((prop, RDFS.range, range_))
+    g.add((OBSL.hasRule, RDFS.domain, OBSL.SemanticModel))
+    g.add((OBSL.ruleGrain, RDFS.domain, OBSL.Rule))
+    g.add((OBSL.dependsOnRule, RDFS.domain, OBSL.Rule))
+    # ruleReads has no range: a dimension, a measure or a metric.
+    g.add((OBSL.ruleReads, RDF.type, OWL.ObjectProperty))
+    g.add((OBSL.ruleReads, RDFS.domain, OBSL.Rule))
+    for prop in (OBSL.ruleType, OBSL.ruleSeverity, OBSL.ruleLevel, OBSL.ruleCondition):
+        g.add((prop, RDF.type, OWL.DatatypeProperty))
+        g.add((prop, RDFS.domain, OBSL.Rule))
+        g.add((prop, RDF.type, OWL.FunctionalProperty))
     g.add((OBSL.sourceObject, RDF.type, OWL.ObjectProperty))
     g.add((OBSL.sourceObject, RDFS.domain, OBSL.ExternalConceptMapping))
     g.add((OBSL.sourceObject, OWL.inverseOf, OBSL.hasExternalConceptMapping))
@@ -756,7 +794,56 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         _emit_custom_extensions(g, met_uri, getattr(met, "custom_extensions", []))
         _emit_external_concept_mappings(g, met_uri, met.external_concept_mappings, prefixes)
 
+    _emit_rules(g, m_uri, model, model_id, prefixes)
+
     return g
+
+
+# ---------------------------------------------------------------------------
+# Business rules
+# ---------------------------------------------------------------------------
+
+
+def _emit_rules(
+    g: Graph, m_uri: URIRef, model: SemanticModel, model_id: str, prefixes: dict[str, str]
+) -> None:
+    """Emit rule definitions: type, level, grain, condition, reads, dependencies.
+
+    Definitions only. Evaluation results are never part of the model graph.
+    """
+    aggregate_names = set(model.effective_measures) | set(model.metrics)
+    for name, rule in model.rules.items():
+        r_uri = _rule_uri(model_id, name)
+        g.add((m_uri, OBSL.hasRule, r_uri))
+        g.add((r_uri, RDF.type, OBSL.Rule))
+        g.add((r_uri, RDF.type, OWL.NamedIndividual))
+        g.add((r_uri, RDFS.label, Literal(name)))
+        if rule.description:
+            g.add((r_uri, RDFS.comment, Literal(rule.description)))
+        g.add((r_uri, OBSL.ruleType, Literal(rule.type.value)))
+        if rule.severity is not None:
+            g.add((r_uri, OBSL.ruleSeverity, Literal(rule.severity.value)))
+        g.add((r_uri, OBSL.ruleLevel, Literal(rule_level(rule, model.rules, aggregate_names))))
+        for dim in rule.grain:
+            g.add((r_uri, OBSL.ruleGrain, _dimension_uri(model_id, dim)))
+        condition = rule.condition.model_dump(by_alias=True, exclude_none=True)
+        g.add((r_uri, OBSL.ruleCondition, Literal(json.dumps(condition, sort_keys=True))))
+        for field_name in transitive_fields(rule, model.rules):
+            if field_name in model.dimensions:
+                g.add((r_uri, OBSL.ruleReads, _dimension_uri(model_id, field_name)))
+            elif field_name in model.metrics:
+                g.add((r_uri, OBSL.ruleReads, _metric_uri(model_id, field_name)))
+            elif field_name in model.effective_measures:
+                g.add((r_uri, OBSL.ruleReads, _measure_uri(model_id, field_name)))
+        for ref in condition_rule_refs(rule.condition):
+            if ref in model.rules:
+                g.add((r_uri, OBSL.dependsOnRule, _rule_uri(model_id, ref)))
+        if rule.owner:
+            g.add((r_uri, OBSL.owner, Literal(rule.owner)))
+        for syn in rule.synonyms:
+            g.add((r_uri, OBSL.synonym, Literal(syn)))
+        _emit_custom_extensions(g, r_uri, rule.custom_extensions)
+        _emit_external_concept_mappings(g, r_uri, rule.external_concept_mappings, prefixes)
 
 
 # ---------------------------------------------------------------------------

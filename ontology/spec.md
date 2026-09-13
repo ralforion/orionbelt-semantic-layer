@@ -42,7 +42,8 @@ OBSL-Core is not intended to represent:
 - window metric metadata (window function, offset, buckets, order direction, default value, `partitionBy`)
 - canonical example queries (`ModelExample` with name, description, query payload, intent tags)
 - vendor-keyed `CustomExtension` blocks attached to any modeling element (model, data object, column, dimension, measure, metric)
-- `ExternalConceptMapping` links from a model, data object, dimension, measure or metric to a concept in an external ontology (SKOS mapping relation plus provenance)
+- `ExternalConceptMapping` links from a model, data object, dimension, measure, metric or rule to a concept in an external ontology (SKOS mapping relation plus provenance)
+- `Rule` definitions: declarative business rules (classification, eligibility, validation, constraint) with their level, grain, serialized condition, what they read and which rules they depend on
 - expression strings
 - labels, descriptions, and synonyms
 - SHACL validation shapes
@@ -302,6 +303,27 @@ Cardinality:
 
 Domain of `obsl:hasExternalConceptMapping`: `obsl:SemanticModel`, `obsl:DataObject`, `obsl:Dimension`, `obsl:Measure`, `obsl:Metric`. Columns and joins are out of scope until the relation vocabulary can say *identifies* or *references* rather than *is*.
 
+### 5.11 Rule
+Represents a declarative business rule over the model's dimensions, measures and metrics. The model ontology describes the rule's definition and dependencies; it never materializes evaluation results.
+
+Required:
+- `rdfs:label`
+- `obsl:ruleType` — `classification`, `eligibility` (members), `validation`, `constraint` (an invariant)
+- `obsl:ruleLevel` — `row` (reads dimensions only; a WHERE predicate) or `aggregate` (reads a measure or metric; a HAVING predicate at the grain). Derived from the condition.
+- `obsl:ruleCondition` — the condition tree as a serialized JSON document in the OBML shape
+
+Optional:
+- `rdfs:comment`
+- `obsl:ruleSeverity` — `info`, `warning`, `error` (validation and constraint rules)
+- `obsl:ruleGrain` — the dimensions an aggregate rule is evaluated at (multi-valued)
+- `obsl:ruleReads` — the dimensions, measures and metrics the condition compares, through rule references (multi-valued, no range)
+- `obsl:dependsOnRule` — the rules the condition references (multi-valued; a DAG)
+- `obsl:owner`, `obsl:synonym`, `obsl:hasCustomExtension`, `obsl:hasExternalConceptMapping`
+
+Cardinality:
+- exactly one `rdfs:label`, `obsl:ruleType`, `obsl:ruleLevel`, `obsl:ruleCondition`
+- at most one `obsl:ruleSeverity`
+
 ## 6. Expressions
 In `OBSL-Core 0.2`, the normative expression representation is:
 - `obsl:expressionSource`
@@ -421,6 +443,11 @@ Any of model, data object, dimension, measure, metric:
 - `externalConceptMappings[].justification` / `source` / `ontologyVersion` / `confidence` / `comment` -> `obsl:mappingJustification` / `obsl:mappingSource` / `obsl:ontologyVersion` / `obsl:confidence` / `obsl:mappingComment`
 - `ontology.prefixes` -> namespace bindings of the exported graph (not described as triples)
 
+### 10.1a Rules
+- `rules` -> `obsl:hasRule`
+- `rules.<name>.type` -> `obsl:ruleType`; `severity` -> `obsl:ruleSeverity`; `grain[]` -> `obsl:ruleGrain`
+- `rules.<name>.condition` -> `obsl:ruleCondition` (serialized), plus derived `obsl:ruleLevel`, `obsl:ruleReads` and `obsl:dependsOnRule` edges
+
 ### 10.2 Data Objects
 - `code` -> `obsl:code`
 - `database` -> `obsl:database`
@@ -511,6 +538,7 @@ Properties constrained to at most one value are declared `owl:FunctionalProperty
 - Cumulative: `obsl:cumulativeType`, `obsl:window`, `obsl:grainToDate`
 - Period-over-period: `obsl:offset`, `obsl:offsetGrain`, `obsl:comparison`
 - External concept mapping: `obsl:sourceObject`, `obsl:targetConcept`, `obsl:authoredConcept`, `obsl:mappingRelation`, `obsl:mappingJustification`, `obsl:mappingSource`, `obsl:ontologyVersion`, `obsl:confidence`, `obsl:mappingComment`
+- Rule: `obsl:ruleType`, `obsl:ruleSeverity`, `obsl:ruleLevel`, `obsl:ruleCondition`
 
 This mirrors the `sh:maxCount 1` constraints in SHACL but at the ontology level, enabling OWL-aware tools to enforce cardinality without loading the SHACL shapes.
 

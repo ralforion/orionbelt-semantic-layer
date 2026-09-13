@@ -132,6 +132,9 @@ class OBMLtoOSI:
         # the prefixes their compact IRIs expand with.
         if self.obml.get("ontology"):
             roundtrip_data["obml_ontology"] = self.obml["ontology"]
+        # Business rules: OSI has no rule concept, so they ride whole.
+        if self.obml.get("rules"):
+            roundtrip_data["obml_rules"] = self.obml["rules"]
         _stash_concept_links(self.obml, roundtrip_data)
         sem_model["custom_extensions"] = [
             {

@@ -386,6 +386,41 @@ means the external concept is the narrower one. There is no implicit `exact`.
 - Not on columns or joins: `customer_id` *identifies* a Customer rather than *being* one, \
 which needs a more precise relation than this vocabulary offers.
 
+## 8. rules — declarative business rules (optional)
+
+A rule is a Boolean condition over dimensions, measures and metrics. No SQL.
+Dimensions only: **row-level** (compiles to a WHERE predicate). Any measure or
+metric: **aggregate**, evaluated at a declared `grain` (compiles to a query with
+the condition as HAVING). `classification` / `eligibility` rules describe members
+(evaluation returns the rows or groups the condition holds for); `validation` /
+`constraint` rules state an invariant (evaluation returns the violations).
+
+```yaml
+rules:
+  Electronics Sale:                     # row-level: dimensions only
+    type: classification                # classification | validation | constraint | eligibility
+    condition: {field: Product Category, op: "=", value: Electronics}
+  High Return Rate:                     # aggregate: reads a metric, needs a grain
+    type: classification
+    grain: [Product Category]
+    condition: {field: Return Rate, op: ">", value: 0.1}
+  Healthy Category:
+    type: validation
+    severity: error                     # info | warning | error (validation / constraint only)
+    grain: [Product Category]
+    condition:
+      all:                              # all | any | not, nestable
+        - {field: Total Sales, op: ">", value: 0}
+        - {not: {rule: High Return Rate}}   # references inline the other rule
+```
+
+- `condition` nodes are exactly one of: a comparison (`field` + `op` + `value`, the \
+query filter operators; `exists` is not allowed), `all`, `any`, `not`, or `rule`.
+- A referenced rule must have the same level and, for aggregate rules, the same \
+`grain` (`RULE_REFERENCE_MISMATCH`); references form a DAG (`CYCLIC_RULE_REFERENCE`).
+- Errors: `UNKNOWN_RULE_FIELD`, `UNKNOWN_RULE`, `UNKNOWN_RULE_GRAIN`, `RULE_GRAIN_REQUIRED`, \
+`RULE_GRAIN_NOT_ALLOWED`, `INVALID_RULE_CONDITION`, `INVALID_RULE_SEVERITY`, `RULE_PARSE_ERROR`.
+
 {FUNCTION_CATALOG_SECTION}
 
 ## Key Rules

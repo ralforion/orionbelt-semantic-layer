@@ -7,7 +7,7 @@ from a resolved :class:`SemanticModel` on demand; it is a handful of dict
 lookups over a few hundred entries at most, so nothing is cached at load.
 
 Object references use the OBML vocabulary (``model``, ``dataObject``,
-``dimension``, ``measure``, ``metric``). Synthesized count measures are not
+``dimension``, ``measure``, ``metric``, ``rule``). Synthesized count measures are not
 in scope: authors cannot attach mappings to them, so listing them as
 unmapped would only be noise.
 """
@@ -25,7 +25,7 @@ from orionbelt.models.concept_links import (
 )
 from orionbelt.models.semantic import ExternalConceptMapping, SemanticModel
 
-MAPPABLE_TYPES: tuple[str, ...] = ("model", "dataObject", "dimension", "measure", "metric")
+MAPPABLE_TYPES: tuple[str, ...] = ("model", "dataObject", "dimension", "measure", "metric", "rule")
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,8 @@ class ConceptMappingIndex:
             yield SemanticObjectRef("measure", name), meas.external_concept_mappings
         for name, met in model.metrics.items():
             yield SemanticObjectRef("metric", name), met.external_concept_mappings
+        for name, rule in model.rules.items():
+            yield SemanticObjectRef("rule", name), rule.external_concept_mappings
 
     # -- lookups -------------------------------------------------------------
 

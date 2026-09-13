@@ -119,4 +119,4 @@ def test_unmapped_skips_synthesized_counts(index: ConceptMappingIndex) -> None:
         SemanticObjectRef("measure", "Untouched"),
     ]
     assert index.unmapped(["measure"]) == [SemanticObjectRef("measure", "Untouched")]
-    assert set(MAPPABLE_TYPES) == {"model", "dataObject", "dimension", "measure", "metric"}
+    assert set(MAPPABLE_TYPES) == {"model", "dataObject", "dimension", "measure", "metric", "rule"}

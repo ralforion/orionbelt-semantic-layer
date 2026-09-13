@@ -92,6 +92,10 @@ obsl:WithinGroup a owl:Class ;
     rdfs:label "Within Group" ;
     rdfs:comment "Ordering clause for ordered-set aggregates (LISTAGG).  Names a column and an ASC/DESC direction." .
 
+obsl:Rule a owl:Class ;
+    rdfs:label "Rule" ;
+    rdfs:comment "A declarative business rule over the model's dimensions, measures and metrics: a classification, eligibility, validation or constraint with a Boolean condition tree (comparisons, all/any/not, references to other rules).  A rule that reads dimensions only is row-level; one that reads a measure or metric is aggregate and evaluated at a declared grain.  The condition is carried as a serialized document; no SQL or code." .
+
 obsl:ExternalConceptMapping a owl:Class ;
     rdfs:label "External Concept Mapping" ;
     rdfs:comment "A qualified link from a modeling element (SemanticModel, DataObject, Dimension, Measure, Metric) to a concept in an external ontology, with the SKOS mapping relation and its provenance (justification, source, ontology version, confidence).  Descriptive metadata: it never affects SQL planning or execution.  The exporter also states the link directly as a skos:*Match triple from the element to the external IRI." .
@@ -676,7 +680,7 @@ obsl:intentTag a owl:DatatypeProperty ;
 
 obsl:hasExternalConceptMapping a owl:ObjectProperty ;
     rdfs:label "has external concept mapping" ;
-    rdfs:comment "Links a modeled element (SemanticModel, DataObject, Dimension, Measure, Metric) to one of its external concept mappings." ;
+    rdfs:comment "Links a modeled element (SemanticModel, DataObject, Dimension, Measure, Metric, Rule) to one of its external concept mappings." ;
     rdfs:range obsl:ExternalConceptMapping .
 
 obsl:sourceObject a owl:ObjectProperty ;
@@ -733,6 +737,59 @@ obsl:mappingComment a owl:DatatypeProperty ;
     rdfs:range xsd:string .
 
 # =============================================================================
+# 8.9 BUSINESS RULES --- declarative rules over the model
+# =============================================================================
+# The model ontology describes rule definitions, what they read and which
+# rules they depend on.  It never materializes rule evaluation results.
+
+obsl:hasRule a owl:ObjectProperty ;
+    rdfs:label "has rule" ;
+    rdfs:comment "Links a semantic model to one of its business rules." ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:Rule .
+
+obsl:ruleType a owl:DatatypeProperty ;
+    rdfs:label "rule type" ;
+    rdfs:comment "One of 'classification', 'eligibility' (members: rows or groups the condition holds for), 'validation', 'constraint' (an invariant: evaluation reports where it does not hold)." ;
+    rdfs:domain obsl:Rule ;
+    rdfs:range xsd:string .
+
+obsl:ruleSeverity a owl:DatatypeProperty ;
+    rdfs:label "rule severity" ;
+    rdfs:comment "For validation and constraint rules: 'info', 'warning' or 'error'." ;
+    rdfs:domain obsl:Rule ;
+    rdfs:range xsd:string .
+
+obsl:ruleLevel a owl:DatatypeProperty ;
+    rdfs:label "rule level" ;
+    rdfs:comment "'row' when the rule reads dimensions only (a WHERE predicate), 'aggregate' when it reads a measure or metric (a HAVING predicate at the rule's grain).  Derived from the condition, not authored." ;
+    rdfs:domain obsl:Rule ;
+    rdfs:range xsd:string .
+
+obsl:ruleGrain a owl:ObjectProperty ;
+    rdfs:label "rule grain" ;
+    rdfs:comment "A dimension an aggregate rule is evaluated at (one triple per dimension)." ;
+    rdfs:domain obsl:Rule ;
+    rdfs:range obsl:Dimension .
+
+obsl:ruleCondition a owl:DatatypeProperty ;
+    rdfs:label "rule condition" ;
+    rdfs:comment "The condition tree as a serialized JSON document in the OBML shape (field/op/value comparisons, all/any/not, rule references)." ;
+    rdfs:domain obsl:Rule ;
+    rdfs:range xsd:string .
+
+obsl:ruleReads a owl:ObjectProperty ;
+    rdfs:label "rule reads" ;
+    rdfs:comment "A dimension, measure or metric the rule's condition compares, references through other rules included.  No range on purpose: the object is whichever of the three it is." ;
+    rdfs:domain obsl:Rule .
+
+obsl:dependsOnRule a owl:ObjectProperty ;
+    rdfs:label "depends on rule" ;
+    rdfs:comment "A rule this rule's condition references.  Rule references form a DAG." ;
+    rdfs:domain obsl:Rule ;
+    rdfs:range obsl:Rule .
+
+# =============================================================================
 # 9. OWL AXIOMS
 # =============================================================================
 
@@ -752,7 +809,8 @@ obsl:mappingComment a owl:DatatypeProperty ;
                   obsl:CustomExtension
                   obsl:ModelExample
                   obsl:WithinGroup
-                  obsl:ExternalConceptMapping ) .
+                  obsl:ExternalConceptMapping
+                  obsl:Rule ) .
 
 # Metric subtypes are disjoint with each other.
 obsl:CumulativeMetric owl:disjointWith obsl:PeriodOverPeriodMetric .
@@ -801,6 +859,11 @@ obsl:extensionData a owl:FunctionalProperty .
 obsl:exampleName a owl:FunctionalProperty .
 obsl:exampleDescription a owl:FunctionalProperty .
 obsl:exampleQuery a owl:FunctionalProperty .
+
+obsl:ruleType a owl:FunctionalProperty .
+obsl:ruleSeverity a owl:FunctionalProperty .
+obsl:ruleLevel a owl:FunctionalProperty .
+obsl:ruleCondition a owl:FunctionalProperty .
 
 obsl:sourceObject a owl:FunctionalProperty .
 obsl:targetConcept a owl:FunctionalProperty .

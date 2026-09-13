@@ -1200,6 +1200,160 @@
         }
       },
       "additionalProperties": false
+    },
+    "ruleType": {
+      "type": "string",
+      "description": "classification and eligibility describe members (the condition holds); validation and constraint state an invariant (evaluation reports where it does not hold).",
+      "enum": [
+        "classification",
+        "validation",
+        "constraint",
+        "eligibility"
+      ]
+    },
+    "ruleSeverity": {
+      "type": "string",
+      "description": "How serious a violated validation or constraint rule is.",
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ]
+    },
+    "ruleCondition": {
+      "type": "object",
+      "description": "One node of a rule's condition tree: exactly one of a comparison (field + op + value, the query filter shape), all, any, not, or a reference to another rule. No SQL.",
+      "properties": {
+        "field": {
+          "type": "string",
+          "description": "A dimension, measure or metric name"
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "equals",
+            "notequals",
+            "inlist",
+            "notinlist",
+            "contains",
+            "notcontains",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "set",
+            "notset",
+            "between",
+            "notbetween",
+            "like",
+            "notlike",
+            "=",
+            "!=",
+            ">",
+            ">=",
+            "<",
+            "<=",
+            "in",
+            "not_in",
+            "is_null",
+            "is_not_null",
+            "starts_with",
+            "ends_with",
+            "relative",
+            "regex",
+            "notregex",
+            "blank",
+            "notblank",
+            "length_eq",
+            "length_gt",
+            "length_lt"
+          ],
+          "description": "Comparison operator (query filter operators; exists / nonexists are not allowed)"
+        },
+        "value": {
+          "description": "Scalar, list of scalars, or a relative-date object"
+        },
+        "all": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/ruleCondition"
+          },
+          "description": "Every child condition holds"
+        },
+        "any": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/ruleCondition"
+          },
+          "description": "At least one child condition holds"
+        },
+        "not": {
+          "$ref": "#/definitions/ruleCondition",
+          "description": "The child condition does not hold"
+        },
+        "rule": {
+          "type": "string",
+          "description": "Another rule's name; its condition is inlined"
+        }
+      },
+      "additionalProperties": false
+    },
+    "rule": {
+      "type": "object",
+      "description": "A declarative business rule over dimensions, measures and metrics. Dimensions only: row-level (a WHERE predicate). Any measure or metric: aggregate, evaluated at the declared grain (a HAVING predicate).",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/ruleType",
+          "default": "classification"
+        },
+        "condition": {
+          "$ref": "#/definitions/ruleCondition"
+        },
+        "grain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Dimensions an aggregate rule is evaluated at (required when the condition reads a measure or metric; not allowed otherwise)"
+        },
+        "severity": {
+          "$ref": "#/definitions/ruleSeverity",
+          "description": "For validation and constraint rules"
+        },
+        "description": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string",
+          "description": "Responsible team or person"
+        },
+        "synonyms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Alternative names or terms (LLM hints)"
+        },
+        "customExtensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/customExtension"
+          }
+        },
+        "externalConceptMappings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/externalConceptMapping"
+          },
+          "description": "Links to concepts in an external ontology"
+        }
+      },
+      "required": [
+        "condition"
+      ],
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -1328,6 +1482,13 @@
           "operator"
         ],
         "additionalProperties": false
+      }
+    },
+    "rules": {
+      "type": "object",
+      "description": "Business rules keyed by name",
+      "additionalProperties": {
+        "$ref": "#/definitions/rule"
       }
     },
     "examples": {

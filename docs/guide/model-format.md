@@ -39,6 +39,9 @@ metrics: # Composite metrics combining measures
 
 filters: # Optional: static WHERE conditions applied to every query
   ...
+
+rules: # Optional: business rules (see Business Rules)
+  ...
 ```
 
 The four main sections (`dataObjects`, `dimensions`, `measures`, `metrics`) are dictionaries keyed by name. The optional `filters` section is a list.
@@ -1681,6 +1684,28 @@ filters:
 ```
 
 Produces: `WHERE "STATUS" = 'completed' AND "COUNTRY" = 'Germany'`
+
+## Business Rules
+
+A `rules` block declares business rules as conditions over dimensions, measures and metrics, without SQL. A rule over dimensions only is row-level (a `WHERE` predicate); one over a measure or metric is aggregate, evaluated at its `grain` (a `HAVING` predicate). `classification` and `eligibility` rules describe members; `validation` and `constraint` rules state an invariant whose violations an evaluation reports.
+
+```yaml
+rules:
+  High Return Rate:
+    type: classification
+    grain: [Product Category]
+    condition: {field: Return Rate, op: ">", value: 0.1}
+  Healthy Category:
+    type: validation
+    severity: warning
+    grain: [Product Category]
+    condition:
+      all:
+        - {field: Total Sales, op: ">", value: 0}
+        - {not: {rule: High Return Rate}}
+```
+
+The full syntax, the condition tree, the validation rules and the API are in [Business Rules](business-rules.md).
 
 ## Refresh contracts
 

@@ -1218,3 +1218,48 @@ metrics:
       offsetGrain: quarter
       comparison: ratio
     description: Quarter-over-quarter ratio of sales (current / previous)
+
+# ---------------------------------------------------------------------------
+# Business rules (synthetic, for the demo). Declarative conditions over the
+# model's dimensions, measures and metrics; no SQL. A rule over dimensions
+# only is row-level; one over a measure or metric is evaluated at its grain.
+# classification / eligibility describe members; validation / constraint
+# state an invariant whose violations an evaluation reports.
+# See docs/guide/business-rules.md.
+# ---------------------------------------------------------------------------
+rules:
+  Electronics Sale:
+    type: classification
+    description: Sales rows in the Electronics category
+    condition: {field: Product Category, op: "=", value: Electronics}
+  High Return Rate:
+    type: classification
+    description: Product categories returning more than a tenth of what they sell
+    grain: [Product Category]
+    condition: {field: Return Rate, op: ">", value: 0.1}
+  High Value Client:
+    type: eligibility
+    description: Clients whose lifetime sales pass the strategic-account threshold
+    owner: sales-ops
+    grain: [Client Name]
+    condition: {field: Total Sales, op: ">", value: 50000}
+  Non-Negative Margin:
+    type: validation
+    severity: error
+    description: Every product category must sell for at least what it cost
+    grain: [Product Category]
+    condition: {field: Gross Margin, op: ">=", value: 0}
+  Low Stock Product:
+    type: classification
+    description: Products with fewer than ten units in stock
+    grain: [Product Name]
+    condition: {field: Total Units In Stock, op: "<", value: 10}
+  Healthy Category:
+    type: validation
+    severity: warning
+    description: A category that sells must not also be a high-return category
+    grain: [Product Category]
+    condition:
+      all:
+        - {field: Total Sales, op: ">", value: 0}
+        - {not: {rule: High Return Rate}}

@@ -44,6 +44,11 @@ from orionbelt.api.schemas import (
     QueryPlanRequest,
     QueryPlanResponse,
     ResolvedInfoResponse,
+    RuleCompileAllResponse,
+    RuleCompileRequest,
+    RuleCompileResponse,
+    RuleDetail,
+    RuleListResponse,
     SchemaResponse,
     SearchRequest,
     SearchResponse,
@@ -794,6 +799,60 @@ async def shortcut_plan_query(
     body.model_id = model_id
     session_id = _session_id_for_store(mgr, _resolve_store_and_model(mgr)[0])
     return await plan_query(session_id, body, mgr)
+
+
+@router.get("/rules", response_model=RuleListResponse, tags=["rules"])
+async def shortcut_rules(
+    dialect: str | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    db_vendor: str | None = Depends(get_db_vendor),  # noqa: B008
+) -> RuleListResponse:
+    """List business rules with statistics (auto-resolves session/model)."""
+    from orionbelt.api.routers.rules import list_rules
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await list_rules(session_id, model_id, dialect, mgr, db_vendor)
+
+
+@router.post("/rules/compile", response_model=RuleCompileAllResponse, tags=["rules"])
+async def shortcut_compile_all_rules(
+    body: RuleCompileRequest | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    db_vendor: str | None = Depends(get_db_vendor),  # noqa: B008
+) -> RuleCompileAllResponse:
+    """Compile every rule (auto-resolves session/model)."""
+    from orionbelt.api.routers.rules import compile_all_rules
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await compile_all_rules(session_id, model_id, body, mgr, db_vendor)
+
+
+@router.get("/rules/{name}", response_model=RuleDetail, tags=["rules"])
+async def shortcut_rule(
+    name: str,
+    dialect: str | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    db_vendor: str | None = Depends(get_db_vendor),  # noqa: B008
+) -> RuleDetail:
+    """Describe one business rule (auto-resolves session/model)."""
+    from orionbelt.api.routers.rules import get_rule
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await get_rule(session_id, model_id, name, dialect, mgr, db_vendor)
+
+
+@router.post("/rules/{name}/compile", response_model=RuleCompileResponse, tags=["rules"])
+async def shortcut_compile_rule(
+    name: str,
+    body: RuleCompileRequest | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    db_vendor: str | None = Depends(get_db_vendor),  # noqa: B008
+) -> RuleCompileResponse:
+    """Compile one business rule (auto-resolves session/model)."""
+    from orionbelt.api.routers.rules import compile_rule
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await compile_rule(session_id, model_id, name, body, mgr, db_vendor)
 
 
 @router.get(

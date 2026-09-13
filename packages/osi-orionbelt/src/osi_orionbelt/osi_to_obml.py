@@ -251,6 +251,8 @@ class OSItoOBML:
                         obml["countLabelPattern"] = ext_data["obml_count_label_pattern"]
                     if isinstance(ext_data.get("obml_ontology"), dict):
                         obml["ontology"] = ext_data["obml_ontology"]
+                    if isinstance(ext_data.get("obml_rules"), dict):
+                        obml["rules"] = ext_data["obml_rules"]
                     _restore_concept_links(ext_data, obml)
                 except (json.JSONDecodeError, TypeError):
                     pass

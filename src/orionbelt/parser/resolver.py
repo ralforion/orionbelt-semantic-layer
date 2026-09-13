@@ -19,6 +19,13 @@ from orionbelt.models.concept_links import (
 )
 from orionbelt.models.errors import SemanticError, ValidationResult
 from orionbelt.models.expressions import find_malformed_measure_refs, find_qualified_refs
+from orionbelt.models.rules import (
+    AGGREGATE,
+    ROW_LEVEL,
+    condition_fields,
+    condition_rule_refs,
+    rule_level,
+)
 from orionbelt.models.semantic import (
     CustomExtension,
     DataColumnRef,
@@ -44,6 +51,9 @@ from orionbelt.models.semantic import (
     OntologyConfig,
     PeriodOverPeriod,
     RefreshPolicy,
+    Rule,
+    RuleCondition,
+    RuleType,
     SemanticModel,
 )
 from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN, count_label, count_pattern_error
@@ -149,6 +159,8 @@ _EXTERNAL_CONCEPT_MAPPING_KEYS = _allowed_keys(
 # field set, but the inner periodOverPeriod block has its own shape.
 _PERIOD_OVER_PERIOD_KEYS = _allowed_keys(PeriodOverPeriod)
 _METRIC_KEYS = _allowed_keys(Metric, exclude=("name",))
+_RULE_KEYS = _allowed_keys(Rule, exclude=("name",))
+_RULE_CONDITION_KEYS = _allowed_keys(RuleCondition)
 
 
 def _parse_nested_in(raw: object) -> NestedSource | None:
@@ -1372,6 +1384,16 @@ class ReferenceResolver:
 
         settings = _parse_settings(raw.get("settings"), errors, source_map)
 
+        rules = self._parse_rules(
+            raw.get("rules"),
+            dimensions,
+            set(measures) | synthesized_measure_names,
+            set(metrics),
+            prefixes,
+            errors,
+            source_map,
+        )
+
         # Parse examples block (PLAN_agent_api_improvements §5)
         examples = self._parse_examples(raw.get("examples"), errors)
 
@@ -1384,6 +1406,7 @@ class ReferenceResolver:
             measures=measures,
             metrics=metrics,
             filters=model_filters,
+            rules=rules,
             examples=examples,
             extends_sources=raw.get("_extends_sources", []),
             inherits_source=raw.get("_inherits_source"),
@@ -1407,6 +1430,252 @@ class ReferenceResolver:
         )
 
         return model, result
+
+    def _parse_rules(
+        self,
+        raw: object,
+        dimensions: dict[str, Dimension],
+        measure_names: set[str],
+        metric_names: set[str],
+        prefixes: dict[str, str],
+        errors: list[SemanticError],
+        source_map: SourceMap | None,
+    ) -> dict[str, Rule]:
+        """Parse and validate the ``rules:`` block.
+
+        Two passes: build every rule first, then check the cross-rule facts
+        (level, grain, references, cycles), since a rule's level depends on
+        what the rules it references read. A rule with a bad condition is
+        reported and dropped; the others still load.
+        """
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            errors.append(
+                SemanticError(
+                    code="RULE_PARSE_ERROR",
+                    message="'rules' must be a YAML mapping keyed by rule name",
+                    path="rules",
+                    span=source_map.get("rules") if source_map else None,
+                )
+            )
+            return {}
+        aggregate_names = measure_names | metric_names
+        known_fields = set(dimensions) | aggregate_names
+        rules: dict[str, Rule] = {}
+        for name, raw_rule in raw.items():
+            path = f"rules.{name}"
+            span = source_map.get(path) if source_map else None
+            if not isinstance(raw_rule, dict):
+                errors.append(
+                    SemanticError(
+                        code="RULE_PARSE_ERROR",
+                        message=f"Rule '{name}' must be a mapping with a 'condition'",
+                        path=path,
+                        span=span,
+                    )
+                )
+                continue
+            _check_unknown_keys(raw_rule, _RULE_KEYS, path, errors, source_map)
+            self._check_condition_keys(raw_rule.get("condition"), f"{path}.condition", errors)
+            # The two list-valued blocks have their own parsers (unknown-key
+            # checks, IRI expansion); everything else goes to the model as is.
+            fields = {
+                k: v
+                for k, v in raw_rule.items()
+                if k in _RULE_KEYS and k not in ("customExtensions", "externalConceptMappings")
+            }
+            try:
+                rule = Rule(
+                    name=name,
+                    **fields,
+                    custom_extensions=_parse_extensions(raw_rule),
+                    external_concept_mappings=_parse_concept_mappings(
+                        raw_rule, path, prefixes, errors, source_map
+                    ),
+                )
+            except PydanticValidationError as exc:
+                for detail in exc.errors():
+                    loc = ".".join(str(part) for part in detail["loc"])
+                    code = (
+                        "INVALID_RULE_CONDITION"
+                        if loc.startswith("condition")
+                        else "RULE_PARSE_ERROR"
+                    )
+                    errors.append(
+                        SemanticError(
+                            code=code,
+                            message=f"Rule '{name}' {loc or 'entry'}: {detail['msg']}",
+                            path=f"{path}.{loc}" if loc else path,
+                            span=span,
+                        )
+                    )
+                continue
+            rules[name] = rule
+
+        # Pass two: references, levels, grain, cycles.
+        for name, rule in list(rules.items()):
+            path = f"rules.{name}"
+            span = source_map.get(path) if source_map else None
+            ok = True
+            for field_name in condition_fields(rule.condition):
+                if field_name not in known_fields:
+                    ok = False
+                    errors.append(
+                        SemanticError(
+                            code="UNKNOWN_RULE_FIELD",
+                            message=(
+                                f"Rule '{name}' compares '{field_name}', which is not a "
+                                "dimension, measure or metric"
+                            ),
+                            path=f"{path}.condition",
+                            span=span,
+                            suggestions=_suggest_similar(field_name, sorted(known_fields)),
+                        )
+                    )
+            for ref in condition_rule_refs(rule.condition):
+                if ref == name or ref not in rules:
+                    ok = False
+                    errors.append(
+                        SemanticError(
+                            code="UNKNOWN_RULE",
+                            message=f"Rule '{name}' references unknown rule '{ref}'"
+                            if ref != name
+                            else f"Rule '{name}' references itself",
+                            path=f"{path}.condition",
+                            span=span,
+                            suggestions=_suggest_similar(ref, [r for r in rules if r != name]),
+                        )
+                    )
+            for dim in rule.grain:
+                if dim not in dimensions:
+                    ok = False
+                    errors.append(
+                        SemanticError(
+                            code="UNKNOWN_RULE_GRAIN",
+                            message=f"Rule '{name}' grain names unknown dimension '{dim}'",
+                            path=f"{path}.grain",
+                            span=span,
+                            suggestions=_suggest_similar(dim, list(dimensions)),
+                        )
+                    )
+            if rule.severity is not None and rule.type in (
+                RuleType.CLASSIFICATION,
+                RuleType.ELIGIBILITY,
+            ):
+                ok = False
+                errors.append(
+                    SemanticError(
+                        code="INVALID_RULE_SEVERITY",
+                        message=(
+                            f"Rule '{name}' is a {rule.type.value} rule; 'severity' belongs to "
+                            "validation and constraint rules"
+                        ),
+                        path=f"{path}.severity",
+                        span=span,
+                    )
+                )
+            if not ok:
+                continue
+            level = rule_level(rule, rules, aggregate_names)
+            if level == AGGREGATE and not rule.grain:
+                errors.append(
+                    SemanticError(
+                        code="RULE_GRAIN_REQUIRED",
+                        message=(
+                            f"Rule '{name}' reads a measure or metric, so it needs a 'grain': "
+                            "the dimensions it is evaluated at"
+                        ),
+                        path=path,
+                        span=span,
+                    )
+                )
+            elif level == ROW_LEVEL and rule.grain:
+                errors.append(
+                    SemanticError(
+                        code="RULE_GRAIN_NOT_ALLOWED",
+                        message=(
+                            f"Rule '{name}' reads dimensions only; a 'grain' is for rules "
+                            "over measures or metrics"
+                        ),
+                        path=f"{path}.grain",
+                        span=span,
+                    )
+                )
+            for ref in condition_rule_refs(rule.condition):
+                other = rules[ref]
+                other_level = rule_level(other, rules, aggregate_names)
+                if other_level != level or (
+                    level == AGGREGATE and set(other.grain) != set(rule.grain)
+                ):
+                    errors.append(
+                        SemanticError(
+                            code="RULE_REFERENCE_MISMATCH",
+                            message=(
+                                f"Rule '{name}' ({level}, grain {rule.grain}) references "
+                                f"'{ref}' ({other_level}, grain {other.grain}); a referenced "
+                                "rule must have the same level and grain"
+                            ),
+                            path=f"{path}.condition",
+                            span=span,
+                        )
+                    )
+
+        for cycle in self._rule_cycles(rules):
+            first = cycle[0]
+            errors.append(
+                SemanticError(
+                    code="CYCLIC_RULE_REFERENCE",
+                    message="Rules reference each other in a cycle: " + " -> ".join(cycle),
+                    path=f"rules.{first}.condition",
+                    span=source_map.get(f"rules.{first}") if source_map else None,
+                )
+            )
+        return rules
+
+    def _check_condition_keys(self, raw: object, path: str, errors: list[SemanticError]) -> None:
+        """UNKNOWN_PROPERTY for stray keys anywhere in a condition tree."""
+        if not isinstance(raw, dict):
+            return
+        _check_unknown_keys(raw, _RULE_CONDITION_KEYS, path, errors)
+        for key in ("all", "any"):
+            children = raw.get(key)
+            if isinstance(children, list):
+                for i, child in enumerate(children):
+                    self._check_condition_keys(child, f"{path}.{key}[{i}]", errors)
+        self._check_condition_keys(raw.get("not"), f"{path}.not", errors)
+
+    @staticmethod
+    def _rule_cycles(rules: dict[str, Rule]) -> list[list[str]]:
+        """Each reference cycle once, as the names along it plus the closing name."""
+        graph: dict[str, list[str]] = {
+            name: [r for r in condition_rule_refs(rule.condition) if r in rules and r != name]
+            for name, rule in rules.items()
+        }
+        cycles: list[list[str]] = []
+        reported: set[frozenset[str]] = set()
+        state: dict[str, int] = {}
+        stack: list[str] = []
+
+        def visit(node: str) -> None:
+            state[node] = 1
+            stack.append(node)
+            for nxt in graph[node]:
+                if state.get(nxt, 0) == 0:
+                    visit(nxt)
+                elif state[nxt] == 1:
+                    cycle = stack[stack.index(nxt) :] + [nxt]
+                    key = frozenset(cycle)
+                    if key not in reported:
+                        reported.add(key)
+                        cycles.append(cycle)
+            stack.pop()
+            state[node] = 2
+
+        for name in rules:
+            if state.get(name, 0) == 0:
+                visit(name)
+        return cycles
 
     def _parse_examples(self, raw: object, errors: list[SemanticError]) -> list[ModelExample]:
         """Parse the model-level ``examples:`` block.

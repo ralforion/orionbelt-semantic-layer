@@ -50,6 +50,8 @@ _MODELED_CLASSES = (
     semantic_models.ModelSettings,
     semantic_models.ExternalConceptMapping,
     semantic_models.OntologyConfig,
+    semantic_models.Rule,
+    semantic_models.RuleCondition,
 )
 
 # Fields that intentionally have no ontology property:
@@ -159,6 +161,16 @@ _EXCLUDED_FIELDS = frozenset(
         # graph rather than describing them as triples.
         "ontology",
         "prefixes",
+        # RuleCondition is serialized whole into obsl:ruleCondition; its
+        # nodes (field/op/value are excluded above as filter scaffolding)
+        # are not individual properties.
+        "all_",
+        "all",
+        "any_",
+        "any",
+        "not_",
+        "not",
+        "rule",
     }
 )
 
@@ -259,6 +271,11 @@ _NAME_REMAP = {
     "ontology_version": "ontologyVersion",
     "ontologyVersion": "ontologyVersion",
     "confidence": "confidence",
+    # Rule. ``type`` resolves through the Metric remap above to obsl:metricType;
+    # the rule's own property is obsl:ruleType, emitted by the exporter.
+    "rules": "hasRule",
+    "condition": "ruleCondition",
+    "severity": "ruleSeverity",
     # ``comment`` on a mapping is obsl:mappingComment; the generic
     # ``comment`` (DataObject) stays excluded above, so this remap only
     # ever resolves for ExternalConceptMapping.
