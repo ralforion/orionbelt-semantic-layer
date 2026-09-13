@@ -227,6 +227,25 @@ class TestValidation:
         assert err.path == path
         assert err.span is not None or code == "UNKNOWN_PROPERTY"
 
+    def test_aggregate_rule_may_compare_only_grain_dimensions(self) -> None:
+        """A non-grain dimension in HAVING is neither grouped nor aggregated."""
+        _, errors = _resolve(
+            _BASE + "rules:\n  R:\n    grain: [Category]\n"
+            "    condition:\n      all:\n"
+            "        - {field: Revenue, op: '>', value: 0}\n"
+            "        - {field: Order ID, op: '=', value: X}\n"
+        )
+        assert _codes(errors) == ["RULE_DIMENSION_OUTSIDE_GRAIN"]
+        assert "Order ID" in errors[0].message
+        # A grain dimension is fine: it is a grouped column.
+        _, errors = _resolve(
+            _BASE + "rules:\n  R:\n    grain: [Category]\n"
+            "    condition:\n      all:\n"
+            "        - {field: Revenue, op: '>', value: 0}\n"
+            "        - {field: Category, op: '!=', value: X}\n"
+        )
+        assert errors == []
+
     def test_rules_block_must_be_a_mapping(self) -> None:
         _, errors = _resolve(_BASE + "rules: []\n")
         assert _codes(errors) == ["RULE_PARSE_ERROR"]

@@ -12,7 +12,7 @@ A business rule is a Boolean condition over the model's dimensions, measures and
 |---|---|---|
 | Reads | dimensions only | at least one measure or metric |
 | `grain` | not allowed | required: the dimensions the rule is evaluated at |
-| Compiles to | a `WHERE` predicate over the dimensions it reads | a query selecting the grain plus the measures it reads, with the condition as `HAVING` |
+| Compiles to | a `WHERE` predicate over the dimensions it reads | a query selecting the grain plus the measures it reads, with the condition as `HAVING`; the only dimensions it may compare are grain dimensions |
 | Example | "this sale is an Electronics sale" | "this category returns more than a tenth of what it sells" |
 
 The level is derived from the condition, not declared. Referencing another rule pulls in what that rule reads.
@@ -89,6 +89,7 @@ A referenced rule must be of the same level and, for aggregate rules, declare th
 | `UNKNOWN_RULE_GRAIN` | `grain` names an unknown dimension |
 | `RULE_GRAIN_REQUIRED` | an aggregate rule has no `grain` |
 | `RULE_GRAIN_NOT_ALLOWED` | a row-level rule has a `grain` |
+| `RULE_DIMENSION_OUTSIDE_GRAIN` | an aggregate rule compares a dimension that is not in its grain (it would be neither grouped nor aggregated) |
 | `RULE_REFERENCE_MISMATCH` | referenced rule has a different level or grain |
 | `CYCLIC_RULE_REFERENCE` | rules reference each other in a cycle |
 | `INVALID_RULE_SEVERITY` | `severity` on a classification or eligibility rule |

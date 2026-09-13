@@ -25,6 +25,7 @@ from orionbelt.models.rules import (
     condition_fields,
     condition_rule_refs,
     rule_level,
+    transitive_fields,
 )
 from orionbelt.models.semantic import (
     CustomExtension,
@@ -1578,6 +1579,28 @@ class ReferenceResolver:
             if not ok:
                 continue
             level = rule_level(rule, rules, aggregate_names)
+            if level == AGGREGATE:
+                # The condition becomes HAVING over a GROUP BY of the grain, so a
+                # dimension it compares must be a grain dimension: anything else
+                # is neither grouped nor aggregated and strict engines reject it.
+                outside = [
+                    f
+                    for f in transitive_fields(rule, rules)
+                    if f in dimensions and f not in rule.grain
+                ]
+                for dim in outside:
+                    errors.append(
+                        SemanticError(
+                            code="RULE_DIMENSION_OUTSIDE_GRAIN",
+                            message=(
+                                f"Rule '{name}' compares dimension '{dim}', which is not in its "
+                                f"grain {rule.grain}; an aggregate rule may compare only its "
+                                "grain dimensions, measures and metrics"
+                            ),
+                            path=f"{path}.condition",
+                            span=span,
+                        )
+                    )
             if level == AGGREGATE and not rule.grain:
                 errors.append(
                     SemanticError(

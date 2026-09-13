@@ -1016,7 +1016,7 @@ Return the join graph as nodes and edges.
 
 ## External Concept Mappings
 
-Links from model artefacts to concepts in external ontologies, authored in OBML as `ontology.prefixes` plus `externalConceptMappings` on the model, a data object, a dimension, a measure or a metric. Descriptive metadata only: nothing here changes SQL. The describe endpoints above (`schema`, `dimensions/{name}`, `measures/{name}`, `metrics/{name}`) carry each artefact's mappings under `external_concept_mappings`; these endpoints answer the cross-cutting questions.
+Links from model artefacts to concepts in external ontologies, authored in OBML as `ontology.prefixes` plus `externalConceptMappings` on the model, a data object, a dimension, a measure, a metric or a rule. Descriptive metadata only: nothing here changes SQL. The describe endpoints above (`schema`, `dimensions/{name}`, `measures/{name}`, `metrics/{name}`) carry each artefact's mappings under `external_concept_mappings`; these endpoints answer the cross-cutting questions.
 
 ### `GET /v1/sessions/{session_id}/models/{model_id}/concept-mappings`
 
@@ -1027,7 +1027,7 @@ Every mapping in the model, with the artefact it sits on and the concept expande
 | `concept` | A compact IRI using the model's prefixes (`corp:NetRevenue`) or a full IRI. Returns the artefacts mapped to that concept; the response echoes the expanded IRI in `concept`. An undeclared prefix or a malformed IRI is **422**. |
 | `namespace` | A declared or built-in prefix name (`corp`) or an absolute namespace IRI the target must start with. Anything else is **422**. |
 | `relation` | One of `exact`, `close`, `broader`, `narrower`, `related`. |
-| `types` | Comma-separated subset of `model`, `dataObject`, `dimension`, `measure`, `metric`. |
+| `types` | Comma-separated subset of `model`, `dataObject`, `dimension`, `measure`, `metric`, `rule`. |
 
 **Response (200):**
 
@@ -1071,7 +1071,7 @@ The external namespaces the model links into, most used first, plus the declared
 
 ### `GET /v1/sessions/{session_id}/models/{model_id}/concept-mappings/unmapped`
 
-Artefacts in the mappable scope that carry no mapping yet: the model itself, data objects, dimensions, declared measures and metrics. Synthesized count measures cannot carry mappings and are not listed. `types` (comma-separated) narrows the report.
+Artefacts in the mappable scope that carry no mapping yet: the model itself, data objects, dimensions, declared measures, metrics and rules. Synthesized count measures cannot carry mappings and are not listed. `types` (comma-separated) narrows the report.
 
 **Response (200):**
 
@@ -1082,7 +1082,7 @@ Artefacts in the mappable scope that carry no mapping yet: the model itself, dat
  {"type": "measure", "name": "Order Total"}
  ],
  "total": 2,
- "types": ["model", "dataObject", "dimension", "measure", "metric"]
+ "types": ["model", "dataObject", "dimension", "measure", "metric", "rule"]
 }
 ```
 

@@ -418,6 +418,8 @@ rules:
 query filter operators; `exists` is not allowed), `all`, `any`, `not`, or `rule`.
 - A referenced rule must have the same level and, for aggregate rules, the same \
 `grain` (`RULE_REFERENCE_MISMATCH`); references form a DAG (`CYCLIC_RULE_REFERENCE`).
+- An aggregate rule may compare only its grain dimensions, measures and metrics \
+(`RULE_DIMENSION_OUTSIDE_GRAIN`).
 - Errors: `UNKNOWN_RULE_FIELD`, `UNKNOWN_RULE`, `UNKNOWN_RULE_GRAIN`, `RULE_GRAIN_REQUIRED`, \
 `RULE_GRAIN_NOT_ALLOWED`, `INVALID_RULE_CONDITION`, `INVALID_RULE_SEVERITY`, `RULE_PARSE_ERROR`.
 

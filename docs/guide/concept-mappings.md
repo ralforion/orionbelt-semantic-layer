@@ -92,7 +92,7 @@ A value is a **full IRI** when its scheme is followed by `//` (`https://...`) or
 
 ### Where mappings are allowed
 
-Model, data object, dimension, measure, metric. **Not** columns or joins: a `customer_id` column *identifies* a Customer rather than *being* one, and a join *relates* two concepts rather than matching either. Both need a more precise relation vocabulary than SKOS matching offers, so they are deliberately out of scope until one exists. Putting `externalConceptMappings` on a column is an `UNKNOWN_PROPERTY` error.
+Model, data object, dimension, measure, metric, and [business rule](business-rules.md). **Not** columns or joins: a `customer_id` column *identifies* a Customer rather than *being* one, and a join *relates* two concepts rather than matching either. Both need a more precise relation vocabulary than SKOS matching offers, so they are deliberately out of scope until one exists. Putting `externalConceptMappings` on a column is an `UNKNOWN_PROPERTY` error.
 
 Synthesized row-count measures (`Sales Count` and friends) cannot carry mappings either; they are never persisted. Map a declared measure instead.
 
