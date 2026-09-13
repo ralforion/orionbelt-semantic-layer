@@ -16,7 +16,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   state an invariant whose violations the compiled query returns. References must match level and
   grain and form a DAG; every problem is a structured error with a source span
   (`UNKNOWN_RULE_FIELD`, `UNKNOWN_RULE`, `UNKNOWN_RULE_GRAIN`, `RULE_GRAIN_REQUIRED`,
-  `RULE_GRAIN_NOT_ALLOWED`, `RULE_REFERENCE_MISMATCH`, `CYCLIC_RULE_REFERENCE`,
+  `RULE_GRAIN_NOT_ALLOWED`, `RULE_DIMENSION_OUTSIDE_GRAIN`, `RULE_REFERENCE_MISMATCH`,
+  `CYCLIC_RULE_REFERENCE`,
   `INVALID_RULE_CONDITION`, `INVALID_RULE_SEVERITY`, `RULE_PARSE_ERROR`). New endpoints
   `GET .../rules` (with statistics by type, level, severity and executability), `GET .../rules/{name}`,
   `POST .../rules/{name}/compile` and `POST .../rules/compile` (per-rule status, never hiding a

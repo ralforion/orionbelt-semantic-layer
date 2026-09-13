@@ -664,13 +664,13 @@ async def list_concept_mappings(
     """List the model's links to external ontology concepts.
 
     Every ``externalConceptMappings`` entry on the model, its data objects,
-    dimensions, measures and metrics, with the artefact it sits on and the
+    dimensions, measures, metrics and rules, with the artefact it sits on and the
     concept expanded to an absolute IRI. Filters combine: ``concept`` (a
     compact IRI using the model's prefixes, or a full IRI) returns the
     artefacts mapped to that concept; ``namespace`` is a prefix name or a
     namespace IRI; ``relation`` is one of exact, close, broader, narrower,
     related; ``types`` is a comma-separated subset of model, dataObject,
-    dimension, measure, metric.
+    dimension, measure, metric, rule.
     """
     model = _get_model(session_id, model_id, mgr)
     return _build_concept_mapping_list(model, model_id, concept, namespace, relation, types)
@@ -722,9 +722,9 @@ async def list_unmapped_objects(
 ) -> UnmappedObjectsResponse:
     """Artefacts in the mappable scope that carry no external concept mapping.
 
-    Covers the model itself, data objects, dimensions, declared measures and
-    metrics (synthesized count measures cannot carry mappings and are not
-    listed). ``types`` narrows the report to a comma-separated subset.
+    Covers the model itself, data objects, dimensions, declared measures,
+    metrics and rules (synthesized count measures cannot carry mappings and are
+    not listed). ``types`` narrows the report to a comma-separated subset.
     """
     model = _get_model(session_id, model_id, mgr)
     index = ConceptMappingIndex(model, model.name or model_id)
