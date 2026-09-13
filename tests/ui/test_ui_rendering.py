@@ -138,8 +138,12 @@ def embedded_ui_url() -> Iterator[str]:
     from orionbelt.api.app import create_app
     from orionbelt.settings import Settings
 
-    app = create_app(settings=Settings(ui_enabled=True))
+    # The port first: the embedded UI takes its API URL from the settings'
+    # effective port at build time, so an app built before the port is known
+    # points its tabs at the default (or the .env) port, where a developer's
+    # own server may be answering and this fixture's never is.
     port = _free_port()
+    app = create_app(settings=Settings(ui_enabled=True, port=port))
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     threading.Thread(target=server.run, daemon=True).start()
