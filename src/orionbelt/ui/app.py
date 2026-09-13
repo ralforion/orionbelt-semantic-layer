@@ -1757,6 +1757,15 @@ def create_blocks(
                 # 140 was narrower than "Validate Model" renders, so it broke
                 # across two lines.
                 with gr.Row(equal_height=True):
+                    # Validate first: it is the step before compiling and
+                    # executing, and the row reads left to right in that order.
+                    validate_btn = gr.Button(
+                        "Validate Model",
+                        variant="primary",
+                        scale=0,
+                        min_width=160,
+                        elem_classes=["action-btn", "green-btn"],
+                    )
                     compile_btn = gr.Button(
                         "Compile SQL",
                         variant="primary",
@@ -1771,13 +1780,6 @@ def create_blocks(
                         min_width=160,
                         visible=query_exec_enabled,
                         elem_classes=["orange-btn", "action-btn"],
-                    )
-                    validate_btn = gr.Button(
-                        "Validate Model",
-                        variant="primary",
-                        scale=0,
-                        min_width=160,
-                        elem_classes=["action-btn", "green-btn"],
                     )
 
                 with gr.Row(elem_classes=["output-row"]):
