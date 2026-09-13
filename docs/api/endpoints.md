@@ -1324,7 +1324,8 @@ Only `SELECT` and `ASK` queries are allowed. The `query` field has a maximum len
  {"label": "Revenue"},
  {"label": "Order Count"}
  ],
- "boolean": null
+ "boolean": null,
+ "warnings": []
 }
 ```
 
@@ -1335,9 +1336,12 @@ For `ASK` queries:
  "type": "ask",
  "variables": [],
  "results": [],
- "boolean": true
+ "boolean": true,
+ "warnings": []
 }
 ```
+
+`warnings` lists non-fatal findings. Today that is a variable that is ordered by or projected but never bound in a triple pattern, `BIND` or `VALUES`: valid SPARQL (an unbound variable compares equal everywhere, so it orders nothing and its column is empty) and nearly always a typo, e.g. `"ORDER BY ?lable: the variable is never bound, so it orders nothing"`.
 
 **Error (400):** Update query rejected or invalid SPARQL syntax.
 

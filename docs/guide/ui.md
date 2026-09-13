@@ -30,6 +30,14 @@ The bundled example model (`examples/orionbelt_1_commerce.yaml`) is loaded autom
 
 The ER diagram is also available as download (MD or PNG) or via the REST API.
 
+![Business Rules](../assets/ui-business-rules-dark.png)
+
+The Business Rules tab lists the model's rules with statistics; Test Rule shows one rule's findings, Test All Rules the report. See [Business Rules](business-rules.md).
+
+![SPARQL](../assets/ui-sparql-dark.png)
+
+The SPARQL tab runs read-only queries over the model's OBSL graph, with a gallery of examples and an editor with SPARQL highlighting. See [OBSL Graph & SPARQL](obsl.md).
+
 ## Local Development
 
 For local development, the Gradio UI is automatically mounted at `/ui` on the REST API server:

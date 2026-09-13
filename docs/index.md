@@ -68,13 +68,14 @@ OBSQL flows over **Apache Arrow Flight SQL** (v2.4+) and **PostgreSQL wire** (v2
 | Star Schema & CFL   | Automatic fact selection and join path resolution                                                               |
 | Session Management  | TTL-scoped per-client sessions for the REST API                                                                 |
 | REST API            | FastAPI endpoints for session-based model management, validation, compilation, execution, and OSI conversion               |
-| Gradio UI           | Interactive web interface for model editing, query testing, SQL compilation, ER diagrams, and OSI import/export |
+| Gradio UI           | Interactive web interface for model editing, query testing, SQL compilation, ER diagrams, the ontology graph, business rules, SPARQL, and OSI import/export |
+| Business Rules      | Declarative rules over dimensions, measures and metrics (classification, eligibility, validation, constraint), compiled to the query that reports their findings and evaluated one at a time or as a report. See [Business Rules](guide/business-rules.md) |
 | Custom Extensions   | Vendor-specific metadata at all model levels (model, data object, column, dimension, measure, metric)           |
 | DB-API 2.0 Drivers  | PEP 249 drivers for all 8 databases with transparent OBML compilation                                          |
 | Arrow Flight SQL    | Embedded gRPC server for DBeaver, Tableau, Power BI — single container, two ports                               |
 | DuckDB as a Client  | A plain DuckDB shell queries the layer: `ATTACH ... (TYPE postgres)` mounts a model as a table, or `adbc_scanner` scans it over Flight SQL. Governed measures join to local Parquet and CSV. See [Using DuckDB as a client](guide/duckdb.md) |
 | PostgreSQL Wire     | Native Postgres-protocol surface (v2.5.0+) — Tableau, DBeaver, Superset, Power BI, `psql`, and **Dremio as a federated Postgres source** connect via their built-in Postgres ODBC/JDBC driver; no new connector to install |
-| OBSL Graph & SPARQL | Every loaded model is exported as an OBSL-Core 0.2 RDF graph (Turtle) with a read-only SPARQL (SELECT/ASK) endpoint |
+| OBSL Graph & SPARQL | Every loaded model is exported as an OBSL-Core 0.2 RDF graph (Turtle) with a read-only SPARQL (SELECT/ASK) endpoint, external concept mappings as SKOS links, and a SPARQL editor with a query gallery in the UI |
 | Plugin Architecture | Extensible dialect system with capability flags                                                                 |
 | Source Tracking     | Error messages with YAML line/column positions                                                                  |
 
