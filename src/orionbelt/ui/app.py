@@ -469,7 +469,10 @@ _CSS = """\
   border-radius: 8px;
 }
 /* ── Business Rules tab: same viewport-relative sizing as the SPARQL results ── */
-.rules-table .header-row, .findings-table .header-row { display: none !important; }
+/* The rule list has no toolbar (it is a listing); the findings keep Gradio's
+   copy + fullscreen buttons, pulled up tight under the status line. */
+.rules-table .header-row { display: none !important; }
+.findings-table .header-row { margin-bottom: 0 !important; min-height: 0 !important; }
 /* The rule list keeps a fixed height (about seven rows) and scrolls inside
    itself when a model has more, so the controls below never move. */
 .rules-table .table-wrap, .rules-table .virtual-table-viewport {
@@ -482,7 +485,8 @@ _CSS = """\
 .rules-table .table-wrap, .findings-table .table-wrap {
   overflow: auto !important; min-height: 100px;
 }
-#ob-rules-stats, #ob-rules-status { margin-bottom: -6px; }
+#ob-rules-stats { margin-bottom: -6px; }
+#ob-rules-status { margin-bottom: -14px; }
 /* ── SPARQL tab: the ACE editor and its hidden bridge textbox ── */
 #ob-sparql-ace { height: 240px; border: 1px solid var(--border-color-primary, #555);
   border-radius: 8px; font-family: Menlo, Consolas, monospace; }
@@ -516,9 +520,9 @@ _CSS = """\
    the fold and scrolls inside itself. Gradio 6 scrolls the inner
    .virtual-table-viewport (capped by max_height, a fixed pixel count that ran
    off the bottom of shorter windows), so the cap goes on both wrappers. The
-   copy/fullscreen toolbar row is hidden: it only added a gap under the status
-   line, which already carries the row count. ── */
-.sparql-table .header-row { display: none !important; }
+   copy + fullscreen toolbar stays, like the query results, pulled up tight
+   under the status line. ── */
+.sparql-table .header-row { margin-bottom: 0 !important; min-height: 0 !important; }
 /* Fill what is left of the window below the editor (its top sits at ~575px),
    never less than a few rows: a tall window shows more, a short one scrolls. */
 .sparql-table .table-wrap,
@@ -526,7 +530,7 @@ _CSS = """\
   max-height: max(220px, calc(100dvh - 620px)) !important;
 }
 .sparql-table .table-wrap { overflow: auto !important; min-height: 140px; }
-#ob-sparql-status { margin-bottom: -6px; }
+#ob-sparql-status { margin-bottom: -14px; }
 .ob-cb-do label span::before { content: '● '; color: #9E9E9E; }
 .ob-cb-dim label span::before { content: '● '; color: #4CAF50; }
 .ob-cb-meas label span::before { content: '● '; color: #2196F3; }
