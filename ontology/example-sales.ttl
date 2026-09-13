@@ -13,6 +13,8 @@
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix corp: <https://ontology.example.com/business/> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
 <https://ralforion.com/ns/model/sales> a owl:NamedIndividual,
@@ -467,4 +469,22 @@ obsl:Column a owl:Class ;
 [] a owl:AllDisjointClasses ;
     owl:members ( obsl:SemanticModel obsl:DataObject obsl:Column obsl:Join obsl:Dimension obsl:Measure obsl:Metric ) .
 
+# -----------------------------------------------------------------------------
+# External concept mapping --- the measure's meaning in a corporate ontology.
+# The direct skos triple is what SKOS consumers read; the mapping resource
+# carries the provenance. corp: is an external ontology, referenced by IRI only.
+# -----------------------------------------------------------------------------
 
+<https://ralforion.com/ns/model/sales/measure/average-order-value> skos:exactMatch corp:NetRevenue ;
+    obsl:hasExternalConceptMapping <https://ralforion.com/ns/model/sales/measure/average-order-value/concept-mapping/https-ontology-example-com-business-netrevenue> .
+
+<https://ralforion.com/ns/model/sales/measure/average-order-value/concept-mapping/https-ontology-example-com-business-netrevenue> a obsl:ExternalConceptMapping ;
+    obsl:sourceObject <https://ralforion.com/ns/model/sales/measure/average-order-value> ;
+    obsl:targetConcept corp:NetRevenue ;
+    obsl:authoredConcept "corp:NetRevenue" ;
+    obsl:mappingRelation "exact" ;
+    obsl:mappingJustification "curated" ;
+    obsl:mappingSource "enterprise-finance-ontology" ;
+    obsl:ontologyVersion "2026.1" ;
+    obsl:confidence 1.0 ;
+    obsl:mappingComment "Approved by Finance Data Governance" .

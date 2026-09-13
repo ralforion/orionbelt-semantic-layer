@@ -167,6 +167,23 @@ SELECT ?metric ?measure WHERE {
 }
 ```
 
+```sparql
+-- What does each measure mean in the corporate ontology?
+-- externalConceptMappings become direct skos:*Match triples from the
+-- element to the external IRI; one with provenance also has an
+-- obsl:ExternalConceptMapping resource (source, justification, confidence).
+PREFIX obsl: <https://ralforion.com/ns/obsl#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+SELECT ?measure ?relation ?concept WHERE {
+    ?m a obsl:Measure ;
+       rdfs:label ?measure ;
+       ?relation ?concept .
+    FILTER(?relation IN (skos:exactMatch, skos:closeMatch, skos:broadMatch,
+                         skos:narrowMatch, skos:relatedMatch))
+}
+```
+
 !!! warning "Read-only"
     Only `SELECT` and `ASK` queries are allowed. Update operations (`INSERT`, `DELETE`, `LOAD`, `DROP`, etc.) return HTTP 400.
 

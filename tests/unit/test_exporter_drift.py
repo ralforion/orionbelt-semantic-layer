@@ -87,6 +87,14 @@ customExtensions:
     data: '{"ai_context": "v2.7.6 sample"}'
   - vendor: governance
     data: 'classification: internal'
+ontology:
+  prefixes:
+    corp: "https://ontology.example.com/business/"
+externalConceptMappings:
+  - concept: corp:SalesModel
+    relation: exact
+    justification: curated
+    source: drift-guard
 """
 
 
@@ -167,3 +175,20 @@ def test_custom_extensions_attached_to_multiple_subject_types(graph) -> None:
         "customExtensions only attached to one subject — the test model "
         "puts them on both the SemanticModel and the Orders dataObject."
     )
+
+
+# --- External concept mappings (context/ontology plan, PR 2) -----------------
+
+
+def test_emits_external_concept_mapping(graph) -> None:
+    assert _has_class_instance(graph, "ExternalConceptMapping")
+    for prop in (
+        "hasExternalConceptMapping",
+        "sourceObject",
+        "targetConcept",
+        "authoredConcept",
+        "mappingRelation",
+        "mappingJustification",
+        "mappingSource",
+    ):
+        assert _has_predicate(graph, prop), prop

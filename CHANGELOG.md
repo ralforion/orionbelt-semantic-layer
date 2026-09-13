@@ -6,6 +6,16 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **External concept mappings in the RDF graph.** The OBSL exporter states every
+  `externalConceptMappings` entry as a direct `skos:exactMatch` / `closeMatch` / `broadMatch` /
+  `narrowMatch` / `relatedMatch` triple from the model, data object, dimension, measure or metric
+  to the expanded external IRI, and adds an `obsl:ExternalConceptMapping` resource (source object,
+  target concept, authored form, relation, justification, source, ontology version, confidence,
+  comment) at a deterministic IRI for every mapping that carries provenance. The model's
+  `ontology.prefixes` and `skos` are bound on the graph, the mapping vocabulary is embedded so the
+  graph stays self-contained, and external ontologies are referenced by IRI only, never imported.
+  `/graph` and `/sparql` see the links immediately; `ontology/example-sales.ttl` and the OBSL guide
+  carry an example and a query.
 - **External concept mappings (OBML mapping foundation).** A model, data object, dimension,
   measure or metric may carry `externalConceptMappings`: qualified links to concepts in an
   external ontology (`concept` as a compact or full IRI, a required SKOS-style `relation`, and

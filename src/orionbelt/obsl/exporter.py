@@ -8,13 +8,17 @@ graph for a loaded semantic model.  Expression strings are preserved as
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from typing import Any
 
 from rdflib import BNode, Graph, Literal, Namespace, URIRef
-from rdflib.namespace import OWL, RDF, RDFS, XSD
+from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
 
+from orionbelt.models.concept_links import effective_prefixes, expand_concept
 from orionbelt.models.expressions import find_placeholders, find_qualified_refs
 from orionbelt.models.semantic import (
+    ExternalConceptMapping,
+    ExternalConceptRelation,
     MeasureFilter,
     MeasureFilterGroup,
     MeasureFilterItem,
@@ -73,6 +77,16 @@ def _measure_uri(model_id: str, name: str) -> URIRef:
 
 def _metric_uri(model_id: str, name: str) -> URIRef:
     return URIRef(f"{BASE}{model_id}/metric/{_slug(name)}")
+
+
+def _concept_mapping_uri(subject_uri: URIRef, target_iri: str) -> URIRef:
+    """Deterministic IRI for a mapping's provenance resource.
+
+    One expanded IRI carries one relation per object (the resolver rejects a
+    repeat), so subject + target identifies the mapping; a slug of the target
+    keeps the IRI readable in SPARQL results and stable across exports.
+    """
+    return URIRef(f"{subject_uri}/concept-mapping/{_slug(target_iri)}")
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +208,13 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
     g.bind("owl", OWL)
     g.bind("rdfs", RDFS)
     g.bind("xsd", XSD)
+    g.bind("skos", SKOS)
+    # The model's own prefixes, so a serialized graph shows ``corp:NetRevenue``
+    # the way the author wrote it. Never displace a binding made above: a
+    # model prefix named like one of them gets a generated name instead.
+    prefixes = effective_prefixes(model.ontology.prefixes if model.ontology else None)
+    for prefix, namespace in (model.ontology.prefixes if model.ontology else {}).items():
+        g.bind(prefix, Namespace(namespace), override=False, replace=False)
 
     # Embed obsl: class declarations so the graph is self-contained.
     core_classes = (
@@ -345,6 +366,33 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
     ):
         g.add((prop, RDF.type, OWL.DatatypeProperty))
 
+    # -- External concept mapping vocabulary ---------------------------------
+    # Links to concepts in external ontologies. The element itself is the
+    # subject of a direct skos:*Match triple; the ExternalConceptMapping
+    # resource carries provenance when a mapping has any. External
+    # ontologies are linked by IRI, never imported.
+    g.add((OBSL.ExternalConceptMapping, RDF.type, OWL.Class))
+    g.add((OBSL.ExternalConceptMapping, RDFS.label, Literal("External Concept Mapping")))
+    g.add((OBSL.hasExternalConceptMapping, RDF.type, OWL.ObjectProperty))
+    g.add((OBSL.hasExternalConceptMapping, RDFS.range, OBSL.ExternalConceptMapping))
+    _add_union_domain(
+        g,
+        OBSL.hasExternalConceptMapping,
+        [OBSL.SemanticModel, OBSL.DataObject, OBSL.Dimension, OBSL.Measure, OBSL.Metric],
+    )
+    g.add((OBSL.sourceObject, RDF.type, OWL.ObjectProperty))
+    g.add((OBSL.sourceObject, RDFS.domain, OBSL.ExternalConceptMapping))
+    g.add((OBSL.sourceObject, OWL.inverseOf, OBSL.hasExternalConceptMapping))
+    # targetConcept has a domain but no range on purpose: a target is whatever
+    # the external ontology declares it to be.
+    g.add((OBSL.targetConcept, RDF.type, OWL.ObjectProperty))
+    g.add((OBSL.targetConcept, RDFS.domain, OBSL.ExternalConceptMapping))
+    for prop in _MAPPING_DATATYPE_PROPERTIES:
+        g.add((prop, RDF.type, OWL.DatatypeProperty))
+        g.add((prop, RDFS.domain, OBSL.ExternalConceptMapping))
+    for prop in (OBSL.sourceObject, OBSL.targetConcept, *_MAPPING_DATATYPE_PROPERTIES):
+        g.add((prop, RDF.type, OWL.FunctionalProperty))
+
     m_uri = _model_uri(model_id)
 
     # -- Semantic Model container -------------------------------------------
@@ -355,6 +403,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
     if model.description:
         g.add((m_uri, RDFS.comment, Literal(model.description)))
     _emit_custom_extensions(g, m_uri, getattr(model, "custom_extensions", []))
+    _emit_external_concept_mappings(g, m_uri, model.external_concept_mappings, prefixes)
     _emit_model_examples(g, m_uri, getattr(model, "examples", []))
 
     # Pre-build column URI lookup for ALL data objects (needed for joins,
@@ -383,6 +432,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         for syn in obj.synonyms:
             g.add((obj_uri, OBSL.synonym, Literal(syn)))
         _emit_custom_extensions(g, obj_uri, getattr(obj, "custom_extensions", []))
+        _emit_external_concept_mappings(g, obj_uri, obj.external_concept_mappings, prefixes)
 
         # Refresh policy — PLAN_freshness_driven_cache.md §6
         if obj.refresh is not None:
@@ -513,6 +563,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         for syn in dim.synonyms:
             g.add((dim_uri, OBSL.synonym, Literal(syn)))
         _emit_custom_extensions(g, dim_uri, getattr(dim, "custom_extensions", []))
+        _emit_external_concept_mappings(g, dim_uri, dim.external_concept_mappings, prefixes)
 
     # -- Measures -----------------------------------------------------------
     # effective_measures includes auto-synthesized row-count measures (e.g.
@@ -626,6 +677,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         for syn in meas.synonyms:
             g.add((meas_uri, OBSL.synonym, Literal(syn)))
         _emit_custom_extensions(g, meas_uri, getattr(meas, "custom_extensions", []))
+        _emit_external_concept_mappings(g, meas_uri, meas.external_concept_mappings, prefixes)
 
     # -- Metrics ------------------------------------------------------------
     for met_name, met in model.metrics.items():
@@ -699,8 +751,84 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         for syn in met.synonyms:
             g.add((met_uri, OBSL.synonym, Literal(syn)))
         _emit_custom_extensions(g, met_uri, getattr(met, "custom_extensions", []))
+        _emit_external_concept_mappings(g, met_uri, met.external_concept_mappings, prefixes)
 
     return g
+
+
+# ---------------------------------------------------------------------------
+# External concept mappings
+# ---------------------------------------------------------------------------
+
+_SKOS_MATCH: dict[ExternalConceptRelation, URIRef] = {
+    ExternalConceptRelation.EXACT: SKOS.exactMatch,
+    ExternalConceptRelation.CLOSE: SKOS.closeMatch,
+    ExternalConceptRelation.BROADER: SKOS.broadMatch,
+    ExternalConceptRelation.NARROWER: SKOS.narrowMatch,
+    ExternalConceptRelation.RELATED: SKOS.relatedMatch,
+}
+
+_MAPPING_DATATYPE_PROPERTIES = (
+    OBSL.authoredConcept,
+    OBSL.mappingRelation,
+    OBSL.mappingJustification,
+    OBSL.mappingSource,
+    OBSL.ontologyVersion,
+    OBSL.confidence,
+    OBSL.mappingComment,
+)
+
+# Fields whose presence earns a mapping its own provenance resource.
+_MAPPING_PROVENANCE_FIELDS = (
+    "justification",
+    "source",
+    "ontology_version",
+    "confidence",
+    "comment",
+)
+
+
+def _emit_external_concept_mappings(
+    g: Graph,
+    subject_uri: URIRef,
+    mappings: list[ExternalConceptMapping],
+    prefixes: dict[str, str],
+) -> None:
+    """Emit a modeling element's links to external ontology concepts.
+
+    Every mapping becomes a direct ``skos:*Match`` triple from the element
+    to the expanded target IRI: that is what any SKOS-aware consumer reads,
+    and what a SPARQL "what does this measure mean" query walks. A mapping
+    that carries provenance (justification, source, ontology version,
+    confidence, comment) additionally gets an ``obsl:ExternalConceptMapping``
+    resource holding it, at a deterministic IRI; a bare concept + relation
+    does not, so the graph stays as lean as the model.
+    """
+    for mapping in mappings:
+        # The resolver sets expanded_iri; a model built in Python may not have.
+        target_iri = mapping.expanded_iri or expand_concept(mapping.concept, prefixes)
+        target = URIRef(target_iri)
+        g.add((subject_uri, _SKOS_MATCH[mapping.relation], target))
+        if all(getattr(mapping, field) is None for field in _MAPPING_PROVENANCE_FIELDS):
+            continue
+        map_uri = _concept_mapping_uri(subject_uri, target_iri)
+        g.add((subject_uri, OBSL.hasExternalConceptMapping, map_uri))
+        g.add((map_uri, RDF.type, OBSL.ExternalConceptMapping))
+        g.add((map_uri, OBSL.sourceObject, subject_uri))
+        g.add((map_uri, OBSL.targetConcept, target))
+        g.add((map_uri, OBSL.authoredConcept, Literal(mapping.concept)))
+        g.add((map_uri, OBSL.mappingRelation, Literal(mapping.relation.value)))
+        if mapping.justification is not None:
+            g.add((map_uri, OBSL.mappingJustification, Literal(mapping.justification.value)))
+        if mapping.source is not None:
+            g.add((map_uri, OBSL.mappingSource, Literal(mapping.source)))
+        if mapping.ontology_version is not None:
+            g.add((map_uri, OBSL.ontologyVersion, Literal(mapping.ontology_version)))
+        if mapping.confidence is not None:
+            # xsd:decimal, as the SHACL shape asks; a float literal would be xsd:double.
+            g.add((map_uri, OBSL.confidence, Literal(Decimal(str(mapping.confidence)))))
+        if mapping.comment is not None:
+            g.add((map_uri, OBSL.mappingComment, Literal(mapping.comment)))
 
 
 # ---------------------------------------------------------------------------
