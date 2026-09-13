@@ -7,6 +7,7 @@ graph for a loaded semantic model.  Expression strings are preserved as
 
 from __future__ import annotations
 
+import hashlib
 import re
 from decimal import Decimal
 from typing import Any
@@ -83,10 +84,12 @@ def _concept_mapping_uri(subject_uri: URIRef, target_iri: str) -> URIRef:
     """Deterministic IRI for a mapping's provenance resource.
 
     One expanded IRI carries one relation per object (the resolver rejects a
-    repeat), so subject + target identifies the mapping; a slug of the target
-    keeps the IRI readable in SPARQL results and stable across exports.
+    repeat), so subject + target identifies the mapping. The slug keeps the
+    IRI readable in SPARQL results; the hash of the exact target makes it
+    unique, because a slug alone folds ``.../a-b`` and ``.../a/b`` together.
     """
-    return URIRef(f"{subject_uri}/concept-mapping/{_slug(target_iri)}")
+    digest = hashlib.sha256(target_iri.encode("utf-8")).hexdigest()[:8]
+    return URIRef(f"{subject_uri}/concept-mapping/{_slug(target_iri)}-{digest}")
 
 
 # ---------------------------------------------------------------------------

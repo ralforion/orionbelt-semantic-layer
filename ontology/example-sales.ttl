@@ -476,9 +476,9 @@ obsl:Column a owl:Class ;
 # -----------------------------------------------------------------------------
 
 <https://ralforion.com/ns/model/sales/measure/average-order-value> skos:exactMatch corp:NetRevenue ;
-    obsl:hasExternalConceptMapping <https://ralforion.com/ns/model/sales/measure/average-order-value/concept-mapping/https-ontology-example-com-business-netrevenue> .
+    obsl:hasExternalConceptMapping <https://ralforion.com/ns/model/sales/measure/average-order-value/concept-mapping/https-ontology-example-com-business-netrevenue-a4bd7bf9> .
 
-<https://ralforion.com/ns/model/sales/measure/average-order-value/concept-mapping/https-ontology-example-com-business-netrevenue> a obsl:ExternalConceptMapping ;
+<https://ralforion.com/ns/model/sales/measure/average-order-value/concept-mapping/https-ontology-example-com-business-netrevenue-a4bd7bf9> a obsl:ExternalConceptMapping ;
     obsl:sourceObject <https://ralforion.com/ns/model/sales/measure/average-order-value> ;
     obsl:targetConcept corp:NetRevenue ;
     obsl:authoredConcept "corp:NetRevenue" ;

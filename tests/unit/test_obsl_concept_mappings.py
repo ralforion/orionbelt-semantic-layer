@@ -9,6 +9,7 @@ ever referenced, never imported.
 
 from __future__ import annotations
 
+import hashlib
 from decimal import Decimal
 
 import pytest
@@ -170,7 +171,10 @@ class TestDirectSkosTriples:
 
 
 class TestProvenanceResource:
-    MAP = URIRef(f"{REVENUE}/concept-mapping/https-ontology-example-com-business-netrevenue")
+    MAP = URIRef(
+        f"{REVENUE}/concept-mapping/https-ontology-example-com-business-netrevenue-"
+        + hashlib.sha256((CORP + "NetRevenue").encode()).hexdigest()[:8]
+    )
 
     def test_resource_carries_every_field(self, graph: Graph) -> None:
         g = graph
@@ -202,6 +206,26 @@ class TestProvenanceResource:
         [map_uri] = list(graph.objects(DOUBLED, OBSL.hasExternalConceptMapping))
         assert (map_uri, OBSL.mappingJustification, Literal("lexical")) in graph
         assert list(graph.objects(map_uri, OBSL.mappingSource)) == []
+
+    def test_targets_that_slug_alike_get_distinct_resources(self) -> None:
+        """``.../a-b`` and ``.../a/b`` share a slug; the hash keeps them apart."""
+        raw, _ = TrackedLoader().load_string(
+            _YAML.replace(
+                "      - concept: corp:GrossRevenue\n        relation: related\n",
+                "      - concept: https://example.com/a-b\n        relation: related\n"
+                "        source: one\n"
+                "      - concept: https://example.com/a/b\n        relation: close\n"
+                "        source: two\n",
+            )
+        )
+        model, result = ReferenceResolver().resolve(raw)
+        assert result.errors == []
+        g = export_obsl(model, "t1")
+        resources = list(g.objects(REVENUE, OBSL.hasExternalConceptMapping))
+        assert len(resources) == 3
+        for res in resources:
+            assert len(list(g.objects(res, OBSL.targetConcept))) == 1
+            assert len(list(g.objects(res, OBSL.mappingSource))) == 1
 
     def test_resource_identity_is_deterministic(self, model: SemanticModel) -> None:
         a = export_obsl(model, "t1")
