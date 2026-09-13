@@ -24,8 +24,38 @@ settings:
   defaultTimezone: "Europe/Zagreb"
   overrideDatabaseTimezone: true
 
+# ---------------------------------------------------------------------------
+# External concept mappings (synthetic, for the demo).
+# The commerce: namespace is an invented business glossary; schema.org,
+# GoodRelations and FIBO are real vocabularies but the links below are
+# illustrative, not curated by their publishers. They are descriptive
+# metadata: nothing here changes the SQL. See docs/guide/concept-mappings.md.
+# ---------------------------------------------------------------------------
+ontology:
+  prefixes:
+    commerce: "https://example.com/ontology/commerce/"
+    schema: "https://schema.org/"
+    gr: "http://purl.org/goodrelations/v1#"
+    fibo: "https://spec.edmcouncil.org/fibo/ontology/"
+
+externalConceptMappings:
+  - concept: commerce:CommerceAnalyticsModel
+    relation: exact
+    justification: curated
+    source: commerce-demo-glossary
+    ontologyVersion: "2026.1"
+    comment: Synthetic demo link
+
 dataObjects:
   Sales:
+    externalConceptMappings:
+      - concept: commerce:SaleTransaction
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
+      - concept: schema:Order
+        relation: related
     code: sales
     schema: orionbelt_1
     refresh:
@@ -84,6 +114,12 @@ dataObjects:
         columnsTo: [Date]
 
   Purchases:
+    externalConceptMappings:
+      - concept: commerce:PurchaseTransaction
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     code: purchases
     schema: orionbelt_1
     refresh:
@@ -143,6 +179,12 @@ dataObjects:
         columnsTo: [Supplier ID]
 
   Returns:
+    externalConceptMappings:
+      - concept: commerce:ReturnTransaction
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     code: returns
     schema: orionbelt_1
     refresh:
@@ -184,6 +226,14 @@ dataObjects:
         columnsTo: [Date]
 
   Shipments:
+    externalConceptMappings:
+      - concept: commerce:Shipment
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
+      - concept: schema:ParcelDelivery
+        relation: close
     code: shipments
     schema: orionbelt_1
     refresh:
@@ -228,6 +278,12 @@ dataObjects:
         columnsTo: [Date]
 
   Client Complaints:
+    externalConceptMappings:
+      - concept: commerce:Complaint
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     code: clientcomplaints
     schema: orionbelt_1
     refresh:
@@ -277,6 +333,14 @@ dataObjects:
 
   # ── Dimension tables ──
   Clients:
+    externalConceptMappings:
+      - concept: commerce:Customer
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
+      - concept: schema:Person
+        relation: close
     code: clients
     schema: orionbelt_1
     refresh:
@@ -318,6 +382,14 @@ dataObjects:
         columnsTo: [Country ID]
 
   Products:
+    externalConceptMappings:
+      - concept: schema:Product
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
+      - concept: gr:ProductOrService
+        relation: close
     code: products
     schema: orionbelt_1
     refresh:
@@ -381,6 +453,12 @@ dataObjects:
         abstractType: string
 
   Channels:
+    externalConceptMappings:
+      - concept: commerce:SalesChannel
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     code: channels
     schema: orionbelt_1
     refresh:
@@ -431,6 +509,12 @@ dataObjects:
         columnsTo: [Country ID]
 
   Countries:
+    externalConceptMappings:
+      - concept: schema:Country
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     code: countries
     schema: orionbelt_1
     refresh:
@@ -453,6 +537,10 @@ dataObjects:
         columnsTo: [Region ID]
 
   Regions:
+    externalConceptMappings:
+      - concept: schema:AdministrativeArea
+        relation: broader
+        comment: A sales region is a kind of administrative area, not the other way round
     code: regions
     schema: orionbelt_1
     refresh:
@@ -506,6 +594,12 @@ dimensions:
   # queries the validator emits MISSING_VIA hints; use the role-playing
   # variants below to silence them and pin the join path explicitly. ──
   Client Name:
+    externalConceptMappings:
+      - concept: commerce:CustomerName
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     dataObject: Clients
     column: Client Name
     resultType: string
@@ -528,6 +622,12 @@ dimensions:
     column: Client Initial
     resultType: string
   Country Name:
+    externalConceptMappings:
+      - concept: commerce:CountryName
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     dataObject: Countries
     column: Country Name
     resultType: string
@@ -548,6 +648,11 @@ dimensions:
     column: Department
     resultType: string
   Channel Name:
+    externalConceptMappings:
+      - concept: commerce:SalesChannelName
+        relation: exact
+        justification: lexical
+        confidence: 0.7
     dataObject: Channels
     column: Channel Name
     resultType: string
@@ -729,6 +834,12 @@ dimensions:
     column: Product Name
     resultType: string
   Product Category:
+    externalConceptMappings:
+      - concept: commerce:ProductCategory
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     dataObject: Products
     column: Product Category
     resultType: string
@@ -759,6 +870,16 @@ measures:
   # ``settings.defaultNumericDataType`` would already pick decimal(18, 2)
   # — keeping it on each measure makes the intent grep-able.
   Total Sales:
+    externalConceptMappings:
+      - concept: commerce:Revenue
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
+        confidence: 1.0
+        comment: The demo's revenue KPI
+      - concept: fibo:FND/Accounting/CurrencyAmount/MonetaryAmount
+        relation: close
     aggregation: sum
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
@@ -773,6 +894,12 @@ measures:
       - dataObject: Sales
         column: Sales Quantity
   Total Purchases:
+    externalConceptMappings:
+      - concept: commerce:ProcurementSpend
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     aggregation: sum
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
@@ -787,6 +914,12 @@ measures:
       - dataObject: Purchases
         column: Purchase Quantity
   Total Returns:
+    externalConceptMappings:
+      - concept: commerce:ReturnValue
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     aggregation: sum
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
@@ -948,6 +1081,12 @@ metrics:
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
   Return Rate:
+    externalConceptMappings:
+      - concept: commerce:ReturnRate
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     # Raw ratio (Returns / Sales) — the trailing ``%`` in ``format`` makes
     # the formatter auto-multiply by 100 at display time, so the stored
     # value stays a clean ratio (0.123) and the rendered string is
@@ -957,6 +1096,12 @@ metrics:
     dataType: "decimal(18, 4)"
     format: "#,##0.0%"
   Gross Margin:
+    externalConceptMappings:
+      - concept: commerce:GrossMargin
+        relation: exact
+        justification: curated
+        source: commerce-demo-glossary
+        ontologyVersion: "2026.1"
     expression: "{[Total Sales]} - {[Total Purchases]}"
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
@@ -1021,6 +1166,11 @@ metrics:
 
   # ── Period-over-period metrics — compare a base measure across time periods. ──
   Sales YoY Growth:
+    externalConceptMappings:
+      - concept: commerce:RevenueGrowth
+        relation: broader
+        justification: curated
+        source: commerce-demo-glossary
     type: period_over_period
     expression: "{[Total Sales]}"
     dataType: "decimal(18, 4)"

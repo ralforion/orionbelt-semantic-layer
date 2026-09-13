@@ -6,6 +6,15 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **Commerce demo links into a business ontology.** `examples/orionbelt_1_commerce.yaml`, the
+  model the public playground loads, now declares `ontology.prefixes` (a synthetic `commerce:`
+  glossary plus schema.org, GoodRelations and FIBO) and `externalConceptMappings` on its
+  high-value artefacts: the transactional and master-data objects, the customer, country, product
+  category and channel dimensions, the sales, returns and purchases measures, and the return rate,
+  gross margin and YoY growth metrics, including two `broader` links that show the direction. All
+  links are marked synthetic in the file. The OBSL guide gains three more ready-to-run SPARQL
+  examples (artefacts by type, measures and their columns, links into one namespace with
+  provenance), and a test runs every example in the guide against the demo's exported graph.
 - **External concept mappings guide.** `docs/guide/concept-mappings.md` explains the OBML model
   ontology versus an external business ontology, why mappings never affect SQL, the prefix and
   IRI rules, the relation vocabulary with its direction (`broader` means the external concept is the
