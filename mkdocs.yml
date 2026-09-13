@@ -140,6 +140,7 @@ nav:
       - Compilation Pipeline: guide/compilation.md
       - Correctness & Drift Tests: guide/correctness-and-drift-tests.md
       - OBSL Graph & SPARQL: guide/obsl.md
+      - External Concept Mappings: guide/concept-mappings.md
       - Freshness Contracts: guide/freshness-contracts.md
       - Result Cache: guide/result-cache.md
       - Command-Line Interface: guide/cli.md

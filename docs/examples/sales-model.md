@@ -232,6 +232,39 @@ Compiles to: `AVG("Orders"."PRICE" * "Orders"."QUANTITY")`
 
 Uses `{[DataObject].[Column]}` syntax to reference columns directly in the expression — no `columns` array needed.
 
+### Linking Measures to a Business Ontology
+
+A measure can say what it *means* in a governed vocabulary with [external concept mappings](../guide/concept-mappings.md). Declare the prefixes once at the top level, then link the artefacts that carry business identity:
+
+```yaml
+ontology:
+  prefixes:
+    corp: "https://ontology.example.com/business/"
+    schema: "https://schema.org/"
+
+dataObjects:
+  Customers:
+    externalConceptMappings:
+      - concept: schema:Organization
+        relation: close
+
+measures:
+  Revenue:
+    resultType: float
+    aggregation: sum
+    expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
+    externalConceptMappings:
+      - concept: corp:GrossRevenue
+        relation: exact
+        justification: curated
+        source: finance-glossary
+        ontologyVersion: "2026.1"
+      - concept: corp:Revenue        # the glossary's umbrella term
+        relation: broader            # corp:Revenue is broader than this measure
+```
+
+Compiles to exactly the same SQL as before: mappings are metadata, not logic. They surface on `GET /v1/measures/Revenue` under `external_concept_mappings`, as `skos:exactMatch` / `skos:broadMatch` triples in the [RDF graph](../guide/obsl.md#external-concept-mappings-in-the-graph), and `GET /v1/concept-mappings/unmapped` lists what is still unlinked.
+
 ## Metrics Explained
 
 ```yaml

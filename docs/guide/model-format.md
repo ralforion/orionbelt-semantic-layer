@@ -21,6 +21,10 @@ settings: # Optional: model-level compilation settings
   defaultTimezone: "Europe/Zagreb"
   defaultLocale: "de-DE" # BCP-47; default locale for result value formatting
 
+ontology: # Optional: prefixes for externalConceptMappings (see External Concept Mappings)
+  prefixes:
+    corp: "https://ontology.example.com/business/"
+
 dataObjects: # Database tables/views with columns and joins
   ...
 
@@ -111,6 +115,7 @@ dataObjects:
 | `owner` | string | No | Responsible team or person |
 | `countable` | bool | No | Synthesize a row-count measure for this object (default `true`); see [Row-Count Measures](#row-count-measures-auto-synthesized) |
 | `countLabel` | string | No | Name/label for this object's synthesized count measure (overrides `countLabelPattern`) |
+| `externalConceptMappings` | list | No | Links to concepts in an external ontology; see [External Concept Mappings](concept-mappings.md) |
 | `nestedIn` | object | No | Take this object's rows by unnesting an array column on another object instead of from a table — see [Nested data objects](#nested-data-objects-nestedin) |
 
 ### Nested data objects (`nestedIn`)
@@ -464,6 +469,7 @@ dimensions:
 | `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
+| `externalConceptMappings` | list | No | Links to concepts in an external ontology; see [External Concept Mappings](concept-mappings.md) |
 
 ### Role-Playing Dimensions (via)
 
@@ -610,6 +616,7 @@ measures:
 | `defaultValue` | str/number/bool | No | Value to report when the aggregate has nothing to add up (emitted as `COALESCE` around the aggregate). Unset keeps the SQL-standard NULL. |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
+| `externalConceptMappings` | list | No | Links to concepts in an external ontology; see [External Concept Mappings](concept-mappings.md) |
 
 ### Aggregation Types
 
@@ -962,6 +969,7 @@ Window metrics compose freely with derived metrics — `expression: '{[Revenue]}
 | `format` | string | — | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `synonyms` | list | — | Alternative names or terms (LLM hints) |
 | `owner` | string | — | Responsible team or person |
+| `externalConceptMappings` | list | — | Links to concepts in an external ontology; see [External Concept Mappings](concept-mappings.md) |
 
 ### Metric Expression Placeholders
 
@@ -1523,6 +1531,28 @@ Use cases:
 - **Governance tags**: Owner, classification, cost center, lineage information
 - **Vendor-specific metadata**: Any key-value data that OrionBelt should pass through without interpretation
 
+## External Concept Mappings
+
+The model, a data object, a dimension, a measure or a metric may link to concepts in an external business ontology (a corporate glossary, FIBO, schema.org) with an `externalConceptMappings` list, using prefixes declared under the top-level `ontology.prefixes` block. Mappings are descriptive: they never change SQL, execution or the result cache.
+
+```yaml
+ontology:
+  prefixes:
+    corp: "https://ontology.example.com/business/"
+
+measures:
+  Revenue:
+    aggregation: sum
+    expression: "{[Orders].[Amount]}"
+    externalConceptMappings:
+      - concept: corp:NetRevenue
+        relation: exact           # exact | close | broader | narrower | related
+        justification: curated    # curated | imported | generated | inferred | lexical
+        source: enterprise-finance-ontology
+```
+
+`relation` reads artefact first, in the SKOS direction: `broader` means the external concept is the broader one. The full syntax, the relation vocabulary, the validation rules and how mappings surface over REST, RDF and OSI are in [External Concept Mappings](concept-mappings.md).
+
 ## Static Filters
 
 A model can declare **static filters** — mandatory WHERE conditions applied to every query against the model. Use them to restrict data by business unit, region, status, time range, or any column-level condition.
@@ -1722,6 +1752,7 @@ OrionBelt validates models against these rules:
 6. **Join targets exist** — All `joinTo` targets must be defined data objects
 7. **References resolve** — All dimension references (dataObject/column) must resolve
 8. **Static filters resolve** — Filter `dataObject` and `column` must reference existing data objects and columns
+9. **External concept mappings resolve** — Every `concept` expands to an absolute IRI with a declared or built-in prefix, `relation` is required, and one IRI carries one relation per artefact; see [External Concept Mappings](concept-mappings.md#rules-the-resolver-enforces) for the error codes
 
 Validation errors include source positions (line/column) when available.
 

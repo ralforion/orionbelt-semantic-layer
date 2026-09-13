@@ -6,6 +6,12 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **External concept mappings guide.** `docs/guide/concept-mappings.md` explains the OBML model
+  ontology versus an external business ontology, why mappings never affect SQL, the prefix and
+  IRI rules, the relation vocabulary with its direction (`broader` means the external concept is the
+  broader one), the resolver's error codes, and how mappings surface over REST, RDF/SPARQL and OSI.
+  The OBML reference tables, the OBSL and OSI guides, the sales-model walkthrough, the docs index
+  and the README point at it.
 - **External concept mapping discovery API.** `GET .../concept-mappings` lists every mapping in a
   model with the artefact it sits on and the concept expanded to an absolute IRI, filtered by
   `concept` (compact or full IRI), `namespace` (prefix name or IRI), `relation` and `types`;

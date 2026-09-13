@@ -21,8 +21,20 @@ OBSL-Core 0.2 maps every OBML concept to RDF triples using standard vocabularies
 | Metric | `obsl:Metric` | `obsl:metricType`, `obsl:expressionSource`, `obsl:baseMeasure`, `obsl:referencesMeasure`, `obsl:owner`, `obsl:dataType`, `obsl:format` |
 | Cumulative Metric | `obsl:CumulativeMetric` | `obsl:timeDimension`, `obsl:cumulativeType`, `obsl:window`, `obsl:grainToDate` |
 | Period-over-Period Metric | `obsl:PeriodOverPeriodMetric` | `obsl:timeDimension`, `obsl:timeGrain`, `obsl:offset`, `obsl:offsetGrain`, `obsl:comparison` |
+| External concept mapping | `obsl:ExternalConceptMapping` (plus a direct `skos:*Match` triple on the artefact) | `obsl:sourceObject`, `obsl:targetConcept`, `obsl:authoredConcept`, `obsl:mappingRelation`, `obsl:mappingJustification`, `obsl:mappingSource`, `obsl:ontologyVersion`, `obsl:confidence`, `obsl:mappingComment` |
 
 Labels use `rdfs:label`, synonyms use `obsl:synonym`, and descriptions use `rdfs:comment`.
+
+### External concept mappings in the graph
+
+An [`externalConceptMappings`](concept-mappings.md) entry becomes a direct SKOS mapping triple from the artefact to the expanded external IRI, so any SKOS-aware consumer reads it without knowing OBSL:
+
+```turtle
+<https://ralforion.com/ns/model/sales/measure/revenue>
+    skos:exactMatch <https://ontology.example.com/business/NetRevenue> .
+```
+
+`exact` is `skos:exactMatch`, `close` is `skos:closeMatch`, `broader` is `skos:broadMatch`, `narrower` is `skos:narrowMatch`, `related` is `skos:relatedMatch`. A mapping that carries provenance (justification, source, ontology version, confidence, comment) additionally gets an `obsl:ExternalConceptMapping` resource holding it, at a deterministic IRI under the artefact. The model's `ontology.prefixes` and `skos` are bound on the graph, so a serialized Turtle shows `corp:NetRevenue` the way the author wrote it. The external ontology itself is never imported: the graph references its IRIs and says nothing about them.
 
 !!! info "Namespace"
     ```

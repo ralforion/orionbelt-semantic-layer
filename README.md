@@ -390,7 +390,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **OBML Format** — YAML-based semantic models with data objects, dimensions, measures, metrics, and joins
 - **Cross-Schema Queries** — model data objects across multiple databases and schemas in a single model
 - **Static Model Filters** — mandatory WHERE conditions baked into the model, auto-applied with join extension
-- **OBSL Graph & SPARQL** — RDF graph export and read-only SPARQL querying for every loaded model
+- **OBSL Graph & SPARQL** — RDF graph export and read-only SPARQL querying for every loaded model; external concept mappings link data objects, dimensions, measures and metrics to a business ontology (FIBO, schema.org, a corporate glossary) as SKOS matches
 - **OSI Interoperability** — bidirectional conversion between OBML and the Open Semantic Interchange format, now developed as [Apache Ossie (incubating)](https://github.com/apache/ossie)
 
 ### SQL Compilation

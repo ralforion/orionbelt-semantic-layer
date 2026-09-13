@@ -54,3 +54,7 @@ The Gradio UI provides **Import OSI** / **Export to OSI** buttons that use these
 ## Mapping Reference
 
 See the [OSI - OBML Mapping Analysis](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/packages/osi-orionbelt/osi_obml_mapping_analysis.md) for the core-spec mapping.
+
+## External concept mappings
+
+OSI has no slot for [`ontology.prefixes` or `externalConceptMappings`](concept-mappings.md), so the converter carries both inside the `ORIONBELT` vendor `custom_extensions` of the OSI entity each OBML artefact becomes: the semantic model (prefixes and model-level mappings), the dataset, the field (for a dimension, including the extra-dimension descriptors when several dimensions share one column) and the metric (for measures and every metric type). The reverse direction restores them verbatim, so OBML → OSI → OBML is lossless and a mapping always comes back together with the prefix its compact IRI needs. Other OSI tools see the payload as opaque vendor data. Importing an OSI document that names concepts natively (`maps_to_concept` or Ossie ontology mappings) is not implemented yet.
