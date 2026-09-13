@@ -1153,6 +1153,52 @@ Compile one rule. Body: `{"dialect": "postgres"}`, optional.
 
 Compile failures are reported the way `query/sql` reports them: **422** with structured errors, **400** for an unsupported dialect.
 
+### `POST /v1/sessions/{session_id}/models/{model_id}/rules/{name}/evaluate`
+
+Run one rule and return its findings: members for `classification` / `eligibility`, violations for `validation` / `constraint`. Goes through the same cache-aware pipeline as `query/execute`; requires `QUERY_EXECUTE=true` (**503** otherwise). Body, all optional: `dialect`, `limit` (default: the API's query limit), `format_values`.
+
+```json
+{
+ "name": "High Return Rate", "type": "classification", "level": "aggregate", "findings": "matches",
+ "severity": null, "dialect": "duckdb", "sql": "SELECT ...",
+ "columns": [{"name": "Product Category", "type": "string"}, {"name": "Return Rate", "type": "float"}],
+ "rows": [["Toys", 0.125]], "row_count": 1, "limit": 100,
+ "execution_time_ms": 12.4, "cached": false, "warnings": []
+}
+```
+
+### `POST /v1/sessions/{session_id}/models/{model_id}/rules/evaluate`
+
+Run every rule, or a filtered subset, into a report. A report, not one result: each rule is a row with its status and nothing is hidden. Requires `QUERY_EXECUTE=true` unless `dry_run`.
+
+| Body field | Default | Description |
+|------------|---------|-------------|
+| `dialect` | model default | target dialect |
+| `types`, `severities` | all | only rules of these types / severities |
+| `executable_only` | `false` | skip rules whose query does not compile instead of failing them |
+| `max_rules` | all | stop after this many |
+| `limit` | 20 | sample findings per rule |
+| `dry_run` | `false` | compile only; status `compiled` |
+| `stop_on_first_failure` | `false` | |
+| `include_sql`, `include_rows` | `false`, `true` | what each row carries |
+| `format_values` | `false` | render numeric cells with their display format |
+
+```json
+{
+ "model_id": "…", "dialect": "duckdb", "generated_at": "2026-09-13T15:04:05+00:00",
+ "filters": {"limit": 20, "dry_run": false, "stop_on_first_failure": false, "executable_only": false, "format_values": false},
+ "summary": {"total": 6, "executed": 6, "compiled": 0, "skipped": 0, "failed": 0, "with_findings": 4},
+ "results": [
+ {"name": "High Return Rate", "type": "classification", "level": "aggregate", "findings": "matches", "severity": null,
+ "status": "executed", "finding_count": 2, "columns": ["Product Category", "Return Rate"], "rows": [["Toys", 0.125]],
+ "sql": null, "error": null, "cached": false, "elapsed_ms": 12.4}
+ ],
+ "elapsed_ms": 80.3
+}
+```
+
+Statuses: `executed`, `compiled` (dry run), `skipped` (`executable_only` and the query does not compile), `failed` (compile or execution error, with `error`).
+
 ### `POST /v1/sessions/{session_id}/models/{model_id}/rules/compile`
 
 Compile every rule. A rule that fails is a row with `status: "failed"` and its `error`; the response is always **200**.
@@ -1434,6 +1480,8 @@ Returns **404** if no sessions exist, **409 Conflict** if multiple sessions or m
 | `GET /v1/rules/{name}` | `GET /v1/sessions/{id}/models/{mid}/rules/{name}` |
 | `POST /v1/rules/{name}/compile` | `POST /v1/sessions/{id}/models/{mid}/rules/{name}/compile` |
 | `POST /v1/rules/compile` | `POST /v1/sessions/{id}/models/{mid}/rules/compile` |
+| `POST /v1/rules/{name}/evaluate` | `POST /v1/sessions/{id}/models/{mid}/rules/{name}/evaluate` |
+| `POST /v1/rules/evaluate` | `POST /v1/sessions/{id}/models/{mid}/rules/evaluate` |
 | `GET /v1/graph` | `GET /v1/sessions/{id}/models/{mid}/graph` |
 | `POST /v1/sparql` | `POST /v1/sessions/{id}/models/{mid}/sparql` |
 | `POST /v1/query/sql` | `POST /v1/sessions/{id}/query/sql` (auto-resolves model_id) |

@@ -1276,3 +1276,191 @@ def run_sparql(
         session_state,
         model_state,
     )
+
+
+# ---------------------------------------------------------------------------
+# Business Rules tab
+# ---------------------------------------------------------------------------
+
+_RULE_COLUMNS = [
+    "rule",
+    "type",
+    "level",
+    "findings",
+    "severity",
+    "grain",
+    "reads",
+    "depends on",
+    "executable",
+]
+_REPORT_COLUMNS = [
+    "rule",
+    "type",
+    "findings",
+    "status",
+    "count",
+    "severity",
+    "cached",
+    "ms",
+    "error",
+]
+
+
+def _rules_frame(rules: list[dict[str, Any]]) -> object:
+    import pandas as pd
+
+    rows = [
+        [
+            r["name"],
+            r["type"],
+            r["level"],
+            r["findings"],
+            r.get("severity") or "",
+            ", ".join(r.get("grain") or []),
+            ", ".join(r.get("measures") or []),
+            ", ".join(r.get("depends_on") or []),
+            "yes" if r["executable"] else f"no: {r.get('error') or ''}",
+        ]
+        for r in rules
+    ]
+    return pd.DataFrame(rows, columns=_RULE_COLUMNS)
+
+
+def _statistics_markdown(stats: dict[str, Any], dialect: str) -> str:
+    def counts(d: dict[str, int]) -> str:
+        return ", ".join(f"{k} {v}" for k, v in d.items()) or "none"
+
+    return (
+        f"**{stats.get('total', 0)} rules** on `{dialect}` &middot; "
+        f"by type: {counts(stats.get('by_type', {}))} &middot; "
+        f"by level: {counts(stats.get('by_level', {}))} &middot; "
+        f"by severity: {counts(stats.get('by_severity', {}))} &middot; "
+        f"executable {stats.get('executable', 0)}, not executable {stats.get('not_executable', 0)}"
+    )
+
+
+def load_rules(
+    model_yaml: str,
+    api_url: str,
+    dialect: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[str, object, object, dict[str, str] | None, dict[str, str] | None]:
+    """Refresh callback: ``(statistics markdown, table, rule dropdown, session, model)``."""
+    from orionbelt.ui.api_client import _rules_request
+
+    suffix = f"?dialect={dialect}" if dialect else ""
+    body, error, session_state, model_state = _rules_request(
+        model_yaml, api_url, session_state, model_state, "GET", suffix
+    )
+    if body is None:
+        return (
+            f"**Error:** {error}",
+            gr.update(visible=False),
+            gr.update(choices=[], value=None),
+            session_state,
+            model_state,
+        )
+    rules = body.get("rules") or []
+    if not rules:
+        return (
+            "This model declares no rules. Add a `rules:` block to the OBML "
+            "(see the Business Rules guide) and refresh.",
+            gr.update(visible=False),
+            gr.update(choices=[], value=None),
+            session_state,
+            model_state,
+        )
+    names = [r["name"] for r in rules]
+    return (
+        _statistics_markdown(body.get("statistics") or {}, body.get("dialect", dialect)),
+        gr.update(value=_rules_frame(rules), visible=True),
+        gr.update(choices=names, value=names[0]),
+        session_state,
+        model_state,
+    )
+
+
+def evaluate_rule_ui(
+    model_yaml: str,
+    api_url: str,
+    dialect: str,
+    rule_name: str | None,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[str, object, dict[str, str] | None, dict[str, str] | None]:
+    """Test Rule callback: ``(status markdown, findings table, session, model)``."""
+    import pandas as pd
+
+    from orionbelt.ui.api_client import _rules_request
+
+    if not rule_name:
+        return "Pick a rule to test.", gr.update(visible=False), session_state, model_state
+    payload: dict[str, Any] = {"format_values": True}
+    if dialect:
+        payload["dialect"] = dialect
+    body, error, session_state, model_state = _rules_request(
+        model_yaml, api_url, session_state, model_state, "POST", f"/{rule_name}/evaluate", payload
+    )
+    if body is None:
+        return f"**Error:** {error}", gr.update(visible=False), session_state, model_state
+    columns = [c["name"] for c in body.get("columns") or []]
+    rows = body.get("rows") or []
+    count = body.get("row_count", len(rows))
+    noun = body.get("findings", "findings")
+    cached = " (cached)" if body.get("cached") else ""
+    severity = f", severity {body['severity']}" if body.get("severity") else ""
+    status = (
+        f"**{rule_name}**: {count} {noun} "
+        f"({body.get('type')}, {body.get('level')}{severity}) "
+        f"in {body.get('execution_time_ms', 0):.0f} ms{cached}"
+    )
+    if not rows:
+        return status, gr.update(visible=False), session_state, model_state
+    frame = pd.DataFrame(rows, columns=columns)
+    return status, gr.update(value=frame, visible=True), session_state, model_state
+
+
+def evaluate_all_rules_ui(
+    model_yaml: str,
+    api_url: str,
+    dialect: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[str, object, dict[str, str] | None, dict[str, str] | None]:
+    """Test All Rules callback: ``(summary markdown, report table, session, model)``."""
+    import pandas as pd
+
+    from orionbelt.ui.api_client import _rules_request
+
+    payload: dict[str, Any] = {"limit": 20, "include_rows": False, "format_values": True}
+    if dialect:
+        payload["dialect"] = dialect
+    body, error, session_state, model_state = _rules_request(
+        model_yaml, api_url, session_state, model_state, "POST", "/evaluate", payload
+    )
+    if body is None:
+        return f"**Error:** {error}", gr.update(visible=False), session_state, model_state
+    summary = body.get("summary") or {}
+    rows = [
+        [
+            r["name"],
+            r["type"],
+            r["findings"],
+            r["status"],
+            "" if r.get("finding_count") is None else r["finding_count"],
+            r.get("severity") or "",
+            "yes" if r.get("cached") else "",
+            f"{r.get('elapsed_ms', 0):.0f}",
+            r.get("error") or "",
+        ]
+        for r in body.get("results") or []
+    ]
+    text = (
+        f"**Report** ({body.get('dialect')}, {body.get('elapsed_ms', 0):.0f} ms): "
+        f"{summary.get('total', 0)} rules, {summary.get('executed', 0)} executed, "
+        f"{summary.get('with_findings', 0)} with findings, "
+        f"{summary.get('failed', 0)} failed, {summary.get('skipped', 0)} skipped"
+    )
+    frame = pd.DataFrame(rows, columns=_REPORT_COLUMNS)
+    return text, gr.update(value=frame, visible=True), session_state, model_state

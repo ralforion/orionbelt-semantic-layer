@@ -6,6 +6,15 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **Rule evaluation and the Business Rules tab.** `POST .../rules/{name}/evaluate` runs one rule
+  through the same cache-aware pipeline as `query/execute` and returns its findings (members for
+  classification and eligibility rules, violations for validation and constraint rules);
+  `POST .../rules/evaluate` runs every rule, or a subset by `types` / `severities` /
+  `executable_only` / `max_rules`, into a report with per-rule status (`executed`, `compiled` on a
+  `dry_run`, `skipped`, `failed`), finding counts, sample rows and errors, never hiding a failure;
+  both have top-level shortcuts. The Gradio UI gains a Business Rules tab, left of SPARQL: the
+  model's rules with statistics by type, level, severity and executability, **Test Rule** for one
+  rule's findings and **Test All Rules** for the report.
 - **Business rules in OBML.** A top-level `rules` block declares business rules as conditions over
   dimensions, measures and metrics, without SQL: a comparison in the query filter shape
   (`field` / `op` / `value`), `all` / `any` / `not` composition, and `rule` references that inline

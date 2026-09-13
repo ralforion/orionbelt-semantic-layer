@@ -127,6 +127,8 @@ Session-scoped under `/v1/sessions/{sid}/models/{mid}/`, each with a top-level s
 | `GET rules/{name}` | one rule with its authored condition and the query behind it |
 | `POST rules/{name}/compile` | the SQL whose rows are the rule's findings (`{"dialect": ...}` optional; defaults like `query/sql`) |
 | `POST rules/compile` | every rule's SQL or the reason it failed, never hiding a failure |
+| `POST rules/{name}/evaluate` | runs one rule and returns its findings (`{"dialect", "limit", "format_values"}` optional); requires `QUERY_EXECUTE=true` |
+| `POST rules/evaluate` | runs every rule (or a filtered subset) into a report: per rule its status (`executed`, `compiled` on a dry run, `skipped`, `failed`), finding count, a sample of findings and the reason when it failed; filters `types`, `severities`, `executable_only`, `max_rules`; controls `limit`, `dry_run`, `stop_on_first_failure`, `include_sql`, `include_rows` |
 
 See the [endpoint reference](../api/endpoints.md#business-rules).
 
@@ -134,6 +136,10 @@ See the [endpoint reference](../api/endpoints.md#business-rules).
 
 Each rule is an `obsl:Rule` in the [OBSL RDF graph](obsl.md): its type, severity, derived level, grain dimensions, serialized condition, what it reads (`obsl:ruleReads`) and the rules it depends on (`obsl:dependsOnRule`). Definitions only; evaluation results are never part of the model graph. Through OSI, rules ride whole in the ORIONBELT vendor extension.
 
+## In the UI
+
+The [Gradio UI](ui.md) has a Business Rules tab: the model's rules with statistics, a **Test Rule** button that lists one rule's findings, and **Test All Rules** for the report.
+
 ## What is next
 
-Evaluation endpoints (run a rule or all rules against the warehouse and return findings as a report), rule references in query filters, and the Business Rules tab in the Gradio UI.
+Rule references in query filters, and provenance and certification metadata on rules.

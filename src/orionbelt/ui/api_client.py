@@ -258,6 +258,53 @@ def _run_sparql(
         return None, f"SPARQL request failed: {exc}", session_state, model_state
 
 
+def _rules_request(
+    model_yaml: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+    method: str,
+    suffix: str,
+    payload: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, str, dict[str, str] | None, dict[str, str] | None]:
+    """One call against the current model's ``/rules`` surface.
+
+    Returns ``(body, error, session_state, model_state)``: ``body`` is the
+    JSON response on success, else ``None`` with ``error`` saying why. The
+    rules endpoints need the API (listing compiles, evaluation runs SQL), so
+    an unreachable API is an error here, not a local fallback.
+    """
+    if not model_yaml or not any(
+        line.strip() and not line.lstrip().startswith("#") for line in model_yaml.splitlines()
+    ):
+        return None, "No model loaded.", session_state, model_state
+    try:
+        client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
+            model_yaml, api_url, session_state, model_state
+        )
+        path = f"/v1/sessions/{session_id}/models/{model_id}/rules{suffix}"
+        resp = client.request(method, path, json=payload, timeout=300)
+        if resp.status_code == 404 and "not found" in resp.text.lower() and "Session" in resp.text:
+            client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
+                model_yaml, api_url, None, None
+            )
+            path = f"/v1/sessions/{session_id}/models/{model_id}/rules{suffix}"
+            resp = client.request(method, path, json=payload, timeout=300)
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except ValueError:
+                detail = resp.text
+            return None, _format_api_errors(detail), session_state, model_state
+        return resp.json(), "", session_state, model_state
+    except _ModelValidationError as exc:
+        return None, _format_api_errors(exc.detail), session_state, model_state
+    except httpx.ConnectError:
+        return None, f"API unreachable at {api_url}.", session_state, model_state
+    except Exception as exc:  # noqa: BLE001 - surfaced to the user, never raised into Gradio
+        return None, f"Rules request failed: {exc}", session_state, model_state
+
+
 def _run_sparql_locally(model_yaml: str, query: str) -> dict[str, Any] | None:
     """Export the graph in-process and query it: the API-unreachable path.
 

@@ -48,9 +48,12 @@ from orionbelt.ui.handlers import (
     _resolve_execution_dialect,
     clear_filters_and_execute,
     compile_sql,
+    evaluate_all_rules_ui,
+    evaluate_rule_ui,
     execute_query,
     filter_and_execute,
     filter_chip_update,
+    load_rules,
     model_jump_targets,
     run_sparql,
     sort_and_execute,
@@ -94,8 +97,11 @@ __all__ = [
     "_load_example_model",
     "_render_ontology_graph",
     "_resolve_execution_dialect",
+    "load_rules",
     "run_sparql",
     "sparql_example_query",
+    "evaluate_all_rules_ui",
+    "evaluate_rule_ui",
     "_warn_if_auth_required_without_key",
     "compile_sql",
     "create_blocks",
@@ -462,6 +468,18 @@ _CSS = """\
   overflow: auto;
   border-radius: 8px;
 }
+/* ── Business Rules tab: same viewport-relative sizing as the SPARQL results ── */
+.rules-table .header-row, .findings-table .header-row { display: none !important; }
+.rules-table .table-wrap, .rules-table .virtual-table-viewport {
+  max-height: calc(45dvh - 120px) !important;
+}
+.findings-table .table-wrap, .findings-table .virtual-table-viewport {
+  max-height: calc(100dvh - 620px) !important;
+}
+.rules-table .table-wrap, .findings-table .table-wrap {
+  overflow: auto !important; min-height: 100px;
+}
+#ob-rules-stats, #ob-rules-status { margin-bottom: -6px; }
 /* ── SPARQL tab: results sized to the viewport so the table always ends above
    the fold and scrolls inside itself. Gradio 6 scrolls the inner
    .virtual-table-viewport (capped by max_height, a fixed pixel count that ran
@@ -2242,6 +2260,79 @@ def create_blocks(
                     fn=None,
                     inputs=[obsl_turtle_state],
                     js=_DOWNLOAD_TTL_JS,
+                )
+
+            with gr.Tab("Business Rules", id=6) as rules_tab:
+                rules_stats = gr.Markdown(
+                    "Rules declared in the model's `rules:` block appear here. "
+                    "Click Refresh Rules to list them.",
+                    elem_id="ob-rules-stats",
+                )
+                rules_table = gr.Dataframe(
+                    label="Rules",
+                    show_label=False,
+                    interactive=False,
+                    wrap=True,
+                    elem_classes=["rules-table"],
+                    visible=False,
+                )
+                with gr.Row():
+                    rule_picker = gr.Dropdown(
+                        choices=[], value=None, label="Rule", scale=3, min_width=280
+                    )
+                    rules_refresh_btn = gr.Button(
+                        "Refresh Rules", scale=1, min_width=150, elem_classes=["green-btn"]
+                    )
+                    test_rule_btn = gr.Button(
+                        "Test Rule",
+                        variant="primary",
+                        elem_classes=["purple-btn"],
+                        scale=1,
+                        min_width=150,
+                    )
+                    test_all_btn = gr.Button(
+                        "Test All Rules",
+                        variant="primary",
+                        elem_classes=["orange-btn"],
+                        scale=1,
+                        min_width=150,
+                    )
+                rules_status = gr.Markdown(
+                    "Test Rule runs one rule and lists its findings (members for a "
+                    "classification or eligibility rule, violations for a validation or "
+                    "constraint). Test All Rules runs every rule into a report.",
+                    elem_id="ob-rules-status",
+                )
+                findings_table = gr.Dataframe(
+                    label="Findings",
+                    show_label=False,
+                    interactive=False,
+                    wrap=True,
+                    elem_classes=["findings-table"],
+                    visible=False,
+                )
+
+                _rules_inputs = [model_input, api_url, dialect, session_state, model_state]
+                _rules_load_outputs = [
+                    rules_stats,
+                    rules_table,
+                    rule_picker,
+                    session_state,
+                    model_state,
+                ]
+                rules_tab.select(fn=load_rules, inputs=_rules_inputs, outputs=_rules_load_outputs)
+                rules_refresh_btn.click(
+                    fn=load_rules, inputs=_rules_inputs, outputs=_rules_load_outputs
+                )
+                test_rule_btn.click(
+                    fn=evaluate_rule_ui,
+                    inputs=[model_input, api_url, dialect, rule_picker, session_state, model_state],
+                    outputs=[rules_status, findings_table, session_state, model_state],
+                )
+                test_all_btn.click(
+                    fn=evaluate_all_rules_ui,
+                    inputs=_rules_inputs,
+                    outputs=[rules_status, findings_table, session_state, model_state],
                 )
 
             with gr.Tab("SPARQL", id=5):

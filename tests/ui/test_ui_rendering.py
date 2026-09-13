@@ -326,3 +326,48 @@ class TestTheSparqlTab:
             timeout=60_000,
         )
         assert "true" in page.locator("#ob-sparql-status").inner_text()
+
+
+class TestTheBusinessRulesTab:
+    """The Business Rules tab lists the demo's rules and reports a test outcome.
+
+    On the embedded UI, like the SPARQL tests. Listing needs only the API;
+    testing needs a warehouse, which the embedded fixture does not configure,
+    so the status line must carry the endpoint's refusal rather than hang.
+    """
+
+    def test_the_demo_rules_are_listed(self, embedded_page: Any) -> None:
+        page = embedded_page
+        page.get_by_role("tab", name="Business Rules").click()
+        # The placeholder text also mentions rules: wait for the loaded
+        # statistics line (a count and a dialect) or an error, not the word.
+        page.wait_for_function(
+            "() => /\\d+ rules on|Error|declares no rules/.test("
+            "document.querySelector('#ob-rules-stats')?.innerText || '')",
+            timeout=60_000,
+        )
+        stats = page.locator("#ob-rules-stats").inner_text()
+        assert "6 rules" in stats
+        # Gradio virtualises the body, so only the rows that fit the viewport
+        # are in the DOM: the count is "some", the six is in the statistics.
+        page.wait_for_selector(".rules-table table tbody tr", state="attached", timeout=30_000)
+        assert page.locator(".rules-table table tbody tr").count() > 0
+
+    def test_testing_a_rule_reports_an_outcome(self, embedded_page: Any) -> None:
+        page = embedded_page
+        page.get_by_role("tab", name="Business Rules").click()
+        # The placeholder text also mentions rules: wait for the loaded
+        # statistics line (a count and a dialect) or an error, not the word.
+        page.wait_for_function(
+            "() => /\\d+ rules on|Error|declares no rules/.test("
+            "document.querySelector('#ob-rules-stats')?.innerText || '')",
+            timeout=60_000,
+        )
+        page.get_by_role("button", name="Test Rule").click()
+        page.wait_for_function(
+            "() => { const t = document.querySelector('#ob-rules-status')?.innerText || '';"
+            " return t.includes('Error') || t.includes(' in ') }",
+            timeout=60_000,
+        )
+        status = page.locator("#ob-rules-status").inner_text()
+        assert "Error" in status or "Electronics Sale" in status

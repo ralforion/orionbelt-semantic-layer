@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import time
+from typing import Any
+from unittest.mock import patch
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from orionbelt.api.app import create_app
 from orionbelt.api.deps import init_session_manager, reset_session_manager
+from orionbelt.service.db_executor import ExecutionResult
 from orionbelt.service.session_manager import SessionManager
 from orionbelt.settings import Settings
 
@@ -198,3 +203,132 @@ class TestShortcuts:
 
     async def test_without_a_model_is_404(self, client: AsyncClient) -> None:
         assert (await client.get("/v1/rules")).status_code == 404
+
+
+# ───────────────────────────── evaluation ─────────────────────────────
+
+_ORDERS_SQL = """\
+CREATE SCHEMA IF NOT EXISTS SALES;
+CREATE TABLE SALES.ORDERS (ID VARCHAR, CATEGORY VARCHAR, AMOUNT DOUBLE, RETURNED DOUBLE);
+INSERT INTO SALES.ORDERS VALUES
+    ('O1', 'Electronics', 100.0, 30.0),
+    ('O2', 'Electronics', 200.0, 20.0),
+    ('O3', 'Toys',         50.0,  1.0),
+    ('O4', 'Books',         0.0,  0.0);
+"""
+# Return rate: Electronics 50/300 = 0.167 (> 0.1), Toys 0.02, Books NULL.
+# Healthy Category (Revenue > 0 AND NOT Return Rate > 0.1) is violated by
+# Electronics (high returns) and Books (no revenue): two violations.
+
+
+class TestEvaluate:
+    """Evaluation through the same pipeline as query/execute, on an in-memory DuckDB."""
+
+    @pytest.fixture
+    def executing_client(self):
+        duckdb = pytest.importorskip("duckdb", reason="duckdb required to evaluate rules")
+        from orionbelt.service.db_executor import duckdb_execution_result
+
+        conn = duckdb.connect(":memory:")
+        conn.execute(_ORDERS_SQL)
+
+        def execute_sql(
+            sql: str, *, dialect: str, tz: Any = None, override_db_tz: bool = False
+        ) -> ExecutionResult:
+            return duckdb_execution_result(conn.execute(sql), time.monotonic(), tz=tz)
+
+        settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        init_session_manager(mgr, query_execute_enabled=True, db_vendor="duckdb")
+        try:
+            with patch("orionbelt.api.query_cache.execute_sql", execute_sql):
+                yield AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+        finally:
+            reset_session_manager()
+            conn.close()
+
+    async def test_matches_of_a_classification_rule(self, executing_client: AsyncClient) -> None:
+        async with executing_client as client:
+            base = await _load(client)
+            r = await client.post(f"{base}/rules/High Return Rate/evaluate", json={"limit": 50})
+            assert r.status_code == 200, r.text
+            data = r.json()
+            assert data["findings"] == "matches" and data["limit"] == 50
+            assert [c["name"] for c in data["columns"]] == ["Category", "Return Rate"]
+            assert [row[0] for row in data["rows"]] == ["Electronics"]
+            assert data["row_count"] == 1 and "HAVING" in data["sql"]
+
+    async def test_violations_of_a_validation_rule(self, executing_client: AsyncClient) -> None:
+        async with executing_client as client:
+            base = await _load(client)
+            r = await client.post(f"{base}/rules/Healthy Category/evaluate")
+            assert r.status_code == 200, r.text
+            data = r.json()
+            assert data["findings"] == "violations" and data["severity"] == "error"
+            assert sorted(row[0] for row in data["rows"]) == ["Books", "Electronics"]
+
+    async def test_row_level_rule_lists_matching_dimension_values(
+        self, executing_client: AsyncClient
+    ) -> None:
+        async with executing_client as client:
+            base = await _load(client)
+            r = await client.post(f"{base}/rules/Electronics Sale/evaluate")
+            assert r.status_code == 200, r.text
+            assert r.json()["rows"] == [["Electronics"]]
+
+    async def test_report_over_every_rule(self, executing_client: AsyncClient) -> None:
+        async with executing_client as client:
+            base = await _load(client)
+            r = await client.post(f"{base}/rules/evaluate", json={"limit": 5, "include_sql": True})
+            assert r.status_code == 200, r.text
+            data = r.json()
+            assert data["summary"] == {
+                "total": 3,
+                "executed": 3,
+                "compiled": 0,
+                "skipped": 0,
+                "failed": 0,
+                "with_findings": 3,
+            }
+            by_name = {row["name"]: row for row in data["results"]}
+            assert by_name["Healthy Category"]["finding_count"] == 2
+            assert by_name["Healthy Category"]["columns"] == ["Category", "Revenue", "Return Rate"]
+            assert by_name["High Return Rate"]["sql"]
+            assert all(row["status"] == "executed" for row in data["results"])
+            assert data["filters"]["limit"] == 5 and "include_sql" not in data["filters"]
+            assert data["generated_at"] and data["elapsed_ms"] >= 0
+
+    async def test_report_filters_and_dry_run(self, executing_client: AsyncClient) -> None:
+        async with executing_client as client:
+            base = await _load(client)
+            r = await client.post(
+                f"{base}/rules/evaluate", json={"types": ["validation"], "dry_run": True}
+            )
+            data = r.json()
+            assert [row["name"] for row in data["results"]] == ["Healthy Category"]
+            assert data["results"][0]["status"] == "compiled"
+            assert data["summary"]["compiled"] == 1 and data["summary"]["executed"] == 0
+            r = await client.post(
+                f"{base}/rules/evaluate", json={"max_rules": 2, "include_rows": False}
+            )
+            data = r.json()
+            assert len(data["results"]) == 2 and all(row["rows"] == [] for row in data["results"])
+
+    async def test_shortcuts(self, executing_client: AsyncClient) -> None:
+        async with executing_client as client:
+            await _load(client)
+            assert (await client.post("/v1/rules/Electronics Sale/evaluate")).status_code == 200
+            assert (await client.post("/v1/rules/evaluate")).json()["summary"]["executed"] == 3
+
+
+class TestEvaluateWithoutExecution:
+    async def test_evaluate_is_503_but_dry_run_report_works(self, client: AsyncClient) -> None:
+        base = await _load(client)
+        assert (await client.post(f"{base}/rules/Electronics Sale/evaluate")).status_code == 503
+        assert (await client.post(f"{base}/rules/evaluate")).status_code == 503
+        r = await client.post(f"{base}/rules/evaluate", json={"dry_run": True})
+        assert r.status_code == 200 and r.json()["summary"]["compiled"] == 3
