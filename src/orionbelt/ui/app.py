@@ -476,7 +476,7 @@ _CSS = """\
   max-height: 320px !important;
 }
 .findings-table .table-wrap, .findings-table .virtual-table-viewport {
-  max-height: calc(100dvh - 620px) !important;
+  max-height: 340px !important;
 }
 .rules-table .table-wrap, .findings-table .table-wrap {
   overflow: auto !important; min-height: 100px;
@@ -518,9 +518,11 @@ _CSS = """\
    copy/fullscreen toolbar row is hidden: it only added a gap under the status
    line, which already carries the row count. ── */
 .sparql-table .header-row { display: none !important; }
+/* Fixed height, like the rule list: the editor above it already takes its
+   share of the window, and a viewport-relative cap kept overrunning the fold. */
 .sparql-table .table-wrap,
 .sparql-table .virtual-table-viewport {
-  max-height: calc(100dvh - 540px) !important;
+  max-height: 340px !important;
 }
 .sparql-table .table-wrap { overflow: auto !important; min-height: 140px; }
 #ob-sparql-status { margin-bottom: -6px; }
