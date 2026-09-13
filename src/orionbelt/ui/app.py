@@ -2253,7 +2253,10 @@ def create_blocks(
                     )
                 sparql_code = gr.Code(
                     value=example_query(EXAMPLE_TITLES[0]),
-                    language=None,
+                    # Gradio has no SPARQL mode; SQL shares enough keywords
+                    # (SELECT, WHERE, ORDER BY, FILTER, strings, comments) to
+                    # colour a query usefully rather than leave it monochrome.
+                    language="sql",
                     lines=12,
                     label="SPARQL (SELECT or ASK; read-only)",
                     elem_id="ob-sparql-code",
