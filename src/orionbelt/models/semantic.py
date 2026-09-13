@@ -320,8 +320,9 @@ class ExternalConceptMapping(BaseModel):
 
     Descriptive metadata only: it says what governed business concept a
     model, data object, dimension, measure or metric stands for. It never
-    changes SQL planning, execution, cache keys, join selection or metric
-    expansion.
+    changes SQL planning, execution, join selection or metric expansion.
+    (A shared model id is a content hash, so editing a mapping is a model
+    edit for the result cache like any other.)
 
     ``concept`` is the authored value, a compact IRI (``corp:NetRevenue``,
     expanded with the model's ``ontology.prefixes``) or a full IRI. The

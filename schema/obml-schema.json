@@ -1144,7 +1144,7 @@
     },
     "externalConceptMapping": {
       "type": "object",
-      "description": "A qualified link from an OBML artifact to a concept in an external ontology. Descriptive metadata only: it never changes SQL, execution, cache keys or join selection.",
+      "description": "A qualified link from an OBML artifact to a concept in an external ontology. Descriptive metadata only: it never changes compiled SQL, planning, execution or join selection.",
       "properties": {
         "concept": {
           "type": "string",

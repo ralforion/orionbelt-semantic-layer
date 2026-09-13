@@ -21,9 +21,9 @@ OBML stays the single source of truth. The RDF graph is a projection of it, and 
 
 ## Why mappings never affect SQL
 
-A mapping is metadata in the same sense `description` or `synonyms` are. It is not read by the resolver, the planner, the code generator or the result cache. Compiled SQL is byte-identical with and without mappings, and so is the cache key, which is derived from the SQL. This is deliberate, and it is tested: governance can add, correct or remove links without invalidating a single query plan or cached result.
+A mapping is metadata in the same sense `description` or `synonyms` are. It is not read by the query resolver, the planner or the code generator: compiled SQL is byte-identical with and without mappings, and so are the join path, the metric expansion and the planner's warnings. This is deliberate, and it is tested.
 
-If a business rule should change what a query returns, it belongs in a measure filter, a static filter or a metric expression, not in a mapping.
+Two things this does *not* mean. It does not make a mapping edit free for the result cache: a shared model id is a hash of the whole OBML document, and the cache key includes it, so changing a mapping is a model edit like any other and cached results are scoped to the new model version. And it does not make mappings a place for logic: if a business rule should change what a query returns, it belongs in a measure filter, a static filter or a metric expression.
 
 ## Syntax
 
@@ -73,7 +73,7 @@ measures:
 | `confidence` | number | No | 0 to 1 |
 | `comment` | string | No | Free text: approval, caveat, rationale |
 
-The resolver expands every `concept` to an absolute IRI. The expanded form is exposed by the API and the RDF graph as `expanded_iri` / `obsl:targetConcept`; it is derived, so authoring `expandedIri` in YAML is an `UNKNOWN_PROPERTY` error.
+The resolver expands every `concept` to an absolute IRI. The API returns it as `expanded_iri`; in the RDF graph it is the object of the direct `skos:*Match` triple on every mapping, and additionally the `obsl:targetConcept` of the provenance resource that only mappings with provenance get (see [OBSL Graph & SPARQL](obsl.md#external-concept-mappings-in-the-graph)). Query the SKOS predicates, not `obsl:targetConcept`, to see every mapping. The expanded form is derived, so authoring `expandedIri` in YAML is an `UNKNOWN_PROPERTY` error.
 
 ### Compact versus full IRIs
 

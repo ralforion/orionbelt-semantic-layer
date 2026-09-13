@@ -1533,7 +1533,7 @@ Use cases:
 
 ## External Concept Mappings
 
-The model, a data object, a dimension, a measure or a metric may link to concepts in an external business ontology (a corporate glossary, FIBO, schema.org) with an `externalConceptMappings` list, using prefixes declared under the top-level `ontology.prefixes` block. Mappings are descriptive: they never change SQL, execution or the result cache.
+The model, a data object, a dimension, a measure or a metric may link to concepts in an external business ontology (a corporate glossary, FIBO, schema.org) with an `externalConceptMappings` list, using prefixes declared under the top-level `ontology.prefixes` block. Mappings are descriptive: they never change compiled SQL, planning or execution.
 
 ```yaml
 ontology:

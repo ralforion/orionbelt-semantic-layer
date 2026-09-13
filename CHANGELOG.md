@@ -39,8 +39,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
   `skos` and `xsd` are built in. The resolver expands every concept to an absolute IRI and reports
   `INVALID_ONTOLOGY_PREFIX`, `UNKNOWN_ONTOLOGY_PREFIX`, `INVALID_CONCEPT_IRI`,
   `INVALID_CONCEPT_MAPPING`, `DUPLICATE_CONCEPT_MAPPING` and `CONFLICTING_CONCEPT_MAPPING` as
-  structured errors with source spans. Mappings are descriptive metadata: compiled SQL and result
-  cache keys are identical with and without them. The JSON schema, contract manifest and OBSL
+  structured errors with source spans. Mappings are descriptive metadata: compiled SQL, join
+  paths and planner warnings are identical with and without them (a shared model id is a content
+  hash, so a mapping edit is a model edit for the result cache like any other). The JSON schema,
+  contract manifest and OBSL
   ontology vocabulary (`obsl:ExternalConceptMapping` and its properties) are extended, and the
   OSI converter (osi-orionbelt 0.3.1) carries `ontology` and every object's mappings through
   the OBSL vendor extension so OBML -> OSI -> OBML is lossless. `extends` and `inherits` merge

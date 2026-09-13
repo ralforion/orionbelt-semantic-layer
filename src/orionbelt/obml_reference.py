@@ -353,7 +353,7 @@ OrionBelt preserves these during parsing but does not interpret them.
 
 The model, a dataObject, a dimension, a measure or a metric may link to
 concepts in an external ontology (a corporate glossary, FIBO, schema.org).
-Descriptive metadata only: mappings never change SQL, execution or caching.
+Descriptive metadata only: mappings never change compiled SQL, planning or execution.
 
 ```yaml
 ontology:
