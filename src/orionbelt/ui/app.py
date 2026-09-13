@@ -470,8 +470,10 @@ _CSS = """\
 }
 /* ── Business Rules tab: same viewport-relative sizing as the SPARQL results ── */
 .rules-table .header-row, .findings-table .header-row { display: none !important; }
+/* The rule list keeps a fixed height (about seven rows) and scrolls inside
+   itself when a model has more, so the controls below never move. */
 .rules-table .table-wrap, .rules-table .virtual-table-viewport {
-  max-height: calc(45dvh - 120px) !important;
+  max-height: 320px !important;
 }
 .findings-table .table-wrap, .findings-table .virtual-table-viewport {
   max-height: calc(100dvh - 620px) !important;
@@ -2272,7 +2274,11 @@ def create_blocks(
                     label="Rules",
                     show_label=False,
                     interactive=False,
-                    wrap=True,
+                    # One line per rule: names and the reads column get the
+                    # room, the enum-valued columns what their longest value
+                    # needs, so nothing wraps and six rules fit the fixed height.
+                    wrap=False,
+                    column_widths=["15%", "13%", "9%", "9%", "8%", "14%", "15%", "9%", "8%"],
                     elem_classes=["rules-table"],
                     visible=False,
                 )
