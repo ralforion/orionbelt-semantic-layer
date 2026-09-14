@@ -261,3 +261,5 @@ The graph is removed when the model is unloaded (`DELETE /v1/sessions/{id}/model
 The full OBSL-Core 0.2 specification — including all classes, properties, URI strategy, OBML mapping, and controlled value sets — is in [`ontology/spec.md`](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/ontology/spec.md).
 
 The OWL ontology (`obsl.ttl`), SHACL shapes (`obsl.shacl.ttl`), and a Sales model example (`example-sales.ttl`) are available in the [`ontology/`](https://github.com/ralforion/orionbelt-semantic-layer/tree/main/ontology) directory and at [https://ralforion.com/ns/obsl/](https://ralforion.com/ns/obsl/).
+
+The same files are published at [https://ralforion.com/ns/obsl/obsl.ttl](https://ralforion.com/ns/obsl/obsl.ttl), [obsl.shacl.ttl](https://ralforion.com/ns/obsl/obsl.shacl.ttl) and [example-sales.ttl](https://ralforion.com/ns/obsl/example-sales.ttl), next to the [vocabulary page](https://ralforion.com/ns/obsl/); the docs deploy copies them from `ontology/` on every release, so the published copy is the repository's. The version IRI `https://ralforion.com/ns/obsl/0.2` resolves to a version page with the same downloads.
