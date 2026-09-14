@@ -263,6 +263,8 @@ OBSL validates column arity at model-load time and gates dialect support at comp
 | Versioned governance, lineage to upstream models | No (model is standalone) | Strong — inherits dbt's lineage, tests, docs, exposures |
 | Filter ergonomics | `MeasureFilter`, `FilterContext`, `GrainOverride`, query-level `where`/`having` | Per-metric `filter:`, `metric_time` |
 | Vendor-agnostic | Yes — self-hostable, no vendor runtime | Practical lock-in: production query APIs require dbt Cloud |
+| Business rules compiled to findings | ✅ `rules:` compiled to the query that reports findings (members or violations), evaluated over REST and MCP | Data tests only: SQL assertions (`unique`, `not_null`, singular tests) on models, sources, seeds and columns that return failing rows; not defined on a metric or at a grouping grain |
+| Links into an external ontology | ✅ `externalConceptMappings` with SKOS relations + provenance, projected to RDF and discoverable over REST | Free-form `meta` on semantic models, dimensions, entities and metrics; dbt "treats `meta` as metadata only" and does not interpret it |
 
 ---
 
@@ -286,6 +288,8 @@ Conversely, dbt SL would need to add to match OBSL's strengths:
 
 ## References
 
+- dbt data tests: https://docs.getdbt.com/docs/build/data-tests
+- dbt `meta` config: https://docs.getdbt.com/reference/resource-configs/meta
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`
 - OBSL cumulative wrap: `src/orionbelt/compiler/cumulative_wrap.py`
 - OBSL PoP wrap: `src/orionbelt/compiler/pop_wrap.py`

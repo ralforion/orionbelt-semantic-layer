@@ -265,6 +265,8 @@ Malloy's time syntax is more ergonomic in a query; OBSL's metric types are more 
 | Symmetric aggregates | ❌ — static fanout detection + CFL, plus a grain-dedup CTE covering the one-side-measure case | ✅ general-purpose |
 | Pipeline operator / refinements | ❌ JSON queries are atomic | ✅ `->` and `+ { ... }` |
 | RDF/SPARQL graph view | ✅ | ❌ |
+| Business rules compiled to findings | ✅ `rules:` compiled to the query that reports findings (members or violations), evaluated over REST and MCP | ❌ no rule or assertion construct in the language; annotations are stored verbatim and "the compiler does not interpret them" |
+| Links into an external ontology | ✅ `externalConceptMappings` with SKOS relations + provenance, projected to RDF and discoverable over REST | ❌ only annotations (`# tag`), which the compiler hands back uninterpreted |
 | Named secondary join paths | ✅ | ❌ |
 | Explicit CFL multi-fact planner | ✅ | n/a (symmetric aggregates) |
 | OSI ↔ OBML conversion | ✅ | ❌ |
@@ -327,6 +329,7 @@ It's plausible to use both: Malloy as the analyst-facing modeling/exploration la
 
 ## References
 
+- Malloy tags and annotations: https://docs.malloydata.dev/documentation/language/tags
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`
 - OBSL CFL planner: `src/orionbelt/compiler/cfl.py`
 - OBSL fanout detection: `src/orionbelt/compiler/fanout.py`

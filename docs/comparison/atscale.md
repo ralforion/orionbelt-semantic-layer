@@ -241,6 +241,8 @@ The free **Developer Community Edition** lowers AtScale's barrier for evaluation
 | Apache Arrow Flight SQL | ✅ | ❌ |
 | DB-API 2.0 drivers | ✅ 8 drivers | ❌ |
 | RDF/SPARQL graph view | ✅ | ❌ |
+| Business rules compiled to findings | ✅ `rules:` compiled to the query that reports findings (members or violations), evaluated over REST and MCP | ❌ none found: SML's documented objects (datasets, dimensions, metrics, calculations, perspectives, row security) carry no rule or assertion |
+| Links into an external ontology | ✅ `externalConceptMappings` with SKOS relations + provenance, projected to RDF and discoverable over REST | ❌ none found in SML's documented objects |
 | Interactive ontology-graph playground | ✅ Gradio | ❌ |
 | OSI interoperability | ✅ converter shipped | ✅ founding contributor |
 | MCP server (LLM/agent) | ✅ first-party | ✅ first-party (AtScale MCP Server) |
@@ -309,6 +311,7 @@ In a Microsoft-stack enterprise: AtScale serves the human BI audience (Excel, Po
 
 ## References
 
+- AtScale SML overview: https://documentation.atscale.com/container/creating-and-sharing-cubes/working-with-models-programmatically/sml
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`
 - OBSL CFL planner: `src/orionbelt/compiler/cfl.py`
 - OBSL fanout detection: `src/orionbelt/compiler/fanout.py`

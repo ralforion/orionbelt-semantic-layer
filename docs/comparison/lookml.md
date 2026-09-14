@@ -258,6 +258,8 @@ For embedded SaaS, multi-tenant analytics, or air-gapped/on-prem use cases, OBSL
 | First-class statistical / regression aggregates as measure types | ✅ 9 declarative aggregations | Via `type: number` + raw SQL — not first-class measure types |
 | First-class `sum_distinct` / `percentile_*` / `median_distinct` measure types | ❌ | ✅ |
 | RDF/SPARQL graph view | ✅ | ❌ |
+| Business rules compiled to findings | ✅ `rules:` compiled to the query that reports findings (members or violations), evaluated over REST and MCP | Partial: `test:` blocks with `explore_source` + `assert` evaluate a yesno expression on every row of an Explore query, so an assertion over an aggregate is possible; run by the CI Assert Validator, not served as a query surface |
+| Links into an external ontology | ✅ `externalConceptMappings` with SKOS relations + provenance, projected to RDF and discoverable over REST | Free-form `tags` strings on fields, "not used by the Looker model" but passed to integrations and the API |
 | Named secondary join paths | ✅ | ❌ |
 | Explicit CFL multi-fact planner | ✅ | n/a |
 | MCP server (LLM/agent) | ✅ | ✅ — managed Looker MCP server, plus open-source MCP Toolbox (2026) |
@@ -321,6 +323,8 @@ A common hybrid: ship Looker for the human BI audience and run OBSL alongside it
 
 ## References
 
+- LookML `test` parameter (data tests): https://cloud.google.com/looker/docs/reference/param-model-test
+- LookML `tags` parameter: https://docs.cloud.google.com/looker/docs/reference/param-field-tags
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`
 - OBSL CFL planner: `src/orionbelt/compiler/cfl.py`
 - OBSL fanout detection: `src/orionbelt/compiler/fanout.py`

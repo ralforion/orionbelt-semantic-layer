@@ -347,6 +347,8 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 | Named secondary join paths, selectable per query | ✅ | ❌ (pin a path in a view at design time) |
 | Symmetric aggregates | ❌ (uses CFL) | ✅ |
 | RDF/SPARQL graph view | ✅ | ❌ |
+| Business rules compiled to findings | ✅ `rules:` compiled to the query that reports findings (members or violations), evaluated over REST and MCP | ❌ the `cube` object has no test, assertion or rule parameter (its parameters: `sql`, `measures`, `dimensions`, `segments`, `joins`, `pre_aggregations`, `hierarchies`, `access_policy`, `meta`, ...) |
+| Links into an external ontology | ✅ `externalConceptMappings` with SKOS relations + provenance, projected to RDF and discoverable over REST | Free-form `meta` ("can be used to pass any information to the frontend"), with an `ai_context` key that gives an agent free-text guidance; no IRI or relation vocabulary |
 | OSI ↔ OBML conversion | ✅ | ❌ |
 | Built-in caching layer | ❌ | ✅ multi-tier |
 | Cube Store / materialization engine | n/a | ✅ |
@@ -417,6 +419,7 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 
 ## References
 
+- Cube `cube` reference (parameters, `meta`, `ai_context`): https://docs.cube.dev/reference/data-modeling/cube
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`
 - OBSL CFL planner: `src/orionbelt/compiler/cfl.py`
 - OBSL fanout detection: `src/orionbelt/compiler/fanout.py`

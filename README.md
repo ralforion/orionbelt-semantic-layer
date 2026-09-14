@@ -141,9 +141,48 @@ OrionBelt is a sidecar, not a platform. It compiles a YAML model into correct SQ
 
 **[Try the live demo](https://orionbelt.ralforion.com/ui/?__theme=dark)** with a pre-loaded model, or [open the Colab notebook](https://colab.research.google.com/github/ralforion/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb) and run it against TPC-H data.
 
+## Meaning, not just metrics
+
+A model that only knows that Total Sales is a sum still leaves the agent guessing what a high-value client is, or whether a category selling at a loss is a bug or a fact. Since 2.30 the model carries that too.
+
+**Business rules** are conditions over the model's own dimensions, measures and metrics, with no SQL. The engine compiles each one to the query that reports its findings: the members of a classification or eligibility rule, the violations of a validation or constraint rule.
+
+```yaml
+rules:
+  Non-Negative Margin:
+    type: validation
+    severity: error
+    description: Every product category must sell for at least what it cost
+    grain: [Product Category]
+    condition: {field: Gross Margin, op: ">=", value: 0}
+```
+
+This rule reads a metric, so it is aggregate: it becomes a `HAVING` at the category grain through the same planner as any query, multi-fact included. `POST /v1/rules/Non-Negative Margin/evaluate` returns the offending categories, and `POST /v1/rules/evaluate` runs every rule into one report.
+
+**Ontology links** tie artefacts to the concepts your organisation already governs, as SKOS mapping relations with provenance:
+
+```yaml
+ontology:
+  prefixes:
+    schema: "https://schema.org/"
+
+dataObjects:
+  Products:
+    externalConceptMappings:
+      - concept: schema:Product
+        relation: exact
+        justification: curated
+```
+
+Links never change the SQL. They change what can be asked: every loaded model is also an RDF graph, so "which artefacts mean a schema.org Product" is a SPARQL query, and the discovery API answers the same over REST (`/concept-mappings`, its `/namespaces`, and the `/unmapped` gap list).
+
+For an agent this is the difference between guessing and looking it up. Over MCP, `list_rules`, `evaluate_rule` and `find_concept_mappings` sit next to `execute_query` as tools.
+
+Guides: [Business Rules](https://ralforion.com/orionbelt-semantic-layer/guide/business-rules/), [External Concept Mappings](https://ralforion.com/orionbelt-semantic-layer/guide/concept-mappings/), [OBSL Graph & SPARQL](https://ralforion.com/orionbelt-semantic-layer/guide/obsl/).
+
 ## Contents
 
-[Four ways in](#four-ways-in) · [Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
+[Four ways in](#four-ways-in) · [Meaning, not just metrics](#meaning-not-just-metrics) · [Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
 
 ---
 
@@ -380,6 +419,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 | **Integration surface** | REST API + MCP + Gradio UI | dbt Cloud API | REST + GraphQL | VS Code extension |
 | **Deployment** | Self-host anywhere, single binary | SaaS (Cloud) | SaaS or self-host | Library |
 | **License** | BUSL-1.1 (converts to Apache 2.0) | Apache 2.0 | AGPL / proprietary | MIT |
+| **Business meaning in the model** | Rules compiled to the query that reports their findings; SKOS links to an external ontology | Column-level data tests; free-form `meta` | Free-form `meta` (`ai_context`) | Annotations, uninterpreted |
 
 ---
 
@@ -531,9 +571,15 @@ Change `dialect` to `bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, 
 - **Query Execution** — execute compiled queries against a connected database, view results with locale-aware number formatting, response metadata panel, TSV download and clipboard copy (requires `QUERY_EXECUTE=true`)
 - **ER Diagram** — interactive Mermaid ER diagram with zoom, column toggle, and download (MD/PNG/Turtle)
 - **Ontology Graph** — interactive vis-network visualization of the OBML graph (data objects, dimensions, measures, metrics, joins) with toggleable layers and adjustable node spacing
+- **Business Rules**: the model's rules with statistics; click a row to select one, show its OBML definition, test it or test all rules into a report
+- **SPARQL**: read-only SELECT / ASK over the model's OBSL graph, in an editor with SPARQL syntax highlighting and a gallery of ready-to-run examples
 - **Editor Toolbar** — clear, undo, redo, upload, download, and copy buttons on all code editors
 - **OSI Import/Export** — convert between OBML and OSI formats
 - **Dark/Light Mode** — toggle via header button, state persisted across sessions
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/ui-business-rules-dark.png" alt="OrionBelt Business Rules tab listing the model's rules with statistics, a selected rule's OBML definition, and the report from testing all rules" width="900">
+</p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/ui-ontology-graph-dark.png" alt="OrionBelt Ontology Graph tab showing the semantic model as an interactive network of data objects, dimensions, measures, metrics, and join relationships" width="900">

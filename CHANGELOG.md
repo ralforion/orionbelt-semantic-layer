@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Business rules and ontology links are presented up front.** The README gains a "Meaning, not just metrics" section between "Where OrionBelt fits" and the contents (a rule, a mapping, what each changes, and the MCP tools), a row in the "Why OrionBelt?" table, the Business Rules tab in the UI section, and the comparison pages gain two rows per competitor with each cell checked against the vendor's documentation (dbt column-level data tests, LookML `test` / `assert` blocks, Cube's `cube` parameters, Malloy's uninterpreted annotations, AtScale's documented SML objects), with the sources listed under References.
+
 ## [2.30.0] - 2026-09-13
 
 ### Added
