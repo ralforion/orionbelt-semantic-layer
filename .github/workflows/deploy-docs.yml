@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'ontology/**'  # published at https://ralforion.com/ns/obsl/
       - 'mkdocs.yml'
       - 'pyproject.toml'  # In case version changes
       - '.github/workflows/deploy-docs.yml'
@@ -45,6 +46,16 @@ jobs:
         working-directory: docs-source
         run: |
           uv run mkdocs build -d ../main-site/public/orionbelt-semantic-layer
+
+      # The OBSL vocabulary served at https://ralforion.com/ns/obsl/ is this
+      # repo's ontology/ directory; copying it here keeps the published Turtle
+      # from drifting behind the ontology (it had, from July to September 2026).
+      # The page's index.html is maintained in the site repo.
+      - name: Copy the OBSL vocabulary files
+        working-directory: docs-source
+        run: |
+          mkdir -p ../main-site/public/ns/obsl
+          cp ontology/obsl.ttl ontology/obsl.shacl.ttl ontology/example-sales.ttl ../main-site/public/ns/obsl/
       
       - name: Get version info
         id: version
@@ -60,8 +71,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          if [[ `git status --porcelain public/orionbelt-semantic-layer` ]]; then
-            git add public/orionbelt-semantic-layer
+          if [[ `git status --porcelain public/orionbelt-semantic-layer public/ns/obsl` ]]; then
+            git add public/orionbelt-semantic-layer public/ns/obsl
             git commit -m "Update OrionBelt docs to ${{ steps.version.outputs.version }}
 
             Built from ralforion/orionbelt-semantic-layer@${{ steps.version.outputs.commit }}
