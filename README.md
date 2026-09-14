@@ -157,7 +157,7 @@ rules:
     condition: {field: Gross Margin, op: ">=", value: 0}
 ```
 
-This rule reads a metric, so it is aggregate: it becomes a `HAVING` at the category grain through the same planner as any query, multi-fact included. `POST /v1/rules/Non-Negative Margin/evaluate` returns the offending categories, and `POST /v1/rules/evaluate` runs every rule into one report.
+This rule reads a metric, so it is aggregate: it becomes a `HAVING` at the category grain through the same planner as any query, multi-fact included. `POST /v1/rules/{name}/evaluate` returns the offending categories for this rule, and `POST /v1/rules/evaluate` runs every rule into one report.
 
 **Ontology links** tie artefacts to the concepts your organisation already governs, as SKOS mapping relations with provenance:
 
