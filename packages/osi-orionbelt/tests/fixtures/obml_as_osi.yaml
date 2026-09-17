@@ -1,4 +1,4 @@
-version: '0.1.1'
+version: '0.2.0.dev0'
 semantic_model:
 - name: sales_analytics
   description: Sales, Returns, Shipments and Purchases Analytics
