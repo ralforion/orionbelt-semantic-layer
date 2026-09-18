@@ -127,6 +127,14 @@ def _generate_mermaid_er_local(
         return f"**Error:** {exc}", ""
 
 
+def _js_literal(value: object) -> str:
+    """JSON for embedding in a ``<script>``, with ``<`` escaped so no value can
+    close the element."""
+    import json
+
+    return json.dumps(value).replace("<", "\\u003c")
+
+
 def _generate_ontology_graph_html(
     model_yaml: str,
     show_data_objects: bool = True,
@@ -142,7 +150,6 @@ def _generate_ontology_graph_html(
     RDF graph and its individuals/predicates drive the nodes/edges, so the graph
     and the exported ontology never drift.
     """
-    import json
     from collections import defaultdict
 
     from orionbelt.parser.loader import TrackedLoader
@@ -400,9 +407,12 @@ def _generate_ontology_graph_html(
         },
     }
 
-    nodes_json = json.dumps(nodes)
-    edges_json = json.dumps(edges)
-    options_json = json.dumps(options)
+    # json.dumps leaves `<` as-is, so a label containing `</script>` would close
+    # the script element below and let model text run as code inside the iframe.
+    # `\u003c` is the same string to JSON and to JS, and cannot end the element.
+    nodes_json = _js_literal(nodes)
+    edges_json = _js_literal(edges)
+    options_json = _js_literal(options)
 
     vis_b64 = _get_vis_network_b64()
 

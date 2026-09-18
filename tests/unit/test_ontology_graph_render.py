@@ -222,3 +222,35 @@ def test_render_graph_lays_out_anew_each_time() -> None:
     assert all(seeds)
     assert seeds[0].group(1) != seeds[1].group(1)
     assert _parse(first) == _parse(second)  # only the seed differs
+
+
+_BREAKOUT_LABEL = "Orders</script><script>window.__pwned=1</script>"
+
+_BREAKOUT_YAML = f"""\
+version: 1.0
+
+dataObjects:
+  "{_BREAKOUT_LABEL}":
+    code: ORDERS
+    database: WH
+    schema: PUBLIC
+    columns:
+      Amount: {{code: AMOUNT, abstractType: float}}
+"""
+
+
+def test_model_text_cannot_close_the_script_element() -> None:
+    """A label carrying `</script>` must stay data, not become markup.
+
+    json.dumps leaves `<` alone, so without escaping the label would end the
+    iframe's script element and run whatever follows it.
+    """
+    html = _generate_ontology_graph_html(_BREAKOUT_YAML)
+    srcdoc = re.search(r'srcdoc="(.*)" ', html, re.S).group(1)
+    payload = srcdoc[srcdoc.index("var n=new vis.DataSet") :]
+    # Exactly one `</script>`: the document's own, not one supplied by the model.
+    assert payload.count("</script>") == 1
+    assert "\\u003c/script>" in payload
+    # The label still survives intact for vis-network.
+    nodes, _ = _parse(html)
+    assert _BREAKOUT_LABEL in {n["label"] for n in nodes}
