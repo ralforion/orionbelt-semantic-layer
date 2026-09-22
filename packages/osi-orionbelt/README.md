@@ -102,7 +102,7 @@ OBML, but are not interpreted by other OSI consumers:
   (`obml_unconverted_metrics`) and re-emitted on OBML to OSI, so the OSI to OBML
   to OSI roundtrip stays lossless. A `LOSSY:` warning is raised for each such
   metric because it is **not queryable through OBML**. SQL expressions in the
-  `ANSI_SQL`, `SNOWFLAKE`, and `DATABRICKS` dialects are all read on import.
+  `ANSI_SQL`, `OSSIE_SQL_2026`, `SNOWFLAKE`, and `DATABRICKS` dialects are all read on import.
 
 OSI v0.1.x inputs are accepted on read via a legacy normalization shim; output
 targets OSI **v0.2.0.dev0**.
