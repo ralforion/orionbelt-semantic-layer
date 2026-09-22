@@ -189,6 +189,22 @@ class TestDialectCatching:
         obml = conv.OSItoOBML(osi).convert()
         assert obml["measures"]["Total Amount"]["columns"][0]["column"] == "id"
 
+    @pytest.mark.parametrize("dialect", ["OSSIE_SQL_2026", "SIGMA", "THOUGHTSPOT", "DAX"])
+    def test_newer_spec_dialects_pass_osi_validation(self, dialect: str) -> None:
+        # The vendored schema's Dialect enum must admit every dialect the
+        # converter recognises, or validate_osi rejects documents it can read.
+        pytest.importorskip("jsonschema")  # validate_osi needs it
+        osi = _osi_model([_metric("Total Amount", dialect, "SUM(Orders.amount)")])
+        dataset = osi["semantic_model"][0]["datasets"][0]
+        dataset["fields"] = [
+            {
+                "name": "amount",
+                "expression": {"dialects": [{"dialect": dialect, "expression": "amount"}]},
+            }
+        ]
+        result = conv.validate_osi(osi)
+        assert result.valid, result.schema_errors + result.semantic_errors
+
 
 class TestNoSilentLoss:
     """Non-convertible metrics are preserved + warned, never dropped."""
@@ -344,7 +360,7 @@ class TestStaleStashNameCollision:
         }
         osi_again = conv.OBMLtoOSI(obml, "sales").convert()
         result = conv.validate_osi(osi_again)
-        assert result.valid, result.errors
+        assert result.valid, result.schema_errors + result.semantic_errors
 
 
 class TestIdempotency:
