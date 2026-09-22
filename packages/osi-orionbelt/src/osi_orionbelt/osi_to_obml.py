@@ -25,11 +25,13 @@ from osi_orionbelt._common import (
     OSI_TO_OBML_TYPE,
 )
 
-# OSI SQL-dialect tag -> sqlglot ``read`` dialect for metric parsing. ANSI maps
-# to sqlglot's default (None). Reading with the source dialect means a
-# Snowflake/Databricks-authored aggregation is parsed under the right grammar.
+# OSI SQL-dialect tag -> sqlglot ``read`` dialect for metric parsing. ANSI and
+# the portable OSSIE_SQL_2026 map to sqlglot's default (None). Reading with the
+# source dialect means a Snowflake/Databricks-authored aggregation is parsed
+# under the right grammar.
 _OSI_DIALECT_TO_SQLGLOT: dict[str, str | None] = {
     "ANSI_SQL": None,
+    "OSSIE_SQL_2026": None,
     "SNOWFLAKE": "snowflake",
     "DATABRICKS": "databricks",
 }
@@ -417,7 +419,7 @@ class OSItoOBML:
 
         # Physical column code from the field's expression. Prefer ANSI_SQL,
         # then any other SQL dialect; never write a non-SQL expression
-        # (MDX/TABLEAU/MAQL) into ``code`` - it is emitted as a physical SQL
+        # (MDX/TABLEAU/DAX/...) into ``code`` - it is emitted as a physical SQL
         # column reference, so fall back to the field name and warn instead.
         expr_obj = field.get("expression", {})
         sql_expr = self._sql_dialect_expression(expr_obj)
@@ -938,14 +940,17 @@ class OSItoOBML:
                 measures[name] = delegated
                 continue
 
-            # Prefer ANSI_SQL, but also read SNOWFLAKE / DATABRICKS expressions
-            # (SQL engines OrionBelt targets) — their aggregations are
-            # syntactically ANSI-compatible. Non-SQL dialects (MDX/TABLEAU/MAQL)
-            # are not parsed as SQL.
+            # Prefer ANSI_SQL, but also read OSSIE_SQL_2026 and SNOWFLAKE /
+            # DATABRICKS expressions - their aggregations are syntactically
+            # ANSI-compatible. Non-SQL dialects (MDX/TABLEAU/MAQL/...) are not
+            # parsed as SQL.
             expr_text, _expr_dialect = self._select_sql_expression(m.get("expression", {}))
             if not expr_text:
                 self._preserve_unconverted_metric(
-                    m, "no SQL-parseable dialect (ANSI_SQL / SNOWFLAKE / DATABRICKS) expression"
+                    m,
+                    "no SQL-parseable dialect ("
+                    + " / ".join(_SQL_PARSEABLE_DIALECTS)
+                    + ") expression",
                 )
                 continue
 
@@ -1214,8 +1219,8 @@ class OSItoOBML:
         """Pick a SQL-parseable expression from an OSI ``expression`` object.
 
         Returns ``(expression, dialect)`` for the most preferred SQL dialect
-        present (ANSI_SQL > SNOWFLAKE > DATABRICKS), or ``("", "")`` when the
-        metric only carries non-SQL dialects (MDX / TABLEAU / MAQL) or no usable
+        present (ANSI_SQL > OSSIE_SQL_2026 > SNOWFLAKE > DATABRICKS), or
+        ``("", "")`` when the metric only carries non-SQL dialects or no usable
         expression. Catching SNOWFLAKE / DATABRICKS lets third-party models
         whose authors omitted ANSI_SQL still convert, since their aggregation
         syntax is ANSI-compatible.
@@ -1250,7 +1255,7 @@ class OSItoOBML:
     def _sql_dialect_expression(expr_obj: object) -> str | None:
         """The field's physical SQL expression: the ``ANSI_SQL`` dialect if
         present, else any other SQL dialect, and never a non-SQL
-        (``MDX``/``TABLEAU``/``MAQL``) one. Returns ``None`` when the field has no
+        (``_NON_SQL_DIALECTS``) one. Returns ``None`` when the field has no
         SQL expression. Shared by the column ``code`` selection and the
         metric-resolution index so the two can never disagree - an MDX expression
         the code path rejects must not be what the resolver indexes."""
