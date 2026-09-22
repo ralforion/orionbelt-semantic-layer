@@ -8,6 +8,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 - **Business rules and ontology links are presented up front.** The README gains a "Meaning, not just metrics" section between "Where OrionBelt fits" and the contents (a rule, a mapping, what each changes, and the MCP tools), a row in the "Why OrionBelt?" table, the Business Rules tab in the UI section, and the comparison pages gain two rows per competitor with each cell checked against the vendor's documentation (dbt column-level data tests, LookML `test` / `assert` blocks, Cube's `cube` parameters, Malloy's uninterpreted annotations, AtScale's documented SML objects), with the sources listed under References.
 
+### Fixed
+
+- **OSI import reads the portable `OSSIE_SQL_2026` dialect.** A metric whose only expression is tagged `OSSIE_SQL_2026` was preserved as unconverted with a `LOSSY:` warning; it now converts like `ANSI_SQL`, preferred after `ANSI_SQL` and before the vendor SQL dialects. The newer non-SQL dialects `SIGMA`, `THOUGHTSPOT` and `DAX` are now recognised as non-SQL, so a field expressed only in one of them no longer has that text written into its column `code`. The vendored OSI schema's `Dialect` enum gains all four, so `validate_osi` (and the CLI/API input check) accepts documents using them. Ships in osi-orionbelt 0.3.2. Mirrors apache/ossie#442.
+
 ## [2.30.0] - 2026-09-13
 
 ### Added

@@ -80,6 +80,18 @@ class TestDialectCatching:
         assert "Net" in obml.get("measures", {})
         assert not any(w.startswith("LOSSY:") for w in converter.warnings)
 
+    def test_ossie_sql_2026_only_agg_becomes_measure(self) -> None:
+        # OSSIE_SQL_2026 is the spec's portable ANSI-compatible language; a
+        # metric expressed only in it must convert, not be preserved as lossy.
+        osi = _osi_model([_metric("Total Amount", "OSSIE_SQL_2026", "SUM(Orders.amount)")])
+        converter = conv.OSItoOBML(osi)
+        obml = converter.convert()
+
+        measure = obml["measures"]["Total Amount"]
+        assert measure["aggregation"] == "sum"
+        assert measure["columns"][0] == {"dataObject": "Orders", "column": "amount"}
+        assert not any(w.startswith("LOSSY:") for w in converter.warnings)
+
     def test_snowflake_uppercased_identifiers_resolve_to_canonical(self) -> None:
         # Snowflake commonly upper-cases identifiers. They must resolve back to
         # the real OSI dataset/field names, not produce refs to ORDERS.AMOUNT.
@@ -159,6 +171,39 @@ class TestDialectCatching:
         obml = conv.OSItoOBML(osi).convert()
         # ANSI_SQL wins regardless of ordering -> column is `id`, not `amount`.
         assert obml["measures"]["Total Amount"]["columns"][0]["column"] == "id"
+
+    def test_ossie_sql_2026_preferred_over_vendor_dialects(self) -> None:
+        osi = _osi_model(
+            [
+                {
+                    "name": "Total Amount",
+                    "expression": {
+                        "dialects": [
+                            {"dialect": "SNOWFLAKE", "expression": "SUM(Orders.amount)"},
+                            {"dialect": "OSSIE_SQL_2026", "expression": "SUM(Orders.id)"},
+                        ]
+                    },
+                }
+            ]
+        )
+        obml = conv.OSItoOBML(osi).convert()
+        assert obml["measures"]["Total Amount"]["columns"][0]["column"] == "id"
+
+    @pytest.mark.parametrize("dialect", ["OSSIE_SQL_2026", "SIGMA", "THOUGHTSPOT", "DAX"])
+    def test_newer_spec_dialects_pass_osi_validation(self, dialect: str) -> None:
+        # The vendored schema's Dialect enum must admit every dialect the
+        # converter recognises, or validate_osi rejects documents it can read.
+        pytest.importorskip("jsonschema")  # validate_osi needs it
+        osi = _osi_model([_metric("Total Amount", dialect, "SUM(Orders.amount)")])
+        dataset = osi["semantic_model"][0]["datasets"][0]
+        dataset["fields"] = [
+            {
+                "name": "amount",
+                "expression": {"dialects": [{"dialect": dialect, "expression": "amount"}]},
+            }
+        ]
+        result = conv.validate_osi(osi)
+        assert result.valid, result.schema_errors + result.semantic_errors
 
 
 class TestNoSilentLoss:
@@ -315,7 +360,7 @@ class TestStaleStashNameCollision:
         }
         osi_again = conv.OBMLtoOSI(obml, "sales").convert()
         result = conv.validate_osi(osi_again)
-        assert result.valid, result.errors
+        assert result.valid, result.schema_errors + result.semantic_errors
 
 
 class TestIdempotency:

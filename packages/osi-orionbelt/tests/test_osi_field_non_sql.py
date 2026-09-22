@@ -71,7 +71,7 @@ class TestSqlDialectCode:
         assert not any("non-SQL" in w for w in warnings)
 
     def test_other_sql_dialects_are_used(self) -> None:
-        for dialect in ("SNOWFLAKE", "DATABRICKS", "BIGQUERY"):
+        for dialect in ("OSSIE_SQL_2026", "SNOWFLAKE", "DATABRICKS", "BIGQUERY"):
             code, warnings = _convert_field("amt", [_dialect(dialect, "amount")])
             assert code == "amount", dialect
             assert not any("non-SQL" in w for w in warnings), dialect
@@ -85,8 +85,8 @@ class TestNonSqlDialectFallback:
         assert "[Measures]" not in code
         assert any("non-SQL" in w and "sales" in w for w in warnings)
 
-    def test_tableau_and_maql_only_fall_back(self) -> None:
-        for dialect in ("TABLEAU", "MAQL"):
+    def test_non_sql_only_falls_back(self) -> None:
+        for dialect in ("TABLEAU", "MAQL", "SIGMA", "THOUGHTSPOT", "DAX"):
             code, warnings = _convert_field("calc", [_dialect(dialect, "SUM([Sales])")])
             assert code == "calc", dialect
             assert any("non-SQL" in w for w in warnings), dialect
