@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The PostgreSQL wire catalog connection is isolated and restricted.** Statements that are not semantic queries (catalog probes, BI metadata browsing, Tableau's temp-table connect check) run on an in-memory DuckDB, which had DuckDB's default access outside the process and ran whatever was routed to it. It now has external access disabled and locked, and accepts only one statement at a time: a `SELECT` over `pg_catalog`, `information_schema` or a loaded model's OBSL objects, or `CREATE TEMP` / `INSERT` / `DROP` on `"#..."` temp tables. Anything else is refused with SQLSTATE `42501` and `CATALOG_QUERY_REJECTED`. Warehouse tables were never reachable through this connection, and the semantic path is unchanged. Affects deployments with `PGWIRE_ENABLED=true`; the public demo does not enable it.
+
 ### Added
 
 - **Example queries in the playground.** A dropdown above the dimension / measure / column pickers lists the loaded model's `examples:`; picking one replaces the query editor's content, and Execute Query runs it. It is filled from the model, so it appears only for a model that declares examples: the demo commerce model now declares seven (top clients, client vs supplier country, sales vs returns by category, month-over-month, running total, rollup by region, HAVING), each checked to run against the seed. A restarted UI server reverts its choices to the startup model's, which is what broke the Business Rules dropdown, so the dropdown accepts any value and the pick is checked against the model the page holds.

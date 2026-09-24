@@ -46,6 +46,7 @@ from orionbelt.models.semantic import SemanticModel
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.canned import match_canned
 from orionbelt.pgwire.catalog import CATALOG_SCHEMA, CatalogEmulator
+from orionbelt.pgwire.catalog_guard import catalog_rejection
 from orionbelt.pgwire.types import (
     can_encode_binary,
     encode_value,
@@ -78,6 +79,7 @@ SQLSTATE_DATA_EXCEPTION = "22000"
 SQLSTATE_INVALID_AUTHORIZATION = "28000"
 SQLSTATE_UNDEFINED_DATABASE = "3D000"
 SQLSTATE_INVALID_CATALOG_NAME = "3D000"
+SQLSTATE_INSUFFICIENT_PRIVILEGE = "42501"
 SQLSTATE_SYSTEM_ERROR = "58000"
 SQLSTATE_CANNOT_CONNECT_NOW = "57P03"
 
@@ -204,6 +206,13 @@ class SemanticRouter:
                 # client without retyping the schema name the user
                 # just ``SET search_path``'d to.
                 catalog_sql = self._resolve_model_alias(sql, database)
+                rejection = catalog_rejection(catalog_sql, self._catalog.model_schemas)
+                if rejection is not None:
+                    return protocol.build_error_response(
+                        severity="ERROR",
+                        code=SQLSTATE_INSUFFICIENT_PRIVILEGE,
+                        message=f"[CATALOG_QUERY_REJECTED] {rejection}",
+                    )
                 result = self._catalog.execute(catalog_sql, database)
             except Exception as exc:  # noqa: BLE001 — protocol boundary
                 logger.info("pgwire catalog probe failed: %s", exc)
