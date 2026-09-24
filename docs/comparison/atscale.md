@@ -135,10 +135,10 @@ For complex OLAP-style metrics (MDX is genuinely more expressive than any YAML f
 |---|---|---|
 | Definition site | `joins:` array on `DataObject` | Relationships in Design Center between dimensions and facts |
 | Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | Relationship cardinality + role-playing dimensions |
-| Multiple paths | First-class via `secondary: true` + `pathName` + per-query `usePathNames` | **Role-playing dimensions** (a dimension joined multiple ways with different roles) — the OLAP-native way |
+| Multiple paths | First-class via `secondary: true` + `pathName` + per-query `usePathNames`, and role-playing dimensions via `via` + `pathName` (each role its own aliased join, several in one query) | **Role-playing dimensions** (a dimension joined multiple ways with different roles) — the OLAP-native way |
 | Cycle / multi-path validation | Built into resolver | Engine-level checks |
 
-AtScale's role-playing dimensions are conceptually similar to OBSL's named secondary paths — both are first-class ways to handle "same dim joined two different ways." Different terminology, similar capability.
+AtScale's role-playing dimensions are conceptually similar to OBSL's named secondary paths — both are first-class ways to handle "same dim joined two different ways." OBSL dimensions can also pin a role with `via` + `pathName`, which joins the table once per role so several roles appear in one query, the closest match to AtScale's model.
 
 ---
 
@@ -150,7 +150,7 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 
 | Topology | Star (single fact + dims) | Snowflake (chained dims) | Multi-rooted (multiple facts) | Multi-path (alt. joins between same pair) | Cycles |
 |---|---|---|---|---|---|
-| **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames` | Detected and rejected |
+| **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames`, or pinned per dimension (`via` + `pathName`) so several roles share one query | Detected and rejected |
 | **AtScale** | ✅ | ✅ | Conformed-dimension patterns or multiple data models | ✅ via role-playing dimensions (different mechanism, similar capability) | Implicit |
 
 **Why this matters**: AtScale's OLAP heritage assumes you've designed a clean cube up front. OBSL's CFL planner lets you query across multiple unrelated facts in one go without pre-designing the cube boundary. For ad-hoc embedded analytics or AI/agent queries that don't know in advance which facts they'll touch, OBSL's flexibility is a real advantage.

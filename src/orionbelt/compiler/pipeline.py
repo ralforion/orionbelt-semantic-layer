@@ -17,6 +17,7 @@ from orionbelt.compiler.validator import validate_sql
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryFilterItem, QueryObject
+from orionbelt.models.roles import expand_role_objects
 from orionbelt.models.semantic import DataObject, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
 
@@ -201,6 +202,9 @@ class CompilationPipeline:
         dialect_name: str,
     ) -> CompilationResult:
         """Compile a query to SQL for the specified dialect."""
+        # Each dimension role is joined under its own alias, which everything
+        # downstream takes from a data object's name (see ``models.roles``).
+        model = expand_role_objects(model)
         # Create dialect first so resolution and planning share one
         # ``qualify_table`` — the EXISTS filter operator needs it during
         # resolution to render the correlated subquery's FROM clause.

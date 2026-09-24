@@ -339,12 +339,12 @@ obsl:defaultValue a owl:DatatypeProperty ;
 
 obsl:pathName a owl:DatatypeProperty ;
     rdfs:label "path name" ;
-    rdfs:comment "Named join path used when a dimension reaches its data object through a non-default route." ;
+    rdfs:comment "Named join path.  On a join, names it among the joins of the same (source, target) pair, and a query selects a secondary one with usePathNames.  On a dimension, pins the dimension to the join of that name from its obsl:via data object: each such role is joined under its own alias, so several roles of one data object can appear in one query." ;
     rdfs:range xsd:string .
 
 obsl:via a owl:ObjectProperty ;
     rdfs:label "via" ;
-    rdfs:comment "Forces a dimension's join path through a specific intermediate data object (role-playing dimensions).  The dimension's data object must be reachable from the via target in the directed join graph." ;
+    rdfs:comment "Forces a dimension's join path through a specific intermediate data object (role-playing dimensions).  The dimension's data object must be reachable from the via target in the directed join graph; with obsl:pathName on the dimension, via must declare that named join to it directly." ;
     rdfs:domain obsl:Dimension ;
     rdfs:range obsl:DataObject .
 

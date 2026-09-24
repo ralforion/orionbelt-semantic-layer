@@ -190,7 +190,7 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 
 | Topology | Star (single fact + dims) | Snowflake (chained dims) | Multi-rooted (multiple facts) | Multi-path (alt. joins between same pair) | Cycles |
 |---|---|---|---|---|---|
-| **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames` | Detected and rejected |
+| **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames`, or pinned per dimension (`via` + `pathName`) so several roles share one query | Detected and rejected |
 | **dbt SL** | ✅ | ✅ | Partial — works if entities line up, but no explicit multi-fact planner | Workaround: define alternate entities and pick by relationship | Implicit |
 
 **Why this matters**: Real-world warehouses are messy. You routinely need a customer→order→order_item path *and* a customer→returns path queryable in one model, or to choose between "ship_address_id" and "billing_address_id" joins to the same address dimension on a per-query basis. dbt expects you to flatten these into well-shaped entities upstream; OBSL lets you model them as-is and resolve at query time.
@@ -218,7 +218,7 @@ OBSL validates column arity at model-load time and gates dialect support at comp
 | | OBSL | dbt SL |
 |---|---|---|
 | Definition | Directed `join` declarations with `columnsFrom`/`columnsTo`, `joinType`, `secondary`, `pathName` | Inferred by matching `entity` names across semantic models |
-| Multiple paths between same objects | First-class via `secondary: true` + named `pathName`, selected per-query via `usePathNames: [{source, target, pathName}]` | Express via additional entities — no path naming primitive |
+| Multiple paths between same objects | First-class via `secondary: true` + named `pathName`, selected per-query via `usePathNames: [{source, target, pathName}]`, or per dimension via `via` + `pathName` (role-playing, several roles in one query) | Express via additional entities — no path naming primitive |
 | Cycle / multi-path validation | Built into resolver; `pathName` required for secondary | n/a (graph traversal handles) |
 
 ---

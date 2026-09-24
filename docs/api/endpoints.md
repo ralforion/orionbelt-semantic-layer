@@ -875,6 +875,8 @@ Get a single dimension by name.
  "column": "Country",
  "result_type": "string",
  "time_grain": null,
+ "via": null,
+ "path_name": null,
  "owner": null
 }
 ```

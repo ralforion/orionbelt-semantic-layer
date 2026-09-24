@@ -180,7 +180,7 @@ OBSL has no named-view-with-refinements concept. Queries are constructed fresh e
 | Definition site | YAML `joins:` array on each `DataObject` | `join_one:`, `join_many:`, `join_cross:` inside `source extend { ... }` |
 | Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | Cardinality is part of the join keyword: `join_one`, `join_many`, `join_cross` |
 | What cardinality drives | Static fanout detection + CFL multi-fact planning + grain dedup for one-side measures | Symmetric aggregate logic |
-| Multiple paths between same tables | First-class via `secondary: true` + named `pathName`, selected per-query via `usePathNames: [{source, target, pathName}]` | Multiple `join_one`/`join_many` declarations with different aliases — no path-name primitive |
+| Multiple paths between same tables | First-class via `secondary: true` + named `pathName`, selected per-query via `usePathNames: [{source, target, pathName}]`, or per dimension via `via` + `pathName` (role-playing, several roles in one query) | Multiple `join_one`/`join_many` declarations with different aliases — no path-name primitive |
 | Cycle / multi-path validation | Built into resolver | Compiler-level checks |
 
 OBSL's named secondary paths are more explicit for ambiguous join graphs; Malloy's cardinality keywords are more elegant for the symmetric-aggregate runtime.
@@ -193,7 +193,7 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 
 | Topology | Star (single fact + dims) | Snowflake (chained dims) | Multi-rooted (multiple facts) | Multi-path (alt. joins between same pair) | Cycles |
 |---|---|---|---|---|---|
-| **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames` | Detected and rejected |
+| **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames`, or pinned per dimension (`via` + `pathName`) so several roles share one query | Detected and rejected |
 | **Malloy** | ✅ | ✅ | Workaround: separate sources, join-as-source patterns; no explicit multi-fact union planner | Workaround: aliased sources; no path-name primitive | Implicit |
 
 **Why this matters**: Real-world warehouses are messy. You routinely need a customer→order→order_item path *and* a customer→returns path queryable together, or to choose between "ship_address_id" and "billing_address_id" joins to the same address dimension per-query. Malloy expects you to denormalize or flatten upstream; OBSL lets you model the graph as-is and resolve at query time.

@@ -532,6 +532,10 @@
           "type": "string",
           "description": "Intermediate data object name. Forces the join path through this data object to reach the dimension's dataObject. Used for role-playing dimensions (e.g., SalesEmployee vs ReturnEmployee)."
         },
+        "pathName": {
+          "type": "string",
+          "description": "pathName of the join declared on `via` that targets this dimension's dataObject (primary or secondary). Pins the dimension to that role: each role is joined under its own alias, so several roles of one data object (e.g. sales and support employee of an order) can appear in one query. Requires via."
+        },
         "owner": {
           "type": "string",
           "description": "Owner or responsible party for this dimension"

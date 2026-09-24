@@ -121,6 +121,8 @@ The `JoinGraph` uses [networkx](https://networkx.org/) to model data object rela
 - `build_join_condition(step)` generates equality conditions from field mappings
 - Accepts optional `use_path_names` to activate secondary joins — when a secondary override is active for a `(source, target)` pair, the primary join is replaced by the matching secondary join
 
+**Dimension roles.** Before resolution, `expand_role_objects` (`orionbelt.models.roles`) turns every dimension with `via` + `pathName` into a *role object*: a leaf copy of its data object named `<dataObject>__<via>__<pathName>` (numeric suffix if taken), joined from `via` by that named join's columns. Role dimensions point at the copy, so the join graph, planners and wrappers treat each role as an ordinary data object and join the table once per role under its own alias. Role objects exist only for the compile and are never persisted.
+
 ```python
 # Example: Orders -> Customers join
 JoinStep(

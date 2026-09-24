@@ -120,6 +120,7 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 - Dynamic date filters (`dynamicDate`, `dynamicDateRange`) — not yet preserved
 - `timeGrain` on dimensions — preserved in field `custom_extensions` (`obml_time_grain`)
 - Dimension `format` — preserved in field `custom_extensions` (`obml_dimension_format`)
+- Dimension `via` / `pathName` (roles): preserved in field `custom_extensions` (`obml_dimension_via`, `obml_dimension_path_name`; inside `obml_extra_dimensions` for further dimensions over the same column)
 - Measure filters — preserved in metric `custom_extensions` (`obml_filters`)
 - Measure `total` — preserved in metric `custom_extensions` (`obml_total`)
 - Measure `format` — preserved in metric `custom_extensions` (`obml_format`)

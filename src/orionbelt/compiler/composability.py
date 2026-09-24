@@ -32,6 +32,7 @@ from orionbelt.compiler.grain_dedup import (
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.query import CoalesceDimension, QueryObject, UsePathName
+from orionbelt.models.roles import expand_role_objects, role_targets
 from orionbelt.models.semantic import MetricType, SemanticModel
 
 # Measure expression column refs: ``{[DataObject].[Column]}``
@@ -145,6 +146,11 @@ class ComposabilityResolver:
         model: SemanticModel,
         use_path_names: list[UsePathName] | None = None,
     ) -> None:
+        # Discovery answers for the model the compiler plans over, where each
+        # dimension role is a data object of its own (see ``models.roles``).
+        # Reported anchors name the authored object rather than the alias.
+        self._role_targets = role_targets(model)
+        model = expand_role_objects(model)
         self.model = model
         self.graph = JoinGraph(model, use_path_names)
         # reach[F] = objects a single base fact F can serve (itself + everything
@@ -251,7 +257,7 @@ class ComposabilityResolver:
         facts of measures already selected (each acts as a CFL leg).
         """
         anchor = dim_objects | measure_objects
-        anchor_objects = sorted(anchor)
+        anchor_objects = sorted({self._role_targets.get(obj, obj) for obj in anchor})
 
         # Empty anchor -> a fresh query: everything is composable, except a
         # measure whose join-only objects cannot be reached at all, or whose own
