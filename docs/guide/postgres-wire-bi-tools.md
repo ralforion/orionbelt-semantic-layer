@@ -124,7 +124,19 @@ PostgreSQL**.
 
 1. Enter the connection details from §1.
 2. Tableau may probe `pg_catalog.pg_class` and `information_schema.tables`
-   at connect time — these are answered by the catalog emulator.
+   at connect time — these are answered by the catalog emulator. Its
+   temp-table connect check (create a `"#..."` table, insert, read back,
+   drop) also runs there.
+
+!!! note "What the catalog emulator runs"
+    Statements that are not semantic queries go to an in-memory catalog
+    with no access outside the process. It accepts one statement at a time:
+    a `SELECT` over `pg_catalog`, `information_schema` or a loaded model's
+    OBSL objects (`model`, `dimensions`, `measures`, `metrics` and their
+    `_*_metadata` views), or the `"#..."` temp-table cycle above. Anything
+    else is refused with SQLSTATE `42501` and `CATALOG_QUERY_REJECTED`. If a
+    BI tool's connect or browse step fails with that code, please report the
+    statement it sent.
 3. Once connected, drag the model table from the left panel onto the
    canvas to use it as a data source.
 4. Drag a dimension (e.g. `Sales Year`) to *Rows* and a measure
