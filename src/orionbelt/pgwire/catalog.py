@@ -818,6 +818,11 @@ class CatalogEmulator:
         self._con.execute("SET enable_external_access = false")
         self._con.execute("SET lock_configuration = true")
 
+    @property
+    def model_schemas(self) -> set[str]:
+        """Schemas holding a loaded model's OBSL objects, as of the last refresh."""
+        return set(self._registered_schemas)
+
     # ------------------------------------------------------------------
     # Refresh — rebuild the in-memory schema from a SessionManager.
     # ------------------------------------------------------------------
