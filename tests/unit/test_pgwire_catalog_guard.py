@@ -30,6 +30,7 @@ ACCEPTED = [
     'SELECT * FROM "orionbelt"."commerce"."dimensions"',
     "SELECT * FROM commerce._measures_metadata",
     "SELECT name FROM metrics",
+    "WITH a AS (SELECT nspname FROM pg_namespace), b AS (SELECT * FROM a) SELECT * FROM b",
     "SELECT nspname FROM pg_namespace "
     "UNION ALL SELECT schema_name FROM information_schema.schemata",
     'CREATE TEMP TABLE "#probe" (a INTEGER)',
@@ -39,6 +40,14 @@ ACCEPTED = [
 ]
 
 REJECTED = [
+    # Review findings (allowlist bypasses): a LATERAL table function is a
+    # source of its own node type, and CTE names must be resolved by scope.
+    "SELECT * FROM pg_namespace, LATERAL duckdb_settings()",
+    "SELECT * FROM pg_namespace CROSS JOIN LATERAL query_table('secret')",
+    "SELECT * FROM query('SELECT * FROM secret')",
+    "SELECT * FROM read_csv('/etc/passwd')",
+    "WITH unused AS (WITH sqlite_master AS (SELECT 1) SELECT 1) SELECT * FROM sqlite_master",
+    'INSERT INTO "#probe" SELECT * FROM sqlite_master',
     "SELECT * FROM commerce.not_an_obsl_object",
     "SELECT * FROM warehouse.sales",
     "SELECT * FROM sales",
