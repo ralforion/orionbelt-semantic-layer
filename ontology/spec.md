@@ -34,7 +34,7 @@ OBSL-Core is not intended to represent:
 - data objects (with optional refresh-policy contracts)
 - columns (with optional `numClass` and `primaryKey` flags)
 - joins (with optional secondary-path naming)
-- dimensions (with optional `via` for role-playing paths)
+- dimensions (with optional `via` for role-playing paths, and `pathName` to pin a dimension to one named join from `via`)
 - measures (with optional grain override, filter context, LISTAGG `delimiter` + `withinGroup` ordering)
 - metrics — four types: derived, cumulative, period-over-period, **window** (`rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value`)
 - cumulative metric metadata (time dimension, window, grain-to-date, optional `partitionBy`)
@@ -170,6 +170,8 @@ Required:
 
 Optional:
 - `obsl:timeGrain`
+- `obsl:via`
+- `obsl:pathName`: the named join from `obsl:via` the dimension reads through (a role)
 - `obsl:synonym`
 - `rdfs:comment`
 
@@ -179,6 +181,7 @@ Cardinality:
 - exactly one `obsl:column`
 - exactly one `obsl:resultType`
 - at most one `obsl:timeGrain`
+- at most one `obsl:pathName`; when present, `obsl:via` SHOULD be present
 
 ### 5.6 Measure
 Represents an aggregated analytic field.
@@ -474,6 +477,8 @@ Any of model, data object, dimension, measure, metric:
 - `column` -> `obsl:column`
 - `resultType` -> `obsl:resultType`
 - `timeGrain` -> `obsl:timeGrain`
+- `via` -> `obsl:via`
+- `pathName` -> `obsl:pathName`
 
 ### 10.6 Measures
 - `columns[]` -> `obsl:sourceColumn`

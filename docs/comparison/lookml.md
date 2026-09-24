@@ -159,7 +159,7 @@ Bottom line: LookML wins on aggregate-variant *shape* (`sum_distinct`, `percenti
 | Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | `relationship`: `one_to_one`, `many_to_one`, `one_to_many`, `many_to_many` |
 | What cardinality drives | Static fanout detection + CFL multi-fact planning + grain dedup for one-side measures | Symmetric aggregates |
 | Join condition | `columnsFrom`/`columnsTo` arrays | `sql_on: ${a.id} = ${b.a_id} ;;` (free-form SQL) |
-| Multiple paths | First-class via `secondary: true` + named `pathName`, query-time selection via `usePathNames` | Multiple aliased joins via `from:` keyword + different names — no path naming primitive |
+| Multiple paths | First-class via `secondary: true` + named `pathName`, query-time selection via `usePathNames`, or per dimension via `via` + `pathName` (role-playing, several roles in one query) | Multiple aliased joins via `from:` keyword + different names — no path naming primitive |
 | Multiple "starting points" | Each query picks a base data object | Each `explore` is a separate starting point with its own join tree |
 
 LookML's `sql_on:` is more flexible (any SQL); OBSL's column lists are more constrained but easier to validate and reason about programmatically.
@@ -172,7 +172,7 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 
 | Topology | Star (single fact + dims) | Snowflake (chained dims) | Multi-rooted (multiple facts) | Multi-path (alt. joins between same pair) | Cycles |
 |---|---|---|---|---|---|
-| **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames` | Detected and rejected |
+| **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames`, or pinned per dimension (`via` + `pathName`) so several roles share one query | Detected and rejected |
 | **LookML** | ✅ | ✅ | One explore per fact; no in-explore multi-fact union | Workaround: `from:` aliasing; no path-name primitive | Implicit |
 
 **Why this matters**: Looker's "explore-per-fact" pattern works well when the org's analytics are organized around a few well-curated explores. It works less well when you want a single semantic surface that an embedded app or agent can hit and ask "give me revenue *and* support tickets by customer this month," or when the same dimension table is joined by different keys in different contexts. OBSL's named secondary paths and CFL planner make those messy real-world topologies first-class rather than something to design around.

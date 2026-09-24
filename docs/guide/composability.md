@@ -47,6 +47,11 @@ current anchor (a star query). A measure or metric whose fact is independent is 
 when that fact still reaches the current grouping dimensions; it can then join as a separate
 UNION ALL leg. ACR reports the two groups separately.
 
+[Dimension roles](model-format.md#several-roles-in-one-query-pathname) (`via` + `pathName`) are
+resolved the way the compiler plans them: each role is its own leaf object joined from `via`, so a
+role behind a secondary-only join is composable with that fact's measures, and several roles of one
+data object can be anchored together. `anchorObjects` names the role's data object, not its alias.
+
 ## The `composables` endpoint
 
 Two ways to supply the anchor; both return the same response shape.

@@ -344,7 +344,7 @@ obsl:pathName a owl:DatatypeProperty ;
 
 obsl:via a owl:ObjectProperty ;
     rdfs:label "via" ;
-    rdfs:comment "Forces a dimension's join path through a specific intermediate data object (role-playing dimensions).  The dimension's data object must be reachable from the via target in the directed join graph." ;
+    rdfs:comment "Forces a dimension's join path through a specific intermediate data object (role-playing dimensions).  The dimension's data object must be reachable from the via target in the directed join graph; with obsl:pathName on the dimension, via must declare that named join to it directly." ;
     rdfs:domain obsl:Dimension ;
     rdfs:range obsl:DataObject .
 

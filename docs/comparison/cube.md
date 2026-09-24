@@ -218,7 +218,7 @@ See [Trend Analysis](../guide/trend-analysis.md) for OBSL's full v2.6 surface (w
 | Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | `relationship`: `one_to_one`, `one_to_many`, `many_to_one` |
 | What cardinality drives | Static fanout detection + CFL multi-fact planning + grain dedup for one-side measures | Symmetric aggregates |
 | Join condition | `columnsFrom`/`columnsTo` arrays | `sql: "{CUBE}.id = {other.foo_id}"` (free-form SQL with `{CUBE}` reference) |
-| Multiple paths | First-class via `secondary: true` + named `pathName`, query-time selection via `usePathNames` | No path-name primitive; workaround via `view`s exposing one path or aliased cubes |
+| Multiple paths | First-class via `secondary: true` + named `pathName`, query-time selection via `usePathNames`, or per dimension via `via` + `pathName` (role-playing, several roles in one query) | No path-name primitive; workaround via `view`s exposing one path or aliased cubes |
 | Join direction | Directed, declared per data object | Bidirectional inference based on `relationship:` |
 | Symmetric aggregates | ❌ — CFL, plus a grain-dedup CTE covering the one-side-measure case | ✅ general-purpose |
 
@@ -246,7 +246,7 @@ That is a genuine peer of OBSL's CFL, reached by a different SQL shape — and i
 
 | Topology | Star (single fact + dims) | Snowflake (chained dims) | Multi-rooted (multiple facts) | Multi-path (alt. joins between same pair) | Cycles |
 |---|---|---|---|---|---|
-| **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames` | Detected and rejected |
+| **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames`, or pinned per dimension (`via` + `pathName`) so several roles share one query | Detected and rejected |
 | **Cube** | ✅ | ✅ | ✅ via multi-fact views — per-fact subqueries `FULL JOIN`ed on shared dimensions (Tesseract) | Workaround via duplicate cubes or a `view` pinning a `join_path` | Implicit |
 
 **What still differs**, now that "can you query two facts at once" is answered yes on both sides:
@@ -258,7 +258,7 @@ That is a genuine peer of OBSL's CFL, reached by a different SQL shape — and i
 | Requires a curated view | No — resolved from the join graph per query | Optional, but the modeling is view-shaped; the SQL API can infer it from a join of two views |
 | Shared-dimension requirement | Each leg anchors on its own common root, found by graph search; intermediate hops are fine | Every fact cube must declare a **direct** join to each shared dimension, at a root-level join path |
 | Time dimensions | Grain handled per leg | Join-key granularity must match the `GROUP BY` granularity |
-| Path ambiguity | Per-query `usePathNames` selects the named path | Dijkstra + member-type heuristic; pin with a view's `join_path` at model-design time |
+| Path ambiguity | Per-query `usePathNames` selects the named path; a role dimension (`via` + `pathName`) pins its own | Dijkstra + member-type heuristic; pin with a view's `join_path` at model-design time |
 
 So the honest summary is: **Cube closed the multi-fact gap; it did not close the multi-path gap.** Choosing between `ship_address_id` and `billing_address_id` joins to the same address dimension is still a model-design decision in Cube (pin it in a view) and still a per-query one in OBSL. And Cube's multi-fact requirement that every fact join each conformed dimension *directly* is a real modeling constraint that CFL's common-root search does not impose.
 
