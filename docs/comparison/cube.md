@@ -4,7 +4,7 @@ description: "Feature comparison between OrionBelt Semantic Layer and Cube, the 
 
 # OBSL vs Cube
 
-A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Cube** (formerly Cube.js — the open-source semantic layer from Cube Dev). Captured 2026-05-23, refreshed 2026-07-31 against **Cube Core v1.7** (Tesseract GA, 2026-07-08).
+A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Cube** (formerly Cube.js — the open-source semantic layer from Cube Dev). Captured 2026-05-23, refreshed 2026-07-31 against **Cube Core v1.7** (Tesseract GA, 2026-07-08); role-playing rows checked against the Cube docs on 2026-09-24.
 
 ---
 
@@ -48,6 +48,7 @@ Cube is the closest peer to OBSL — both are self-hostable, both target embedde
 | `DataObjectJoin` | `joins:` inside a cube with `relationship: many_to_one`/`one_to_many`/`one_to_one` | Cube uses relationship-driven symmetric aggregates |
 | Combining multiple data objects in one query | Native via join graph + CFL | `view` entity required to combine cubes; views are first-class but distinct from cubes |
 | `secondary: true` + `pathName` | n/a — multiple joins between the same pair require workarounds | No path-name primitive |
+| Dimension `via` + `pathName` (role-playing) | A second cube over the same table per role (`extends: users`), each with its own join | Cube supports one join per pair of cubes, so each role is a cube; it inherits every member of the parent, measures included |
 | `QueryObject` JSON | Cube REST query shape (`measures`, `dimensions`, `filters`, `timeDimensions`, `segments`, `order`, `limit`) | Different shape but same idea |
 | `Filter` (named, reusable) | `segments` (named WHERE-style filters reusable in queries) | |
 
@@ -218,7 +219,7 @@ See [Trend Analysis](../guide/trend-analysis.md) for OBSL's full v2.6 surface (w
 | Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | `relationship`: `one_to_one`, `one_to_many`, `many_to_one` |
 | What cardinality drives | Static fanout detection + CFL multi-fact planning + grain dedup for one-side measures | Symmetric aggregates |
 | Join condition | `columnsFrom`/`columnsTo` arrays | `sql: "{CUBE}.id = {other.foo_id}"` (free-form SQL with `{CUBE}` reference) |
-| Multiple paths | First-class via `secondary: true` + named `pathName`, query-time selection via `usePathNames`, or per dimension via `via` + `pathName` (role-playing, several roles in one query) | No path-name primitive; workaround via `view`s exposing one path or aliased cubes |
+| Multiple paths | First-class via `secondary: true` + named `pathName`, query-time selection via `usePathNames`, or per dimension via `via` + `pathName` (role-playing, several roles in one query) | No path-name primitive; a second cube per role via `extends` (one join per pair of cubes), exposed through a view by `join_path` + `prefix` |
 | Join direction | Directed, declared per data object | Bidirectional inference based on `relationship:` |
 | Symmetric aggregates | ❌ — CFL, plus a grain-dedup CTE covering the one-side-measure case | ✅ general-purpose |
 
@@ -247,7 +248,7 @@ That is a genuine peer of OBSL's CFL, reached by a different SQL shape — and i
 | Topology | Star (single fact + dims) | Snowflake (chained dims) | Multi-rooted (multiple facts) | Multi-path (alt. joins between same pair) | Cycles |
 |---|---|---|---|---|---|
 | **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames`, or pinned per dimension (`via` + `pathName`) so several roles share one query | Detected and rejected |
-| **Cube** | ✅ | ✅ | ✅ via multi-fact views — per-fact subqueries `FULL JOIN`ed on shared dimensions (Tesseract) | Workaround via duplicate cubes or a `view` pinning a `join_path` | Implicit |
+| **Cube** | ✅ | ✅ | ✅ via multi-fact views — per-fact subqueries `FULL JOIN`ed on shared dimensions (Tesseract) | A second cube per role via `extends`, or a `view` pinning a `join_path` | Implicit |
 
 **What still differs**, now that "can you query two facts at once" is answered yes on both sides:
 
@@ -261,6 +262,76 @@ That is a genuine peer of OBSL's CFL, reached by a different SQL shape — and i
 | Path ambiguity | Per-query `usePathNames` selects the named path; a role dimension (`via` + `pathName`) pins its own | Dijkstra + member-type heuristic; pin with a view's `join_path` at model-design time |
 
 So the honest summary is: **Cube closed the multi-fact gap; it did not close the multi-path gap.** Choosing between `ship_address_id` and `billing_address_id` joins to the same address dimension is still a model-design decision in Cube (pin it in a view) and still a per-query one in OBSL. And Cube's multi-fact requirement that every fact join each conformed dimension *directly* is a real modeling constraint that CFL's common-root search does not impose.
+
+### Role-playing dimensions: several roles of one table in one query
+
+An order has a sales employee and a support employee, both rows of `employees`. Showing revenue by both at once needs the table joined twice. Both tools can do it; they differ in what has to be modelled and what the query surface then shows.
+
+**OBSL.** Two named joins on the fact, and a dimension per role that pins its join with `via` + `pathName`. Each role is joined under its own alias at compile time; nothing is duplicated in the model.
+
+```yaml
+dataObjects:
+  Orders:
+    joins:
+      - {joinType: many-to-one, joinTo: Employees, pathName: sales,
+         columnsFrom: [Sales Employee ID], columnsTo: [Employee ID]}
+      - {joinType: many-to-one, joinTo: Employees, secondary: true, pathName: support,
+         columnsFrom: [Support Employee ID], columnsTo: [Employee ID]}
+dimensions:
+  Sales Employee:   {dataObject: Employees, column: Name, resultType: string, via: Orders, pathName: sales}
+  Support Employee: {dataObject: Employees, column: Name, resultType: string, via: Orders, pathName: support}
+```
+
+```sql
+-- OBSQL
+SELECT "Sales Employee", "Support Employee", "Revenue" FROM sales
+```
+
+**Cube.** The joins documentation states that only one join per pair of cubes is supported, and that the same table is joined through a second key by creating a second cube with `extends` and joining that. The extended cube inherits the parent's measures, dimensions, segments and joins. For the SQL API, Cube recommends a view that includes each role by its join path:
+
+```yaml
+cubes:
+  - name: employees
+    sql_table: employees
+  - name: support_employees
+    extends: employees
+  - name: orders
+    sql_table: orders
+    joins:
+      - name: employees
+        sql: "{CUBE}.sales_employee_id = {employees}.id"
+        relationship: many_to_one
+      - name: support_employees
+        sql: "{CUBE}.support_employee_id = {support_employees}.id"
+        relationship: many_to_one
+views:
+  - name: orders_view
+    cubes:
+      - join_path: orders
+        includes: [revenue]
+      - join_path: orders.employees
+        prefix: true
+        includes: [name]
+      - join_path: orders.support_employees
+        prefix: true
+        includes: [name]
+```
+
+```sql
+-- Cube SQL API
+SELECT employees_name, support_employees_name, MEASURE(revenue) FROM orders_view GROUP BY 1, 2
+```
+
+The view and the SQL API query are composed from Cube's joins, extending-cubes and views documentation rather than run against a Cube deployment.
+
+| | OBSL | Cube |
+|---|---|---|
+| Declaring a role | One dimension per attribute the role needs | Two lines (`extends`) plus a join, however many attributes |
+| What consumers see | Exactly the declared role dimensions | The whole cube again under the role's name, measures included (`support_employees.count`), usually curated by a view |
+| Measures | Stay on their own data object; roles only group and filter | Duplicated per role, each counting through its own join |
+| Query | Name the dimensions | Name prefixed view members, or `CROSS JOIN` the cubes (Cube calls that advanced and recommends views) |
+| Joins beyond the role (the support employee's department) | ❌ a role reaches only its own data object's columns | ✅ the extended cube inherits the parent's joins |
+| Switching a path per query instead | ✅ `usePathNames` | ❌ |
 
 ---
 
@@ -345,6 +416,7 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 | Statistical aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) as first-class measure types | ✅ 9 declarative aggregations | Via `type: number` + raw SQL |
 | Multi-rooted DAG modeling | ✅ via CFL (`UNION ALL` legs, common root per leg) | ✅ via multi-fact views (per-fact subqueries `FULL JOIN`ed on shared dims) — **new in v1.7** |
 | Named secondary join paths, selectable per query | ✅ | ❌ (pin a path in a view at design time) |
+| Several roles of one table in one query | ✅ role dimensions (`via` + `pathName`); only the declared dimensions are exposed, measures not duplicated | ✅ a second cube per role (`extends`), which re-exposes every member including measures; usually curated by a view |
 | Symmetric aggregates | ❌ (uses CFL) | ✅ |
 | RDF/SPARQL graph view | ✅ | ❌ |
 | Business rules compiled to findings | ✅ `rules:` compiled to the query that reports findings (members or violations), evaluated over REST and MCP | ❌ the `cube` object has no test, assertion or rule parameter (its parameters: `sql`, `measures`, `dimensions`, `segments`, `joins`, `pre_aggregations`, `hierarchies`, `access_policy`, `meta`, ...) |
@@ -373,6 +445,7 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 
 - You need **per-query join-path selection** — two valid joins between the same pair of objects, chosen by the consumer rather than pinned in a view at design time. (Multi-fact alone is no longer a reason: Cube v1.7 does that too.)
 - Your facts reach shared dimensions **through intermediate hops** — Cube's multi-fact views require each fact to join every shared dimension directly.
+- You want **role-playing dimensions as plain named dimensions** (`Sales Employee`, `Support Employee`) in one query, without a second cube per role that duplicates every member, or a view to hide the duplicates.
 - You want **first-class declarative cumulative and period-over-period metric types** instead of expressing them via query-time `time_shift` or per-measure `rolling_window`.
 - You want a **graph view of the model** (RDF/SPARQL) for governance/lineage tooling.
 - You need **OSI interoperability** for moving models between semantic layer formats.
@@ -401,6 +474,7 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 9. **Dimension hierarchies and drill paths** — `hierarchies` on cubes, surfaced through views for BI drill-down.
 10. **Custom granularities and calendar cubes** — fiscal years, retail 4-5-4, weeks starting Sunday. OBSL's `TimeGrain` set is fixed.
 11. **Multi-stage calculations** — a generic staged-aggregation surface (`group_by` / `reduce_by` / `add_group_by`) alongside the existing typed metrics.
+12. **Joins beyond a role** — a role dimension (`via` + `pathName`) reaches only its own data object's columns; Cube's extended cube inherits the parent's joins, so the support employee's department is one more member.
 
 ### To match OBSL, Cube would need:
 
@@ -428,6 +502,10 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 - Cube docs: https://cube.dev/docs
 - Cube data modeling reference: https://cube.dev/docs/product/data-modeling/reference
 - Cube multi-fact views: https://docs.cube.dev/docs/data-modeling/multi-fact-views
+- Cube joins (one join per pair of cubes; `extends` for a second key): https://docs.cube.dev/docs/data-modeling/joins
+- Cube extending cubes (members and joins inherited): https://docs.cube.dev/docs/data-modeling/extending-cubes
+- Cube views (`join_path`, `prefix`): https://docs.cube.dev/docs/data-modeling/views
+- Cube SQL API joins (`CROSS JOIN`, `__cubeJoinField`, views recommended): https://github.com/cube-js/cube/blob/master/docs-mintlify/reference/core-data-apis/sql-api/joins.mdx
 - Cube hierarchies: https://cube.dev/docs/product/data-modeling/reference/hierarchies
 - Cube calendar cubes: https://cube.dev/docs/product/data-modeling/concepts/calendar-cubes
 - Cube data access policies: https://cube.dev/docs/reference/data-modeling/data-access-policies
