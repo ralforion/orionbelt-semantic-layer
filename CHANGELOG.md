@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.31.1] - 2026-09-24
+
 ### Fixed
 
 - **The PostgreSQL wire catalog connection is isolated and restricted.** Statements that are not semantic queries (catalog probes, BI metadata browsing, Tableau's temp-table connect check) run on an in-memory DuckDB, which had DuckDB's default access outside the process and ran whatever was routed to it. It now has external access disabled and locked, and accepts only one statement at a time: a `SELECT` over `pg_catalog`, `information_schema` or a loaded model's OBSL objects, or `CREATE TEMP` / `INSERT` / `DROP` on `"#..."` temp tables. Anything else is refused with SQLSTATE `42501` and `CATALOG_QUERY_REJECTED`. Warehouse tables were never reachable through this connection, and the semantic path is unchanged. Affects deployments with `PGWIRE_ENABLED=true`; the public demo does not enable it.
