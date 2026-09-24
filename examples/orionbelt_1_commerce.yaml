@@ -1278,3 +1278,78 @@ rules:
       all:
         - {field: Total Sales, op: ">", value: 0}
         - {not: {rule: High Return Rate}}
+
+# Canonical example queries. The playground lists them in its "Example
+# queries" dropdown (only for a model that declares examples), and the
+# examples endpoints serve them to agents. Each runs against the demo seed.
+examples:
+  - name: top_clients_by_sales
+    description: The ten clients with the highest sales.
+    intentTags: [ranking, sales]
+    query:
+      select:
+        dimensions: [Client Name]
+        measures: [Total Sales]
+      orderBy:
+        - {field: Total Sales, direction: desc}
+      limit: 10
+  - name: client_vs_supplier_country
+    description: >-
+      Sales by client country and supplier country in one query: two roles of
+      Countries, each joined under its own alias.
+    intentTags: [role-playing, geography]
+    query:
+      select:
+        dimensions: [Country Name, Supplier Country]
+        measures: [Total Sales]
+      orderBy:
+        - {field: Total Sales, direction: desc}
+      limit: 20
+  - name: sales_vs_returns_by_category
+    description: >-
+      Sales and returns come from two independent facts, combined per product
+      category (Composite Fact Layer), with the return rate derived from both.
+    intentTags: [multi-fact, returns]
+    query:
+      select:
+        dimensions: [Product Category]
+        measures: [Total Sales, Total Returns, Return Rate]
+      orderBy:
+        - {field: Total Sales, direction: desc}
+  - name: monthly_sales_vs_previous_month
+    description: Monthly sales with the change against the previous month.
+    intentTags: [period-over-period, time]
+    query:
+      select:
+        dimensions: [Sales Month]
+        measures: [Total Sales, Sales MoM Change]
+      orderBy:
+        - {field: Sales Month}
+  - name: cumulative_monthly_sales
+    description: Monthly sales with a running total.
+    intentTags: [cumulative, time]
+    query:
+      select:
+        dimensions: [Sales Month]
+        measures: [Total Sales, Cumulative Sales]
+      orderBy:
+        - {field: Sales Month}
+  - name: sales_by_region_with_subtotals
+    description: Sales by region and country, with a subtotal per region and a grand total.
+    intentTags: [rollup, geography]
+    query:
+      select:
+        dimensions: [Region Name, Country Name]
+        measures: [Total Sales]
+      grouping: rollup
+  - name: countries_over_one_million
+    description: Countries whose sales exceed one million, filtered after aggregation.
+    intentTags: [having, geography]
+    query:
+      select:
+        dimensions: [Country Name]
+        measures: [Total Sales]
+      having:
+        - {field: Total Sales, op: gt, value: 1000000}
+      orderBy:
+        - {field: Total Sales, direction: desc}

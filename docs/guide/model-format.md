@@ -1789,7 +1789,7 @@ Two `dataObject` entries that map to the same physical table should declare equi
 
 ## Examples
 
-The optional top-level `examples:` block lists canonical queries authored alongside the model — the kinds of questions the model is designed to answer. Surfaced through `GET /v1/sessions/{sid}/models/{mid}/examples` so agents can ground on the model in one round trip without guessing from dimension and measure names alone.
+The optional top-level `examples:` block lists canonical queries authored alongside the model — the kinds of questions the model is designed to answer. Surfaced through `GET /v1/sessions/{sid}/models/{mid}/examples` so agents can ground on the model in one round trip without guessing from dimension and measure names alone. The [UI](ui.md) lists them in its **Example queries** dropdown, labelled from `name` (`revenue_by_country` reads "Revenue by country"), and hides the dropdown for a model without examples.
 
 ```yaml
 examples:
