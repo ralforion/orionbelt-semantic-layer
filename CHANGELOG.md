@@ -6,6 +6,7 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **Example queries in the playground.** A dropdown above the dimension / measure / column pickers lists the loaded model's `examples:`; picking one replaces the query editor's content, and Execute Query runs it. It is filled from the model, so it appears only for a model that declares examples: the demo commerce model now declares seven (top clients, client vs supplier country, sales vs returns by category, month-over-month, running total, rollup by region, HAVING), each checked to run against the seed. A restarted UI server reverts its choices to the startup model's, which is what broke the Business Rules dropdown, so the dropdown accepts any value and the pick is checked against the model the page holds.
 - **The demo model shows a role dimension.** The commerce model gains `Supplier Country` (`via: Suppliers`, `pathName: supplier_country`), so client country (`Country Name`) and supplier country appear in one query, each from its own join of `Countries`. Before, the secondary `supplier_country` path could only replace the client country through `usePathNames`. An execution test checks the role query against SQL written by hand from the seed schema.
 
 ## [2.31.0] - 2026-09-24

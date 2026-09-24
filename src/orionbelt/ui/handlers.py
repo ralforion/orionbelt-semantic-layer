@@ -573,6 +573,61 @@ def model_jump_targets(model_yaml: str) -> object:
     return gr.update(choices=choices, value=None)
 
 
+def _model_examples(model_yaml: str) -> dict[str, dict[str, Any]]:
+    """The model's ``examples:`` queries, by name, in declaration order.
+
+    Read from the YAML the editor holds, like the pickers, so the list follows
+    whatever model is loaded. An entry without a name or a query mapping is
+    skipped rather than shown as an example that cannot fill the query box.
+    """
+    try:
+        raw = yaml.safe_load(model_yaml or "") or {}
+    except yaml.YAMLError:
+        return {}
+    entries = raw.get("examples") if isinstance(raw, dict) else None
+    examples: dict[str, dict[str, Any]] = {}
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        name, query = entry.get("name"), entry.get("query")
+        if isinstance(name, str) and name and isinstance(query, dict):
+            examples[name] = query
+    return examples
+
+
+def model_example_choices(model_yaml: str) -> list[tuple[str, str]]:
+    """``(label, name)`` per example query.
+
+    ``top_clients_by_sales`` is labelled "Top clients by sales".
+    """
+    return [(name.replace("_", " ").capitalize(), name) for name in _model_examples(model_yaml)]
+
+
+def example_picker_update(model_yaml: str) -> object:
+    """Refill the "Example queries" dropdown; hidden for a model without examples.
+
+    The value is reset so a finished pick does not linger. Resetting alone does
+    not protect against a restarted server, whose choices revert to the startup
+    model's; the dropdown accepts custom values for that, and
+    :func:`load_example_query` checks the name against the model it is given.
+    """
+    choices = model_example_choices(model_yaml)
+    return gr.update(choices=choices, value=None, visible=bool(choices))
+
+
+def load_example_query(name: str | None, model_yaml: str, query_yaml: str) -> tuple[str, object]:
+    """Replace the query box with the picked example, then clear the pick.
+
+    *name* is looked up in *model_yaml*, the model the page holds, not in the
+    dropdown's server-side choices, which may belong to another model after a
+    server restart. An unknown name leaves the query as it is.
+    """
+    query = _model_examples(model_yaml).get(name or "")
+    if query is None:
+        return query_yaml, gr.update(value=None)
+    return yaml.safe_dump(query, sort_keys=False, allow_unicode=True), gr.update(value=None)
+
+
 def _resolve_execution_dialect(api_url: str, current: str) -> str:
     """Snap the SQL Dialect dropdown to the API's effective execution dialect.
 

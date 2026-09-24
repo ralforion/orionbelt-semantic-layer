@@ -50,10 +50,13 @@ from orionbelt.ui.handlers import (
     compile_sql,
     evaluate_all_rules_ui,
     evaluate_rule_ui,
+    example_picker_update,
     execute_query,
     filter_and_execute,
     filter_chip_update,
+    load_example_query,
     load_rules,
+    model_example_choices,
     model_jump_targets,
     rule_definition,
     run_sparql,
@@ -1709,6 +1712,23 @@ def create_blocks(
                         elem_id="ob-model",
                     )
                     with gr.Column(scale=2, elem_classes=["picker-col"]):
+                        # Filled from the model's ``examples:``, so it shows only
+                        # for a model that declares some (the demo does).
+                        # ``allow_custom_value``: after the server loses session
+                        # state its choices revert to the startup model's, and
+                        # Gradio would reject a pick from the model the page
+                        # holds before the handler runs. The handler checks the
+                        # name against that model instead.
+                        init_examples = model_example_choices(example_model)
+                        example_picker = gr.Dropdown(
+                            choices=init_examples,
+                            value=None,
+                            label="Example queries",
+                            interactive=True,
+                            allow_custom_value=True,
+                            visible=bool(init_examples),
+                            elem_classes=["picker-dropdown"],
+                        )
                         with gr.Row(elem_classes=["picker-row"]):
                             dim_picker = gr.Dropdown(
                                 choices=init_dim_choices,
@@ -1846,6 +1866,22 @@ def create_blocks(
                     fn=_update_pickers,
                     inputs=[model_input, dialect, query_input],
                     outputs=[dim_picker, meas_picker, field_picker, dialect],
+                )
+
+                model_input.change(
+                    fn=example_picker_update, inputs=[model_input], outputs=[example_picker]
+                )
+                # A pick replaces the query box; nothing runs until Execute.
+                # ``.input`` rather than ``.change``: clearing the pick is a
+                # programmatic change and must not load anything.
+                example_picker.input(
+                    fn=load_example_query,
+                    inputs=[example_picker, model_input, query_input],
+                    outputs=[query_input, example_picker],
+                ).then(
+                    fn=_highlight_pickers,
+                    inputs=[model_input, query_input],
+                    outputs=[dim_picker, meas_picker],
                 )
 
                 # "Jump to" navigator for the (large) model YAML: refill targets when
@@ -3024,6 +3060,11 @@ def create_blocks(
             fn=model_jump_targets,
             inputs=[model_input],
             outputs=[jump_dropdown],
+        ).then(
+            # And the example queries, which the restored model decides.
+            fn=example_picker_update,
+            inputs=[model_input],
+            outputs=[example_picker],
         ).then(fn=None, js=inject_js)
 
         # Session cleanup: API sessions expire automatically via SESSION_TTL_SECONDS.

@@ -138,6 +138,13 @@ def test_client_and_supplier_country_in_one_query(model, seed: Path) -> None:
     assert any(r[0] != r[1] for r in rows), "every client country equals its supplier country"
 
 
+def test_every_model_example_executes(model, seed: Path) -> None:
+    """The playground offers these queries verbatim; each must run on the seed."""
+    assert model.examples, "the demo model declares no example queries"
+    for example in model.examples:
+        assert _execute(model, seed, example.query), f"example {example.name!r} returned no rows"
+
+
 def test_filter_context_ignores_the_query_filter(model, seed: Path) -> None:
     """Unfiltered Sales reads one grand total whatever the WHERE says."""
     rows = _execute(
