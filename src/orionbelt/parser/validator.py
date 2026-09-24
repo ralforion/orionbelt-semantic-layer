@@ -16,7 +16,6 @@ from orionbelt.models.expressions import (
     find_qualified_refs,
 )
 from orionbelt.models.functions import CAST_TARGETS, JSON_PATH_RE, TIME_UNITS, lookup_function
-from orionbelt.models.roles import role_object_name
 from orionbelt.models.semantic import (
     CASTABLE_TEMPORAL_TYPES,
     DATE_BEARING_TYPES,
@@ -1827,43 +1826,29 @@ class SemanticValidator:
 
         Direct only: the role's copy of the table is joined from ``via`` by that
         join's columns, so a path through intermediate objects has no join to
-        copy. The copy is named after the role, and a data object already
-        carrying that name would be shadowed by it.
+        copy.
         """
-        path = f"dimensions.{name}.pathName"
         assert dim.via is not None
         joins = [j for j in model.data_objects[dim.via].joins if j.join_to == dim.view]
-        if not any(j.path_name == dim.path_name for j in joins):
-            declared = sorted(j.path_name for j in joins if j.path_name)
-            hint = (
-                f"Declared pathNames: {', '.join(declared)}."
-                if declared
-                else f"'{dim.via}' declares no named join to '{dim.view}'."
+        if any(j.path_name == dim.path_name for j in joins):
+            return []
+        declared = sorted(j.path_name for j in joins if j.path_name)
+        hint = (
+            f"Declared pathNames: {', '.join(declared)}."
+            if declared
+            else f"'{dim.via}' declares no named join to '{dim.view}'."
+        )
+        return [
+            SemanticError(
+                code="INVALID_DIMENSION_PATH",
+                message=(
+                    f"Dimension '{name}': '{dim.via}' has no join to '{dim.view}' "
+                    f"with pathName '{dim.path_name}'. {hint}"
+                ),
+                path=f"dimensions.{name}.pathName",
+                suggestions=declared,
             )
-            return [
-                SemanticError(
-                    code="INVALID_DIMENSION_PATH",
-                    message=(
-                        f"Dimension '{name}': '{dim.via}' has no join to '{dim.view}' "
-                        f"with pathName '{dim.path_name}'. {hint}"
-                    ),
-                    path=path,
-                    suggestions=declared,
-                )
-            ]
-        role = role_object_name(dim.via, dim.view, dim.path_name or "")
-        if role in model.data_objects:
-            return [
-                SemanticError(
-                    code="INVALID_DIMENSION_PATH",
-                    message=(
-                        f"Dimension '{name}': its role is joined under the alias '{role}', "
-                        f"which is already the name of a data object."
-                    ),
-                    path=path,
-                )
-            ]
-        return []
+        ]
 
     def _check_via_ambiguity(self, model: SemanticModel) -> list[SemanticError]:
         """Warn when ``via`` alone names the source of several joins to the dimension.

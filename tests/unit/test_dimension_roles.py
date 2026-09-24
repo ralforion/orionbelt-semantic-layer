@@ -7,10 +7,14 @@ import osi_orionbelt.converter as conv
 import yaml
 from rdflib import Literal
 
+from orionbelt.compiler.composability import (
+    resolve_composables_for_anchors,
+    resolve_composables_for_query,
+)
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect, UsePathName
-from orionbelt.models.roles import expand_role_objects, role_object_name
+from orionbelt.models.roles import expand_role_objects
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.obsl.exporter import OBSL, export_obsl
 from orionbelt.parser.loader import TrackedLoader
@@ -134,8 +138,8 @@ def _run(sql: str) -> list[tuple[object, ...]]:
     return sorted(con.execute(sql).fetchall(), key=str)
 
 
-SALES = role_object_name("Orders", "Employees", "sales")
-SUPPORT = role_object_name("Orders", "Employees", "support")
+SALES = "Employees__Orders__sales"
+SUPPORT = "Employees__Orders__support"
 
 
 class TestCompilation:
@@ -268,22 +272,6 @@ class TestValidation:
         assert [e.code for e in errors] == ["INVALID_DIMENSION_PATH"]
         assert errors[0].suggestions == ["sales", "support"]
 
-    def test_role_alias_may_not_shadow_a_data_object(self) -> None:
-        clash = ROLE_MODEL_YAML.replace(
-            "\ndimensions:",
-            f"""  {SUPPORT}:
-    code: other
-    schema: main
-    columns:
-      X:
-        code: x
-        abstractType: int
-
-dimensions:""",
-        )
-        errors = _validate(clash)
-        assert {e.code for e in errors} == {"INVALID_DIMENSION_PATH"}
-
     def test_via_alone_over_several_joins_warns(self) -> None:
         errors = _validate(
             ROLE_MODEL_YAML.replace(
@@ -295,6 +283,159 @@ dimensions:""",
         assert len(warnings) == 1
         assert warnings[0].severity == "warning"
         assert "'sales'" in warnings[0].message
+
+
+COLLIDING_ROLES_YAML = """\
+version: 1.0
+
+dataObjects:
+  Orders:
+    code: orders
+    schema: main
+    columns:
+      Order ID: {code: order_id, abstractType: int}
+      First Employee ID: {code: first_employee_id, abstractType: int}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Employees
+        pathName: sales__support
+        columnsFrom: [First Employee ID]
+        columnsTo: [Employee ID]
+      - joinType: one-to-one
+        joinTo: Orders__sales
+        columnsFrom: [Order ID]
+        columnsTo: [Order ID]
+  Orders__sales:
+    code: order_extras
+    schema: main
+    columns:
+      Order ID: {code: order_id, abstractType: int}
+      Second Employee ID: {code: second_employee_id, abstractType: int}
+    joins:
+      - joinType: many-to-one
+        joinTo: Employees
+        pathName: support
+        columnsFrom: [Second Employee ID]
+        columnsTo: [Employee ID]
+  Employees:
+    code: employees
+    schema: main
+    columns:
+      Employee ID: {code: employee_id, abstractType: int}
+      Name: {code: name, abstractType: string}
+
+dimensions:
+  First Employee:
+    dataObject: Employees
+    column: Name
+    resultType: string
+    via: Orders
+    pathName: sales__support
+  Second Employee:
+    dataObject: Employees
+    column: Name
+    resultType: string
+    via: Orders__sales
+    pathName: support
+
+measures:
+  Revenue:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    resultType: float
+    aggregation: sum
+"""
+
+
+class TestAliases:
+    def test_roles_whose_names_would_collide_get_distinct_aliases(self) -> None:
+        """``Employees__Orders__sales__support`` spells two different roles here."""
+        sql = _compile(_load(COLLIDING_ROLES_YAML), ["First Employee", "Second Employee"])
+        assert '"Employees__Orders__sales__support__2"' in sql
+        con = duckdb.connect()
+        con.execute("CREATE TABLE employees (employee_id INTEGER, name VARCHAR)")
+        con.execute("INSERT INTO employees VALUES (1, 'Ann'), (2, 'Bob')")
+        con.execute(
+            "CREATE TABLE orders (order_id INTEGER, first_employee_id INTEGER, amount DOUBLE)"
+        )
+        con.execute("INSERT INTO orders VALUES (10, 1, 100)")
+        con.execute("CREATE TABLE order_extras (order_id INTEGER, second_employee_id INTEGER)")
+        con.execute("INSERT INTO order_extras VALUES (10, 2)")
+        assert con.execute(sql).fetchall() == [("Ann", "Bob", 100)]
+
+    def test_alias_taken_by_a_data_object_gets_a_suffix(self) -> None:
+        taken = ROLE_MODEL_YAML.replace(
+            "\ndimensions:",
+            f"""  {SUPPORT}:
+    code: other
+    schema: main
+    columns:
+      X:
+        code: x
+        abstractType: int
+
+dimensions:""",
+        )
+        assert _validate(taken) == []
+        sql = _compile(_load(taken), ["Sales Employee", "Support Employee"])
+        assert f'AS "{SUPPORT}__2" ON "Orders"."support_employee_id"' in sql
+        assert _run(sql) == [("Ann", "Bob", 50), ("Ann", "Cid", 100), ("Bob", "Cid", 25)]
+
+    def test_string_literals_in_a_computed_column_are_left_alone(self) -> None:
+        literal = ROLE_MODEL_YAML.replace(
+            'expression: "upper({[Employees].[Name]})"',
+            "expression: \"concat('{[Employees].[Name]}: ', {[Employees].[Name]})\"",
+        )
+        sql = _compile(_load(literal), ["Sales Employee", "Support Employee Display"])
+        assert "'{[Employees].[Name]}: '" in sql
+        assert _run(sql) == [
+            ("Ann", "{[Employees].[Name]}: Bob", 50),
+            ("Ann", "{[Employees].[Name]}: Cid", 100),
+            ("Bob", "{[Employees].[Name]}: Cid", 25),
+        ]
+
+
+SECONDARY_ONLY_YAML = ROLE_MODEL_YAML.replace(
+    """      - joinType: many-to-one
+        joinTo: Employees
+        pathName: sales
+        columnsFrom: [Sales Employee ID]
+        columnsTo: [Employee ID]
+""",
+    "",
+).replace(
+    """  Sales Employee:
+    dataObject: Employees
+    column: Name
+    resultType: string
+    via: Orders
+    pathName: sales
+""",
+    "",
+)
+
+
+class TestComposability:
+    """Discovery sees roles the way the compiler does."""
+
+    def test_measure_composes_with_a_role_behind_a_secondary_join(self) -> None:
+        model = _load(SECONDARY_ONLY_YAML)
+        assert "Support Employee" in resolve_composables_for_anchors(model, ["Revenue"]).dimensions
+        # And the compiler agrees.
+        assert _run(_compile(model, ["Support Employee"])) == [("Bob", 50), ("Cid", 125)]
+
+    def test_role_anchor_reports_its_data_object(self) -> None:
+        result = resolve_composables_for_anchors(_load(), ["Support Employee"])
+        assert result.anchor_objects == ["Employees"]
+        assert "Revenue" in result.measures
+
+    def test_query_with_two_roles_keeps_its_measure(self) -> None:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Sales Employee", "Support Employee"], measures=[])
+        )
+        assert "Revenue" in resolve_composables_for_query(_load(), query).measures
 
 
 class TestPropagation:

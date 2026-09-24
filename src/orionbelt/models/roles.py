@@ -21,22 +21,46 @@ and a query reaching one by two equally short routes is refused as ambiguous.
 
 from __future__ import annotations
 
+from orionbelt.models.expressions import rename_object_references
 from orionbelt.models.semantic import (
     DataObject,
-    DataObjectColumn,
     DataObjectJoin,
     Dimension,
     SemanticModel,
 )
 
 
-def role_object_name(source: str, target: str, path_name: str) -> str:
-    """The data object name, and so the SQL alias, of one role of *target*.
+def role_object_names(model: SemanticModel) -> dict[tuple[str, str, str], str]:
+    """``(via, dataObject, pathName)`` of each role to its data object name.
 
-    Names the source as well as the path: ``pathName`` is unique only per
-    ``(source, target)`` pair, so two facts may both call their join ``support``.
+    The name is also the role's SQL alias: ``<dataObject>__<via>__<pathName>``.
+    It names the source as well as the path, since ``pathName`` is unique only
+    per ``(source, target)`` pair. Object names and path names may themselves
+    contain ``__``, so two roles can spell the same name, and so can an authored
+    data object; a later claimant gets a ``__2``, ``__3``... suffix, because two
+    roles sharing an alias would silently read one join for both.
     """
-    return f"{target}__{source}__{path_name}"
+    names: dict[tuple[str, str, str], str] = {}
+    taken = set(model.data_objects)
+    for dim in model.dimensions.values():
+        if role_join(model, dim) is None:
+            continue
+        assert dim.via is not None and dim.path_name is not None
+        key = (dim.via, dim.view, dim.path_name)
+        if key in names:
+            continue
+        base = f"{dim.view}__{dim.via}__{dim.path_name}"
+        name, suffix = base, 2
+        while name in taken:
+            name, suffix = f"{base}__{suffix}", suffix + 1
+        taken.add(name)
+        names[key] = name
+    return names
+
+
+def role_targets(model: SemanticModel) -> dict[str, str]:
+    """Each role object's name to the authored data object it copies."""
+    return {name: target for (_, target, _), name in role_object_names(model).items()}
 
 
 def role_join(model: SemanticModel, dim: Dimension) -> DataObjectJoin | None:
@@ -63,14 +87,18 @@ def _role_object(target: DataObject, name: str) -> DataObject:
     rather than ``{First}``, is repointed at the copy; left alone it would read
     the table under the other role's alias.
     """
-    self_ref = f"{{[{target.name}]."
-    columns: dict[str, DataObjectColumn] = {}
-    for col_name, column in target.columns.items():
-        if column.expression and self_ref in column.expression:
-            column = column.model_copy(
-                update={"expression": column.expression.replace(self_ref, f"{{[{name}].")}
+    columns = {
+        col_name: (
+            column.model_copy(
+                update={
+                    "expression": rename_object_references(column.expression, target.name, name)
+                }
             )
-        columns[col_name] = column
+            if column.expression
+            else column
+        )
+        for col_name, column in target.columns.items()
+    }
     return target.model_copy(
         update={"name": name, "columns": columns, "joins": [], "countable": False}
     )
@@ -83,18 +111,17 @@ def expand_role_objects(model: SemanticModel) -> SemanticModel:
     roles compiles exactly as it did. A dimension whose role join does not exist
     is left untouched: the validator reports it at load.
     """
-    roles = {
-        dim_name: (dim, join)
-        for dim_name, dim in model.dimensions.items()
-        if (join := role_join(model, dim)) is not None
-    }
-    if not roles:
+    names = role_object_names(model)
+    if not names:
         return model
     data_objects = dict(model.data_objects)
     dimensions = dict(model.dimensions)
-    for dim_name, (dim, join) in roles.items():
-        assert dim.via is not None
-        name = role_object_name(dim.via, dim.view, join.path_name or "")
+    for dim_name, dim in model.dimensions.items():
+        join = role_join(model, dim)
+        if join is None:
+            continue
+        assert dim.via is not None and dim.path_name is not None
+        name = names[(dim.via, dim.view, dim.path_name)]
         if name not in data_objects:
             data_objects[name] = _role_object(model.data_objects[dim.view], name)
             source = data_objects[dim.via]

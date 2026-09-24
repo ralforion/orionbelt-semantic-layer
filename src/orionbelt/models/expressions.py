@@ -69,6 +69,24 @@ def substitute_placeholders(expression: str, repl: Callable[[re.Match[str]], str
     )
 
 
+def rename_object_references(expression: str, old: str, new: str) -> str:
+    """Point every ``{[old].[Column]}`` reference outside a string literal at *new*.
+
+    Literals are skipped for the same reason as in :func:`substitute_placeholders`:
+    ``'{[Employees].[Name]}'`` is text the author typed, not a reference.
+    """
+
+    def repl(match: re.Match[str]) -> str:
+        if match.group(1).strip() != old:
+            return match.group(0)
+        return f"{{[{new}].[{match.group(2)}]}}"
+
+    return "".join(
+        text if is_literal else QUALIFIED_COLUMN_REF.sub(repl, text)
+        for text, is_literal in _segments(expression)
+    )
+
+
 def find_placeholders(expression: str) -> list[str]:
     """The column names *expression* references, in order of appearance.
 

@@ -562,7 +562,8 @@ GROUP BY ...
 Rules:
 
 - `pathName` requires `via`, and `via` must declare a join to the dimension's `dataObject` with that `pathName`, primary or secondary. Anything else is rejected at load with `INVALID_DIMENSION_PATH`, which lists the path names `via` does declare.
-- Dimensions naming the same role share one join. A role is joined under the alias `<dataObject>__<via>__<pathName>`, which must not be the name of an existing data object.
+- Dimensions naming the same role share one join. A role is joined under the alias `<dataObject>__<via>__<pathName>`. If that name is already taken, by a data object or by another role spelling the same name, the alias gets a `__2`, `__3`, ... suffix.
+- Composability discovery (`composables`) sees roles the way the compiler does, and reports a role's anchor under its `dataObject`.
 - A role is pinned: a query's [`usePathNames`](query-language.md#secondary-join-paths) switches the join for dimensions *without* `pathName` and leaves roles alone.
 - The role's copy of the table carries none of that table's own joins, so a role reaches only the columns of its `dataObject`. A dimension on an object *beyond* it, such as the support employee's department, is not supported yet.
 - `via` without `pathName`, where `via` joins the dimension's `dataObject` more than once, loads with an `AMBIGUOUS_VIA` warning, because the dimension silently reads through the primary join.
