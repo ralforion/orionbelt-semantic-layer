@@ -606,16 +606,22 @@ def model_example_choices(model_yaml: str) -> list[tuple[str, str]]:
 def example_picker_update(model_yaml: str) -> object:
     """Refill the "Example queries" dropdown; hidden for a model without examples.
 
-    The value is always reset, so a pick never has to survive a change of
-    choices: a restarted server validating a stale value against choices it no
-    longer has is what broke the Business Rules dropdown.
+    The value is reset so a finished pick does not linger. Resetting alone does
+    not protect against a restarted server, whose choices revert to the startup
+    model's; the dropdown accepts custom values for that, and
+    :func:`load_example_query` checks the name against the model it is given.
     """
     choices = model_example_choices(model_yaml)
     return gr.update(choices=choices, value=None, visible=bool(choices))
 
 
 def load_example_query(name: str | None, model_yaml: str, query_yaml: str) -> tuple[str, object]:
-    """Replace the query box with the picked example, then clear the pick."""
+    """Replace the query box with the picked example, then clear the pick.
+
+    *name* is looked up in *model_yaml*, the model the page holds, not in the
+    dropdown's server-side choices, which may belong to another model after a
+    server restart. An unknown name leaves the query as it is.
+    """
     query = _model_examples(model_yaml).get(name or "")
     if query is None:
         return query_yaml, gr.update(value=None)

@@ -1714,12 +1714,18 @@ def create_blocks(
                     with gr.Column(scale=2, elem_classes=["picker-col"]):
                         # Filled from the model's ``examples:``, so it shows only
                         # for a model that declares some (the demo does).
+                        # ``allow_custom_value``: after the server loses session
+                        # state its choices revert to the startup model's, and
+                        # Gradio would reject a pick from the model the page
+                        # holds before the handler runs. The handler checks the
+                        # name against that model instead.
                         init_examples = model_example_choices(example_model)
                         example_picker = gr.Dropdown(
                             choices=init_examples,
                             value=None,
                             label="Example queries",
                             interactive=True,
+                            allow_custom_value=True,
                             visible=bool(init_examples),
                             elem_classes=["picker-dropdown"],
                         )

@@ -71,3 +71,27 @@ def test_demo_model_offers_its_examples() -> None:
     names = [name for _, name in model_example_choices(_DEMO.read_text())]
     assert "client_vs_supplier_country" in names
     assert len(names) >= 5
+
+
+def test_pick_outside_the_server_choices_reaches_the_handler() -> None:
+    """After a server restart the choices are the startup model's.
+
+    A pick from the model the page holds must still reach
+    :func:`load_example_query`, which checks it against that model; Gradio's
+    own choice validation would reject it first.
+    """
+    from unittest.mock import patch
+
+    from orionbelt.ui import app as ui_app
+
+    with (
+        patch.object(ui_app, "_fetch_settings", return_value={"_unreachable": True}),
+        patch.object(ui_app, "_fetch_dialects", return_value=["duckdb"]),
+    ):
+        blocks = ui_app.create_blocks(default_api_url="http://example.invalid")
+    picker = next(
+        c for c in blocks.blocks.values() if getattr(c, "label", None) == "Example queries"
+    )
+    assert picker.preprocess("top_clients_by_sales_of_a_custom_model") == (
+        "top_clients_by_sales_of_a_custom_model"
+    )
