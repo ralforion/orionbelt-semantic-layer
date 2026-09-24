@@ -737,6 +737,8 @@ class OSItoOBML:
                                 dim_def["owner"] = ext_data["obml_dimension_owner"]
                             if ext_data.get("obml_dimension_via"):
                                 dim_def["via"] = ext_data["obml_dimension_via"]
+                            if ext_data.get("obml_dimension_path_name"):
+                                dim_def["pathName"] = ext_data["obml_dimension_path_name"]
                             # The dimension's own synonyms / vendor extensions,
                             # restored authoritatively to the dimension. Opaque
                             # foreign data, so keep only well-shaped entries.
@@ -786,7 +788,14 @@ class OSItoOBML:
                         "column": field_name,
                         "resultType": desc.get("resultType") or abstract_type,
                     }
-                    for prop in ("timeGrain", "format", "description", "owner", "via"):
+                    for prop in (
+                        "timeGrain",
+                        "format",
+                        "description",
+                        "owner",
+                        "via",
+                        "pathName",
+                    ):
                         value = desc.get(prop)
                         if isinstance(value, str) and value:
                             extra_def[prop] = value

@@ -243,6 +243,13 @@ obsl:DimensionShape a sh:NodeShape ;
         sh:maxCount 1 ;
         sh:name "result type" ;
         sh:message "Every dimension must have exactly one obsl:resultType."
+    ] ;
+    sh:property [
+        sh:path obsl:pathName ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "path name" ;
+        sh:message "A dimension names at most one join path."
     ] .
 
 # -----------------------------------------------------------------------------

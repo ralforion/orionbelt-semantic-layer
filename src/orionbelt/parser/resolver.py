@@ -782,6 +782,7 @@ class ReferenceResolver:
                     result_type=raw_dim.get("resultType", "string"),
                     time_grain=raw_dim.get("timeGrain"),
                     via=via,
+                    path_name=raw_dim.get("pathName"),
                     description=raw_dim.get("description"),
                     format=raw_dim.get("format"),
                     owner=raw_dim.get("owner"),

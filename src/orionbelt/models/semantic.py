@@ -807,6 +807,18 @@ class Dimension(BaseModel):
     description: str | None = None
     format: str | None = None
     via: str | None = None
+    path_name: str | None = Field(None, alias="pathName")
+    """The ``pathName`` of the join from ``via`` to ``dataObject`` this dimension reads through.
+
+    Pins the dimension to one role of a data object that ``via`` joins more
+    than once, such as the sales and the support employee of an order. Each
+    role compiles to its own aliased join of the table, so several roles can
+    appear in one query, which the query-level ``usePathNames`` cannot do: it
+    swaps the pair's join for every dimension at once.
+
+    The join must be declared on ``via`` and target ``dataObject`` directly;
+    it may be the primary join or a secondary one.
+    """
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")

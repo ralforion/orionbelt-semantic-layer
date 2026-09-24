@@ -420,6 +420,12 @@ classes:
         json_schema: true
         ontology_property: via
         osi_roundtrip: true
+      path_name:
+        alias: pathName
+        type: "str | None"
+        json_schema: true
+        ontology_property: pathName
+        osi_roundtrip: true
       owner:
         alias: owner
         type: "str | None"

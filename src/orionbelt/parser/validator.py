@@ -16,12 +16,14 @@ from orionbelt.models.expressions import (
     find_qualified_refs,
 )
 from orionbelt.models.functions import CAST_TARGETS, JSON_PATH_RE, TIME_UNITS, lookup_function
+from orionbelt.models.roles import role_object_name
 from orionbelt.models.semantic import (
     CASTABLE_TEMPORAL_TYPES,
     DATE_BEARING_TYPES,
     SUB_DAY_GRAINS,
     DataColumnRef,
     DataType,
+    Dimension,
     ExpressionMode,
     Measure,
     MeasureFilter,
@@ -119,6 +121,7 @@ class SemanticValidator:
         errors.extend(self._check_join_key_expressions(model))
         errors.extend(self._check_distinct_within_group(model))
         errors.extend(self._check_via_reachability(model))
+        errors.extend(self._check_via_ambiguity(model))
         errors.extend(self._check_missing_via(model))
         errors.extend(self._check_measure_anchors(model))
         errors.extend(self._check_nested_objects(model))
@@ -1768,7 +1771,18 @@ class SemanticValidator:
 
     def _check_via_reachability(self, model: SemanticModel) -> list[SemanticError]:
         """Validate that each dimension's dataObject is reachable from its via."""
-        errors: list[SemanticError] = []
+        errors: list[SemanticError] = [
+            SemanticError(
+                code="INVALID_DIMENSION_PATH",
+                message=(
+                    f"Dimension '{name}': pathName '{dim.path_name}' needs 'via' to name "
+                    f"the data object that declares the join."
+                ),
+                path=f"dimensions.{name}.pathName",
+            )
+            for name, dim in model.dimensions.items()
+            if dim.path_name is not None and not dim.via
+        ]
         dims_with_via = [(name, dim) for name, dim in model.dimensions.items() if dim.via]
         if not dims_with_via:
             return errors
@@ -1786,6 +1800,9 @@ class SemanticValidator:
                     )
                 )
                 continue
+            if dim.path_name is not None:
+                errors.extend(self._check_dimension_role(model, name, dim))
+                continue
             if dim.via == dim.view:
                 continue
             reachable = nx.descendants(g, dim.via) if dim.via in g else set()
@@ -1801,6 +1818,86 @@ class SemanticValidator:
                     )
                 )
         return errors
+
+    @staticmethod
+    def _check_dimension_role(
+        model: SemanticModel, name: str, dim: Dimension
+    ) -> list[SemanticError]:
+        """A dimension's ``pathName`` must name a join from ``via`` to its data object.
+
+        Direct only: the role's copy of the table is joined from ``via`` by that
+        join's columns, so a path through intermediate objects has no join to
+        copy. The copy is named after the role, and a data object already
+        carrying that name would be shadowed by it.
+        """
+        path = f"dimensions.{name}.pathName"
+        assert dim.via is not None
+        joins = [j for j in model.data_objects[dim.via].joins if j.join_to == dim.view]
+        if not any(j.path_name == dim.path_name for j in joins):
+            declared = sorted(j.path_name for j in joins if j.path_name)
+            hint = (
+                f"Declared pathNames: {', '.join(declared)}."
+                if declared
+                else f"'{dim.via}' declares no named join to '{dim.view}'."
+            )
+            return [
+                SemanticError(
+                    code="INVALID_DIMENSION_PATH",
+                    message=(
+                        f"Dimension '{name}': '{dim.via}' has no join to '{dim.view}' "
+                        f"with pathName '{dim.path_name}'. {hint}"
+                    ),
+                    path=path,
+                    suggestions=declared,
+                )
+            ]
+        role = role_object_name(dim.via, dim.view, dim.path_name or "")
+        if role in model.data_objects:
+            return [
+                SemanticError(
+                    code="INVALID_DIMENSION_PATH",
+                    message=(
+                        f"Dimension '{name}': its role is joined under the alias '{role}', "
+                        f"which is already the name of a data object."
+                    ),
+                    path=path,
+                )
+            ]
+        return []
+
+    def _check_via_ambiguity(self, model: SemanticModel) -> list[SemanticError]:
+        """Warn when ``via`` alone names the source of several joins to the dimension.
+
+        Without ``pathName`` such a dimension always reads through the pair's
+        primary join (or whichever path a query's ``usePathNames`` selects), so a
+        dimension meant as the secondary role silently returns the primary one.
+        """
+        warnings: list[SemanticError] = []
+        for name, dim in model.dimensions.items():
+            if dim.via is None or dim.path_name is not None:
+                continue
+            source = model.data_objects.get(dim.via)
+            if source is None:
+                continue
+            joins = [j for j in source.joins if j.join_to == dim.view]
+            if len(joins) < 2:
+                continue
+            primary = next((j.path_name for j in joins if not j.secondary), None)
+            primary_text = f"the primary path '{primary}'" if primary else "the primary path"
+            warnings.append(
+                SemanticError(
+                    code="AMBIGUOUS_VIA",
+                    message=(
+                        f"Dimension '{name}': '{dim.via}' joins '{dim.view}' {len(joins)} "
+                        f"times, and via alone reads through {primary_text}. Set "
+                        f"'pathName' to pick the role this dimension stands for."
+                    ),
+                    path=f"dimensions.{name}",
+                    severity="warning",
+                    suggestions=sorted(j.path_name for j in joins if j.path_name),
+                )
+            )
+        return warnings
 
     def _check_measure_anchors(self, model: SemanticModel) -> list[SemanticError]:
         """Validate each measure's ``anchor``: it must exist and be one it reads.

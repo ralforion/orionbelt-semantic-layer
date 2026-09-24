@@ -453,6 +453,8 @@ class OBMLtoOSI:
                     ext_data["obml_dimension_owner"] = dim_obj["owner"]
                 if dim_obj.get("via"):
                     ext_data["obml_dimension_via"] = dim_obj["via"]
+                if dim_obj.get("pathName"):
+                    ext_data["obml_dimension_path_name"] = dim_obj["pathName"]
                 # The dimension's own synonyms and vendor extensions have no
                 # native OSI slot (OSI has no dimension entity), so preserve them
                 # authoritatively here for the reverse trip. The customExtensions
@@ -466,7 +468,15 @@ class OBMLtoOSI:
                 _stash_concept_links(dim_obj, ext_data, "obml_dimension_external_concept_mappings")
             else:
                 descriptor: dict[str, Any] = {"name": _dim_name}
-                for prop in ("resultType", "timeGrain", "format", "description", "owner", "via"):
+                for prop in (
+                    "resultType",
+                    "timeGrain",
+                    "format",
+                    "description",
+                    "owner",
+                    "via",
+                    "pathName",
+                ):
                     if dim_obj.get(prop):
                         descriptor[prop] = dim_obj[prop]
                 # Carry the extra dimension's own synonyms and vendor extensions

@@ -427,6 +427,7 @@ Rules:
 - `pathName` must be unique per `(source, target)` pair (not globally)
 - Secondary joins are excluded from cycle detection and multipath validation
 - Queries use `usePathNames` to select a secondary join instead of the default primary — see [Query Language](query-language.md#secondary-join-paths)
+- A dimension with `via` + `pathName` always reads through that join, and several such roles can share one query; see [Several Roles in One Query](#several-roles-in-one-query-pathname)
 
 ## Column References
 
@@ -469,6 +470,7 @@ dimensions:
 | `resultType` | enum | Yes | Data type of the result. A temporal `resultType` over a `timeGrain` is emitted as a CAST, so the dimension keeps its declared type rather than whatever the engine's truncation returns. It must be wide enough to hold the bucket: an hour, minute or second grain needs `timestamp`, and neither `time` nor `time_tz` ever holds a grain, because a grain always carries a date. A narrower declaration is rejected at load with `RESULT_TYPE_LOSES_GRAIN`, because the cast is applied in the `GROUP BY` too and would merge buckets and change the measures. The same rule holds a query-time `"dimension:grain"` override, which names a grain the model never declared |
 | `timeGrain` | enum | No | Time grain: `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second`. The underlying column's `abstractType` must be `date`, `timestamp`, or `timestamp_tz` — validation rejects `timeGrain` on string/numeric columns (error code `TIME_GRAIN_ON_NON_TEMPORAL`). For text columns that encode dates (e.g. `'2024-03'`), define a computed column with `to_date()` first and point the dimension at that. |
 | `via` | string | No | Force join path through this intermediate data object (role-playing dimensions) |
+| `pathName` | string | No | Pin the dimension to the join of this `pathName` from `via` to `dataObject` (primary or secondary); each such role is joined under its own alias. Requires `via`. See [Several roles in one query](#several-roles-in-one-query-pathname) |
 | `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
@@ -506,6 +508,64 @@ The `via` data object must be reachable from the query's base object, and the di
 The `via` object can be any ancestor on the path — it doesn't have to be the immediate parent. For example, `via: Sales` on a dimension targeting `Regions` would force the path `Sales → Clients → Countries → Regions`.
 
 The validator will emit `MISSING_VIA` warnings when a dimension's target is reachable from multiple fact tables without `via` set.
+
+### Several Roles in One Query (pathName)
+
+`via` picks the fact a dimension is read from, but not *which* join when that fact joins the dimension table more than once. An order with a sales employee and a support employee has two joins from `Orders` to `Employees`, and `via: Orders` alone always reads through the primary one. Add `pathName` to pin a dimension to one of those joins:
+
+```yaml
+dataObjects:
+  Orders:
+    joins:
+      - joinType: many-to-one
+        joinTo: Employees
+        pathName: sales
+        columnsFrom: [Sales Employee ID]
+        columnsTo: [Employee ID]
+      - joinType: many-to-one
+        joinTo: Employees
+        secondary: true
+        pathName: support
+        columnsFrom: [Support Employee ID]
+        columnsTo: [Employee ID]
+
+dimensions:
+  Sales Employee:
+    dataObject: Employees
+    column: Name
+    resultType: string
+    via: Orders
+    pathName: sales
+
+  Support Employee:
+    dataObject: Employees
+    column: Name
+    resultType: string
+    via: Orders
+    pathName: support
+```
+
+Each role is joined under its own alias, so both can appear in one query:
+
+```sql
+SELECT "Employees__Orders__sales"."name" AS "Sales Employee",
+       "Employees__Orders__support"."name" AS "Support Employee",
+       SUM("Orders"."amount") AS "Revenue"
+FROM orders AS "Orders"
+LEFT JOIN employees AS "Employees__Orders__sales"
+  ON "Orders"."sales_employee_id" = "Employees__Orders__sales"."employee_id"
+LEFT JOIN employees AS "Employees__Orders__support"
+  ON "Orders"."support_employee_id" = "Employees__Orders__support"."employee_id"
+GROUP BY ...
+```
+
+Rules:
+
+- `pathName` requires `via`, and `via` must declare a join to the dimension's `dataObject` with that `pathName`, primary or secondary. Anything else is rejected at load with `INVALID_DIMENSION_PATH`, which lists the path names `via` does declare.
+- Dimensions naming the same role share one join. A role is joined under the alias `<dataObject>__<via>__<pathName>`, which must not be the name of an existing data object.
+- A role is pinned: a query's [`usePathNames`](query-language.md#secondary-join-paths) switches the join for dimensions *without* `pathName` and leaves roles alone.
+- The role's copy of the table carries none of that table's own joins, so a role reaches only the columns of its `dataObject`. A dimension on an object *beyond* it, such as the support employee's department, is not supported yet.
+- `via` without `pathName`, where `via` joins the dimension's `dataObject` more than once, loads with an `AMBIGUOUS_VIA` warning, because the dimension silently reads through the primary join.
 
 ### Time Dimensions
 
@@ -1773,6 +1833,7 @@ OrionBelt validates models against these rules:
 2. **No cyclic joins** — Join graph must be acyclic (secondary joins are excluded)
 3. **No multipath joins** — No ambiguous diamond patterns (secondary joins are excluded). A **canonical join exception** applies: when a data object has a direct join to a target AND also an indirect path through intermediaries, the direct join is treated as canonical and no error is raised. Only true diamonds (two indirect paths to the same target) are flagged.
 4. **Secondary join constraints** — Every secondary join must have a `pathName`; `pathName` must be unique per `(source, target)` pair
+   A dimension's `pathName` must name a join from its `via` to its `dataObject` (`INVALID_DIMENSION_PATH`)
 5. **Measures resolve** — All column references in measures must point to existing data object columns
 6. **Join targets exist** — All `joinTo` targets must be defined data objects
 7. **References resolve** — All dimension references (dataObject/column) must resolve

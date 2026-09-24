@@ -593,6 +593,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         if dim.via:
             via_uri = _data_object_uri(model_id, dim.via)
             g.add((dim_uri, OBSL.via, via_uri))
+        if dim.path_name:
+            g.add((dim_uri, OBSL.pathName, Literal(dim.path_name)))
         if dim.time_grain:
             g.add((dim_uri, OBSL.timeGrain, Literal(dim.time_grain.value)))
         if dim.description:

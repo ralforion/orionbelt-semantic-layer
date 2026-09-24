@@ -303,6 +303,8 @@ query = QueryObject(
 
 If a `usePathNames` entry references a non-existent data object or pathName, the query will return a resolution error.
 
+`usePathNames` applies to the whole query, so it selects one join per pair: a query cannot ask for the departure and the arrival airport at the same time this way. For that, declare role dimensions in the model with `via` and `pathName` (see [Several Roles in One Query](model-format.md#several-roles-in-one-query-pathname)). Each role joins its own aliased copy of the table and ignores `usePathNames`.
+
 ## Dimension Exclusion (Anti-Join)
 
 The `dimensionsExclude` flag inverts a dimension-only query to return value combinations that do **not** exist in the data. This is useful for finding missing relationships — for example, directors and producers who have never collaborated on a movie.
