@@ -134,6 +134,37 @@ getting wrong numbers (e.g., the classic "sum of per-region ratios"
 trap). Honesty over convenience — the semantic layer exists to make the
 math right.
 
+## Role-playing dimensions (v2.31.0+)
+
+A dimension that pins a role with `via` + `pathName` (see
+[Several Roles in One Query](model-format.md#several-roles-in-one-query-pathname))
+is an ordinary column of the virtual table. Several roles of one data
+object go in one `SELECT`, and each is joined under its own alias:
+
+```sql
+SELECT "Sales Employee", "Support Employee", "Revenue"
+FROM sales
+WHERE "Support Employee" = 'Cid'
+```
+
+```sql
+-- compiled
+SELECT "Employees__Orders__sales"."name" AS "Sales Employee",
+       "Employees__Orders__support"."name" AS "Support Employee",
+       SUM("Orders"."amount") AS "Revenue"
+FROM orders AS "Orders"
+LEFT JOIN employees AS "Employees__Orders__sales"
+  ON "Orders"."sales_employee_id" = "Employees__Orders__sales"."employee_id"
+LEFT JOIN employees AS "Employees__Orders__support"
+  ON "Orders"."support_employee_id" = "Employees__Orders__support"."employee_id"
+WHERE "Employees__Orders__support"."name" = 'Cid'
+GROUP BY ...
+```
+
+The query names roles, not joins: no join syntax, aliases or key columns.
+Arrow Flight SQL and the PostgreSQL wire protocol translate OBSQL with the
+same translator, so a BI tool sees each role as its own column.
+
 ## Multi-model addressing (v2.4.0+)
 
 Start the server with multiple OBML files pre-loaded:
