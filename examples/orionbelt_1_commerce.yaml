@@ -501,6 +501,10 @@ dataObjects:
       #     - {source: Suppliers, target: Countries, pathName: supplier_country}
       #
       # which re-reads the same dimension as the supplier's country instead.
+      #
+      # The "Supplier Country" dimension pins this path instead (via +
+      # pathName), so client and supplier country can share one query:
+      # each is joined under its own alias.
       - joinType: many-to-one
         joinTo: Countries
         secondary: true
@@ -631,6 +635,17 @@ dimensions:
     dataObject: Countries
     column: Country Name
     resultType: string
+  # ── Role-playing: Country by role ──
+  # "Country Name" is the client's country. This is the supplier's: the
+  # secondary Suppliers -> Countries join, joined as its own copy of
+  # Countries, so both appear in one query.
+  Supplier Country:
+    dataObject: Countries
+    column: Country Name
+    resultType: string
+    via: Suppliers
+    pathName: supplier_country
+    description: Country of the product's supplier
   Region Name:
     dataObject: Regions
     column: Region Name
