@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **The demo model shows a role dimension.** The commerce model gains `Supplier Country` (`via: Suppliers`, `pathName: supplier_country`), so client country (`Country Name`) and supplier country appear in one query, each from its own join of `Countries`. Before, the secondary `supplier_country` path could only replace the client country through `usePathNames`. An execution test checks the role query against SQL written by hand from the seed schema.
+
 ## [2.31.0] - 2026-09-24
 
 ### Added

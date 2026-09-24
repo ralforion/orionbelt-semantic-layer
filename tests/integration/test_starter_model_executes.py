@@ -100,6 +100,44 @@ def test_the_named_secondary_path_changes_the_answer(model, seed: Path) -> None:
     assert via_client != via_supplier, "the secondary path made no difference"
 
 
+def test_client_and_supplier_country_in_one_query(model, seed: Path) -> None:
+    """The role dimension joins Countries a second time, next to the client's.
+
+    Checked against SQL written by hand from the schema, so the two joins of
+    ``countries`` are proven to read different rows rather than one alias twice.
+    """
+    rows = _execute(
+        model,
+        seed,
+        {
+            "select": {
+                "dimensions": ["Country Name", "Supplier Country"],
+                "measures": ["Total Sales"],
+            }
+        },
+    )
+    con = duckdb.connect(str(seed), read_only=True)
+    try:
+        expected = con.execute(
+            "SELECT cc.countryname, sc.countryname, SUM(s.salesamount)"
+            " FROM orionbelt_1.sales s"
+            " LEFT JOIN orionbelt_1.clients c ON s.salesclient = c.clientid"
+            " LEFT JOIN orionbelt_1.countries cc ON c.clientcountryid = cc.countryid"
+            " LEFT JOIN orionbelt_1.products p ON s.product = p.productid"
+            " LEFT JOIN orionbelt_1.suppliers su ON p.productsuppl = su.supplierid"
+            " LEFT JOIN orionbelt_1.countries sc ON su.suppliercountryid = sc.countryid"
+            " GROUP BY 1, 2"
+        ).fetchall()
+    finally:
+        con.close()
+
+    def rounded(result: list) -> list:
+        return sorted((r[0], r[1], round(float(r[2]), 2)) for r in result)
+
+    assert rounded(rows) == rounded(expected), "role query differs from the hand-written join"
+    assert any(r[0] != r[1] for r in rows), "every client country equals its supplier country"
+
+
 def test_filter_context_ignores_the_query_filter(model, seed: Path) -> None:
     """Unfiltered Sales reads one grand total whatever the WHERE says."""
     rows = _execute(
