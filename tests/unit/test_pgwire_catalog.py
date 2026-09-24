@@ -572,3 +572,51 @@ class TestEveryDataTypeMaps:
             precision, scale = ((mod - 4) >> 16) & 0xFFFF, (mod - 4) & 0xFFFF
             expected = label[len("decimal(") : -1].split(",")
             assert (precision, scale) == (int(expected[0]), int(expected[1])), label
+
+
+class TestCatalogIsolation:
+    """The catalog connection answers from memory and reaches nothing else.
+
+    Clients send it SQL of their own (catalog probes, BI temp-table checks),
+    so it must not read or write files, attach databases, or load
+    extensions, and a client must not be able to switch that back on.
+    """
+
+    def test_files_are_out_of_reach(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import duckdb
+
+        source = tmp_path / "outside.txt"
+        source.write_text("outside the catalog\n")
+        target = tmp_path / "written.csv"
+        emu = CatalogEmulator()
+        for sql in (
+            f"SELECT * FROM read_text('{source}')",
+            f"COPY (SELECT 1 AS a) TO '{target}'",
+            f"ATTACH '{tmp_path / 'other.duckdb'}' AS other",
+        ):
+            with pytest.raises(duckdb.Error):
+                emu.execute(sql)
+        assert not target.exists()
+        assert not (tmp_path / "other.duckdb").exists()
+
+    def test_isolation_cannot_be_switched_back_on(self) -> None:
+        import duckdb
+
+        emu = CatalogEmulator()
+        with pytest.raises(duckdb.Error):
+            emu.execute("SET enable_external_access = true")
+        with pytest.raises(duckdb.Error):
+            emu.execute("SET lock_configuration = false")
+
+    def test_catalog_probes_and_temp_table_cycle_still_work(
+        self, manager_with_model: SessionManager
+    ) -> None:
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        tables = emu.execute("SELECT table_name FROM information_schema.tables")
+        assert ("model",) in [tuple(r) for r in tables.rows]
+        # The connect check Tableau runs: create, insert, read back, drop.
+        emu.execute('CREATE TEMP TABLE "#probe" (a INTEGER)')
+        emu.execute('INSERT INTO "#probe" VALUES (1)')
+        assert [tuple(r) for r in emu.execute('SELECT a FROM "#probe"').rows] == [(1,)]
+        emu.execute('DROP TABLE "#probe"')

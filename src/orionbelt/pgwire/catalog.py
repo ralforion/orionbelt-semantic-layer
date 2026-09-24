@@ -809,6 +809,14 @@ class CatalogEmulator:
                 self._con.execute(view_ddl)
         with contextlib.suppress(Exception):
             self._con.execute("USE memory")
+        # Clients reach this connection with SQL of their own: catalog
+        # probes, and the temp-table cycle BI tools run to check a
+        # connection. Everything it answers lives in memory, so it needs
+        # nothing outside the process, and must not offer it: no files,
+        # no network, no extensions. Locked, so a client cannot SET it back.
+        # Not suppressed: a catalog that could not be isolated must not run.
+        self._con.execute("SET enable_external_access = false")
+        self._con.execute("SET lock_configuration = true")
 
     # ------------------------------------------------------------------
     # Refresh — rebuild the in-memory schema from a SessionManager.
