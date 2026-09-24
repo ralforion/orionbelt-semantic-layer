@@ -107,6 +107,18 @@ def _writes_only_temp_tables(stmt: exp.Expr) -> bool:
     )
 
 
+def _is_statement_local(table: exp.Table, scope: Scope) -> bool:
+    """Whether *table* reads a CTE or derived table of this statement.
+
+    Sources are keyed by alias, so the lookup is by ``alias_or_name``: looked
+    up by bare name, ``main.sqlite_master AS s`` matched a CTE called
+    ``sqlite_master`` and passed as local. A qualified name is never a CTE.
+    """
+    if table.db or table.catalog:
+        return False
+    return isinstance(scope.sources.get(table.alias_or_name), Scope)
+
+
 def _relation_rejection(stmt: exp.Expr, model_schemas: set[str]) -> str | None:
     """Reject any FROM/JOIN source that is not the catalog, an OBSL object or a temp table.
 
@@ -133,7 +145,7 @@ def _relation_rejection(stmt: exp.Expr, model_schemas: set[str]) -> str | None:
         return "the statement could not be analysed for the catalog"
     for scope in scopes:
         for table in scope.tables:
-            if isinstance(scope.sources.get(table.name), Scope):
+            if _is_statement_local(table, scope):
                 continue  # a CTE or derived table defined within this statement
             if not _relation_allowed(table, model_schemas):
                 return (

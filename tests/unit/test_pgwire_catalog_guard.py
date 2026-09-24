@@ -30,6 +30,7 @@ ACCEPTED = [
     'SELECT * FROM "orionbelt"."commerce"."dimensions"',
     "SELECT * FROM commerce._measures_metadata",
     "SELECT name FROM metrics",
+    "WITH c AS (SELECT nspname FROM pg_namespace) SELECT x.nspname FROM c AS x",
     "WITH a AS (SELECT nspname FROM pg_namespace), b AS (SELECT * FROM a) SELECT * FROM b",
     "SELECT nspname FROM pg_namespace "
     "UNION ALL SELECT schema_name FROM information_schema.schemata",
@@ -48,6 +49,9 @@ REJECTED = [
     "SELECT * FROM read_csv('/etc/passwd')",
     "WITH unused AS (WITH sqlite_master AS (SELECT 1) SELECT 1) SELECT * FROM sqlite_master",
     'INSERT INTO "#probe" SELECT * FROM sqlite_master',
+    "WITH sqlite_master AS (SELECT 1) "
+    "SELECT s.type FROM main.sqlite_master AS s CROSS JOIN pg_namespace LIMIT 1",
+    "WITH sqlite_master AS (SELECT 1) SELECT * FROM sqlite_master AS s, main.sqlite_master",
     "SELECT * FROM commerce.not_an_obsl_object",
     "SELECT * FROM warehouse.sales",
     "SELECT * FROM sales",
