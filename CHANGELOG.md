@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.31.2] - 2026-09-25
+
 ### Fixed
 
 - **The OBML reference documents `pathName`.** `GET /v1/reference/obml`, the text MCP and LLM clients author models from, had no word on secondary joins or role dimensions, so an agent could not write a `pathName`-pinned dimension from it. It now shows a secondary join with `pathName`, two role dimensions reading one data object through different joins in one query, how that differs from the query-level `usePathNames`, and the `INVALID_DIMENSION_PATH` / `AMBIGUOUS_VIA` codes.
