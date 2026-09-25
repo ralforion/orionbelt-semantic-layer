@@ -50,6 +50,7 @@ from orionbelt.api.routers import (
     sessions,
     shortcuts,
 )
+from orionbelt.api.routers import lineage as lineage_router
 from orionbelt.api.routers import (
     models as models_router,
 )
@@ -673,6 +674,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(model_api.router, prefix="/sessions", tags=["model-discovery"])
     v1.include_router(composables.router, prefix="/sessions", tags=["model-discovery"])
     v1.include_router(rules_router.router, prefix="/sessions", tags=["rules"])
+    v1.include_router(lineage_router.router, prefix="/sessions", tags=["lineage"])
     v1.include_router(graph.router, prefix="/sessions", tags=["graph"])
     v1.include_router(shortcuts.router, tags=["model-discovery"])
     v1.include_router(convert.router, prefix="/convert", tags=["convert"])

@@ -51,6 +51,8 @@ class ExplainCflLeg:
     reason: str
     measures: list[str]
     joins: list[str]
+    #: The leg's joins with their columns, as ``ExplainJoin`` steps.
+    join_steps: list[ExplainJoin] = field(default_factory=list)
 
 
 @dataclass
@@ -433,6 +435,19 @@ class CompilationPipeline:
                     reason=leg.reason,
                     measures=leg.measures,
                     joins=leg.joins,
+                    join_steps=[
+                        ExplainJoin(
+                            from_object=step.from_object,
+                            to_object=step.to_object,
+                            join_columns=[
+                                f"{fc} = {tc}"
+                                for fc, tc in zip(step.from_columns, step.to_columns, strict=True)
+                            ],
+                            reason=f"CFL leg of {q(leg.measure_source)}",
+                            cardinality=step.cardinality.value,
+                        )
+                        for step in leg.join_steps
+                    ],
                 )
             )
 

@@ -16,7 +16,7 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler.anchored import conformed_join_type, plan_conformed_facts
-from orionbelt.compiler.graph import JoinGraph
+from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.nested import emit_join_step
 from orionbelt.compiler.resolution import (
@@ -109,6 +109,8 @@ class CflLegInfo:
     reason: str
     measures: list[str]
     joins: list[str]
+    #: The same joins as ``joins``, as the planner's steps.
+    join_steps: list[JoinStep] = field(default_factory=list)
 
 
 @dataclass

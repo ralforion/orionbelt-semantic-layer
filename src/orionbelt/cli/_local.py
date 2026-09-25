@@ -41,6 +41,7 @@ from orionbelt.service.model_store import (
 
 if TYPE_CHECKING:
     from orionbelt.obsl.sparql import SPARQLResult
+    from orionbelt.service.lineage import Lineage
 
 
 class CliError(Exception):
@@ -358,6 +359,41 @@ def run_rules(
         outcome.columns = [c.name for c in executed.columns]
         outcome.rows = executed.rows
     return resolved_dialect, outcomes
+
+
+def lineage(
+    model_yaml: str,
+    kind: str,
+    name: str | None = None,
+    *,
+    query: QueryObject | None = None,
+    sql: str | None = None,
+    dialect: str | None = None,
+) -> tuple[Lineage, str]:
+    """Lineage of a model artefact or a query, and the model id its IRIs use.
+
+    *kind* is ``dimension``, ``measure``, ``metric``, ``rule`` or ``query``. A
+    query comes as a query document or an OBSQL string; it is compiled so its
+    lineage includes the joins the planner chose.
+    """
+    from orionbelt.service.lineage import LineageBuilder, LineageError, query_joins
+
+    store, model_id, model = _load(model_yaml)
+    builder = LineageBuilder(model)
+    if kind == "query":
+        q = query if query is not None else _translate(model, str(sql))
+        compiled = _compile(store, model_id, q, resolve_dialect(model, dialect))
+        return builder.query(q, query_joins(compiled)), model_id
+    build = {
+        "dimension": builder.dimension,
+        "measure": builder.measure,
+        "metric": builder.metric,
+        "rule": builder.rule,
+    }[kind]
+    try:
+        return build(str(name)), model_id
+    except LineageError as exc:
+        raise CliError(str(exc)) from None
 
 
 def _converter_module() -> types.ModuleType:

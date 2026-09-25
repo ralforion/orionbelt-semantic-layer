@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -663,6 +665,117 @@ def graph(
 
         turtle = _guarded(lambda: _local.graph(model_yaml))
     _emit_text(turtle, output)
+
+
+class LineageOutput(enum.StrEnum):
+    """Output format for the ``lineage`` command."""
+
+    mermaid = "mermaid"
+    markdown = "markdown"
+    json = "json"
+    turtle = "turtle"
+
+
+#: The format an ``-o`` path implies when ``-f`` is not given.
+_LINEAGE_SUFFIXES = {
+    ".md": LineageOutput.markdown,
+    ".json": LineageOutput.json,
+    ".ttl": LineageOutput.turtle,
+    ".mmd": LineageOutput.mermaid,
+}
+
+
+@app.command()
+def lineage(
+    model: ModelArgOpt = None,
+    dimension: Annotated[
+        str | None, typer.Option("--dimension", help="Lineage of this dimension.")
+    ] = None,
+    measure: Annotated[
+        str | None, typer.Option("--measure", help="Lineage of this measure.")
+    ] = None,
+    metric: Annotated[str | None, typer.Option("--metric", help="Lineage of this metric.")] = None,
+    rule: Annotated[str | None, typer.Option("--rule", "-r", help="Lineage of this rule.")] = None,
+    query: QueryOpt = None,
+    sql: SqlOpt = None,
+    dialect: DialectOpt = None,
+    fmt: Annotated[
+        LineageOutput | None,
+        typer.Option(
+            "--format",
+            "-f",
+            help="mermaid (default), markdown (a ```mermaid fence), json, or turtle "
+            "(OBSL graph IRIs linked by prov:wasDerivedFrom).",
+        ),
+    ] = None,
+    output: OutputOpt = None,
+    server: ServerOpt = None,
+    api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
+) -> None:
+    """Show what a dimension, measure, metric, rule or query is built from.
+
+    Give exactly one of --dimension, --measure, --metric, --rule, -q (a query
+    document) or --sql (OBSQL). The graph follows references down to the tables,
+    and a query's lineage includes the joins the planner chose. Without -f, an
+    -o path ending in .md, .json or .ttl picks the format.
+    """
+    targets = [
+        (kind, value)
+        for kind, value in (
+            ("dimension", dimension),
+            ("measure", measure),
+            ("metric", metric),
+            ("rule", rule),
+            ("query", query or sql),
+        )
+        if value
+    ]
+    if len(targets) != 1 or (query and sql):
+        raise _fail("Give exactly one of --dimension, --measure, --metric, --rule, -q or --sql.")
+    kind, name = targets[0]
+    suffix = Path(output).suffix.lower() if output else ""
+    chosen = fmt or _LINEAGE_SUFFIXES.get(suffix, LineageOutput.mermaid)
+    q = _io.load_query(query) if query else None
+
+    model_yaml = _local_model(model, server, "trace lineage")
+    if model_yaml is None:
+        if sql:
+            raise _fail("--sql needs a local MODEL. With --server, pass the query with -q.")
+        client = _remote_client(str(server), api_key, client_cert, client_key, ca_cert)
+        api_format = "mermaid" if chosen is LineageOutput.markdown else chosen.value
+        data = _guarded(lambda: client.lineage(kind, name, api_format, query=q, dialect=dialect))
+        text = (
+            json.dumps(data, indent=2, ensure_ascii=False)
+            if chosen is LineageOutput.json
+            else str(data)
+        )
+    else:
+        from orionbelt.cli import _local
+        from orionbelt.service.lineage import to_turtle
+
+        graph, model_id = _guarded(
+            lambda: _local.lineage(
+                model_yaml,
+                kind,
+                name if kind != "query" else None,
+                query=q,
+                sql=sql,
+                dialect=dialect,
+            )
+        )
+        if chosen is LineageOutput.json:
+            payload = {**dataclasses.asdict(graph), "mermaid": graph.to_mermaid()}
+            text = json.dumps(payload, indent=2, ensure_ascii=False)
+        elif chosen is LineageOutput.turtle:
+            text = to_turtle(graph, model_id)
+        else:
+            text = graph.to_mermaid()
+    if chosen is LineageOutput.markdown:
+        text = f"```mermaid\n{text.rstrip()}\n```"
+    _emit_text(text, output)
 
 
 @app.command()

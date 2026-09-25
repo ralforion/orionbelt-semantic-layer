@@ -54,10 +54,12 @@ from orionbelt.ui.handlers import (
     execute_query,
     filter_and_execute,
     filter_chip_update,
+    lineage_names,
     load_example_query,
     load_rules,
     model_example_choices,
     model_jump_targets,
+    render_lineage,
     rule_definition,
     run_sparql,
     select_rule,
@@ -473,6 +475,35 @@ _CSS = """\
 #er-diagram svg .er.relationshipLabel {
   font-family: Helvetica, Arial, sans-serif !important;
 }
+/* ── Ontology Graph controls: the two action buttons stay compact ── */
+.onto-actions {
+  flex: 0 0 auto !important;
+  flex-wrap: nowrap !important;
+  align-self: center;
+  gap: 8px !important;
+  width: auto !important;
+  min-width: 0 !important;
+}
+/* ── Lineage tab ── */
+#lineage-diagram {
+  overflow: auto;
+  border: 1px solid var(--border-color-primary);
+  border-radius: 8px;
+  padding: 8px;
+  height: calc(100dvh - 220px); /* pre-script fallback: _fit_head() sizes it live */
+  min-height: 400px;
+}
+/* Node labels are HTML inside the SVG, so Gradio's Markdown text colour
+   would paint them with the page colour (white in dark mode, on light node
+   fills). Let them take the colour the diagram's classDef gives the node,
+   and the font Mermaid measured them with. */
+#lineage-diagram svg p,
+#lineage-diagram svg span,
+#lineage-diagram svg small {
+  color: inherit !important;
+  font-family: Helvetica, Arial, sans-serif !important;
+  margin: 0 !important;
+}
 /* ── Ontology Graph tab ── */
 #ob-ontology-graph-container {
   overflow: auto;
@@ -680,7 +711,7 @@ _CSS = """\
   .picker-dropdown { width: 100% !important; min-width: 0 !important; }
 
   /* Diagram/graph canvases: fit the smaller viewport */
-  #er-diagram { height: 60dvh !important; min-height: 300px !important; }
+  #er-diagram, #lineage-diagram { height: 60dvh !important; min-height: 300px !important; }
 
   /* Smaller type on phones to fit more on screen */
   .gradio-container { font-size: 13px !important; }
@@ -1291,9 +1322,11 @@ def _mermaid_head() -> str:
   document.head.appendChild(el);
   window.mermaid.initialize({{ startOnLoad: false }});
   window.__obRenderMermaid = async function () {{
-    var nodes = document.querySelectorAll("#er-diagram .mermaid:not([data-processed])");
+    var nodes = document.querySelectorAll(
+      "#er-diagram .mermaid:not([data-processed]), #lineage-diagram .mermaid:not([data-processed])"
+    );
     if (nodes.length) {{ await window.mermaid.run({{ nodes: nodes }}); }}
-    return document.querySelectorAll("#er-diagram svg").length;
+    return document.querySelectorAll("#er-diagram svg, #lineage-diagram svg").length;
   }};
 }})();
 </script>
@@ -2488,14 +2521,24 @@ def create_blocks(
                         scale=2,
                         min_width=240,
                     )
-                    # Stacked at the right of the controls: render above, export below.
-                    with gr.Column(scale=1, min_width=160):
+                    # Small and side by side at the right of the controls. They
+                    # keep their own width when a narrow window wraps the row.
+                    with gr.Row(elem_classes=["onto-actions"]):
                         ontology_btn = gr.Button(
                             "Render Graph",
                             variant="primary",
+                            size="sm",
+                            scale=0,
+                            min_width=110,
                             elem_classes=["purple-btn"],
                         )
-                        export_onto_btn = gr.Button("Export Onto", elem_classes=["green-btn"])
+                        export_onto_btn = gr.Button(
+                            "Export Onto",
+                            size="sm",
+                            scale=0,
+                            min_width=100,
+                            elem_classes=["green-btn"],
+                        )
 
                 ontology_output = gr.HTML(
                     value=(
@@ -2553,6 +2596,79 @@ def create_blocks(
                     inputs=[obsl_turtle_state],
                     js=_DOWNLOAD_TTL_JS,
                 )
+
+            with gr.Tab("Lineage", id=7) as lineage_tab:
+                # What an artefact or the current query is built from, down to
+                # the tables. "Query" (the default) traces the query editor's
+                # query. ``allow_custom_value``: the name choices are filled per
+                # type after load, and Gradio would otherwise reject a pick
+                # held from before a server restart; the API checks the name.
+                with gr.Row():
+                    lineage_type = gr.Dropdown(
+                        choices=["Query", "Dimension", "Measure", "Metric", "Rule"],
+                        value="Query",
+                        label="Lineage of",
+                        interactive=True,
+                        scale=1,
+                    )
+                    lineage_name = gr.Dropdown(
+                        choices=[],
+                        value=None,
+                        label="Name",
+                        interactive=True,
+                        allow_custom_value=True,
+                        visible=False,
+                        scale=3,
+                    )
+                lineage_theme = gr.Textbox(value="dark", visible=False)
+                lineage_output = gr.Markdown(
+                    value="*The lineage of the current query appears here.*",
+                    elem_id="lineage-diagram",
+                    elem_classes=["ob-fit-box"],
+                )
+
+                _render_lineage_js = """() => {
+                    let tries = 0;
+                    const t = setInterval(async () => {
+                        if (window.__obRenderMermaid) { await window.__obRenderMermaid(); }
+                        if (document.querySelector('#lineage-diagram svg') || ++tries > 30) {
+                            clearInterval(t);
+                        }
+                    }, 100);
+                }"""
+                _lineage_inputs = [
+                    model_input,
+                    query_input,
+                    lineage_type,
+                    lineage_name,
+                    dialect,
+                    api_url,
+                    session_state,
+                    model_state,
+                    lineage_theme,
+                ]
+                _lineage_outputs = [lineage_output, session_state, model_state]
+
+                def _render_on(event: Any) -> None:
+                    event(
+                        fn=render_lineage,
+                        inputs=_lineage_inputs,
+                        outputs=_lineage_outputs,
+                        js=_DETECT_THEME_JS,
+                    ).then(fn=None, js=_render_lineage_js)
+
+                _render_on(lineage_tab.select)
+                _render_on(lineage_name.input)
+                lineage_type.input(
+                    fn=lineage_names,
+                    inputs=[model_input, lineage_type, api_url, session_state, model_state],
+                    outputs=[lineage_name, session_state, model_state],
+                ).then(
+                    fn=render_lineage,
+                    inputs=_lineage_inputs,
+                    outputs=_lineage_outputs,
+                    js=_DETECT_THEME_JS,
+                ).then(fn=None, js=_render_lineage_js)
 
             with gr.Tab("Business Rules", id=6) as rules_tab:
                 rules_stats = gr.Markdown(

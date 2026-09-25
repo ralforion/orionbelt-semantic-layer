@@ -1283,6 +1283,47 @@ Return a single example by name, with the full query payload and a best-effort c
 
 ---
 
+## Lineage
+
+What a dimension, measure, metric, rule or query is built from, followed down to the tables it reads. Names are looked up per artefact type, because a rule may share its name with a measure, so each type has its own route.
+
+| Lineage of | Endpoint |
+|---|---|
+| Dimension | `GET /v1/sessions/{session_id}/models/{model_id}/dimensions/{name}/lineage` |
+| Measure | `GET /v1/sessions/{session_id}/models/{model_id}/measures/{name}/lineage` |
+| Metric | `GET /v1/sessions/{session_id}/models/{model_id}/metrics/{name}/lineage` |
+| Rule | `GET /v1/sessions/{session_id}/models/{model_id}/rules/{name}/lineage` |
+| Query | `POST /v1/sessions/{session_id}/query/lineage`, body like `query/sql` |
+
+A query is compiled first, so its lineage includes the joins the planner chose, across every leg of a multi-fact query. An unknown name is a `404`; a query that does not resolve is a `422`, as at `query/sql`.
+
+What each artefact depends on:
+
+| Artefact | Sources |
+|---|---|
+| Dimension | Its column; the `via` data object |
+| Measure | Its columns or expression columns; filter columns (`filter`); `withinGroup` column (`order`); grain-override dimensions (`grain`); `anchor` data object; a synthesized count reads its data object's rows (`rows`) |
+| Metric | The measures and metrics its expression names; for cumulative and window metrics the measure plus the time (`time`) and partition (`partition`) dimensions |
+| Rule | The fields its condition reads (`condition`), the rules it references (`rule`), its grain dimensions (`grain`) |
+| Query | Its dimensions, measures and metrics; `where`, `having` and `order` fields; the planner's joins between data objects (`join on ...`) |
+
+A computed column depends on the columns its expression reads (`expression`).
+
+**`format` query parameter:**
+
+| Value | Response |
+|---|---|
+| `json` (default) | `root`, `nodes` (`id`, `kind`, `name`, `detail`), `edges` (`source`, `target`, `label`) and `mermaid` |
+| `mermaid` | The Mermaid flowchart as `text/vnd.mermaid` |
+| `turtle` | `text/turtle` over the same IRIs as the model's [OBSL graph](#obsl-graph-sparql), so the two merge; each edge is `target prov:wasDerivedFrom source` (W3C PROV), and a query is a `prov:Entity` derived from the joins it used |
+
+```bash
+curl "http://127.0.0.1:8000/v1/metrics/Gross%20Margin/lineage?format=mermaid"
+curl -X POST "http://127.0.0.1:8000/v1/query/lineage?format=turtle" \
+  -H "Content-Type: application/json" \
+  -d '{"select": {"dimensions": ["Country Name"], "measures": ["Total Sales"]}}'
+```
+
 ## OBSL Graph & SPARQL
 
 ### `GET /v1/sessions/{session_id}/models/{model_id}/graph`
@@ -1487,6 +1528,8 @@ Returns **404** if no sessions exist, **409 Conflict** if multiple sessions or m
 | `POST /v1/rules/{name}/compile` | `POST /v1/sessions/{id}/models/{mid}/rules/{name}/compile` |
 | `POST /v1/rules/compile` | `POST /v1/sessions/{id}/models/{mid}/rules/compile` |
 | `POST /v1/rules/{name}/evaluate` | `POST /v1/sessions/{id}/models/{mid}/rules/{name}/evaluate` |
+| `GET /v1/{dimensions,measures,metrics,rules}/{name}/lineage` | `GET /v1/sessions/{id}/models/{mid}/{type}/{name}/lineage` |
+| `POST /v1/query/lineage` | `POST /v1/sessions/{id}/query/lineage` |
 | `POST /v1/rules/evaluate` | `POST /v1/sessions/{id}/models/{mid}/rules/evaluate` |
 | `GET /v1/graph` | `GET /v1/sessions/{id}/models/{mid}/graph` |
 | `POST /v1/sparql` | `POST /v1/sessions/{id}/models/{mid}/sparql` |

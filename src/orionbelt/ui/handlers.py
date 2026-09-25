@@ -25,6 +25,7 @@ from orionbelt.ui.api_client import (
     _ensure_session_and_model,
     _fetch_settings,
     _format_api_errors,
+    _model_request,
     _ModelValidationError,
 )
 from orionbelt.ui.rendering import _format_sql
@@ -1626,3 +1627,107 @@ def rule_definition(
     if body is None:
         return gr.update(value=f"# {error}", visible=True), session_state, model_state
     return gr.update(value=rule_definition_yaml(body), visible=True), session_state, model_state
+
+
+# ---------------------------------------------------------------------------
+# Lineage tab
+# ---------------------------------------------------------------------------
+
+#: The lineage tab's type choices, and the API collection each one lives in.
+LINEAGE_TYPES = {
+    "Query": "query",
+    "Dimension": "dimensions",
+    "Measure": "measures",
+    "Metric": "metrics",
+    "Rule": "rules",
+}
+
+
+def lineage_names(
+    model_yaml: str,
+    lineage_type: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[Any, dict[str, str] | None, dict[str, str] | None]:
+    """The name picker for *lineage_type*: its choices, first one selected.
+
+    Names come from the API rather than the YAML, so they are exactly what the
+    lineage endpoints accept, synthesized counts included. The picker hides
+    for "Query", which shows the query editor's current query.
+    """
+    collection = LINEAGE_TYPES.get(lineage_type, "query")
+    if collection == "query":
+        return gr.update(visible=False, value=None), session_state, model_state
+    body, error, session_state, model_state = _model_request(
+        model_yaml,
+        api_url,
+        session_state,
+        model_state,
+        "GET",
+        f"/v1/sessions/{{session_id}}/models/{{model_id}}/{collection}",
+    )
+    if body is None:
+        return gr.update(visible=True, choices=[], value=None), session_state, model_state
+    items = body.get("rules", []) if isinstance(body, dict) else body
+    names = [item["name"] for item in items]
+    return (
+        gr.update(visible=True, choices=names, value=names[0] if names else None),
+        session_state,
+        model_state,
+    )
+
+
+def render_lineage(
+    model_yaml: str,
+    query_yaml: str,
+    lineage_type: str,
+    name: str | None,
+    dialect: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+    theme: str = "dark",
+) -> tuple[str, dict[str, str] | None, dict[str, str] | None]:
+    """The lineage of the picked artefact, or of the current query, as Mermaid markdown."""
+    collection = LINEAGE_TYPES.get(lineage_type, "query")
+    if collection == "query":
+        try:
+            query = yaml.safe_load(query_yaml or "")
+        except yaml.YAMLError as exc:
+            return f"*Invalid query YAML:* {exc}", session_state, model_state
+        if isinstance(query, dict) and "query" in query and "select" not in query:
+            query = query["query"]
+        if not isinstance(query, dict):
+            return "*The query editor holds no query.*", session_state, model_state
+        body, error, session_state, model_state = _model_request(
+            model_yaml,
+            api_url,
+            session_state,
+            model_state,
+            "POST",
+            "/v1/sessions/{session_id}/query/lineage",
+            payload={"model_id": None, "query": query, "dialect": dialect or None},
+        )
+    elif not name:
+        return f"*Pick a {lineage_type.lower()}.*", session_state, model_state
+    else:
+        from urllib.parse import quote
+
+        body, error, session_state, model_state = _model_request(
+            model_yaml,
+            api_url,
+            session_state,
+            model_state,
+            "GET",
+            f"/v1/sessions/{{session_id}}/models/{{model_id}}/{collection}/"
+            f"{quote(name, safe='')}/lineage",
+        )
+    if body is None:
+        return f"**Lineage unavailable:** {error}", session_state, model_state
+    init = (
+        f"%%{{init: {{'theme': '{theme}', "
+        "'themeVariables': {'fontFamily': 'Helvetica, Arial, sans-serif'}}}%%"
+    )
+    mermaid = f"{init}\n{body['mermaid']}"
+    return f"```mermaid\n{mermaid}\n```", session_state, model_state

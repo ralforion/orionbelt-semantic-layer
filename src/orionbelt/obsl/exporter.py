@@ -90,6 +90,26 @@ def _rule_uri(model_id: str, name: str) -> URIRef:
     return URIRef(f"{BASE}{model_id}/rule/{_slug(name)}")
 
 
+def artefact_uri(model_id: str, kind: str, name: str, data_object: str = "") -> URIRef:
+    """The IRI the OBSL graph gives an artefact, so other exports can link to it.
+
+    *kind* is ``data_object``, ``column`` (with its *data_object*), ``dimension``,
+    ``measure``, ``metric``, ``rule`` or ``join`` (from *data_object* to *name*).
+    """
+    if kind == "column":
+        return _column_uri(model_id, data_object, name)
+    if kind == "join":
+        return _join_uri(model_id, data_object, name)
+    build = {
+        "data_object": _data_object_uri,
+        "dimension": _dimension_uri,
+        "measure": _measure_uri,
+        "metric": _metric_uri,
+        "rule": _rule_uri,
+    }[kind]
+    return build(model_id, name)
+
+
 def _concept_mapping_uri(subject_uri: URIRef, target_iri: str) -> URIRef:
     """Deterministic IRI for a mapping's provenance resource.
 

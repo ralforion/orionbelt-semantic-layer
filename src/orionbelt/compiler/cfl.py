@@ -750,6 +750,7 @@ class CFLPlanner:
                     reason=leg_reason,
                     measures=[m.name for m in measures],
                     joins=leg_join_strs,
+                    join_steps=list(steps) if join_targets else [],
                 )
             )
 

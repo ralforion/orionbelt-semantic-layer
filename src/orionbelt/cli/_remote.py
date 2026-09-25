@@ -280,6 +280,31 @@ class RemoteClient:
         """Run a read-only SPARQL query against the server's curated model graph."""
         return cast("dict[str, Any]", self._post("/sparql", {"query": query}))
 
+    def lineage(
+        self,
+        kind: str,
+        name: str | None,
+        fmt: str,
+        *,
+        query: QueryObject | None = None,
+        dialect: str | None = None,
+    ) -> Any:
+        """Lineage from the curated model: JSON as a dict, Mermaid or Turtle as text.
+
+        *kind* is ``dimension``, ``measure``, ``metric``, ``rule`` or ``query``.
+        """
+        text = fmt != "json"
+        if kind == "query":
+            assert query is not None
+            params: dict[str, Any] = {"format": fmt}
+            if dialect:
+                params["dialect"] = dialect
+            return self._request(
+                "POST", "/query/lineage", json=self._query_body(query), params=params, text=text
+            )
+        path = f"/{kind}s/{quote(str(name), safe='')}/lineage"
+        return self._request("GET", path, params={"format": fmt}, text=text)
+
     # -- business rules -----------------------------------------------------
     #
     # The rules endpoints answer in several shapes; each method maps its answer
