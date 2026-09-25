@@ -23,7 +23,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-_SIMPLE_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _MEASURE_REF = re.compile(r"\{\[([^\]]+)\]\}")
 _COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
 
@@ -69,9 +68,12 @@ class NotPortableError(Exception):
 
 
 def sql_ident(name: str) -> str:
-    """Render *name* as an identifier, double-quoting it when it is not plain."""
-    if _SIMPLE_IDENT.match(name):
-        return name
+    """Render *name* as a double-quoted identifier.
+
+    Always quoted: a plain-looking name can still be a reserved word (a data
+    object called ``Order``), and a quoted identifier matches the Ossie dataset
+    or field name exactly, case included.
+    """
     return '"' + name.replace('"', '""') + '"'
 
 
@@ -172,10 +174,13 @@ class PortableRenderer:
         return self.column(ref.get("dataObject", ""), ref.get("column", ""))
 
     def _dimension(self, name: str) -> str:
+        """The dimension as the query groups by it, truncated to its ``timeGrain``."""
         dim = self.dimensions.get(name)
         if dim is None:
             raise NotPortableError(f"references unknown dimension '{name}'")
-        return self.column(dim.get("dataObject", ""), dim.get("column", ""))
+        column = self.column(dim.get("dataObject", ""), dim.get("column", ""))
+        grain = dim.get("timeGrain")
+        return f"DATE_TRUNC({_string_literal(grain)}, {column})" if grain else column
 
     def _expression(self, template: str) -> str:
         return _COLUMN_REF.sub(lambda m: self.column(m.group(1), m.group(2)), template)
@@ -298,6 +303,30 @@ class PortableRenderer:
         finally:
             self._resolving.discard(name)
 
+    def _has_window(self, name: str) -> bool:
+        """Whether the expression for *name* already contains a window call."""
+        if name in self.metrics:
+            met = self.metrics[name]
+            if met.get("type") in ("cumulative", "window"):
+                return True
+            refs = _MEASURE_REF.findall(met.get("expression") or "")
+            return any(self._has_window(r) for r in refs if r != name)
+        return bool(self.measures.get(name, {}).get("total"))
+
+    def _windowed(self, name: str, ref: str) -> str:
+        """The SQL for *ref*, which a window of metric *name* aggregates over.
+
+        Window calls cannot nest, so a reference that already carries one (a
+        grand total, or a cumulative or window metric) needs another query
+        layer that one expression does not have.
+        """
+        if self._has_window(ref):
+            raise NotPortableError(
+                f"metric '{name}' applies a window over '{ref}', which is itself a window; "
+                f"nested window calls need another query layer"
+            )
+        return self._reference(ref)
+
     def _reference(self, name: str) -> str:
         if name in self.metrics:
             return f"({self.metric(name)})"
@@ -326,7 +355,7 @@ class PortableRenderer:
         func = str(met.get("cumulativeType", "sum")).lower()
         if func not in _CUMULATIVE_FUNCS or not met.get("measure"):
             raise NotPortableError(f"metric '{name}' is an incomplete cumulative metric")
-        inner = self._reference(met["measure"])
+        inner = self._windowed(name, met["measure"])
         time = self._dimension(met.get("timeDimension", ""))
         partitions = self._partitions(met)
         frame = "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
@@ -346,7 +375,7 @@ class PortableRenderer:
         if func not in _WINDOW_FUNCS:
             raise NotPortableError(f"metric '{name}' has unknown windowFunction '{func}'")
         direction = "DESC" if str(met.get("orderDirection", "desc")).lower() == "desc" else "ASC"
-        inner = self._reference(met["measure"]) if met.get("measure") else None
+        inner = self._windowed(name, met["measure"]) if met.get("measure") else None
         time = self._dimension(met["timeDimension"]) if met.get("timeDimension") else None
 
         args: list[str] = []

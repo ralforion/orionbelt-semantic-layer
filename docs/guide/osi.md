@@ -53,15 +53,15 @@ Another OSI tool reads a metric's SQL expression, not OrionBelt's vendor extensi
 
 | OBML | Exported expression |
 |---|---|
-| Column reference | `<dataset>.<field>`: the data object name (quoted when it is not a plain identifier) and the column `code` |
+| Column reference | `"<dataset>"."<field>"`: the data object name and the column `code`, always quoted so a reserved word such as `Order` still parses |
 | Measure `filters` | `SUM(CASE WHEN <condition> THEN <arg> END)`, the spec's portable filtered aggregation |
 | Measure `total: true` | The grand-total window, e.g. `SUM(SUM(x)) OVER ()` |
 | Measure `defaultValue` | `COALESCE(<aggregate>, <value>)` |
 | Synthesized count (`"Orders Count"`) | `COUNT(<dataset>.<primary key>)` |
 | Metric referencing measures or metrics | The referenced SQL, inlined |
-| Cumulative and window metrics | The window over the aggregated measure, ordered by the time dimension's field |
+| Cumulative and window metrics | The window over the aggregated measure, ordered by the time dimension at its `timeGrain` (`DATE_TRUNC('month', ...)`) |
 
-Some OBML definitions depend on the query and have no faithful single expression: period-over-period metrics, and measures with `grain`, `filterContext` or `anchor`, plus anything that references them. The export leaves these out of the OSI metrics, warns about each, and keeps them whole in the model-level `ORIONBELT` extension, so OBML → OSI → OBML still restores them.
+Some OBML definitions depend on the query and have no faithful single expression: period-over-period metrics, measures with `grain`, `filterContext` or `anchor`, and cumulative or window metrics over something that is already a window (a `total: true` measure, or another cumulative or window metric), since window calls cannot nest. The same goes for anything that references them. The export leaves these out of the OSI metrics, warns about each, and keeps them whole in the model-level `ORIONBELT` extension, so OBML → OSI → OBML still restores them.
 
 The import reads both document shapes: the current flat Apache Ossie document, with the model at the root, and the earlier `semantic_model` array, which the export still writes while `0.2.0` is unreleased.
 

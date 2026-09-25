@@ -186,61 +186,82 @@ class TestReferencesResolve:
 
     def test_dataset_name_with_space_is_quoted(self) -> None:
         osi, _ = _export()
-        assert _sql(osi)["Sales"] == 'SUM("Order Lines".AMT)'
+        assert _sql(osi)["Sales"] == f"SUM({AMT})"
 
-    def test_sql_ident(self) -> None:
-        assert sql_ident("Orders") == "Orders"
+    def test_sql_ident_always_quotes(self) -> None:
+        assert sql_ident("Orders") == '"Orders"'
         assert sql_ident("Order Lines") == '"Order Lines"'
         assert sql_ident('a"b') == '"a""b"'
+
+    def test_reserved_word_data_object_parses(self) -> None:
+        obml = copy.deepcopy(_MODEL)
+        obml["dataObjects"]["Order"] = obml["dataObjects"].pop("Order Lines")
+        obml["measures"] = {
+            "Sales": {
+                "columns": [{"dataObject": "Order", "column": "Amount"}],
+                "resultType": "float",
+                "aggregation": "sum",
+            }
+        }
+        obml["dimensions"] = {}
+        obml["metrics"] = {}
+        osi, _ = _export(obml)
+        assert _sql(osi)["Sales"] == 'SUM("Order"."AMT")'
+        sqlglot.parse_one(_sql(osi)["Sales"])
+
+
+# Column references as the export writes them
+LINES = '"Order Lines"'
+AMT = f'{LINES}."AMT"'
+STATUS = f'{LINES}."STATUS"'
+COUNTRY = '"Customers"."COUNTRY"'
+MONTH = f"DATE_TRUNC('month', {LINES}.\"LINE_DT\")"
 
 
 class TestSemanticsSpelledOut:
     def test_measure_filters_become_case_when(self) -> None:
         osi, _ = _export()
         assert _sql(osi)["US Sales"] == (
-            "SUM(CASE WHEN Customers.COUNTRY = 'US' AND NOT ("
-            "(\"Order Lines\".STATUS IN ('void', 'it''s test')) OR "
-            "(\"Order Lines\".STATUS LIKE '%50\\%%' ESCAPE '\\')"
-            ') THEN "Order Lines".AMT END)'
+            f"SUM(CASE WHEN {COUNTRY} = 'US' AND NOT ("
+            f"({STATUS} IN ('void', 'it''s test')) OR "
+            f"({STATUS} LIKE '%50\\%%' ESCAPE '\\')"
+            f") THEN {AMT} END)"
         )
 
     def test_total_becomes_grand_total_window(self) -> None:
         osi, _ = _export()
-        assert _sql(osi)["Total Sales"] == 'SUM(SUM("Order Lines".AMT)) OVER ()'
+        assert _sql(osi)["Total Sales"] == f"SUM(SUM({AMT})) OVER ()"
 
     def test_avg_total_is_exact_and_default_applies(self) -> None:
         osi, _ = _export()
         assert _sql(osi)["Average Line"] == (
-            'COALESCE((SUM(SUM("Order Lines".AMT)) OVER () / '
-            'SUM(COUNT("Order Lines".AMT)) OVER ()), 0)'
+            f"COALESCE((SUM(SUM({AMT})) OVER () / SUM(COUNT({AMT})) OVER ()), 0)"
         )
 
     def test_count_distinct(self) -> None:
         osi, _ = _export()
-        assert _sql(osi)["Customers Reached"] == 'COUNT(DISTINCT "Order Lines".CUST_ID)'
+        assert _sql(osi)["Customers Reached"] == f'COUNT(DISTINCT {LINES}."CUST_ID")'
 
     def test_synthesized_count_is_inlined(self) -> None:
         osi, _ = _export()
-        assert _sql(osi)["Sales per Line"] == (
-            'SUM("Order Lines".AMT) / COUNT("Order Lines".LINE_ID)'
-        )
+        assert _sql(osi)["Sales per Line"] == f'SUM({AMT}) / COUNT({LINES}."LINE_ID")'
 
     def test_metric_on_metric_is_inlined(self) -> None:
         osi, _ = _export()
         assert _sql(osi)["US Share Pct"].startswith("(SUM(CASE WHEN")
         assert _sql(osi)["US Share Pct"].endswith(") * 100")
 
-    def test_cumulative_orders_by_the_time_field(self) -> None:
+    def test_cumulative_orders_by_the_truncated_time_dimension(self) -> None:
         osi, _ = _export()
         assert _sql(osi)["Running Sales"] == (
-            'SUM(SUM("Order Lines".AMT)) OVER (PARTITION BY Customers.COUNTRY '
-            'ORDER BY "Order Lines".LINE_DT ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)'
+            f"SUM(SUM({AMT})) OVER (PARTITION BY {COUNTRY} "
+            f"ORDER BY {MONTH} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
         )
 
     def test_window_metric(self) -> None:
         osi, _ = _export()
         assert _sql(osi)["Sales Rank"] == (
-            'RANK() OVER (PARTITION BY Customers.COUNTRY ORDER BY SUM("Order Lines".AMT) DESC)'
+            f"RANK() OVER (PARTITION BY {COUNTRY} ORDER BY SUM({AMT}) DESC)"
         )
 
     def test_databricks_delegation_is_tagged_databricks(self) -> None:
@@ -250,6 +271,67 @@ class TestSemanticsSpelledOut:
         osi, _ = _export(obml)
         dialect = osi["semantic_model"][0]["metrics"][0]["expression"]["dialects"][0]
         assert dialect == {"dialect": "DATABRICKS", "expression": 'MEASURE("Delegated")'}
+
+
+class TestExportedSqlRuns:
+    """Every exported metric runs in the query OrionBelt would group it by.
+
+    The datasets are aliased to their Ossie names, and the query groups by the
+    time dimension at its grain and the partition dimension, as OrionBelt does.
+    """
+
+    @staticmethod
+    def _connection() -> Any:
+        duckdb = pytest.importorskip("duckdb")
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE fct (LINE_ID VARCHAR, AMT DOUBLE, STATUS VARCHAR, "
+            "LINE_DT DATE, CUST_ID VARCHAR)"
+        )
+        con.execute("CREATE TABLE cust (ID VARCHAR, COUNTRY VARCHAR)")
+        con.execute(
+            "INSERT INTO fct VALUES ('1', 10, 'ok', DATE '2024-01-05', 'a'), "
+            "('2', 20, 'void', DATE '2024-02-05', 'b'), ('3', 5, '50% off', DATE '2024-02-06', 'a')"
+        )
+        con.execute("INSERT INTO cust VALUES ('a', 'US'), ('b', 'DE')")
+        return con
+
+    def test_every_exported_metric_executes(self) -> None:
+        con = self._connection()
+        osi, _ = _export()
+        for name, sql in _sql(osi).items():
+            (
+                con.execute(
+                    f"SELECT {MONTH}, {COUNTRY}, {sql} "
+                    f'FROM fct AS {LINES} LEFT JOIN cust AS "Customers" '
+                    f'ON {LINES}."CUST_ID" = "Customers"."ID" '
+                    f"GROUP BY {MONTH}, {COUNTRY}"
+                ).fetchall(),
+                name,
+            )
+
+    def test_window_over_a_window_is_left_out(self) -> None:
+        obml = copy.deepcopy(_MODEL)
+        obml["metrics"] = {
+            "Running Total": {
+                "type": "cumulative",
+                "measure": "Total Sales",
+                "timeDimension": "Line Date",
+            },
+            "Rank of Running": {
+                "type": "window",
+                "windowFunction": "rank",
+                "measure": "Running Sales",
+            },
+            "Running Sales": copy.deepcopy(_MODEL["metrics"]["Running Sales"]),
+        }
+        osi, warnings = _export(obml)
+        assert set(_sql(osi)) & {"Running Total", "Rank of Running"} == set()
+        assert "Running Sales" in _sql(osi)
+        for name in ("Running Total", "Rank of Running"):
+            assert any(name in w and "nested window" in w for w in warnings)
+        back = conv.OSItoOBML(osi).convert()
+        assert back["metrics"] == obml["metrics"]
 
 
 class TestNotPortableIsLeftOut:

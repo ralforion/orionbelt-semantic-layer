@@ -27,7 +27,7 @@
 - **OSI** uses snake_case codes everywhere (`name: "store_sales"`)
 - **OBML** supports dual naming — a display name as the dictionary key and a `code` for the physical SQL reference
 
-During OSI → OBML conversion, field names are used directly as both the display name and code. During OBML → OSI conversion, the `code` value becomes the OSI field `name`, and the OBML column name rides in the field's `custom_extensions` (`obml_column_name`) so the reverse trip restores it. Metric expressions reference columns as `<dataset>.<field>`: the OBML data object name (double-quoted when it is not a plain identifier) and the column code.
+During OSI → OBML conversion, field names are used directly as both the display name and code. During OBML → OSI conversion, the `code` value becomes the OSI field `name`, and the OBML column name rides in the field's `custom_extensions` (`obml_column_name`) so the reverse trip restores it. Metric expressions reference columns as `"<dataset>"."<field>"`: the OBML data object name and the column code, always double-quoted so reserved words parse and names match exactly. Cumulative and window metrics order and partition by each dimension at its `timeGrain` (`DATE_TRUNC`).
 
 ### 2.2 Relationship Placement
 
@@ -123,7 +123,7 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 - Dimension `via` / `pathName` (roles): preserved in field `custom_extensions` (`obml_dimension_via`, `obml_dimension_path_name`; inside `obml_extra_dimensions` for further dimensions over the same column)
 - Measure filters — written into the expression as `AGG(CASE WHEN <condition> THEN <arg> END)`, and preserved in metric `custom_extensions` (`obml_filters`)
 - Measure `total` — written into the expression as the grand-total window the compiler emits (`SUM(SUM(x)) OVER ()`; exact `SUM/COUNT` ratio for `AVG`), and preserved in metric `custom_extensions` (`obml_total`)
-- Measure `grain`, `filterContext` and `anchor`, and period-over-period metrics — depend on the query, so they have no faithful single expression. They are left out of the OSI metrics with a warning and kept whole in the model-level `custom_extensions` (`obml_unexported`); the reverse trip restores them
+- Measure `grain`, `filterContext` and `anchor`, period-over-period metrics, and cumulative or window metrics over a window (a `total` measure or another cumulative or window metric; window calls cannot nest) — depend on the query, so they have no faithful single expression. They are left out of the OSI metrics with a warning and kept whole in the model-level `custom_extensions` (`obml_unexported`); the reverse trip restores them
 - Measure `format` — preserved in metric `custom_extensions` (`obml_format`)
 - Measure `delimiter` — preserved in metric `custom_extensions` (`obml_delimiter`)
 - Measure `withinGroup` — preserved in metric `custom_extensions` (`obml_within_group`)
