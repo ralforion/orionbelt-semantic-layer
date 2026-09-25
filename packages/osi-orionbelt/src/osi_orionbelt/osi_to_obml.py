@@ -105,6 +105,23 @@ class OSItoOBML:
         # or an expression our parser cannot decompose). Preserved verbatim
         # rather than dropped — see ``_preserve_unconverted_metric``.
         self._unconverted_metrics: list[dict] = []
+        # Measures/metrics restored whole from an OBML definition stash; their
+        # column references already use OBML column names.
+        self._restored_names: set[str] = set()
+
+    def _models(self) -> list[dict]:
+        """The document's semantic models, in either document shape.
+
+        A current Apache Ossie document is one model at the root. Earlier
+        documents, including what this converter writes, wrap models in a
+        ``semantic_model`` array.
+        """
+        if "semantic_model" in self.osi:
+            models = self.osi.get("semantic_model")
+            return models if isinstance(models, list) else []
+        if "datasets" in self.osi:
+            return [self.osi]
+        return []
 
     def _normalize_legacy_v01(self) -> None:
         """Promote OSI v0.1.x payloads to the v0.2 shape, in place.
@@ -123,11 +140,7 @@ class OSItoOBML:
         if version and not version.startswith(("0.1", "0.0")):
             return  # already v0.2+ (or future) — nothing to do
 
-        models = self.osi.get("semantic_model", [])
-        if not isinstance(models, list):
-            return
-
-        for model in models:
+        for model in self._models():
             for ds in model.get("datasets", []) or []:
                 # Promote legacy primary_key / unique_keys from OBSL extras
                 # only if the dataset doesn't already declare them.
@@ -157,14 +170,15 @@ class OSItoOBML:
         # metrics). Both are populated as a side effect of conversion below.
         self.warnings = []
         self._unconverted_metrics = []
+        self._restored_names = set()
 
         # v0.1.x inputs need the legacy shim to promote pre-v0.2
         # custom_extensions into v0.2 first-class fields before we parse.
         self._normalize_legacy_v01()
 
-        models = self.osi.get("semantic_model", [])
+        models = self._models()
         if not models:
-            raise ValueError("No semantic_model found in OSI input")
+            raise ValueError("No semantic model found in OSI input")
 
         # Take the first semantic model (OBML is a single-model format)
         model = models[0]
@@ -256,6 +270,7 @@ class OSItoOBML:
                     if isinstance(ext_data.get("obml_rules"), dict):
                         obml["rules"] = ext_data["obml_rules"]
                     _restore_concept_links(ext_data, obml)
+                    self._restore_unexported(ext_data.get("obml_unexported"), obml)
                 except (json.JSONDecodeError, TypeError):
                     pass
                 break
@@ -263,7 +278,65 @@ class OSItoOBML:
         # Preserve third-party vendor extensions verbatim
         self._carry_foreign_extensions(model.get("custom_extensions"), obml)
 
+        self._restore_column_names(obml, datasets)
         return obml
+
+    def _restore_unexported(self, unexported: object, obml: dict[str, Any]) -> None:
+        """Restore measures and metrics the export left out for lack of a portable form."""
+        if not isinstance(unexported, dict):
+            return
+        for kind in ("measures", "metrics"):
+            entries = unexported.get(kind)
+            if not isinstance(entries, dict):
+                continue
+            target = obml.setdefault(kind, {})
+            for name, definition in entries.items():
+                if isinstance(definition, dict) and name not in target:
+                    target[name] = definition
+                    self._restored_names.add(name)
+
+    def _restore_column_names(self, obml: dict[str, Any], datasets: list) -> None:
+        """Rename columns from their OSI field name back to the OBML column name.
+
+        The export names each field by its physical code and keeps the OBML
+        column name in ``obml_column_name``. Measure filters and model filters
+        refer to columns by that name, so every column key and every reference
+        the import built from field names is renamed to match.
+        """
+        renames: dict[str, dict[str, str]] = {}
+        for ds in datasets:
+            for field in ds.get("fields", []) or []:
+                original = self._extract_obml_extras(field).get("obml_column_name")
+                if isinstance(original, str) and original != field.get("name"):
+                    renames.setdefault(ds["name"], {})[field["name"]] = original
+        if not renames:
+            return
+
+        def rename(data_object: str, column: str) -> str:
+            return renames.get(data_object, {}).get(column, column)
+
+        for do_name, do_obj in obml.get("dataObjects", {}).items():
+            do_obj["columns"] = {
+                rename(do_name, col): spec for col, spec in do_obj.get("columns", {}).items()
+            }
+            for join in do_obj.get("joins", []) or []:
+                join["columnsFrom"] = [rename(do_name, c) for c in join.get("columnsFrom", [])]
+                join["columnsTo"] = [
+                    rename(join.get("joinTo", ""), c) for c in join.get("columnsTo", [])
+                ]
+        for dim in obml.get("dimensions", {}).values():
+            dim["column"] = rename(dim.get("dataObject", ""), dim.get("column", ""))
+        for name, measure in obml.get("measures", {}).items():
+            if name in self._restored_names:
+                continue
+            for ref in measure.get("columns", []) or []:
+                ref["column"] = rename(ref.get("dataObject", ""), ref.get("column", ""))
+            if measure.get("expression"):
+                measure["expression"] = re.sub(
+                    r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}",
+                    lambda m: "{[" + m.group(1) + "].[" + rename(m.group(1), m.group(2)) + "]}",
+                    measure["expression"],
+                )
 
     @staticmethod
     def _carry_foreign_extensions(osi_exts: list[dict] | None, obml_target: dict[str, Any]) -> None:
@@ -904,6 +977,17 @@ class OSItoOBML:
 
             # Restore OBML-only properties from custom_extensions
             obml_extras = self._extract_obml_extras(m)
+
+            # An OBML-origin measure or metric carries its whole definition.
+            # Restore it rather than re-deriving it from the portable SQL, which
+            # spells out filters and totals that the definition holds as
+            # structure (re-parsing would apply them twice).
+            definition = obml_extras.get("obml_definition")
+            if isinstance(definition, dict):
+                kind = obml_extras.get("obml_definition_kind")
+                (metrics if kind == "metric" else measures)[name] = dict(definition)
+                self._restored_names.add(name)
+                continue
 
             # Check for cumulative metric stored in custom_extensions
             if obml_extras.get("obml_metric_type") == "cumulative":

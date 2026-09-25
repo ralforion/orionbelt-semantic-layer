@@ -46,10 +46,12 @@ class TestMetricRoundTripCodeVsName:
         },
     }
 
-    def test_emitter_uses_physical_code(self) -> None:
+    def test_emitter_references_dataset_name(self) -> None:
+        # Ossie resolves ``<dataset>.<field>``: the dataset is named after the
+        # OBML data object, not its physical table code.
         osi = conv.OBMLtoOSI(self._OBML).convert()
         sql = osi["semantic_model"][0]["metrics"][0]["expression"]["dialects"][0]["expression"]
-        assert "fact_orders" in sql  # confirms the emit side uses the code
+        assert sql == "SUM(Orders.amount)"
 
     def test_measure_survives_round_trip(self) -> None:
         osi = conv.OBMLtoOSI(self._OBML).convert()
@@ -60,7 +62,7 @@ class TestMetricRoundTripCodeVsName:
         assert "Revenue" in obml.get("measures", {}), obml.get("measures")
         rev = obml["measures"]["Revenue"]
         assert rev["aggregation"] == "sum"
-        assert rev["columns"] == [{"dataObject": "Orders", "column": "amount"}]
+        assert rev["columns"] == [{"dataObject": "Orders", "column": "Amount"}]
 
         # Nothing about Revenue should have leaked into an unconverted-metric stash.
         stashed = json.dumps(obml.get("customExtensions", []))
@@ -461,7 +463,7 @@ class TestMultipleDimensionsPerColumn:
         assert set(dims) == {"Order Day", "Order Month", "Order Quarter"}
         assert {d["timeGrain"] for d in dims.values()} == {"day", "month", "quarter"}
         # All three still point at the same physical column.
-        assert {d["column"] for d in dims.values()} == {"order_date"}
+        assert {d["column"] for d in dims.values()} == {"date"}
 
     def test_export_warns_not_silent(self) -> None:
         _, warnings = self._roundtrip()

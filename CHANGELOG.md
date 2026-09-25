@@ -4,6 +4,12 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **OSI export writes expressions that compute what OrionBelt computes.** Another OSI tool reads a metric's SQL, not the ORIONBELT extension, and that SQL was wrong in several ways. Column references named the physical table (`FCT_ORDER_LINES.AMT`) instead of the dataset (`"Order Lines".AMT`), so they dangled whenever the two differ. Measure filters and `total: true` were dropped, so a filtered measure read as the unfiltered one and a share of the grand total read as 1. References to a synthesized count or to another metric stayed as literal `{[Name]}` text, and period-over-period metrics exported `prev.value`. Filters are now written as `SUM(CASE WHEN ... END)`, totals as the grand-total window the compiler emits, `defaultValue` as `COALESCE`, and counts and metric references are inlined. What has no faithful single expression (period-over-period, and measures with `grain`, `filterContext` or `anchor`) is left out of the OSI metrics with a warning and kept whole in the model extension. `aggregation: measure` is tagged `DATABRICKS` rather than `ANSI_SQL`, and `count_distinct` renders `COUNT(DISTINCT ...)`.
+- **OBML -> OSI -> OBML returns the model it was given.** The import renamed every column to its physical code, so a measure filter on `Country` pointed at a column that was now `COUNTRY` and the round-tripped sales model failed validation; it also rebuilt measures by parsing the SQL, which turned `Revenue Share` into `Revenue / Revenue`. Each field now carries its OBML column name and each exported measure or metric its OBML definition, and the import restores both.
+- **OSI import reads current Apache Ossie documents.** Ossie `0.2.0.dev0` moved the model to the document root; the import only read the earlier `semantic_model` array and rejected every current document. It now reads both. The export still writes the `semantic_model` array until `0.2.0` is released.
+
 ## [2.31.2] - 2026-09-25
 
 ### Fixed

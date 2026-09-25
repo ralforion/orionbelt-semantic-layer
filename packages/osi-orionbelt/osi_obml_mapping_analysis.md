@@ -27,7 +27,7 @@
 - **OSI** uses snake_case codes everywhere (`name: "store_sales"`)
 - **OBML** supports dual naming — a display name as the dictionary key and a `code` for the physical SQL reference
 
-During OSI → OBML conversion, field names are used directly as both the display name and code. During OBML → OSI conversion, the `code` value becomes the OSI field `name`.
+During OSI → OBML conversion, field names are used directly as both the display name and code. During OBML → OSI conversion, the `code` value becomes the OSI field `name`, and the OBML column name rides in the field's `custom_extensions` (`obml_column_name`) so the reverse trip restores it. Metric expressions reference columns as `<dataset>.<field>`: the OBML data object name (double-quoted when it is not a plain identifier) and the column code.
 
 ### 2.2 Relationship Placement
 
@@ -121,8 +121,9 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 - `timeGrain` on dimensions — preserved in field `custom_extensions` (`obml_time_grain`)
 - Dimension `format` — preserved in field `custom_extensions` (`obml_dimension_format`)
 - Dimension `via` / `pathName` (roles): preserved in field `custom_extensions` (`obml_dimension_via`, `obml_dimension_path_name`; inside `obml_extra_dimensions` for further dimensions over the same column)
-- Measure filters — preserved in metric `custom_extensions` (`obml_filters`)
-- Measure `total` — preserved in metric `custom_extensions` (`obml_total`)
+- Measure filters — written into the expression as `AGG(CASE WHEN <condition> THEN <arg> END)`, and preserved in metric `custom_extensions` (`obml_filters`)
+- Measure `total` — written into the expression as the grand-total window the compiler emits (`SUM(SUM(x)) OVER ()`; exact `SUM/COUNT` ratio for `AVG`), and preserved in metric `custom_extensions` (`obml_total`)
+- Measure `grain`, `filterContext` and `anchor`, and period-over-period metrics — depend on the query, so they have no faithful single expression. They are left out of the OSI metrics with a warning and kept whole in the model-level `custom_extensions` (`obml_unexported`); the reverse trip restores them
 - Measure `format` — preserved in metric `custom_extensions` (`obml_format`)
 - Measure `delimiter` — preserved in metric `custom_extensions` (`obml_delimiter`)
 - Measure `withinGroup` — preserved in metric `custom_extensions` (`obml_within_group`)
@@ -134,7 +135,7 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 
 - **`primary_key`** — natively represented: OSI's dataset-level `primary_key` array maps to per-column `primaryKey: true` on OBML columns (`DataObjectColumn.primaryKey`), and back to the dataset array on export.
 - **`unique_keys`** — no native OBML equivalent; round-trips via an `OSI`-vendor `customExtension` (`obml_unique_keys`). Together with `primary_key`, it also drives relationship cardinality inference (see Section 2.2).
-- **Multi-dialect expressions** — on import the converter reads the first available SQL dialect in the order `ANSI_SQL`, `OSSIE_SQL_2026`, `SNOWFLAKE`, `DATABRICKS`, and parses it with sqlglot under that dialect's grammar (ANSI grammar for `OSSIE_SQL_2026`); non-SQL dialects (`MDX`, `TABLEAU`, `MAQL`, `SIGMA`, `THOUGHTSPOT`, `DAX`) are not parsed. Column references are resolved on the parsed AST (so a dotted string literal like `'north.us'` is never mistaken for a `dataset.column` reference; T-SQL-style `[bracket]` identifiers are also accepted), and every single-column aggregate OBML models is decomposed - `SUM`, `COUNT`, `AVG`, `MIN`, `MAX`, `ANY_VALUE`, `MEDIAN`, `MODE`, `STDDEV`, `STDDEV_POP`, `VARIANCE`, `VAR_POP` (normalised from sqlglot's `VARIANCE_POP`), and `LISTAGG` (which sqlglot models as a generic function). A metric with no SQL-parseable dialect, no aggregate, a nested aggregate, a multi-column aggregate that needs a two-column measure (`CORR`, `COVAR_POP`, `REGR_SLOPE`, ...) or `LISTAGG` with a delimiter, an unresolvable reference, or one sqlglot cannot parse, is preserved verbatim (`obml_unconverted_metrics`) with a `LOSSY:` warning rather than dropped. A **field's** physical column `code` is likewise taken only from a SQL dialect (`ANSI_SQL` preferred, then any other SQL dialect); a field whose only expressions are non-SQL falls back to the field name with a warning, so non-SQL text is never emitted as a SQL column reference. On export, OBML measures/metrics emit `ANSI_SQL`.
+- **Multi-dialect expressions** — on import the converter reads the first available SQL dialect in the order `ANSI_SQL`, `OSSIE_SQL_2026`, `SNOWFLAKE`, `DATABRICKS`, and parses it with sqlglot under that dialect's grammar (ANSI grammar for `OSSIE_SQL_2026`); non-SQL dialects (`MDX`, `TABLEAU`, `MAQL`, `SIGMA`, `THOUGHTSPOT`, `DAX`) are not parsed. Column references are resolved on the parsed AST (so a dotted string literal like `'north.us'` is never mistaken for a `dataset.column` reference; T-SQL-style `[bracket]` identifiers are also accepted), and every single-column aggregate OBML models is decomposed - `SUM`, `COUNT`, `AVG`, `MIN`, `MAX`, `ANY_VALUE`, `MEDIAN`, `MODE`, `STDDEV`, `STDDEV_POP`, `VARIANCE`, `VAR_POP` (normalised from sqlglot's `VARIANCE_POP`), and `LISTAGG` (which sqlglot models as a generic function). A metric with no SQL-parseable dialect, no aggregate, a nested aggregate, a multi-column aggregate that needs a two-column measure (`CORR`, `COVAR_POP`, `REGR_SLOPE`, ...) or `LISTAGG` with a delimiter, an unresolvable reference, or one sqlglot cannot parse, is preserved verbatim (`obml_unconverted_metrics`) with a `LOSSY:` warning rather than dropped. A **field's** physical column `code` is likewise taken only from a SQL dialect (`ANSI_SQL` preferred, then any other SQL dialect); a field whose only expressions are non-SQL falls back to the field name with a warning, so non-SQL text is never emitted as a SQL column reference. On export, OBML measures/metrics emit `ANSI_SQL`, except `aggregation: measure`, whose `MEASURE("<name>")` call is tagged `DATABRICKS`. Import reads both document shapes: the current flat Apache Ossie document (model at the root) and the earlier `semantic_model` array, which export still writes.
 - **`datatype`** (Apache Ossie v0.2+) — the first-class `Field`/`Metric` `datatype` (capitalised `DataType` enum: `String`/`Integer`/`Decimal`/`Float`/`Boolean`/`Date`/`Time`/`DateTime`/`DateTimeTz`/`Opaque`) maps to OBML column `abstractType` on import, taking precedence over the name heuristic. `Decimal` narrows to `float` (OBML models exact decimal at the physical/result layer, not as a coarse `abstractType`); `Opaque` falls back to the heuristic (it signals "unknown / non-portable"). On export OBML emits `datatype` from `abstractType`, and the exact `abstractType` is stashed in `custom_extensions` (`obml_abstract_type`) so OBML → OSI → OBML restores it verbatim, lossless through the narrowing. Metric/measure `datatype` maps to the exact OBML `dataType` (its physical/result-layer home), so `Decimal` → `decimal(18, 2)` rather than narrowing to `float`; export re-emits a first-class `datatype` from an explicit `dataType` only (plain measures stay untouched, keeping round trips idempotent).
 - **`ai_context`** — preserved losslessly via `customExtensions` (see Section 2.4).
 - **`custom_extensions`** — mapped to OBML `customExtensions`.
@@ -155,11 +156,12 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 1. Combine `database.schema.code` into the OSI `source` string
 2. Convert columns to fields with `ANSI_SQL` dialect expressions and a first-class `datatype` (from `abstractType`)
 3. Extract inline joins into global relationships with generated names
-4. Convert measures to OSI metrics with SQL expressions
-5. Expand metric templates by substituting measure SQL into `{[Name]}` references
-6. Map OBML dimension metadata into `field.dimension.is_time` flags
-7. Preserve secondary join info in relationship `ai_context`
-8. Store OBML-specific type info in `custom_extensions` with `vendor_name: "COMMON"`
+4. Convert measures to OSI metrics with SQL expressions that compute what OrionBelt computes (filters, totals, defaults spelled out)
+5. Expand metric templates by substituting measure, synthesized-count and metric SQL into `{[Name]}` references
+6. Leave out what has no faithful expression, with a warning; each exported measure or metric also carries its full OBML definition (`obml_definition`), which the reverse trip restores instead of re-parsing the SQL
+7. Map OBML dimension metadata into `field.dimension.is_time` flags
+8. Preserve secondary join info in relationship `ai_context`
+9. Store OBML-specific type info in `custom_extensions` with `vendor_name: "COMMON"`
 
 ## 4. Validation
 

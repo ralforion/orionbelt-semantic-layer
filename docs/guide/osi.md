@@ -47,6 +47,24 @@ Both endpoints are stateless — no session required.
 
 The converter targets the OSI **core-spec** semantic model (datasets, fields, relationships, metrics) in both directions. OSI's separate ontology layer is out of scope.
 
+## What other OSI tools read
+
+Another OSI tool reads a metric's SQL expression, not OrionBelt's vendor extension, so the export writes expressions that compute what OrionBelt computes:
+
+| OBML | Exported expression |
+|---|---|
+| Column reference | `<dataset>.<field>`: the data object name (quoted when it is not a plain identifier) and the column `code` |
+| Measure `filters` | `SUM(CASE WHEN <condition> THEN <arg> END)`, the spec's portable filtered aggregation |
+| Measure `total: true` | The grand-total window, e.g. `SUM(SUM(x)) OVER ()` |
+| Measure `defaultValue` | `COALESCE(<aggregate>, <value>)` |
+| Synthesized count (`"Orders Count"`) | `COUNT(<dataset>.<primary key>)` |
+| Metric referencing measures or metrics | The referenced SQL, inlined |
+| Cumulative and window metrics | The window over the aggregated measure, ordered by the time dimension's field |
+
+Some OBML definitions depend on the query and have no faithful single expression: period-over-period metrics, and measures with `grain`, `filterContext` or `anchor`, plus anything that references them. The export leaves these out of the OSI metrics, warns about each, and keeps them whole in the model-level `ORIONBELT` extension, so OBML → OSI → OBML still restores them.
+
+The import reads both document shapes: the current flat Apache Ossie document, with the model at the root, and the earlier `semantic_model` array, which the export still writes while `0.2.0` is unreleased.
+
 ## Gradio UI
 
 The Gradio UI provides **Import OSI** / **Export to OSI** buttons that use these API endpoints, with validation feedback for both directions.
@@ -57,4 +75,4 @@ See the [OSI - OBML Mapping Analysis](https://github.com/ralforion/orionbelt-sem
 
 ## External concept mappings
 
-OSI has no slot for [`ontology.prefixes` or `externalConceptMappings`](concept-mappings.md), so the converter carries both inside the `ORIONBELT` vendor `custom_extensions` of the OSI entity each OBML artefact becomes: the semantic model (prefixes and model-level mappings), the dataset, the field (for a dimension, including the extra-dimension descriptors when several dimensions share one column) and the metric (for measures and every metric type). The reverse direction restores them verbatim, so OBML → OSI → OBML is lossless and a mapping always comes back together with the prefix its compact IRI needs. Other OSI tools see the payload as opaque vendor data. Importing an OSI document that names concepts natively (`maps_to_concept` or Ossie ontology mappings) is not implemented yet.
+OSI has no slot for [`ontology.prefixes` or `externalConceptMappings`](concept-mappings.md), so the converter carries both inside the `ORIONBELT` vendor `custom_extensions` of the OSI entity each OBML artefact becomes: the semantic model (prefixes and model-level mappings), the dataset, the field (for a dimension, including the extra-dimension descriptors when several dimensions share one column) and the metric (for every exported measure and metric; a left-out one keeps its links in the model-level extension). The reverse direction restores them verbatim, so OBML → OSI → OBML is lossless and a mapping always comes back together with the prefix its compact IRI needs. Other OSI tools see the payload as opaque vendor data. Importing an OSI document that names concepts natively (`maps_to_concept` or Ossie ontology mappings) is not implemented yet.
