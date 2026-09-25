@@ -1706,6 +1706,16 @@ class TestReferenceEndpoints:
         assert "WRONG_FUNCTION_ARITY" in body
         assert "concat" in body
 
+    async def test_obml_reference_documents_role_dimensions(self, client: AsyncClient) -> None:
+        """Authoring clients learn OBML from this text, so pathName has to be in it."""
+        r = await client.get("/v1/reference/obml")
+        body = r.json()["reference"]
+        assert "secondary: true" in body
+        assert "pathName: payer" in body
+        assert "usePathNames" in body
+        assert "INVALID_DIMENSION_PATH" in body
+        assert "AMBIGUOUS_VIA" in body
+
     async def test_obml_reference_lists_every_catalog_entry(self, client: AsyncClient) -> None:
         """The section is generated from the catalog rather than written out.
 
