@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+from collections.abc import Callable
 from typing import Annotated, Any
 
 import typer
@@ -550,36 +551,118 @@ def describe(
         )
 
 
+def _local_model(model: str | None, server: str | None, action: str) -> str | None:
+    """The model YAML to use locally, or ``None`` to run against ``--server``.
+
+    Same rule as ``compile`` / ``execute``: a given MODEL is authoritative, so an
+    ambient ``OBSL_SERVER`` never redirects an explicit local run.
+    """
+    if server and not model:
+        return None
+    if not model:
+        raise _fail(
+            f"MODEL is required to {action} locally "
+            "(or omit MODEL with --server to use the deployed model)."
+        )
+    if server:
+        _render.note("MODEL provided: running locally; --server ignored.")
+    return _io.read_text(model)
+
+
+def _guarded[T](fn: Callable[[], T]) -> T:
+    """Run a local or remote call, turning its expected failures into a clean exit."""
+    from orionbelt.cli._local import CliError
+    from orionbelt.service.db_executor import ExecutionError, ExecutionUnavailableError
+    from orionbelt.service.model_store import ModelValidationError
+
+    try:
+        return fn()
+    except ModelValidationError as exc:
+        raise _model_invalid(exc) from None
+    except (CliError, ExecutionError, ExecutionUnavailableError) as exc:
+        raise _fail(str(exc)) from None
+
+
+OutputOpt = Annotated[
+    str | None,
+    typer.Option("--output", "-o", help="Write to this file instead of standard output."),
+]
+
+
+def _emit_text(text: str, output: str | None) -> None:
+    """Print *text*, or write it to *output* and say so on stderr."""
+    if output is None:
+        _render.raw(text)
+        return
+    _io.write_text(output, text if text.endswith("\n") else text + "\n")
+    _render.note(f"wrote {output}")
+
+
 @app.command()
 def diagram(
-    model: ModelArg,
+    model: ModelArgOpt = None,
     columns: Annotated[
         bool, typer.Option("--columns/--no-columns", help="Show columns in entities.")
     ] = True,
     theme: Annotated[str, typer.Option("--theme", help="Mermaid theme.")] = "default",
+    markdown: Annotated[
+        bool,
+        typer.Option(
+            "--markdown",
+            "--md",
+            help="Wrap the diagram in a ```mermaid Markdown fence. Implied by an -o path "
+            "ending in .md.",
+        ),
+    ] = False,
+    output: OutputOpt = None,
+    server: ServerOpt = None,
+    api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
 ) -> None:
-    """Render the model as a Mermaid ER diagram."""
-    model_yaml = _io.read_text(model)
-    from orionbelt.cli import _local
-    from orionbelt.service.model_store import ModelValidationError
+    """Render the model as a Mermaid ER diagram.
 
-    try:
-        _render.raw(_local.diagram(model_yaml, show_columns=columns, theme=theme))
-    except ModelValidationError as exc:
-        raise _model_invalid(exc) from None
+    Locally, MODEL is required. With --server the diagram is downloaded from the
+    server's curated model.
+    """
+    model_yaml = _local_model(model, server, "render the diagram")
+    if model_yaml is None:
+        client = _remote_client(str(server), api_key, client_cert, client_key, ca_cert)
+        mermaid = _guarded(lambda: client.diagram(show_columns=columns, theme=theme))
+    else:
+        from orionbelt.cli import _local
+
+        mermaid = _guarded(lambda: _local.diagram(model_yaml, show_columns=columns, theme=theme))
+    if markdown or (output or "").lower().endswith(".md"):
+        mermaid = f"```mermaid\n{mermaid.rstrip()}\n```"
+    _emit_text(mermaid, output)
 
 
 @app.command()
-def graph(model: ModelArg) -> None:
-    """Render the model's OBSL-Core RDF graph as Turtle."""
-    model_yaml = _io.read_text(model)
-    from orionbelt.cli import _local
-    from orionbelt.service.model_store import ModelValidationError
+def graph(
+    model: ModelArgOpt = None,
+    output: OutputOpt = None,
+    server: ServerOpt = None,
+    api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
+) -> None:
+    """Render the model's OBSL-Core RDF graph (its ontology export) as Turtle.
 
-    try:
-        _render.raw(_local.graph(model_yaml))
-    except ModelValidationError as exc:
-        raise _model_invalid(exc) from None
+    Locally, MODEL is required. With --server the graph is downloaded from the
+    server's curated model.
+    """
+    model_yaml = _local_model(model, server, "render the graph")
+    if model_yaml is None:
+        client = _remote_client(str(server), api_key, client_cert, client_key, ca_cert)
+        turtle = _guarded(client.graph)
+    else:
+        from orionbelt.cli import _local
+
+        turtle = _guarded(lambda: _local.graph(model_yaml))
+    _emit_text(turtle, output)
 
 
 @app.command()
@@ -675,6 +758,293 @@ def dialects(
         _render.emit_json(names)
     else:
         _render.emit_table(["dialect"], [[n] for n in names], fmt)
+
+
+SparqlFileOpt = Annotated[
+    str | None,
+    typer.Option("--query", "-q", help="Path to a SPARQL query file ('-' for stdin)."),
+]
+SparqlTextOpt = Annotated[
+    str | None,
+    typer.Option("--sparql", help="SPARQL query string, e.g. 'SELECT ?m WHERE { ... }'."),
+]
+
+
+@app.command()
+def sparql(
+    model: ModelArgOpt = None,
+    query: SparqlFileOpt = None,
+    text: SparqlTextOpt = None,
+    fmt: FormatOpt = OutputFormat.table,
+    server: ServerOpt = None,
+    api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
+) -> None:
+    """Run a read-only SPARQL query (SELECT or ASK) against the model's RDF graph.
+
+    The graph is the OBSL-Core graph that `obsl graph` prints. Locally, MODEL is
+    required. With --server the query runs against the server's curated model.
+    """
+    if bool(query) == bool(text):
+        raise _fail("Provide exactly one of --query/-q (a SPARQL file) or --sparql (a string).")
+    sparql_text = _io.read_text(query) if query else str(text)
+    model_yaml = _local_model(model, server, "query the graph")
+    if model_yaml is None:
+        client = _remote_client(str(server), api_key, client_cert, client_key, ca_cert)
+        data: dict[str, Any] = _guarded(lambda: client.sparql(sparql_text))
+    else:
+        from orionbelt.cli import _local
+
+        result = _guarded(lambda: _local.sparql(model_yaml, sparql_text))
+        data = {
+            "type": result.type,
+            "variables": result.variables,
+            "results": result.results,
+            "boolean": result.boolean,
+        }
+
+    if fmt is OutputFormat.json:
+        _render.emit_json(data)
+    elif data.get("type") == "ask":
+        _render.raw("true" if data.get("boolean") else "false")
+    else:
+        variables = list(data.get("variables") or [])
+        results = data.get("results") or []
+        _render.emit_table(variables, [[r.get(v) for v in variables] for r in results], fmt)
+        _render.note(f"{len(results)} results")
+
+
+# --------------------------------------------------------------------------
+# Business rules
+# --------------------------------------------------------------------------
+
+rules_app = typer.Typer(
+    name="rules",
+    help=(
+        "List, compile and evaluate a model's business rules. Each rule compiles to "
+        "a query whose rows are its findings."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(rules_app)
+
+RuleNameOpt = Annotated[
+    list[str] | None,
+    typer.Option("--rule", "-r", help="Rule name; repeat for several. Default: every rule."),
+]
+
+
+def _rules(
+    model: str | None,
+    server: str | None,
+    remote: Callable[[Any], tuple[str, list[Any]]],
+    local: Callable[[str], tuple[str, list[Any]]],
+    tls: tuple[str | None, str | None, str | None, str | None],
+    action: str,
+) -> tuple[str, list[Any]]:
+    """Run a rules operation locally or against ``--server``."""
+    model_yaml = _local_model(model, server, action)
+    if model_yaml is None:
+        client = _remote_client(str(server), *tls)
+        return _guarded(lambda: remote(client))
+    return _guarded(lambda: local(model_yaml))
+
+
+def _exit_on_failed(outcomes: list[Any]) -> None:
+    failed = [o.name for o in outcomes if o.status == "failed"]
+    if failed:
+        _render.error(f"{len(failed)} rule(s) failed: {', '.join(failed)}")
+        raise typer.Exit(1)
+
+
+@rules_app.command("list")
+def rules_list(
+    model: ModelArgOpt = None,
+    dialect: DialectOpt = None,
+    fmt: FormatOpt = OutputFormat.table,
+    server: ServerOpt = None,
+    api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
+) -> None:
+    """List the business rules and whether each rule's query compiles."""
+    from orionbelt.cli import _local
+
+    used_dialect, outcomes = _rules(
+        model,
+        server,
+        lambda client: client.list_rules(dialect),
+        lambda yaml_text: _local.run_rules(yaml_text, dialect),
+        (api_key, client_cert, client_key, ca_cert),
+        "list rules",
+    )
+    if fmt is OutputFormat.json:
+        rules = [
+            {
+                "name": o.name,
+                "type": o.type,
+                "level": o.level,
+                "severity": o.severity,
+                "findings": o.findings,
+                "compiles": o.status != "failed",
+                "error": o.error,
+            }
+            for o in outcomes
+        ]
+        _render.emit_json({"dialect": used_dialect, "rules": rules})
+        return
+    _render.emit_table(
+        ["rule", "type", "level", "severity", "findings", "compiles", "error"],
+        [
+            [
+                o.name,
+                o.type,
+                o.level,
+                o.severity or "",
+                o.findings,
+                "no" if o.status == "failed" else "yes",
+                o.error or "",
+            ]
+            for o in outcomes
+        ],
+        fmt,
+    )
+    _render.note(f"{len(outcomes)} rules ({used_dialect})")
+
+
+@rules_app.command("compile")
+def rules_compile(
+    model: ModelArgOpt = None,
+    rule: RuleNameOpt = None,
+    dialect: DialectOpt = None,
+    fmt: FormatOpt = OutputFormat.table,
+    server: ServerOpt = None,
+    api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
+) -> None:
+    """Print the SQL behind each rule. Exits non-zero when a rule fails to compile."""
+    from orionbelt.cli import _local
+
+    used_dialect, outcomes = _rules(
+        model,
+        server,
+        lambda client: client.compile_rules(dialect, rule),
+        lambda yaml_text: _local.run_rules(yaml_text, dialect, names=rule),
+        (api_key, client_cert, client_key, ca_cert),
+        "compile rules",
+    )
+    if fmt is OutputFormat.json:
+        keys = ("name", "status", "level", "findings", "sql", "error")
+        _render.emit_json(
+            {
+                "dialect": used_dialect,
+                "rules": [{k: getattr(o, k) for k in keys} for o in outcomes],
+            }
+        )
+    else:
+        for o in outcomes:
+            if o.status == "failed":
+                _render.error(f"{o.name}: {o.error}")
+            else:
+                _render.raw(f"-- Rule: {o.name} ({o.findings})\n{o.sql}\n")
+    _exit_on_failed(outcomes)
+
+
+@rules_app.command("evaluate")
+def rules_evaluate(
+    model: ModelArgOpt = None,
+    rule: RuleNameOpt = None,
+    rule_type: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--type",
+            help="Only rules of this type (classification, eligibility, validation, "
+            "constraint); repeat for several.",
+        ),
+    ] = None,
+    severity: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--severity", help="Only rules of this severity (info, warning, error); repeatable."
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, max=1000, help="Findings fetched per rule."),
+    ] = 20,
+    dialect: DialectOpt = None,
+    fmt: FormatOpt = OutputFormat.table,
+    server: ServerOpt = None,
+    api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
+) -> None:
+    """Run rules against the warehouse and report their findings.
+
+    With a single --rule, prints that rule's findings. Otherwise prints one summary
+    row per rule; a count shown as "20+" reached --limit and may be higher.
+    Exits non-zero when a rule fails to compile or run.
+    """
+    from orionbelt.cli import _local
+
+    used_dialect, outcomes = _rules(
+        model,
+        server,
+        lambda client: client.evaluate_rules(
+            dialect, names=rule, types=rule_type, severities=severity, limit=limit
+        ),
+        lambda yaml_text: _local.run_rules(
+            yaml_text,
+            dialect,
+            names=rule,
+            types=rule_type,
+            severities=severity,
+            execute=True,
+            limit=limit,
+        ),
+        (api_key, client_cert, client_key, ca_cert),
+        "evaluate rules",
+    )
+    if fmt is OutputFormat.json:
+        _render.emit_json(
+            {"dialect": used_dialect, "rules": [dataclasses.asdict(o) for o in outcomes]}
+        )
+    elif rule and len(rule) == 1 and len(outcomes) == 1 and outcomes[0].status == "executed":
+        only = outcomes[0]
+        _render.emit_table(only.columns, only.rows, fmt)
+        _render.note(f"{only.name}: {_count(only.finding_count, limit)} findings ({only.findings})")
+    else:
+        _render.emit_table(
+            ["rule", "type", "severity", "status", "findings", "error"],
+            [
+                [
+                    o.name,
+                    o.type,
+                    o.severity or "",
+                    o.status,
+                    _count(o.finding_count, limit),
+                    o.error or "",
+                ]
+                for o in outcomes
+            ],
+            fmt,
+        )
+        with_findings = sum(1 for o in outcomes if o.finding_count)
+        _render.note(f"{len(outcomes)} rules, {with_findings} with findings ({used_dialect})")
+    _exit_on_failed(outcomes)
+
+
+def _count(finding_count: int | None, limit: int) -> str:
+    """A finding count, marked when it hit the fetch limit."""
+    if finding_count is None:
+        return ""
+    return f"{finding_count}+" if finding_count >= limit else str(finding_count)
 
 
 def _model_invalid(exc: Any) -> typer.Exit:

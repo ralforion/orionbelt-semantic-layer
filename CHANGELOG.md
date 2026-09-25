@@ -4,6 +4,11 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`obsl sparql` and `obsl rules` in the CLI.** `obsl sparql` runs a read-only SPARQL query (SELECT or ASK, inline with `--sparql` or from a file with `-q`) against the model's OBSL-Core graph. `obsl rules list`, `obsl rules compile` and `obsl rules evaluate` list a model's business rules, print the SQL behind them, and run them to report findings, filtered with `--rule`, `--type` and `--severity`. Both work locally, with the same planner and graph as the REST API, or against a deployed server with `--server`, through the `/v1/sparql` and `/v1/rules` shortcuts. `rules compile` and `rules evaluate` exit `1` when a rule fails to compile or run, so they can gate a CI job.
+- **`obsl diagram` and `obsl graph` save and download.** Both take `-o/--output` to write a file, and `--server` to download from a deployed model instead of rendering a local one. `obsl diagram --markdown` (implied by an `-o` path ending in `.md`) wraps the Mermaid ER diagram in a Markdown fence, like the UI's `.md` download. `obsl graph` writes the model's OBSL-Core graph as Turtle, the same file as the UI's *Export Onto*.
+
 ## [2.31.2] - 2026-09-25
 
 ### Fixed
