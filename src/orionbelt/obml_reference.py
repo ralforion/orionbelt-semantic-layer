@@ -82,7 +82,23 @@ dataObjects:
           - Customer ID           # local column name
         columnsTo:
           - Customer ID           # target column name
+        pathName: buyer           # optional on a primary join: names this path
+      - joinType: many-to-one     # a second join to the same target
+        joinTo: Customers
+        secondary: true           # inactive unless selected; requires pathName
+        pathName: payer           # unique per (source, target) pair
+        columnsFrom:
+          - Payer ID
+        columnsTo:
+          - Customer ID
 ```
+
+Each `(source, target)` pair has one primary join; further joins to the same
+target are `secondary: true` and must carry a `pathName`
+(`SECONDARY_JOIN_MISSING_PATH_NAME`; a repeated name is `DUPLICATE_JOIN_PATH_NAME`).
+A secondary join is used only when a dimension pins it with `pathName` (below)
+or a query swaps it in for the whole pair with
+`usePathNames: [{source: Orders, target: Customers, pathName: payer}]`.
 
 ## 2. dimensions — named analytical dimensions
 
@@ -118,7 +134,36 @@ dimensions:
     column: Name
     resultType: string
     via: Returns                  # reach Employees through Returns
+
+  # Role dimensions — same target joined twice from one data object
+  Buyer Country:
+    dataObject: Customers
+    column: Country
+    resultType: string
+    via: Orders
+    pathName: buyer               # read through Orders' join named 'buyer'
+
+  Payer Country:
+    dataObject: Customers
+    column: Country
+    resultType: string
+    via: Orders
+    pathName: payer               # read through the secondary join 'payer'
 ```
+
+`via` alone reads through the primary join from `via` to `dataObject`. When
+`via` joins that data object more than once, `pathName` pins the dimension to
+one named join, primary or secondary. Each role compiles to its own aliased
+join, so `Buyer Country` and `Payer Country` can appear in **one** query —
+which `usePathNames` cannot do, since it swaps the pair's join for every
+dimension at once. Role dimensions are pinned: `usePathNames` does not change
+them. A role reaches only its own data object's columns, not objects joined
+beyond it.
+
+- `pathName` requires `via`, and must name a join declared directly on `via`
+  that targets `dataObject` (`INVALID_DIMENSION_PATH`).
+- `via` without `pathName` on a data object that `via` joins more than once
+  warns `AMBIGUOUS_VIA`: it silently reads through the primary join.
 
 ## 3. measures — aggregations
 
@@ -436,7 +481,7 @@ query filter operators; `exists` is not allowed), `all`, `any`, `not`, or `rule`
 5. A dimension references exactly one `dataObject` + `column` pair.
 6. A dimension may set `via` to force the join path through a specific \
 intermediate data object (role-playing dimensions). The dimension's \
-`dataObject` must be reachable from `via` in the directed join graph.
+`dataObject` must be reachable from `via` in the directed join graph. When `via` joins `dataObject` more than once, add `pathName` to pick the join (role) the dimension reads through.
 7. **Strict parsing (v2.7.2+)**: unknown keys on any OBML object are \
 rejected with error code `UNKNOWN_PROPERTY`. A typo like `filtter:` or \
 `columsFrom:` fails validation instead of being silently dropped — there \
