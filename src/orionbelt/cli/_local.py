@@ -10,7 +10,8 @@ from __future__ import annotations
 import importlib
 import os
 import types
-from typing import Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.pipeline import CompilationResult
@@ -37,6 +38,9 @@ from orionbelt.service.model_store import (
     ModelStore,
     ValidationSummary,
 )
+
+if TYPE_CHECKING:
+    from orionbelt.obsl.sparql import SPARQLResult
 
 
 class CliError(Exception):
@@ -171,6 +175,13 @@ def _execute_loaded(
         query = query.model_copy(update={"limit": limit})
     resolved_dialect = resolve_dialect(model, dialect)
     compiled = _compile(store, model_id, query, resolved_dialect)
+    return compiled, _run_compiled(model, compiled, resolved_dialect)
+
+
+def _run_compiled(
+    model: SemanticModel, compiled: CompilationResult, dialect: str
+) -> ExecutionResult:
+    """Execute compiled SQL with the model's timezone settings."""
     settings = getattr(model, "settings", None)
     tz = resolve_timezone(
         default_timezone=getattr(settings, "default_timezone", None) if settings else None
@@ -180,8 +191,7 @@ def _execute_loaded(
     # driver's Arrow path, and the result's columns get typed by inference over
     # the values rather than from the driver's schema.
     ensure_arrow()
-    executed = execute_sql(compiled.sql, dialect=resolved_dialect, tz=tz, override_db_tz=override)
-    return compiled, executed
+    return execute_sql(compiled.sql, dialect=dialect, tz=tz, override_db_tz=override)
 
 
 def compile_query(
@@ -245,6 +255,109 @@ def graph(model_yaml: str) -> str:
     """Render a model's OBSL-Core RDF graph as Turtle."""
     store, model_id, _ = _load(model_yaml)
     return store.get_graph(model_id).turtle
+
+
+def sparql(model_yaml: str, query: str) -> SPARQLResult:
+    """Run a read-only SPARQL query against a model's OBSL-Core RDF graph."""
+    from orionbelt.obsl.sparql import SPARQLUpdateError
+
+    store, model_id, _ = _load(model_yaml)
+    try:
+        return store.query_graph(model_id, query)
+    except SPARQLUpdateError as exc:
+        raise CliError(str(exc)) from None
+    except Exception as exc:  # noqa: BLE001 - rdflib raises many parse error types
+        raise CliError(f"SPARQL error: {exc}") from None
+
+
+@dataclass
+class RuleOutcome:
+    """One business rule's plan, and its compile or evaluation result.
+
+    ``status`` is ``compiled`` or ``executed`` on success and ``failed``
+    otherwise, with the reason in ``error``. ``finding_count`` and ``rows`` are
+    set once the rule's query has run.
+    """
+
+    name: str
+    type: str
+    level: str
+    findings: str
+    severity: str | None
+    status: str
+    sql: str | None = None
+    error: str | None = None
+    finding_count: int | None = None
+    columns: list[str] = field(default_factory=list)
+    rows: list[list[Any]] = field(default_factory=list)
+
+
+def run_rules(
+    model_yaml: str,
+    dialect: str | None,
+    *,
+    names: list[str] | None = None,
+    types: list[str] | None = None,
+    severities: list[str] | None = None,
+    execute: bool = False,
+    limit: int = 20,
+    pretty: bool = True,
+) -> tuple[str, list[RuleOutcome]]:
+    """Compile, and with ``execute`` also run, a model's business rules.
+
+    Mirrors the REST rules endpoints: each rule compiles to an ordinary query
+    whose rows are its findings, and a rule that fails to compile or run is
+    reported as a failed row rather than aborting the others. Returns the
+    resolved dialect and one outcome per selected rule, in model order.
+    """
+    from orionbelt.compiler.rules import RuleCompiler
+    from orionbelt.service.db_executor import ExecutionError
+
+    store, model_id, model = _load(model_yaml)
+    resolved_dialect = resolve_dialect(model, dialect)
+    unknown = [n for n in names or [] if n not in model.rules]
+    if unknown:
+        known = ", ".join(model.rules) or "none"
+        raise CliError(f"Unknown rule(s): {', '.join(unknown)}. Rules in the model: {known}")
+
+    selected = [r for r in model.rules.values() if not names or r.name in names]
+    if types:
+        selected = [r for r in selected if r.type.value in types]
+    if severities:
+        selected = [r for r in selected if r.severity and r.severity.value in severities]
+
+    compiler = RuleCompiler(model)
+    outcomes: list[RuleOutcome] = []
+    for rule in selected:
+        plan = compiler.plan(rule)
+        outcome = RuleOutcome(
+            name=rule.name,
+            type=rule.type.value,
+            level=plan.level,
+            findings=plan.findings,
+            severity=rule.severity.value if rule.severity else None,
+            status="compiled",
+        )
+        outcomes.append(outcome)
+        query = plan.query.model_copy(update={"limit": limit}) if execute else plan.query
+        try:
+            compiled = _compile(store, model_id, query, resolved_dialect)
+        except CliError as exc:
+            outcome.status, outcome.error = "failed", str(exc)
+            continue
+        outcome.sql = format_sql(compiled.sql, compiled.dialect) if pretty else compiled.sql
+        if not execute:
+            continue
+        try:
+            executed = _run_compiled(model, compiled, resolved_dialect)
+        except ExecutionError as exc:
+            outcome.status, outcome.error = "failed", str(exc)
+            continue
+        outcome.status = "executed"
+        outcome.finding_count = executed.row_count
+        outcome.columns = [c.name for c in executed.columns]
+        outcome.rows = executed.rows
+    return resolved_dialect, outcomes
 
 
 def _converter_module() -> types.ModuleType:

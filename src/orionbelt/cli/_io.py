@@ -1,4 +1,4 @@
-"""Input helpers for the ``obsl`` CLI: reading model / query / OSI files."""
+"""Input and output helpers for the ``obsl`` CLI: model / query / OSI files."""
 
 from __future__ import annotations
 
@@ -51,3 +51,11 @@ def load_query(path: str) -> QueryObject:
         return QueryObject.model_validate(data)
     except Exception as exc:  # noqa: BLE001 — surface pydantic errors as a clean CLI message
         raise typer.BadParameter(f"Invalid query: {exc}") from None
+
+
+def write_text(path: str, text: str) -> None:
+    """Write UTF-8 text to ``path``, failing cleanly when it cannot be written."""
+    try:
+        Path(path).write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise typer.BadParameter(f"Could not write {path}: {exc}") from None

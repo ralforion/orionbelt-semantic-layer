@@ -1,18 +1,19 @@
 ---
-description: "The obsl command-line tool runs validate, compile, describe, diagram, graph and convert in-process, so a model can be linted and its SQL previewed with no infrastructure."
+description: "The obsl command-line tool runs validate, compile, describe, diagram, graph, SPARQL, business rules and convert in-process, so a model can be linted and its SQL previewed with no infrastructure."
 ---
 
 # Command-Line Interface (`obsl`)
 
 `obsl` is the OrionBelt Semantic Layer command-line tool. It is **local-first**:
-`validate`, `compile`, `describe`, `diagram`, `graph` and `convert` run
-in-process by calling the same compiler, parser and converter the REST API
+`validate`, `compile`, `describe`, `diagram`, `graph`, `sparql`, `rules` and
+`convert` run in-process by calling the same compiler, parser and converter the REST API
 uses — so you can lint a model and preview the generated SQL with zero
 infrastructure. This makes it a natural fit for CI pipelines and pre-commit
 hooks.
 
-Commands that benefit from a running engine (notably `execute`, which needs a
-warehouse connection) can target a deployed server with `--server`.
+Commands that benefit from a running engine (notably `execute` and
+`rules evaluate`, which need a warehouse connection) can target a deployed
+server with `--server`.
 
 ## Installation
 
@@ -36,8 +37,12 @@ obsl --version
 | `obsl compile [MODEL] -q QUERY` | Compile a query to SQL | local or `--server` |
 | `obsl execute [MODEL] -q QUERY` | Compile and run a query | local or `--server` |
 | `obsl describe MODEL` | Structured overview of artefacts | local |
-| `obsl diagram MODEL` | Mermaid ER diagram | local |
-| `obsl graph MODEL` | OBSL-Core RDF graph (Turtle) | local |
+| `obsl diagram [MODEL]` | Mermaid ER diagram, raw or as Markdown | local or `--server` |
+| `obsl graph [MODEL]` | OBSL-Core RDF graph, the model's ontology export (Turtle) | local or `--server` |
+| `obsl sparql [MODEL] --sparql TEXT` | Read-only SPARQL (SELECT or ASK) over that graph | local or `--server` |
+| `obsl rules list [MODEL]` | Business rules and whether each compiles | local or `--server` |
+| `obsl rules compile [MODEL]` | The SQL behind each rule; exits `1` if one fails | local or `--server` |
+| `obsl rules evaluate [MODEL]` | Run rules and report findings; exits `1` if one fails | local or `--server` |
 | `obsl convert DIRECTION INPUT` | OSI ↔ OBML conversion | local or `--server` |
 | `obsl dialects` | List supported SQL dialects | local or `--server` |
 
@@ -61,8 +66,12 @@ For `compile` and `execute` you supply the query one of two ways (exactly one):
 | `compile` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--explain` · `--pretty/--no-pretty` (default pretty) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `execute` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--limit N` (default 1000; see note) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `describe` | `-f/--format` |
-| `diagram` | `--columns/--no-columns` (default columns) · `--theme NAME` (Mermaid theme, default `default`) |
-| `graph` | _(none)_ |
+| `diagram` | `--columns/--no-columns` (default columns) · `--theme NAME` (Mermaid theme, default `default`) · `--markdown/--md` · `-o/--output PATH` (Markdown when it ends in `.md`) · `-s/--server` · `--api-key` · TLS options above |
+| `graph` | `-o/--output PATH` · `-s/--server` · `--api-key` · TLS options above |
+| `sparql` | `-q/--query PATH` (SPARQL file) · `--sparql TEXT` · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
+| `rules list` | `-d/--dialect NAME` · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
+| `rules compile` | `-r/--rule NAME` (repeatable; default every rule) · `-d/--dialect NAME` · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
+| `rules evaluate` | `-r/--rule NAME` (repeatable) · `--type TYPE` (repeatable) · `--severity LEVEL` (repeatable) · `--limit N` (findings per rule, default 20) · `-d/--dialect NAME` · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `convert` | `DIRECTION` (`osi-to-obml`\|`obml-to-osi`) · `INPUT` · `--name NAME` (OSI model name, obml-to-osi) · `-s/--server` · `--api-key` · TLS options above |
 | `dialects` | `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 
@@ -183,9 +192,49 @@ SQL (the CLI warns if you pass `--limit` there).
 ```bash
 obsl describe model.yaml                       # tables of data objects, dimensions, measures, metrics
 obsl diagram model.yaml > er.mmd               # Mermaid ER diagram
+obsl diagram model.yaml -o er.md               # the same, in a ```mermaid Markdown fence
 obsl diagram model.yaml --no-columns --theme dark   # compact entities, dark theme
-obsl graph model.yaml > model.ttl              # OBSL-Core RDF (Turtle)
+obsl graph model.yaml -o model.ttl             # OBSL-Core RDF (Turtle), the ontology export
+obsl diagram -s https://obsl.example.com -o er.md   # download from the server's curated model
+obsl graph -s https://obsl.example.com -o model.ttl
 ```
+
+`-o` writes the file and notes it on stderr. The Markdown form is what the UI's
+`.md` download saves, and the Turtle is what its *Export Onto* button saves.
+
+## SPARQL
+
+`obsl sparql` runs a read-only SPARQL query (`SELECT` or `ASK`) against the
+model's OBSL-Core graph, the one `obsl graph` prints. Give the query inline with
+`--sparql` or as a file with `-q` (exactly one). `SELECT` prints a table of the
+bindings, `ASK` prints `true` or `false`. Updates are refused.
+
+```bash
+obsl sparql model.yaml --sparql 'ASK { ?s ?p ?o }'
+obsl sparql model.yaml -q measures.rq -f csv
+obsl sparql -s https://obsl.example.com -q measures.rq   # the server's curated model
+```
+
+## Business rules
+
+A model's `rules:` compile to ordinary queries whose rows are the rule's
+findings: members for `classification` and `eligibility` rules, violations for
+`validation` and `constraint` rules. The `rules` commands use the same planner
+as the REST rules endpoints.
+
+```bash
+obsl rules list model.yaml                              # every rule, and whether it compiles
+obsl rules compile model.yaml -r "High Value Client"    # the SQL behind one rule
+obsl rules evaluate model.yaml                          # one summary row per rule
+obsl rules evaluate model.yaml --type validation --severity error
+obsl rules evaluate model.yaml -r "Low Stock Product"   # that rule's findings
+```
+
+`evaluate` fetches at most `--limit` findings per rule (default 20). A count
+shown as `20+` reached the limit and may be higher. Locally it needs a
+configured warehouse, like `execute`. `compile` and `evaluate` exit `1` when a
+rule fails to compile or run, and report the others anyway, so they can gate a
+CI job.
 
 ## Convert (OSI ↔ OBML)
 
@@ -220,7 +269,10 @@ go to **stderr** — so `obsl ... -f json | jq` and redirects work cleanly.
 curated model** (via the `/v1/query/sql` and `/v1/query/execute` shortcuts that
 auto-resolve the deployed model) — no model is uploaded, so `MODEL` is omitted
 and governed single-model deployments (where ad-hoc model upload is disabled)
-are respected. `validate` and `convert` operate on the model you pass.
+are respected. `diagram`, `graph`, `sparql` and the `rules` commands work the
+same way, through the `/v1/diagram/er`, `/v1/graph`, `/v1/sparql` and
+`/v1/rules` shortcuts. `validate` and `convert` operate on the
+model you pass.
 
 ### TLS in remote mode
 

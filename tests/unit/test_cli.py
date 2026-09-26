@@ -456,7 +456,7 @@ def test_validate_online_query_params(monkeypatch):
 
     seen = {}
 
-    def fake_request(self, method, path, *, json=None, params=None):
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
         seen["params"] = params
         return {"valid": True, "errors": [], "warnings": []}
 
@@ -470,7 +470,7 @@ def test_validate_offline_sends_no_params(monkeypatch):
 
     seen = {}
 
-    def fake_request(self, method, path, *, json=None, params=None):
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
         seen["params"] = params
         return {"valid": True, "errors": [], "warnings": []}
 
@@ -694,3 +694,435 @@ class TestClientCertificates:
 
         tls = resolve_tls(f"~/{Path(cert).name}", f"~/{Path(key).name}", None)
         assert tls.context is not None
+
+
+# -- sparql -----------------------------------------------------------------
+
+_ASK = "ASK { ?s ?p ?o }"
+_SELECT = "SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }"
+
+
+def test_sparql_select_local(model_file):
+    result = runner.invoke(app, ["sparql", model_file, "--sparql", _SELECT, "-f", "csv"])
+    assert result.exit_code == 0, result.output
+    header, value = result.stdout.strip().splitlines()[:2]
+    assert header == "n"
+    assert int(value) > 0
+
+
+def test_sparql_ask_local(model_file):
+    result = runner.invoke(app, ["sparql", model_file, "--sparql", _ASK])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == "true"
+
+
+def test_sparql_query_file_json(model_file, tmp_path):
+    q = tmp_path / "q.rq"
+    q.write_text(_ASK, encoding="utf-8")
+    result = runner.invoke(app, ["sparql", model_file, "-q", str(q), "-f", "json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {
+        "type": "ask",
+        "variables": [],
+        "results": [],
+        "boolean": True,
+    }
+
+
+def test_sparql_requires_exactly_one_query_input(model_file):
+    result = runner.invoke(app, ["sparql", model_file])
+    assert result.exit_code != 0
+
+
+def test_sparql_update_is_refused(model_file):
+    result = runner.invoke(
+        app, ["sparql", model_file, "--sparql", "INSERT DATA { <a:x> <a:y> <a:z> }"]
+    )
+    assert result.exit_code == 1
+    assert "error" in result.output.lower()
+
+
+def test_sparql_remote(monkeypatch):
+    from orionbelt.cli import _remote
+
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
+        assert (method, path, json) == ("POST", "/sparql", {"query": _SELECT})
+        return {"type": "select", "variables": ["n"], "results": [{"n": "7"}], "boolean": None}
+
+    monkeypatch.setattr(_remote.RemoteClient, "_request", fake_request)
+    result = runner.invoke(app, ["sparql", "--sparql", _SELECT, "-s", "http://x", "-f", "csv"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip().splitlines() == ["n", "7"]
+
+
+# -- rules ------------------------------------------------------------------
+
+_COMMERCE = str(Path(__file__).resolve().parents[2] / "examples" / "orionbelt_1_commerce.yaml")
+
+
+def _fake_execution(monkeypatch):
+    """Replace the warehouse call: every rule query returns one row."""
+    from orionbelt.cli import _local
+    from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
+
+    def fake_run(model, compiled, dialect):
+        return ExecutionResult([ColumnMeta("Name", "str")], raw_rows=[["x"]], row_count=1)
+
+    monkeypatch.setattr(_local, "_run_compiled", fake_run)
+
+
+def test_rules_list_local():
+    result = runner.invoke(app, ["rules", "list", _COMMERCE, "-d", "duckdb", "-f", "json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert data["dialect"] == "duckdb"
+    names = [r["name"] for r in data["rules"]]
+    assert "High Value Client" in names and "Non-Negative Margin" in names
+    assert all(r["compiles"] for r in data["rules"])
+
+
+def test_rules_compile_one_prints_sql():
+    result = runner.invoke(
+        app, ["rules", "compile", _COMMERCE, "-r", "High Value Client", "-d", "duckdb"]
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("-- Rule: High Value Client (matches)")
+    assert "HAVING" in result.stdout
+
+
+def test_rules_unknown_rule_fails_cleanly():
+    result = runner.invoke(app, ["rules", "compile", _COMMERCE, "-r", "Nope"])
+    assert result.exit_code == 1
+    assert "Unknown rule(s): Nope" in result.output
+
+
+def test_rules_compile_failure_exits_nonzero(monkeypatch):
+    from orionbelt.cli import _local
+
+    real_compile = _local._compile
+
+    def flaky(store, model_id, query, dialect):
+        if "Total Sales" in query.select.measures:
+            raise _local.CliError("boom")
+        return real_compile(store, model_id, query, dialect)
+
+    monkeypatch.setattr(_local, "_compile", flaky)
+    result = runner.invoke(app, ["rules", "compile", _COMMERCE, "-d", "duckdb"])
+    assert result.exit_code == 1
+    assert "High Value Client: boom" in result.output
+    assert "-- Rule: Electronics Sale" in result.stdout
+
+
+def test_rules_evaluate_summary(monkeypatch):
+    _fake_execution(monkeypatch)
+    result = runner.invoke(
+        app, ["rules", "evaluate", _COMMERCE, "--type", "validation", "-d", "duckdb", "-f", "json"]
+    )
+    assert result.exit_code == 0, result.output
+    rules = json.loads(result.stdout)["rules"]
+    assert {r["name"] for r in rules} == {"Non-Negative Margin", "Healthy Category"}
+    assert all(r["status"] == "executed" and r["finding_count"] == 1 for r in rules)
+    assert all("LIMIT 20" in r["sql"] for r in rules)
+
+
+def test_rules_evaluate_one_prints_findings(monkeypatch):
+    _fake_execution(monkeypatch)
+    result = runner.invoke(
+        app,
+        ["rules", "evaluate", _COMMERCE, "-r", "Low Stock Product", "-d", "duckdb", "-f", "csv"],
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip().splitlines() == ["Name", "x"]
+
+
+def test_rules_evaluate_limit_marks_truncated_count(monkeypatch):
+    _fake_execution(monkeypatch)
+    result = runner.invoke(
+        app,
+        ["rules", "evaluate", _COMMERCE, "--severity", "error", "--limit", "1", "-f", "csv"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Non-Negative Margin,validation,error,executed,1+," in result.stdout
+
+
+def test_rules_evaluate_remote_report(monkeypatch):
+    from orionbelt.cli import _remote
+
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
+        assert (method, path) == ("POST", "/rules/evaluate")
+        assert json == {
+            "limit": 5,
+            "include_rows": True,
+            "include_sql": True,
+            "types": ["eligibility"],
+        }
+        return {
+            "dialect": "duckdb",
+            "results": [
+                {
+                    "name": "High Value Client",
+                    "type": "eligibility",
+                    "level": "aggregate",
+                    "findings": "matches",
+                    "status": "executed",
+                    "finding_count": 2,
+                    "columns": ["Client Name"],
+                    "rows": [["A"], ["B"]],
+                },
+                {
+                    "name": "Broken",
+                    "type": "eligibility",
+                    "level": "row",
+                    "findings": "matches",
+                    "status": "failed",
+                    "error": "no such column",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(_remote.RemoteClient, "_request", fake_request)
+    result = runner.invoke(
+        app,
+        [
+            "rules",
+            "evaluate",
+            "--type",
+            "eligibility",
+            "--limit",
+            "5",
+            "-s",
+            "http://x",
+            "-f",
+            "csv",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "High Value Client,eligibility,,executed,2," in result.stdout
+    assert "Broken,eligibility,,failed,,no such column" in result.stdout
+
+
+def test_rules_evaluate_remote_one_rule(monkeypatch):
+    from orionbelt.cli import _remote
+
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
+        if (method, path) == ("GET", "/rules"):
+            return {
+                "dialect": "duckdb",
+                "rules": [
+                    {
+                        "name": "Low Stock Product",
+                        "type": "classification",
+                        "level": "aggregate",
+                        "findings": "matches",
+                        "executable": True,
+                    }
+                ],
+            }
+        assert (method, path, json) == (
+            "POST",
+            "/rules/Low%20Stock%20Product/evaluate",
+            {"limit": 20},
+        )
+        return {
+            "name": "Low Stock Product",
+            "type": "classification",
+            "level": "aggregate",
+            "findings": "matches",
+            "dialect": "duckdb",
+            "columns": [{"name": "Product Name"}],
+            "rows": [["Duo"]],
+            "row_count": 1,
+        }
+
+    monkeypatch.setattr(_remote.RemoteClient, "_request", fake_request)
+    result = runner.invoke(
+        app, ["rules", "evaluate", "-r", "Low Stock Product", "-s", "http://x", "-f", "csv"]
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip().splitlines() == ["Product Name", "Duo"]
+
+
+def test_rules_list_remote(monkeypatch):
+    from orionbelt.cli import _remote
+
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
+        assert (method, path, params) == ("GET", "/rules", {"dialect": "postgres"})
+        return {
+            "dialect": "postgres",
+            "rules": [
+                {
+                    "name": "A",
+                    "type": "validation",
+                    "level": "row",
+                    "findings": "violations",
+                    "severity": "error",
+                    "executable": False,
+                    "error": "bad",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(_remote.RemoteClient, "_request", fake_request)
+    result = runner.invoke(app, ["rules", "list", "-d", "postgres", "-s", "http://x", "-f", "csv"])
+    assert result.exit_code == 0, result.output
+    assert "A,validation,row,error,violations,no,bad" in result.stdout
+
+
+# -- diagram / graph downloads ------------------------------------------------
+
+
+def test_diagram_markdown_to_file(model_file, tmp_path):
+    out = tmp_path / "er.md"
+    result = runner.invoke(app, ["diagram", model_file, "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    text = out.read_text(encoding="utf-8")
+    assert text.startswith("```mermaid\n")
+    assert text.endswith("\n```\n")
+    assert "erDiagram" in text
+
+
+def test_diagram_markdown_flag_to_stdout(model_file):
+    result = runner.invoke(app, ["diagram", model_file, "--md"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("```mermaid\n")
+
+
+def test_diagram_plain_file_stays_raw(model_file, tmp_path):
+    out = tmp_path / "er.mmd"
+    result = runner.invoke(app, ["diagram", model_file, "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    assert not out.read_text(encoding="utf-8").startswith("```")
+
+
+def test_diagram_remote(monkeypatch, tmp_path):
+    from orionbelt.cli import _remote
+
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
+        assert (method, path) == ("GET", "/diagram/er")
+        assert params == {"show_columns": "false", "theme": "dark"}
+        return {"mermaid": "erDiagram\n    A ||--o{ B : x"}
+
+    monkeypatch.setattr(_remote.RemoteClient, "_request", fake_request)
+    out = tmp_path / "er.md"
+    result = runner.invoke(
+        app, ["diagram", "--no-columns", "--theme", "dark", "-s", "http://x", "-o", str(out)]
+    )
+    assert result.exit_code == 0, result.output
+    assert out.read_text(encoding="utf-8") == "```mermaid\nerDiagram\n    A ||--o{ B : x\n```\n"
+
+
+def test_graph_to_file(model_file, tmp_path):
+    out = tmp_path / "model.ttl"
+    result = runner.invoke(app, ["graph", model_file, "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    assert "@prefix obsl:" in out.read_text(encoding="utf-8")
+
+
+def test_graph_remote(monkeypatch):
+    from orionbelt.cli import _remote
+
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
+        assert (method, path, text) == ("GET", "/graph", True)
+        return "@prefix obsl: <https://ralforion.com/ns/obsl#> .\n"
+
+    monkeypatch.setattr(_remote.RemoteClient, "_request", fake_request)
+    result = runner.invoke(app, ["graph", "-s", "http://x"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("@prefix obsl:")
+
+
+def test_graph_local_requires_model():
+    result = runner.invoke(app, ["graph"])
+    assert result.exit_code == 1
+    assert "MODEL is required" in result.output
+
+
+def _remote_rules(monkeypatch, *, evaluate_fails: bool):
+    """Fake server: a validation rule 'A' and a classification rule 'B'."""
+    from orionbelt.cli import _local, _remote
+
+    calls = []
+
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
+        calls.append((method, path))
+        if (method, path) == ("GET", "/rules"):
+            return {
+                "dialect": "duckdb",
+                "rules": [
+                    {
+                        "name": "A",
+                        "type": "validation",
+                        "level": "row",
+                        "findings": "violations",
+                        "severity": "error",
+                        "executable": True,
+                    },
+                    {
+                        "name": "B",
+                        "type": "classification",
+                        "level": "row",
+                        "findings": "matches",
+                        "severity": None,
+                        "executable": True,
+                    },
+                ],
+            }
+        if evaluate_fails:
+            raise _local.CliError("Server returned 422: Query resolution failed")
+        return {
+            "name": path.split("/")[2],
+            "type": "validation",
+            "level": "row",
+            "findings": "violations",
+            "dialect": "duckdb",
+            "columns": [{"name": "x"}],
+            "rows": [],
+            "row_count": 0,
+        }
+
+    monkeypatch.setattr(_remote.RemoteClient, "_request", fake_request)
+    return calls
+
+
+def test_rules_evaluate_remote_named_failure_survives_type_filter(monkeypatch):
+    """A selected rule that fails keeps its row, so --type cannot turn it into a pass."""
+    _remote_rules(monkeypatch, evaluate_fails=True)
+    result = runner.invoke(
+        app,
+        ["rules", "evaluate", "-r", "A", "--type", "validation", "-s", "http://x", "-f", "json"],
+    )
+    assert result.exit_code == 1
+    rules = json.loads(result.stdout)["rules"]
+    assert [(r["name"], r["type"], r["status"]) for r in rules] == [("A", "validation", "failed")]
+
+
+def test_rules_evaluate_remote_filters_before_running(monkeypatch):
+    calls = _remote_rules(monkeypatch, evaluate_fails=False)
+    result = runner.invoke(
+        app,
+        [
+            "rules",
+            "evaluate",
+            "-r",
+            "A",
+            "-r",
+            "B",
+            "--type",
+            "validation",
+            "-s",
+            "http://x",
+            "-f",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert [r["name"] for r in json.loads(result.stdout)["rules"]] == ["A"]
+    assert ("POST", "/rules/B/evaluate") not in calls
+
+
+def test_rules_evaluate_remote_unknown_rule(monkeypatch):
+    calls = _remote_rules(monkeypatch, evaluate_fails=False)
+    result = runner.invoke(app, ["rules", "evaluate", "-r", "Nope", "-s", "http://x"])
+    assert result.exit_code == 1
+    assert "Unknown rule(s): Nope" in result.output
+    assert all(method == "GET" for method, _ in calls)

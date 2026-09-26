@@ -15,14 +15,15 @@ from __future__ import annotations
 
 import os
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 
 from orionbelt import __version__
-from orionbelt.cli._local import CliError
+from orionbelt.cli._local import CliError, RuleOutcome
 from orionbelt.models.query import QueryObject
 
 # Generous default: a remote ``execute`` may hit a cold warehouse connection.
@@ -163,6 +164,7 @@ class RemoteClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        text: bool = False,
     ) -> Any:
         url = f"{self.base}/v1{path}"
         try:
@@ -179,7 +181,7 @@ class RemoteClient:
             raise CliError(f"Could not reach server {self.base}: {exc}") from None
         if resp.status_code >= 400:
             raise CliError(f"Server returned {resp.status_code}: {_detail(resp)}")
-        return resp.json()
+        return resp.text if text else resp.json()
 
     # -- operations ---------------------------------------------------------
 
@@ -264,6 +266,158 @@ class RemoteClient:
     def dialects(self) -> list[str]:
         data = self._get("/dialects")
         return [d["name"] for d in data.get("dialects", [])]
+
+    def diagram(self, *, show_columns: bool, theme: str) -> str:
+        """The curated model's Mermaid ER diagram."""
+        params = {"show_columns": str(show_columns).lower(), "theme": theme}
+        return str(self._get("/diagram/er", params=params)["mermaid"])
+
+    def graph(self) -> str:
+        """The curated model's OBSL-Core RDF graph as Turtle."""
+        return str(self._request("GET", "/graph", text=True))
+
+    def sparql(self, query: str) -> dict[str, Any]:
+        """Run a read-only SPARQL query against the server's curated model graph."""
+        return cast("dict[str, Any]", self._post("/sparql", {"query": query}))
+
+    # -- business rules -----------------------------------------------------
+    #
+    # The rules endpoints answer in several shapes; each method maps its answer
+    # onto ``RuleOutcome`` so the commands render local and remote results the
+    # same way.
+
+    def list_rules(self, dialect: str | None) -> tuple[str, list[RuleOutcome]]:
+        """Every rule of the curated model, and whether its query compiles."""
+        data = self._get("/rules", params={"dialect": dialect} if dialect else None)
+        outcomes = [
+            RuleOutcome(
+                name=r["name"],
+                type=r.get("type", ""),
+                level=r.get("level", ""),
+                findings=r.get("findings", ""),
+                severity=r.get("severity"),
+                status="compiled" if r.get("executable") else "failed",
+                error=r.get("error"),
+            )
+            for r in data.get("rules", [])
+        ]
+        return str(data.get("dialect", "")), outcomes
+
+    def compile_rules(
+        self, dialect: str | None, names: list[str] | None = None
+    ) -> tuple[str, list[RuleOutcome]]:
+        """Compile the named rules, or every rule when none are named."""
+        body = {"dialect": dialect} if dialect else {}
+        if not names:
+            data = self._post("/rules/compile", body)
+            outcomes = [_outcome(r) for r in data.get("results", [])]
+            return str(data.get("dialect", dialect or "")), outcomes
+        results = [
+            self._per_rule(name, "compile", body, lambda d: {**d, "status": "compiled"})
+            for name in names
+        ]
+        return dialect or _first_dialect(results), [o for o, _ in results]
+
+    def evaluate_rules(
+        self,
+        dialect: str | None,
+        *,
+        names: list[str] | None = None,
+        types: list[str] | None = None,
+        severities: list[str] | None = None,
+        limit: int = 20,
+    ) -> tuple[str, list[RuleOutcome]]:
+        """Run the named rules, or every rule matching the filters when none are named."""
+        if not names:
+            body: dict[str, Any] = {"limit": limit, "include_rows": True, "include_sql": True}
+            for key, value in (("dialect", dialect), ("types", types), ("severities", severities)):
+                if value:
+                    body[key] = value
+            data = self._post("/rules/evaluate", body)
+            report = [_outcome(r) for r in data.get("results", [])]
+            return str(data.get("dialect", dialect or "")), report
+
+        # Select before running, as local mode does: resolve each named rule's
+        # type and severity from the rule list, refuse unknown names, and run
+        # only the rules that match. A selected rule that then fails keeps its
+        # row, so a failure can never be filtered away into a passing exit.
+        _, listed = self.list_rules(dialect)
+        known = {o.name: o for o in listed}
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            raise CliError(
+                f"Unknown rule(s): {', '.join(unknown)}. "
+                f"Rules in the model: {', '.join(known) or 'none'}"
+            )
+        selected = [
+            known[n]
+            for n in names
+            if (not types or known[n].type in types)
+            and (not severities or known[n].severity in severities)
+        ]
+        per_rule_body: dict[str, Any] = {"limit": limit}
+        if dialect:
+            per_rule_body["dialect"] = dialect
+        outcomes = []
+        dialects: list[tuple[RuleOutcome, str | None]] = []
+        for rule in selected:
+            outcome, used = self._per_rule(rule.name, "evaluate", per_rule_body, _evaluated)
+            if outcome.status == "failed":
+                outcome = replace(
+                    outcome,
+                    type=rule.type,
+                    level=rule.level,
+                    findings=rule.findings,
+                    severity=rule.severity,
+                )
+            outcomes.append(outcome)
+            dialects.append((outcome, used))
+        return dialect or _first_dialect(dialects), outcomes
+
+    def _per_rule(
+        self, name: str, action: str, body: dict[str, Any], shape: Any
+    ) -> tuple[RuleOutcome, str | None]:
+        """Call ``/rules/{name}/{action}``; a refusal is that rule's failed row."""
+        try:
+            data = self._post(f"/rules/{quote(name, safe='')}/{action}", body)
+        except CliError as exc:
+            failed = RuleOutcome(
+                name=name,
+                type="",
+                level="",
+                findings="",
+                severity=None,
+                status="failed",
+                error=str(exc),
+            )
+            return failed, None
+        return _outcome(shape(data)), data.get("dialect")
+
+
+def _outcome(item: dict[str, Any]) -> RuleOutcome:
+    """A ``RuleOutcome`` from any rules endpoint's per-rule item."""
+    return RuleOutcome(
+        name=item["name"],
+        type=item.get("type", ""),
+        level=item.get("level", ""),
+        findings=item.get("findings", ""),
+        severity=item.get("severity"),
+        status=item.get("status", "compiled"),
+        sql=item.get("sql"),
+        error=item.get("error"),
+        finding_count=item.get("finding_count"),
+        columns=[c if isinstance(c, str) else c.get("name", "") for c in item.get("columns", [])],
+        rows=item.get("rows") or [],
+    )
+
+
+def _evaluated(data: dict[str, Any]) -> dict[str, Any]:
+    """Shape a ``/rules/{name}/evaluate`` answer like a report item."""
+    return {**data, "status": "executed", "finding_count": data.get("row_count")}
+
+
+def _first_dialect(results: list[tuple[RuleOutcome, str | None]]) -> str:
+    return next((d for _, d in results if d), "")
 
 
 def _detail(resp: httpx.Response) -> str:
