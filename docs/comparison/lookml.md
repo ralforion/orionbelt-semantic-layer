@@ -288,7 +288,7 @@ For embedded SaaS, multi-tenant analytics, or air-gapped/on-prem use cases, OBSL
 - Your consumers are **applications, agents, or LLMs** — a stable JSON Query API beats requiring callers to know LookML.
 - You need first-class, *reusable* **cumulative** and **period-over-period** metric types instead of expressing them as table calculations.
 - You target ClickHouse, Databricks, Dremio, or DuckDB.
-- You want a **graph view of the model** (RDF/SPARQL) for governance/lineage tooling.
+- You want a **graph view of the model** (RDF/SPARQL) and **lineage per artefact and per query** (REST, CLI, UI) for governance tooling.
 - You need **multi-tenant** semantic models (sessions, TTL) without provisioning a Looker instance per tenant.
 - Cost matters and per-user Looker licensing isn't justifiable for your use case.
 
@@ -323,6 +323,7 @@ A common hybrid: ship Looker for the human BI audience and run OBSL alongside it
 
 ## References
 
+- Looker lineage in Knowledge Catalog (Looker Google Cloud core, Preview): https://docs.cloud.google.com/looker/docs/looker-core-lineage
 - LookML `test` parameter (data tests): https://cloud.google.com/looker/docs/reference/param-model-test
 - LookML `tags` parameter: https://docs.cloud.google.com/looker/docs/reference/param-field-tags
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`

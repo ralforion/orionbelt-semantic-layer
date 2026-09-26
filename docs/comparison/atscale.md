@@ -230,7 +230,7 @@ The free **Developer Community Edition** lowers AtScale's barrier for evaluation
 | Role-playing dimensions | Via `secondary: true` + `pathName` (different mechanism) | First-class OLAP idiom |
 | Enterprise RLS / governance | ❌ | ✅ |
 | Perspectives (model subsets) | Via separate models | ✅ |
-| Lineage / impact analysis | ❌ | ✅ |
+| Lineage / impact analysis | ✅ lineage for each dimension, measure, metric and rule and per query, down to columns, tables and joins (REST, CLI, UI, Turtle); downstream impact via SPARQL over the model graph | ✅ Lineage panel over SML objects within a repository, upstream and downstream |
 | Multi-rooted DAG modeling | ✅ via CFL | ❌ (cube-rooted) |
 | Named secondary join paths (per-query) | ✅ | Role-playing dimensions are model-time, not query-time |
 | First-class declarative PoP metric type | ✅ | Via MDX (more flexible but less turnkey) |
@@ -273,7 +273,7 @@ The free **Developer Community Edition** lowers AtScale's barrier for evaluation
 - You want **first-class declarative cumulative and period-over-period metric types** rather than expressing them as MDX calculated members.
 - You target **DuckDB, Dremio, or ClickHouse** with full driver coverage.
 - You want **OSI interoperability** for portability between semantic layers.
-- You want a **graph view of the model** (RDF/SPARQL) for governance/lineage tooling without buying enterprise software.
+- You want a **graph view of the model** (RDF/SPARQL) and **per-query lineage** for governance tooling without buying enterprise software.
 - Your operational appetite is small — **one Python service**, no separate model designer or aggregate engine to operate.
 
 ### They could coexist
@@ -291,7 +291,7 @@ In a Microsoft-stack enterprise: AtScale serves the human BI audience (Excel, Po
 3. **Multi-level hierarchies, parent-child, ragged** — first-class OLAP dimension structures beyond simple grains.
 4. **Autonomous aggregates / pre-aggregations** — automated rollup creation and query routing (also a Cube gap).
 5. **Enterprise governance primitives** — RLS, perspectives, dimension/measure-level security, AD integration.
-6. **Lineage and impact analysis** — first-class governance surface.
+6. **Impact analysis as a view** — OBSL traces lineage upstream, per artefact and per query, and answers the downstream question (*"what reads this column?"*) with SPARQL; AtScale's Design Center shows both directions in one Lineage panel.
 7. **Time intelligence library** richer than the current `cumulative` + `period_over_period` types — full MDX-equivalent functions like `ParallelPeriod`, `OpeningPeriod`, `ClosingPeriod`.
 8. **Visual model designer** for non-developer authors.
 9. **More dialects** — Synapse, Redshift, Iceberg lakehouse format.
@@ -302,15 +302,18 @@ In a Microsoft-stack enterprise: AtScale serves the human BI audience (Excel, Po
 2. **Multi-rooted DAG modeling with explicit CFL multi-fact planning** — the ability to query across genuinely independent fact tables in one go without pre-designing a cube.
 3. **First-class declarative cumulative & period-over-period metric types** — turnkey alternatives to writing MDX calculated members.
 4. **RDF/SPARQL graph surface** for governance/lineage tooling outside the proprietary platform.
-5. **A modern, open-protocol SQL wire surface for BI tools** — OBSL ships both **PostgreSQL wire** (Tableau / DBeaver / Superset / Power BI / `psql` / Dremio's Postgres-source connector, v2.5.0+) and **Apache Arrow Flight SQL** (gRPC, columnar, JDBC/ODBC via Flight SQL drivers) side-by-side; AtScale's BI-tool surface is JDBC/ODBC + MDX/DAX through the enterprise gateway.
-6. **First-class DB-API 2.0 drivers** for direct programmatic access from Python.
-7. ~~MCP server (first-party)~~ — **closed**: AtScale ships its own containerized MCP Server exposing models, hierarchies, and metrics under role-based access.
-8. **Plain-text portable model format** — OBML is a static YAML file that diffs in Git; AtScale models are richer but harder to version-control as plain text.
+5. **Per-query lineage down to tables and joins** — AtScale's Queries page lists the attributes and metrics a query used; OBSL also shows the planner's joins and exports the lineage as RDF.
+6. **A modern, open-protocol SQL wire surface for BI tools** — OBSL ships both **PostgreSQL wire** (Tableau / DBeaver / Superset / Power BI / `psql` / Dremio's Postgres-source connector, v2.5.0+) and **Apache Arrow Flight SQL** (gRPC, columnar, JDBC/ODBC via Flight SQL drivers) side-by-side; AtScale's BI-tool surface is JDBC/ODBC + MDX/DAX through the enterprise gateway.
+7. **First-class DB-API 2.0 drivers** for direct programmatic access from Python.
+8. ~~MCP server (first-party)~~ — **closed**: AtScale ships its own containerized MCP Server exposing models, hierarchies, and metrics under role-based access.
+9. **Plain-text portable model format** — OBML is a static YAML file that diffs in Git; AtScale models are richer but harder to version-control as plain text.
 
 ---
 
 ## References
 
+- AtScale Design Center Lineage panel: https://documentation.atscale.com/container/creating-and-sharing-cubes/navigating-the-cube-designer-canvas/lineage
+- AtScale Queries page (attributes and metrics a query used): https://documentation.atscale.com/container/managing-atscale/monitoring-queries/using-the-queries-tab
 - AtScale SML overview: https://documentation.atscale.com/container/creating-and-sharing-cubes/working-with-models-programmatically/sml
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`
 - OBSL CFL planner: `src/orionbelt/compiler/cfl.py`

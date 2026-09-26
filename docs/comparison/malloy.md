@@ -298,7 +298,7 @@ Malloy's time syntax is more ergonomic in a query; OBSL's metric types are more 
 - You need first-class, *reusable* **cumulative** and **period-over-period** metric definitions (vs. embedding window logic in each query).
 - You target **ClickHouse, Databricks, or Dremio**.
 - You need **named alternative join paths** for ambiguous graphs.
-- You want a **graph view of the model** (RDF/SPARQL) for governance/lineage tooling.
+- You want a **graph view of the model** (RDF/SPARQL) and **lineage per artefact and per query** (REST, CLI, UI) for governance tooling.
 - You want a **fully self-hostable, embeddable** semantic engine with no DSL dependency on the consumer side.
 
 ### They could coexist
@@ -329,6 +329,7 @@ It's plausible to use both: Malloy as the analyst-facing modeling/exploration la
 
 ## References
 
+- Malloy documentation (no lineage feature documented): https://docs.malloydata.dev/documentation/
 - Malloy tags and annotations: https://docs.malloydata.dev/documentation/language/tags
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`
 - OBSL CFL planner: `src/orionbelt/compiler/cfl.py`
