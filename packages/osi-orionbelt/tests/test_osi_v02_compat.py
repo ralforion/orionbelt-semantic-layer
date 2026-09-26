@@ -199,12 +199,11 @@ class TestPrimaryKey:
     def test_pk_roundtrip_restores_per_column_flag(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
         obml = conv.OSItoOBML(osi).convert()
-        # OSI fields surface as OBML columns keyed by physical code
-        # (display names are an OBML-side concept).
+        # OSI fields are keyed by physical code; the OBML column names come back.
         cols = obml["dataObjects"]["Orders"]["columns"]
-        assert cols["order_id"].get("primaryKey") is True
-        assert cols["line_no"].get("primaryKey") is True
-        assert cols["amount"].get("primaryKey") is None or not cols["amount"]["primaryKey"]
+        assert cols["Order ID"].get("primaryKey") is True
+        assert cols["Line Number"].get("primaryKey") is True
+        assert not cols["Amount"].get("primaryKey")
 
     def test_unknown_pk_column_emits_warning(self) -> None:
         bad = {
@@ -262,7 +261,7 @@ class TestFieldLabel:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
         obml = conv.OSItoOBML(osi).convert()
         # OSI label round-trips back into OBSL customExtensions
-        col = obml["dataObjects"]["Orders"]["columns"]["order_id"]
+        col = obml["dataObjects"]["Orders"]["columns"]["Order ID"]
         exts = col.get("customExtensions", [])
         # OSI label round-trips back into an OSI-vendor customExtension
         assert any(

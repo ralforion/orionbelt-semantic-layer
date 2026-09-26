@@ -6,12 +6,14 @@ clear 503 (not a 500) when the converter package is not installed.
 
 from __future__ import annotations
 
+import copy
 import importlib
 
 import pytest
 from fastapi import HTTPException
 
 from orionbelt.api import osi_support
+from orionbelt.parser.resolver import ReferenceResolver
 
 
 def test_get_converter_module_returns_package() -> None:
@@ -56,3 +58,21 @@ def test_get_converter_module_reraises_inner_import_error(monkeypatch: pytest.Mo
     with pytest.raises(ModuleNotFoundError) as excinfo:
         osi_support.get_converter_module()
     assert excinfo.value.name == "some_missing_dep"
+
+
+def test_sales_model_roundtrip_through_ossie_stays_valid(
+    sales_model_raw: tuple[dict, object], resolver: ReferenceResolver
+) -> None:
+    """OBML -> Ossie -> OBML returns the same measures and metrics, still valid.
+
+    The export names Ossie fields by physical code; the import must restore the
+    OBML column names, or measure filters point at columns that no longer exist.
+    """
+    mod = osi_support.get_converter_module()
+    raw, _ = sales_model_raw
+    back = mod.OSItoOBML(mod.OBMLtoOSI(copy.deepcopy(raw)).convert()).convert()
+
+    assert back["measures"] == raw["measures"]
+    assert back["metrics"] == raw["metrics"]
+    _, result = resolver.resolve(back)
+    assert result.valid, result.errors
