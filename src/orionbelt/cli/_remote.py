@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
@@ -359,20 +359,45 @@ class RemoteClient:
                 if value:
                     body[key] = value
             data = self._post("/rules/evaluate", body)
-            outcomes = [_outcome(r) for r in data.get("results", [])]
-            return str(data.get("dialect", dialect or "")), outcomes
+            report = [_outcome(r) for r in data.get("results", [])]
+            return str(data.get("dialect", dialect or "")), report
 
+        # Select before running, as local mode does: resolve each named rule's
+        # type and severity from the rule list, refuse unknown names, and run
+        # only the rules that match. A selected rule that then fails keeps its
+        # row, so a failure can never be filtered away into a passing exit.
+        _, listed = self.list_rules(dialect)
+        known = {o.name: o for o in listed}
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            raise CliError(
+                f"Unknown rule(s): {', '.join(unknown)}. "
+                f"Rules in the model: {', '.join(known) or 'none'}"
+            )
+        selected = [
+            known[n]
+            for n in names
+            if (not types or known[n].type in types)
+            and (not severities or known[n].severity in severities)
+        ]
         per_rule_body: dict[str, Any] = {"limit": limit}
         if dialect:
             per_rule_body["dialect"] = dialect
-        results = [self._per_rule(name, "evaluate", per_rule_body, _evaluated) for name in names]
-        outcomes = [
-            o
-            for o, _ in results
-            if (not types or o.type in types)
-            and (not severities or o.status == "failed" or o.severity in severities)
-        ]
-        return dialect or _first_dialect(results), outcomes
+        outcomes = []
+        dialects: list[tuple[RuleOutcome, str | None]] = []
+        for rule in selected:
+            outcome, used = self._per_rule(rule.name, "evaluate", per_rule_body, _evaluated)
+            if outcome.status == "failed":
+                outcome = replace(
+                    outcome,
+                    type=rule.type,
+                    level=rule.level,
+                    findings=rule.findings,
+                    severity=rule.severity,
+                )
+            outcomes.append(outcome)
+            dialects.append((outcome, used))
+        return dialect or _first_dialect(dialects), outcomes
 
     def _per_rule(
         self, name: str, action: str, body: dict[str, Any], shape: Any

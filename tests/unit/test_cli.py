@@ -905,6 +905,19 @@ def test_rules_evaluate_remote_one_rule(monkeypatch):
     from orionbelt.cli import _remote
 
     def fake_request(self, method, path, *, json=None, params=None, text=False):
+        if (method, path) == ("GET", "/rules"):
+            return {
+                "dialect": "duckdb",
+                "rules": [
+                    {
+                        "name": "Low Stock Product",
+                        "type": "classification",
+                        "level": "aggregate",
+                        "findings": "matches",
+                        "executable": True,
+                    }
+                ],
+            }
         assert (method, path, json) == (
             "POST",
             "/rules/Low%20Stock%20Product/evaluate",
@@ -1109,3 +1122,94 @@ def test_lineage_remote_sql_needs_local_model():
     result = runner.invoke(app, ["lineage", "--sql", "SELECT 1", "-s", "http://x"])
     assert result.exit_code == 1
     assert "-q" in result.output
+
+
+def _remote_rules(monkeypatch, *, evaluate_fails: bool):
+    """Fake server: a validation rule 'A' and a classification rule 'B'."""
+    from orionbelt.cli import _local, _remote
+
+    calls = []
+
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
+        calls.append((method, path))
+        if (method, path) == ("GET", "/rules"):
+            return {
+                "dialect": "duckdb",
+                "rules": [
+                    {
+                        "name": "A",
+                        "type": "validation",
+                        "level": "row",
+                        "findings": "violations",
+                        "severity": "error",
+                        "executable": True,
+                    },
+                    {
+                        "name": "B",
+                        "type": "classification",
+                        "level": "row",
+                        "findings": "matches",
+                        "severity": None,
+                        "executable": True,
+                    },
+                ],
+            }
+        if evaluate_fails:
+            raise _local.CliError("Server returned 422: Query resolution failed")
+        return {
+            "name": path.split("/")[2],
+            "type": "validation",
+            "level": "row",
+            "findings": "violations",
+            "dialect": "duckdb",
+            "columns": [{"name": "x"}],
+            "rows": [],
+            "row_count": 0,
+        }
+
+    monkeypatch.setattr(_remote.RemoteClient, "_request", fake_request)
+    return calls
+
+
+def test_rules_evaluate_remote_named_failure_survives_type_filter(monkeypatch):
+    """A selected rule that fails keeps its row, so --type cannot turn it into a pass."""
+    _remote_rules(monkeypatch, evaluate_fails=True)
+    result = runner.invoke(
+        app,
+        ["rules", "evaluate", "-r", "A", "--type", "validation", "-s", "http://x", "-f", "json"],
+    )
+    assert result.exit_code == 1
+    rules = json.loads(result.stdout)["rules"]
+    assert [(r["name"], r["type"], r["status"]) for r in rules] == [("A", "validation", "failed")]
+
+
+def test_rules_evaluate_remote_filters_before_running(monkeypatch):
+    calls = _remote_rules(monkeypatch, evaluate_fails=False)
+    result = runner.invoke(
+        app,
+        [
+            "rules",
+            "evaluate",
+            "-r",
+            "A",
+            "-r",
+            "B",
+            "--type",
+            "validation",
+            "-s",
+            "http://x",
+            "-f",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert [r["name"] for r in json.loads(result.stdout)["rules"]] == ["A"]
+    assert ("POST", "/rules/B/evaluate") not in calls
+
+
+def test_rules_evaluate_remote_unknown_rule(monkeypatch):
+    calls = _remote_rules(monkeypatch, evaluate_fails=False)
+    result = runner.invoke(app, ["rules", "evaluate", "-r", "Nope", "-s", "http://x"])
+    assert result.exit_code == 1
+    assert "Unknown rule(s): Nope" in result.output
+    assert all(method == "GET" for method, _ in calls)
