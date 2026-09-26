@@ -1,14 +1,14 @@
 ---
-description: OrionBelt Semantic Layer is a source-available Semantic Sidecar for agentic AI, analytics, data quality, and governance. YAML models compile to SQL across 8 dialects, exposed via REST, MCP, Arrow Flight SQL, and Postgres wire.
+description: OrionBelt Semantic Layer is a source-available Semantic and Context Layer and Rule Engine that runs as a Semantic Sidecar for agentic AI, analytics, data quality, and governance. YAML models compile to SQL across 8 dialects, exposed via REST, MCP, Arrow Flight SQL, and Postgres wire.
 ---
 
 <p align="center">
   <img src="assets/ORIONBELT_Logo.png" alt="OrionBelt Logo" width="400">
 </p>
 
-# OrionBelt&reg; Semantic Layer and Sidecar
+# OrionBelt&reg; Semantic and Context Layer, Rule Engine, and Semantic Sidecar
 
-**A source-available Semantic Sidecar for agentic AI, analytics, data quality, and governance systems.**
+**A source-available Semantic and Context Layer and Rule Engine, run as a Semantic Sidecar for agentic AI, analytics, data quality, and governance systems.**
 
 **Inject governed semantics into systems that never had them.**
 
@@ -28,6 +28,18 @@ OBSL applies the same pattern to **semantics**:
 - It's **multi-surface by design.** The same model is reachable over REST (for agents and apps), MCP (for LLM clients), Arrow Flight SQL + PostgreSQL wire (for BI tools), and direct DB-API drivers (for Python). One model, many channels.
 - It's **opinionated about correctness, not deployment.** Dialect-aware SQL generation, fan-trap-safe joins, and dimensional metrics are non-negotiable; where to run OBSL — embedded in your app, alongside a warehouse, behind a proxy, in a single container — is your call.
 - It's **source-available, with a clock on it.** BUSL-1.1 today, converts to Apache 2.0 in 2030. No SaaS lock-in is required to use the full v2.6 surface.
+
+## What is a Context Layer?
+
+A semantic layer tells a consumer *how* to compute a number: which table, which join, which aggregate. A context layer also tells it *what the number means* and what the business expects of it, in a form an agent can look up instead of guess. In OBSL that context lives in the same model as the metrics:
+
+- **[Business rules](guide/business-rules.md)** state conditions over the model's dimensions, measures and metrics: who counts as a high-value client, which categories must not sell at a loss. The rule engine compiles each rule to the query that reports its members or violations, and evaluates one rule or all of them into a report over the API, MCP, the CLI (`obsl rules evaluate`) and the UI. The CLI exits non-zero when a rule fails to compile or run, not when it finds violations; a validation rule that runs and reports violations still exits 0, so check its findings (for example with `-f json`) to fail a data-quality job on them.
+- **[External concept mappings](guide/concept-mappings.md)** link data objects, dimensions, measures, metrics and rules to the concepts your organisation already governs (schema.org, FIBO, an internal vocabulary), with provenance.
+- **[The OBSL graph](guide/obsl.md)** exposes every loaded model as RDF, so its artefacts, joins, rules and concept links can be queried with SPARQL.
+- **[Lineage](api/endpoints.md#lineage)** shows what a dimension, measure, metric, rule or query is built from, down to the tables and the joins the planner chose, as a graph (JSON, Mermaid, or Turtle linked into the OBSL graph) in the API, the CLI (`obsl lineage`) and the UI.
+- **Descriptions, synonyms and owners** on each artefact give agents the vocabulary users actually speak.
+
+Agents reach all of it over MCP and REST, next to the query tools, so the same model that computes a number can also explain it.
 
 ## The OrionBelt trio
 
