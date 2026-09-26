@@ -110,7 +110,7 @@ class Lineage:
             left, right = _SHAPES[node.kind]
             label = _escape(node.name)
             if node.detail:
-                label += f"<br/><small>{_escape(node.detail)}</small>"
+                label += f"<br/>{_escape(node.detail)}"
             lines.append(f"    {ids[node.id]}{left}{label}{right}")
         for edge in self.edges:
             arrow = f"-- {_escape(edge.label)} -->" if edge.label else "-->"

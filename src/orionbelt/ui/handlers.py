@@ -1688,18 +1688,23 @@ def render_lineage(
     session_state: dict[str, str] | None,
     model_state: dict[str, str] | None,
     theme: str = "dark",
-) -> tuple[str, dict[str, str] | None, dict[str, str] | None]:
-    """The lineage of the picked artefact, or of the current query, as Mermaid markdown."""
+) -> tuple[str, str, dict[str, str] | None, dict[str, str] | None]:
+    """The lineage of the picked artefact, or of the current query.
+
+    Returns ``(markdown, raw_mermaid, session_state, model_state)``: the diagram
+    as a ```mermaid block to render, and the plain flowchart the .md download
+    saves.
+    """
     collection = LINEAGE_TYPES.get(lineage_type, "query")
     if collection == "query":
         try:
             query = yaml.safe_load(query_yaml or "")
         except yaml.YAMLError as exc:
-            return f"*Invalid query YAML:* {exc}", session_state, model_state
+            return f"*Invalid query YAML:* {exc}", "", session_state, model_state
         if isinstance(query, dict) and "query" in query and "select" not in query:
             query = query["query"]
         if not isinstance(query, dict):
-            return "*The query editor holds no query.*", session_state, model_state
+            return "*The query editor holds no query.*", "", session_state, model_state
         body, error, session_state, model_state = _model_request(
             model_yaml,
             api_url,
@@ -1710,7 +1715,7 @@ def render_lineage(
             payload={"model_id": None, "query": query, "dialect": dialect or None},
         )
     elif not name:
-        return f"*Pick a {lineage_type.lower()}.*", session_state, model_state
+        return f"*Pick a {lineage_type.lower()}.*", "", session_state, model_state
     else:
         from urllib.parse import quote
 
@@ -1724,10 +1729,14 @@ def render_lineage(
             f"{quote(name, safe='')}/lineage",
         )
     if body is None:
-        return f"**Lineage unavailable:** {error}", session_state, model_state
+        return f"**Lineage unavailable:** {error}", "", session_state, model_state
+    # Natural size (no useMaxWidth) so the box scrolls and the zoom slider
+    # scales; SVG text labels (no htmlLabels) so the .png download can draw the
+    # SVG on a canvas, which HTML labels in a foreignObject would taint.
     init = (
         f"%%{{init: {{'theme': '{theme}', "
-        "'themeVariables': {'fontFamily': 'Helvetica, Arial, sans-serif'}}}%%"
+        "'themeVariables': {'fontFamily': 'Helvetica, Arial, sans-serif'}, "
+        "'htmlLabels': false, 'flowchart': {'useMaxWidth': false, 'htmlLabels': false}}}%%"
     )
-    mermaid = f"{init}\n{body['mermaid']}"
-    return f"```mermaid\n{mermaid}\n```", session_state, model_state
+    raw: str = body["mermaid"]
+    return f"```mermaid\n{init}\n{raw}\n```", raw, session_state, model_state
