@@ -215,7 +215,8 @@ LINES = '"Order Lines"'
 AMT = f'{LINES}."AMT"'
 STATUS = f'{LINES}."STATUS"'
 COUNTRY = '"Customers"."COUNTRY"'
-MONTH = f"DATE_TRUNC('month', {LINES}.\"LINE_DT\")"
+# "Line Date" declares resultType: date, so the truncation is cast back to DATE.
+MONTH = f"CAST(DATE_TRUNC('month', {LINES}.\"LINE_DT\") AS DATE)"
 
 
 class TestSemanticsSpelledOut:
@@ -332,6 +333,21 @@ class TestExportedSqlRuns:
             assert any(name in w and "nested window" in w for w in warnings)
         back = conv.OSItoOBML(osi).convert()
         assert back["metrics"] == obml["metrics"]
+
+
+class TestReferenceCycles:
+    def test_indirect_cycle_is_left_out_not_a_crash(self) -> None:
+        obml = copy.deepcopy(_MODEL)
+        obml["metrics"] = {
+            "A": {"expression": "{[B]} + 1"},
+            "B": {"expression": "{[A]} * 2"},
+            "Running A": {"type": "cumulative", "measure": "A", "timeDimension": "Line Date"},
+        }
+        osi, warnings = _export(obml)
+        assert set(_sql(osi)) & {"A", "B", "Running A"} == set()
+        for name in ("A", "B", "Running A"):
+            assert any(f"'{name}'" in w and "not exported" in w for w in warnings), name
+        assert conv.OSItoOBML(osi).convert()["metrics"] == obml["metrics"]
 
 
 class TestNotPortableIsLeftOut:

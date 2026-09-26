@@ -27,7 +27,7 @@
 - **OSI** uses snake_case codes everywhere (`name: "store_sales"`)
 - **OBML** supports dual naming — a display name as the dictionary key and a `code` for the physical SQL reference
 
-During OSI → OBML conversion, field names are used directly as both the display name and code. During OBML → OSI conversion, the `code` value becomes the OSI field `name`, and the OBML column name rides in the field's `custom_extensions` (`obml_column_name`) so the reverse trip restores it. Metric expressions reference columns as `"<dataset>"."<field>"`: the OBML data object name and the column code, always double-quoted so reserved words parse and names match exactly. Cumulative and window metrics order and partition by each dimension at its `timeGrain` (`DATE_TRUNC`).
+During OSI → OBML conversion, field names are used directly as both the display name and code. During OBML → OSI conversion, the `code` value becomes the OSI field `name`, and the OBML column name rides in the field's `custom_extensions` (`obml_column_name`) so the reverse trip restores it. Metric expressions reference columns as `"<dataset>"."<field>"`: the OBML data object name and the column code, always double-quoted so reserved words parse and names match exactly. Cumulative and window metrics order and partition by each dimension exactly as the query groups it: truncated to its `timeGrain` (`DATE_TRUNC`) and cast back to a temporal `resultType`, as the compiler renders it. A reference cycle among metrics is left out with a warning.
 
 ### 2.2 Relationship Placement
 

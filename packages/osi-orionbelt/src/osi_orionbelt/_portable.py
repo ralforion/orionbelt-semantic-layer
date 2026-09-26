@@ -40,6 +40,11 @@ _QUERY_DEPENDENT_OPTIONS = {
 # result (``compiler/total_wrap.py``); anything not listed re-aggregates by SUM.
 _TOTAL_REAGG = {"min": "MIN", "max": "MAX"}
 
+# A time-grain dimension declaring one of these ``resultType``s is cast back to
+# it after truncation, as the compiler does (``compiler/resolution.py``), so the
+# query groups by the cast expression.
+_TEMPORAL_CASTS = {"date": "DATE", "timestamp": "TIMESTAMP", "time": "TIME"}
+
 _CUMULATIVE_FUNCS = {"sum", "avg", "min", "max", "count"}
 _GRAIN_TO_DATE = {"year", "quarter", "month", "week"}
 _WINDOW_FUNCS = {
@@ -174,13 +179,22 @@ class PortableRenderer:
         return self.column(ref.get("dataObject", ""), ref.get("column", ""))
 
     def _dimension(self, name: str) -> str:
-        """The dimension as the query groups by it, truncated to its ``timeGrain``."""
+        """The dimension exactly as the query groups by it.
+
+        A ``timeGrain`` truncates the column, and a temporal ``resultType`` casts
+        the truncation back to that type, as the compiler renders it; ordering
+        by anything else is not a grouped expression.
+        """
         dim = self.dimensions.get(name)
         if dim is None:
             raise NotPortableError(f"references unknown dimension '{name}'")
         column = self.column(dim.get("dataObject", ""), dim.get("column", ""))
         grain = dim.get("timeGrain")
-        return f"DATE_TRUNC({_string_literal(grain)}, {column})" if grain else column
+        if not grain:
+            return column
+        truncated = f"DATE_TRUNC({_string_literal(grain)}, {column})"
+        cast = _TEMPORAL_CASTS.get(str(dim.get("resultType", "")).lower())
+        return f"CAST({truncated} AS {cast})" if cast else truncated
 
     def _expression(self, template: str) -> str:
         return _COLUMN_REF.sub(lambda m: self.column(m.group(1), m.group(2)), template)
@@ -303,14 +317,19 @@ class PortableRenderer:
         finally:
             self._resolving.discard(name)
 
-    def _has_window(self, name: str) -> bool:
-        """Whether the expression for *name* already contains a window call."""
+    def _has_window(self, name: str, visiting: frozenset[str] = frozenset()) -> bool:
+        """Whether the expression for *name* already contains a window call.
+
+        Raises :class:`NotPortableError` on a reference cycle, direct or not.
+        """
+        if name in visiting:
+            raise NotPortableError(f"metric '{name}' is part of a reference cycle")
         if name in self.metrics:
             met = self.metrics[name]
             if met.get("type") in ("cumulative", "window"):
                 return True
             refs = _MEASURE_REF.findall(met.get("expression") or "")
-            return any(self._has_window(r) for r in refs if r != name)
+            return any(self._has_window(r, visiting | {name}) for r in refs)
         return bool(self.measures.get(name, {}).get("total"))
 
     def _windowed(self, name: str, ref: str) -> str:

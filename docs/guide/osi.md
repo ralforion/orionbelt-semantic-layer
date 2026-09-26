@@ -59,7 +59,7 @@ Another OSI tool reads a metric's SQL expression, not OrionBelt's vendor extensi
 | Measure `defaultValue` | `COALESCE(<aggregate>, <value>)` |
 | Synthesized count (`"Orders Count"`) | `COUNT(<dataset>.<primary key>)` |
 | Metric referencing measures or metrics | The referenced SQL, inlined |
-| Cumulative and window metrics | The window over the aggregated measure, ordered by the time dimension at its `timeGrain` (`DATE_TRUNC('month', ...)`) |
+| Cumulative and window metrics | The window over the aggregated measure, ordered by the time dimension exactly as the query groups it: truncated to its `timeGrain`, and cast back to a temporal `resultType` (`CAST(DATE_TRUNC('month', ...) AS DATE)`) |
 
 Some OBML definitions depend on the query and have no faithful single expression: period-over-period metrics, measures with `grain`, `filterContext` or `anchor`, and cumulative or window metrics over something that is already a window (a `total: true` measure, or another cumulative or window metric), since window calls cannot nest. The same goes for anything that references them. The export leaves these out of the OSI metrics, warns about each, and keeps them whole in the model-level `ORIONBELT` extension, so OBML → OSI → OBML still restores them.
 
