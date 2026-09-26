@@ -26,7 +26,7 @@ from orionbelt.service.lineage import (
     Lineage,
     LineageBuilder,
     LineageError,
-    query_joins,
+    query_plan_facts,
     to_turtle,
 )
 from orionbelt.service.model_store import ModelStore
@@ -101,7 +101,7 @@ def query_lineage(
     model = store.get_model(model_id)
     resolved = _resolve_dialect(request_dialect=dialect, model=model, fallback=get_db_vendor())
     result = compile_query_or_raise(store=store, model_id=model_id, query=query, dialect=resolved)
-    lineage = LineageBuilder(model).query(query, query_joins(result))
+    lineage = LineageBuilder(model).query(query, query_plan_facts(result))
     return lineage_response(lineage, model_id, fmt)
 
 

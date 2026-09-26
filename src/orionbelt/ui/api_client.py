@@ -315,13 +315,14 @@ def _model_request(
     *,
     payload: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
+    text: bool = False,
 ) -> tuple[Any, str, dict[str, str] | None, dict[str, str] | None]:
     """One call against the current model, recovering from an expired session.
 
     *path* may use ``{session_id}`` and ``{model_id}``; a *payload* key
     ``model_id`` set to ``None`` is filled in. Returns ``(body, error,
-    session_state, model_state)`` with ``body`` the JSON response, or ``None``
-    and ``error`` saying why.
+    session_state, model_state)`` with ``body`` the JSON response (the text,
+    with *text*), or ``None`` and ``error`` saying why.
     """
     if not model_yaml or not model_yaml.strip():
         return None, "No model loaded.", session_state, model_state
@@ -346,7 +347,7 @@ def _model_request(
             except ValueError:
                 detail = resp.text
             return None, _format_api_errors(detail), session_state, model_state
-        return resp.json(), "", session_state, model_state
+        return (resp.text if text else resp.json()), "", session_state, model_state
     except _ModelValidationError as exc:
         return None, _format_api_errors(exc.detail), session_state, model_state
     except httpx.ConnectError:

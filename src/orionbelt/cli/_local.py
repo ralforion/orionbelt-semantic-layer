@@ -376,14 +376,14 @@ def lineage(
     query comes as a query document or an OBSQL string; it is compiled so its
     lineage includes the joins the planner chose.
     """
-    from orionbelt.service.lineage import LineageBuilder, LineageError, query_joins
+    from orionbelt.service.lineage import LineageBuilder, LineageError, query_plan_facts
 
     store, model_id, model = _load(model_yaml)
     builder = LineageBuilder(model)
     if kind == "query":
         q = query if query is not None else _translate(model, str(sql))
         compiled = _compile(store, model_id, q, resolve_dialect(model, dialect))
-        return builder.query(q, query_joins(compiled)), model_id
+        return builder.query(q, query_plan_facts(compiled)), model_id
     build = {
         "dimension": builder.dimension,
         "measure": builder.measure,

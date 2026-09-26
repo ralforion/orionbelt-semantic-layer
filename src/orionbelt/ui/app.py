@@ -55,6 +55,7 @@ from orionbelt.ui.handlers import (
     filter_and_execute,
     filter_chip_update,
     lineage_names,
+    lineage_turtle,
     load_example_query,
     load_rules,
     model_example_choices,
@@ -475,8 +476,8 @@ _CSS = """\
 #er-diagram svg .er.relationshipLabel {
   font-family: Helvetica, Arial, sans-serif !important;
 }
-/* ── Ontology Graph controls: the two action buttons stay compact ── */
-.onto-actions {
+/* ── Compact button groups (Ontology Graph, Lineage): stay small, in one row ── */
+.compact-actions {
   flex: 0 0 auto !important;
   flex-wrap: nowrap !important;
   align-self: center;
@@ -493,6 +494,14 @@ _CSS = """\
   height: calc(100dvh - 220px); /* pre-script fallback: _fit_head() sizes it live */
   min-height: 400px;
 }
+/* Always-visible scrollbars: macOS overlay scrollbars stay hidden until a
+   scroll starts, which hides that a wide lineage scrolls sideways. */
+#lineage-diagram::-webkit-scrollbar { width: 10px; height: 10px; }
+#lineage-diagram::-webkit-scrollbar-thumb {
+  background: var(--border-color-primary);
+  border-radius: 5px;
+}
+#lineage-diagram::-webkit-scrollbar-corner { background: transparent; }
 #lineage-diagram svg {
   /* Sized by the zoom slider from the diagram's natural size; the box scrolls
      both ways. Gradio's Markdown CSS would otherwise shrink the SVG to the
@@ -916,18 +925,27 @@ _DETECT_THEME_JS = """
 }
 """
 
+
 # JS: download OBSL Turtle as a .ttl file
-_DOWNLOAD_TTL_JS = """(turtle) => {
-    if (!turtle) { alert('No OBSL graph available. Load a model first.'); return; }
+def _download_ttl_js(filename: str, empty_message: str) -> str:
+    """JS: download Turtle text as *filename*; alert *empty_message* when there is none."""
+    js = """(turtle) => {
+    if (!turtle) { alert('__EMPTY__'); return; }
     var blob = new Blob([turtle], {type: 'text/turtle'});
     var a = document.createElement('a');
-    a.download = 'obsl-model.ttl';
+    a.download = '__FILE__';
     a.href = URL.createObjectURL(blob);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(a.href);
 }"""
+    return js.replace("__FILE__", filename).replace("__EMPTY__", empty_message)
+
+
+_DOWNLOAD_TTL_JS = _download_ttl_js(
+    "obsl-model.ttl", "No OBSL graph available. Load a model first."
+)
 
 # JS: download the exported OSI model as a .osi.yaml file
 _DOWNLOAD_OSI_JS = """(osiYaml) => {
@@ -2536,7 +2554,7 @@ def create_blocks(
                     )
                     # Small and side by side at the right of the controls. They
                     # keep their own width when a narrow window wraps the row.
-                    with gr.Row(elem_classes=["onto-actions"]):
+                    with gr.Row(elem_classes=["compact-actions"]):
                         ontology_btn = gr.Button(
                             "Render Graph",
                             variant="primary",
@@ -2641,12 +2659,15 @@ def create_blocks(
                         label="Zoom %",
                         scale=1,
                     )
-                    lineage_md_btn = gr.Button("↓ .md", scale=0, min_width=60, size="sm")
-                    lineage_png_btn = gr.Button("↓ .png", scale=0, min_width=60, size="sm")
+                    with gr.Row(elem_classes=["compact-actions"]):
+                        lineage_md_btn = gr.Button("↓ .md", scale=0, min_width=60, size="sm")
+                        lineage_png_btn = gr.Button("↓ .png", scale=0, min_width=60, size="sm")
+                        lineage_ttl_btn = gr.Button("↓ .ttl", scale=0, min_width=60, size="sm")
                 # Hidden: the Mermaid theme (set by JS at call time) and the raw
                 # Mermaid text the .md download saves.
                 lineage_theme = gr.Textbox(value="dark", visible=False)
                 lineage_raw = gr.Textbox(value="", visible=False)
+                lineage_ttl = gr.Textbox(value="", visible=False)
                 lineage_output = gr.Markdown(
                     value="*The lineage of the current query appears here.*",
                     elem_id="lineage-diagram",
@@ -2721,6 +2742,15 @@ def create_blocks(
                 lineage_png_btn.click(
                     fn=None,
                     js=_download_png_js("#lineage-diagram", "lineage.png", "lineage"),
+                )
+                lineage_ttl_btn.click(
+                    fn=lineage_turtle,
+                    inputs=_lineage_inputs[:-1],
+                    outputs=[lineage_ttl, session_state, model_state],
+                ).then(
+                    fn=None,
+                    inputs=[lineage_ttl],
+                    js=_download_ttl_js("lineage.ttl", "No lineage available."),
                 )
 
             with gr.Tab("Business Rules", id=6) as rules_tab:

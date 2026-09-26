@@ -48,7 +48,7 @@ from orionbelt.models.semantic import (
 _MEASURE_REF = re.compile(r"\{\[([^\]]+)\]\}")
 
 #: Node kinds, in the order the Mermaid legend lists them.
-KINDS = ("data_object", "column", "dimension", "measure", "metric", "rule", "query")
+KINDS = ("data_object", "column", "dimension", "measure", "metric", "rule", "union", "query")
 
 _SHAPES = {
     "data_object": ('[("', '")]'),
@@ -57,6 +57,7 @@ _SHAPES = {
     "measure": ('{{"', '"}}'),
     "metric": ('[["', '"]]'),
     "rule": ('>"', '"]'),
+    "union": ('{"', '"}'),
     "query": ('(("', '"))'),
 }
 
@@ -67,6 +68,7 @@ _STYLES = {
     "measure": "fill:#fff4e0,stroke:#c98a1b,color:#4a3208",
     "metric": "fill:#fde8e8,stroke:#c0504d,color:#4a1d1c",
     "rule": "fill:#efe7fb,stroke:#7e57c2,color:#2e1f4a",
+    "union": "fill:#fff8d6,stroke:#b8962e,color:#4a3b0c",
     "query": "fill:#e0f2f1,stroke:#26877a,color:#123d38",
 }
 
@@ -157,7 +159,7 @@ def to_turtle(lineage: Lineage, model_id: str) -> str:
     by_id = {n.id: n for n in lineage.nodes}
     iris: dict[str, Node] = {}
     for node in lineage.nodes:
-        if node.kind == "query":
+        if node.kind in ("query", "union"):
             iri: Node = BNode()
             graph.add((iri, RDF.type, prov.Entity))
         else:
@@ -225,9 +227,9 @@ class LineageBuilder:
             raise LineageError(f"Rule '{name}' not found")
         return self._build(lambda: self._rule(name))
 
-    def query(self, query: QueryObject, joins: list[tuple[str, str, str]] | None = None) -> Lineage:
-        """Lineage of *query*; *joins* are the planner's ``(from, to, columns)`` steps."""
-        return self._build(lambda: self._query(query, joins or []))
+    def query(self, query: QueryObject, plan: QueryPlanFacts | None = None) -> Lineage:
+        """Lineage of *query*, with the planner's joins and legs from *plan*."""
+        return self._build(lambda: self._query(query, plan or QueryPlanFacts()))
 
     # ── graph plumbing ────────────────────────────────────────────────
 
@@ -386,7 +388,7 @@ class LineageBuilder:
                 self._edge(self._dimension(dim), node, "grain")
         return node
 
-    def _query(self, query: QueryObject, joins: list[tuple[str, str, str]]) -> str:
+    def _query(self, query: QueryObject, plan: QueryPlanFacts) -> str:
         node = self._node("query", "Query")
         for dim in query.select.dimensions:
             names = dim.coalesce if isinstance(dim, CoalesceDimension) else [dim]
@@ -407,9 +409,39 @@ class LineageBuilder:
             source = self._field(order.field)
             if source:
                 self._edge(source, node, "order")
-        for from_object, to_object, columns in joins:
+        for from_object, to_object, columns in plan.joins:
             self._edge(self._table(from_object), self._table(to_object), f"join on {columns}")
+        if plan.legs:
+            self._union(plan.legs)
         return node
+
+    def _union(self, legs: list[tuple[str, list[str]]]) -> None:
+        """Route each leg's measures through the ``UNION ALL`` that combines the legs.
+
+        A multi-fact query computes each fact's measures in its own leg and
+        stacks the legs with ``UNION ALL``; the metrics and the query read the
+        measures from there, so their edges from a leg's measure now start at
+        the union node.
+        """
+        union = self._node("union", "UNION ALL", f"{len(legs)} legs")
+        leg_of: dict[str, str] = {}
+        for source, measures in legs:
+            for measure in measures:
+                if measure in self._measures:
+                    leg_of[self._measure(measure)] = source
+        rerouted: list[LineageEdge] = []
+        for edge in self._lineage.edges:
+            target_kind = edge.target.split(":", 1)[0]
+            if edge.source in leg_of and target_kind in ("metric", "query"):
+                rerouted.append(LineageEdge(union, edge.target, edge.label))
+            else:
+                rerouted.append(edge)
+        self._lineage.edges = []
+        self._seen_edges.clear()
+        for edge in rerouted:
+            self._edge(edge.source, edge.target, edge.label)
+        for measure_node, source in leg_of.items():
+            self._edge(measure_node, union, f"leg {source}")
 
 
 def _condition_refs(condition: RuleCondition) -> tuple[list[str], list[str]]:
@@ -441,16 +473,29 @@ def _query_filter_fields(items: list[QueryFilter | QueryFilterGroup]) -> list[st
     return fields
 
 
-def query_joins(result: CompilationResult) -> list[tuple[str, str, str]]:
-    """The ``(from, to, columns)`` join steps the planner chose for a compiled query."""
+@dataclass
+class QueryPlanFacts:
+    """What the planner decided for a query that lineage shows.
+
+    ``joins`` are ``(from, to, columns)`` steps; ``legs`` are ``(fact, measures)``
+    for a multi-fact query, whose legs a ``UNION ALL`` combines.
+    """
+
+    joins: list[tuple[str, str, str]] = field(default_factory=list)
+    legs: list[tuple[str, list[str]]] = field(default_factory=list)
+
+
+def query_plan_facts(result: CompilationResult) -> QueryPlanFacts:
+    """The joins, and for a multi-fact query the legs, of a compiled query."""
+    facts = QueryPlanFacts()
     if result.explain is None:
-        return []
+        return facts
     steps = list(result.explain.joins)
     for leg in result.explain.cfl_legs:
         steps.extend(leg.join_steps)
-    joins: list[tuple[str, str, str]] = []
+        facts.legs.append((leg.measure_source, list(leg.measures)))
     for step in steps:
         join = (step.from_object, step.to_object, ", ".join(step.join_columns))
-        if join not in joins:
-            joins.append(join)
-    return joins
+        if join not in facts.joins:
+            facts.joins.append(join)
+    return facts

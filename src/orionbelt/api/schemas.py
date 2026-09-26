@@ -1332,7 +1332,8 @@ class LineageNodeItem(BaseModel):
 
     id: str = Field(description="Stable id: '<kind>:<name>' ('column:<data object>.<column>')")
     kind: str = Field(
-        description="table, column, dimension, measure, metric, rule or query",
+        description="data_object, column, dimension, measure, metric, rule, union "
+        "(the UNION ALL of a multi-fact query's legs) or query",
     )
     name: str
     detail: str | None = Field(
@@ -1350,7 +1351,8 @@ class LineageEdgeItem(BaseModel):
         default=None,
         description="How the source is used when it is not plain use: filter, grain, "
         "condition, rule, time, partition, where, having, order, via, anchor, rows, "
-        "expression, or 'join on <columns>' between tables",
+        "expression, 'join on <columns>' between data objects, or 'leg <fact>' into "
+        "a union",
     )
 
 
