@@ -301,13 +301,11 @@ class LineageBuilder:
 
     # ── semantic artefacts ────────────────────────────────────────────
 
-    def _field(self, name: str, data_object: str | None = None) -> str | None:
-        """The node a query field names; None when it names nothing in the model.
+    def _field(self, name: str) -> str | None:
+        """A dimension (optionally ``Name:grain``), measure or metric by name.
 
-        The exact name is looked up first, so a measure called ``Sales: Retail``
-        is that measure. Then a ``Dimension:grain`` suffix, then a raw
-        ``DataObject.Column`` reference, then, inside an ``exists`` subquery, a
-        bare column of that subquery's *data_object*.
+        The exact name wins, so a measure called ``Sales: Retail`` is that
+        measure; a ``:grain`` suffix is only read off a dimension name.
         """
         if name in self.model.dimensions:
             return self._dimension(name)
@@ -318,14 +316,42 @@ class LineageBuilder:
         base, _, _grain = name.rpartition(":")
         if base in self.model.dimensions:
             return self._dimension(base)
-        obj_name, _, col_name = name.partition(".")
-        obj = self.model.data_objects.get(obj_name.strip())
-        if obj is not None and col_name.strip() in obj.columns:
-            return self._column(obj_name.strip(), col_name.strip())
-        sub = self.model.data_objects.get(data_object or "")
-        if sub is not None and name in sub.columns:
-            return self._column(str(data_object), name)
         return None
+
+    def _qualified_column(self, ref: str) -> str | None:
+        """A ``DataObject.Column`` reference, as raw mode and filters read it."""
+        obj_name, _, col_name = ref.partition(".")
+        obj_name, col_name = obj_name.strip(), col_name.strip()
+        obj = self.model.data_objects.get(obj_name)
+        if obj is None or col_name not in obj.columns:
+            return None
+        return self._column(obj_name, col_name)
+
+    def _filter_field(self, name: str, *, having: bool) -> str | None:
+        """A query filter's field, in the compiler's order (``filter_resolution``).
+
+        A dimension, then for ``having`` a measure or metric, then a qualified
+        column.
+        """
+        if name in self.model.dimensions:
+            return self._dimension(name)
+        if having and (name in self._measures or name in self.model.metrics):
+            return self._field(name)
+        return self._qualified_column(name)
+
+    def _subquery_field(self, name: str, target: str) -> str | None:
+        """An ``exists`` subquery filter's field, in the compiler's order.
+
+        A column of the subquery's own data object shadows a same-named
+        dimension; then a dimension's column; then a qualified column.
+        """
+        target_obj = self.model.data_objects.get(target)
+        if target_obj is not None and name in target_obj.columns:
+            return self._column(target, name)
+        dim = self.model.dimensions.get(name)
+        if dim is not None and dim.column:
+            return self._column(dim.view, dim.column)
+        return self._qualified_column(name)
 
     def _dimension(self, name: str) -> str:
         dim = self.model.dimensions[name]
@@ -431,12 +457,13 @@ class LineageBuilder:
             if source:
                 self._edge(source, node)
         for raw in query.select.fields:
-            source = self._field(raw)
+            # Raw mode reads the column, whatever else shares its spelling.
+            source = self._qualified_column(raw)
             if source:
                 self._edge(source, node, "field")
         for label, items in (("where", query.where), ("having", query.having)):
             for item in _query_filters(list(items)):
-                source = self._field(item.field)
+                source = self._filter_field(item.field, having=label == "having")
                 if source:
                     self._edge(source, node, label)
                 if item.subquery is not None:
@@ -460,7 +487,7 @@ class LineageBuilder:
         """An ``exists``/``nonexists`` filter reads its subquery's data object and filters."""
         self._edge(self._table(sub.data_object), node, op)
         for item in sub.filter:
-            source = self._field(item.field, sub.data_object)
+            source = self._subquery_field(item.field, sub.data_object)
             if source:
                 self._edge(source, node, op)
 
@@ -546,16 +573,11 @@ def query_plan_facts(result: CompilationResult) -> QueryPlanFacts:
         steps.extend(leg.join_steps)
         facts.legs.append((leg.measure_source, list(leg.measures)))
     for step in steps:
-        # Draw each join the way the model declares it, owner to target, so the
-        # Turtle names the declared join's IRI.
-        owner, target = (
-            (step.to_object, step.from_object)
-            if step.reversed
-            else (
-                step.from_object,
-                step.to_object,
-            )
-        )
+        # Draw each join as the model declares it, owner to target, with
+        # declared object names rather than role aliases, so the Turtle names
+        # the declared join's IRI.
+        owner = step.declared_from or step.from_object
+        target = step.declared_to or step.to_object
         join = (owner, target, ", ".join(step.join_columns), step.path_name)
         if join not in facts.joins:
             facts.joins.append(join)

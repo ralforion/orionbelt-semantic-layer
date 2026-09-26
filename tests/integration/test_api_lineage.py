@@ -26,6 +26,7 @@ dataObjects:
       ID: {code: ID, abstractType: string, primaryKey: true}
       Customer: {code: CUSTOMER_ID, abstractType: string}
       Ship Customer: {code: SHIP_CUSTOMER_ID, abstractType: string}
+      Country: {code: SHIP_COUNTRY, abstractType: string}
       Amount: {code: AMOUNT, abstractType: float}
       Tax: {code: TAX, abstractType: float}
       Gross: {abstractType: float, expression: "{Amount} + {Tax}"}
@@ -35,6 +36,7 @@ dataObjects:
         joinTo: Customers
         columnsFrom: [Customer]
         columnsTo: [ID]
+        pathName: billing
       - joinType: many-to-one
         joinTo: Customers
         columnsFrom: [Ship Customer]
@@ -50,6 +52,7 @@ dataObjects:
       Country: {code: COUNTRY, abstractType: string}
 dimensions:
   Country: {dataObject: Customers, column: Country}
+  Ship To Country: {dataObject: Customers, column: Country, via: Orders, pathName: shipping}
   Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}
 measures:
   Revenue:
@@ -57,6 +60,9 @@ measures:
     aggregation: sum
   "Sales: Retail":
     columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+  "Orders.Amount":
+    columns: [{dataObject: Orders, column: Tax}]
     aggregation: sum
   US Gross:
     columns: [{dataObject: Orders, column: Gross}]
@@ -321,3 +327,77 @@ class TestQueryShapes:
         assert join_iris == {
             f"https://ralforion.com/ns/model/{model_id}/join/orders-to-customers/shipping"
         }
+
+
+class TestCompilerPrecedence:
+    """Lineage resolves a field the way the compiler reads it in that context."""
+
+    async def _query(self, client: AsyncClient, query: dict, fmt: str = "json"):
+        sid, model_id, _ = await _load(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/lineage",
+            params={"format": fmt},
+            json={"model_id": model_id, "query": query},
+        )
+        assert r.status_code == 200, r.text
+        return r, model_id
+
+    async def test_subquery_column_shadows_a_dimension(self, client: AsyncClient) -> None:
+        query = {
+            "select": {"dimensions": ["Country"]},
+            "where": [
+                {
+                    "field": "Country",
+                    "op": "exists",
+                    "subquery": {
+                        "dataObject": "Orders",
+                        "filter": [{"field": "Country", "op": "=", "value": "DE"}],
+                    },
+                }
+            ],
+        }
+        r, _ = await self._query(client, query)
+        edges = _edges(r.json())
+        assert ("column:Orders.Country", "query:Query", "exists") in edges
+        assert ("column:Customers.Country", "query:Query", "exists") not in edges
+
+    async def test_raw_field_reads_the_column_not_a_same_named_measure(
+        self, client: AsyncClient
+    ) -> None:
+        r, _ = await self._query(client, {"select": {"fields": ["Orders.Amount"]}})
+        edges = _edges(r.json())
+        assert ("column:Orders.Amount", "query:Query", "field") in edges
+        assert all(not s.startswith("measure:") for s, _, _ in edges)
+
+    async def _join_iris(self, client: AsyncClient, query: dict) -> tuple[set[str], set[str]]:
+        """The join IRIs the lineage Turtle names, and those the model graph has."""
+        ttl, model_id = await self._query(client, query, fmt="turtle")
+        lineage = Graph().parse(data=ttl.text, format="turtle")
+        sessions = (await client.get("/v1/sessions")).json()["sessions"]
+        sid = next(x["session_id"] for x in sessions if x["model_count"])
+        model = Graph().parse(
+            data=(await client.get(f"/v1/sessions/{sid}/models/{model_id}/graph")).text,
+            format="turtle",
+        )
+        return (
+            {str(x) for x in lineage.subjects() if "/join/" in str(x)},
+            {str(x) for x in model.subjects() if "/join/" in str(x)},
+        )
+
+    async def test_primary_join_keeps_its_path_name(self, client: AsyncClient) -> None:
+        used, declared = await self._join_iris(
+            client, {"select": {"dimensions": ["Country"], "measures": ["Revenue"]}}
+        )
+        assert len(used) == 1 and used <= declared
+        assert next(iter(used)).endswith("/join/orders-to-customers/billing")
+
+    async def test_role_dimension_names_the_declared_join(self, client: AsyncClient) -> None:
+        query = {"select": {"dimensions": ["Ship To Country"], "measures": ["Revenue"]}}
+        r, _ = await self._query(client, query)
+        joins = [e for e in r.json()["edges"] if (e["label"] or "").startswith("join on")]
+        assert [(j["source"], j["target"], j["path_name"]) for j in joins] == [
+            ("data_object:Orders", "data_object:Customers", "shipping")
+        ]
+        used, declared = await self._join_iris(client, query)
+        assert len(used) == 1 and used <= declared
+        assert next(iter(used)).endswith("/join/orders-to-customers/shipping")
