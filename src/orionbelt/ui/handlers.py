@@ -25,6 +25,7 @@ from orionbelt.ui.api_client import (
     _ensure_session_and_model,
     _fetch_settings,
     _format_api_errors,
+    _model_request,
     _ModelValidationError,
 )
 from orionbelt.ui.rendering import _format_sql
@@ -1626,3 +1627,169 @@ def rule_definition(
     if body is None:
         return gr.update(value=f"# {error}", visible=True), session_state, model_state
     return gr.update(value=rule_definition_yaml(body), visible=True), session_state, model_state
+
+
+# ---------------------------------------------------------------------------
+# Lineage tab
+# ---------------------------------------------------------------------------
+
+#: The lineage tab's type choices, and the API collection each one lives in.
+LINEAGE_TYPES = {
+    "Query": "query",
+    "Dimension": "dimensions",
+    "Measure": "measures",
+    "Metric": "metrics",
+    "Rule": "rules",
+}
+
+
+def lineage_names(
+    model_yaml: str,
+    lineage_type: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[Any, dict[str, str] | None, dict[str, str] | None]:
+    """The name picker for *lineage_type*: its choices, first one selected.
+
+    Names come from the API rather than the YAML, so they are exactly what the
+    lineage endpoints accept, synthesized counts included. The picker hides
+    for "Query", which shows the query editor's current query.
+    """
+    collection = LINEAGE_TYPES.get(lineage_type, "query")
+    if collection == "query":
+        return gr.update(visible=False, value=None), session_state, model_state
+    body, error, session_state, model_state = _model_request(
+        model_yaml,
+        api_url,
+        session_state,
+        model_state,
+        "GET",
+        f"/v1/sessions/{{session_id}}/models/{{model_id}}/{collection}",
+    )
+    if body is None:
+        return gr.update(visible=True, choices=[], value=None), session_state, model_state
+    items = body.get("rules", []) if isinstance(body, dict) else body
+    names = [item["name"] for item in items]
+    return (
+        gr.update(visible=True, choices=names, value=names[0] if names else None),
+        session_state,
+        model_state,
+    )
+
+
+def _lineage_request(
+    model_yaml: str,
+    query_yaml: str,
+    lineage_type: str,
+    name: str | None,
+    dialect: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+    fmt: str = "json",
+) -> tuple[Any, str, dict[str, str] | None, dict[str, str] | None]:
+    """Ask the API for the lineage the tab shows, in *fmt* (``json`` or ``turtle``).
+
+    "Query" sends the query editor's query; any other type the picked name.
+    Returns ``(body, error, session_state, model_state)``.
+    """
+    collection = LINEAGE_TYPES.get(lineage_type, "query")
+    text = fmt != "json"
+    if collection == "query":
+        try:
+            query = yaml.safe_load(query_yaml or "")
+        except yaml.YAMLError as exc:
+            return None, f"Invalid query YAML: {exc}", session_state, model_state
+        if isinstance(query, dict) and "query" in query and "select" not in query:
+            query = query["query"]
+        if not isinstance(query, dict):
+            return None, "The query editor holds no query.", session_state, model_state
+        return _model_request(
+            model_yaml,
+            api_url,
+            session_state,
+            model_state,
+            "POST",
+            "/v1/sessions/{session_id}/query/lineage",
+            payload={"model_id": None, "query": query, "dialect": dialect or None},
+            params={"format": fmt},
+            text=text,
+        )
+    if not name:
+        return None, f"Pick a {lineage_type.lower()}.", session_state, model_state
+    from urllib.parse import quote
+
+    return _model_request(
+        model_yaml,
+        api_url,
+        session_state,
+        model_state,
+        "GET",
+        f"/v1/sessions/{{session_id}}/models/{{model_id}}/{collection}/"
+        f"{quote(name, safe='')}/lineage",
+        params={"format": fmt},
+        text=text,
+    )
+
+
+def render_lineage(
+    model_yaml: str,
+    query_yaml: str,
+    lineage_type: str,
+    name: str | None,
+    dialect: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+    theme: str = "dark",
+) -> tuple[str, str, dict[str, str] | None, dict[str, str] | None]:
+    """The lineage of the picked artefact, or of the current query.
+
+    Returns ``(markdown, raw_mermaid, session_state, model_state)``: the diagram
+    as a ```mermaid block to render, and the plain flowchart the .md download
+    saves.
+    """
+    body, error, session_state, model_state = _lineage_request(
+        model_yaml, query_yaml, lineage_type, name, dialect, api_url, session_state, model_state
+    )
+    if body is None:
+        return f"**Lineage unavailable:** {error}", "", session_state, model_state
+    # Natural size (no useMaxWidth) so the box scrolls and the zoom slider
+    # scales; SVG text labels (no htmlLabels) so the .png download can draw the
+    # SVG on a canvas, which HTML labels in a foreignObject would taint.
+    init = (
+        f"%%{{init: {{'theme': '{theme}', "
+        "'themeVariables': {'fontFamily': 'Helvetica, Arial, sans-serif'}, "
+        "'htmlLabels': false, 'flowchart': {'useMaxWidth': false, 'htmlLabels': false}}}%%"
+    )
+    raw: str = body["mermaid"]
+    return f"```mermaid\n{init}\n{raw}\n```", raw, session_state, model_state
+
+
+def lineage_turtle(
+    model_yaml: str,
+    query_yaml: str,
+    lineage_type: str,
+    name: str | None,
+    dialect: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[str, dict[str, str] | None, dict[str, str] | None]:
+    """The lineage the tab shows, as Turtle for the .ttl download (empty on failure)."""
+    body, error, session_state, model_state = _lineage_request(
+        model_yaml,
+        query_yaml,
+        lineage_type,
+        name,
+        dialect,
+        api_url,
+        session_state,
+        model_state,
+        fmt="turtle",
+    )
+    if body is None:
+        gr.Warning(f"Lineage unavailable: {error}")
+        return "", session_state, model_state
+    return str(body), session_state, model_state

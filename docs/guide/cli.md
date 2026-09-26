@@ -43,6 +43,7 @@ obsl --version
 | `obsl rules list [MODEL]` | Business rules and whether each compiles | local or `--server` |
 | `obsl rules compile [MODEL]` | The SQL behind each rule; exits `1` if one fails | local or `--server` |
 | `obsl rules evaluate [MODEL]` | Run rules and report findings; exits `1` if one fails | local or `--server` |
+| `obsl lineage [MODEL] --measure NAME` | What an artefact or query is built from (Mermaid, Markdown, JSON, Turtle) | local or `--server` |
 | `obsl convert DIRECTION INPUT` | OSI ↔ OBML conversion | local or `--server` |
 | `obsl dialects` | List supported SQL dialects | local or `--server` |
 
@@ -71,6 +72,7 @@ For `compile` and `execute` you supply the query one of two ways (exactly one):
 | `sparql` | `-q/--query PATH` (SPARQL file) · `--sparql TEXT` · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `rules list` | `-d/--dialect NAME` · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `rules compile` | `-r/--rule NAME` (repeatable; default every rule) · `-d/--dialect NAME` · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
+| `lineage` | `--dimension/--measure/--metric NAME` · `-r/--rule NAME` · `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `-f/--format {mermaid,markdown,json,turtle}` · `-o/--output PATH` · `-s/--server` · `--api-key` · TLS options above |
 | `rules evaluate` | `-r/--rule NAME` (repeatable) · `--type TYPE` (repeatable) · `--severity LEVEL` (repeatable) · `--limit N` (findings per rule, default 20) · `-d/--dialect NAME` · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `convert` | `DIRECTION` (`osi-to-obml`\|`obml-to-osi`) · `INPUT` · `--name NAME` (OSI model name, obml-to-osi) · `-s/--server` · `--api-key` · TLS options above |
 | `dialects` | `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
@@ -235,6 +237,25 @@ shown as `20+` reached the limit and may be higher. Locally it needs a
 configured warehouse, like `execute`. `compile` and `evaluate` exit `1` when a
 rule fails to compile or run, and report the others anyway, so they can gate a
 CI job.
+
+## Lineage
+
+`obsl lineage` shows what a dimension, measure, metric, rule or query is built
+from, down to the tables. Name the artefact with exactly one of `--dimension`,
+`--measure`, `--metric`, `--rule`/`-r`, or give a query with `-q` or `--sql`; a
+query is compiled, so its lineage includes the planner's joins.
+
+```bash
+obsl lineage model.yaml --metric "Gross Margin"            # Mermaid flowchart
+obsl lineage model.yaml -r "Healthy Category" -o rule.md   # as a ```mermaid Markdown file
+obsl lineage model.yaml --sql 'SELECT "Country Name", "Total Sales" FROM m' -o query.ttl
+obsl lineage -s https://obsl.example.com --measure "Total Sales" -f json
+```
+
+`-f` picks `mermaid` (default), `markdown`, `json` (the API's shape) or
+`turtle` (the OBSL graph's IRIs linked by `prov:wasDerivedFrom`). Without `-f`,
+an `-o` path ending in `.md`, `.json` or `.ttl` picks the format. With
+`--server`, pass a query with `-q`; `--sql` needs the local model to translate.
 
 ## Convert (OSI ↔ OBML)
 

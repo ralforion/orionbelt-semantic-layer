@@ -54,10 +54,13 @@ from orionbelt.ui.handlers import (
     execute_query,
     filter_and_execute,
     filter_chip_update,
+    lineage_names,
+    lineage_turtle,
     load_example_query,
     load_rules,
     model_example_choices,
     model_jump_targets,
+    render_lineage,
     rule_definition,
     run_sparql,
     select_rule,
@@ -473,6 +476,38 @@ _CSS = """\
 #er-diagram svg .er.relationshipLabel {
   font-family: Helvetica, Arial, sans-serif !important;
 }
+/* ── Compact button groups (Ontology Graph, Lineage): stay small, in one row ── */
+.compact-actions {
+  flex: 0 0 auto !important;
+  flex-wrap: nowrap !important;
+  align-self: center;
+  gap: 8px !important;
+  width: auto !important;
+  min-width: 0 !important;
+}
+/* ── Lineage tab ── */
+#lineage-diagram {
+  overflow: auto;
+  border: 1px solid var(--border-color-primary);
+  border-radius: 8px;
+  padding: 8px;
+  height: calc(100dvh - 220px); /* pre-script fallback: _fit_head() sizes it live */
+  min-height: 400px;
+}
+/* Always-visible scrollbars: macOS overlay scrollbars stay hidden until a
+   scroll starts, which hides that a wide lineage scrolls sideways. */
+#lineage-diagram::-webkit-scrollbar { width: 10px; height: 10px; }
+#lineage-diagram::-webkit-scrollbar-thumb {
+  background: var(--border-color-primary);
+  border-radius: 5px;
+}
+#lineage-diagram::-webkit-scrollbar-corner { background: transparent; }
+#lineage-diagram svg {
+  /* Sized by the zoom slider from the diagram's natural size; the box scrolls
+     both ways. Gradio's Markdown CSS would otherwise shrink the SVG to the
+     box width. */
+  max-width: none !important;
+}
 /* ── Ontology Graph tab ── */
 #ob-ontology-graph-container {
   overflow: auto;
@@ -680,7 +715,7 @@ _CSS = """\
   .picker-dropdown { width: 100% !important; min-width: 0 !important; }
 
   /* Diagram/graph canvases: fit the smaller viewport */
-  #er-diagram { height: 60dvh !important; min-height: 300px !important; }
+  #er-diagram, #lineage-diagram { height: 60dvh !important; min-height: 300px !important; }
 
   /* Smaller type on phones to fit more on screen */
   .gradio-container { font-size: 13px !important; }
@@ -890,18 +925,27 @@ _DETECT_THEME_JS = """
 }
 """
 
+
 # JS: download OBSL Turtle as a .ttl file
-_DOWNLOAD_TTL_JS = """(turtle) => {
-    if (!turtle) { alert('No OBSL graph available. Load a model first.'); return; }
+def _download_ttl_js(filename: str, empty_message: str) -> str:
+    """JS: download Turtle text as *filename*; alert *empty_message* when there is none."""
+    js = """(turtle) => {
+    if (!turtle) { alert('__EMPTY__'); return; }
     var blob = new Blob([turtle], {type: 'text/turtle'});
     var a = document.createElement('a');
-    a.download = 'obsl-model.ttl';
+    a.download = '__FILE__';
     a.href = URL.createObjectURL(blob);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(a.href);
 }"""
+    return js.replace("__FILE__", filename).replace("__EMPTY__", empty_message)
+
+
+_DOWNLOAD_TTL_JS = _download_ttl_js(
+    "obsl-model.ttl", "No OBSL graph available. Load a model first."
+)
 
 # JS: download the exported OSI model as a .osi.yaml file
 _DOWNLOAD_OSI_JS = """(osiYaml) => {
@@ -916,24 +960,34 @@ _DOWNLOAD_OSI_JS = """(osiYaml) => {
     URL.revokeObjectURL(a.href);
 }"""
 
+
 # JS: download the raw Mermaid text as a .md file
-_DOWNLOAD_MD_JS = """(raw) => {
-    if (!raw) { alert('No diagram available. Generate the ER diagram first.'); return; }
+def _download_md_js(filename: str, what: str) -> str:
+    """JS: download raw Mermaid text, wrapped in a ```mermaid fence, as *filename*."""
+    js = """(raw) => {
+    if (!raw) { alert('No diagram available. Generate the __WHAT__ first.'); return; }
     var content = '```mermaid\\n' + raw + '\\n```\\n';
     var blob = new Blob([content], {type: 'text/markdown'});
     var a = document.createElement('a');
-    a.download = 'mermaid.md';
+    a.download = '__FILE__';
     a.href = URL.createObjectURL(blob);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(a.href);
 }"""
+    return js.replace("__WHAT__", what).replace("__FILE__", filename)
+
+
+_DOWNLOAD_MD_JS = _download_md_js("mermaid.md", "ER diagram")
+
 
 # JS: render the Mermaid SVG to a PNG and trigger download
-_DOWNLOAD_PNG_JS = """() => {
-    var svgEl = document.querySelector('#er-diagram svg');
-    if (!svgEl) { alert('No diagram available. Generate the ER diagram first.'); return; }
+def _download_png_js(container: str, filename: str, what: str) -> str:
+    """JS: render the Mermaid SVG inside *container* to a PNG named *filename*."""
+    js = """() => {
+    var svgEl = document.querySelector('__CONTAINER__ svg');
+    if (!svgEl) { alert('No diagram available. Generate the __WHAT__ first.'); return; }
     var clone = svgEl.cloneNode(true);
     clone.style.transform = 'none';
     var vb = clone.getAttribute('viewBox');
@@ -961,7 +1015,7 @@ _DOWNLOAD_PNG_JS = """() => {
         ctx.drawImage(img, 0, 0, w, h);
         canvas.toBlob(function(blob) {
             var a = document.createElement('a');
-            a.download = 'mermaid.png';
+            a.download = '__FILE__';
             a.href = URL.createObjectURL(blob);
             document.body.appendChild(a);
             a.click();
@@ -972,6 +1026,14 @@ _DOWNLOAD_PNG_JS = """() => {
     img.onerror = function() { alert('Failed to render diagram as PNG.'); };
     img.src = dataUrl;
 }"""
+    return (
+        js.replace("__CONTAINER__", container)
+        .replace("__WHAT__", what)
+        .replace("__FILE__", filename)
+    )
+
+
+_DOWNLOAD_PNG_JS = _download_png_js("#er-diagram", "mermaid.png", "ER diagram")
 
 # SVG icon: upload (Lucide style, matches Gradio's 16x16 toolbar icons)
 _UPLOAD_SVG = (
@@ -1291,9 +1353,11 @@ def _mermaid_head() -> str:
   document.head.appendChild(el);
   window.mermaid.initialize({{ startOnLoad: false }});
   window.__obRenderMermaid = async function () {{
-    var nodes = document.querySelectorAll("#er-diagram .mermaid:not([data-processed])");
+    var nodes = document.querySelectorAll(
+      "#er-diagram .mermaid:not([data-processed]), #lineage-diagram .mermaid:not([data-processed])"
+    );
     if (nodes.length) {{ await window.mermaid.run({{ nodes: nodes }}); }}
-    return document.querySelectorAll("#er-diagram svg").length;
+    return document.querySelectorAll("#er-diagram svg, #lineage-diagram svg").length;
   }};
 }})();
 </script>
@@ -2488,14 +2552,24 @@ def create_blocks(
                         scale=2,
                         min_width=240,
                     )
-                    # Stacked at the right of the controls: render above, export below.
-                    with gr.Column(scale=1, min_width=160):
+                    # Small and side by side at the right of the controls. They
+                    # keep their own width when a narrow window wraps the row.
+                    with gr.Row(elem_classes=["compact-actions"]):
                         ontology_btn = gr.Button(
                             "Render Graph",
                             variant="primary",
+                            size="sm",
+                            scale=0,
+                            min_width=110,
                             elem_classes=["purple-btn"],
                         )
-                        export_onto_btn = gr.Button("Export Onto", elem_classes=["green-btn"])
+                        export_onto_btn = gr.Button(
+                            "Export Onto",
+                            size="sm",
+                            scale=0,
+                            min_width=100,
+                            elem_classes=["green-btn"],
+                        )
 
                 ontology_output = gr.HTML(
                     value=(
@@ -2552,6 +2626,131 @@ def create_blocks(
                     fn=None,
                     inputs=[obsl_turtle_state],
                     js=_DOWNLOAD_TTL_JS,
+                )
+
+            with gr.Tab("Lineage", id=7) as lineage_tab:
+                # What an artefact or the current query is built from, down to
+                # the tables. "Query" (the default) traces the query editor's
+                # query. ``allow_custom_value``: the name choices are filled per
+                # type after load, and Gradio would otherwise reject a pick
+                # held from before a server restart; the API checks the name.
+                with gr.Row():
+                    lineage_type = gr.Dropdown(
+                        choices=["Query", "Dimension", "Measure", "Metric", "Rule"],
+                        value="Query",
+                        label="Lineage of",
+                        interactive=True,
+                        scale=1,
+                    )
+                    lineage_name = gr.Dropdown(
+                        choices=[],
+                        value=None,
+                        label="Name",
+                        interactive=True,
+                        allow_custom_value=True,
+                        visible=False,
+                        scale=2,
+                    )
+                    lineage_zoom = gr.Slider(
+                        minimum=10,
+                        maximum=200,
+                        value=60,
+                        step=10,
+                        label="Zoom %",
+                        scale=1,
+                    )
+                    with gr.Row(elem_classes=["compact-actions"]):
+                        lineage_md_btn = gr.Button("↓ .md", scale=0, min_width=60, size="sm")
+                        lineage_png_btn = gr.Button("↓ .png", scale=0, min_width=60, size="sm")
+                        lineage_ttl_btn = gr.Button("↓ .ttl", scale=0, min_width=60, size="sm")
+                # Hidden: the Mermaid theme (set by JS at call time) and the raw
+                # Mermaid text the .md download saves.
+                lineage_theme = gr.Textbox(value="dark", visible=False)
+                lineage_raw = gr.Textbox(value="", visible=False)
+                lineage_ttl = gr.Textbox(value="", visible=False)
+                lineage_output = gr.Markdown(
+                    value="*The lineage of the current query appears here.*",
+                    elem_id="lineage-diagram",
+                    elem_classes=["ob-fit-box"],
+                )
+
+                # Zoom by sizing the SVG from its viewBox rather than with a
+                # transform, so the scroll area always matches what is drawn.
+                _lineage_zoom_js = """(zoom) => {
+                    const el = document.querySelector('#lineage-diagram svg');
+                    const vb = el && el.viewBox && el.viewBox.baseVal;
+                    if (!vb || !vb.width) return;
+                    el.style.width = (vb.width * zoom / 100) + 'px';
+                    el.style.height = (vb.height * zoom / 100) + 'px';
+                }"""
+                # Render once the markup arrives, then size it to the zoom.
+                _render_lineage_js = (
+                    """(zoom) => {
+                    const size = """
+                    + _lineage_zoom_js
+                    + """;
+                    let tries = 0;
+                    const t = setInterval(async () => {
+                        if (window.__obRenderMermaid) { await window.__obRenderMermaid(); }
+                        if (document.querySelector('#lineage-diagram svg')) {
+                            size(zoom);
+                            clearInterval(t);
+                        }
+                        if (++tries > 30) clearInterval(t);
+                    }, 100);
+                }"""
+                )
+                _lineage_inputs = [
+                    model_input,
+                    query_input,
+                    lineage_type,
+                    lineage_name,
+                    dialect,
+                    api_url,
+                    session_state,
+                    model_state,
+                    lineage_theme,
+                ]
+                _lineage_outputs = [lineage_output, lineage_raw, session_state, model_state]
+
+                def _render_on(event: Any) -> None:
+                    event(
+                        fn=render_lineage,
+                        inputs=_lineage_inputs,
+                        outputs=_lineage_outputs,
+                        js=_DETECT_THEME_JS,
+                    ).then(fn=None, inputs=[lineage_zoom], js=_render_lineage_js)
+
+                _render_on(lineage_tab.select)
+                _render_on(lineage_name.input)
+                lineage_type.input(
+                    fn=lineage_names,
+                    inputs=[model_input, lineage_type, api_url, session_state, model_state],
+                    outputs=[lineage_name, session_state, model_state],
+                ).then(
+                    fn=render_lineage,
+                    inputs=_lineage_inputs,
+                    outputs=_lineage_outputs,
+                    js=_DETECT_THEME_JS,
+                ).then(fn=None, inputs=[lineage_zoom], js=_render_lineage_js)
+                lineage_zoom.change(fn=None, inputs=[lineage_zoom], js=_lineage_zoom_js)
+                lineage_md_btn.click(
+                    fn=None,
+                    inputs=[lineage_raw],
+                    js=_download_md_js("lineage.md", "lineage"),
+                )
+                lineage_png_btn.click(
+                    fn=None,
+                    js=_download_png_js("#lineage-diagram", "lineage.png", "lineage"),
+                )
+                lineage_ttl_btn.click(
+                    fn=lineage_turtle,
+                    inputs=_lineage_inputs[:-1],
+                    outputs=[lineage_ttl, session_state, model_state],
+                ).then(
+                    fn=None,
+                    inputs=[lineage_ttl],
+                    js=_download_ttl_js("lineage.ttl", "No lineage available."),
                 )
 
             with gr.Tab("Business Rules", id=6) as rules_tab:

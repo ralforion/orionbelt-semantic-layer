@@ -8,6 +8,7 @@ from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.fanout import detect_fanout
 from orionbelt.compiler.grain_dedup import detect_dedup_measures
+from orionbelt.compiler.graph import JoinStep
 from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
 from orionbelt.compiler.raw import RawPlanner
 from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
@@ -17,7 +18,7 @@ from orionbelt.compiler.validator import validate_sql
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryFilterItem, QueryObject
-from orionbelt.models.roles import expand_role_objects
+from orionbelt.models.roles import expand_role_objects, role_object_names
 from orionbelt.models.semantic import DataObject, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
 
@@ -40,6 +41,66 @@ class ExplainJoin:
     join_columns: list[str]
     reason: str
     cardinality: str = ""
+    #: The declared join this step follows: owner, target (declared object names,
+    #: never a role alias) and ``pathName``. Empty when the step matches none.
+    declared_from: str = ""
+    declared_to: str = ""
+    path_name: str | None = None
+
+
+def _declared_join(
+    model: SemanticModel,
+    roles: dict[str, tuple[str, str, str]],
+    step: JoinStep,
+) -> tuple[str, str, str | None]:
+    """The declared join a planner step follows: its owner, target and ``pathName``.
+
+    A step records objects and columns but not which declared join it came
+    from, and a join with a ``pathName`` differs from its sibling only in those
+    columns, so the step is matched against the owner's declared joins. A
+    reversed step walks the join from its target, so its sides are swapped. A
+    role-playing dimension's join targets a compile-time alias object; *roles*
+    maps each alias to the ``(via, dataObject, pathName)`` it stands for, so the
+    declared names come back.
+    """
+    owner, target = step.from_object, step.to_object
+    cols_from, cols_to = list(step.from_columns), list(step.to_columns)
+    if step.reversed:
+        owner, target, cols_from, cols_to = target, owner, cols_to, cols_from
+    if target in roles:
+        via, declared, path_name = roles[target]
+        return via, declared, path_name
+    declared_owner = roles[owner][1] if owner in roles else owner
+    obj = model.data_objects.get(declared_owner)
+    for join in obj.joins if obj is not None else []:
+        if (
+            join.join_to == target
+            and list(join.columns_from) == cols_from
+            and list(join.columns_to) == cols_to
+        ):
+            return declared_owner, target, join.path_name
+    return declared_owner, target, None
+
+
+def _explain_join(
+    step: JoinStep,
+    join_columns: list[str],
+    reason: str,
+    model: SemanticModel,
+    roles: dict[str, tuple[str, str, str]],
+) -> ExplainJoin:
+    """An ``ExplainJoin`` for a planner step, naming the declared join it follows."""
+    declared_from, declared_to, path_name = _declared_join(model, roles, step)
+    return ExplainJoin(
+        from_object=step.from_object,
+        to_object=step.to_object,
+        join_columns=join_columns,
+        reason=reason,
+        cardinality=step.cardinality.value,
+        declared_from=declared_from,
+        declared_to=declared_to,
+        path_name=path_name,
+    )
 
 
 @dataclass
@@ -51,6 +112,8 @@ class ExplainCflLeg:
     reason: str
     measures: list[str]
     joins: list[str]
+    #: The leg's joins with their columns, as ``ExplainJoin`` steps.
+    join_steps: list[ExplainJoin] = field(default_factory=list)
 
 
 @dataclass
@@ -204,6 +267,8 @@ class CompilationPipeline:
         """Compile a query to SQL for the specified dialect."""
         # Each dimension role is joined under its own alias, which everything
         # downstream takes from a data object's name (see ``models.roles``).
+        # The explain maps an alias back to the declared join it stands for.
+        roles = {alias: key for key, alias in role_object_names(model).items()}
         model = expand_role_objects(model)
         # Create dialect first so resolution and planning share one
         # ``qualify_table`` — the EXISTS filter operator needs it during
@@ -309,7 +374,7 @@ class CompilationPipeline:
             ]
 
         # Build explain plan
-        explain = self._build_explain(resolved, model, use_cfl, plan)
+        explain = self._build_explain(resolved, model, use_cfl, plan, roles)
 
         # Compute deduplicated physical tables touched by the query
         physical_tables = _compute_physical_tables(resolved, query, model)
@@ -339,8 +404,13 @@ class CompilationPipeline:
         model: SemanticModel,
         use_cfl: bool,
         plan: QueryPlan,
+        roles: dict[str, tuple[str, str, str]] | None = None,
     ) -> ExplainPlan:
-        """Build the explain plan from resolution results."""
+        """Build the explain plan from resolution results.
+
+        *roles* maps each role alias to its ``(via, dataObject, pathName)``.
+        """
+        roles = roles or {}
         q = self._q
 
         # Planner choice
@@ -413,15 +483,7 @@ class CompilationPipeline:
                         f"Join {q(step.from_object)} → {q(step.to_object)} to include "
                         f"columns needed by the query"
                     )
-                explain_joins.append(
-                    ExplainJoin(
-                        from_object=step.from_object,
-                        to_object=step.to_object,
-                        join_columns=join_cols,
-                        reason=reason,
-                        cardinality=step.cardinality.value,
-                    )
-                )
+                explain_joins.append(_explain_join(step, join_cols, reason, model, roles))
 
         # CFL leg details
         cfl_leg_explains: list[ExplainCflLeg] = []
@@ -433,6 +495,19 @@ class CompilationPipeline:
                     reason=leg.reason,
                     measures=leg.measures,
                     joins=leg.joins,
+                    join_steps=[
+                        _explain_join(
+                            step,
+                            [
+                                f"{fc} = {tc}"
+                                for fc, tc in zip(step.from_columns, step.to_columns, strict=True)
+                            ],
+                            f"CFL leg of {q(leg.measure_source)}",
+                            model,
+                            roles,
+                        )
+                        for step in leg.join_steps
+                    ],
                 )
             )
 

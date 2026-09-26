@@ -1037,6 +1037,93 @@ def test_graph_local_requires_model():
     assert "MODEL is required" in result.output
 
 
+# -- lineage ------------------------------------------------------------------
+
+
+def test_lineage_measure_mermaid(model_file):
+    result = runner.invoke(app, ["lineage", model_file, "--measure", "Total Revenue"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("flowchart LR")
+    assert "Total Revenue" in result.stdout
+
+
+def test_lineage_rule_markdown_by_suffix():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "rule.md"
+        result = runner.invoke(
+            app, ["lineage", _COMMERCE, "-r", "Healthy Category", "-o", str(out)]
+        )
+        assert result.exit_code == 0, result.output
+        text = out.read_text(encoding="utf-8")
+    assert text.startswith("```mermaid\nflowchart LR")
+    assert "High Return Rate" in text
+
+
+def test_lineage_json_matches_api_shape(model_file):
+    result = runner.invoke(app, ["lineage", model_file, "--measure", "Total Revenue", "-f", "json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert set(data) == {"root", "nodes", "edges", "mermaid"}
+    assert data["root"] == "measure:Total Revenue"
+
+
+def test_lineage_query_turtle(model_file):
+    result = runner.invoke(
+        app,
+        [
+            "lineage",
+            model_file,
+            "--sql",
+            'SELECT "Customer Country", "Total Revenue" FROM m',
+            "-f",
+            "turtle",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "prov:wasDerivedFrom" in result.stdout
+    assert "prov:Entity" in result.stdout
+
+
+def test_lineage_needs_exactly_one_target(model_file):
+    result = runner.invoke(app, ["lineage", model_file])
+    assert result.exit_code == 1
+    result = runner.invoke(
+        app,
+        ["lineage", model_file, "--measure", "Total Revenue", "--dimension", "Customer Country"],
+    )
+    assert result.exit_code == 1
+
+
+def test_lineage_unknown_name(model_file):
+    result = runner.invoke(app, ["lineage", model_file, "--metric", "Nope"])
+    assert result.exit_code == 1
+    assert "Metric 'Nope' not found" in result.output
+
+
+def test_lineage_remote(monkeypatch):
+    from orionbelt.cli import _remote
+
+    calls = []
+
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
+        calls.append((method, path, params, text))
+        return 'flowchart LR\n    n0["x"]'
+
+    monkeypatch.setattr(_remote.RemoteClient, "_request", fake_request)
+    result = runner.invoke(app, ["lineage", "-r", "High Value", "-s", "http://x", "-f", "markdown"])
+    assert result.exit_code == 0, result.output
+    assert calls == [("GET", "/rules/High%20Value/lineage", {"format": "mermaid"}, True)]
+    assert result.stdout.startswith("```mermaid\nflowchart LR")
+
+
+def test_lineage_remote_sql_needs_local_model():
+    result = runner.invoke(app, ["lineage", "--sql", "SELECT 1", "-s", "http://x"])
+    assert result.exit_code == 1
+    assert "-q" in result.output
+
+
 def _remote_rules(monkeypatch, *, evaluate_fails: bool):
     """Fake server: a validation rule 'A' and a classification rule 'B'."""
     from orionbelt.cli import _local, _remote

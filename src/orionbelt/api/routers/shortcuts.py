@@ -23,6 +23,12 @@ from orionbelt.api.deps import (
     get_session_manager,
 )
 from orionbelt.api.routers.composables import build_composables
+from orionbelt.api.routers.lineage import (
+    LINEAGE_RESPONSES,
+    LineageFormat,
+    artefact_lineage,
+    query_lineage,
+)
 from orionbelt.api.routers.model_api import (
     _build_explain,
     _build_join_graph,
@@ -43,6 +49,7 @@ from orionbelt.api.schemas import (
     ExplainPlanResponse,
     ExplainResponse,
     JoinGraphResponse,
+    LineageResponse,
     MeasureDetail,
     MetricDetail,
     QueryCompileResponse,
@@ -897,6 +904,55 @@ async def shortcut_compile_rule(
 
     session_id, model_id, _ = _resolve_single_model(mgr)
     return await compile_rule(session_id, model_id, name, body, mgr, db_vendor)
+
+
+def _shortcut_lineage(kind: str, plural: str) -> None:
+    @router.get(
+        f"/{plural}/{{name}}/lineage",
+        response_model=LineageResponse,
+        responses=LINEAGE_RESPONSES,
+        tags=["lineage"],
+        name=f"shortcut_{kind}_lineage",
+        summary=f"Lineage of a {kind}",
+    )
+    async def _lineage(
+        name: str,
+        format: LineageFormat = LineageFormat.json,  # noqa: A002 - public query parameter
+        mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    ) -> LineageResponse | Response:
+        session_id, model_id, _ = _resolve_single_model(mgr)
+        return artefact_lineage(session_id, model_id, kind, name, mgr, format)
+
+    _lineage.__doc__ = (
+        f"What the {kind} is built from, down to the tables it reads (auto-resolves session/model)."
+    )
+
+
+for _kind, _plural in (
+    ("dimension", "dimensions"),
+    ("measure", "measures"),
+    ("metric", "metrics"),
+    ("rule", "rules"),
+):
+    _shortcut_lineage(_kind, _plural)
+
+
+@router.post(
+    "/query/lineage",
+    response_model=LineageResponse,
+    responses=LINEAGE_RESPONSES,
+    tags=["lineage"],
+    dependencies=[Depends(validate_query_body)],
+)
+async def shortcut_query_lineage(
+    body: ShortcutQueryRequest,
+    dialect: str | None = None,
+    format: LineageFormat = LineageFormat.json,  # noqa: A002 - public query parameter
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> LineageResponse | Response:
+    """What a query is built from, including the planner's joins (auto-resolves)."""
+    store, model_id = _resolve_store_and_model(mgr)
+    return query_lineage(store, model_id, body, dialect, format)
 
 
 @router.get(

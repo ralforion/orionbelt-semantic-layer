@@ -1327,6 +1327,48 @@ class ExplainResponse(BaseModel):
     lineage: list[ExplainLineageItem] = Field(default_factory=list)
 
 
+class LineageNodeItem(BaseModel):
+    """One artefact in a lineage graph."""
+
+    id: str = Field(description="Stable id: '<kind>:<name>' ('column:<data object>.<column>')")
+    kind: str = Field(
+        description="data_object, column, dimension, measure, metric, rule, union "
+        "(the UNION ALL of a multi-fact query's legs) or query",
+    )
+    name: str
+    detail: str | None = Field(
+        default=None,
+        description="Table reference, column's data object, aggregation, metric or rule type",
+    )
+
+
+class LineageEdgeItem(BaseModel):
+    """``source`` feeds ``target``."""
+
+    source: str
+    target: str
+    label: str | None = Field(
+        default=None,
+        description="How the source is used when it is not plain use: filter, grain, "
+        "condition, rule, time, partition, where, having, order, via, anchor, rows, "
+        "expression, 'join on <columns>' between data objects, or 'leg <fact>' into "
+        "a union",
+    )
+    path_name: str | None = Field(
+        default=None,
+        description="The pathName of the secondary join a 'join on' edge follows",
+    )
+
+
+class LineageResponse(BaseModel):
+    """Lineage of one artefact or query, down to the tables it reads."""
+
+    root: str = Field(description="Id of the node the lineage is for")
+    nodes: list[LineageNodeItem] = Field(default_factory=list)
+    edges: list[LineageEdgeItem] = Field(default_factory=list)
+    mermaid: str = Field(description="The graph as a Mermaid flowchart, sources on the left")
+
+
 class SearchRequest(BaseModel):
     """Request body for POST /find."""
 

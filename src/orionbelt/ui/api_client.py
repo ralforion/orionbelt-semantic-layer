@@ -305,6 +305,57 @@ def _rules_request(
         return None, f"Rules request failed: {exc}", session_state, model_state
 
 
+def _model_request(
+    model_yaml: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+    method: str,
+    path: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+    text: bool = False,
+) -> tuple[Any, str, dict[str, str] | None, dict[str, str] | None]:
+    """One call against the current model, recovering from an expired session.
+
+    *path* may use ``{session_id}`` and ``{model_id}``; a *payload* key
+    ``model_id`` set to ``None`` is filled in. Returns ``(body, error,
+    session_state, model_state)`` with ``body`` the JSON response (the text,
+    with *text*), or ``None`` and ``error`` saying why.
+    """
+    if not model_yaml or not model_yaml.strip():
+        return None, "No model loaded.", session_state, model_state
+
+    def send(fresh: bool) -> tuple[httpx.Response, dict[str, str], dict[str, str]]:
+        client, session_id, model_id, ss, ms = _ensure_session_and_model(
+            model_yaml, api_url, None if fresh else session_state, None if fresh else model_state
+        )
+        body = dict(payload) if payload is not None else None
+        if body is not None and "model_id" in body and body["model_id"] is None:
+            body["model_id"] = model_id
+        url = path.format(session_id=session_id, model_id=model_id)
+        return client.request(method, url, json=body, params=params), ss, ms
+
+    try:
+        resp, session_state, model_state = send(fresh=False)
+        if resp.status_code == 404 and "Session" in resp.text:
+            resp, session_state, model_state = send(fresh=True)
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except ValueError:
+                detail = resp.text
+            return None, _format_api_errors(detail), session_state, model_state
+        return (resp.text if text else resp.json()), "", session_state, model_state
+    except _ModelValidationError as exc:
+        return None, _format_api_errors(exc.detail), session_state, model_state
+    except httpx.ConnectError:
+        return None, f"API unreachable at {api_url}.", session_state, model_state
+    except Exception as exc:  # noqa: BLE001 - surfaced to the user, never raised into Gradio
+        return None, f"Request failed: {exc}", session_state, model_state
+
+
 def _run_sparql_locally(model_yaml: str, query: str) -> dict[str, Any] | None:
     """Export the graph in-process and query it: the API-unreachable path.
 

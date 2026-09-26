@@ -6,8 +6,13 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **Lineage of dimensions, measures, metrics, rules and queries.** A lineage follows references down to the tables: columns (computed columns included), filter and grain columns, the measures and metrics a metric or rule reads, rules a rule references, and for a query its raw `select.fields` columns, `exists` subqueries, and the joins the planner chose, named as declared (with their `pathName`, role-playing joins included), across every leg of a multi-fact query. The API serves it per artefact type, since a rule may share a measure's name: `GET /v1/{dimensions,measures,metrics,rules}/{name}/lineage` and `POST /v1/query/lineage`, with session-scoped forms. `?format=` returns JSON (nodes, edges and Mermaid), Mermaid text, or Turtle over the OBSL graph's IRIs with `prov:wasDerivedFrom` edges, so it merges with the model graph. `obsl lineage` offers the same locally or with `--server`, as Mermaid, Markdown, JSON or Turtle. The UI gains a Lineage tab that draws the current query's lineage by default, or a picked artefact's, with a zoom slider, two-way scrolling with visible scrollbars, and `.md`, `.png` and `.ttl` downloads. A multi-fact query's lineage shows the `UNION ALL` that combines its legs: each leg's measures feed a `union` node, which the metrics and the query read.
 - **`obsl sparql` and `obsl rules` in the CLI.** `obsl sparql` runs a read-only SPARQL query (SELECT or ASK, inline with `--sparql` or from a file with `-q`) against the model's OBSL-Core graph. `obsl rules list`, `obsl rules compile` and `obsl rules evaluate` list a model's business rules, print the SQL behind them, and run them to report findings, filtered with `--rule`, `--type` and `--severity`. Both work locally, with the same planner and graph as the REST API, or against a deployed server with `--server`, through the `/v1/sparql` and `/v1/rules` shortcuts. `rules compile` and `rules evaluate` exit `1` when a rule fails to compile or run, so they can gate a CI job.
 - **`obsl diagram` and `obsl graph` save and download.** Both take `-o/--output` to write a file, and `--server` to download from a deployed model instead of rendering a local one. `obsl diagram --markdown` (implied by an `-o` path ending in `.md`) wraps the Mermaid ER diagram in a Markdown fence, like the UI's `.md` download. `obsl graph` writes the model's OBSL-Core graph as Turtle, the same file as the UI's *Export Onto*.
+
+### Changed
+
+- **Ontology Graph buttons are compact.** Render Graph and Export Onto are small and side by side; before, a narrow window (1000 pixels wide, for example) stretched each across the full width.
 
 ### Fixed
 
