@@ -175,7 +175,9 @@ _CSS = """\
 .dark .header-bar img.logo-dark { display: none; }
 .dark .header-bar img.logo-light { display: inline-block; }
 .header-bar .header-title {
-  font-size: 22px; font-weight: 600; white-space: nowrap; line-height: 1; padding-bottom: 2px;
+  /* 18px keeps the full name on the logo's line next to the links at a
+     1300px window; at 22px the links wrapped to a second header row. */
+  font-size: 18px; font-weight: 600; white-space: nowrap; line-height: 1; padding-bottom: 2px;
 }
 .header-bar .header-version {
   font-size: 16px; opacity: 0.6; white-space: nowrap;
@@ -1666,7 +1668,7 @@ def create_blocks(
                 f' src="{_LOGO_LIGHT_URI}"'
                 f' style="height:34px;width:auto" alt="OrionBelt">'
                 f'<span class="header-title">'
-                f"Semantic Layer and Sidecar</span></span>"
+                f"Semantic and Context Layer, Rule Engine, and Semantic Sidecar</span></span>"
                 f'<span class="header-links">'
                 f'<span class="header-version">'
                 f"v{__version__}</span>"
