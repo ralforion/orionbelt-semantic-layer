@@ -401,3 +401,36 @@ class TestCompilerPrecedence:
         used, declared = await self._join_iris(client, query)
         assert len(used) == 1 and used <= declared
         assert next(iter(used)).endswith("/join/orders-to-customers/shipping")
+
+
+class TestOrderBy:
+    """orderBy resolves against the query's own SELECT, as the compiler does."""
+
+    async def _edges_for(self, client: AsyncClient, query: dict) -> set:
+        sid, model_id, _ = await _load(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/lineage", json={"model_id": model_id, "query": query}
+        )
+        assert r.status_code == 200, r.text
+        return _edges(r.json())
+
+    async def test_raw_order_by_is_the_selected_column(self, client: AsyncClient) -> None:
+        edges = await self._edges_for(
+            client,
+            {"select": {"fields": ["Orders.Amount"]}, "orderBy": [{"field": "Orders.Amount"}]},
+        )
+        assert ("column:Orders.Amount", "query:Query", "order") in edges
+        # the same-named measure, and the Tax column it reads, are not part of it
+        assert all(not s.startswith("measure:") for s, _, _ in edges)
+        assert all("Orders.Tax" not in s for s, _, _ in edges)
+
+    async def test_order_by_position_and_selected_measure(self, client: AsyncClient) -> None:
+        edges = await self._edges_for(
+            client,
+            {
+                "select": {"dimensions": ["Country"], "measures": ["Revenue"]},
+                "orderBy": [{"field": "2"}, {"field": "Country"}],
+            },
+        )
+        assert ("measure:Revenue", "query:Query", "order") in edges
+        assert ("dimension:Country", "query:Query", "order") in edges

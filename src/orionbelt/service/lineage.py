@@ -24,7 +24,7 @@ A column that is a computed ``expression`` depends on the columns it reads.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 
 from orionbelt.compiler.pipeline import CompilationResult
@@ -469,8 +469,7 @@ class LineageBuilder:
                 if item.subquery is not None:
                     self._subquery(item.subquery, str(item.op), node)
         for order in query.order_by:
-            source = self._field(order.field)
-            if source:
+            for source in self._order_sources(query, order.field):
                 self._edge(source, node, "order")
         for from_object, to_object, columns, path_name in plan.joins:
             self._edge(
@@ -482,6 +481,45 @@ class LineageBuilder:
         if plan.legs:
             self._union(plan.legs)
         return node
+
+    def _order_sources(self, query: QueryObject, name: str) -> list[str]:
+        """What an ``orderBy`` field sorts by, resolved as the compiler does.
+
+        Only against the query's own SELECT (``filter_resolution``): a coalesce
+        alias, a selected dimension, a selected measure or metric, a selected
+        raw field, or a 1-based SELECT position. A raw ``Orders.Amount`` is the
+        column even when a measure shares that spelling.
+        """
+        dims: list[tuple[str, list[str]]] = []
+        for dim in query.select.dimensions:
+            if isinstance(dim, CoalesceDimension):
+                dims.append((dim.alias, list(dim.coalesce)))
+            else:
+                dims.append((dim, [dim]))
+        selected: list[list[str]] = [
+            *(sources for _, sources in dims),
+            *([m] for m in query.select.measures),
+        ]
+        for label, sources in dims:
+            # A dimension selected as ``Name:grain`` sorts by ``Name`` too.
+            if name in (label, label.rpartition(":")[0]):
+                return self._nodes(self._field(s) for s in sources)
+        if name in query.select.measures:
+            return self._nodes([self._field(name)])
+        if name in query.select.fields:
+            return self._nodes([self._qualified_column(name)])
+        if name.isdigit():
+            position = int(name) - 1
+            if 0 <= position < len(selected):
+                return self._nodes(self._field(s) for s in selected[position])
+            fields = list(query.select.fields)
+            if 0 <= position - len(selected) < len(fields):
+                return self._nodes([self._qualified_column(fields[position - len(selected)])])
+        return []
+
+    @staticmethod
+    def _nodes(ids: Iterable[str | None]) -> list[str]:
+        return [i for i in ids if i]
 
     def _subquery(self, sub: Subquery, op: str, node: str) -> None:
         """An ``exists``/``nonexists`` filter reads its subquery's data object and filters."""
