@@ -235,8 +235,11 @@ obsl rules evaluate model.yaml -r "Low Stock Product"   # that rule's findings
 `evaluate` fetches at most `--limit` findings per rule (default 20). A count
 shown as `20+` reached the limit and may be higher. Locally it needs a
 configured warehouse, like `execute`. `compile` and `evaluate` exit `1` when a
-rule fails to compile or run, and report the others anyway, so they can gate a
-CI job.
+rule fails to compile or run, and report the others anyway, so a CI job catches
+a rule that no longer works. Findings do not change the exit code: a validation
+rule that runs and reports violations exits `0`. To fail a data-quality job on
+violations, read the findings, for example the `finding_count` of each rule in
+`-f json`.
 
 ## Lineage
 
