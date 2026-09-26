@@ -25,16 +25,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from orionbelt.compiler.pipeline import CompilationResult
 from orionbelt.models.expressions import find_placeholders, find_qualified_refs
 from orionbelt.models.query import (
     CoalesceDimension,
-    DimensionRef,
     QueryFilter,
     QueryFilterGroup,
     QueryObject,
+    Subquery,
 )
 from orionbelt.models.semantic import (
     MeasureFilter,
@@ -89,11 +89,15 @@ class LineageNode:
 
 @dataclass(frozen=True)
 class LineageEdge:
-    """``source`` feeds ``target``; ``label`` says how, when it is not plain use."""
+    """``source`` feeds ``target``; ``label`` says how, when it is not plain use.
+
+    ``path_name`` names the secondary join a ``join on`` edge follows.
+    """
 
     source: str
     target: str
     label: str | None = None
+    path_name: str | None = None
 
 
 @dataclass
@@ -115,7 +119,10 @@ class Lineage:
                 label += f"<br/>{_escape(node.detail)}"
             lines.append(f"    {ids[node.id]}{left}{label}{right}")
         for edge in self.edges:
-            arrow = f"-- {_escape(edge.label)} -->" if edge.label else "-->"
+            text = edge.label or ""
+            if text and edge.path_name:
+                text = f"{text} (path {edge.path_name})"
+            arrow = f'-->|"{_escape(text)}"|' if text else "-->"
             lines.append(f"    {ids[edge.source]} {arrow} {ids[edge.target]}")
         used = {node.kind for node in self.nodes}
         for kind in KINDS:
@@ -179,7 +186,13 @@ def to_turtle(lineage: Lineage, model_id: str) -> str:
     root = iris.get(lineage.root)
     for edge in lineage.edges:
         if edge.label and edge.label.startswith("join on ") and root is not None:
-            join = artefact_uri(model_id, "join", by_id[edge.target].name, by_id[edge.source].name)
+            join = artefact_uri(
+                model_id,
+                "join",
+                by_id[edge.target].name,
+                by_id[edge.source].name,
+                path_name=edge.path_name,
+            )
             graph.add((join, RDF.type, OBSL.Join))
             graph.add((root, prov.wasDerivedFrom, join))
         else:
@@ -248,8 +261,10 @@ class LineageBuilder:
             self._lineage.nodes.append(LineageNode(node_id, kind, name, detail))
         return node_id
 
-    def _edge(self, source: str, target: str, label: str | None = None) -> None:
-        edge = LineageEdge(source, target, label)
+    def _edge(
+        self, source: str, target: str, label: str | None = None, path_name: str | None = None
+    ) -> None:
+        edge = LineageEdge(source, target, label, path_name)
         if source != target and edge not in self._seen_edges:
             self._seen_edges.add(edge)
             self._lineage.edges.append(edge)
@@ -286,15 +301,30 @@ class LineageBuilder:
 
     # ── semantic artefacts ────────────────────────────────────────────
 
-    def _field(self, name: str) -> str | None:
-        """A dimension, measure or metric by name; None when the name is none of them."""
-        name = DimensionRef.parse(name).name if ":" in name else name
+    def _field(self, name: str, data_object: str | None = None) -> str | None:
+        """The node a query field names; None when it names nothing in the model.
+
+        The exact name is looked up first, so a measure called ``Sales: Retail``
+        is that measure. Then a ``Dimension:grain`` suffix, then a raw
+        ``DataObject.Column`` reference, then, inside an ``exists`` subquery, a
+        bare column of that subquery's *data_object*.
+        """
         if name in self.model.dimensions:
             return self._dimension(name)
         if name in self._measures:
             return self._measure(name)
         if name in self.model.metrics:
             return self._metric(name)
+        base, _, _grain = name.rpartition(":")
+        if base in self.model.dimensions:
+            return self._dimension(base)
+        obj_name, _, col_name = name.partition(".")
+        obj = self.model.data_objects.get(obj_name.strip())
+        if obj is not None and col_name.strip() in obj.columns:
+            return self._column(obj_name.strip(), col_name.strip())
+        sub = self.model.data_objects.get(data_object or "")
+        if sub is not None and name in sub.columns:
+            return self._column(str(data_object), name)
         return None
 
     def _dimension(self, name: str) -> str:
@@ -400,20 +430,39 @@ class LineageBuilder:
             source = self._field(measure)
             if source:
                 self._edge(source, node)
+        for raw in query.select.fields:
+            source = self._field(raw)
+            if source:
+                self._edge(source, node, "field")
         for label, items in (("where", query.where), ("having", query.having)):
-            for field_name in _query_filter_fields(list(items)):
-                source = self._field(field_name)
+            for item in _query_filters(list(items)):
+                source = self._field(item.field)
                 if source:
                     self._edge(source, node, label)
+                if item.subquery is not None:
+                    self._subquery(item.subquery, str(item.op), node)
         for order in query.order_by:
             source = self._field(order.field)
             if source:
                 self._edge(source, node, "order")
-        for from_object, to_object, columns in plan.joins:
-            self._edge(self._table(from_object), self._table(to_object), f"join on {columns}")
+        for from_object, to_object, columns, path_name in plan.joins:
+            self._edge(
+                self._table(from_object),
+                self._table(to_object),
+                f"join on {columns}",
+                path_name,
+            )
         if plan.legs:
             self._union(plan.legs)
         return node
+
+    def _subquery(self, sub: Subquery, op: str, node: str) -> None:
+        """An ``exists``/``nonexists`` filter reads its subquery's data object and filters."""
+        self._edge(self._table(sub.data_object), node, op)
+        for item in sub.filter:
+            source = self._field(item.field, sub.data_object)
+            if source:
+                self._edge(source, node, op)
 
     def _union(self, legs: list[tuple[str, list[str]]]) -> None:
         """Route each leg's measures through the ``UNION ALL`` that combines the legs.
@@ -433,13 +482,13 @@ class LineageBuilder:
         for edge in self._lineage.edges:
             target_kind = edge.target.split(":", 1)[0]
             if edge.source in leg_of and target_kind in ("metric", "query"):
-                rerouted.append(LineageEdge(union, edge.target, edge.label))
+                rerouted.append(replace(edge, source=union))
             else:
                 rerouted.append(edge)
         self._lineage.edges = []
         self._seen_edges.clear()
         for edge in rerouted:
-            self._edge(edge.source, edge.target, edge.label)
+            self._edge(edge.source, edge.target, edge.label, edge.path_name)
         for measure_node, source in leg_of.items():
             self._edge(measure_node, union, f"leg {source}")
 
@@ -463,25 +512,27 @@ def _condition_refs(condition: RuleCondition) -> tuple[list[str], list[str]]:
     return fields, rules
 
 
-def _query_filter_fields(items: list[QueryFilter | QueryFilterGroup]) -> list[str]:
-    fields: list[str] = []
+def _query_filters(items: list[QueryFilter | QueryFilterGroup]) -> list[QueryFilter]:
+    """The leaf filters of a query filter list, groups flattened."""
+    leaves: list[QueryFilter] = []
     for item in items:
         if isinstance(item, QueryFilterGroup):
-            fields.extend(_query_filter_fields(list(item.filters)))
+            leaves.extend(_query_filters(list(item.filters)))
         else:
-            fields.append(item.field)
-    return fields
+            leaves.append(item)
+    return leaves
 
 
 @dataclass
 class QueryPlanFacts:
     """What the planner decided for a query that lineage shows.
 
-    ``joins`` are ``(from, to, columns)`` steps; ``legs`` are ``(fact, measures)``
-    for a multi-fact query, whose legs a ``UNION ALL`` combines.
+    ``joins`` are ``(from, to, columns, path_name)`` steps, ``path_name`` set for
+    a secondary join; ``legs`` are ``(fact, measures)`` for a multi-fact query,
+    whose legs a ``UNION ALL`` combines.
     """
 
-    joins: list[tuple[str, str, str]] = field(default_factory=list)
+    joins: list[tuple[str, str, str, str | None]] = field(default_factory=list)
     legs: list[tuple[str, list[str]]] = field(default_factory=list)
 
 
@@ -495,7 +546,17 @@ def query_plan_facts(result: CompilationResult) -> QueryPlanFacts:
         steps.extend(leg.join_steps)
         facts.legs.append((leg.measure_source, list(leg.measures)))
     for step in steps:
-        join = (step.from_object, step.to_object, ", ".join(step.join_columns))
+        # Draw each join the way the model declares it, owner to target, so the
+        # Turtle names the declared join's IRI.
+        owner, target = (
+            (step.to_object, step.from_object)
+            if step.reversed
+            else (
+                step.from_object,
+                step.to_object,
+            )
+        )
+        join = (owner, target, ", ".join(step.join_columns), step.path_name)
         if join not in facts.joins:
             facts.joins.append(join)
     return facts

@@ -44,7 +44,7 @@ def test_multi_fact_query_gets_every_legs_joins_and_the_union(loaded) -> None:
     result = store.compile_query(model_id, query, "duckdb")
     assert result.explain is not None and result.explain.planner == "CFL"
     plan = query_plan_facts(result)
-    targets = {(f, t) for f, t, _ in plan.joins}
+    targets = {(f, t) for f, t, _, _ in plan.joins}
     assert {("Sales", "Clients"), ("Sales", "Products"), ("Returns", "Sales")} <= targets
     assert dict(plan.legs) == {"Sales": ["Total Sales"], "Returns": ["Total Returns"]}
 

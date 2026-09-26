@@ -25,6 +25,7 @@ dataObjects:
     columns:
       ID: {code: ID, abstractType: string, primaryKey: true}
       Customer: {code: CUSTOMER_ID, abstractType: string}
+      Ship Customer: {code: SHIP_CUSTOMER_ID, abstractType: string}
       Amount: {code: AMOUNT, abstractType: float}
       Tax: {code: TAX, abstractType: float}
       Gross: {abstractType: float, expression: "{Amount} + {Tax}"}
@@ -34,6 +35,12 @@ dataObjects:
         joinTo: Customers
         columnsFrom: [Customer]
         columnsTo: [ID]
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Ship Customer]
+        columnsTo: [ID]
+        secondary: true
+        pathName: shipping
   Customers:
     code: CUSTOMERS
     database: EDW
@@ -46,6 +53,9 @@ dimensions:
   Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}
 measures:
   Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+  "Sales: Retail":
     columns: [{dataObject: Orders, column: Amount}]
     aggregation: sum
   US Gross:
@@ -244,3 +254,70 @@ class TestShortcuts:
         assert r.json()["root"] == "query:Query"
         r = await client.get("/v1/rules/Revenue/lineage", params={"format": "mermaid"})
         assert r.text.startswith("flowchart LR")
+
+
+class TestQueryShapes:
+    """Query parts that reach data beyond select dimensions and measures."""
+
+    async def _lineage(self, client: AsyncClient, query: dict, fmt: str = "json"):
+        sid, model_id, _ = await _load(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/lineage",
+            params={"format": fmt},
+            json={"model_id": model_id, "query": query},
+        )
+        assert r.status_code == 200, r.text
+        return r, model_id
+
+    async def test_measure_name_with_a_colon(self, client: AsyncClient) -> None:
+        r, _ = await self._lineage(client, {"select": {"measures": ["Sales: Retail"]}})
+        assert ("measure:Sales: Retail", "query:Query", None) in _edges(r.json())
+
+    async def test_raw_fields_reach_their_columns(self, client: AsyncClient) -> None:
+        r, _ = await self._lineage(client, {"select": {"fields": ["Orders.Gross"]}})
+        edges = _edges(r.json())
+        assert ("column:Orders.Gross", "query:Query", "field") in edges
+        # the computed column's own inputs and table are there too
+        assert ("column:Orders.Amount", "column:Orders.Gross", "expression") in edges
+        assert ("data_object:Orders", "column:Orders.Amount", None) in edges
+
+    async def test_exists_subquery_reads_its_data_object(self, client: AsyncClient) -> None:
+        query = {
+            "select": {"dimensions": ["Country"]},
+            "where": [
+                {
+                    "field": "Country",
+                    "op": "exists",
+                    "subquery": {
+                        "dataObject": "Orders",
+                        "filter": [{"field": "Amount", "op": ">", "value": 100}],
+                    },
+                }
+            ],
+        }
+        r, _ = await self._lineage(client, query)
+        edges = _edges(r.json())
+        assert ("data_object:Orders", "query:Query", "exists") in edges
+        assert ("column:Orders.Amount", "query:Query", "exists") in edges
+
+    async def test_secondary_join_keeps_its_path(self, client: AsyncClient) -> None:
+        query = {
+            "select": {"dimensions": ["Country"], "measures": ["Revenue"]},
+            "usePathNames": [{"source": "Orders", "target": "Customers", "pathName": "shipping"}],
+        }
+        r, model_id = await self._lineage(client, query)
+        joins = [e for e in r.json()["edges"] if (e["label"] or "").startswith("join on")]
+        assert [(j["source"], j["target"], j["label"], j["path_name"]) for j in joins] == [
+            (
+                "data_object:Orders",
+                "data_object:Customers",
+                "join on Ship Customer = ID",
+                "shipping",
+            )
+        ]
+        ttl, _ = await self._lineage(client, query, fmt="turtle")
+        graph = Graph().parse(data=ttl.text, format="turtle")
+        join_iris = {str(s) for s in graph.subjects() if "/join/" in str(s)}
+        assert join_iris == {
+            f"https://ralforion.com/ns/model/{model_id}/join/orders-to-customers/shipping"
+        }

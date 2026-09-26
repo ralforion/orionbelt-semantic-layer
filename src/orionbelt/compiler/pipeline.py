@@ -8,6 +8,7 @@ from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.fanout import detect_fanout
 from orionbelt.compiler.grain_dedup import detect_dedup_measures
+from orionbelt.compiler.graph import JoinStep
 from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
 from orionbelt.compiler.raw import RawPlanner
 from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
@@ -40,6 +41,33 @@ class ExplainJoin:
     join_columns: list[str]
     reason: str
     cardinality: str = ""
+    #: The ``pathName`` of the secondary join this step follows; None for a primary join.
+    path_name: str | None = None
+    #: True when the step walks the declared join from its target back to its owner.
+    reversed: bool = False
+
+
+def _declared_path_name(model: SemanticModel, step: JoinStep) -> str | None:
+    """The ``pathName`` of the declared secondary join a planner step follows.
+
+    A step records its objects and columns but not which declared join it came
+    from, and a secondary join differs from the primary one only in those
+    columns, so the step is matched against the owning object's joins. A
+    reversed step walks the join from its target, so its sides are swapped.
+    """
+    owner, target = step.from_object, step.to_object
+    cols_from, cols_to = list(step.from_columns), list(step.to_columns)
+    if step.reversed:
+        owner, target, cols_from, cols_to = target, owner, cols_to, cols_from
+    obj = model.data_objects.get(owner)
+    for join in obj.joins if obj is not None else []:
+        if (
+            join.join_to == target
+            and list(join.columns_from) == cols_from
+            and list(join.columns_to) == cols_to
+        ):
+            return join.path_name if join.secondary else None
+    return None
 
 
 @dataclass
@@ -422,6 +450,8 @@ class CompilationPipeline:
                         join_columns=join_cols,
                         reason=reason,
                         cardinality=step.cardinality.value,
+                        path_name=_declared_path_name(model, step),
+                        reversed=step.reversed,
                     )
                 )
 
@@ -445,6 +475,8 @@ class CompilationPipeline:
                             ],
                             reason=f"CFL leg of {q(leg.measure_source)}",
                             cardinality=step.cardinality.value,
+                            path_name=_declared_path_name(model, step),
+                            reversed=step.reversed,
                         )
                         for step in leg.join_steps
                     ],

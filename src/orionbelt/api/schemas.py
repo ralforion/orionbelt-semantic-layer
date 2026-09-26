@@ -1354,6 +1354,10 @@ class LineageEdgeItem(BaseModel):
         "expression, 'join on <columns>' between data objects, or 'leg <fact>' into "
         "a union",
     )
+    path_name: str | None = Field(
+        default=None,
+        description="The pathName of the secondary join a 'join on' edge follows",
+    )
 
 
 class LineageResponse(BaseModel):

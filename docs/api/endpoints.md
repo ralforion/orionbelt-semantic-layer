@@ -1305,7 +1305,7 @@ What each artefact depends on:
 | Measure | Its columns or expression columns; filter columns (`filter`); `withinGroup` column (`order`); grain-override dimensions (`grain`); `anchor` data object; a synthesized count reads its data object's rows (`rows`) |
 | Metric | The measures and metrics its expression names; for cumulative and window metrics the measure plus the time (`time`) and partition (`partition`) dimensions |
 | Rule | The fields its condition reads (`condition`), the rules it references (`rule`), its grain dimensions (`grain`) |
-| Query | Its dimensions, measures and metrics; `where`, `having` and `order` fields; the planner's joins between data objects (`join on ...`). A multi-fact query adds a `union` node: each leg's measures feed it (`leg <fact>`), and the metrics and the query read those measures through it, as the `UNION ALL` that combines the legs does |
+| Query | Its dimensions, measures and metrics; raw `select.fields` columns (`field`); `where`, `having` and `order` fields; an `exists` / `nonexists` subquery's data object and filter fields (labelled with the operator); the planner's joins between data objects (`join on ...`, drawn as declared, with the secondary join's `path_name`). A multi-fact query adds a `union` node: each leg's measures feed it (`leg <fact>`), and the metrics and the query read those measures through it, as the `UNION ALL` that combines the legs does |
 
 A computed column depends on the columns its expression reads (`expression`).
 
@@ -1313,9 +1313,9 @@ A computed column depends on the columns its expression reads (`expression`).
 
 | Value | Response |
 |---|---|
-| `json` (default) | `root`, `nodes` (`id`, `kind`, `name`, `detail`), `edges` (`source`, `target`, `label`) and `mermaid`. Node kinds: `data_object`, `column`, `dimension`, `measure`, `metric`, `rule`, `union`, `query` |
+| `json` (default) | `root`, `nodes` (`id`, `kind`, `name`, `detail`), `edges` (`source`, `target`, `label`, `path_name`) and `mermaid`. Node kinds: `data_object`, `column`, `dimension`, `measure`, `metric`, `rule`, `union`, `query` |
 | `mermaid` | The Mermaid flowchart as `text/vnd.mermaid` |
-| `turtle` | `text/turtle` over the same IRIs as the model's [OBSL graph](#obsl-graph-sparql), so the two merge; each edge is `target prov:wasDerivedFrom source` (W3C PROV), and a query or union is a `prov:Entity`; a query is derived from the joins it used |
+| `turtle` | `text/turtle` over the same IRIs as the model's [OBSL graph](#obsl-graph-sparql), so the two merge; each edge is `target prov:wasDerivedFrom source` (W3C PROV), and a query is derived from the IRI of each declared join it used, secondary joins included, and a query or union is a `prov:Entity`; a query is derived from the joins it used |
 
 ```bash
 curl "http://127.0.0.1:8000/v1/metrics/Gross%20Margin/lineage?format=mermaid"
