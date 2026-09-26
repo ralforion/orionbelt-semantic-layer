@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.32.0] - 2026-09-26
+
 ### Added
 
 - **Lineage of dimensions, measures, metrics, rules and queries.** A lineage follows references down to the tables: columns (computed columns included), filter and grain columns, the measures and metrics a metric or rule reads, rules a rule references, and for a query its raw `select.fields` columns, `exists` subqueries, and the joins the planner chose, named as declared (with their `pathName`, role-playing joins included), across every leg of a multi-fact query. The API serves it per artefact type, since a rule may share a measure's name: `GET /v1/{dimensions,measures,metrics,rules}/{name}/lineage` and `POST /v1/query/lineage`, with session-scoped forms. `?format=` returns JSON (nodes, edges and Mermaid), Mermaid text, or Turtle over the OBSL graph's IRIs with `prov:wasDerivedFrom` edges, so it merges with the model graph. `obsl lineage` offers the same locally or with `--server`, as Mermaid, Markdown, JSON or Turtle. The UI gains a Lineage tab that draws the current query's lineage by default, or a picked artefact's, with a zoom slider, two-way scrolling with visible scrollbars, and `.md`, `.png` and `.ttl` downloads. A multi-fact query's lineage shows the `UNION ALL` that combines its legs: each leg's measures feed a `union` node, which the metrics and the query read.
@@ -12,6 +14,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Changed
 
+- **Positioning: Semantic and Context Layer, Rule Engine, and Semantic Sidecar.** The README, the docs home page (with a new "What is a Context Layer?" section: business rules and the rule engine, external concept mappings, the OBSL graph and SPARQL, lineage, descriptions, synonyms and owners), the docs site description and the UI header say so. The product name OrionBelt Semantic Layer (OBSL) is unchanged. The UI header title is 18px so the longer name stays on one line. (#483)
+- **Comparison pages cover lineage and the new CLI.** A "Lineage of artefacts and queries" row in the comparison matrix, with competitor cells checked against current vendor docs; the CLI and business rules rows list the new commands and surfaces; the AtScale page no longer says OBSL has no lineage. (#484)
 - **Ontology Graph buttons are compact.** Render Graph and Export Onto are small and side by side; before, a narrow window (1000 pixels wide, for example) stretched each across the full width.
 
 ### Fixed
