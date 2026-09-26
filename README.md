@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/ORIONBELT_Logo.png" alt="OrionBelt Semantic Layer logo" width="320">
 </p>
 
-<h1 align="center">OrionBelt&reg; Semantic Layer and Sidecar</h1>
+<h1 align="center">OrionBelt&reg; Semantic and Context Layer, Rule Engine, and Semantic Sidecar</h1>
 
 <p align="center"><strong>Define your metrics once in YAML. Let agents and BI tools query them without ever touching your schema.</strong></p>
 
@@ -24,7 +24,7 @@
 
 Ask an LLM to write SQL against a raw star schema and sooner or later it joins two fact tables and hands you a revenue number inflated by a factor of eight. It looks right. Nobody catches it.
 
-OrionBelt is a **[semantic sidecar](https://ralforion.com/semantic-sidecar.html)**. You declare dimensions, measures, metrics, and joins in version-controlled YAML. OrionBelt compiles them into dialect-specific SQL through a real AST, and routes multi-fact queries through a Composite Fact Layer planner that [blocks the join paths that produce fan traps](https://ralforion.com/text-to-sql.html). Agents and BI tools ask for `"Total Revenue" by "Country"`. They never see a table name.
+OrionBelt is a **semantic and context layer** with a **rule engine**, and it runs as a **[semantic sidecar](https://ralforion.com/semantic-sidecar.html)**. You declare dimensions, measures, metrics, and joins in version-controlled YAML. OrionBelt compiles them into dialect-specific SQL through a real AST, and routes multi-fact queries through a Composite Fact Layer planner that [blocks the join paths that produce fan traps](https://ralforion.com/text-to-sql.html). Agents and BI tools ask for `"Total Revenue" by "Country"`. They never see a table name.
 
 No BI tool in the middle. No runtime lock-in. Point it at what you already have.
 
@@ -143,9 +143,9 @@ OrionBelt is a sidecar, not a platform. It compiles a YAML model into correct SQ
 
 ## Meaning, not just metrics
 
-A model that only knows that Total Sales is a sum still leaves the agent guessing what a high-value client is, or whether a category selling at a loss is a bug or a fact. Since 2.30 the model carries that too.
+A model that only knows that Total Sales is a sum still leaves the agent guessing what a high-value client is, or whether a category selling at a loss is a bug or a fact. Since 2.30 the model carries that too, and that is what makes OrionBelt a context layer as well as a semantic layer: business rules, links to the ontologies your organisation governs, and the model itself as an RDF graph give an agent the meaning behind the numbers, not only the numbers.
 
-**Business rules** are conditions over the model's own dimensions, measures and metrics, with no SQL. The engine compiles each one to the query that reports its findings: the members of a classification or eligibility rule, the violations of a validation or constraint rule.
+**Business rules** are conditions over the model's own dimensions, measures and metrics, with no SQL. The rule engine compiles each one to the query that reports its findings: the members of a classification or eligibility rule, the violations of a validation or constraint rule.
 
 ```yaml
 rules:
