@@ -487,6 +487,27 @@ _CSS = """\
   width: auto !important;
   min-width: 0 !important;
 }
+/* Lineage downloads: one row when there is room, wrapping to two rows
+   (.md .png, then .ttl) when there is not, instead of running past the page
+   edge. */
+/* Gradio sizes these buttons with min-width: min(60px, 100%), and the 100%
+   refers back to this group, so the group's natural width counted each button
+   at its bare text width and the buttons then overflowed it. A fixed minimum
+   lets the group claim the width its buttons really take. */
+.download-actions > button { flex: 0 0 auto !important; min-width: 60px !important; }
+.download-actions { min-width: max-content !important; }
+@media (max-width: 1150px) {
+  .download-actions {
+    flex-wrap: wrap !important;
+    min-width: 0 !important;
+    max-width: 140px !important;
+    justify-content: flex-end;
+    row-gap: 6px !important;
+  }
+}
+/* The zoom slider needs little room; capped, it leaves the width to the
+   dropdowns and keeps the downloads on one row on normal windows. */
+.lineage-zoom { max-width: 320px !important; }
 /* ── Lineage tab ── */
 #lineage-diagram {
   overflow: auto;
@@ -2660,8 +2681,9 @@ def create_blocks(
                         step=10,
                         label="Zoom %",
                         scale=1,
+                        elem_classes=["lineage-zoom"],
                     )
-                    with gr.Row(elem_classes=["compact-actions"]):
+                    with gr.Row(elem_classes=["compact-actions", "download-actions"]):
                         lineage_md_btn = gr.Button("↓ .md", scale=0, min_width=60, size="sm")
                         lineage_png_btn = gr.Button("↓ .png", scale=0, min_width=60, size="sm")
                         lineage_ttl_btn = gr.Button("↓ .ttl", scale=0, min_width=60, size="sm")
