@@ -141,6 +141,18 @@ OrionBelt is a sidecar, not a platform. It compiles a YAML model into correct SQ
 
 **[Try the live demo](https://orionbelt.ralforion.com/ui/?__theme=dark)** with a pre-loaded model, or [open the Colab notebook](https://colab.research.google.com/github/ralforion/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb) and run it against TPC-H data.
 
+## What is a Context Layer?
+
+A semantic layer tells a consumer *how* to compute a number: which table, which join, which aggregate. A context layer also tells it *what the number means* and what the business expects of it, in a form an agent can look up instead of guess. In OrionBelt that context lives in the same model as the metrics:
+
+- **[Business rules](https://ralforion.com/orionbelt-semantic-layer/guide/business-rules/)** state conditions over the model's dimensions, measures and metrics: who counts as a high-value client, which categories must not sell at a loss. The rule engine compiles each rule to the query that reports its members or violations, and evaluates one rule or all of them over REST, MCP, the CLI (`obsl rules evaluate`) and the UI.
+- **[External concept mappings](https://ralforion.com/orionbelt-semantic-layer/guide/concept-mappings/)** link data objects, dimensions, measures, metrics and rules to the concepts your organisation already governs (schema.org, FIBO, an internal vocabulary), with provenance.
+- **[The OBSL graph](https://ralforion.com/orionbelt-semantic-layer/guide/obsl/)** exposes every loaded model as RDF, so its artefacts, joins, rules and concept links can be queried with SPARQL.
+- **[Lineage](https://ralforion.com/orionbelt-semantic-layer/api/endpoints/#lineage)** shows what a dimension, measure, metric, rule or query is built from, down to the tables and the joins the planner chose, as JSON, Mermaid, or Turtle linked into the OBSL graph, in the API, the CLI (`obsl lineage`) and the UI.
+- **Descriptions, synonyms and owners** on each artefact give agents the vocabulary users actually speak.
+
+Agents reach all of it over MCP and REST, next to the query tools, so the same model that computes a number can also explain it. The next section shows rules and concept links in a model.
+
 ## Meaning, not just metrics
 
 A model that only knows that Total Sales is a sum still leaves the agent guessing what a high-value client is, or whether a category selling at a loss is a bug or a fact. Since 2.30 the model carries that too, and that is what makes OrionBelt a context layer as well as a semantic layer: business rules, links to the ontologies your organisation governs, and the model itself as an RDF graph give an agent the meaning behind the numbers, not only the numbers.
@@ -182,7 +194,7 @@ Guides: [Business Rules](https://ralforion.com/orionbelt-semantic-layer/guide/bu
 
 ## Contents
 
-[Four ways in](#four-ways-in) · [Meaning, not just metrics](#meaning-not-just-metrics) · [Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
+[Four ways in](#four-ways-in) · [What is a Context Layer?](#what-is-a-context-layer) · [Meaning, not just metrics](#meaning-not-just-metrics) · [Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
 
 ---
 
