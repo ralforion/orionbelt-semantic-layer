@@ -447,7 +447,7 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 - Your facts reach shared dimensions **through intermediate hops** — Cube's multi-fact views require each fact to join every shared dimension directly.
 - You want **role-playing dimensions as plain named dimensions** (`Sales Employee`, `Support Employee`) in one query, without a second cube per role that duplicates every member, or a view to hide the duplicates.
 - You want **first-class declarative cumulative and period-over-period metric types** instead of expressing them via query-time `time_shift` or per-measure `rolling_window`.
-- You want a **graph view of the model** (RDF/SPARQL) for governance/lineage tooling.
+- You want a **graph view of the model** (RDF/SPARQL) and **lineage per artefact and per query** (REST, CLI, UI) for governance tooling.
 - You need **OSI interoperability** for moving models between semantic layer formats.
 - Your operational appetite is small — **one Python service**, no Redis, no scheduler, no separate query orchestrator.
 - You're targeting **Dremio** or otherwise want full feature parity self-hosted without a Cloud upgrade path.
@@ -493,6 +493,7 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 
 ## References
 
+- Cube Semantic Catalog (lineage described in blog posts only): https://cube.dev/blog/introducing-semantic-catalog-preview
 - Cube `cube` reference (parameters, `meta`, `ai_context`): https://docs.cube.dev/reference/data-modeling/cube
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`
 - OBSL CFL planner: `src/orionbelt/compiler/cfl.py`

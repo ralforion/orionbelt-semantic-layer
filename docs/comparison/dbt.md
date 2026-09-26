@@ -241,7 +241,7 @@ OBSL validates column arity at model-load time and gates dialect support at comp
 | Natural SQL surface | **OrionBelt Semantic QL (OBSQL)** — write `SELECT "Region", "Total Sales" FROM sales` (or without FROM); `MEASURE()` marker; aggregate-wrap matching against declared aggregation; `WITH ROLLUP` / `WITH CUBE` first-class | No — dbt SL has no SQL surface; you ask for metrics via GraphQL or the `dbt sl query` CLI, both DSL-specific |
 | Catalog discovery from BI tools | `SHOW TABLES`, `DESCRIBE <model>`, `information_schema.*`, `pg_catalog.*` answered from the model in-process — never touches the warehouse | n/a |
 | Governance | **Closed by design** — raw warehouse SQL and DDL/DML always reject with `RAW_SQL_REJECTED` / `WRITE_OPERATION_REJECTED`. No env flag to bypass | n/a |
-| REST API | Yes — full session lifecycle, validate/compile/execute, ER diagram, `find`, lineage `explain`, OSI conversion | No (REST not offered) |
+| REST API | Yes — full session lifecycle, validate/compile/execute, ER diagram, `find`, lineage of dimensions / measures / metrics / rules / queries (JSON, Mermaid, Turtle), OSI conversion | No (REST not offered) |
 | Arrow Flight SQL | Yes — gRPC server on port 8815; BI tools (DBeaver, Tableau JDBC, Power BI ODBC) connect natively. Multi-model addressing via the `database` gRPC header. | No |
 | DB-API 2.0 drivers | Yes — 8 drivers (`ob-bigquery`, `ob-snowflake`, `ob-postgres`, `ob-mysql`, `ob-duckdb`, `ob-clickhouse`, `ob-databricks`, `ob-dremio`) | No |
 | GraphQL | No | Yes (dbt Cloud) |
@@ -260,7 +260,7 @@ OBSL validates column arity at model-load time and gates dialect support at comp
 |---|---|---|
 | Sessions / multi-tenant runtime | TTL, max-age, rate limits, 410/429 | Cloud-managed |
 | Caching | Result cache based on freshness inheritance (file backend, off by default): TTL derived from per-`dataObject` `refresh:` contract; ETL `POST /v1/heartbeat` invalidates dependent entries by physical table | dbt Cloud query cache |
-| Versioned governance, lineage to upstream models | No (model is standalone) | Strong — inherits dbt's lineage, tests, docs, exposures |
+| Versioned governance, lineage to upstream models | Partial: lineage from each artefact and query down to the physical tables and the joins the planner chose, but no link into an upstream transformation pipeline (the model is standalone) | Strong — inherits dbt's lineage, tests, docs, exposures |
 | Filter ergonomics | `MeasureFilter`, `FilterContext`, `GrainOverride`, query-level `where`/`having` | Per-metric `filter:`, `metric_time` |
 | Vendor-agnostic | Yes — self-hostable, no vendor runtime | Practical lock-in: production query APIs require dbt Cloud |
 | Business rules compiled to findings | ✅ `rules:` compiled to the query that reports findings (members or violations), evaluated over REST and MCP | Data tests only: SQL assertions (`unique`, `not_null`, singular tests) on models, sources, seeds, snapshots and columns that return failing rows; not defined on a metric or at a grouping grain |
@@ -288,6 +288,8 @@ Conversely, dbt SL would need to add to match OBSL's strengths:
 
 ## References
 
+- dbt Catalog lineage: https://docs.getdbt.com/docs/explore/explore-projects
+- dbt column-level lineage (models, sources, snapshots): https://docs.getdbt.com/docs/explore/column-level-lineage
 - dbt data tests: https://docs.getdbt.com/docs/build/data-tests
 - dbt `meta` config: https://docs.getdbt.com/reference/resource-configs/meta
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`
