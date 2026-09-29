@@ -36,10 +36,10 @@ import statistics
 import subprocess
 import sys
 import time
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
-import sqlglot
 import yaml
 
 from orionbelt.compiler.pipeline import CompilationPipeline
@@ -203,13 +203,24 @@ def main() -> None:
         _profile(CompilationPipeline(), queries, model, args.dialect, args.reps, args.top)
         return
 
-    pipelines = {"reuse": CompilationPipeline()}
+    # Each variant's reuse flags; the --ab baseline is named after what it turns
+    # off, so saved results say which comparison they measured.
+    flags = {"reuse": {"reuse_measures": True, "reuse_graphs": True}}
     if args.ab:
-        baseline = CompilationPipeline(
-            reuse_measures=args.ab_off not in ("all", "measures"),
-            reuse_graphs=args.ab_off not in ("all", "graphs"),
-        )
-        pipelines = {"rebuild": baseline, **pipelines}
+        baseline_name = {
+            "all": "no-reuse",
+            "measures": "no-measure-reuse",
+            "graphs": "no-graph-reuse",
+        }[args.ab_off]
+        flags = {
+            baseline_name: {
+                "reuse_measures": args.ab_off not in ("all", "measures"),
+                "reuse_graphs": args.ab_off not in ("all", "graphs"),
+            },
+            **flags,
+        }
+    pipelines = {name: CompilationPipeline(**f) for name, f in flags.items()}
+    if args.ab:
         _check_parity(pipelines, queries, model, args.dialect)
     samples = _time(pipelines, queries, model, args.dialect, args.reps, args.warmup, args.seed)
     report = _report(samples)
@@ -225,7 +236,7 @@ def main() -> None:
                 "commit": _commit(),
                 "python": sys.version.split()[0],
                 "implementation": platform.python_implementation(),
-                "sqlglot": sqlglot.__version__,
+                "sqlglot": version("sqlglot"),
                 "platform": platform.platform(),
                 "machine": platform.machine(),
                 "model": str(
@@ -236,7 +247,8 @@ def main() -> None:
                 "reps": args.reps,
                 "warmup": args.warmup,
                 "seed": args.seed,
-                "variants": list(pipelines),
+                "variants": flags,
+                "ab_off": args.ab_off if args.ab else None,
                 "model_load_ms": load_ms,
             },
             "summary": report,
