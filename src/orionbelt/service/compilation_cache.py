@@ -20,7 +20,8 @@ Keys:
   everywhere, mapping items included: the compiler renders a mapping filter
   value in insertion order, so ``{"a": 1, "b": 2}`` and ``{"b": 2, "a": 1}``
   compile to different SQL and must not share an entry. A value of any other
-  type bypasses the cache.
+  type bypasses the cache. The encoding is stored as its SHA-256 digest, so a
+  key is 32 bytes whatever the query's size.
 
 Results are deep-copied on the way in and on the way out, so a caller that
 mutates what it got back (the CLI assigns formatted SQL to ``result.sql``)
@@ -37,6 +38,7 @@ decided on every execution, hit or miss.
 from __future__ import annotations
 
 import copy
+import hashlib
 import itertools
 import threading
 import weakref
@@ -79,12 +81,17 @@ def _encode(value: Any) -> Any:
     raise _UnkeyableError
 
 
-def query_key(query: QueryObject) -> str | None:
-    """The canonical cache key of *query*, or ``None`` when it cannot be keyed."""
+def query_key(query: QueryObject) -> bytes | None:
+    """The cache key of *query*, or ``None`` when it cannot be keyed.
+
+    The SHA-256 digest of the typed encoding: 32 bytes whatever the query's
+    size, as exact as the encoding itself.
+    """
     try:
-        return repr(_encode(query.model_dump(mode="python")))
+        encoded = repr(_encode(query.model_dump(mode="python")))
     except _UnkeyableError:
         return None
+    return hashlib.sha256(encoded.encode()).digest()
 
 
 @dataclass(frozen=True)
@@ -100,8 +107,8 @@ class CompilationCacheStats:
     evictions: int
 
 
-def _size(key: tuple[int, str, str], result: CompilationResult) -> int:
-    """Rough bytes held by one entry: the key text plus the result's repr."""
+def _size(key: tuple[int, str, bytes], result: CompilationResult) -> int:
+    """Rough bytes held by one entry: the key plus the result's repr."""
     return len(key[1]) + len(key[2]) + len(repr(result))
 
 
@@ -121,7 +128,7 @@ class CompilationCache:
         self._max_bytes = max_bytes
         self._max_entry_bytes = max_entry_bytes
         self._lock = threading.Lock()
-        self._entries: OrderedDict[tuple[int, str, str], tuple[CompilationResult, int]] = (
+        self._entries: OrderedDict[tuple[int, str, bytes], tuple[CompilationResult, int]] = (
             OrderedDict()
         )
         self._bytes = 0

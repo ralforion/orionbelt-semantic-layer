@@ -156,6 +156,15 @@ class TestKeys:
         cache.compile(pipeline, _query(), model, "postgres")
         assert pipeline.calls == 2
 
+    def test_key_is_a_fixed_size_digest(self) -> None:
+        small = query_key(_query())
+        large = query_key(
+            _query(where=[{"field": "Customer Country", "op": "in", "value": ["x"] * 500}])
+        )
+        assert isinstance(small, bytes) and isinstance(large, bytes)
+        assert len(small) == len(large) == 32
+        assert small != large
+
     def test_list_order_is_kept(self) -> None:
         a = _query(orderBy=[{"field": "Total Revenue"}, {"field": "Customer Country"}])
         b = _query(orderBy=[{"field": "Customer Country"}, {"field": "Total Revenue"}])
