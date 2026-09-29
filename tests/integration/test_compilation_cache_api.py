@@ -64,7 +64,7 @@ class TestCompilationCacheApi:
         assert (await client.get("/v1/cache/compilation")).json()["entries"] == 0
         assert (await client.get("/v1/cache/stats")).status_code == 200
 
-    async def test_disabled_by_default(self) -> None:
+    async def test_zero_entries_disables_it(self) -> None:
         transport = ASGITransport(app=_app(CompilationCache()))
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             await _compile(c)
@@ -73,3 +73,14 @@ class TestCompilationCacheApi:
         reset_session_manager()
         assert stats["enabled"] is False
         assert (stats["hits"], stats["entries"]) == (0, 0)
+
+
+def test_settings_enable_the_cache_by_default() -> None:
+    settings = Settings()
+    assert settings.compile_cache_max_entries == 2048
+    cache = CompilationCache(
+        max_entries=settings.compile_cache_max_entries,
+        max_bytes=settings.compile_cache_max_bytes,
+        max_entry_bytes=settings.compile_cache_max_entry_bytes,
+    )
+    assert cache.enabled

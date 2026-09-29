@@ -1447,7 +1447,7 @@ Drops every cache entry regardless of TTL or freshness contract. Useful for manu
 
 ## Compilation cache
 
-A separate, in-memory cache of **compiled SQL** (not rows): the SQL, warnings, validation status, explain plan and physical-table dependencies of a query, keyed by the loaded model, the dialect and the full query. A repeated query skips the compiler on every surface (REST, pgwire, Flight); result-cache freshness is still decided on every execution. It is **off by default**; enable it with `COMPILE_CACHE_MAX_ENTRIES` (for example `2048`). `COMPILE_CACHE_MAX_BYTES` (default 64 MB) caps its estimated memory and `COMPILE_CACHE_MAX_ENTRY_BYTES` (default 1 MB) skips larger entries. Entries of a model go when the last session holding it releases it.
+A separate, in-memory cache of **compiled SQL** (not rows): the SQL, warnings, validation status, explain plan and physical-table dependencies of a query, keyed by the loaded model, the dialect and the full query. A repeated query skips the compiler on every surface (REST, pgwire, Flight); result-cache freshness is still decided on every execution. It is **on by default** with `COMPILE_CACHE_MAX_ENTRIES=2048` (about 7.5 MB on the TPC-DS example); `0` disables it. `COMPILE_CACHE_MAX_BYTES` (default 64 MB) caps its estimated memory and `COMPILE_CACHE_MAX_ENTRY_BYTES` (default 1 MB) skips larger entries. Entries of a model go when the last session holding it releases it.
 
 ### `GET /v1/cache/compilation`
 

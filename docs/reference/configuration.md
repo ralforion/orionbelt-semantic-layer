@@ -46,7 +46,7 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `FLIGHT_TLS_KEY`           | —           | PEM private key. Both or neither                  |
 | `FLIGHT_TLS_CLIENT_CA`     | —           | PEM CA for client certificates; turns on mutual TLS |
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution       |
-| `COMPILE_CACHE_MAX_ENTRIES` | `0`       | Compiled queries kept in memory, shared by REST, pgwire and Flight; `0` disables the compilation cache (see [endpoints](../api/endpoints.md#compilation-cache)) |
+| `COMPILE_CACHE_MAX_ENTRIES` | `2048`    | Compiled queries kept in memory, shared by REST, pgwire and Flight (about 7.5 MB at 2048); `0` disables the compilation cache (see [endpoints](../api/endpoints.md#compilation-cache)) |
 | `COMPILE_CACHE_MAX_BYTES`  | `67108864`  | Estimated memory cap of the compilation cache (64 MB) |
 | `COMPILE_CACHE_MAX_ENTRY_BYTES` | `1048576` | A compiled query larger than this (1 MB) is not cached |
 

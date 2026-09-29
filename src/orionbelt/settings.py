@@ -161,8 +161,9 @@ class Settings(BaseSettings):
     cache_unknown_freshness_default_ttl: int = 300
 
     # In-memory compilation cache (service/compilation_cache.py): compiled SQL
-    # and diagnostics per (model, dialect, query). 0 entries = disabled.
-    compile_cache_max_entries: int = 0
+    # and diagnostics per (model, dialect, query). About 3.7 KB per entry on
+    # the TPC-DS example, so 2048 entries is ~7.5 MB. 0 disables it.
+    compile_cache_max_entries: int = 2048
     compile_cache_max_bytes: int = 64 * 1024 * 1024  # 64 MB
     compile_cache_max_entry_bytes: int = 1024 * 1024  # 1 MB
     heartbeat_auth_token: str | None = None  # endpoint disabled (404) when unset
