@@ -5,9 +5,10 @@ a ``QueryObject`` before timing starts, and no database is queried. Validation
 stays on, as in production. Each query is warmed up, then compiled ``--reps``
 times; the order of (query, variant) runs is shuffled so drift is shared.
 
-``--ab`` compares the compiler with and without reusing the effective measures
-inside one compilation (``CompilationPipeline(reuse_measures=...)``), in one
-process with interleaved runs, after checking both give equal results.
+``--ab`` compares the compiler with every in-compilation reuse against one
+with ``--ab-off`` of them turned off (``CompilationPipeline(reuse_measures=...,
+reuse_graphs=...)``), in one process with interleaved runs, after checking both
+give equal results.
 ``--profile`` runs cProfile instead of timing; its cumulative times are not
 comparable with timed runs, its call counts are.
 
@@ -15,6 +16,7 @@ Usage::
 
     uv run python scripts/bench_compile.py                        # TPC-DS, duckdb
     uv run python scripts/bench_compile.py --ab --json out.json   # A/B, raw samples
+    uv run python scripts/bench_compile.py --ab --ab-off graphs   # one reuse only
     uv run python scripts/bench_compile.py --dialect snowflake --reps 50
     uv run python scripts/bench_compile.py --profile --top 25
 
@@ -182,6 +184,12 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--ab", action="store_true", help="compare reuse on/off")
+    parser.add_argument(
+        "--ab-off",
+        choices=["all", "measures", "graphs"],
+        default="all",
+        help="which reuse the --ab baseline turns off",
+    )
     parser.add_argument("--profile", action="store_true", help="cProfile instead of timing")
     parser.add_argument("--top", type=int, default=30, help="rows printed by --profile")
     parser.add_argument("--json", type=Path, help="write metadata and raw samples here")
@@ -197,7 +205,11 @@ def main() -> None:
 
     pipelines = {"reuse": CompilationPipeline()}
     if args.ab:
-        pipelines = {"rebuild": CompilationPipeline(reuse_measures=False), **pipelines}
+        baseline = CompilationPipeline(
+            reuse_measures=args.ab_off not in ("all", "measures"),
+            reuse_graphs=args.ab_off not in ("all", "graphs"),
+        )
+        pipelines = {"rebuild": baseline, **pipelines}
         _check_parity(pipelines, queries, model, args.dialect)
     samples = _time(pipelines, queries, model, args.dialect, args.reps, args.warmup, args.seed)
     report = _report(samples)

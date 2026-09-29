@@ -825,7 +825,7 @@ def build_exists_filter_expr(
             )
         ]
 
-    graph = JoinGraph(model, use_path_names=overrides)
+    graph = JoinGraph.of(model, use_path_names=overrides)
 
     # EXISTS correlates without multiplying outer rows, so cardinality
     # direction is irrelevant — use the undirected walker.

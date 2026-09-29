@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.fanout import detect_fanout
 from orionbelt.compiler.grain_dedup import detect_dedup_measures
-from orionbelt.compiler.graph import JoinStep
+from orionbelt.compiler.graph import JoinStep, reuse_join_graphs
 from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
 from orionbelt.compiler.raw import RawPlanner
 from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
@@ -213,10 +214,12 @@ def _compute_physical_tables(
 class CompilationPipeline:
     """Orchestrates: Query → Resolution → Planning → AST → SQL."""
 
-    def __init__(self, *, reuse_measures: bool = True) -> None:
+    def __init__(self, *, reuse_measures: bool = True, reuse_graphs: bool = True) -> None:
         # ``reuse_measures=False`` rebuilds the effective measures on every
-        # access, as before the reuse; kept for A/B benchmarks and rollback.
+        # access and ``reuse_graphs=False`` every join graph, as before each
+        # reuse; kept for A/B benchmarks and rollback.
         self._reuse_measures = reuse_measures
+        self._reuse_graphs = reuse_graphs
         self._resolver = QueryResolver()
         self._star_planner = StarSchemaPlanner()
         self._cfl_planner = CFLPlanner()
@@ -268,9 +271,11 @@ class CompilationPipeline:
         dialect_name: str,
     ) -> CompilationResult:
         """Compile a query to SQL for the specified dialect."""
-        if not self._reuse_measures:
-            return self._compile(query, model, dialect_name)
-        with reuse_effective_measures():
+        with ExitStack() as scopes:
+            if self._reuse_measures:
+                scopes.enter_context(reuse_effective_measures())
+            if self._reuse_graphs:
+                scopes.enter_context(reuse_join_graphs())
             return self._compile(query, model, dialect_name)
 
     def _compile(

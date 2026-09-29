@@ -66,7 +66,7 @@ class RawPlanner:
         dialect: Dialect | None = None,
     ) -> QueryPlan:
         builder = QueryBuilder()
-        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+        graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
 
         def qualify(obj: DataObject) -> str:
             return qualify_table(obj) if qualify_table else obj.qualified_code
@@ -138,7 +138,7 @@ class RawPlanner:
         *,
         union_by_name: bool = False,
     ) -> QueryPlan:
-        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+        graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
 
         def qualify(obj: DataObject) -> str:
             return qualify_table(obj) if qualify_table else obj.qualified_code

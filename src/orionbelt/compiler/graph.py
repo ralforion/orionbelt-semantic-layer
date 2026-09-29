@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 import networkx as nx
@@ -55,8 +58,59 @@ def path_overrides(use_path_names: list[UsePathName] | None) -> dict[tuple[str, 
     return {(upn.source, upn.target): upn.path_name for upn in use_path_names or ()}
 
 
+# Graphs built inside a ``reuse_join_graphs()`` block, keyed by model identity
+# and the effective path overrides. A graph keeps its model alive, so an ``id``
+# is never reused by another model while the block lasts.
+_GraphKey = tuple[int, frozenset[tuple[tuple[str, str], str]]]
+_join_graph_scope: ContextVar[dict[_GraphKey, JoinGraph] | None] = ContextVar(
+    "join_graph_scope", default=None
+)
+
+
+@contextmanager
+def reuse_join_graphs() -> Iterator[None]:
+    """Build each distinct join graph once for the duration of the block.
+
+    One compilation asks for the same graph several times (resolution, fanout
+    detection, planning). Inside this block :meth:`JoinGraph.of` returns the
+    graph already built for the same model instance and the same effective
+    ``(source, target) -> pathName`` overrides. A graph is read-only once
+    built. The block is context-local (thread and task safe) and nothing
+    outlives it; a nested block reuses the outer one.
+    """
+    if _join_graph_scope.get() is not None:
+        yield
+        return
+    token = _join_graph_scope.set({})
+    try:
+        yield
+    finally:
+        _join_graph_scope.reset(token)
+
+
 class JoinGraph:
     """Graph of data objects (nodes) and relationships (edges) for join path resolution."""
+
+    @classmethod
+    def of(
+        cls,
+        model: SemanticModel,
+        use_path_names: list[UsePathName] | None = None,
+    ) -> JoinGraph:
+        """The join graph for *model* and *use_path_names*.
+
+        Inside a :func:`reuse_join_graphs` block an identical graph is reused;
+        outside one this is the same as the constructor.
+        """
+        scope = _join_graph_scope.get()
+        if scope is None:
+            return cls(model, use_path_names)
+        key = (id(model), frozenset(path_overrides(use_path_names).items()))
+        graph = scope.get(key)
+        if graph is None or graph._model is not model:
+            graph = cls(model, use_path_names)
+            scope[key] = graph
+        return graph
 
     def __init__(
         self,

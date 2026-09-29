@@ -57,7 +57,7 @@ def plan_dimensions_exclude(
            )
       SELECT ... FROM non_combinations ORDER BY ... LIMIT ...
     """
-    graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+    graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
 
     def qualify(obj: DataObject) -> str:
         return qualify_table(obj) if qualify_table else obj.qualified_code

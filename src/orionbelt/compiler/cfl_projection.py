@@ -90,7 +90,7 @@ def group_dimensions_into_legs(
     via directed join paths, and use that as the leg's key object.
     Returns empty measure lists per leg (dimension-only, no aggregates).
     """
-    graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+    graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
     legs: dict[str, list[ResolvedMeasure]] = {}
     assigned: set[str] = set()
 
@@ -767,7 +767,7 @@ def _single_leg_root(
     """
     if len(objects) <= 1:
         return next(iter(objects), None)
-    graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+    graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
     root = graph.find_common_root(objects)
     if not root:
         return None
@@ -821,7 +821,7 @@ def _dimension_carrying_leg(
     reaches both. Returns ``None`` when no root reaches a dimension - the leg
     would carry nothing and must not be created.
     """
-    graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+    graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
     dim_objects = {dim.object_name for dim in resolved.dimensions}
     root = graph.find_common_root(sources | dim_objects) if dim_objects else None
     if not root:

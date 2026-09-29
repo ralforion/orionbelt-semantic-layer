@@ -193,7 +193,7 @@ def detect_fanout(resolved: ResolvedQuery, model: SemanticModel) -> None:
     def _get_graph() -> JoinGraph:
         nonlocal _graph
         if _graph is None:
-            _graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+            _graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
         return _graph
 
     effective_measures = model.effective_measures

@@ -323,7 +323,7 @@ def needs_conforming(
     referenced = measure.referenced_objects
     if len(referenced) < 2:
         return False
-    graph = JoinGraph(model, use_path_names=use_path_names or None)
+    graph = JoinGraph.of(model, use_path_names=use_path_names or None)
     root = graph.find_common_root(set(referenced))
     return not (root and set(referenced) <= (graph.descendants(root) | {root}))
 
@@ -372,7 +372,7 @@ def anchored_conformed_objects(
     )
     if not anchor:
         return set()
-    graph = JoinGraph(model, use_path_names=use_path_names or None)
+    graph = JoinGraph.of(model, use_path_names=use_path_names or None)
     reachable = graph.descendants(anchor) | {anchor}
     # Anchored on a fact, its own columns are read directly and only the other
     # facts conform. Anchored on the shared key, *every* fact conforms - the key
@@ -960,7 +960,7 @@ class QueryResolver:
         # Detect multi-fact: CFL is needed only when measure source objects
         # span multiple independent fact tables.
         if len(ctx.result.measure_source_objects) > 1:
-            graph = JoinGraph(model, use_path_names=query.use_path_names or None)
+            graph = JoinGraph.of(model, use_path_names=query.use_path_names or None)
             reachable = graph.descendants(ctx.result.base_object)
             unreachable = ctx.result.measure_source_objects - reachable - {ctx.result.base_object}
             if unreachable:
@@ -973,7 +973,7 @@ class QueryResolver:
         if not ctx.result.measure_source_objects and ctx.result.dimensions:
             dim_objects = {d.object_name for d in ctx.result.dimensions}
             if not dim_objects <= {ctx.result.base_object}:
-                graph = JoinGraph(model, use_path_names=query.use_path_names or None)
+                graph = JoinGraph.of(model, use_path_names=query.use_path_names or None)
                 steps = graph.find_join_path(
                     {ctx.result.base_object},
                     dim_objects,
@@ -989,7 +989,7 @@ class QueryResolver:
         if ctx.result.is_raw and ctx.result.base_object:
             field_objects = {f.object_name for f in ctx.result.fields}
             if len(field_objects) > 1:
-                graph = JoinGraph(model, use_path_names=query.use_path_names or None)
+                graph = JoinGraph.of(model, use_path_names=query.use_path_names or None)
                 reachable = graph.descendants(ctx.result.base_object)
                 unreachable = field_objects - reachable - {ctx.result.base_object}
                 if unreachable:
@@ -1035,7 +1035,7 @@ class QueryResolver:
         self._validate_use_path_names(ctx, query.use_path_names)
 
         # 5. Resolve join paths
-        ctx.graph = JoinGraph(model, use_path_names=query.use_path_names or None)
+        ctx.graph = JoinGraph.of(model, use_path_names=query.use_path_names or None)
         if ctx.result.base_object and len(ctx.result.required_objects) > 1:
             ambiguous: dict[str, list[list[str]]] = {}
             ctx.result.join_steps = ctx.graph.find_join_path(
@@ -1975,7 +1975,7 @@ class QueryResolver:
         if not remaining:
             return best
 
-        graph = JoinGraph(ctx.model, use_path_names=ctx.result.use_path_names or None)
+        graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
         if remaining <= graph.descendants(best):
             return best
 
@@ -2125,7 +2125,7 @@ class QueryResolver:
             sources = ctx.result.measure_source_objects
             candidates = sorted(sources)
             if spanning:
-                graph = JoinGraph(ctx.model, use_path_names=ctx.result.use_path_names or None)
+                graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
                 candidates = [
                     name for name in candidates if spanning <= (graph.descendants(name) | {name})
                 ] or sorted(sources)
@@ -2147,7 +2147,7 @@ class QueryResolver:
         # (See ``_reanchor_if_unreachable`` — the same idea, applied when a
         # measure pinned the base to an object that cannot reach the rest.)
         if len(ctx.result.required_objects) > 1:
-            graph = JoinGraph(ctx.model, use_path_names=ctx.result.use_path_names or None)
+            graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
             root = graph.find_common_root(ctx.result.required_objects)
             if root:
                 return root

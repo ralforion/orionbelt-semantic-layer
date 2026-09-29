@@ -243,7 +243,7 @@ class CFLPlanner:
         cross_fact: list[ResolvedMeasure] | None,
     ) -> None:
         """Refuse ordered aggregates whose sort key their own leg cannot reach."""
-        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+        graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
         owner: dict[str, str] = {}
         for obj_name, measures in measures_by_object.items():
             for measure in measures:
@@ -314,7 +314,7 @@ class CFLPlanner:
         anything sitting behind one.
         """
         roots = set(measures_by_object) or {resolved.base_object}
-        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+        graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
         reachable = {
             name for root in roots for name in (graph.descendants_without_unnest(root) | {root})
         }
@@ -469,7 +469,7 @@ class CFLPlanner:
         the columns it actually has — the database fills missing columns with
         NULL automatically via ``UNION ALL BY NAME``.
         """
-        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+        graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
 
         def qualify(obj: DataObject) -> str:
             return qualify_table(obj) if qualify_table else obj.qualified_code
