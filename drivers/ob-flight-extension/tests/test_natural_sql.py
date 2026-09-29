@@ -23,6 +23,7 @@ import pyarrow as pa
 import pytest
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
+from orionbelt.service.compilation_cache import CompilationCache
 from pyarrow import flight
 
 from ob_flight.catalog import (
@@ -111,6 +112,7 @@ def _make_server(model: object) -> OBFlightServer:
     store.list_models.return_value = [MagicMock(model_id="sample_model")]
     store.get_model.return_value = model
     mgr = MagicMock()
+    mgr.compilation_cache = CompilationCache()
     mgr.get_store.return_value = store
 
     # Avoid binding a real gRPC socket — the tests only exercise the
@@ -314,6 +316,16 @@ class TestPrepareSQL:
         names = [f.name for f in schema]
         assert "Customer Country" in names
         assert "Total Revenue" in names
+
+    def test_repeated_semantic_query_hits_the_compilation_cache(self, model) -> None:
+        server = _make_server(model)
+        server._session_manager.compilation_cache = CompilationCache(max_entries=10)
+        sql = 'SELECT "Customer Country", "Total Revenue" FROM sample_model'
+        first = server._prepare_sql(sql)[0]
+        second = server._prepare_sql(sql)[0]
+        stats = server._session_manager.compilation_cache.stats()
+        assert second == first
+        assert (stats.misses, stats.hits) == (1, 1)
 
     def test_semantic_group_by_ignored(self, model) -> None:
         server = _make_server(model)

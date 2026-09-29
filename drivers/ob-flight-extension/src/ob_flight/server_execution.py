@@ -441,7 +441,7 @@ def prepare_sql(
             raise flight.FlightServerError(
                 f"OrionBelt Semantic QL translation failed: {detail}"
             ) from None
-        compiled = CompilationPipeline().compile(query, model, dialect)
+        compiled = _compile(server, CompilationPipeline(), query, model, dialect)
         sql = server._rewrite_table_names(compiled.sql, model)
         logger.info("Compiled SQL:\n%s", sql)
         schema_hint = server._semantic_result_schema(query, model)
@@ -602,7 +602,18 @@ def compile_obml(
     from orionbelt.models.query import QueryObject
 
     query = QueryObject.model_validate(obml)
-    return query, CompilationPipeline().compile(query, model, dialect)
+    return query, _compile(server, CompilationPipeline(), query, model, dialect)
+
+
+def _compile(server: OBFlightServer, pipeline: Any, query: Any, model: Any, dialect: str) -> Any:
+    """Compile through the session manager's compilation cache when there is one.
+
+    Standalone Flight has no session manager and compiles every time.
+    """
+    manager = server._session_manager
+    if manager is None:
+        return pipeline.compile(query, model, dialect)
+    return manager.compilation_cache.compile(pipeline, query, model, dialect)
 
 
 def align_cached_table(table: pa.Table, schema: pa.Schema | None) -> pa.Table:

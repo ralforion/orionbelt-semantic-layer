@@ -1445,6 +1445,44 @@ Drops every cache entry regardless of TTL or freshness contract. Useful for manu
 }
 ```
 
+## Compilation cache
+
+A separate, in-memory cache of **compiled SQL** (not rows): the SQL, warnings, validation status, explain plan and physical-table dependencies of a query, keyed by the loaded model, the dialect and the full query. A repeated query skips the compiler on every surface (REST, pgwire, Flight); result-cache freshness is still decided on every execution. It is **off by default**; enable it with `COMPILE_CACHE_MAX_ENTRIES` (for example `2048`). `COMPILE_CACHE_MAX_BYTES` (default 64 MB) caps its estimated memory and `COMPILE_CACHE_MAX_ENTRY_BYTES` (default 1 MB) skips larger entries. Entries of a model go when the last session holding it releases it.
+
+### `GET /v1/cache/compilation`
+
+Always responds; `enabled` is `false` when `COMPILE_CACHE_MAX_ENTRIES=0`.
+
+**Response (200):**
+
+```json
+{
+ "enabled": true,
+ "entries": 312,
+ "bytes": 1843200,
+ "max_entries": 2048,
+ "max_bytes": 67108864,
+ "hits": 9120,
+ "misses": 312,
+ "bypasses": 0,
+ "evictions": 0
+}
+```
+
+`bypasses` counts queries whose filter values have no exact typed key; they are compiled every time.
+
+### `POST /v1/cache/compilation/clear`
+
+Drops every compiled query. The result cache is not touched, and the counters are kept.
+
+**Response (200):**
+
+```json
+{
+ "entries_cleared": 312
+}
+```
+
 ### `POST /v1/heartbeat`
 
 ETL pings this endpoint after refreshing a physical table. The cache invalidates every entry whose dependency set includes that table — across every dataObject and every session.

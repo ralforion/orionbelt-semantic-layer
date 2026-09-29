@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from orionbelt.api.deps import get_cache
-from orionbelt.api.schemas import CacheClearResponse, CacheStatsResponse, CacheSweepResponse
+from orionbelt.api.deps import get_cache, get_session_manager
+from orionbelt.api.schemas import (
+    CacheClearResponse,
+    CacheStatsResponse,
+    CacheSweepResponse,
+    CompilationCacheClearResponse,
+    CompilationCacheStatsResponse,
+)
 from orionbelt.cache.protocol import Cache
+from orionbelt.service.session_manager import SessionManager
 
 router = APIRouter()
 
@@ -67,3 +74,33 @@ async def clear_cache(
         backend=cache.backend_name,
         entries_cleared=entries_cleared,
     )
+
+
+@router.get("/compilation", response_model=CompilationCacheStatsResponse, tags=["cache"])
+async def get_compilation_cache_stats(
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> CompilationCacheStatsResponse:
+    """Return statistics for the compilation cache (compiled SQL, not rows).
+
+    Always responds; ``enabled`` is false when ``COMPILE_CACHE_MAX_ENTRIES=0``.
+    """
+    s = mgr.compilation_cache.stats()
+    return CompilationCacheStatsResponse(
+        enabled=s.enabled,
+        entries=s.entries,
+        bytes=s.bytes,
+        max_entries=s.max_entries,
+        max_bytes=s.max_bytes,
+        hits=s.hits,
+        misses=s.misses,
+        bypasses=s.bypasses,
+        evictions=s.evictions,
+    )
+
+
+@router.post("/compilation/clear", response_model=CompilationCacheClearResponse, tags=["cache"])
+async def clear_compilation_cache(
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> CompilationCacheClearResponse:
+    """Drop every compiled query. The result cache is not touched; counters are kept."""
+    return CompilationCacheClearResponse(entries_cleared=mgr.compilation_cache.clear())

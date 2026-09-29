@@ -61,6 +61,7 @@ from orionbelt.api.routers import settings as settings_router
 from orionbelt.api.schemas import HealthResponse
 from orionbelt.cache.factory import build_cache
 from orionbelt.service import db_executor
+from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.session_manager import SessionManager
 from orionbelt.settings import Settings
 
@@ -228,6 +229,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         max_models_per_session=settings.max_models_per_session,
         cleanup_interval=settings.session_cleanup_interval,
         is_single_model_mode=is_admin_curated,
+        compilation_cache=CompilationCache(
+            max_entries=settings.compile_cache_max_entries,
+            max_bytes=settings.compile_cache_max_bytes,
+            max_entry_bytes=settings.compile_cache_max_entry_bytes,
+        ),
     )
     mgr.start()
 

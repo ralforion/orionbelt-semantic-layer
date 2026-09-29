@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Compilation cache (opt-in).** A bounded, in-memory cache of compiled queries: SQL, warnings, validation status, explain plan and physical-table dependencies, keyed by the loaded model, the dialect and the full query, with every filter value keyed by its type. A repeated query skips the compiler on REST, pgwire and Flight; on the TPC-DS example a hit takes 0.09 ms instead of 2.1 ms, and a miss costs 0.17 ms more. Sessions sharing a model share its entries, which go when the last session releases the model. Results are copied in and out, so a caller changing what it got back cannot change a later hit, and failures are not cached. Result-cache eligibility and freshness are still decided on every execution. Off by default: set `COMPILE_CACHE_MAX_ENTRIES` (bounded further by `COMPILE_CACHE_MAX_BYTES`, 64 MB, and `COMPILE_CACHE_MAX_ENTRY_BYTES`, 1 MB). `GET /v1/cache/compilation` reports hits, misses, bypasses, evictions and bytes; `POST /v1/cache/compilation/clear` empties it without touching the result cache.
+
 ### Changed
 
 - **Compilation is about 2.4x faster on a large model.** Every read of a model's measure namespace rebuilt the synthesized row counts, and one compilation read it hundreds of times: about 30 rebuilds per TPC-DS query. The namespace is now computed once per model per compilation, so a role-expanded copy of the model still gets its own. On the TPC-DS example model and its 40 queries (DuckDB), the mean compile time drops from 5.9 ms to 2.4 ms, the p95 from 18.2 ms to 5.1 ms, and the slowest query (Q83) from 19.9 ms to 5.1 ms; results are identical on all eight dialects. `scripts/bench_compile.py` reproduces the measurement without a database (`--ab` compares both paths in one run, `--json` writes the raw samples, `--profile` runs cProfile).

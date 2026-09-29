@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pytest
+from orionbelt.service.compilation_cache import CompilationCache
 from pyarrow import flight
 
 from ob_flight.server import OBFlightServer
@@ -62,6 +63,8 @@ def mock_session_manager():
     mgr = MagicMock()
     mgr.get_store.return_value = store
     mgr.list_protected_session_ids.return_value = ["__default__"]
+    # A real, disabled cache: compiles through the (patched) pipeline.
+    mgr.compilation_cache = CompilationCache()
     return mgr
 
 

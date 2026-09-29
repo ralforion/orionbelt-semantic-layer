@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.model_cache import ModelCache
 from orionbelt.service.model_store import ModelStore
 
@@ -100,6 +101,7 @@ class SessionManager:
         max_models_per_session: int = 10,
         cleanup_interval: int = 60,
         is_single_model_mode: bool = False,
+        compilation_cache: CompilationCache | None = None,
     ) -> None:
         self._ttl = ttl_seconds
         self._max_age = max_age_seconds
@@ -111,9 +113,17 @@ class SessionManager:
         # One process-wide content-addressed model cache shared by every
         # per-session store, so identical OBML compiles once across sessions.
         self._model_cache = ModelCache()
+        # One process-wide compilation cache shared the same way; disabled
+        # (compiles every time) unless the caller configures one.
+        self._compilation_cache = compilation_cache or CompilationCache()
         self._sessions: dict[str, _Session] = {}
         self._stop_event = threading.Event()
         self._cleanup_thread: threading.Thread | None = None
+
+    @property
+    def compilation_cache(self) -> CompilationCache:
+        """The process-wide compilation cache every session's store uses."""
+        return self._compilation_cache
 
     @property
     def ttl(self) -> int:
@@ -176,7 +186,11 @@ class SessionManager:
         session_id = secrets.token_hex(16)  # 32-char hex (128-bit)
         session = _Session(
             session_id=session_id,
-            store=ModelStore(max_models=self._max_models, shared_cache=self._model_cache),
+            store=ModelStore(
+                max_models=self._max_models,
+                shared_cache=self._model_cache,
+                compilation_cache=self._compilation_cache,
+            ),
             created_at=now_wall,
             created_at_mono=now_mono,
             last_accessed=now_mono,
@@ -297,7 +311,11 @@ class SessionManager:
             now_wall = datetime.now(UTC)
             session = _Session(
                 session_id=_DEFAULT_SESSION_ID,
-                store=ModelStore(max_models=self._max_models, shared_cache=self._model_cache),
+                store=ModelStore(
+                    max_models=self._max_models,
+                    shared_cache=self._model_cache,
+                    compilation_cache=self._compilation_cache,
+                ),
                 created_at=now_wall,
                 created_at_mono=now_mono,
                 last_accessed=now_mono,
@@ -326,7 +344,11 @@ class SessionManager:
             now_wall = datetime.now(UTC)
             session = _Session(
                 session_id=session_id,
-                store=ModelStore(max_models=self._max_models, shared_cache=self._model_cache),
+                store=ModelStore(
+                    max_models=self._max_models,
+                    shared_cache=self._model_cache,
+                    compilation_cache=self._compilation_cache,
+                ),
                 created_at=now_wall,
                 created_at_mono=now_mono,
                 last_accessed=now_mono,

@@ -345,6 +345,26 @@ class CacheClearResponse(BaseModel):
     entries_cleared: int = 0
 
 
+class CompilationCacheStatsResponse(BaseModel):
+    """Response body for GET /v1/cache/compilation."""
+
+    enabled: bool
+    entries: int
+    bytes: int
+    max_entries: int
+    max_bytes: int
+    hits: int
+    misses: int
+    bypasses: int
+    evictions: int
+
+
+class CompilationCacheClearResponse(BaseModel):
+    """Response body for POST /v1/cache/compilation/clear."""
+
+    entries_cleared: int = 0
+
+
 class HeartbeatRequest(BaseModel):
     """Request body for POST /v1/heartbeat.
 

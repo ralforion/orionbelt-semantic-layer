@@ -25,6 +25,7 @@ from orionbelt.parser.merger import ExtendsMerger, MergeError
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.schema_validation import validate_obml_document
 from orionbelt.parser.validator import SemanticValidator
+from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.model_cache import CompiledModel, ModelCache
 
 # ---------------------------------------------------------------------------
@@ -205,8 +206,16 @@ class ModelStore:
     following the same singleton pattern as ``api/deps.py``.
     """
 
-    def __init__(self, max_models: int = 10, shared_cache: ModelCache | None = None) -> None:
+    def __init__(
+        self,
+        max_models: int = 10,
+        shared_cache: ModelCache | None = None,
+        compilation_cache: CompilationCache | None = None,
+    ) -> None:
         self._lock = threading.Lock()
+        # Process-wide compilation cache; None compiles every time (CLI,
+        # stateless helpers, bare unit tests).
+        self._compilation_cache = compilation_cache
         # Process-wide content-addressed cache shared across sessions. When
         # None (CLI, stateless helpers, bare unit tests) every model stays
         # private to this store and ids are random — behaviour identical to
@@ -918,7 +927,9 @@ class ModelStore:
     ) -> CompilationResult:
         """Compile a query against a loaded model."""
         model = self.get_model(model_id)
-        return self._pipeline.compile(query, model, dialect)
+        if self._compilation_cache is None:
+            return self._pipeline.compile(query, model, dialect)
+        return self._compilation_cache.compile(self._pipeline, query, model, dialect)
 
     def refresh_contracts(self, model_id: str) -> dict[str, RefreshContract]:
         """Per-physical-table freshness contracts for the given model.
