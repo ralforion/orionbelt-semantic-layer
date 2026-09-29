@@ -84,6 +84,9 @@ _IDEMPOTENT_WRAPS: frozenset[str] = frozenset({"sum", "min", "max", "avg", "medi
 # ``AGG`` and ``AGGREGATE`` are accepted as portable aliases for BI tools and
 # users coming from Calcite-style proposals.
 _MEASURE_MARKER_NAMES: frozenset[str] = frozenset({"MEASURE", "AGG", "AGGREGATE"})
+# sqlglot 30.19 parses ``AGG(x)`` into its own node; earlier versions keep it a
+# generic function like ``MEASURE(x)``. Both shapes must be read.
+_AGG_NODE: type[exp.Expression] | None = getattr(exp, "Agg", None)
 
 
 # Map SQL operators (sqlglot AST kinds) to QueryObject FilterOperator values.
@@ -560,9 +563,13 @@ def _detect_grouping(group_node: exp.Group | None) -> Grouping | None:
     """Map a sqlglot Group node into our Grouping enum, or None."""
     if group_node is None:
         return None
-    if group_node.args.get("cube"):
+    # ``WITH ROLLUP`` / ``WITH CUBE`` land in the node's own args; from sqlglot
+    # 30.19 ``ROLLUP(...)`` / ``CUBE(...)`` are listed among the grouping
+    # expressions instead (earlier versions keep them in the args too).
+    items = group_node.expressions
+    if group_node.args.get("cube") or any(isinstance(e, exp.Cube) for e in items):
         return Grouping.CUBE
-    if group_node.args.get("rollup"):
+    if group_node.args.get("rollup") or any(isinstance(e, exp.Rollup) for e in items):
         return Grouping.ROLLUP
     return None
 
@@ -798,6 +805,8 @@ def _column_name(node: exp.Expression) -> str | None:
         # MEASURE(<label>) / AGG(<label>) / AGGREGATE(<label>) — single arg,
         # must be a bare identifier / column.
         return _column_name(node.expressions[0])
+    if _AGG_NODE is not None and isinstance(node, _AGG_NODE):
+        return _column_name(node.this)
     return None
 
 

@@ -8,6 +8,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 - **Compilation is about 2.4x faster on a large model.** Every read of a model's measure namespace rebuilt the synthesized row counts, and one compilation read it hundreds of times: about 30 rebuilds per TPC-DS query. The namespace is now computed once per model per compilation, so a role-expanded copy of the model still gets its own. On the TPC-DS example model and its 40 queries (DuckDB), the mean compile time drops from 5.9 ms to 2.4 ms, the p95 from 18.2 ms to 5.1 ms, and the slowest query (Q83) from 19.9 ms to 5.1 ms; results are identical on all eight dialects. `scripts/bench_compile.py` reproduces the measurement without a database (`--ab` compares both paths in one run, `--json` writes the raw samples, `--profile` runs cProfile).
 
+### Fixed
+
+- **OBSQL keeps working with sqlglot 30.19.** sqlglot 30.19 parses `AGG("x")` into its own node and lists `GROUP BY ROLLUP(...)` / `CUBE(...)` among the grouping expressions instead of under their own keys. The translator read only the earlier shapes, so `SELECT AGG("Total Revenue") ...` was rejected and `GROUP BY ROLLUP(...)` / `CUBE(...)` lost their grouping. It now reads both, so any sqlglot in the supported `>=30.0,<31.0` range works (#489).
+
 ## [2.32.0] - 2026-09-26
 
 ### Added
