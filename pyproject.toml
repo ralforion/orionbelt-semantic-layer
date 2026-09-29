@@ -49,7 +49,11 @@ dependencies = [
     "structlog>=25.1,<27.0",
     "opentelemetry-api>=1.39,<2.0",
     "httpx>=0.28,<1.0",
-    "sqlglot>=30.0,<31.0",
+    # [c]: the compiled parser (sqlglotc), about 1.55x faster compilation with
+    # identical output. sqlglot pins it to its own version. Wheels cover
+    # CPython 3.10+ on Linux (glibc) x86_64/aarch64, macOS and Windows; other
+    # platforms (e.g. Alpine/musl) build it from source.
+    "sqlglot[c]>=30.0,<31.0",
     "jsonschema>=4.23,<5.0",
     "rdflib>=7.0,<8.0",
     # IANA timezone database for Python's zoneinfo on systems without
