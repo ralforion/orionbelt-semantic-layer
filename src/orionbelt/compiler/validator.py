@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import sqlglot
 from sqlglot.errors import SqlglotError
 
@@ -29,9 +31,12 @@ def validate_sql(sql: str, dialect_name: str) -> list[str]:
     if sg_dialect is None:
         return [f"Unknown dialect '{dialect_name}' — skipping SQL validation"]
 
+    # Parse only. ``transpile`` would also generate SQL back, but generation
+    # runs at ``unsupported_level=WARN`` and only logs, so it never adds a
+    # ``SqlglotError`` a parse does not raise; it cost ~15% of validation.
     errors: list[str] = []
     try:
-        sqlglot.transpile(sql, read=sg_dialect)
+        sqlglot.parse(sql, read=sg_dialect)
     except SqlglotError as exc:
         errors.append(str(exc))
     return errors
@@ -46,6 +51,16 @@ def format_sql(sql: str, dialect_name: str) -> str:
     sg_dialect = _DIALECT_MAP.get(dialect_name)
     if sg_dialect is None:
         return sql
+    return _pretty(sql, sg_dialect)
+
+
+# Every REST response formats its SQL, and a repeated query (a compilation
+# cache hit, a dashboard refresh) formats the same string again: ~1.2 ms of
+# parse + generate on the TPC-DS example. Formatting is a pure function of two
+# strings, so the result is memoized. Bounded by entry count; an entry is the
+# SQL and its formatted form, a few KB.
+@lru_cache(maxsize=512)
+def _pretty(sql: str, sg_dialect: str) -> str:
     try:
         return sqlglot.transpile(sql, read=sg_dialect, write=sg_dialect, pretty=True)[0]
     except SqlglotError:

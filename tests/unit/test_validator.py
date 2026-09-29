@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import pytest
+import sqlglot
+from sqlglot.errors import SqlglotError
 
 from orionbelt.compiler.pipeline import CompilationPipeline
-from orionbelt.compiler.validator import _DIALECT_MAP, validate_sql
+from orionbelt.compiler.validator import _DIALECT_MAP, _pretty, format_sql, validate_sql
 from orionbelt.dialect import DialectRegistry
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
@@ -86,3 +88,56 @@ def test_pipeline_returns_sql_even_when_invalid() -> None:
     # SQL is always returned regardless of validation
     assert result.sql != ""
     assert isinstance(result.sql_valid, bool)
+
+
+_PARITY_SQL = [
+    "SELECT a, SUM(b) AS s FROM t GROUP BY a ORDER BY s DESC LIMIT 5",
+    "SELECT CAST(DATE_TRUNC('month', d) AS DATE) FROM t WHERE x IN (1, 2)",
+    "WITH c AS (SELECT 1 AS x) SELECT x FROM c UNION ALL SELECT 2",
+    "SELCT a FROM t",
+    "SELECT a FROM",
+    "SELECT (a FROM t",
+    "SELECT 'unterminated FROM t",
+]
+
+
+def _transpile_errors(sql: str, sg_dialect: str) -> list[str]:
+    """What validation reported when it used ``transpile`` (parse + generate)."""
+    try:
+        sqlglot.transpile(sql, read=sg_dialect)
+    except SqlglotError as exc:
+        return [str(exc)]
+    return []
+
+
+@pytest.mark.parametrize("dialect", sorted(_DIALECT_MAP))
+@pytest.mark.parametrize("sql", _PARITY_SQL)
+def test_parse_only_validation_reports_what_transpile_did(dialect: str, sql: str) -> None:
+    assert validate_sql(sql, dialect) == _transpile_errors(sql, _DIALECT_MAP[dialect])
+
+
+@pytest.mark.parametrize("dialect", sorted(_DIALECT_MAP))
+@pytest.mark.parametrize("sql", _PARITY_SQL)
+def test_memoized_format_matches_transpile(dialect: str, sql: str) -> None:
+    sg = _DIALECT_MAP[dialect]
+    try:
+        expected = sqlglot.transpile(sql, read=sg, write=sg, pretty=True)[0]
+    except SqlglotError:
+        expected = sql
+    assert format_sql(sql, dialect) == expected
+    assert format_sql(sql, dialect) == expected  # the memoized answer too
+
+
+def test_repeated_format_is_served_from_the_memo() -> None:
+    _pretty.cache_clear()
+    sql = "SELECT a, b FROM t WHERE a > 1"
+    first = format_sql(sql, "postgres")
+    assert format_sql(sql, "postgres") is first
+    info = _pretty.cache_info()
+    assert (info.hits, info.misses) == (1, 1)
+
+
+def test_format_unknown_dialect_returns_input_uncached() -> None:
+    _pretty.cache_clear()
+    assert format_sql("SELECT 1", "nope") == "SELECT 1"
+    assert _pretty.cache_info().currsize == 0
