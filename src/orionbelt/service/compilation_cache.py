@@ -16,8 +16,11 @@ Keys:
 * the **dialect** name;
 * the **query**, encoded from ``QueryObject.model_dump()`` with every scalar
   tagged by type (``1`` and ``True``, ``"2024-01-01"`` and ``date(2024, 1, 1)``
-  and ``Decimal("1.0")`` and ``Decimal("1.00")`` all differ); list order is
-  kept, mapping keys are sorted. A value of any other type bypasses the cache.
+  and ``Decimal("1.0")`` and ``Decimal("1.00")`` all differ). Order is kept
+  everywhere, mapping items included: the compiler renders a mapping filter
+  value in insertion order, so ``{"a": 1, "b": 2}`` and ``{"b": 2, "a": 1}``
+  compile to different SQL and must not share an entry. A value of any other
+  type bypasses the cache.
 
 Results are deep-copied on the way in and on the way out, so a caller that
 mutates what it got back (the CLI assigns formatted SQL to ``result.sql``)
@@ -67,11 +70,12 @@ def _encode(value: Any) -> Any:
     if isinstance(value, timedelta):
         return ("timedelta", value.days, value.seconds, value.microseconds)
     if isinstance(value, list | tuple):
-        return ("list", tuple(_encode(v) for v in value))
+        return (type(value).__name__, tuple(_encode(v) for v in value))
     if isinstance(value, dict):
         if not all(isinstance(k, str) for k in value):
             raise _UnkeyableError
-        return ("dict", tuple(sorted((k, _encode(v)) for k, v in value.items())))
+        # Insertion order, not sorted: see the module docstring.
+        return ("dict", tuple((k, _encode(v)) for k, v in value.items()))
     raise _UnkeyableError
 
 

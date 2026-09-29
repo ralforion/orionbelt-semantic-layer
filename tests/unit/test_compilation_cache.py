@@ -178,6 +178,20 @@ class TestKeys:
 
         assert query_key(with_value(left)) != query_key(with_value(right))
 
+    def test_mapping_value_order_is_kept(self, model: SemanticModel) -> None:
+        """The compiler renders a mapping value in insertion order (review, #493)."""
+
+        def contains(value: dict[str, int]) -> QueryObject:
+            return _query(where=[{"field": "Customer Country", "op": "contains", "value": value}])
+
+        first, second = contains({"a": 1, "b": 2}), contains({"b": 2, "a": 1})
+        assert query_key(first) != query_key(second)
+        cache, pipeline = _cache(), _Counting()
+        cache.compile(pipeline, first, model, "duckdb")
+        hit = cache.compile(pipeline, second, model, "duckdb")
+        assert pipeline.calls == 2
+        assert hit.sql == CompilationPipeline().compile(second, model, "duckdb").sql
+
     def test_dates_share_the_key_of_their_iso_string(self) -> None:
         """The query model coerces a date filter value to its ISO string first."""
 
