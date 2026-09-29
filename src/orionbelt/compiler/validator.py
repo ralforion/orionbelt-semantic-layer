@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
+import threading
+from collections import OrderedDict
 
 import sqlglot
 from sqlglot.errors import SqlglotError
@@ -51,17 +52,76 @@ def format_sql(sql: str, dialect_name: str) -> str:
     sg_dialect = _DIALECT_MAP.get(dialect_name)
     if sg_dialect is None:
         return sql
-    return _pretty(sql, sg_dialect)
+    cached = _FORMAT_MEMO.get(sql, sg_dialect)
+    if cached is not None:
+        return cached
+    formatted = _pretty(sql, sg_dialect)
+    _FORMAT_MEMO.put(sql, sg_dialect, formatted)
+    return formatted
 
 
-# Every REST response formats its SQL, and a repeated query (a compilation
-# cache hit, a dashboard refresh) formats the same string again: ~1.2 ms of
-# parse + generate on the TPC-DS example. Formatting is a pure function of two
-# strings, so the result is memoized. Bounded by entry count; an entry is the
-# SQL and its formatted form, a few KB.
-@lru_cache(maxsize=512)
 def _pretty(sql: str, sg_dialect: str) -> str:
     try:
         return sqlglot.transpile(sql, read=sg_dialect, write=sg_dialect, pretty=True)[0]
     except SqlglotError:
         return sql
+
+
+class _FormatMemo:
+    """Recently formatted SQL, bounded by entry count and by characters held.
+
+    Every REST response formats its SQL, and a repeated query (a compilation
+    cache hit, a dashboard refresh) formats the same string again: ~1.2 ms of
+    parse + generate on the TPC-DS example. Formatting is a pure function of
+    two strings, so recent results are kept. An entry holds the SQL and its
+    formatted form; SQL longer than ``max_entry_chars`` is formatted every time
+    and never kept, so a few very large queries cannot pin memory, and the
+    total is capped at ``max_chars`` (least recently used evicted first).
+    """
+
+    def __init__(self, max_entries: int, max_chars: int, max_entry_chars: int) -> None:
+        self.max_entries = max_entries
+        self.max_chars = max_chars
+        self.max_entry_chars = max_entry_chars
+        self._entries: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._chars = 0
+        self._lock = threading.Lock()
+
+    def get(self, sql: str, sg_dialect: str) -> str | None:
+        with self._lock:
+            formatted = self._entries.get((sql, sg_dialect))
+            if formatted is not None:
+                self._entries.move_to_end((sql, sg_dialect))
+            return formatted
+
+    def put(self, sql: str, sg_dialect: str, formatted: str) -> None:
+        size = len(sql) + len(formatted)
+        if len(sql) > self.max_entry_chars:
+            return
+        with self._lock:
+            previous = self._entries.pop((sql, sg_dialect), None)
+            if previous is not None:
+                self._chars -= len(sql) + len(previous)
+            self._entries[(sql, sg_dialect)] = formatted
+            self._chars += size
+            while self._entries and (
+                len(self._entries) > self.max_entries or self._chars > self.max_chars
+            ):
+                (old_sql, _), old = self._entries.popitem(last=False)
+                self._chars -= len(old_sql) + len(old)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._chars = 0
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    @property
+    def chars(self) -> int:
+        return self._chars
+
+
+# 512 entries, at most ~8 MB of text; SQL over 64 KB is not kept.
+_FORMAT_MEMO = _FormatMemo(max_entries=512, max_chars=8 * 1024 * 1024, max_entry_chars=64 * 1024)
