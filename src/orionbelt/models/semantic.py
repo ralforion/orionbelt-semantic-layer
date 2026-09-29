@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from enum import StrEnum
 from typing import Any
 
@@ -1379,6 +1382,35 @@ class ModelExample(BaseModel):
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
+# Effective measures computed inside a ``reuse_effective_measures()`` block,
+# keyed by model identity. Each entry keeps its model alive, so an ``id`` is
+# never reused by another model while the block lasts.
+_effective_measures_scope: ContextVar[
+    dict[int, tuple[SemanticModel, dict[str, Measure]]] | None
+] = ContextVar("effective_measures_scope", default=None)
+
+
+@contextmanager
+def reuse_effective_measures() -> Iterator[None]:
+    """Compute each model's effective measures once for the duration of the block.
+
+    ``SemanticModel.effective_measures`` rebuilds the synthesized counts on
+    every access, and one compilation reads it hundreds of times. Inside this
+    block the first access per model instance is kept and returned again, so a
+    role-expanded copy still gets its own namespace. The block is context-local
+    (thread and task safe) and nothing outlives it; a nested block reuses the
+    outer one. Callers must not mutate the model or the returned mapping.
+    """
+    if _effective_measures_scope.get() is not None:
+        yield
+        return
+    token = _effective_measures_scope.set({})
+    try:
+        yield
+    finally:
+        _effective_measures_scope.reset(token)
+
+
 class SemanticModel(BaseModel):
     """Complete semantic model parsed from OBML YAML."""
 
@@ -1681,8 +1713,15 @@ class SemanticModel(BaseModel):
         """
         from orionbelt.models.synthesis import synthesize_count_measures
 
+        scope = _effective_measures_scope.get()
+        if scope is not None:
+            entry = scope.get(id(self))
+            if entry is not None and entry[0] is self:
+                return entry[1]
         merged = dict(self.measures)
         merged.update(synthesize_count_measures(self))
+        if scope is not None:
+            scope[id(self)] = (self, merged)
         return merged
 
     @field_validator("name", mode="before")

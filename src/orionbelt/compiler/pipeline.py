@@ -19,7 +19,7 @@ from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryFilterItem, QueryObject
 from orionbelt.models.roles import expand_role_objects, role_object_names
-from orionbelt.models.semantic import DataObject, SemanticModel
+from orionbelt.models.semantic import DataObject, SemanticModel, reuse_effective_measures
 from orionbelt.models.warnings import WarningCode, warning
 
 
@@ -213,7 +213,10 @@ def _compute_physical_tables(
 class CompilationPipeline:
     """Orchestrates: Query → Resolution → Planning → AST → SQL."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, reuse_measures: bool = True) -> None:
+        # ``reuse_measures=False`` rebuilds the effective measures on every
+        # access, as before the reuse; kept for A/B benchmarks and rollback.
+        self._reuse_measures = reuse_measures
         self._resolver = QueryResolver()
         self._star_planner = StarSchemaPlanner()
         self._cfl_planner = CFLPlanner()
@@ -265,6 +268,17 @@ class CompilationPipeline:
         dialect_name: str,
     ) -> CompilationResult:
         """Compile a query to SQL for the specified dialect."""
+        if not self._reuse_measures:
+            return self._compile(query, model, dialect_name)
+        with reuse_effective_measures():
+            return self._compile(query, model, dialect_name)
+
+    def _compile(
+        self,
+        query: QueryObject,
+        model: SemanticModel,
+        dialect_name: str,
+    ) -> CompilationResult:
         # Each dimension role is joined under its own alias, which everything
         # downstream takes from a data object's name (see ``models.roles``).
         # The explain maps an alias back to the declared join it stands for.
