@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from unittest import mock
+
 import pytest
+import rdflib.plugins.sparql.evaluate as rdflib_evaluate
 from httpx import ASGITransport, AsyncClient
 
 from orionbelt.api.app import create_app
@@ -113,16 +116,28 @@ async def test_sparql_reject_update(
     assert resp.status_code == 400
 
 
+@pytest.mark.parametrize("shortcut", [False, True], ids=["session", "shortcut"])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT * WHERE { SERVICE <http://169.254.169.254/> { ?s ?p ?o } }",
+        "ASK { FILTER EXISTS { FILTER EXISTS {"
+        " SERVICE <http://169.254.169.254/> { ?s ?p ?o } } } }",
+        "ASK { FILTER NOT EXISTS { FILTER NOT EXISTS {"
+        " SERVICE <http://169.254.169.254/> { ?s ?p ?o } } } }",
+    ],
+    ids=["plain", "nested-exists", "nested-not-exists"],
+)
 async def test_sparql_reject_service(
-    client: AsyncClient, session_with_model: tuple[str, str]
+    client: AsyncClient, session_with_model: tuple[str, str], query: str, shortcut: bool
 ) -> None:
     session_id, model_id = session_with_model
-    resp = await client.post(
-        f"/v1/sessions/{session_id}/models/{model_id}/sparql",
-        json={"query": "SELECT * WHERE { SERVICE <http://169.254.169.254/> { ?s ?p ?o } }"},
-    )
+    url = "/v1/sparql" if shortcut else f"/v1/sessions/{session_id}/models/{model_id}/sparql"
+    with mock.patch.object(rdflib_evaluate, "urlopen") as urlopen:
+        resp = await client.post(url, json={"query": query})
     assert resp.status_code == 400
     assert resp.json()["detail"] == "SERVICE clauses are not allowed"
+    urlopen.assert_not_called()
 
 
 async def test_sparql_invalid_query(

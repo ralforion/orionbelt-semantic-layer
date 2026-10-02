@@ -693,6 +693,16 @@ class TestSPARQL:
             "SELECT * WHERE { OPTIONAL { SERVICE <http://x/> { ?s ?p ?o } } }",
             "SELECT * WHERE { { SELECT ?s WHERE { SERVICE <http://x/> { ?s ?p ?o } } } }",
             "ASK { SERVICE <http://x/> { ?s ?p ?o } }",
+            # Algebra translation hides EXISTS patterns from a values() walk.
+            "ASK { FILTER EXISTS { SERVICE <http://x/> { ?s ?p ?o } } }",
+            "ASK { FILTER EXISTS { FILTER EXISTS { SERVICE <http://x/> { ?s ?p ?o } } } }",
+            "SELECT * WHERE { ?a ?b ?c FILTER NOT EXISTS { FILTER NOT EXISTS {"
+            " SERVICE SILENT <http://x/> { ?s ?p ?o } } } }",
+            "SELECT * WHERE { BIND(EXISTS { SERVICE <http://x/> { ?s ?p ?o } } AS ?x) }",
+            "SELECT (EXISTS { SERVICE <http://x/> { ?s ?p ?o } } AS ?x) WHERE {}",
+            "SELECT ?a WHERE { ?a ?b ?c } GROUP BY ?a"
+            " HAVING (EXISTS { SERVICE <http://x/> { ?s ?p ?o } })",
+            "SELECT ?a WHERE { ?a ?b ?c } ORDER BY (EXISTS { SERVICE <http://x/> { ?s ?p ?o } })",
         ],
     )
     def test_reject_service(self, sales_model: SemanticModel, query: str) -> None:

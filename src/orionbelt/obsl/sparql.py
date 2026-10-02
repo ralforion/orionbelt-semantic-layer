@@ -97,30 +97,38 @@ def _reject_remote_access(graph: Graph, query: str) -> None:
     dataset-backed graph loads each ``FROM``/``FROM NAMED`` source through
     ``Graph.parse`` (a URL or a local path). Either turns a read-only query
     into a request the server makes on the caller's behalf, so both are
-    rejected before evaluation. The check walks the parsed algebra rather than
-    the text, so comments, string literals, and casing cannot slip past it.
+    rejected before evaluation. The check walks the parse tree rather than the
+    text, so comments, string literals, and casing cannot slip past it.
+
+    ``SERVICE`` is searched for in the parse tree *before* algebra translation:
+    translation moves ``EXISTS``/``NOT EXISTS`` patterns into a ``.graph``
+    attribute outside ``values()`` and drops nested filters from the tree, so
+    a walk over the algebra misses a ``SERVICE`` nested inside them.
     """
-    from rdflib.plugins.sparql import prepareQuery
+    from pyparsing import ParseResults
+    from rdflib.plugins.sparql.algebra import translateQuery
+    from rdflib.plugins.sparql.parser import parseQuery
     from rdflib.plugins.sparql.parserutils import CompValue
 
+    def has_service(node: Any) -> bool:
+        if isinstance(node, CompValue):
+            return node.name == "ServiceGraphPattern" or any(has_service(v) for v in node.values())
+        if isinstance(node, (list, tuple, ParseResults)):
+            return any(has_service(v) for v in node)
+        return False
+
+    parsed = parseQuery(query)
+    if has_service(parsed):
+        raise SPARQLRemoteAccessError("SERVICE clauses are not allowed")
+
     # Same prefixes graph.query would see, so a query using the graph's bound
-    # prefixes without declaring them parses here too.
-    algebra = prepareQuery(query, initNs=dict(graph.namespaces())).algebra
+    # prefixes without declaring them translates here too.
+    algebra = translateQuery(parsed, initNs=dict(graph.namespaces())).algebra
 
     if algebra.get("datasetClause"):
         raise SPARQLRemoteAccessError(
             "FROM and FROM NAMED clauses are not allowed; queries run against the model graph"
         )
-
-    def has_service(node: Any) -> bool:
-        if isinstance(node, CompValue):
-            return node.name == "ServiceGraphPattern" or any(has_service(v) for v in node.values())
-        if isinstance(node, (list, tuple)):
-            return any(has_service(v) for v in node)
-        return False
-
-    if has_service(algebra):
-        raise SPARQLRemoteAccessError("SERVICE clauses are not allowed")
 
 
 def unbound_variable_warnings(query: str) -> list[str]:
