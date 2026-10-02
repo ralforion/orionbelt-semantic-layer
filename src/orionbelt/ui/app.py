@@ -12,7 +12,7 @@ from __future__ import annotations
 # ``time`` is kept imported so tests can patch ``ui_app.time.sleep`` for the
 # re-exported ``_fetch_settings`` retry loop.
 import time  # noqa: F401
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import gradio as gr
 import httpx
@@ -78,6 +78,9 @@ from orionbelt.ui.rendering import (
     _get_vis_network_b64,
     _render_ontology_graph,
 )
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI, Request
 
 __all__ = [
     "_API_HEADERS",
@@ -3308,6 +3311,26 @@ def create_blocks(
     return demo
 
 
+def _reject_unknown_pages(app: FastAPI, root_path: str, pages: set[str]) -> None:
+    """Answer 404 for ``<root>?page=<name>`` when ``name`` is not a Gradio page.
+
+    Gradio's root route looks the ``page`` query parameter up in its page table
+    without a guard, so an unknown name raises ``KeyError`` and a 500 with a
+    full traceback. Scanners probing WordPress admin URLs
+    (``?page=gravitysmtp-settings``) hit it several times a day.
+    """
+    from fastapi.responses import PlainTextResponse
+
+    root = root_path.rstrip("/")
+
+    @app.middleware("http")
+    async def _guard(request: Request, call_next: Any) -> Any:
+        page = request.query_params.get("page")
+        if page is not None and page not in pages and request.url.path.rstrip("/") == root:
+            return PlainTextResponse("Not Found", status_code=404)
+        return await call_next(request)
+
+
 def create_ui() -> None:
     """Build and launch the Gradio interface (standalone mode).
 
@@ -3363,6 +3386,7 @@ def create_ui() -> None:
             # API host), serve a disallow-all so crawlers skip it.
             return PlainTextResponse("User-agent: *\nDisallow: /\n")
 
+        _reject_unknown_pages(app, root_path, set(demo.config.get("page", {})))
         app = gr.mount_gradio_app(app, demo, path=root_path, **demo.ob_frontend)
         uvicorn.run(
             app,
