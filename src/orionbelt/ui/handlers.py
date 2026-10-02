@@ -9,7 +9,11 @@ query-editor insertion helpers. They depend on the HTTP client helpers in
 
 from __future__ import annotations
 
+import shutil
+import tempfile
+import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
@@ -733,6 +737,27 @@ def execute_query(
     return (*result[:4], table, *result[5:])
 
 
+_TSV_DIR_PREFIX = "obsl_tsv_"
+_TSV_MAX_AGE_SECONDS = 600
+
+
+def _prune_result_tsv_dirs() -> None:
+    """Delete result TSV dirs older than ten minutes.
+
+    Every execution writes its full result to a fresh temp dir, and nothing
+    removed them. On Cloud Run ``/tmp`` is in memory, so each run grew the
+    container until it hit its limit. Gradio copies the file into its own cache
+    as soon as the handler returns, so an older original is never needed.
+    """
+    cutoff = time.time() - _TSV_MAX_AGE_SECONDS
+    for path in Path(tempfile.gettempdir()).glob(f"{_TSV_DIR_PREFIX}*"):
+        try:
+            if path.is_dir() and path.stat().st_mtime < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            continue
+
+
 def _execute_query(
     model_yaml: str,
     query_yaml: str,
@@ -939,12 +964,11 @@ def _execute_query(
         if loc:
             info += f" · Locale: {loc}"
 
-        import tempfile
-
         # Write into a temp dir with a fixed basename so the browser downloads
         # it as "query_results.tsv" (DownloadButton uses the file's basename;
         # mkstemp's random suffix produced names like "query_results_p_jyptv2").
-        tsv_dir = tempfile.mkdtemp(prefix="obsl_tsv_")
+        _prune_result_tsv_dirs()
+        tsv_dir = tempfile.mkdtemp(prefix=_TSV_DIR_PREFIX)
         tsv_path = f"{tsv_dir}/query_results.tsv"
         export_df.drop(columns=["#"], errors="ignore").to_csv(tsv_path, sep="\t", index=False)
 

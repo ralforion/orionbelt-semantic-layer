@@ -30,6 +30,16 @@ def test_create_blocks_builds_without_network() -> None:
     assert blocks is not None
 
 
+def test_gradio_cache_is_swept() -> None:
+    """Downloads land in Gradio's cache, which on Cloud Run is in-memory /tmp."""
+    with (
+        patch.object(ui_app, "_fetch_settings", return_value={"_unreachable": True}),
+        patch.object(ui_app, "_fetch_dialects", return_value=["postgres", "duckdb"]),
+    ):
+        blocks = ui_app.create_blocks(default_api_url="http://example.invalid")
+    assert blocks.delete_cache == (1800, 3600)
+
+
 def test_create_blocks_with_embedded_settings() -> None:
     embedded = {
         "single_model_mode": True,

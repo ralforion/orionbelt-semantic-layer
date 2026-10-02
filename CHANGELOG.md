@@ -17,6 +17,7 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Fixed
 
+- **The UI no longer keeps every query result in memory.** Each run wrote its full result to a new temp directory for the download button, and Gradio copied it into its own cache; neither was ever removed. On Cloud Run `/tmp` is in memory, so the UI grew until it hit its 512 MiB limit and was restarted, about daily (`Memory limit of 512 MiB exceeded`). Result directories older than ten minutes are now removed on every run, and Gradio sweeps its cache every 30 minutes, dropping files older than an hour (a download link older than an hour no longer works).
 - **OBSQL keeps working with sqlglot 30.19.** sqlglot 30.19 parses `AGG("x")` into its own node and lists `GROUP BY ROLLUP(...)` / `CUBE(...)` among the grouping expressions instead of under their own keys. The translator read only the earlier shapes, so `SELECT AGG("Total Revenue") ...` was rejected and `GROUP BY ROLLUP(...)` / `CUBE(...)` lost their grouping. It now reads both, so any sqlglot in the supported `>=30.0,<31.0` range works (#489).
 
 ## [2.32.0] - 2026-09-26

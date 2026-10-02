@@ -1662,7 +1662,10 @@ def create_blocks(
         # seed the editor with a starter template.
         example_model = _load_example_model()
 
-    with gr.Blocks(title="OrionBelt Semantic Layer") as demo:
+    # Every download and rendered file lands in Gradio's cache dir, which on
+    # Cloud Run is in-memory /tmp and counts against the container limit.
+    # Sweep it every 30 minutes, dropping files older than an hour.
+    with gr.Blocks(title="OrionBelt Semantic Layer", delete_cache=(1800, 3600)) as demo:
         # ── Browser-persisted state (localStorage via Gradio BrowserState) ──
         saved_model = gr.BrowserState("", storage_key="ob_model_yaml")
         saved_query = gr.BrowserState("", storage_key="ob_query_yaml")
