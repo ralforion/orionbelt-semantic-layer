@@ -377,14 +377,14 @@ async def shortcut_sparql(
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> SPARQLResponse:
     """Execute a read-only SPARQL query (auto-resolves session/model)."""
-    from orionbelt.obsl.sparql import SPARQLUpdateError
+    from orionbelt.obsl.sparql import SPARQLRemoteAccessError, SPARQLUpdateError
 
     store, model_id = _resolve_store_and_model(mgr)
     try:
         result = store.query_graph(model_id, body.query)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found") from None
-    except SPARQLUpdateError as exc:
+    except (SPARQLUpdateError, SPARQLRemoteAccessError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"SPARQL error: {exc}") from None

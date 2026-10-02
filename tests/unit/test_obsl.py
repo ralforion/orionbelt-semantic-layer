@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from unittest import mock
+
 import pytest
+import rdflib.plugins.sparql.evaluate as rdflib_evaluate
 from rdflib import Literal, URIRef
 from rdflib.namespace import RDF, RDFS
 
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.obsl.exporter import BASE, OBSL, export_obsl
-from orionbelt.obsl.sparql import SPARQLUpdateError, execute_sparql
+from orionbelt.obsl.sparql import SPARQLRemoteAccessError, SPARQLUpdateError, execute_sparql
 from orionbelt.service.model_store import ModelStore
 from tests.conftest import SAMPLE_MODEL_YAML
 
@@ -681,6 +684,42 @@ class TestSPARQL:
                 CONSTRUCT { ?s a obsl:Measure } WHERE { ?s a obsl:Measure }
                 """,
             )
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "SELECT * WHERE { SERVICE <http://169.254.169.254/x> { ?s ?p ?o } }",
+            "select * where { service silent <http://x/> { ?s ?p ?o } }",
+            "SELECT * WHERE { OPTIONAL { SERVICE <http://x/> { ?s ?p ?o } } }",
+            "SELECT * WHERE { { SELECT ?s WHERE { SERVICE <http://x/> { ?s ?p ?o } } } }",
+            "ASK { SERVICE <http://x/> { ?s ?p ?o } }",
+        ],
+    )
+    def test_reject_service(self, sales_model: SemanticModel, query: str) -> None:
+        g = export_obsl(sales_model, "t1")
+        with (
+            mock.patch.object(rdflib_evaluate, "urlopen") as urlopen,
+            pytest.raises(SPARQLRemoteAccessError, match="SERVICE"),
+        ):
+            execute_sparql(g, query)
+        urlopen.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "SELECT * FROM <file:///etc/passwd> WHERE { ?s ?p ?o }",
+            "SELECT * FROM NAMED <http://x/> WHERE { GRAPH ?g { ?s ?p ?o } }",
+        ],
+    )
+    def test_reject_dataset_clause(self, sales_model: SemanticModel, query: str) -> None:
+        g = export_obsl(sales_model, "t1")
+        with pytest.raises(SPARQLRemoteAccessError, match="FROM"):
+            execute_sparql(g, query)
+
+    def test_service_keyword_in_literal_is_allowed(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        result = execute_sparql(g, "ASK { ?s ?p 'SERVICE <http://x/>' } # SERVICE <http://y/>")
+        assert result.type == "ask"
 
     def test_metrics_referencing_measure(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")

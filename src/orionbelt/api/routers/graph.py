@@ -10,7 +10,7 @@ from fastapi.responses import Response
 
 from orionbelt.api.deps import get_session_manager
 from orionbelt.api.schemas import SPARQLRequest, SPARQLResponse
-from orionbelt.obsl.sparql import SPARQLUpdateError
+from orionbelt.obsl.sparql import SPARQLRemoteAccessError, SPARQLUpdateError
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.session_manager import (
     SessionExpiredError,
@@ -73,7 +73,7 @@ async def sparql_query(
         result = store.query_graph(model_id, body.query)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found") from None
-    except SPARQLUpdateError as exc:
+    except (SPARQLUpdateError, SPARQLRemoteAccessError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"SPARQL error: {exc}") from None

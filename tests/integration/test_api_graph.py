@@ -113,6 +113,18 @@ async def test_sparql_reject_update(
     assert resp.status_code == 400
 
 
+async def test_sparql_reject_service(
+    client: AsyncClient, session_with_model: tuple[str, str]
+) -> None:
+    session_id, model_id = session_with_model
+    resp = await client.post(
+        f"/v1/sessions/{session_id}/models/{model_id}/sparql",
+        json={"query": "SELECT * WHERE { SERVICE <http://169.254.169.254/> { ?s ?p ?o } }"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "SERVICE clauses are not allowed"
+
+
 async def test_sparql_invalid_query(
     client: AsyncClient, session_with_model: tuple[str, str]
 ) -> None:

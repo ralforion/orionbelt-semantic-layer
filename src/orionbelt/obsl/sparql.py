@@ -18,6 +18,10 @@ class SPARQLUpdateError(ValueError):
     """Raised when a SPARQL update operation is attempted."""
 
 
+class SPARQLRemoteAccessError(ValueError):
+    """Raised when a query would make rdflib fetch data from outside the graph."""
+
+
 @dataclass
 class SPARQLResult:
     """Result of a read-only SPARQL query."""
@@ -49,11 +53,14 @@ def execute_sparql(graph: Graph, query: str) -> SPARQLResult:
     ------
     SPARQLUpdateError
         If the query contains an update keyword.
+    SPARQLRemoteAccessError
+        If the query has a ``SERVICE`` or ``FROM``/``FROM NAMED`` clause.
     ValueError
         If the query is syntactically invalid or uses an unsupported form.
     """
     if _FORBIDDEN.search(query):
         raise SPARQLUpdateError("SPARQL update operations are not allowed")
+    _reject_remote_access(graph, query)
 
     result = graph.query(query)
     result_any: Any = result
@@ -81,6 +88,39 @@ def execute_sparql(graph: Graph, query: str) -> SPARQLResult:
         rows.append(row_dict)
 
     return SPARQLResult(type="select", variables=variables, results=rows, warnings=warnings)
+
+
+def _reject_remote_access(graph: Graph, query: str) -> None:
+    """Refuse clauses that make rdflib reach outside the in-memory graph.
+
+    rdflib answers ``SERVICE <url>`` with an HTTP request to ``url``, and on a
+    dataset-backed graph loads each ``FROM``/``FROM NAMED`` source through
+    ``Graph.parse`` (a URL or a local path). Either turns a read-only query
+    into a request the server makes on the caller's behalf, so both are
+    rejected before evaluation. The check walks the parsed algebra rather than
+    the text, so comments, string literals, and casing cannot slip past it.
+    """
+    from rdflib.plugins.sparql import prepareQuery
+    from rdflib.plugins.sparql.parserutils import CompValue
+
+    # Same prefixes graph.query would see, so a query using the graph's bound
+    # prefixes without declaring them parses here too.
+    algebra = prepareQuery(query, initNs=dict(graph.namespaces())).algebra
+
+    if algebra.get("datasetClause"):
+        raise SPARQLRemoteAccessError(
+            "FROM and FROM NAMED clauses are not allowed; queries run against the model graph"
+        )
+
+    def has_service(node: Any) -> bool:
+        if isinstance(node, CompValue):
+            return node.name == "ServiceGraphPattern" or any(has_service(v) for v in node.values())
+        if isinstance(node, (list, tuple)):
+            return any(has_service(v) for v in node)
+        return False
+
+    if has_service(algebra):
+        raise SPARQLRemoteAccessError("SERVICE clauses are not allowed")
 
 
 def unbound_variable_warnings(query: str) -> list[str]:
