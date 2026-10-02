@@ -294,6 +294,25 @@ class TestOneshotBatchHappyPath:
         assert data["model_id"] == original_mid
         assert data["model_load"] == "reused"
 
+    async def test_dedup_in_batch_leaves_reused_model_loaded(self, client: AsyncClient) -> None:
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        first = await client.post(
+            f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML}
+        )
+        original_mid = first.json()["model_id"]
+        # Defaults: dedup=True, persist_model=False. The batch reuses the model
+        # loaded above, so its cleanup must not evict it.
+        r = await client.post(
+            "/v1/oneshot/batch",
+            json={"session_id": sid, "model_yaml": SAMPLE_MODEL_YAML, "queries": _TWO_QUERIES},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["model_id"] == original_mid
+        assert data["model_load"] == "reused"
+        assert data["model_persisted"] is True
+        assert (await client.get(f"/v1/sessions/{sid}/models/{original_mid}")).status_code == 200
+
     async def test_per_query_error_does_not_fail_batch(self, client: AsyncClient) -> None:
         bad_queries = [
             _TWO_QUERIES[0],

@@ -4,6 +4,14 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Security
+
+- **SPARQL queries can no longer make the server fetch a URL.** rdflib answers a `SERVICE <url>` clause with an outbound HTTP request, so any caller of the SPARQL endpoints could make the API request an arbitrary address, the cloud metadata service included. `SERVICE` is now refused with a 400 before the query runs. `FROM` and `FROM NAMED` are refused too: on a model graph they were ignored, but on a dataset-backed graph rdflib loads each source, a URL or a local path, through `Graph.parse`. The check reads the parsed query, so casing, comments, subqueries and `OPTIONAL` blocks do not get past it, and the word `SERVICE` inside a string literal is still allowed.
+
+### Fixed
+
+- **A batch no longer removes a model it reused.** With an existing `session_id`, `model_yaml` identical to a model already loaded there, and the defaults `dedup=true` / `persist_model=false`, `POST /v1/oneshot/batch` reused that model and then removed it during cleanup, so a model loaded with `POST .../models` disappeared under its owner. Cleanup now removes only a model the batch loaded fresh; a reused model stays loaded and the response reports `model_persisted: true`.
+
 ## [2.33.0] - 2026-10-02
 
 ### Added

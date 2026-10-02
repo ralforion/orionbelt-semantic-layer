@@ -619,19 +619,14 @@ async def oneshot_batch(
                         ),
                     )
 
-    # Model lifecycle: if we loaded the model for this batch and persist is
-    # off, evict it. If model_id was supplied by the caller, never touch it.
-    model_was_loaded_here = model_load in ("fresh", "reused") and body.model_yaml is not None
+    # Model lifecycle: if this batch loaded the model and persist is off, evict
+    # it. A dedup hit ("reused") is a model an earlier load put in the session,
+    # and a supplied model_id is the caller's — neither is ours to remove.
     persisted = True
-    if model_was_loaded_here and not body.persist_model:
-        try:
+    if model_load == "fresh" and not body.persist_model:
+        with contextlib.suppress(KeyError):
             store.remove_model(model_id)
-            persisted = False
-        except KeyError:
-            persisted = False
-    elif not model_was_loaded_here:
-        # Caller-owned model — we don't decide its lifecycle.
-        persisted = True
+        persisted = False
 
     final_results = [r for r in results if r is not None]
     return OneshotBatchResponse(
