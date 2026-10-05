@@ -71,6 +71,14 @@ _VERSION_LITERAL = "PostgreSQL 15.0 on x86_64-pc-linux-gnu (OrionBelt pgwire 2.5
 
 
 _RE_SHOW = re.compile(r'^show\s+"?([a-z_][a-z0-9_]*)"?\s*$', re.IGNORECASE)
+# Multi-word SHOW forms are aliases for a parameter, and Postgres names the
+# result column after the parameter. SQLAlchemy sends the isolation one on
+# every connect.
+_SHOW_ALIASES: dict[str, str] = {
+    "show transaction isolation level": "transaction_isolation",
+    "show session authorization": "session_authorization",
+    "show time zone": "timezone",
+}
 _RE_SET = re.compile(r"^set\s+", re.IGNORECASE)
 _RE_RESET = re.compile(r"^reset\s+", re.IGNORECASE)
 _RE_DISCARD = re.compile(r"^discard\s+", re.IGNORECASE)
@@ -129,7 +137,8 @@ def match_canned(
             + protocol.build_command_complete("SELECT 1")
         )
 
-    if normalised == "select version()":
+    # SQLAlchemy's postgres dialects schema-qualify it on every connect.
+    if normalised in {"select version()", "select pg_catalog.version()"}:
         return (
             protocol.build_row_description([("version", protocol.OID_TEXT)])
             + protocol.build_data_row([_VERSION_LITERAL])
@@ -201,9 +210,11 @@ def match_canned(
         return _single_text_row(column, _SHOW_VALUES["session_authorization"])
 
     show_match = _RE_SHOW.match(normalised)
-    if show_match is not None:
-        name = show_match.group(1).lower()
-        if name == "search_path":
+    param = _SHOW_ALIASES.get(re.sub(r"\s+", " ", normalised)) or (
+        show_match.group(1).lower() if show_match is not None else None
+    )
+    if param is not None:
+        if param == "search_path":
             # search_path mirrors the effective schema so BI tools'
             # ``SET search_path = X`` / ``SHOW search_path`` cycle
             # round-trips to a real, queryable schema. Pre-v2.5.0 we
@@ -212,9 +223,9 @@ def match_canned(
             # ``pg_namespace`` after the schema-per-model layout flip
             # and contributed to the DBeaver NPE.
             value = current_schema or database or _SHOW_VALUES["search_path"]
-            return _single_text_row(name, value)
-        value = _SHOW_VALUES.get(name, "")
-        return _single_text_row(name, value)
+            return _single_text_row(param, value)
+        value = _SHOW_VALUES.get(param, "")
+        return _single_text_row(param, value)
 
     # SET / RESET / DISCARD / transaction wrappers — accept and ignore.
     if _RE_SET.match(normalised) is not None:

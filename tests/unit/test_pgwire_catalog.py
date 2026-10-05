@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.pgwire.catalog import CatalogEmulator
+from orionbelt.pgwire.catalog import CatalogEmulator, _rewrite_for_duckdb
 from orionbelt.service.session_manager import SessionManager
 from tests.conftest import SAMPLE_MODEL_YAML
 
@@ -341,6 +341,119 @@ def test_catalog_type_uses_default_numeric_data_type() -> None:
     assert _measure_sql_type(explicit, "decimal(18, 2)") == "DECIMAL(10, 4)"
     # No default + no dataType -> coarse DOUBLE.
     assert _measure_sql_type(no_dt, None) == "DOUBLE"
+
+
+class TestSqlalchemyPostgresReflection:
+    """The catalog probes SQLAlchemy 1.4's psycopg2 dialect sends.
+
+    Superset runs them on "Test connection" (hstore) and on dataset / SQL Lab
+    table reflection (the rest). Each one used to fail the bind.
+    """
+
+    def test_hstore_probe_binds(self, manager_with_model: SessionManager) -> None:
+        """Sent on every connect. No hstore exists, so no rows, but no error."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute(
+            "SELECT t.oid, typarray FROM pg_type t "
+            "JOIN pg_namespace ns ON typnamespace = ns.oid "
+            "WHERE typname = 'hstore'"
+        )
+        assert result.rows == []
+        int4 = emu.execute("SELECT typarray FROM pg_type WHERE typname = 'int4'")
+        assert int4.rows[0][0] == 1007
+
+    def test_domain_lookup_binds(self, manager_with_model: SessionManager) -> None:
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute(
+            "SELECT t.typname as name, "
+            "pg_catalog.format_type(t.typbasetype, t.typtypmod) as attype, "
+            "not t.typnotnull as nullable, t.typdefault as default, "
+            "pg_catalog.pg_type_is_visible(t.oid) as visible, n.nspname as schema "
+            "FROM pg_catalog.pg_type t "
+            "LEFT JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "
+            "WHERE t.typtype = 'd'"
+        )
+        assert result.rows == []
+
+    def test_constraint_def_accepts_pretty_flag(self, manager_with_model: SessionManager) -> None:
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute("SELECT pg_catalog.pg_get_constraintdef(1, true)")
+        assert result.rows == [[None]]
+
+    def test_index_reflection_binds(self, manager_with_model: SessionManager) -> None:
+        """``a.attnum = ANY(ix.indkey)`` in an outer join to the attribute shadow."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute(
+            "SELECT i.relname, ix.indisunique, a.attname, c.conrelid, am.amname "
+            "FROM pg_class t "
+            "join pg_index ix on t.oid = ix.indrelid "
+            "join pg_class i on i.oid = ix.indexrelid "
+            "left outer join pg_attribute a "
+            "on t.oid = a.attrelid and a.attnum = ANY(ix.indkey) "
+            "left outer join pg_constraint c on (ix.indrelid = c.conrelid "
+            "and ix.indexrelid = c.conindid and c.contype in ('p', 'u', 'x')) "
+            "left outer join pg_am am on i.relam = am.oid "
+            "WHERE t.relkind IN ('r', 'v', 'f', 'm', 'p') and ix.indisprimary = 'f'"
+        )
+        assert result.rows == []
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            # Part of a larger expression: rewriting would split it.
+            "SELECT 1 + a.attnum = ANY(ix.indkey) FROM t",
+            "SELECT * FROM t WHERE a.attnum = ANY(ix.indkey) = false",
+            # Other columns: ``= ANY`` keeps its NULL outcome.
+            "SELECT * FROM t WHERE t.col = ANY(t.arr)",
+        ],
+    )
+    def test_any_rewrite_leaves_other_shapes_alone(self, sql: str) -> None:
+        assert _rewrite_for_duckdb(sql) == sql
+
+    def test_any_rewrite_keeps_null_semantics(self, manager_with_model: SessionManager) -> None:
+        """``2 = ANY([1, NULL])`` is NULL in Postgres, not false."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute(
+            "SELECT (t.col = ANY(t.arr)) IS NULL FROM (SELECT 2 AS col, [1, NULL] AS arr) t"
+        )
+        assert result.rows == [[True]]
+
+    def test_identity_details_bind(self, manager_with_model: SessionManager) -> None:
+        """Column reflection builds identity details with ``json_build_object``."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute("SELECT json_build_object('always', true, 'start', 1)")
+        assert result.rows == [['{"always":true,"start":1}']]
+
+    def test_sql_lab_backend_pid_and_cancel(self, manager_with_model: SessionManager) -> None:
+        """SQL Lab reads the PID per query and terminates it to stop one."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        assert emu.execute("SELECT pg_backend_pid()").rows == [[10000]]
+        assert emu.execute("SELECT pg_terminate_backend(10000)").rows == [[False]]
+        assert emu.execute("SELECT pg_cancel_backend(10000)").rows == [[False]]
+
+    def test_format_type_names_postgres_types(
+        self, manager_with_decimal_measure: SessionManager
+    ) -> None:
+        """SQLAlchemy maps a reflected column's type from this string."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_decimal_measure)
+        result = emu.execute(
+            "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) "
+            "FROM pg_catalog.pg_attribute a "
+            "JOIN pg_catalog.pg_class c ON a.attrelid = c.oid "
+            "WHERE c.relname = 'model' AND a.attnum > 0"
+        )
+        types = dict(result.rows)
+        assert types["Customer Country"] == "text"
+        assert types["Total Revenue"] == "numeric(18,2)"
+        assert "unknown" not in types.values()
 
 
 class TestTypeNamespaceResolves:
