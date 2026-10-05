@@ -418,31 +418,8 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
                 order_by.append(item)
 
     # --- LIMIT / OFFSET ---
-    limit_value: int | None = None
-    limit_node = ast.args.get("limit")
-    if limit_node is not None:
-        try:
-            limit_value = int(limit_node.expression.sql())
-        except (AttributeError, ValueError):
-            errors.append(
-                SemanticError(
-                    code="UNSUPPORTED_SQL_FEATURE",
-                    message=f"LIMIT must be an integer literal — got `{limit_node.sql()}`.",
-                )
-            )
-
-    offset_value: int | None = None
-    offset_node = ast.args.get("offset")
-    if offset_node is not None:
-        try:
-            offset_value = int(offset_node.expression.sql())
-        except (AttributeError, ValueError):
-            errors.append(
-                SemanticError(
-                    code="UNSUPPORTED_SQL_FEATURE",
-                    message=f"OFFSET must be an integer literal — got `{offset_node.sql()}`.",
-                )
-            )
+    limit_value = _integer_clause(ast.args.get("limit"), "LIMIT", errors)
+    offset_value = _integer_clause(ast.args.get("offset"), "OFFSET", errors)
 
     if errors:
         raise SQLTranslationError(errors)
@@ -1003,31 +980,8 @@ def _build_raw_mode_query(
             )
 
     # LIMIT / OFFSET
-    limit_value: int | None = None
-    limit_node = ast.args.get("limit")
-    if limit_node is not None:
-        try:
-            limit_value = int(limit_node.expression.sql())
-        except (AttributeError, ValueError):
-            errors.append(
-                SemanticError(
-                    code="UNSUPPORTED_SQL_FEATURE",
-                    message=f"LIMIT must be an integer literal — got `{limit_node.sql()}`.",
-                )
-            )
-
-    offset_value: int | None = None
-    offset_node = ast.args.get("offset")
-    if offset_node is not None:
-        try:
-            offset_value = int(offset_node.expression.sql())
-        except (AttributeError, ValueError):
-            errors.append(
-                SemanticError(
-                    code="UNSUPPORTED_SQL_FEATURE",
-                    message=f"OFFSET must be an integer literal — got `{offset_node.sql()}`.",
-                )
-            )
+    limit_value = _integer_clause(ast.args.get("limit"), "LIMIT", errors)
+    offset_value = _integer_clause(ast.args.get("offset"), "OFFSET", errors)
 
     # GROUP BY / WITH ROLLUP — illegal in raw mode
     if ast.args.get("group") is not None:
@@ -1649,6 +1603,33 @@ def _literal_value(expr: exp.Expression) -> str | int | float | bool | None:
         if isinstance(val, int | float):
             return -val
     return None
+
+
+def _integer_clause(
+    node: exp.Expression | None, keyword: str, errors: list[SemanticError]
+) -> int | None:
+    """The integer of a LIMIT / OFFSET clause, or None with an error recorded.
+
+    Drivers that bind parameters server-side (psycopg 3 under SQLAlchemy 2.x)
+    send ``LIMIT $1::INTEGER``; once bound that is an integer literal cast to
+    an integer type, which is unwrapped here.
+    """
+
+    if node is None:
+        return None
+    value = node.expression
+    if isinstance(value, exp.Cast) and value.to.is_type(*exp.DataType.INTEGER_TYPES):
+        value = value.this
+    try:
+        return int(value.sql())
+    except (AttributeError, ValueError):
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message=f"{keyword} must be an integer literal — got `{node.sql()}`.",
+            )
+        )
+        return None
 
 
 def _translate_order_by(
