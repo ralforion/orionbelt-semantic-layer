@@ -109,15 +109,14 @@ Silently accepted but ignored — implicit from the dimensions in SELECT.
   (``ORDER BY 2 DESC``)
 * Optional direction: ``ASC`` (default) or ``DESC``
 * Optional null position: ``NULLS FIRST`` or ``NULLS LAST``. Without
-  it the dialect default applies — Postgres / Snowflake / DuckDB /
-  Dremio put NULLs *last* on ASC, *first* on DESC; MySQL / ClickHouse
-  / BigQuery / Databricks the opposite. Set it explicitly for portable
-  ordering across the 8 supported dialects.
+  it, Postgres semantics apply on every backend: NULLs *last* on ASC,
+  *first* on DESC. OBSQL is Postgres SQL, so the same query orders
+  NULLs the same way whichever of the 8 dialects executes it.
 
 Examples:
 
 ```sql
-ORDER BY 1, 2                       -- both ASC, dialect-default NULLs
+ORDER BY 1, 2                       -- both ASC, NULLs last
 ORDER BY "Total Sales" DESC          -- one column, descending
 ORDER BY 1 NULLS FIRST, 2 DESC NULLS LAST
 ```

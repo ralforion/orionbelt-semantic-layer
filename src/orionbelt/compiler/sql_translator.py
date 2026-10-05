@@ -53,6 +53,16 @@ __all__ = ["SQLTranslationError", "translate_sql_to_query"]
 # end of statement (``;?`` then EOL) or right before ORDER BY / LIMIT / OFFSET /
 # HAVING / FETCH. The lookahead keeps any trailing clauses intact so they can
 # still be parsed by sqlglot.
+#: OBSQL is read as Postgres SQL: it arrives over the Postgres wire, from BI
+#: tools speaking Postgres, and from Dremio federating a Postgres source. The
+#: dialect fixes what an unqualified ORDER BY means. sqlglot records the null
+#: placement the *read* dialect implies, and its generic dialect treats NULLs
+#: as smallest, so every plain ascending sort came through as NULLS FIRST.
+#: Postgres puts NULLs last ascending and first descending, on every backend.
+#: Any SQL regenerated here for a second translation must use it too, or an
+#: explicit ``NULLS FIRST`` that is the generic default would be dropped.
+_DIALECT = "postgres"
+
 _TRAILING_CLAUSE = r"(?=\s*(?:;|$|ORDER\s+BY\b|LIMIT\b|OFFSET\b|HAVING\b|FETCH\b))"
 _TRAILING_WITH_ROLLUP = re.compile(rf"\bWITH\s+ROLLUP\b{_TRAILING_CLAUSE}", re.IGNORECASE)
 _TRAILING_WITH_CUBE = re.compile(rf"\bWITH\s+CUBE\b{_TRAILING_CLAUSE}", re.IGNORECASE)
@@ -139,7 +149,7 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
     forced_grouping = grouping[1]
 
     try:
-        ast = sqlglot.parse_one(cleaned_sql)
+        ast = sqlglot.parse_one(cleaned_sql, read=_DIALECT)
     except ParseError as exc:
         raise SQLTranslationError(
             [
@@ -149,7 +159,7 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
                 )
             ]
         ) from None
-    ast = ast.transform(_unwrap_literal_cast)
+    ast = ast.transform(_unnegate_is).transform(_unwrap_literal_cast)
 
     if isinstance(ast, exp.Union):
         raise SQLTranslationError(
@@ -1820,12 +1830,28 @@ def _dir(desc: bool) -> SortDirection:
     return SortDirection.DESC if desc else SortDirection.ASC
 
 
+def _unnegate_is(node: exp.Expression) -> exp.Expression:
+    """``x IS NOT NULL`` as ``NOT (x IS NULL)``, the shape the predicates expect.
+
+    The Postgres reader (``_DIALECT``) builds ``Is(..., negate=True)`` where
+    the generic one built ``Not(Is(...))``; the IS handlers only read the
+    latter and would take the negated form for ``IS NULL``.
+    """
+
+    if isinstance(node, exp.Is) and node.args.get("negate"):
+        return exp.Not(this=exp.Is(this=node.this, expression=node.expression))
+    return node
+
+
 def _nulls_position(ob: exp.Expression) -> NullsPosition | None:
     """Read the ``NULLS FIRST`` / ``NULLS LAST`` clause off a sqlglot Ordered node.
 
-    sqlglot stores the modifier on ``Ordered.args["nulls_first"]`` as a bool
-    (True = NULLS FIRST, False = NULLS LAST). ``None`` means unspecified —
-    propagate the dialect default rather than forcing one or the other.
+    sqlglot stores the placement on ``Ordered.args["nulls_first"]`` as a bool
+    (True = NULLS FIRST, False = NULLS LAST), filling in the read dialect's
+    default when the clause is absent. Read as Postgres (``_DIALECT``) that is
+    NULLS LAST ascending and NULLS FIRST descending, so every target dialect
+    orders NULLs the way the Postgres client asked. ``None`` only for an
+    ORDER BY node sqlglot built without a placement.
     """
     nf = ob.args.get("nulls_first")
     if nf is None:
@@ -1917,7 +1943,7 @@ def count_placeholders(sql: str) -> int:
     a prepared statement that needs binding from one that does not.
     """
     try:
-        parsed = sqlglot.parse_one(sql)
+        parsed = sqlglot.parse_one(sql, read=_DIALECT)
     except SqlglotError:
         # An unparseable statement has no parameters to count. The caller is
         # about to translate it and will produce the better error.
@@ -1937,14 +1963,14 @@ def strip_where_for_schema(sql: str) -> str:
     translate it and will produce the better error.
     """
     try:
-        parsed = sqlglot.parse_one(sql)
+        parsed = sqlglot.parse_one(sql, read=_DIALECT)
     except SqlglotError:
         return sql
     for clause in (exp.Where, exp.Having):
         node = parsed.find(clause)
         if node is not None:
             node.pop()
-    return str(parsed.sql())
+    return str(parsed.sql(dialect=_DIALECT))
 
 
 def bind_placeholders(sql: str, values: Sequence[Any]) -> str:
@@ -1960,7 +1986,7 @@ def bind_placeholders(sql: str, values: Sequence[Any]) -> str:
     binding the wrong number of values silently shifts every later parameter
     onto the wrong column.
     """
-    parsed = sqlglot.parse_one(_numbered_placeholder_sql(sql))
+    parsed = sqlglot.parse_one(_numbered_placeholder_sql(sql), read=_DIALECT)
     placeholders = ordered_placeholders(parsed)
     if len(placeholders) != len(values):
         raise SQLTranslationError(
@@ -1978,7 +2004,7 @@ def bind_placeholders(sql: str, values: Sequence[Any]) -> str:
         )
     for placeholder, value in zip(placeholders, values, strict=True):
         placeholder.replace(_literal_node(value))
-    return str(parsed.sql())
+    return str(parsed.sql(dialect=_DIALECT))
 
 
 def _literal_node(value: Any) -> exp.Expression:
@@ -2014,7 +2040,7 @@ def placeholder_arrow_schema(sql: str, model: SemanticModel) -> Any:
     import pyarrow as pa
 
     try:
-        parsed = sqlglot.parse_one(_numbered_placeholder_sql(sql))
+        parsed = sqlglot.parse_one(_numbered_placeholder_sql(sql), read=_DIALECT)
     except SqlglotError:
         return pa.schema([])
 
