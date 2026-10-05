@@ -640,18 +640,24 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"\b(?:pg_catalog\s*\.\s*)?json_build_object\s*\(", re.IGNORECASE),
         "json_object(",
     ),
-    # ``t.col = ANY(t.arr)`` → ``list_contains(t.arr, t.col)``. DuckDB plans
-    # ``= ANY(...)`` as a correlated subquery, which it cannot use in an
-    # outer-join condition against a shadow view ("Cannot perform non-inner
-    # join on subquery"). SQLAlchemy's index reflection joins pg_attribute
-    # on ``a.attnum = ANY(ix.indkey)``. Column-to-column only, so
-    # ``ANY(ARRAY[...])`` and ``ANY(func(...))`` are left alone.
+    # ``a.attnum = ANY(ix.indkey)`` → ``list_contains(ix.indkey, a.attnum)``.
+    # DuckDB plans ``= ANY(...)`` as a correlated subquery, which it cannot
+    # use in an outer-join condition against a shadow view ("Cannot perform
+    # non-inner join on subquery"); SQLAlchemy's index reflection joins
+    # pg_attribute on exactly this condition. Scoped to that pair on purpose:
+    # ``attnum`` is NOT NULL and ``indkey`` never holds NULLs, so dropping
+    # ``= ANY``'s third (NULL) outcome cannot change a result here. The
+    # anchors require the comparison to stand alone between boolean
+    # connectives, so it is never split out of a larger expression.
     (
         re.compile(
-            r"\b(?P<col>[a-z_]\w*\.[a-z_]\w*)\s*=\s*ANY\s*\(\s*(?P<arr>[a-z_]\w*\.[a-z_]\w*)\s*\)",
+            r"(?P<lead>\b(?:ON|AND|WHERE)\s+|\(\s*)"
+            r"(?P<col>[a-z_]\w*\.attnum)\s*=\s*ANY\s*\(\s*(?P<arr>[a-z_]\w*\.indkey)\s*\)"
+            r"(?=\s*(?:\)|\bAND\b|\bOR\b|\bLEFT\b|\bRIGHT\b|\bJOIN\b|\bWHERE\b"
+            r"|\bORDER\b|\bGROUP\b|$))",
             re.IGNORECASE,
         ),
-        r"list_contains(\g<arr>, \g<col>)",
+        r"\g<lead>list_contains(\g<arr>, \g<col>)",
     ),
     # information_schema._pg_expandarray → bare _pg_expandarray. JDBC's
     # getPrimaryKeys query uses the qualified form; DuckDB can't create

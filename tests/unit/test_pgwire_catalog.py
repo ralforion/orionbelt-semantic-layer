@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.pgwire.catalog import CatalogEmulator
+from orionbelt.pgwire.catalog import CatalogEmulator, _rewrite_for_duckdb
 from orionbelt.service.session_manager import SessionManager
 from tests.conftest import SAMPLE_MODEL_YAML
 
@@ -400,6 +400,28 @@ class TestSqlalchemyPostgresReflection:
             "WHERE t.relkind IN ('r', 'v', 'f', 'm', 'p') and ix.indisprimary = 'f'"
         )
         assert result.rows == []
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            # Part of a larger expression: rewriting would split it.
+            "SELECT 1 + a.attnum = ANY(ix.indkey) FROM t",
+            "SELECT * FROM t WHERE a.attnum = ANY(ix.indkey) = false",
+            # Other columns: ``= ANY`` keeps its NULL outcome.
+            "SELECT * FROM t WHERE t.col = ANY(t.arr)",
+        ],
+    )
+    def test_any_rewrite_leaves_other_shapes_alone(self, sql: str) -> None:
+        assert _rewrite_for_duckdb(sql) == sql
+
+    def test_any_rewrite_keeps_null_semantics(self, manager_with_model: SessionManager) -> None:
+        """``2 = ANY([1, NULL])`` is NULL in Postgres, not false."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute(
+            "SELECT (t.col = ANY(t.arr)) IS NULL FROM (SELECT 2 AS col, [1, NULL] AS arr) t"
+        )
+        assert result.rows == [[True]]
 
     def test_identity_details_bind(self, manager_with_model: SessionManager) -> None:
         """Column reflection builds identity details with ``json_build_object``."""
