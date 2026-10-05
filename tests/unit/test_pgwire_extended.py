@@ -305,23 +305,91 @@ def test_describe_portal_returns_row_description() -> None:
             )
         )
     )
-    reply = sess.describe(protocol.DescribeMessage(target=b"P", name=""))
+    reply = asyncio.run(sess.describe(protocol.DescribeMessage(target=b"P", name="")))
     frames = _parse_frames(reply)
     assert [t for t, _ in frames] == [b"T"]
 
 
-def test_describe_statement_returns_param_description_and_no_data() -> None:
-    sess = _make_session(_select_one_reply())
+def _recording_session(
+    reply_for: dict[str, bytes], default: bytes
+) -> tuple[ExtendedSession, list[str]]:
+    """ExtendedSession whose handler records each SQL and answers by exact match."""
+
+    seen: list[str] = []
+
+    async def handler(sql: str, _db: str, **_kwargs: object) -> bytes:
+        seen.append(sql)
+        return reply_for.get(sql, default)
+
+    return ExtendedSession(handler=handler, database=""), seen
+
+
+def _parse(sess: ExtendedSession, name: str, sql: str, oids: tuple[int, ...]) -> None:
+    asyncio.run(sess.parse(protocol.ParseMessage(statement_name=name, query=sql, param_oids=oids)))
+
+
+def _bind(sess: ExtendedSession, stmt: str, values: tuple[bytes | None, ...]) -> None:
     asyncio.run(
-        sess.parse(
-            protocol.ParseMessage(
-                statement_name="s1", query="SELECT $1", param_oids=(protocol.OID_TEXT,)
+        sess.bind(
+            protocol.BindMessage(
+                portal_name="",
+                statement_name=stmt,
+                param_formats=(),
+                param_values=values,
+                result_formats=(),
             )
         )
     )
-    reply = sess.describe(protocol.DescribeMessage(target=b"S", name="s1"))
-    frames = _parse_frames(reply)
-    assert [t for t, _ in frames] == [b"t", b"n"]
+
+
+def _describe(sess: ExtendedSession, target: bytes, name: str) -> list[bytes]:
+    reply = asyncio.run(sess.describe(protocol.DescribeMessage(target=target, name=name)))
+    return [t for t, _ in _parse_frames(reply)]
+
+
+def test_describe_parameterised_statement_runs_it_with_null_parameters() -> None:
+    """pgjdbc ``prepareThreshold=-1``: Describe('S') before any Bind (#511)."""
+    sess, seen = _recording_session({}, _two_row_reply())
+    _parse(sess, "s1", "SELECT col FROM t WHERE col = $1", (protocol.OID_TEXT,))
+    assert seen == []  # parameterised: nothing ran at Parse
+    assert _describe(sess, b"S", "s1") == [b"t", b"T"]
+    assert seen == ["SELECT col FROM t WHERE col = NULL"]
+
+
+def test_describe_parameterised_falls_back_to_shape_only() -> None:
+    """OBSQL rejects ``= NULL``; the WHERE-less ``LIMIT 0`` variant answers."""
+    sess, seen = _recording_session(
+        {'SELECT "a" FROM m WHERE "a" = NULL LIMIT 5': _error_reply()}, _two_row_reply()
+    )
+    _parse(sess, "s1", 'SELECT "a" FROM m WHERE "a" = $1 LIMIT 5', (protocol.OID_TEXT,))
+    assert _describe(sess, b"S", "s1") == [b"t", b"T"]
+    assert seen[-1] == 'SELECT "a" FROM m LIMIT 0'
+
+
+def test_describe_parameterised_keeps_no_data_when_nothing_works() -> None:
+    sess, _ = _recording_session({}, _error_reply())
+    _parse(sess, "s1", "SELECT $1", (protocol.OID_TEXT,))
+    assert _describe(sess, b"S", "s1") == [b"t", b"n"]
+
+
+def test_describe_parameterised_never_runs_a_write() -> None:
+    sess, seen = _recording_session({}, _two_row_reply())
+    _parse(sess, "s1", "INSERT INTO t VALUES ($1)", (protocol.OID_TEXT,))
+    assert _describe(sess, b"S", "s1") == [b"t", b"n"]
+    assert seen == []
+
+
+def test_reused_statement_does_not_repeat_row_description() -> None:
+    """pgjdbc from the 6th run: Bind + Execute only on a described statement (#511)."""
+    sess, _ = _recording_session({}, _two_row_reply())
+    _parse(sess, "S_1", "SELECT col FROM t WHERE col = $1", (protocol.OID_TEXT,))
+    _bind(sess, "S_1", (b"a",))
+    assert _describe(sess, b"P", "") == [b"T"]
+    first = sess.execute(protocol.ExecuteMessage(portal_name="", max_rows=0))
+    assert [t for t, _ in _parse_frames(first)] == [b"D", b"D", b"C"]
+    _bind(sess, "S_1", (b"b",))
+    again = sess.execute(protocol.ExecuteMessage(portal_name="", max_rows=0))
+    assert [t for t, _ in _parse_frames(again)] == [b"D", b"D", b"C"]
 
 
 def test_execute_replays_data_rows_and_command_complete() -> None:
@@ -458,13 +526,13 @@ def test_close_statement_and_portal() -> None:
 
 def test_describe_missing_statement_returns_error() -> None:
     sess = _make_session(_select_one_reply())
-    reply = sess.describe(protocol.DescribeMessage(target=b"S", name="missing"))
+    reply = asyncio.run(sess.describe(protocol.DescribeMessage(target=b"S", name="missing")))
     assert reply.startswith(b"E")
 
 
 def test_describe_missing_portal_returns_error() -> None:
     sess = _make_session(_select_one_reply())
-    reply = sess.describe(protocol.DescribeMessage(target=b"P", name="missing"))
+    reply = asyncio.run(sess.describe(protocol.DescribeMessage(target=b"P", name="missing")))
     assert reply.startswith(b"E")
 
 

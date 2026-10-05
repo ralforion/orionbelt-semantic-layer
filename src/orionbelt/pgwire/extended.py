@@ -38,6 +38,10 @@ import struct
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+import sqlglot
+import sqlglot.errors
+from sqlglot import exp
+
 from orionbelt.pgwire import protocol
 
 logger = logging.getLogger(__name__)
@@ -97,10 +101,16 @@ class PreparedStatement:
     sql: str
     param_oids: tuple[int, ...]
     preexec_reply: PortalReply | None = None
-    # True once ``Describe('S')`` has shipped a RowDescription to the
-    # client; propagates to portals so Execute doesn't send the schema
-    # twice — pgjdbc errors on a second RowDescription frame.
-    described_via_statement: bool = False
+    # RowDescription for ``Describe('S')`` of a parameterised statement,
+    # derived without the real values (see ``_describe_parameterised``).
+    # Shape only: never replayed as a result.
+    describe_reply: PortalReply | None = None
+    # True once the client holds this statement's RowDescription, from
+    # ``Describe('S')`` or from ``Describe('P')`` on one of its portals.
+    # Later portals then skip the RowDescription at Execute: pgjdbc reuses
+    # a named statement with Bind + Execute only, and a RowDescription it
+    # did not ask for puts its reply queue out of step.
+    row_description_sent: bool = False
 
 
 @dataclass
@@ -282,7 +292,7 @@ class ExtendedSession:
         # pgjdbc applies that override when parsing DataRows. We do
         # NOT re-send RowDescription at Execute; sending it twice trips
         # pgjdbc's "Bad Connection" state.
-        if stmt.described_via_statement:
+        if stmt.row_description_sent:
             portal.described = True
         self._portals[msg.portal_name] = portal
         return protocol.build_bind_complete()
@@ -291,7 +301,7 @@ class ExtendedSession:
     # Phase 3: Describe
     # ------------------------------------------------------------------
 
-    def describe(self, msg: protocol.DescribeMessage) -> bytes:
+    async def describe(self, msg: protocol.DescribeMessage) -> bytes:
         if msg.target == b"S":
             stmt = self._statements.get(msg.name)
             if stmt is None:
@@ -309,12 +319,12 @@ class ExtendedSession:
             # into "no rows" state and the later DataRow / RowDescription
             # at Execute trips "Received resultset tuples, but no field
             # structure for them".
-            if stmt.preexec_reply is not None:
-                reply = stmt.preexec_reply
+            reply = stmt.preexec_reply or await self._describe_parameterised(stmt)
+            if reply is not None:
                 if reply.is_error:
                     return protocol.build_parameter_description(param_oids) + reply.error
                 if reply.row_description:
-                    stmt.described_via_statement = True
+                    stmt.row_description_sent = True
                     return protocol.build_parameter_description(param_oids) + reply.row_description
             return protocol.build_parameter_description(param_oids) + protocol.build_no_data()
 
@@ -332,7 +342,34 @@ class ExtendedSession:
             return protocol.build_no_data()
         if not portal.reply.row_description:
             return protocol.build_no_data()
+        portal.statement.row_description_sent = True
         return portal.reply.row_description
+
+    async def _describe_parameterised(self, stmt: PreparedStatement) -> PortalReply | None:
+        """RowDescription for a parameterised statement, before any Bind.
+
+        Real Postgres knows a statement's result columns at Parse; here they
+        come from running it. The columns never depend on the parameter
+        values, so this runs the statement without them: first the SQL as
+        written with every parameter NULL (the catalog path accepts that),
+        then, if that fails (OBSQL rejects ``= NULL``), a variant with WHERE,
+        HAVING and OFFSET removed and ``LIMIT 0``. A statement that is not
+        read-only, or for which neither works, keeps the ``NoData`` reply
+        rather than an error: its Execute may still succeed.
+        """
+
+        if stmt.describe_reply is not None:
+            return stmt.describe_reply
+        if not _is_preexec_safe(stmt.sql):
+            return None
+        for sql in (_with_null_parameters(stmt.sql, stmt.param_oids), _shape_only(stmt.sql)):
+            if sql is None:
+                continue
+            reply = _split_simple_reply(await self._handler(sql, self._database))
+            if not reply.is_error:
+                stmt.describe_reply = reply
+                return reply
+        return None
 
     # ------------------------------------------------------------------
     # Phase 4: Execute
@@ -386,6 +423,34 @@ class _BinaryParameterError(Exception):
 
 class _BadParameterError(Exception):
     """Raised when a text parameter can't be decoded."""
+
+
+def _with_null_parameters(sql: str, param_oids: tuple[int, ...]) -> str | None:
+    """``sql`` with every ``$N`` placeholder bound to NULL."""
+
+    count = max([len(param_oids), *(int(n) for n in re.findall(r"\$(\d+)", sql))])
+    try:
+        return _replace_placeholders(sql, ["NULL"] * count)
+    except _BadParameterError:
+        return None
+
+
+def _shape_only(sql: str) -> str | None:
+    """A SELECT reduced to its result shape: no WHERE / HAVING / OFFSET, LIMIT 0.
+
+    Placeholders left elsewhere (a JOIN condition, the select list) are bound
+    to NULL. None when ``sql`` is not a single SELECT sqlglot can round-trip.
+    """
+
+    try:
+        tree = sqlglot.parse_one(sql, read="postgres")
+    except sqlglot.errors.SqlglotError:
+        return None
+    if not isinstance(tree, exp.Select):
+        return None
+    for clause in ("where", "having", "offset"):
+        tree.set(clause, None)
+    return _with_null_parameters(tree.limit(0).sql(dialect="postgres"), ())
 
 
 def _expand_param_formats(formats: tuple[int, ...], n_params: int) -> list[int]:

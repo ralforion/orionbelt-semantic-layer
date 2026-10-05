@@ -423,10 +423,14 @@ async def test_extended_query_parameter_substitution(
         await writer.wait_closed()
 
 
-async def test_extended_describe_statement_returns_param_desc_and_no_data(
+async def test_extended_describe_statement_returns_param_desc_and_row_desc(
     pgwire_with_router: PgWireServer,
 ) -> None:
-    """Describe('S') before Bind responds with ParameterDescription + NoData."""
+    """Describe('S') before Bind answers with the result columns, as Postgres does.
+
+    pgjdbc with server-prepared statements trusts this reply and sends no
+    Describe('P'); NoData here made it reject the rows (#511).
+    """
 
     reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
     try:
@@ -442,8 +446,8 @@ async def test_extended_describe_statement_returns_param_desc_and_no_data(
         await writer.drain()
         reply = await _drain_until_ready(reader)
         tags = [t for t, _ in reply]
-        # ParseComplete, ParameterDescription, NoData, RFQ.
-        assert tags == [b"1", b"t", b"n", b"Z"]
+        # ParseComplete, ParameterDescription, RowDescription, RFQ.
+        assert tags == [b"1", b"t", b"T", b"Z"]
     finally:
         writer.write(_terminate_frame())
         await writer.drain()
