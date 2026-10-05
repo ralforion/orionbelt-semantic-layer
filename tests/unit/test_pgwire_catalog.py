@@ -408,6 +408,14 @@ class TestSqlalchemyPostgresReflection:
         result = emu.execute("SELECT json_build_object('always', true, 'start', 1)")
         assert result.rows == [['{"always":true,"start":1}']]
 
+    def test_sql_lab_backend_pid_and_cancel(self, manager_with_model: SessionManager) -> None:
+        """SQL Lab reads the PID per query and terminates it to stop one."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        assert emu.execute("SELECT pg_backend_pid()").rows == [[10000]]
+        assert emu.execute("SELECT pg_terminate_backend(10000)").rows == [[False]]
+        assert emu.execute("SELECT pg_cancel_backend(10000)").rows == [[False]]
+
     def test_format_type_names_postgres_types(
         self, manager_with_decimal_measure: SessionManager
     ) -> None:

@@ -145,6 +145,13 @@ _STUB_MACROS: tuple[str, ...] = (
         WHEN 2950 THEN 'uuid'
         ELSE 'unknown' END""",
     "CREATE OR REPLACE MACRO pg_encoding_to_char(enc) AS 'UTF8'",
+    # Superset's SQL Lab reads ``pg_backend_pid()`` before each query and
+    # sends ``pg_terminate_backend(pid)`` to stop it. Cancellation is not
+    # honoured, so the PID is a fixed placeholder and both signal functions
+    # report that nothing was signalled.
+    "CREATE OR REPLACE MACRO pg_backend_pid() AS 10000",
+    "CREATE OR REPLACE MACRO pg_terminate_backend(pid, timeout := 0) AS false",
+    "CREATE OR REPLACE MACRO pg_cancel_backend(pid) AS false",
     # JDBC's ``getPrimaryKeys`` calls
     # ``(information_schema._pg_expandarray(i.indkey)).n`` to enumerate
     # PK column positions. Our virtual tables have no PKs so the
