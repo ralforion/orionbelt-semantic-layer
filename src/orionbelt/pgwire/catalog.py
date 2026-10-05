@@ -250,17 +250,27 @@ _PG_CATALOG_OID = 11
 #: Macros whose body reads a shadow view. DuckDB binds a macro's subquery at
 #: CREATE time, so these run after ``_SHADOW_VIEWS``.
 _VIEW_MACROS: tuple[str, ...] = (
+    # Both lookups collect their shadow view into a list and pick the match
+    # with a lambda, rather than filter the view in a subquery. DuckDB
+    # substitutes a macro argument as text, so a caller's column argument
+    # (``current_setting(name)`` over pg_settings) would otherwise bind to the
+    # view's own column of that name inside the subquery. The lambda sees the
+    # caller's scope; its ``_obsl_row`` parameter is the only name it shadows.
+    #
     # psycopg 3 resolves type names with ``to_regtype(name)``: the OID, or
     # NULL when no such type exists (it probes for hstore on connect).
-    "CREATE OR REPLACE MACRO to_regtype(type_name) AS "
-    "(SELECT oid FROM _obsl_pg_type WHERE typname = type_name)",
+    "CREATE OR REPLACE MACRO to_regtype(type_name) AS list_filter("
+    "(SELECT list({'n': typname, 'v': oid}) FROM _obsl_pg_type), "
+    "lambda _obsl_row: _obsl_row.n = type_name)[1].v",
     # Postgres's current_setting reads pg_settings. Names are matched
     # case-insensitively like GUCs; the Postgres rows (non-empty category)
-    # win over DuckDB's own settings of the same name. An unknown name is
-    # NULL, as with ``missing_ok``, instead of an error.
+    # sort first, so they win over DuckDB's own settings of the same name.
+    # An unknown name is NULL, as with ``missing_ok``, instead of an error.
     "CREATE OR REPLACE MACRO _obsl_current_setting(setting_name, missing_ok := false) AS "
-    "(SELECT setting FROM _obsl_pg_settings WHERE lower(name) = lower(setting_name) "
-    "ORDER BY category = '' LIMIT 1)",
+    "list_filter("
+    "(SELECT list({'n': lower(name), 'v': setting} ORDER BY category = '') "
+    "FROM _obsl_pg_settings), "
+    "lambda _obsl_row: _obsl_row.n = lower(setting_name))[1].v",
 )
 
 _SHADOW_VIEWS: tuple[str, ...] = (

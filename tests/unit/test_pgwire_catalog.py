@@ -526,6 +526,22 @@ class TestSqlalchemy2Reflection:
     ) -> None:
         assert emu.execute(f"SELECT {call}").rows == [[expected]]
 
+    def test_current_setting_of_a_column_uses_the_callers_row(self, emu: CatalogEmulator) -> None:
+        """An unqualified column argument must not bind inside the macro's lookup."""
+        result = emu.execute(
+            "SELECT name, current_setting(name) FROM pg_settings "
+            "WHERE name IN ('server_version', 'server_encoding') ORDER BY name"
+        )
+        assert result.rows == [["server_encoding", "UTF8"], ["server_version", "15.0"]]
+
+    def test_to_regtype_of_a_column_uses_the_callers_row(self, emu: CatalogEmulator) -> None:
+        """Was a multiple-row scalar-subquery error."""
+        result = emu.execute(
+            "SELECT typname, to_regtype(typname) FROM pg_type "
+            "WHERE typname IN ('int4', 'text', 'bool') ORDER BY typname"
+        )
+        assert result.rows == [["bool", 16], ["int4", 23], ["text", 25]]
+
     def test_psycopg3_type_lookup(self, emu: CatalogEmulator) -> None:
         """psycopg 3's TypeInfo query: hstore is absent, int4 resolves."""
         query = (
