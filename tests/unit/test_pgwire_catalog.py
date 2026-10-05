@@ -343,6 +343,89 @@ def test_catalog_type_uses_default_numeric_data_type() -> None:
     assert _measure_sql_type(no_dt, None) == "DOUBLE"
 
 
+class TestSqlalchemyPostgresReflection:
+    """The catalog probes SQLAlchemy 1.4's psycopg2 dialect sends.
+
+    Superset runs them on "Test connection" (hstore) and on dataset / SQL Lab
+    table reflection (the rest). Each one used to fail the bind.
+    """
+
+    def test_hstore_probe_binds(self, manager_with_model: SessionManager) -> None:
+        """Sent on every connect. No hstore exists, so no rows, but no error."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute(
+            "SELECT t.oid, typarray FROM pg_type t "
+            "JOIN pg_namespace ns ON typnamespace = ns.oid "
+            "WHERE typname = 'hstore'"
+        )
+        assert result.rows == []
+        int4 = emu.execute("SELECT typarray FROM pg_type WHERE typname = 'int4'")
+        assert int4.rows[0][0] == 1007
+
+    def test_domain_lookup_binds(self, manager_with_model: SessionManager) -> None:
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute(
+            "SELECT t.typname as name, "
+            "pg_catalog.format_type(t.typbasetype, t.typtypmod) as attype, "
+            "not t.typnotnull as nullable, t.typdefault as default, "
+            "pg_catalog.pg_type_is_visible(t.oid) as visible, n.nspname as schema "
+            "FROM pg_catalog.pg_type t "
+            "LEFT JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "
+            "WHERE t.typtype = 'd'"
+        )
+        assert result.rows == []
+
+    def test_constraint_def_accepts_pretty_flag(self, manager_with_model: SessionManager) -> None:
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute("SELECT pg_catalog.pg_get_constraintdef(1, true)")
+        assert result.rows == [[None]]
+
+    def test_index_reflection_binds(self, manager_with_model: SessionManager) -> None:
+        """``a.attnum = ANY(ix.indkey)`` in an outer join to the attribute shadow."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute(
+            "SELECT i.relname, ix.indisunique, a.attname, c.conrelid, am.amname "
+            "FROM pg_class t "
+            "join pg_index ix on t.oid = ix.indrelid "
+            "join pg_class i on i.oid = ix.indexrelid "
+            "left outer join pg_attribute a "
+            "on t.oid = a.attrelid and a.attnum = ANY(ix.indkey) "
+            "left outer join pg_constraint c on (ix.indrelid = c.conrelid "
+            "and ix.indexrelid = c.conindid and c.contype in ('p', 'u', 'x')) "
+            "left outer join pg_am am on i.relam = am.oid "
+            "WHERE t.relkind IN ('r', 'v', 'f', 'm', 'p') and ix.indisprimary = 'f'"
+        )
+        assert result.rows == []
+
+    def test_identity_details_bind(self, manager_with_model: SessionManager) -> None:
+        """Column reflection builds identity details with ``json_build_object``."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_model)
+        result = emu.execute("SELECT json_build_object('always', true, 'start', 1)")
+        assert result.rows == [['{"always":true,"start":1}']]
+
+    def test_format_type_names_postgres_types(
+        self, manager_with_decimal_measure: SessionManager
+    ) -> None:
+        """SQLAlchemy maps a reflected column's type from this string."""
+        emu = CatalogEmulator()
+        emu.refresh(manager_with_decimal_measure)
+        result = emu.execute(
+            "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) "
+            "FROM pg_catalog.pg_attribute a "
+            "JOIN pg_catalog.pg_class c ON a.attrelid = c.oid "
+            "WHERE c.relname = 'model' AND a.attnum > 0"
+        )
+        types = dict(result.rows)
+        assert types["Customer Country"] == "text"
+        assert types["Total Revenue"] == "numeric(18,2)"
+        assert "unknown" not in types.values()
+
+
 class TestTypeNamespaceResolves:
     """``pg_type.typnamespace`` has to point at a namespace that exists.
 

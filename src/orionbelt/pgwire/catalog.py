@@ -82,8 +82,10 @@ _STUB_MACROS: tuple[str, ...] = (
     "CREATE OR REPLACE MACRO pg_table_is_visible(oid) AS true",
     "CREATE OR REPLACE MACRO pg_type_is_visible(oid) AS true",
     "CREATE OR REPLACE MACRO pg_get_partkeydef(oid) AS NULL",
-    "CREATE OR REPLACE MACRO pg_get_indexdef(oid) AS NULL",
-    "CREATE OR REPLACE MACRO pg_get_constraintdef(oid) AS NULL",
+    # Optional trailing arguments, as for pg_get_expr below; SQLAlchemy's
+    # reflection calls ``pg_get_constraintdef(oid, true)``.
+    "CREATE OR REPLACE MACRO pg_get_indexdef(oid, col := 0, pretty := false) AS NULL",
+    "CREATE OR REPLACE MACRO pg_get_constraintdef(oid, pretty := false) AS NULL",
     # Both arities — ``pg_get_expr(expr, oid)`` (Dremio's pgjdbc /
     # DBeaver) and ``pg_get_expr(expr, oid, pretty)`` (psql / pgAdmin).
     # DuckDB ``CREATE OR REPLACE MACRO`` does NOT arity-overload —
@@ -112,7 +114,36 @@ _STUB_MACROS: tuple[str, ...] = (
     "CREATE OR REPLACE MACRO pg_relation_is_publishable(oid) AS false",
     "CREATE OR REPLACE MACRO obj_description(oid, catalog) AS NULL",
     "CREATE OR REPLACE MACRO col_description(oid, col) AS NULL",
-    "CREATE OR REPLACE MACRO format_type(oid, typemod) AS 'unknown'",
+    # Postgres's own names for the OIDs ``_obsl_pg_type`` declares, with
+    # numeric precision/scale decoded from its typmod. SQLAlchemy maps
+    # reflected column types from this string, so a constant left every
+    # column untyped (Superset could not tell dates or numbers apart).
+    """CREATE OR REPLACE MACRO format_type(type_oid, typemod) AS CASE type_oid
+        WHEN 16 THEN 'boolean'
+        WHEN 17 THEN 'bytea'
+        WHEN 18 THEN '"char"'
+        WHEN 19 THEN 'name'
+        WHEN 20 THEN 'bigint'
+        WHEN 21 THEN 'smallint'
+        WHEN 23 THEN 'integer'
+        WHEN 25 THEN 'text'
+        WHEN 26 THEN 'oid'
+        WHEN 700 THEN 'real'
+        WHEN 701 THEN 'double precision'
+        WHEN 1042 THEN 'character'
+        WHEN 1043 THEN 'character varying'
+        WHEN 1082 THEN 'date'
+        WHEN 1083 THEN 'time without time zone'
+        WHEN 1114 THEN 'timestamp without time zone'
+        WHEN 1184 THEN 'timestamp with time zone'
+        WHEN 1186 THEN 'interval'
+        WHEN 1266 THEN 'time with time zone'
+        WHEN 1700 THEN CASE WHEN typemod >= 4
+            THEN 'numeric(' || ((typemod - 4) >> 16) || ','
+                 || ((typemod - 4) & 65535) || ')'
+            ELSE 'numeric' END
+        WHEN 2950 THEN 'uuid'
+        ELSE 'unknown' END""",
     "CREATE OR REPLACE MACRO pg_encoding_to_char(enc) AS 'UTF8'",
     # JDBC's ``getPrimaryKeys`` calls
     # ``(information_schema._pg_expandarray(i.indkey)).n`` to enumerate
@@ -330,6 +361,12 @@ _SHADOW_VIEWS: tuple[str, ...] = (
     # ``LEFT JOIN pg_type et ON et.oid = t.typelem`` to resolve array
     # element types and fails the bind without ``typelem``. Both are
     # 0 for every base scalar we expose here.
+    # ``typarray`` is the OID of the type's array type, Postgres's real
+    # values. psycopg2's hstore probe (``SELECT t.oid, typarray FROM pg_type
+    # t JOIN pg_namespace ...``), which SQLAlchemy runs on every connect and
+    # so Superset on "Test connection", fails the bind without it.
+    # ``typdefault`` (no default) and ``typcollation`` (none) are read by
+    # SQLAlchemy's domain lookup during table reflection.
     # ``typnamespace``: every base type below lives in ``pg_catalog``, as in
     # Postgres, and DuckDB's own ``postgres`` extension joins on it to
     # enumerate a catalog. Without the column the bind fails with "does not
@@ -345,32 +382,35 @@ _SHADOW_VIEWS: tuple[str, ...] = (
     # no error. The ``pg_catalog`` row the shadow below adds is what makes
     # this oid resolve.
     f"""CREATE OR REPLACE TEMP VIEW _obsl_pg_type AS
-        SELECT t.*, {_PG_CATALOG_OID} AS typnamespace FROM (VALUES
+        SELECT t.*, {_PG_CATALOG_OID} AS typnamespace,
+               NULL::VARCHAR AS typdefault, 0 AS typcollation
+        FROM (VALUES
             -- columns: oid, typname, typcategory, typlen, typtype,
-            --          typnotnull, typtypmod, typbasetype, typelem, typrelid
-            (16,   'bool',        'B', 1,   'b', false, -1, 0, 0, 0),
-            (17,   'bytea',       'U', -1,  'b', false, -1, 0, 0, 0),
-            (18,   'char',        'S', 1,   'b', false, -1, 0, 0, 0),
-            (19,   'name',        'S', 64,  'b', false, -1, 0, 0, 0),
-            (20,   'int8',        'N', 8,   'b', false, -1, 0, 0, 0),
-            (21,   'int2',        'N', 2,   'b', false, -1, 0, 0, 0),
-            (23,   'int4',        'N', 4,   'b', false, -1, 0, 0, 0),
-            (25,   'text',        'S', -1,  'b', false, -1, 0, 0, 0),
-            (26,   'oid',         'N', 4,   'b', false, -1, 0, 0, 0),
-            (700,  'float4',      'N', 4,   'b', false, -1, 0, 0, 0),
-            (701,  'float8',      'N', 8,   'b', false, -1, 0, 0, 0),
-            (1042, 'bpchar',      'S', -1,  'b', false, -1, 0, 0, 0),
-            (1043, 'varchar',     'S', -1,  'b', false, -1, 0, 0, 0),
-            (1082, 'date',        'D', 4,   'b', false, -1, 0, 0, 0),
-            (1083, 'time',        'D', 8,   'b', false, -1, 0, 0, 0),
-            (1114, 'timestamp',   'D', 8,   'b', false, -1, 0, 0, 0),
-            (1184, 'timestamptz', 'D', 8,   'b', false, -1, 0, 0, 0),
-            (1186, 'interval',    'T', 16,  'b', false, -1, 0, 0, 0),
-            (1266, 'timetz',      'D', 12,  'b', false, -1, 0, 0, 0),
-            (1700, 'numeric',     'N', -1,  'b', false, -1, 0, 0, 0),
-            (2950, 'uuid',        'U', 16,  'b', false, -1, 0, 0, 0)
+            --          typnotnull, typtypmod, typbasetype, typelem, typrelid,
+            --          typarray
+            (16,   'bool',        'B', 1,   'b', false, -1, 0, 0, 0, 1000),
+            (17,   'bytea',       'U', -1,  'b', false, -1, 0, 0, 0, 1001),
+            (18,   'char',        'S', 1,   'b', false, -1, 0, 0, 0, 1002),
+            (19,   'name',        'S', 64,  'b', false, -1, 0, 0, 0, 1003),
+            (20,   'int8',        'N', 8,   'b', false, -1, 0, 0, 0, 1016),
+            (21,   'int2',        'N', 2,   'b', false, -1, 0, 0, 0, 1005),
+            (23,   'int4',        'N', 4,   'b', false, -1, 0, 0, 0, 1007),
+            (25,   'text',        'S', -1,  'b', false, -1, 0, 0, 0, 1009),
+            (26,   'oid',         'N', 4,   'b', false, -1, 0, 0, 0, 1028),
+            (700,  'float4',      'N', 4,   'b', false, -1, 0, 0, 0, 1021),
+            (701,  'float8',      'N', 8,   'b', false, -1, 0, 0, 0, 1022),
+            (1042, 'bpchar',      'S', -1,  'b', false, -1, 0, 0, 0, 1014),
+            (1043, 'varchar',     'S', -1,  'b', false, -1, 0, 0, 0, 1015),
+            (1082, 'date',        'D', 4,   'b', false, -1, 0, 0, 0, 1182),
+            (1083, 'time',        'D', 8,   'b', false, -1, 0, 0, 0, 1183),
+            (1114, 'timestamp',   'D', 8,   'b', false, -1, 0, 0, 0, 1115),
+            (1184, 'timestamptz', 'D', 8,   'b', false, -1, 0, 0, 0, 1185),
+            (1186, 'interval',    'T', 16,  'b', false, -1, 0, 0, 0, 1187),
+            (1266, 'timetz',      'D', 12,  'b', false, -1, 0, 0, 0, 1270),
+            (1700, 'numeric',     'N', -1,  'b', false, -1, 0, 0, 0, 1231),
+            (2950, 'uuid',        'U', 16,  'b', false, -1, 0, 0, 0, 2951)
         ) AS t(oid, typname, typcategory, typlen, typtype, typnotnull,
-               typtypmod, typbasetype, typelem, typrelid)""",
+               typtypmod, typbasetype, typelem, typrelid, typarray)""",
     # Shadow pg_class that replaces NULL ``aclitem[]`` / ``text[]``
     # columns with non-NULL empty-array literals. pgjdbc inside
     # DBeaver and other BI clients reads ``relacl`` / ``reloptions``
@@ -585,6 +625,26 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
             re.IGNORECASE,
         ),
         "::VARCHAR",
+    ),
+    # json_build_object(k, v, ...) → json_object(k, v, ...), DuckDB's
+    # variadic equivalent (a macro cannot be variadic). SQLAlchemy's column
+    # reflection uses it for identity-column details.
+    (
+        re.compile(r"\b(?:pg_catalog\s*\.\s*)?json_build_object\s*\(", re.IGNORECASE),
+        "json_object(",
+    ),
+    # ``t.col = ANY(t.arr)`` → ``list_contains(t.arr, t.col)``. DuckDB plans
+    # ``= ANY(...)`` as a correlated subquery, which it cannot use in an
+    # outer-join condition against a shadow view ("Cannot perform non-inner
+    # join on subquery"). SQLAlchemy's index reflection joins pg_attribute
+    # on ``a.attnum = ANY(ix.indkey)``. Column-to-column only, so
+    # ``ANY(ARRAY[...])`` and ``ANY(func(...))`` are left alone.
+    (
+        re.compile(
+            r"\b(?P<col>[a-z_]\w*\.[a-z_]\w*)\s*=\s*ANY\s*\(\s*(?P<arr>[a-z_]\w*\.[a-z_]\w*)\s*\)",
+            re.IGNORECASE,
+        ),
+        r"list_contains(\g<arr>, \g<col>)",
     ),
     # information_schema._pg_expandarray → bare _pg_expandarray. JDBC's
     # getPrimaryKeys query uses the qualified form; DuckDB can't create

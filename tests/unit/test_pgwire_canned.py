@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import struct
 
+import pytest
+
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.canned import match_canned
 
@@ -35,8 +37,9 @@ def test_select_one_returns_int4_row() -> None:
     assert oid == protocol.OID_INT4
 
 
-def test_select_version_returns_postgres_flavored_string() -> None:
-    reply = match_canned("SELECT version()")
+@pytest.mark.parametrize("sql", ["SELECT version()", "select pg_catalog.version()"])
+def test_select_version_returns_postgres_flavored_string(sql: str) -> None:
+    reply = match_canned(sql)
     assert reply is not None
     frames = _parse_frames(reply)
     assert [t for t, _ in frames] == [b"T", b"D", b"C"]
@@ -66,6 +69,18 @@ def test_show_unknown_param_returns_empty_string() -> None:
     _, data_row = frames[1]
     (col_len,) = struct.unpack("!I", data_row[2:6])
     assert col_len == 0
+
+
+def test_show_transaction_isolation_level_names_the_parameter() -> None:
+    """SQLAlchemy's multi-word form; Postgres labels the column by parameter."""
+    reply = match_canned("show transaction isolation level")
+    assert reply is not None
+    frames = _parse_frames(reply)
+    _, desc = frames[0]
+    assert desc[2:].split(b"\x00", 1)[0] == b"transaction_isolation"
+    _, data_row = frames[1]
+    (col_len,) = struct.unpack("!I", data_row[2:6])
+    assert data_row[6 : 6 + col_len] == b"read committed"
 
 
 def test_set_is_no_op() -> None:
