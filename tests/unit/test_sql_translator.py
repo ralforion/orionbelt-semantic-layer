@@ -180,6 +180,25 @@ def test_predicates_without_a_faithful_translation_are_refused(
         )
 
 
+@pytest.mark.parametrize("negation", ["", "NOT "])
+@pytest.mark.parametrize(
+    ("select", "subject"),
+    [
+        (f'{_COUNTRY}, "Total Revenue"', _COUNTRY),
+        ('"Customers"."Customer ID", "Customers"."Country"', '"Customers"."Country"'),
+    ],
+    ids=["model", "raw"],
+)
+def test_in_without_a_literal_list_is_refused(
+    model: SemanticModel, select: str, subject: str, negation: str
+) -> None:
+    # sqlglot keeps UNNEST outside the IN list; read as a list it was IN ().
+    with pytest.raises(SQLTranslationError, match="IN needs a list of literals"):
+        translate_sql_to_query(
+            f"SELECT {select} FROM m WHERE {subject} {negation}IN UNNEST(ARRAY['US'])", model
+        )
+
+
 def test_not_like_compiles_to_not_like(model: SemanticModel) -> None:
     from orionbelt.compiler.pipeline import CompilationPipeline
 

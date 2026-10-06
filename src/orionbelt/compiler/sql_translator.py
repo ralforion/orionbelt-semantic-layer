@@ -1068,14 +1068,8 @@ def _atom_to_raw_filter(
                 )
             )
             return None
-        values = [_literal_value(e) for e in predicate.expressions]
-        if any(v is None for v in values):
-            errors.append(
-                SemanticError(
-                    code="UNSUPPORTED_SQL_FEATURE",
-                    message=f"IN list must contain only literals — got `{atom.sql()}`.",
-                )
-            )
+        values = _in_values(predicate, errors)
+        if values is None:
             return None
         in_op = FilterOperator.NOT_IN_LIST if negated else FilterOperator.IN_LIST
         return QueryFilter(field=field, op=in_op, value=values)
@@ -1295,14 +1289,8 @@ def _atom_to_query_filter(
             )
             return None
         op = FilterOperator.NOT_IN_LIST if negated else FilterOperator.IN_LIST
-        values = [_literal_value(e) for e in predicate.expressions]
-        if any(v is None for v in values):
-            errors.append(
-                SemanticError(
-                    code="UNSUPPORTED_SQL_FEATURE",
-                    message=f"IN list must contain only literals — got `{atom.sql()}`.",
-                )
-            )
+        values = _in_values(predicate, errors)
+        if values is None:
             return None
         return (
             QueryFilter(field=canonical(name), op=op, value=values),
@@ -1588,14 +1576,8 @@ def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> Que
                 )
             )
             return None
-        values = [_literal_value(e) for e in predicate.expressions]
-        if any(v is None for v in values):
-            errors.append(
-                SemanticError(
-                    code="UNSUPPORTED_SQL_FEATURE",
-                    message=f"IN list in subquery must contain only literals — got `{atom.sql()}`.",
-                )
-            )
+        values = _in_values(predicate, errors)
+        if values is None:
             return None
         in_op = FilterOperator.NOT_IN_LIST if negated else FilterOperator.IN_LIST
         return QueryFilter(field=name, op=in_op, value=values)
@@ -2003,6 +1985,29 @@ def _like_operator(
         )
         return None
     return FilterOperator.NOT_LIKE if negated else FilterOperator.LIKE
+
+
+def _in_values(predicate: exp.In, errors: list[SemanticError]) -> list[Any] | None:
+    """The values of ``IN (<literal>, ...)``; any other right-hand side is refused.
+
+    sqlglot keeps ``IN UNNEST(...)`` and ``IN (SELECT ...)`` outside
+    ``expressions``, so reading only the list took them for ``IN ()``.
+    """
+    operand_forms = ("query", "unnest", "field")
+    values = [_literal_value(e) for e in predicate.expressions]
+    if (
+        not values
+        or any(predicate.args.get(form) is not None for form in operand_forms)
+        or any(v is None for v in values)
+    ):
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message=f"IN needs a list of literals - got `{_as_written(predicate)}`.",
+            )
+        )
+        return None
+    return values
 
 
 def _between_bounds(predicate: exp.Between, errors: list[SemanticError]) -> list[Any] | None:

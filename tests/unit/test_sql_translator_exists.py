@@ -253,3 +253,13 @@ def test_subquery_ilike_refused(model: SemanticModel) -> None:
             'WHERE EXISTS (SELECT 1 FROM "OrderItems" WHERE "Status" ILIKE \'s%\')',
             model,
         )
+
+
+@pytest.mark.parametrize("negation", ["", "NOT "])
+def test_subquery_in_without_a_literal_list_is_refused(model: SemanticModel, negation: str) -> None:
+    with pytest.raises(SQLTranslationError, match="IN needs a list of literals"):
+        translate_sql_to_query(
+            'SELECT "Order ID", "Total Revenue" FROM m WHERE EXISTS (SELECT 1 FROM "OrderItems" '
+            f"WHERE \"Status\" {negation}IN UNNEST(ARRAY['shipped']))",
+            model,
+        )
