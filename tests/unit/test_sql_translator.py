@@ -138,6 +138,33 @@ def test_order_by_position(model: SemanticModel) -> None:
     assert q.order_by[0].direction.value == "desc"
 
 
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        "\"Customer Country\" = CAST('US' AS VARCHAR)",
+        "\"Customer Country\" IN (CAST('US' AS VARCHAR), CAST('DE' AS TEXT))",
+        "\"Customer Country\" LIKE CAST('U%' AS VARCHAR)",
+        '"Total Revenue" > CAST(5 AS BIGINT)',
+        '"Total Revenue" > CAST(-2.5 AS DOUBLE)',
+    ],
+)
+def test_bound_parameter_casts_read_as_literals(model: SemanticModel, predicate: str) -> None:
+    """pgwire binds each parameter as a cast literal of its own type."""
+    q = translate_sql_to_query(
+        f'SELECT "Customer Country", "Total Revenue" FROM m WHERE {predicate}', model
+    )
+    assert q.where or q.having
+
+
+def test_a_converting_cast_is_not_a_literal(model: SemanticModel) -> None:
+    """Only a cast to the literal's own kind is the identity."""
+    with pytest.raises(SQLTranslationError):
+        translate_sql_to_query(
+            'SELECT "Customer Country" FROM m WHERE "Total Revenue" > CAST(\'5\' AS INTEGER)',
+            model,
+        )
+
+
 def test_limit(model: SemanticModel) -> None:
     q = translate_sql_to_query(
         'SELECT "Customer Country" FROM m LIMIT 50',

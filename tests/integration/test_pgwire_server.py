@@ -455,6 +455,47 @@ async def test_extended_describe_statement_returns_param_desc_and_row_desc(
         await writer.wait_closed()
 
 
+@pytest.mark.parametrize(
+    ("oid", "value"),
+    [
+        (protocol.OID_TEXT, None),  # Describe said TEXT; an untyped NULL bound as FLOAT8
+        (protocol.OID_INT4, b"1"),  # Describe said FLOAT8; ``SELECT 1`` hit the canned INT4
+    ],
+)
+async def test_server_prepared_select_param_keeps_its_described_type(
+    pgwire_with_router: PgWireServer, oid: int, value: bytes | None
+) -> None:
+    """pgjdbc's server-prepared path: Describe('S'), then Bind + Execute only.
+
+    Both cases were refused with "cached plan must not change result type"
+    in review of #513, because Describe and Bind typed the parameter
+    differently. Typed rendering in both makes them agree.
+    """
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
+    try:
+        writer.write(_startup_payload({"user": "obsl", "database": "commerce"}))
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        writer.write(
+            _build_parse("S_1", "SELECT $1", (oid,)) + _build_describe(b"S", "S_1") + _build_sync()
+        )
+        await writer.drain()
+        described = await _drain_until_ready(reader)
+        assert [t for t, _ in described] == [b"1", b"t", b"T", b"Z"]
+
+        writer.write(_build_bind("", "S_1", [value]) + _build_execute("") + _build_sync())
+        await writer.drain()
+        executed = await _drain_until_ready(reader)
+        assert [t for t, _ in executed] == [b"2", b"D", b"C", b"Z"], executed
+    finally:
+        writer.write(_terminate_frame())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_extended_error_then_sync_recovers_session(
     pgwire_with_router: PgWireServer,
 ) -> None:

@@ -146,6 +146,7 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
                 )
             ]
         ) from None
+    ast = ast.transform(_unwrap_literal_cast)
 
     if isinstance(ast, exp.Union):
         raise SQLTranslationError(
@@ -1584,6 +1585,32 @@ def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> Que
         )
     )
     return None
+
+
+def _unwrap_literal_cast(node: exp.Expression) -> exp.Expression:
+    """``CAST(<literal> AS <its own kind>)`` as the bare literal.
+
+    The Postgres wire surface binds each parameter as a cast literal
+    (``CAST('US' AS VARCHAR)``, ``CAST(5 AS BIGINT)``, a typed NULL) so that
+    Describe and Bind agree on its type. Such a cast is the identity on the
+    value, and every predicate here reads bare literals. Only a cast to the
+    literal's own kind is unwrapped; ``CAST('5' AS INTEGER)`` keeps its
+    meaning and is still rejected where a literal is required.
+    """
+
+    if not isinstance(node, exp.Cast):
+        return node
+    inner, target = node.this, node.to
+    if isinstance(inner, exp.Null):
+        return inner
+    if isinstance(inner, exp.Boolean) and target.is_type(exp.DataType.Type.BOOLEAN):
+        return inner
+    number = inner.this if isinstance(inner, exp.Neg) else inner
+    if isinstance(number, exp.Literal) and number.is_number:
+        return inner if target.is_type(*exp.DataType.NUMERIC_TYPES) else node
+    if isinstance(inner, exp.Literal) and inner.is_string:
+        return inner if target.is_type(*exp.DataType.TEXT_TYPES) else node
+    return node
 
 
 def _literal_value(expr: exp.Expression) -> str | int | float | bool | None:

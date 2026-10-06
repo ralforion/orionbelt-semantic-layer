@@ -61,17 +61,17 @@ def _error_reply() -> bytes:
 
 def test_substitute_inlines_text_value() -> None:
     sql = substitute_parameters("SELECT * FROM t WHERE x = $1", (b"abc",), [0])
-    assert sql == "SELECT * FROM t WHERE x = 'abc'"
+    assert sql == "SELECT * FROM t WHERE x = CAST('abc' AS VARCHAR)"
 
 
 def test_substitute_inlines_null() -> None:
     sql = substitute_parameters("SELECT $1", (None,), [0])
-    assert sql == "SELECT NULL"
+    assert sql == "SELECT CAST(NULL AS VARCHAR)"
 
 
 def test_substitute_escapes_single_quote() -> None:
     sql = substitute_parameters("SELECT $1", (b"O'Hara",), [0])
-    assert sql == "SELECT 'O''Hara'"
+    assert sql == "SELECT CAST('O''Hara' AS VARCHAR)"
 
 
 def test_substitute_handles_multiple_placeholders() -> None:
@@ -80,7 +80,10 @@ def test_substitute_handles_multiple_placeholders() -> None:
         (b"a", b"b", b"c"),
         [0, 0, 0],
     )
-    assert sql == "SELECT 'a', 'b', 'c' FROM t WHERE y = 'b'"
+    assert sql == (
+        "SELECT CAST('a' AS VARCHAR), CAST('b' AS VARCHAR), CAST('c' AS VARCHAR) "
+        "FROM t WHERE y = CAST('b' AS VARCHAR)"
+    )
 
 
 def test_substitute_skips_inside_single_quotes() -> None:
@@ -89,7 +92,7 @@ def test_substitute_skips_inside_single_quotes() -> None:
         (b"val",),
         [0],
     )
-    assert sql == "SELECT '$1 is literal' AS note, 'val'"
+    assert sql == "SELECT '$1 is literal' AS note, CAST('val' AS VARCHAR)"
 
 
 def test_substitute_skips_inside_double_quotes() -> None:
@@ -98,7 +101,7 @@ def test_substitute_skips_inside_double_quotes() -> None:
         (b"val",),
         [0],
     )
-    assert sql == 'SELECT "$1" AS "$1", \'val\''
+    assert sql == 'SELECT "$1" AS "$1", CAST(\'val\' AS VARCHAR)'
 
 
 def test_substitute_numeric_text_rejects_injection() -> None:
@@ -116,12 +119,24 @@ def test_substitute_numeric_text_rejects_injection() -> None:
 
 def test_substitute_numeric_text_canonicalizes() -> None:
     """Valid numeric text params render as canonical numeric literals."""
-    assert substitute_parameters("x $1", (b"  -7 ",), [0], param_oids=(23,)) == "x -7"
-    assert substitute_parameters("x $1", (b"3.14",), [0], param_oids=(1700,)) == "x 3.14"
-    assert substitute_parameters("x $1", (b"1e3",), [0], param_oids=(701,)) == "x 1E+3"
+    assert (
+        substitute_parameters("x $1", (b"  -7 ",), [0], param_oids=(23,)) == "x CAST(-7 AS INTEGER)"
+    )
+    assert (
+        substitute_parameters("x $1", (b"3.14",), [0], param_oids=(1700,))
+        == "x CAST(3.14 AS DOUBLE)"
+    )
+    assert (
+        substitute_parameters("x $1", (b"1e3",), [0], param_oids=(701,)) == "x CAST(1E+3 AS DOUBLE)"
+    )
     # Fractional edge forms Postgres accepts.
-    assert substitute_parameters("x $1", (b".5",), [0], param_oids=(1700,)) == "x 0.5"
-    assert substitute_parameters("x $1", (b"-2.5E-3",), [0], param_oids=(701,)) == "x -0.0025"
+    assert (
+        substitute_parameters("x $1", (b".5",), [0], param_oids=(1700,)) == "x CAST(0.5 AS DOUBLE)"
+    )
+    assert (
+        substitute_parameters("x $1", (b"-2.5E-3",), [0], param_oids=(701,))
+        == "x CAST(-0.0025 AS DOUBLE)"
+    )
 
 
 def test_substitute_numeric_text_rejects_nonstandard_forms() -> None:
@@ -145,25 +160,27 @@ def test_substitute_numeric_text_rejects_non_finite() -> None:
 
 def test_substitute_skips_inside_line_comment() -> None:
     sql = substitute_parameters("SELECT 1 -- $1\nWHERE x = $1", (b"v",), [0])
-    assert sql == "SELECT 1 -- $1\nWHERE x = 'v'"
+    assert sql == "SELECT 1 -- $1\nWHERE x = CAST('v' AS VARCHAR)"
 
 
 def test_substitute_skips_inside_block_comment() -> None:
     sql = substitute_parameters("SELECT /* $1 nested /* $1 */ */ $1", (b"v",), [0])
-    assert sql == "SELECT /* $1 nested /* $1 */ */ 'v'"
+    assert sql == "SELECT /* $1 nested /* $1 */ */ CAST('v' AS VARCHAR)"
 
 
 def test_substitute_skips_inside_dollar_quote() -> None:
-    assert substitute_parameters("SELECT $$ $1 $$, $1", (b"v",), [0]) == "SELECT $$ $1 $$, 'v'"
+    assert substitute_parameters("SELECT $$ $1 $$, $1", (b"v",), [0]) == (
+        "SELECT $$ $1 $$, CAST('v' AS VARCHAR)"
+    )
     assert (
         substitute_parameters("SELECT $tag$ $1 $tag$, $1", (b"v",), [0])
-        == "SELECT $tag$ $1 $tag$, 'v'"
+        == "SELECT $tag$ $1 $tag$, CAST('v' AS VARCHAR)"
     )
 
 
 def test_substitute_dollar_digit_is_placeholder_not_tag() -> None:
     """``$1`` is a placeholder even next to a stray ``$`` (digit-led tags are invalid)."""
-    assert substitute_parameters("SELECT $1$", (b"v",), [0]) == "SELECT 'v'$"
+    assert substitute_parameters("SELECT $1$", (b"v",), [0]) == "SELECT CAST('v' AS VARCHAR)$"
 
 
 def test_substitute_rejects_binary_format_for_unknown_oid() -> None:
@@ -183,7 +200,7 @@ def test_substitute_decodes_binary_int4() -> None:
         [1],
         param_oids=(23,),  # OID_INT4
     )
-    assert sql == "INSERT INTO t VALUES (42)"
+    assert sql == "INSERT INTO t VALUES (CAST(42 AS INTEGER))"
 
 
 def test_substitute_decodes_binary_int2_int8() -> None:
@@ -193,22 +210,28 @@ def test_substitute_decodes_binary_int2_int8() -> None:
         [1, 1],
         param_oids=(21, 20),  # INT2, INT8
     )
-    assert sql == "SELECT -7, 1000000000000"
+    assert sql == "SELECT CAST(-7 AS SMALLINT), CAST(1000000000000 AS BIGINT)"
 
 
 def test_substitute_decodes_binary_float8() -> None:
     sql = substitute_parameters("SELECT $1", (struct.pack("!d", 3.5),), [1], param_oids=(701,))
-    assert sql == "SELECT 3.5"
+    assert sql == "SELECT CAST(3.5 AS DOUBLE)"
 
 
 def test_substitute_decodes_binary_bool() -> None:
-    assert substitute_parameters("SELECT $1", (b"\x01",), [1], param_oids=(16,)) == "SELECT TRUE"
-    assert substitute_parameters("SELECT $1", (b"\x00",), [1], param_oids=(16,)) == "SELECT FALSE"
+    assert (
+        substitute_parameters("SELECT $1", (b"\x01",), [1], param_oids=(16,))
+        == "SELECT CAST(TRUE AS BOOLEAN)"
+    )
+    assert (
+        substitute_parameters("SELECT $1", (b"\x00",), [1], param_oids=(16,))
+        == "SELECT CAST(FALSE AS BOOLEAN)"
+    )
 
 
 def test_substitute_decodes_binary_text() -> None:
     sql = substitute_parameters("SELECT $1", (b"hi'there",), [1], param_oids=(25,))
-    assert sql == "SELECT 'hi''there'"
+    assert sql == "SELECT CAST('hi''there' AS VARCHAR)"
 
 
 def test_substitute_rejects_out_of_range_placeholder() -> None:
@@ -385,7 +408,7 @@ def test_describe_types_each_null_like_bind_renders_it() -> None:
     sess, seen = _recording_session({}, _two_row_reply())
     _parse(sess, "s1", "SELECT $1, $2", (protocol.OID_TEXT, 23))
     _describe(sess, b"S", "s1")
-    assert seen == ["SELECT CAST(NULL AS VARCHAR), CAST(NULL AS BIGINT)"]
+    assert seen == ["SELECT CAST(NULL AS VARCHAR), CAST(NULL AS INTEGER)"]
 
 
 def test_describe_ignores_placeholders_inside_literals_and_comments() -> None:

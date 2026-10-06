@@ -544,7 +544,7 @@ def _with_typed_nulls(sql: str, param_oids: tuple[int, ...]) -> str | None:
         if idx >= _MAX_PARAMETERS:
             raise _BadParameterError(f"Placeholder ${idx + 1} exceeds the parameter limit")
         oid = param_oids[idx] if idx < len(param_oids) else 0
-        return _TYPED_NULL.get(oid, "CAST(NULL AS VARCHAR)")
+        return _typed("NULL", oid)
 
     try:
         return _map_placeholders(sql, render)
@@ -610,34 +610,39 @@ def substitute_parameters(
 
     Quoting follows the Postgres standard-conforming-strings rule: wrap
     string values in single quotes and double any embedded single
-    quote. Numerics / booleans render unquoted.
+    quote. Numerics / booleans render unquoted. Each value, NULL included,
+    is then cast to the type its OID binds as (``_PARAM_SQL_TYPE``), so the
+    result type does not depend on the value.
     """
 
     rendered: list[str] = []
     for idx, (raw, fmt) in enumerate(zip(values, formats, strict=True)):
-        if raw is None:
-            rendered.append("NULL")
-            continue
         oid = param_oids[idx] if idx < len(param_oids) else 0
-        if fmt == 1:
-            rendered.append(_decode_binary_param(raw, oid))
-            continue
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise _BadParameterError(f"Text-format parameter is not valid UTF-8: {exc}") from None
-        if oid in _NUMERIC_TEXT_OIDS:
-            # Never splice client bytes into SQL raw: strictly parse the text
-            # per its declared numeric OID and re-render a canonical literal.
-            # A value like ``0 AND "x" = 'y'`` fails the parse and is rejected
-            # instead of becoming active SQL.
-            rendered.append(_canonical_numeric_text(text, oid))
-        elif oid in _BOOL_TEXT_OIDS:
-            rendered.append("TRUE" if text.lower() in {"t", "true", "1", "y", "yes"} else "FALSE")
-        else:
-            escaped = text.replace("'", "''")
-            rendered.append(f"'{escaped}'")
+        rendered.append(_typed(_render_literal(raw, fmt, oid), oid))
     return _replace_placeholders(sql, rendered)
+
+
+def _render_literal(raw: bytes | None, fmt: int, oid: int) -> str:
+    """One parameter value as a SQL literal, before :func:`_typed` casts it."""
+
+    if raw is None:
+        return "NULL"
+    if fmt == 1:
+        return _decode_binary_param(raw, oid)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _BadParameterError(f"Text-format parameter is not valid UTF-8: {exc}") from None
+    if oid in _NUMERIC_TEXT_OIDS:
+        # Never splice client bytes into SQL raw: strictly parse the text
+        # per its declared numeric OID and re-render a canonical literal.
+        # A value like ``0 AND "x" = 'y'`` fails the parse and is rejected
+        # instead of becoming active SQL.
+        return _canonical_numeric_text(text, oid)
+    if oid in _BOOL_TEXT_OIDS:
+        return "TRUE" if text.lower() in {"t", "true", "1", "y", "yes"} else "FALSE"
+    escaped = text.replace("'", "''")
+    return f"'{escaped}'"
 
 
 # Postgres binary parameter OIDs we know how to decode. Anything else
@@ -669,20 +674,31 @@ _NUMERIC_TEXT_OIDS: frozenset[int] = frozenset(
 )
 _BOOL_TEXT_OIDS: frozenset[int] = frozenset({_OID_BOOL})
 
-#: The SQL type each parameter OID binds as in :func:`substitute_parameters`:
-#: numbers and booleans render unquoted, everything else as a quoted string.
-#: A float or numeric binds as a literal whose type follows its value (``1``
-#: is an integer, ``1.5`` a decimal); Bind's result-type check catches the
-#: rare select-list parameter where that differs from what Describe said.
-_TYPED_NULL: dict[int, str] = {
-    _OID_INT2: "CAST(NULL AS BIGINT)",
-    _OID_INT4: "CAST(NULL AS BIGINT)",
-    _OID_INT8: "CAST(NULL AS BIGINT)",
-    _OID_FLOAT4: "CAST(NULL AS DOUBLE)",
-    _OID_FLOAT8: "CAST(NULL AS DOUBLE)",
-    _OID_NUMERIC: "CAST(NULL AS DECIMAL)",
-    _OID_BOOL: "CAST(NULL AS BOOLEAN)",
+#: The SQL type each parameter binds as, by its declared OID; anything else
+#: (text, varchar, dates, OID 0 "unspecified") binds as text, as its quoted
+#: literal always did. Bind and Describe both render every parameter as
+#: ``CAST(<value> AS <type>)``, a NULL included, so the result type a
+#: describe-time run reports is the one Bind produces whatever the value:
+#: ``SELECT $1`` bound to ``1`` must not turn into the canned ``SELECT 1``.
+#: ``numeric`` maps to DOUBLE because DuckDB's bare DECIMAL is (18, 3) and
+#: would round; the semantic translator unwraps such casts, so filter values
+#: stay exact there.
+_PARAM_SQL_TYPE: dict[int, str] = {
+    _OID_INT2: "SMALLINT",
+    _OID_INT4: "INTEGER",
+    _OID_INT8: "BIGINT",
+    _OID_FLOAT4: "REAL",
+    _OID_FLOAT8: "DOUBLE",
+    _OID_NUMERIC: "DOUBLE",
+    _OID_BOOL: "BOOLEAN",
+    _OID_BYTEA: "BLOB",
 }
+
+
+def _typed(literal: str, oid: int) -> str:
+    """``literal`` cast to the SQL type a parameter of ``oid`` binds as."""
+
+    return f"CAST({literal} AS {_PARAM_SQL_TYPE.get(oid, 'VARCHAR')})"
 
 
 def _canonical_numeric_text(text: str, oid: int) -> str:
