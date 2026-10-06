@@ -35,7 +35,7 @@ from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
 )
-from orionbelt.models.semantic import WindowFunctionKind
+from orionbelt.models.semantic import DataType, WindowFunctionKind
 
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
@@ -54,7 +54,39 @@ _WINDOW_FUNCTION_NAMES: dict[WindowFunctionKind, str] = {
 }
 
 
-def _build_window_call(measure: ResolvedMeasure) -> WindowFunction:
+def partition_keys(
+    dim_names: list[str], model: SemanticModel | None, dialect: Dialect | None
+) -> list[Expr]:
+    """``PARTITION BY`` keys for the dimension aliases *dim_names*.
+
+    A float dimension goes through :meth:`Dialect.float_partition_key`, since
+    not every engine partitions by a float. A non-temporal dimension projects
+    its column as it is, so the column's ``abstractType`` is the type the
+    window sees; a declared ``resultType: float`` counts as well.
+    """
+    keys: list[Expr] = []
+    for name in dim_names:
+        key: Expr = ColumnRef(name=name)
+        if dialect is not None and model is not None and _is_float_dimension(model, name):
+            key = dialect.float_partition_key(key)
+        keys.append(key)
+    return keys
+
+
+def _is_float_dimension(model: SemanticModel, name: str) -> bool:
+    dim = model.dimensions.get(name)
+    if dim is None:
+        return False
+    if dim.result_type is DataType.FLOAT:
+        return True
+    obj = model.data_objects.get(dim.view)
+    column = obj.columns.get(dim.column) if obj is not None else None
+    return column is not None and column.abstract_type is DataType.FLOAT
+
+
+def _build_window_call(
+    measure: ResolvedMeasure, model: SemanticModel | None, dialect: Dialect | None
+) -> WindowFunction:
     """Build the window-function AST node for a ``MetricType.WINDOW`` metric."""
     assert measure.window_function is not None
     kind = measure.window_function
@@ -102,14 +134,10 @@ def _build_window_call(measure: ResolvedMeasure) -> WindowFunction:
         if measure.window_time_dimension:
             order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=desc)]
 
-    partition_by: list[Expr] = [
-        ColumnRef(name=dim_name) for dim_name in measure.window_partition_by
-    ]
-
     return WindowFunction(
         func_name=func_name,
         args=args,
-        partition_by=partition_by,
+        partition_by=partition_keys(measure.window_partition_by, model, dialect),
         order_by=order_by,
     )
 
@@ -278,7 +306,9 @@ def _substitute_for_outer(
 
     def value_of(comp: ResolvedMeasure) -> Expr:
         if comp.is_window:
-            return _apply_metric_cast(_build_window_call(comp), comp.name, model, dialect)
+            return _apply_metric_cast(
+                _build_window_call(comp, model, dialect), comp.name, model, dialect
+            )
         return ColumnRef(name=comp.name)
 
     return expand_metric_expression(expr, metric_components, value_of)
@@ -402,7 +432,7 @@ def wrap_with_window(
 
     for m in resolved.measures:
         if m.is_window:
-            window_expr: Expr = _build_window_call(m)
+            window_expr: Expr = _build_window_call(m, model, dialect)
             window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
             outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))
         elif m.name in ddm_names:

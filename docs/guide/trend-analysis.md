@@ -46,8 +46,12 @@ AVG("Revenue") OVER (
 ) AS "Revenue MA12 by Country"
 ```
 
-Default is `[]` (no partition) — existing cumulative metrics produce
-identical SQL.
+A cumulative metric is always partitioned by the query's other selected
+dimensions as well: `Country, order_month, Revenue YTD` accumulates per
+country even without `partitionBy`. Dimensions over the same date column at
+another grain (`order_year` next to `order_month`) are positions on the time
+axis, not groups, and do not partition. `partitionBy` adds keys on top; a key
+the query already selects is not repeated.
 
 ## 2. Window metrics — RANK, LAG, LEAD, NTILE, FIRST/LAST VALUE
 

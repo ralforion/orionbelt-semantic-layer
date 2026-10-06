@@ -933,7 +933,7 @@ metrics:
  The `timeDimension` must be included in the query's selected dimensions. Cumulative metrics without their time dimension in the SELECT will raise a validation error.
 
 !!! tip "Partition by dimension"
- Add `partitionBy: [Country, ...]` to compute per-entity rolling windows (e.g. 12-month MA per country). Every entry must be a model dimension present in the query's SELECT. See [Trend Analysis](trend-analysis.md#1-partitioned-rolling-windows) for worked examples.
+ A cumulative metric accumulates per group of the query's other selected dimensions: `Country, Order Month, Revenue YTD` gives each country its own year-to-date. Dimensions over the same date column at another grain (`Order Year` next to `Order Month`) do not partition. Add `partitionBy: [Country, ...]` for extra keys; every entry must be a model dimension present in the query's SELECT. See [Trend Analysis](trend-analysis.md#1-partitioned-rolling-windows) for worked examples.
 
 ### Period-over-Period Metrics
 
@@ -1021,7 +1021,7 @@ Window metrics compose freely with derived metrics — `expression: '{[Revenue]}
 | `cumulativeType` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` | `"sum"` | Window aggregation function |
 | `window` | integer | — | Rolling window size in periods (mutually exclusive with `grainToDate`) |
 | `grainToDate` | `"year"` \| `"quarter"` \| `"month"` \| `"week"` | — | Reset boundary (mutually exclusive with `window`) |
-| `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics. Each entry must be a model dimension in the query's SELECT. |
+| `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics. Each entry must be a model dimension in the query's SELECT. Cumulative metrics are also partitioned by the query's other dimensions. |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
 | `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics) |
 | `offset` | integer | — | Row offset for `lag` / `lead` (>= 1) |

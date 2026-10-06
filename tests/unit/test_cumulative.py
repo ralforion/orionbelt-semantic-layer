@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Any
+
 import pytest
 
 from orionbelt.ast.nodes import (
@@ -51,10 +54,19 @@ dataObjects:
       Order Date:
         code: ORDER_DATE
         abstractType: date
+      Region:
+        code: REGION
+        abstractType: string
       Amount:
         code: AMOUNT
         abstractType: float
         numClass: additive
+      Booked Date:
+        abstractType: date
+        expression: "{Order Date}"
+      Region Code:
+        abstractType: string
+        expression: "upper({Region})"
 
 dimensions:
   Order Date:
@@ -62,6 +74,33 @@ dimensions:
     column: Order Date
     resultType: date
     timeGrain: month
+
+  Order Year:
+    dataObject: Orders
+    column: Order Date
+    resultType: date
+    timeGrain: year
+
+  Region:
+    dataObject: Orders
+    column: Region
+    resultType: string
+
+  Booked Month:
+    dataObject: Orders
+    column: Booked Date
+    resultType: date
+    timeGrain: month
+
+  Region Code:
+    dataObject: Orders
+    column: Region Code
+    resultType: string
+
+  Order Amount:
+    dataObject: Orders
+    column: Amount
+    resultType: float
 
 measures:
   Revenue:
@@ -113,6 +152,19 @@ metrics:
     measure: Revenue
     timeDimension: Order Date
     grainToDate: year
+
+  # Cumulative over a computed date column
+  Cumulative Booked Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Booked Month
+
+  # Window metric partitioned by a float dimension
+  Revenue Rank by Amount:
+    type: window
+    measure: Revenue
+    windowFunction: rank
+    partitionBy: [Order Amount]
 
   # Cumulative: rolling max
   30-Day Peak Revenue:
@@ -736,3 +788,109 @@ class TestCumulativeSQLGeneration:
         result = pipeline.compile(query, model, "duckdb")
         sql = result.sql.upper()
         assert "OVER" in sql
+
+
+# ── Partitioning by the query's other dimensions (executed on DuckDB) ─────
+
+
+class TestCumulativePartitionsByQueryDimensions:
+    """A cumulative metric accumulates per group of the query's other dimensions."""
+
+    @pytest.fixture
+    def orders(self) -> Iterator[Any]:
+        duckdb = pytest.importorskip("duckdb")
+        connection = duckdb.connect()
+        connection.execute("CREATE SCHEMA PUBLIC")
+        connection.execute(
+            "CREATE TABLE PUBLIC.ORDERS AS SELECT * FROM (VALUES "
+            "('1', DATE '2021-11-05', 'East', 10.0), "
+            "('2', DATE '2021-11-20', 'West', 1.0), "
+            "('3', DATE '2021-12-05', 'East', 20.0), "
+            "('4', DATE '2021-12-10', 'West', 2.0), "
+            "('5', DATE '2022-01-05', 'East', 40.0), "
+            "('6', DATE '2022-01-10', 'West', 4.0)"
+            ") AS t(ORDER_ID, ORDER_DATE, REGION, AMOUNT)"
+        )
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _run(connection: Any, dimensions: list[str], metric: str) -> dict[tuple[str, ...], float]:
+        query = QueryObject(select=QuerySelect(dimensions=dimensions, measures=[metric]))
+        sql = CompilationPipeline().compile(query, _load_model(), "duckdb").sql
+        return {
+            tuple(str(v) for v in row[:-1]): float(row[-1])
+            for row in connection.execute(sql).fetchall()
+        }
+
+    def test_running_total_per_region(self, orders: Any) -> None:
+        rows = self._run(orders, ["Region", "Order Date"], "Cumulative Revenue")
+        assert rows[("East", "2021-11-01")] == 10.0
+        assert rows[("West", "2021-11-01")] == 1.0
+        assert rows[("East", "2021-12-01")] == 30.0
+        assert rows[("West", "2021-12-01")] == 3.0
+        assert rows[("West", "2022-01-01")] == 7.0
+
+    def test_grain_to_date_per_region(self, orders: Any) -> None:
+        rows = self._run(orders, ["Region", "Order Date"], "YTD Revenue")
+        assert rows[("West", "2021-12-01")] == 3.0
+        assert rows[("East", "2022-01-01")] == 40.0
+        assert rows[("West", "2022-01-01")] == 4.0
+
+    def test_same_column_coarser_grain_does_not_partition(self, orders: Any) -> None:
+        # Order Year is a position on the time axis, not a group: the running
+        # total continues across the year boundary.
+        rows = self._run(orders, ["Order Year", "Order Date"], "Cumulative Revenue")
+        assert rows[("2022-01-01", "2022-01-01")] == 77.0
+
+    def test_computed_columns_on_one_object_are_not_one_time_axis(self, orders: Any) -> None:
+        # Every computed column has an empty physical name; Region Code must
+        # still partition a running total over the computed Booked Month.
+        rows = self._run(orders, ["Region Code", "Booked Month"], "Cumulative Booked Revenue")
+        assert rows[("WEST", "2021-11-01")] == 1.0
+        assert rows[("EAST", "2021-12-01")] == 30.0
+        assert rows[("WEST", "2022-01-01")] == 7.0
+
+    def test_partition_by_not_repeated_when_selected(self) -> None:
+        model = _load_model(
+            CUMULATIVE_MODEL_YAML
+            + """
+  Revenue by Region:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Date
+    partitionBy: [Region]
+"""
+        )
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Region", "Order Date"], measures=["Revenue by Region"])
+        )
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert 'PARTITION BY "Region" ORDER BY' in sql
+
+
+class TestFloatPartitionKeys:
+    """BigQuery refuses a FLOAT64 window partition key; it partitions by its text."""
+
+    @staticmethod
+    def _sql(dimensions: list[str], metric: str, dialect: str) -> str:
+        query = QueryObject(select=QuerySelect(dimensions=dimensions, measures=[metric]))
+        return CompilationPipeline().compile(query, _load_model(), dialect).sql
+
+    def test_cumulative_float_group_cast_on_bigquery(self) -> None:
+        sql = self._sql(["Order Amount", "Order Date"], "Cumulative Revenue", "bigquery")
+        assert "PARTITION BY CAST(`Order Amount` AS STRING)" in sql
+
+    def test_window_partition_by_float_cast_on_bigquery(self) -> None:
+        sql = self._sql(["Order Amount", "Region"], "Revenue Rank by Amount", "bigquery")
+        assert "PARTITION BY CAST(`Order Amount` AS STRING)" in sql
+
+    def test_float_key_left_as_is_elsewhere(self) -> None:
+        sql = self._sql(["Order Amount", "Order Date"], "Cumulative Revenue", "duckdb")
+        assert 'PARTITION BY "Order Amount" ORDER BY' in sql
+
+    def test_non_float_key_not_cast_on_bigquery(self) -> None:
+        sql = self._sql(["Region", "Order Date"], "Cumulative Revenue", "bigquery")
+        assert "PARTITION BY `Region` ORDER BY" in sql

@@ -372,6 +372,15 @@ class Dialect(ABC):
             return f"DECIMAL({p}, {s})"
         return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
+    def float_partition_key(self, expr: Expr) -> Expr:
+        """A float dimension as a window ``PARTITION BY`` key.
+
+        Most engines partition by a float as they group by one. BigQuery
+        refuses it ("Partitioning by expressions of type FLOAT64 is not
+        allowed") and overrides this.
+        """
+        return expr
+
     def cast_to_obml_type(
         self, expr: Expr, obml_type: OBMLType, *, source_exact: bool = False
     ) -> Expr:
