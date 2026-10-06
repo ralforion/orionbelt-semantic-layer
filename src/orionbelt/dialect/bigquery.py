@@ -103,6 +103,14 @@ class BigQueryDialect(Dialect):
             return "NUMERIC"
         return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
+    def float_partition_key(self, expr: Expr) -> Expr:
+        """BigQuery cannot partition a window by FLOAT64; partition by its text.
+
+        ``CAST(FLOAT64 AS STRING)`` is the shortest round-trip form, so distinct
+        values stay distinct partitions and equal values share one.
+        """
+        return Cast(expr=expr, type_name="STRING")
+
     def cast_to_obml_type(
         self, expr: Expr, obml_type: OBMLType, *, source_exact: bool = False
     ) -> Expr:

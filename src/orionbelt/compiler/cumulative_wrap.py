@@ -37,7 +37,7 @@ from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
 )
-from orionbelt.compiler.window_wrap import wraps_a_cte
+from orionbelt.compiler.window_wrap import partition_keys, wraps_a_cte
 from orionbelt.models.semantic import CumulativeAggType, GrainToDate, TimeGrain
 
 if TYPE_CHECKING:
@@ -67,6 +67,7 @@ def _build_cumulative_window(
     time_dim_name: str,
     dialect: Dialect | None = None,
     group_dims: list[str] | None = None,
+    model: SemanticModel | None = None,
 ) -> Expr:
     """Build the window function expression for a cumulative metric.
 
@@ -83,7 +84,7 @@ def _build_cumulative_window(
     # accumulates per group (per country, per product, ...), then any
     # metric-level ``partitionBy`` keys that the query did not already add.
     partition_names = list(dict.fromkeys([*(group_dims or []), *measure.cumulative_partition_by]))
-    extra_partitions: list[Expr] = [ColumnRef(name=dim_name) for dim_name in partition_names]
+    extra_partitions = partition_keys(partition_names, model, dialect)
 
     if measure.cumulative_grain_to_date is not None:
         # Grain-to-date: PARTITION BY <truncated time_dim>, unbounded frame.
@@ -145,17 +146,20 @@ def _group_dimensions(resolved: ResolvedQuery, time_dim_name: str) -> list[str]:
     Every selected dimension except the time dimension itself and dimensions
     over the same date column at another grain (``Sales Year`` next to
     ``Sales Month``): those are positions on the time axis, and partitioning
-    by them would restart a running total at each year.
+    by them would restart a running total at each year. "Same column" is the
+    logical column reached the same way: the physical name is empty for every
+    computed column, and one calendar column reached through two join paths
+    (``via``) is two time axes.
     """
     time_dim = next((d for d in resolved.dimensions if d.name == time_dim_name), None)
     groups: list[str] = []
     for dim in resolved.dimensions:
         if dim.name == time_dim_name:
             continue
-        if (
-            time_dim is not None
-            and dim.object_name == time_dim.object_name
-            and dim.source_column == time_dim.source_column
+        if time_dim is not None and (dim.object_name, dim.column_name, dim.via) == (
+            time_dim.object_name,
+            time_dim.column_name,
+            time_dim.via,
         ):
             continue
         groups.append(dim.name)
@@ -296,6 +300,7 @@ def wrap_with_cumulative(
                 m.cumulative_time_dimension,
                 dialect,
                 _group_dimensions(resolved, m.cumulative_time_dimension),
+                model,
             )
             window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
             outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))
