@@ -258,9 +258,19 @@ def make_iban(country: str, n: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+#: Sales and purchases are sampled from these dates.
+SALES_START = date(2021, 1, 1)
+SALES_END = date(2025, 12, 31)
+#: The calendar runs past the sales window, so the dates that follow a sale
+#: have a calendar row too: shipments go out up to 5 days after a sale and
+#: returns come back up to 30 days after it. Without them, late-December
+#: shipments and returns had no month and formed a NULL group.
+CALENDAR_END = date(2026, 1, 31)
+
+
 def gen_calendar() -> list[tuple[date, str, str, str]]:
     rows = []
-    for d in daterange(date(2021, 1, 1), date(2025, 12, 31)):
+    for d in daterange(SALES_START, CALENDAR_END):
         rows.append(
             (
                 d,
@@ -615,7 +625,9 @@ def main() -> None:
     products = gen_products(120, suppliers)
     clients = gen_clients(500)
     balances = gen_account_balances(clients)
-    cal_dates = [r[0] for r in calendar_rows]
+    # Sample from the sales window only. The calendar's extra days must not
+    # become sale dates, which would also change every value drawn after them.
+    cal_dates = [r[0] for r in calendar_rows if r[0] <= SALES_END]
     sales = gen_sales(10_000, clients, products, employees, cal_dates)
     purchases = gen_purchases(3_000, products, employees, suppliers, cal_dates)
     returns = gen_returns(sales, employees, pct=0.05)
