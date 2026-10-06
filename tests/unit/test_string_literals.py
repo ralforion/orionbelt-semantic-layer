@@ -108,3 +108,10 @@ def test_decimal_literal_renders_exactly_in_plain_notation(dialect: str) -> None
     compile_expr = DialectRegistry.get(dialect).compile_expr
     assert compile_expr(Literal(value=Decimal("9007199254740993.00"))) == "9007199254740993.00"
     assert compile_expr(Literal(value=Decimal("1E-10"))) == "0.0000000001"
+
+
+def test_an_oversized_decimal_literal_is_not_rendered() -> None:
+    from decimal import Decimal
+
+    with pytest.raises(ValueError, match="out of range"):
+        DialectRegistry.get("postgres").compile_expr(Literal(value=Decimal("1e100000")))

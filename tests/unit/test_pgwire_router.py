@@ -943,3 +943,22 @@ def test_temp_table_writes_answer_with_postgres_command_tags() -> None:
         assert frames == [(b"C", tag + b"\x00")], (sql, frames)
     # A read still returns its rows.
     assert [t for t, _ in run('SELECT a FROM "#Tableau_tag_copy"')] == [b"T", b"D", b"D", b"C"]
+
+
+def test_reads_and_returning_keep_their_rows() -> None:
+    """Only a plain write turns into a tag (review of #516)."""
+    mgr = SessionManager()
+    mgr.get_or_create_named("commerce").load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+
+    def run(sql: str) -> list[tuple[bytes, bytes]]:
+        return _parse_frames(asyncio.run(router.handle(sql, database="commerce")))
+
+    # A read whose column happens to be called "Count" (crashed the router).
+    frames = run("SELECT 'abc' AS \"Count\"")
+    assert [t for t, _ in frames] == [b"T", b"D", b"C"]
+    assert b"abc" in frames[1][1]
+    run('CREATE TEMPORARY TABLE "#Tableau_ret" ("id" INTEGER)')
+    frames = run('INSERT INTO "#Tableau_ret" VALUES (7) RETURNING id')
+    assert [t for t, _ in frames] == [b"T", b"D", b"C"]
+    assert b"7" in frames[1][1]

@@ -865,8 +865,13 @@ def _decode_binary_param(raw: bytes, oid: int) -> str:
 # psycopg 3 binds dates, datetimes and timedeltas in this format by default.
 _PG_EPOCH_DATE = _dt.date(2000, 1, 1)
 _PG_EPOCH = _dt.datetime(2000, 1, 1)
-# int32 / int64 extremes are Postgres's -infinity / infinity.
-_INFINITE = {2**31 - 1, -(2**31), 2**63 - 1, -(2**63)}
+# Postgres's -infinity / infinity: the int32 extremes for a date, the int64
+# extremes for a timestamp (int32 extremes are ordinary timestamps near 2000).
+_INFINITE_DATE = {2**31 - 1, -(2**31)}
+_INFINITE_TIMESTAMP = {2**63 - 1, -(2**63)}
+#: Widest NUMERIC parameter accepted, in decimal digits either side of the
+#: point; the OBSQL translator refuses wider literals as well.
+_MAX_NUMERIC_DIGITS = 1000
 
 
 def _fixed(raw: bytes, size: int, name: str) -> None:
@@ -874,8 +879,8 @@ def _fixed(raw: bytes, size: int, name: str) -> None:
         raise _BadParameterError(f"{name} binary param must be {size} bytes, got {len(raw)}")
 
 
-def _finite(value: int, name: str) -> int:
-    if value in _INFINITE:
+def _finite(value: int, name: str, sentinels: set[int]) -> int:
+    if value in sentinels:
         raise _BadParameterError(f"Infinite {name} parameter not supported")
     return value
 
@@ -884,7 +889,7 @@ def _decode_binary_date(raw: bytes) -> str:
     _fixed(raw, 4, "DATE")
     (days,) = struct.unpack("!i", raw)
     try:
-        value = _PG_EPOCH_DATE + _dt.timedelta(days=_finite(days, "date"))
+        value = _PG_EPOCH_DATE + _dt.timedelta(days=_finite(days, "date", _INFINITE_DATE))
     except OverflowError:
         raise _BadParameterError("DATE parameter out of range") from None
     return f"'{value.isoformat()}'"
@@ -894,7 +899,9 @@ def _timestamp(raw: bytes, name: str) -> _dt.datetime:
     _fixed(raw, 8, name)
     (micros,) = struct.unpack("!q", raw)
     try:
-        return _PG_EPOCH + _dt.timedelta(microseconds=_finite(micros, name.lower()))
+        return _PG_EPOCH + _dt.timedelta(
+            microseconds=_finite(micros, name.lower(), _INFINITE_TIMESTAMP)
+        )
     except OverflowError:
         raise _BadParameterError(f"{name} parameter out of range") from None
 
@@ -953,6 +960,8 @@ def _decode_binary_numeric(raw: bytes) -> str:
         raise _BadParameterError("Non-finite NUMERIC parameter not allowed")
     if ndigits < 0 or len(raw) != 8 + 2 * ndigits:
         raise _BadParameterError("NUMERIC binary param has a malformed digit count")
+    if 4 * abs(weight) > _MAX_NUMERIC_DIGITS or dscale > _MAX_NUMERIC_DIGITS:
+        raise _BadParameterError("NUMERIC parameter out of range")
     digits = struct.unpack(f"!{ndigits}H", raw[8:])
     if any(digit > 9999 for digit in digits):
         raise _BadParameterError("NUMERIC binary param has an invalid digit")

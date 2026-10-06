@@ -168,6 +168,10 @@ def _snowflake_path(path: str) -> str:
     return out
 
 
+#: Widest numeric literal rendered, in digit positions either side of the point.
+_MAX_LITERAL_DIGITS = 1000
+
+
 class UnsupportedAggregationError(Exception):
     """Raised when a dialect does not support a specific aggregation function."""
 
@@ -1928,7 +1932,15 @@ class Dialect(ABC):
                 return self.quote_string_literal(v)
             case Literal(value=v) if isinstance(v, Decimal):
                 # Plain notation: str() would write 1E-10, which some engines
-                # read as a double.
+                # read as a double. Bounded first: plain notation of 1e1000000000
+                # is a gigabyte (the OBSQL translator already refuses it).
+                exponent = v.as_tuple().exponent
+                if (
+                    not isinstance(exponent, int)
+                    or abs(v.adjusted()) > _MAX_LITERAL_DIGITS
+                    or exponent < -_MAX_LITERAL_DIGITS
+                ):
+                    raise ValueError(f"Numeric literal out of range: {v}")
                 return format(v, "f")
             case Literal(value=v):
                 return str(v)

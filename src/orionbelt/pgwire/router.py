@@ -1365,23 +1365,33 @@ def _command_tag(sql: str, result: ExecutionResult) -> str | None:
         tokens = [t.token_type for t in Postgres.tokenizer_class().tokenize(sql)]
     except Exception:  # noqa: BLE001 — not a statement we can tag
         return None
-    if not tokens:
+    if not tokens or TokenType.RETURNING in tokens:
+        # RETURNING hands rows back, as in Postgres.
         return None
-    count = 0
-    if [c.name for c in result.columns] == ["Count"] and result.rows:
-        count = int(result.rows[0][0] or 0)
     verb = tokens[0]
     if verb == TokenType.SELECT:
-        return f"SELECT {count}" if TokenType.INTO in tokens else None
+        return f"SELECT {_affected(result)}" if TokenType.INTO in tokens else None
     if verb == TokenType.INSERT:
-        return f"INSERT 0 {count}"
+        return f"INSERT 0 {_affected(result)}"
     if verb == TokenType.CREATE:
         # CREATE TABLE ... AS SELECT reports the rows it wrote, as SELECT INTO.
-        return f"SELECT {count}" if TokenType.ALIAS in tokens else "CREATE TABLE"
+        if TokenType.ALIAS in tokens:
+            return f"SELECT {_affected(result)}"
+        return "CREATE TABLE"
     if verb == TokenType.DROP:
         return "DROP TABLE"
     # UPDATE / DELETE / TRUNCATE never get here: catalog_rejection refuses them.
     return None
+
+
+def _affected(result: ExecutionResult) -> int:
+    """The row count DuckDB reports for a write: a single integer ``Count``."""
+
+    if [c.name for c in result.columns] == ["Count"] and result.rows:
+        value = result.rows[0][0]
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return 0
 
 
 def _canned_in_requested_formats(reply: bytes, result_formats: tuple[int, ...]) -> bytes:

@@ -1636,7 +1636,7 @@ def _cast_keeps_value(inner: exp.Expression, target: exp.DataType) -> bool:
     number = inner.this if isinstance(inner, exp.Neg) else inner
     if isinstance(number, exp.Literal) and number.is_number:
         value = decimal.Decimal(number.this)
-        value = -value if isinstance(inner, exp.Neg) else value
+        value = value.copy_negate() if isinstance(inner, exp.Neg) else value
         return _number_fits(value, target, params)
     if isinstance(inner, exp.Literal) and inner.is_string:
         return _string_fits(inner.this, target, params)
@@ -1717,6 +1717,21 @@ _TEMPORAL_PARSERS: dict[Any, Callable[[str], object]] = {
 }
 
 
+#: A numeric literal may span at most this many digit positions on either side
+#: of the decimal point. It is written out in plain notation, so ``1e1000000000``
+#: would otherwise become a gigabyte of SQL; no engine holds such a value.
+_MAX_LITERAL_DIGITS = 1000
+
+
+def _literal_in_range(value: Decimal) -> bool:
+    exponent = value.as_tuple().exponent
+    return (
+        isinstance(exponent, int)
+        and abs(value.adjusted()) <= _MAX_LITERAL_DIGITS
+        and exponent >= -_MAX_LITERAL_DIGITS
+    )
+
+
 def _literal_value(expr: exp.Expression) -> str | int | float | Decimal | bool | None:
     """Extract a Python scalar from a sqlglot literal node, or None for non-literals.
 
@@ -1729,6 +1744,15 @@ def _literal_value(expr: exp.Expression) -> str | int | float | Decimal | bool |
             return int(expr.this)
         if expr.is_number:
             exact = Decimal(expr.this)
+            if not _literal_in_range(exact):
+                raise SQLTranslationError(
+                    [
+                        SemanticError(
+                            code="UNSUPPORTED_SQL_FEATURE",
+                            message=f"Numeric literal `{expr.this}` is out of range.",
+                        )
+                    ]
+                )
             approx = float(exact)
             return approx if Decimal(repr(approx)) == exact else exact
         return str(expr.this)
@@ -1738,7 +1762,10 @@ def _literal_value(expr: exp.Expression) -> str | int | float | Decimal | bool |
         return None
     if isinstance(expr, exp.Neg) and isinstance(expr.this, exp.Literal):
         val = _literal_value(expr.this)
-        if isinstance(val, int | float | Decimal) and not isinstance(val, bool):
+        if isinstance(val, Decimal):
+            # Context-free: unary minus would round to the context's 28 digits.
+            return val.copy_negate()
+        if isinstance(val, int | float) and not isinstance(val, bool):
             return -val
     return None
 

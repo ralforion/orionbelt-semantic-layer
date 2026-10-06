@@ -317,6 +317,26 @@ def test_non_finite_binary_parameters_are_refused(oid: int, pg_hex: str) -> None
         _decode_binary_param(bytes.fromhex(pg_hex), oid)
 
 
+@pytest.mark.parametrize(
+    ("micros", "literal"),
+    [
+        # int32 extremes are ordinary timestamps near 2000 (review of #516).
+        (2**31 - 1, "'2000-01-01 00:35:47.483647'"),
+        (-(2**31), "'1999-12-31 23:24:12.516352'"),
+    ],
+)
+def test_int32_extreme_timestamps_are_not_infinity(micros: int, literal: str) -> None:
+    assert _decode_binary_param(struct.pack("!q", micros), 1114) == literal
+
+
+def test_infinite_timestamp_and_oversized_numeric_are_refused() -> None:
+    with pytest.raises(_BadParameterError, match="Infinite"):
+        _decode_binary_param(struct.pack("!q", 2**63 - 1), 1114)
+    # weight 300 (10000 ** 300, 1200 digits): past the accepted width.
+    with pytest.raises(_BadParameterError, match="out of range"):
+        _decode_binary_param(struct.pack("!hhHHH", 1, 300, 0, 0, 1), 1700)
+
+
 def test_describe_lets_the_context_type_an_unspecified_parameter() -> None:
     """pgjdbc binds a date unspecified: ``DATE '...' > $1`` must still describe."""
     text_null = "SELECT DATE '2024-01-02' > CAST(NULL AS VARCHAR)"
