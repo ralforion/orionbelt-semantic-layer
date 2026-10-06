@@ -14,7 +14,7 @@ keywords = ["duckdb", "semantic-layer", "obml", "db-api", "orionbelt"]
 requires-python = ">=3.12"
 dependencies = [
     "ob-driver-core>=0.1",
-    "duckdb>=1.0",
+    "duckdb>=1.4",
 ]
 
 [project.optional-dependencies]
