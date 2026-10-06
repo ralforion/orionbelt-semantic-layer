@@ -223,6 +223,9 @@ class SemanticRouter:
                     code=SQLSTATE_SYNTAX_ERROR,
                     message=f"catalog query failed: {exc}",
                 )
+            tag = _command_tag(sql, result)
+            if tag is not None:
+                return protocol.build_command_complete(tag)
             return _encode_result(result, result_formats)
 
         try:
@@ -1343,6 +1346,42 @@ def _encode_result(
         out += protocol.build_data_row(encoded)
     out += protocol.build_command_complete(f"SELECT {len(result.rows)}")
     return out
+
+
+def _command_tag(sql: str, result: ExecutionResult) -> str | None:
+    """Postgres's CommandComplete tag for a write or DDL statement, else None.
+
+    The embedded DuckDB answers ``INSERT`` / ``CREATE TABLE ... AS`` /
+    ``SELECT ... INTO`` with a one-row ``Count`` result (``Success`` for
+    ``DROP``). Postgres sends no rows for these, only the tag, and a client
+    that described the statement (``NoData``) rejects rows it was not told
+    about: pgjdbc's ``SELECT ... INTO "#temp"`` with ``prepareThreshold=-1``.
+    """
+
+    from sqlglot import TokenType
+    from sqlglot.dialects.postgres import Postgres
+
+    try:
+        tokens = [t.token_type for t in Postgres.tokenizer_class().tokenize(sql)]
+    except Exception:  # noqa: BLE001 — not a statement we can tag
+        return None
+    if not tokens:
+        return None
+    count = 0
+    if [c.name for c in result.columns] == ["Count"] and result.rows:
+        count = int(result.rows[0][0] or 0)
+    verb = tokens[0]
+    if verb == TokenType.SELECT:
+        return f"SELECT {count}" if TokenType.INTO in tokens else None
+    if verb == TokenType.INSERT:
+        return f"INSERT 0 {count}"
+    if verb == TokenType.CREATE:
+        # CREATE TABLE ... AS SELECT reports the rows it wrote, as SELECT INTO.
+        return f"SELECT {count}" if TokenType.ALIAS in tokens else "CREATE TABLE"
+    if verb == TokenType.DROP:
+        return "DROP TABLE"
+    # UPDATE / DELETE / TRUNCATE never get here: catalog_rejection refuses them.
+    return None
 
 
 def _canned_in_requested_formats(reply: bytes, result_formats: tuple[int, ...]) -> bytes:

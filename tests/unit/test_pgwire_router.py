@@ -913,3 +913,33 @@ def test_federation_flatten_keeps_the_null_placement(order: str, nulls: str) -> 
     q = translate_sql_to_query(normalized, model)
     assert q.order_by[0].nulls is not None
     assert q.order_by[0].nulls.value == nulls
+
+
+def test_temp_table_writes_answer_with_postgres_command_tags() -> None:
+    """No rows for writes: a client that described them (NoData) rejects rows.
+
+    pgjdbc's ``SELECT ... INTO "#temp"`` with ``prepareThreshold=-1`` failed
+    with "Received resultset tuples, but no field structure for them".
+    """
+    mgr = SessionManager()
+    mgr.get_or_create_named("commerce").load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+
+    def run(sql: str) -> list[tuple[bytes, bytes]]:
+        return _parse_frames(asyncio.run(router.handle(sql, database="commerce")))
+
+    steps = [
+        ('CREATE TEMPORARY TABLE "#Tableau_tag" ("a" INTEGER)', b"CREATE TABLE"),
+        ('INSERT INTO "#Tableau_tag" VALUES (1), (2)', b"INSERT 0 2"),
+        (
+            'SELECT a INTO TEMP TABLE "#Tableau_tag_copy" FROM "#Tableau_tag" WHERE a > 0',
+            b"SELECT 2",
+        ),
+        ('CREATE TEMPORARY TABLE "#Tableau_tag_as" AS SELECT 1 AS a', b"SELECT 1"),
+        ('DROP TABLE "#Tableau_tag"', b"DROP TABLE"),
+    ]
+    for sql, tag in steps:
+        frames = run(sql)
+        assert frames == [(b"C", tag + b"\x00")], (sql, frames)
+    # A read still returns its rows.
+    assert [t for t, _ in run('SELECT a FROM "#Tableau_tag_copy"')] == [b"T", b"D", b"D", b"C"]
