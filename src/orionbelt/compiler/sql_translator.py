@@ -159,7 +159,7 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
                 )
             ]
         ) from None
-    ast = ast.transform(_unnegate_is).transform(_unwrap_literal_cast)
+    ast = ast.transform(_unnegate).transform(_unwrap_literal_cast)
 
     if isinstance(ast, exp.Union):
         raise SQLTranslationError(
@@ -1055,9 +1055,11 @@ def _atom_to_raw_filter(
             return f"{node.table}.{node.name}"
         return None
 
+    predicate, negated = _split_not(atom)
+
     # IN / NOT IN
-    if isinstance(atom, exp.In):
-        field = _qualified_field(atom.this)
+    if isinstance(predicate, exp.In):
+        field = _qualified_field(predicate.this)
         if field is None:
             errors.append(
                 SemanticError(
@@ -1066,7 +1068,7 @@ def _atom_to_raw_filter(
                 )
             )
             return None
-        values = [_literal_value(e) for e in atom.expressions]
+        values = [_literal_value(e) for e in predicate.expressions]
         if any(v is None for v in values):
             errors.append(
                 SemanticError(
@@ -1075,7 +1077,24 @@ def _atom_to_raw_filter(
                 )
             )
             return None
-        return QueryFilter(field=field, op=FilterOperator.IN_LIST, value=values)
+        in_op = FilterOperator.NOT_IN_LIST if negated else FilterOperator.IN_LIST
+        return QueryFilter(field=field, op=in_op, value=values)
+
+    if isinstance(predicate, exp.Between):
+        field = _qualified_field(predicate.this)
+        if field is None:
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"Unsupported raw-mode predicate `{atom.sql()}`.",
+                )
+            )
+            return None
+        bounds = _between_bounds(predicate, errors)
+        if bounds is None:
+            return None
+        between_op = FilterOperator.NOT_BETWEEN if negated else FilterOperator.BETWEEN
+        return QueryFilter(field=field, op=between_op, value=bounds)
 
     if isinstance(atom, exp.Is):
         field = _qualified_field(atom.this)
@@ -1089,9 +1108,12 @@ def _atom_to_raw_filter(
             return None
         return QueryFilter(field=field, op=FilterOperator.IS_NULL)
 
-    if isinstance(atom, exp.Like | exp.ILike):
-        field = _qualified_field(atom.this)
-        pattern = _literal_value(atom.expression)
+    if isinstance(predicate, exp.Like | exp.ILike):
+        like_op = _like_operator(predicate, negated, errors)
+        if like_op is None:
+            return None
+        field = _qualified_field(predicate.this)
+        pattern = _literal_value(predicate.expression)
         if field is None or pattern is None:
             errors.append(
                 SemanticError(
@@ -1100,7 +1122,7 @@ def _atom_to_raw_filter(
                 )
             )
             return None
-        return QueryFilter(field=field, op=FilterOperator.LIKE, value=pattern)
+        return QueryFilter(field=field, op=like_op, value=pattern)
 
     for op_type, op_value in _OP_MAP.items():
         if isinstance(atom, op_type):
@@ -1249,9 +1271,11 @@ def _atom_to_query_filter(
             exists_node, negated=negated, exists_subject=exists_subject, errors=errors
         )
 
+    predicate, negated = _split_not(atom)
+
     # IN / NOT IN
-    if isinstance(atom, exp.In):
-        name = _column_name(atom.this)
+    if isinstance(predicate, exp.In):
+        name = _column_name(predicate.this)
         if name is None:
             errors.append(
                 SemanticError(
@@ -1270,8 +1294,8 @@ def _atom_to_query_filter(
                 )
             )
             return None
-        op = FilterOperator.IN_LIST
-        values = [_literal_value(e) for e in atom.expressions]
+        op = FilterOperator.NOT_IN_LIST if negated else FilterOperator.IN_LIST
+        values = [_literal_value(e) for e in predicate.expressions]
         if any(v is None for v in values):
             errors.append(
                 SemanticError(
@@ -1337,10 +1361,43 @@ def _atom_to_query_filter(
             kind == "measure",
         )
 
+    # BETWEEN / NOT BETWEEN
+    if isinstance(predicate, exp.Between):
+        name = _column_name(predicate.this)
+        if name is None:
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"Unsupported left-hand side in `{atom.sql()}`.",
+                )
+            )
+            return None
+        bounds = _between_bounds(predicate, errors)
+        if bounds is None:
+            return None
+        kind = classify(name)
+        if kind is None:
+            errors.append(
+                SemanticError(
+                    code="UNKNOWN_FILTER_FIELD",
+                    message=f"`{name}` is not a known field.",
+                    context={"field": name},
+                )
+            )
+            return None
+        between_op = FilterOperator.NOT_BETWEEN if negated else FilterOperator.BETWEEN
+        return (
+            QueryFilter(field=canonical(name), op=between_op, value=bounds),
+            kind == "measure",
+        )
+
     # LIKE / NOT LIKE
-    if isinstance(atom, exp.Like | exp.ILike):
-        name = _column_name(atom.this)
-        pattern = _literal_value(atom.expression)
+    if isinstance(predicate, exp.Like | exp.ILike):
+        like_op = _like_operator(predicate, negated, errors)
+        if like_op is None:
+            return None
+        name = _column_name(predicate.this)
+        pattern = _literal_value(predicate.expression)
         if name is None or pattern is None:
             errors.append(
                 SemanticError(
@@ -1360,7 +1417,7 @@ def _atom_to_query_filter(
             )
             return None
         return (
-            QueryFilter(field=canonical(name), op=FilterOperator.LIKE, value=pattern),
+            QueryFilter(field=canonical(name), op=like_op, value=pattern),
             kind == "measure",
         )
 
@@ -1520,8 +1577,9 @@ def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> Que
             )
         )
         return None
-    if isinstance(atom, exp.In):
-        name = _column_name(atom.this)
+    predicate, negated = _split_not(atom)
+    if isinstance(predicate, exp.In):
+        name = _column_name(predicate.this)
         if name is None:
             errors.append(
                 SemanticError(
@@ -1530,7 +1588,7 @@ def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> Que
                 )
             )
             return None
-        values = [_literal_value(e) for e in atom.expressions]
+        values = [_literal_value(e) for e in predicate.expressions]
         if any(v is None for v in values):
             errors.append(
                 SemanticError(
@@ -1539,7 +1597,23 @@ def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> Que
                 )
             )
             return None
-        return QueryFilter(field=name, op=FilterOperator.IN_LIST, value=values)
+        in_op = FilterOperator.NOT_IN_LIST if negated else FilterOperator.IN_LIST
+        return QueryFilter(field=name, op=in_op, value=values)
+    if isinstance(predicate, exp.Between):
+        name = _column_name(predicate.this)
+        if name is None:
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"Unsupported left-hand side in subquery `{atom.sql()}`.",
+                )
+            )
+            return None
+        bounds = _between_bounds(predicate, errors)
+        if bounds is None:
+            return None
+        between_op = FilterOperator.NOT_BETWEEN if negated else FilterOperator.BETWEEN
+        return QueryFilter(field=name, op=between_op, value=bounds)
     if isinstance(atom, exp.Is):
         name = _column_name(atom.this)
         if name is None or not isinstance(atom.expression, exp.Null):
@@ -1563,9 +1637,12 @@ def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> Que
             )
             return None
         return QueryFilter(field=name, op=FilterOperator.IS_NOT_NULL)
-    if isinstance(atom, exp.Like | exp.ILike):
-        name = _column_name(atom.this)
-        pattern = _literal_value(atom.expression)
+    if isinstance(predicate, exp.Like | exp.ILike):
+        like_op = _like_operator(predicate, negated, errors)
+        if like_op is None:
+            return None
+        name = _column_name(predicate.this)
+        pattern = _literal_value(predicate.expression)
         if name is None or pattern is None:
             errors.append(
                 SemanticError(
@@ -1574,7 +1651,7 @@ def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> Que
                 )
             )
             return None
-        return QueryFilter(field=name, op=FilterOperator.LIKE, value=pattern)
+        return QueryFilter(field=name, op=like_op, value=pattern)
     for op_type, op_value in _OP_MAP.items():
         if isinstance(atom, op_type):
             name = _column_name(atom.this)
@@ -1866,17 +1943,89 @@ def _dir(desc: bool) -> SortDirection:
     return SortDirection.DESC if desc else SortDirection.ASC
 
 
-def _unnegate_is(node: exp.Expression) -> exp.Expression:
-    """``x IS NOT NULL`` as ``NOT (x IS NULL)``, the shape the predicates expect.
+def _unnegate(node: exp.Expression) -> exp.Expression:
+    """``x IS NOT NULL`` / ``x NOT LIKE p`` as ``NOT (...)``, the shape the predicates expect.
 
     The Postgres reader (``_DIALECT``) builds ``Is(..., negate=True)`` where
-    the generic one built ``Not(Is(...))``; the IS handlers only read the
-    latter and would take the negated form for ``IS NULL``.
+    the generic one built ``Not(Is(...))``, and both build
+    ``Like(..., negate=True)``. The handlers read only the ``Not`` form and
+    took a flagged node for its positive: ``NOT LIKE 'M%'`` answered the
+    names that start with M.
     """
-
-    if isinstance(node, exp.Is) and node.args.get("negate"):
-        return exp.Not(this=exp.Is(this=node.this, expression=node.expression))
+    if isinstance(node, exp.Is | exp.Like | exp.ILike) and node.args.get("negate"):
+        plain = node.copy()
+        plain.set("negate", None)
+        return exp.Not(this=plain)
     return node
+
+
+# Predicates with a negated filter operator: a ``NOT`` in front is translated.
+_NEGATABLE = (exp.In, exp.Between, exp.Like, exp.ILike)
+
+
+def _split_not(atom: exp.Expr) -> tuple[exp.Expr, bool]:
+    """``NOT <IN | BETWEEN | LIKE>``, parentheses allowed, as ``(predicate, negated)``.
+
+    Each ``NOT`` flips the sign, so ``NOT (x NOT LIKE p)`` reads as ``x LIKE p``.
+    """
+    inner: exp.Expr = atom
+    negated = False
+    while isinstance(inner, exp.Not):
+        inner = inner.this.unnest()
+        negated = not negated
+    if isinstance(inner, _NEGATABLE):
+        return inner, negated
+    return atom, False
+
+
+def _as_written(node: exp.Expression) -> str:
+    """*node* in the reader's dialect, so an error quotes the predicate as the user wrote it."""
+    return node.sql(dialect=_DIALECT)
+
+
+def _like_operator(
+    predicate: exp.Like | exp.ILike, negated: bool, errors: list[SemanticError]
+) -> FilterOperator | None:
+    """``like`` / ``notlike`` for a LIKE predicate; ILIKE is refused.
+
+    The filter operators match case-sensitively, so ILIKE has no translation:
+    answered as LIKE, ``ILIKE 'mex%'`` found no ``Mexico``.
+    """
+    if isinstance(predicate, exp.ILike):
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message=(
+                    "ILIKE is not supported: OBSQL filters match case-sensitively. "
+                    f"Use LIKE with the exact case - got `{_as_written(predicate)}`."
+                ),
+            )
+        )
+        return None
+    return FilterOperator.NOT_LIKE if negated else FilterOperator.LIKE
+
+
+def _between_bounds(predicate: exp.Between, errors: list[SemanticError]) -> list[Any] | None:
+    """``[low, high]`` of ``BETWEEN low AND high``; both bounds must be literals."""
+    if predicate.args.get("symmetric"):
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message=f"BETWEEN SYMMETRIC is not supported - got `{_as_written(predicate)}`.",
+            )
+        )
+        return None
+    low = _literal_value(predicate.args["low"])
+    high = _literal_value(predicate.args["high"])
+    if low is None or high is None:
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message=f"BETWEEN bounds must be literals - got `{_as_written(predicate)}`.",
+            )
+        )
+        return None
+    return [low, high]
 
 
 def _nulls_position(ob: exp.Expression) -> NullsPosition | None:

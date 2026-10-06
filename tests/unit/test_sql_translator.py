@@ -126,6 +126,87 @@ def test_like_predicate(model: SemanticModel) -> None:
     assert f.value == "U%"
 
 
+_COUNTRY = '"Customer Country"'
+
+
+@pytest.mark.parametrize(
+    ("predicate", "op", "value"),
+    [
+        # sqlglot builds NOT LIKE as Like(negate=True); it was read as LIKE.
+        (f"{_COUNTRY} NOT LIKE 'U%'", FilterOperator.NOT_LIKE, "U%"),
+        (f"NOT ({_COUNTRY} LIKE 'U%')", FilterOperator.NOT_LIKE, "U%"),
+        (f"NOT ({_COUNTRY} NOT LIKE 'U%')", FilterOperator.LIKE, "U%"),
+        (f"{_COUNTRY} NOT IN ('US', 'CA')", FilterOperator.NOT_IN_LIST, ["US", "CA"]),
+        (f"{_COUNTRY} BETWEEN 'A' AND 'M'", FilterOperator.BETWEEN, ["A", "M"]),
+        (f"{_COUNTRY} NOT BETWEEN 'A' AND 'M'", FilterOperator.NOT_BETWEEN, ["A", "M"]),
+        (f"NOT ({_COUNTRY} BETWEEN 'A' AND 'M')", FilterOperator.NOT_BETWEEN, ["A", "M"]),
+    ],
+)
+def test_negated_and_range_predicates(
+    model: SemanticModel, predicate: str, op: FilterOperator, value: object
+) -> None:
+    q = translate_sql_to_query(
+        f'SELECT {_COUNTRY}, "Total Revenue" FROM m WHERE {predicate}', model
+    )
+    assert [(f.field, f.op, f.value) for f in q.where] == [("Customer Country", op, value)]
+
+
+def test_between_on_a_measure_routes_to_having(model: SemanticModel) -> None:
+    q = translate_sql_to_query(
+        f'SELECT {_COUNTRY}, "Total Revenue" FROM m WHERE "Total Revenue" BETWEEN 10 AND 20',
+        model,
+    )
+    assert q.where == []
+    assert [(f.field, f.op, f.value) for f in q.having] == [
+        ("Total Revenue", FilterOperator.BETWEEN, [10, 20])
+    ]
+
+
+@pytest.mark.parametrize(
+    ("predicate", "message"),
+    [
+        (f"{_COUNTRY} ILIKE 'u%'", "ILIKE is not supported"),
+        (f"{_COUNTRY} NOT ILIKE 'u%'", "ILIKE is not supported"),
+        (f"{_COUNTRY} BETWEEN SYMMETRIC 'M' AND 'A'", "BETWEEN SYMMETRIC 'M' AND 'A'"),
+        (f"{_COUNTRY} BETWEEN {_COUNTRY} AND 'Z'", "BETWEEN bounds must be literals"),
+    ],
+)
+def test_predicates_without_a_faithful_translation_are_refused(
+    model: SemanticModel, predicate: str, message: str
+) -> None:
+    with pytest.raises(SQLTranslationError, match=message):
+        translate_sql_to_query(
+            f'SELECT {_COUNTRY}, "Total Revenue" FROM m WHERE {predicate}', model
+        )
+
+
+def test_not_like_compiles_to_not_like(model: SemanticModel) -> None:
+    from orionbelt.compiler.pipeline import CompilationPipeline
+
+    q = translate_sql_to_query(
+        f"SELECT {_COUNTRY}, \"Total Revenue\" FROM m WHERE {_COUNTRY} NOT LIKE 'U%'", model
+    )
+    assert "NOT LIKE 'U%'" in CompilationPipeline().compile(q, model, "duckdb").sql
+
+
+@pytest.mark.parametrize(
+    ("predicate", "op", "value"),
+    [
+        ('"Customers"."Country" NOT LIKE \'U%\'', FilterOperator.NOT_LIKE, "U%"),
+        ('"Customers"."Country" NOT IN (\'US\')', FilterOperator.NOT_IN_LIST, ["US"]),
+        ("\"Customers\".\"Country\" BETWEEN 'A' AND 'M'", FilterOperator.BETWEEN, ["A", "M"]),
+    ],
+)
+def test_raw_mode_negated_and_range_predicates(
+    model: SemanticModel, predicate: str, op: FilterOperator, value: object
+) -> None:
+    q = translate_sql_to_query(
+        f'SELECT "Customers"."Customer ID", "Customers"."Country" FROM m WHERE {predicate}',
+        model,
+    )
+    assert [(f.field, f.op, f.value) for f in q.where] == [("Customers.Country", op, value)]
+
+
 def test_order_by_alias(model: SemanticModel) -> None:
     q = translate_sql_to_query(
         'SELECT "Customer Country", "Total Revenue" FROM m ORDER BY "Total Revenue" DESC',

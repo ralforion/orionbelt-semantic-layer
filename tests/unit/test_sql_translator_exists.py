@@ -222,3 +222,34 @@ def test_nested_exists_in_subquery_errors(model: SemanticModel) -> None:
             model,
         )
     assert "Nested EXISTS" in str(exc.value) or "EXISTS" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("predicate", "op", "value"),
+    [
+        ("\"Status\" NOT LIKE 'sh%'", FilterOperator.NOT_LIKE, "sh%"),
+        ("\"Status\" NOT IN ('shipped')", FilterOperator.NOT_IN_LIST, ["shipped"]),
+        ("\"Status\" BETWEEN 'a' AND 'm'", FilterOperator.BETWEEN, ["a", "m"]),
+        ("\"Status\" NOT BETWEEN 'a' AND 'm'", FilterOperator.NOT_BETWEEN, ["a", "m"]),
+    ],
+)
+def test_subquery_negated_and_range_predicates(
+    model: SemanticModel, predicate: str, op: FilterOperator, value: object
+) -> None:
+    q = translate_sql_to_query(
+        'SELECT "Order ID", "Total Revenue" FROM m '
+        f'WHERE EXISTS (SELECT 1 FROM "OrderItems" WHERE {predicate})',
+        model,
+    )
+    sub = q.where[0].subquery
+    assert sub is not None
+    assert [(f.field, f.op, f.value) for f in sub.filter] == [("Status", op, value)]
+
+
+def test_subquery_ilike_refused(model: SemanticModel) -> None:
+    with pytest.raises(SQLTranslationError, match="ILIKE is not supported"):
+        translate_sql_to_query(
+            'SELECT "Order ID", "Total Revenue" FROM m '
+            'WHERE EXISTS (SELECT 1 FROM "OrderItems" WHERE "Status" ILIKE \'s%\')',
+            model,
+        )
