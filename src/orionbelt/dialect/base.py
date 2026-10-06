@@ -6,6 +6,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from orionbelt.ast.nodes import (
     AliasedExpr,
@@ -165,6 +166,10 @@ def _snowflake_path(path: str) -> str:
         else:
             out += value if not out else f".{value}"
     return out
+
+
+#: Widest numeric literal rendered, in digit positions either side of the point.
+_MAX_LITERAL_DIGITS = 1000
 
 
 class UnsupportedAggregationError(Exception):
@@ -1694,7 +1699,11 @@ class Dialect(ABC):
         """
         if right is not None and isinstance(right, Literal):
             value = right.value
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value != 0:
+            if (
+                isinstance(value, (int, float, Decimal))
+                and not isinstance(value, bool)
+                and value != 0
+            ):
                 return right_sql
         return f"NULLIF({right_sql}, 0)"
 
@@ -1921,6 +1930,18 @@ class Dialect(ABC):
                 return "FALSE"
             case Literal(value=v) if isinstance(v, str):
                 return self.quote_string_literal(v)
+            case Literal(value=v) if isinstance(v, Decimal):
+                # Plain notation: str() would write 1E-10, which some engines
+                # read as a double. Bounded first: plain notation of 1e1000000000
+                # is a gigabyte (the OBSQL translator already refuses it).
+                exponent = v.as_tuple().exponent
+                if (
+                    not isinstance(exponent, int)
+                    or abs(v.adjusted()) > _MAX_LITERAL_DIGITS
+                    or exponent < -_MAX_LITERAL_DIGITS
+                ):
+                    raise ValueError(f"Numeric literal out of range: {v}")
+                return format(v, "f")
             case Literal(value=v):
                 return str(v)
             case Star(table=None):

@@ -13,6 +13,7 @@ from orionbelt.pgwire import protocol
 from orionbelt.pgwire.extended import (
     ExtendedSession,
     _BadParameterError,
+    _decode_binary_param,
     _split_simple_reply,
     substitute_parameters,
 )
@@ -127,7 +128,8 @@ def test_substitute_numeric_text_canonicalizes() -> None:
         == "x CAST(3.14 AS DECIMAL(3, 2))"
     )
     assert (
-        substitute_parameters("x $1", (b"1e3",), [0], param_oids=(701,)) == "x CAST(1E+3 AS DOUBLE)"
+        substitute_parameters("x $1", (b"1e3",), [0], param_oids=(701,))
+        == "x CAST(1000.0 AS DOUBLE)"
     )
     # Fractional edge forms Postgres accepts.
     assert (
@@ -218,6 +220,16 @@ def test_float4_out_of_range_is_a_parameter_error() -> None:
         substitute_parameters("x $1", (b"1e39",), [0], param_oids=(700,))
 
 
+def test_float8_binds_as_the_double_it_denotes() -> None:
+    """Postgres rounds a float8 parameter to a double; so does Bind (review of #516)."""
+    assert (
+        substitute_parameters("x $1", (b"9007199254740993",), [0], param_oids=(701,))
+        == "x CAST(9007199254740992.0 AS DOUBLE)"
+    )
+    with pytest.raises(_BadParameterError, match="out of range"):
+        substitute_parameters("x $1", (b"1e400",), [0], param_oids=(701,))
+
+
 def test_uuid_binds_in_canonical_form_and_refuses_garbage() -> None:
     assert (
         substitute_parameters(
@@ -278,6 +290,71 @@ def test_substitute_decodes_binary_bool() -> None:
 def test_substitute_decodes_binary_text() -> None:
     sql = substitute_parameters("SELECT $1", (b"hi'there",), [1], param_oids=(25,))
     assert sql == "SELECT CAST('hi''there' AS VARCHAR)"
+
+
+# Postgres 16 ``*_send`` output: psycopg 3 binds dates, datetimes, timedeltas,
+# decimals and UUIDs in these binary formats by default; pgjdbc binds a
+# BigDecimal as binary NUMERIC on a server-prepared statement.
+@pytest.mark.parametrize(
+    ("oid", "pg_hex", "literal"),
+    [
+        (1082, "00002279", "'2024-02-29'"),
+        (1083, "00000008cd15db20", "'10:30:00.500000'"),
+        (1114, "0003001dc047efc0", "'2026-10-05 21:58:30.123456'"),
+        (1184, "0002b0de36ada800", "'2024-01-01 10:00:00+00:00'"),
+        (1186, "00000000003567e00000000200000001", "'1 months 2 days 3500000 microseconds'"),
+        (2950, "a0eebc999c0b4ef8bb6d6bb9bd380a11", "'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'"),
+        (1700, "0004000300000002232f07c8156203e1", "9007199254740993.00"),
+        (
+            1700,
+            "000a000900000000000c0d801ed204d2162e23340d801ed204d2162e",
+            "12345678901234567890123456789012345678",
+        ),
+    ],
+)
+def test_binary_parameters_decode_like_postgres(oid: int, pg_hex: str, literal: str) -> None:
+    assert _decode_binary_param(bytes.fromhex(pg_hex), oid) == literal
+
+
+@pytest.mark.parametrize(
+    ("oid", "pg_hex"),
+    [
+        (1700, "00000000c0000000"),  # NaN
+        (1082, "7fffffff"),  # infinity
+    ],
+)
+def test_non_finite_binary_parameters_are_refused(oid: int, pg_hex: str) -> None:
+    with pytest.raises(_BadParameterError):
+        _decode_binary_param(bytes.fromhex(pg_hex), oid)
+
+
+@pytest.mark.parametrize(
+    ("micros", "literal"),
+    [
+        # int32 extremes are ordinary timestamps near 2000 (review of #516).
+        (2**31 - 1, "'2000-01-01 00:35:47.483647'"),
+        (-(2**31), "'1999-12-31 23:24:12.516352'"),
+    ],
+)
+def test_int32_extreme_timestamps_are_not_infinity(micros: int, literal: str) -> None:
+    assert _decode_binary_param(struct.pack("!q", micros), 1114) == literal
+
+
+def test_infinite_timestamp_and_oversized_numeric_are_refused() -> None:
+    with pytest.raises(_BadParameterError, match="Infinite"):
+        _decode_binary_param(struct.pack("!q", 2**63 - 1), 1114)
+    # weight 300 (10000 ** 300, 1200 digits): past the accepted width.
+    with pytest.raises(_BadParameterError, match="out of range"):
+        _decode_binary_param(struct.pack("!hhHHH", 1, 300, 0, 0, 1), 1700)
+
+
+def test_describe_lets_the_context_type_an_unspecified_parameter() -> None:
+    """pgjdbc binds a date unspecified: ``DATE '...' > $1`` must still describe."""
+    text_null = "SELECT DATE '2024-01-02' > CAST(NULL AS VARCHAR)"
+    sess, seen = _recording_session({text_null: _error_reply()}, _two_row_reply())
+    _parse(sess, "s1", "SELECT DATE '2024-01-02' > $1", (0,))
+    assert _describe(sess, b"S", "s1") == [b"t", b"T"]
+    assert seen == [text_null, "SELECT DATE '2024-01-02' > NULL"]
 
 
 def test_substitute_rejects_out_of_range_placeholder() -> None:

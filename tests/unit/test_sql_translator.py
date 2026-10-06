@@ -5,6 +5,8 @@ Spec: design/PLAN_flight_natural_sql.md
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from orionbelt.compiler.sql_translator import (
@@ -169,6 +171,9 @@ def test_bound_parameter_casts_read_as_literals(model: SemanticModel, predicate:
         '"Total Revenue" > CAST(3000000000 AS INTEGER)',  # out of range
         '"Total Revenue" > CAST(0.1 AS REAL)',  # not a float32
         '"Total Revenue" > CAST(1e39 AS REAL)',  # beyond a real's range
+        # Not a double / real exactly: the cast rounds to ...992 (review of #516).
+        '"Total Revenue" > CAST(9007199254740993.00 AS DOUBLE)',
+        '"Total Revenue" > CAST(9007199254740993.00 AS REAL)',
         "\"Customer Country\" = CAST('USA' AS VARCHAR(2))",  # truncates
         "\"Customer Country\" = CAST('US' AS CHAR(5))",  # pads
         "\"Total Revenue\" > CAST('5' AS INTEGER)",  # converts
@@ -195,6 +200,7 @@ def test_a_cast_that_can_change_the_value_is_not_a_literal(
     [
         ('"Total Revenue" = CAST(1.23 AS DECIMAL(5,2))', 1.23),
         ('"Total Revenue" > CAST(0.5 AS REAL)', 0.5),
+        ('"Total Revenue" > CAST(0.5 AS DOUBLE)', 0.5),
         ("\"Customer Country\" = CAST('2024-01-01' AS DATE)", "2024-01-01"),
         (
             "\"Customer Country\" = CAST('2024-01-01 00:00:00.678' AS TIMESTAMP(3))",
@@ -1192,6 +1198,8 @@ class TestPreparedStatementParameters:
     ("value", "oid"),
     [
         (b"0.1", 700),  # float4: bound as the real it denotes
+        (b"9007199254740993", 701),  # float8: bound as the double it denotes
+        (b"0.1", 701),
         (b"A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11", 2950),  # uuid: canonical form
         (b"2024-01-01", 1082),
         (b"2024-01-01 10:00:00.5", 1114),
@@ -1222,3 +1230,41 @@ def test_placeholder_numbering_leaves_dollar_quoted_strings_alone() -> None:
     assert "$$?$$" in bound or "'?'" in bound
     assert "_obsl_param" not in bound
     assert bound.endswith("> 5")
+
+
+@pytest.mark.parametrize(
+    ("literal", "value"),
+    [
+        # Past a float's ~15 significant digits the literal stays exact.
+        ("9007199254740993.00", Decimal("9007199254740993.00")),
+        ("-12345678901234567890.123", Decimal("-12345678901234567890.123")),
+        # Negation must not round to the decimal context's 28 digits (review of #516).
+        (
+            "-123456789012345678901234567890.12345678",
+            Decimal("-123456789012345678901234567890.12345678"),
+        ),
+        # Ordinary values are floats, as before.
+        ("1.5", 1.5),
+        ("0.1", 0.1),
+    ],
+)
+def test_decimal_literals_keep_their_digits(
+    model: SemanticModel, literal: str, value: object
+) -> None:
+    q = translate_sql_to_query(
+        f'SELECT "Customer Country", "Total Revenue" FROM m WHERE "Total Revenue" > {literal}',
+        model,
+    )
+    filt = (q.having or q.where)[0]
+    assert filt.value == value
+    assert type(filt.value) is type(value)
+
+
+@pytest.mark.parametrize("literal", ["1e100000", "1e1000000000", "1e-1001"])
+def test_an_oversized_numeric_literal_is_refused(model: SemanticModel, literal: str) -> None:
+    """Plain notation of 1e1000000000 would be a gigabyte of SQL (review of #516)."""
+    with pytest.raises(SQLTranslationError, match="out of range"):
+        translate_sql_to_query(
+            f'SELECT "Customer Country", "Total Revenue" FROM m WHERE "Total Revenue" > {literal}',
+            model,
+        )
