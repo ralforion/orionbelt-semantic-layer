@@ -1669,6 +1669,8 @@ Multiple static filters are combined with **AND**. They are always injected befo
 | `contains` | `LIKE '%val%'` | Substring match |
 | `starts_with` | `LIKE 'val%'` | Prefix match |
 | `ends_with` | `LIKE '%val'` | Suffix match |
+| `like` / `notlike` | `[NOT] LIKE 'pattern'` | Pattern match, case-sensitive |
+| `ilike` / `notilike` | `[NOT] ILIKE 'pattern'` | Pattern match, case-insensitive (rendered per dialect) |
 
 ### Date and Timestamp Values
 

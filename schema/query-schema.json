@@ -23,6 +23,8 @@
         "notbetween",
         "like",
         "notlike",
+        "ilike",
+        "notilike",
         "=",
         "!=",
         ">",

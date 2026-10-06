@@ -371,6 +371,8 @@
         "notbetween",
         "like",
         "notlike",
+        "ilike",
+        "notilike",
         "starts_with",
         "ends_with"
       ]
@@ -394,6 +396,8 @@
         "notbetween",
         "like",
         "notlike",
+        "ilike",
+        "notilike",
         "starts_with",
         "ends_with",
         "=",
@@ -1251,6 +1255,8 @@
             "notbetween",
             "like",
             "notlike",
+            "ilike",
+            "notilike",
             "=",
             "!=",
             ">",

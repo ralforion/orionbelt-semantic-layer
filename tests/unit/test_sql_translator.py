@@ -140,6 +140,9 @@ _COUNTRY = '"Customer Country"'
         (f"{_COUNTRY} BETWEEN 'A' AND 'M'", FilterOperator.BETWEEN, ["A", "M"]),
         (f"{_COUNTRY} NOT BETWEEN 'A' AND 'M'", FilterOperator.NOT_BETWEEN, ["A", "M"]),
         (f"NOT ({_COUNTRY} BETWEEN 'A' AND 'M')", FilterOperator.NOT_BETWEEN, ["A", "M"]),
+        (f"{_COUNTRY} ILIKE 'u%'", FilterOperator.ILIKE, "u%"),
+        (f"{_COUNTRY} NOT ILIKE 'u%'", FilterOperator.NOT_ILIKE, "u%"),
+        (f"NOT ({_COUNTRY} ILIKE 'u%')", FilterOperator.NOT_ILIKE, "u%"),
     ],
 )
 def test_negated_and_range_predicates(
@@ -165,8 +168,6 @@ def test_between_on_a_measure_routes_to_having(model: SemanticModel) -> None:
 @pytest.mark.parametrize(
     ("predicate", "message"),
     [
-        (f"{_COUNTRY} ILIKE 'u%'", "ILIKE is not supported"),
-        (f"{_COUNTRY} NOT ILIKE 'u%'", "ILIKE is not supported"),
         (f"{_COUNTRY} BETWEEN SYMMETRIC 'M' AND 'A'", "BETWEEN SYMMETRIC 'M' AND 'A'"),
         (f"{_COUNTRY} BETWEEN {_COUNTRY} AND 'Z'", "BETWEEN bounds must be literals"),
     ],
@@ -214,6 +215,7 @@ def test_not_like_compiles_to_not_like(model: SemanticModel) -> None:
         ('"Customers"."Country" NOT LIKE \'U%\'', FilterOperator.NOT_LIKE, "U%"),
         ('"Customers"."Country" NOT IN (\'US\')', FilterOperator.NOT_IN_LIST, ["US"]),
         ("\"Customers\".\"Country\" BETWEEN 'A' AND 'M'", FilterOperator.BETWEEN, ["A", "M"]),
+        ('"Customers"."Country" ILIKE \'u%\'', FilterOperator.ILIKE, "u%"),
     ],
 )
 def test_raw_mode_negated_and_range_predicates(

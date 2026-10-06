@@ -367,6 +367,10 @@ class BigQueryDialect(Dialect):
             f"{min_date}, {max_date}, INTERVAL 1 {grain.upper()})) AS d"
         )
 
+    def compile_ilike_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """BigQuery has no ILIKE: compare ``LOWER`` of both sides."""
+        return self._compile_lower_like(column, pattern, negated=negated)
+
     def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
         """BigQuery uses ``REGEXP_CONTAINS(col, pattern)``."""
         col_sql = self.compile_expr(column)

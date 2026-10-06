@@ -20,6 +20,7 @@ from orionbelt.ast.nodes import (
     Expr,
     From,
     FunctionCall,
+    ILikeMatch,
     InList,
     InTimeZone,
     IsNull,
@@ -2072,6 +2073,9 @@ class Dialect(ABC):
                 return self._render_in_timezone(inner, zone, from_zone)
             case RegexMatch(column=column, pattern=pattern, negated=negated):
                 return self.compile_regex_match(column, pattern, negated=negated)
+            case ILikeMatch(column=column, pattern=pattern, negated=negated):
+                sql = self.compile_ilike_match(column, pattern, negated=negated)
+                return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case RelativeDateRange(
                 column=column,
                 unit=unit,
@@ -2122,6 +2126,25 @@ class Dialect(ABC):
         pat_sql = self.compile_expr(Literal.string(pattern))
         op_sql = f"REGEXP_LIKE({col_sql}, {pat_sql})"
         return f"NOT {op_sql}" if negated else op_sql
+
+    def compile_ilike_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """Compile a case-insensitive LIKE. Default is the ``ILIKE`` operator.
+
+        Overridden where the engine has no such operator (Dremio: a function;
+        BigQuery, MySQL: ``LOWER`` of both sides). ``LOWER`` is not the default
+        because ClickHouse's folds ASCII only, while its ``ILIKE`` folds ``Ä``.
+        """
+        col_sql = self.compile_expr(column, _parent_prec=self._PREC_CMP)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        op = "NOT ILIKE" if negated else "ILIKE"
+        return f"{col_sql} {op} {pat_sql}"
+
+    def _compile_lower_like(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """``LOWER(column) [NOT] LIKE LOWER(pattern)``, for engines without ILIKE."""
+        col_sql = self.compile_expr(FunctionCall(name="LOWER", args=[column]))
+        pat_sql = self.compile_expr(FunctionCall(name="LOWER", args=[Literal.string(pattern)]))
+        op = "NOT LIKE" if negated else "LIKE"
+        return f"{col_sql} {op} {pat_sql}"
 
     def compile_relative_date_range(
         self,

@@ -298,6 +298,10 @@ class PortableRenderer:
         if op in ("like", "notlike"):
             keyword = "NOT LIKE" if op == "notlike" else "LIKE"
             return f"{col} {keyword} {_string_literal(text)}"
+        if op in ("ilike", "notilike"):
+            # ILIKE is not ANSI; LOWER of both sides is.
+            keyword = "NOT LIKE" if op == "notilike" else "LIKE"
+            return f"LOWER({col}) {keyword} LOWER({_string_literal(text)})"
         if op in ("between", "notbetween"):
             if len(values) < 2:
                 return f"{col} {'<>' if op == 'notbetween' else '='} {first}"

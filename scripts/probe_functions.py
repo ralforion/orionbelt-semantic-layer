@@ -285,6 +285,18 @@ CANDIDATES: list[tuple[str, str, str]] = [
     ("date", "current_date", "current_date"),
     ("date", "current_date()", "current_date()"),
     ("date", "current_timestamp", "current_timestamp"),
+    # Case-insensitive LIKE (filter operator ``ilike``). Expected: true, false,
+    # true, true, true, NULL; ``strasse`` shows whether folding is ASCII-only.
+    ("ilike", "native", "'Mexico' ILIKE 'mex%'"),
+    ("ilike", "native negated", "'Mexico' NOT ILIKE 'mex%'"),
+    ("ilike", "lower both", "LOWER('Mexico') LIKE LOWER('MEX%')"),
+    ("ilike", "native non-ASCII", "'ÄRGER' ILIKE 'är%'"),
+    ("ilike", "lower non-ASCII", "LOWER('ÄRGER') LIKE LOWER('är%')"),
+    ("ilike", "native NULL", "NULLIF('a', 'a') ILIKE 'a%'"),
+    ("ilike", "native sharp s", "'STRASSE' ILIKE 'straße'"),
+    ("ilike", "CH function", "ilike('Mexico', 'mex%')"),
+    ("ilike", "plain LIKE (MySQL collation)", "'Mexico' LIKE 'mex%'"),
+    ("ilike", "native escape", "'a_b' ILIKE 'A\\_B'"),
 ]
 
 

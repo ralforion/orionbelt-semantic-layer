@@ -12,6 +12,7 @@ from orionbelt.ast.nodes import (
     Expr,
     From,
     FunctionCall,
+    ILikeMatch,
     InList,
     IsNull,
     Join,
@@ -112,6 +113,10 @@ def build_filter_expr(col: Expr, qf: QueryFilter, errors: list[SemanticError]) -
             return BinaryOp(left=col, op="LIKE", right=Literal.string(str(val)))
         case FilterOperator.NOT_LIKE:
             return BinaryOp(left=col, op="NOT LIKE", right=Literal.string(str(val)))
+        case FilterOperator.ILIKE | FilterOperator.NOT_ILIKE:
+            return ILikeMatch(
+                column=col, pattern=str(val), negated=(op == FilterOperator.NOT_ILIKE)
+            )
         case FilterOperator.BETWEEN:
             if isinstance(val, list) and len(val) >= 2:
                 return Between(
@@ -414,6 +419,9 @@ def _build_single_measure_filter(
         case "notlike":
             v = values[0] if values else ""
             return BinaryOp(left=col, op="NOT LIKE", right=Literal.string(str(v)))
+        case "ilike" | "notilike":
+            v = values[0] if values else ""
+            return ILikeMatch(column=col, pattern=str(v), negated=op_str == "notilike")
         case "between":
             if len(values) >= 2:
                 return Between(

@@ -132,6 +132,13 @@ class DremioDialect(Dialect):
             ),
         )
 
+    def compile_ilike_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """Dremio has the ``ILIKE(value, pattern)`` function, not the operator."""
+        col_sql = self.compile_expr(column)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        call = f"ILIKE({col_sql}, {pat_sql})"
+        return f"NOT {call}" if negated else call
+
     def _render_concat(self, args: list[Expr]) -> str:
         """Dremio's ``CONCAT`` ignores NULL arguments, where the catalog says
         NULL propagates.

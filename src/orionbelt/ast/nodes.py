@@ -270,6 +270,20 @@ class RegexMatch:
 
 
 @dataclass(frozen=True)
+class ILikeMatch:
+    """Case-insensitive LIKE predicate. Each dialect renders its native syntax.
+
+    Postgres / Snowflake / DuckDB / Databricks / ClickHouse use ``ILIKE``;
+    Dremio has only the ``ILIKE(value, pattern)`` function; BigQuery and MySQL
+    have neither and compare ``LOWER`` of both sides.
+    """
+
+    column: Expr
+    pattern: str
+    negated: bool = False
+
+
+@dataclass(frozen=True)
 class InTimeZone:
     """Read *expr* as wall clock in *zone*. Each dialect renders its own form.
 
@@ -339,6 +353,7 @@ Expr = (
     | RawSQL
     | Between
     | RegexMatch
+    | ILikeMatch
     | RelativeDateRange
     | InTimeZone
     | WindowFunction

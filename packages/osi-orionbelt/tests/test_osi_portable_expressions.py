@@ -105,6 +105,18 @@ _MODEL: dict[str, Any] = {
                 },
             ],
         },
+        "Void Sales": {
+            "columns": [{"dataObject": "Order Lines", "column": "Amount"}],
+            "resultType": "float",
+            "aggregation": "sum",
+            "filters": [
+                {
+                    "column": {"dataObject": "Order Lines", "column": "Status"},
+                    "operator": "ilike",
+                    "values": [{"dataType": "string", "valueString": "VOID%"}],
+                },
+            ],
+        },
         "Total Sales": {
             "columns": [{"dataObject": "Order Lines", "column": "Amount"}],
             "resultType": "float",
@@ -227,6 +239,12 @@ class TestSemanticsSpelledOut:
             f"({STATUS} IN ('void', 'it''s test')) OR "
             f"({STATUS} LIKE '%50\\%%' ESCAPE '\\')"
             f") THEN {AMT} END)"
+        )
+
+    def test_ilike_filter_lowers_both_sides(self) -> None:
+        osi, _ = _export()
+        assert _sql(osi)["Void Sales"] == (
+            f"SUM(CASE WHEN LOWER({STATUS}) LIKE LOWER('VOID%') THEN {AMT} END)"
         )
 
     def test_total_becomes_grand_total_window(self) -> None:

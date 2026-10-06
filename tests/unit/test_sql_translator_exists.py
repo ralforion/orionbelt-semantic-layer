@@ -231,6 +231,7 @@ def test_nested_exists_in_subquery_errors(model: SemanticModel) -> None:
         ("\"Status\" NOT IN ('shipped')", FilterOperator.NOT_IN_LIST, ["shipped"]),
         ("\"Status\" BETWEEN 'a' AND 'm'", FilterOperator.BETWEEN, ["a", "m"]),
         ("\"Status\" NOT BETWEEN 'a' AND 'm'", FilterOperator.NOT_BETWEEN, ["a", "m"]),
+        ("\"Status\" NOT ILIKE 's%'", FilterOperator.NOT_ILIKE, "s%"),
     ],
 )
 def test_subquery_negated_and_range_predicates(
@@ -244,15 +245,6 @@ def test_subquery_negated_and_range_predicates(
     sub = q.where[0].subquery
     assert sub is not None
     assert [(f.field, f.op, f.value) for f in sub.filter] == [("Status", op, value)]
-
-
-def test_subquery_ilike_refused(model: SemanticModel) -> None:
-    with pytest.raises(SQLTranslationError, match="ILIKE is not supported"):
-        translate_sql_to_query(
-            'SELECT "Order ID", "Total Revenue" FROM m '
-            'WHERE EXISTS (SELECT 1 FROM "OrderItems" WHERE "Status" ILIKE \'s%\')',
-            model,
-        )
 
 
 @pytest.mark.parametrize("negation", ["", "NOT "])

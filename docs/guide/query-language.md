@@ -567,6 +567,13 @@ OrionBelt supports two operator naming conventions — OBML style and SQL style.
 | `ends_with` | `LIKE '%value'` | string |
 | `like` | `LIKE 'pattern'` | string |
 | `notlike` | `NOT LIKE 'pattern'` | string |
+| `ilike` | `ILIKE 'pattern'` (dialect-specific) | string |
+| `notilike` | `NOT ILIKE 'pattern'` (dialect-specific) | string |
+
+`ilike` / `notilike` match case-insensitively. Postgres, Snowflake, DuckDB,
+Databricks and ClickHouse use `ILIKE`; Dremio uses its `ILIKE(value, pattern)`
+function; BigQuery and MySQL, which have no `ILIKE`, compare `LOWER` of both
+sides. Non-ASCII letters fold on every engine (`'ÄRGER'` matches `'är%'`).
 
 #### Regex Operators
 

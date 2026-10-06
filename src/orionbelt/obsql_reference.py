@@ -65,11 +65,13 @@ already at the query grain.
 * AND-chained ``<column> <op> <literal>`` predicates.
 * Operators: ``=``, ``!=``, ``<``, ``<=``, ``>``, ``>=``, ``[NOT] IN (...)``,
   ``[NOT] BETWEEN <literal> AND <literal>``, ``IS NULL``, ``IS NOT NULL``,
-  ``[NOT] LIKE``, ``EXISTS (SELECT 1 FROM <DataObject> [WHERE ...])``,
-  ``NOT EXISTS (...)``. ``NOT (...)`` around ``IN``, ``BETWEEN`` or ``LIKE``
-  works too.
-* ``ILIKE`` and ``BETWEEN SYMMETRIC`` reject with ``UNSUPPORTED_SQL_FEATURE``:
-  filters match case-sensitively, and a reversed range has no faithful form.
+  ``[NOT] LIKE``, ``[NOT] ILIKE``,
+  ``EXISTS (SELECT 1 FROM <DataObject> [WHERE ...])``, ``NOT EXISTS (...)``.
+  ``NOT (...)`` around ``IN``, ``BETWEEN``, ``LIKE`` or ``ILIKE`` works too.
+* ``ILIKE`` matches case-insensitively on every backend, also those without
+  the operator (BigQuery and MySQL compare ``LOWER`` of both sides).
+* ``BETWEEN SYMMETRIC`` rejects with ``UNSUPPORTED_SQL_FEATURE``: a reversed
+  range has no faithful form.
 * References to **measures or metrics** in WHERE auto-route to HAVING.
 * Top-level OR rejects with ``UNSUPPORTED_SQL_FEATURE`` — use ``IN (...)``
   or split into two queries.
