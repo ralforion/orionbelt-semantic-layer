@@ -128,7 +128,8 @@ def test_substitute_numeric_text_canonicalizes() -> None:
         == "x CAST(3.14 AS DECIMAL(3, 2))"
     )
     assert (
-        substitute_parameters("x $1", (b"1e3",), [0], param_oids=(701,)) == "x CAST(1E+3 AS DOUBLE)"
+        substitute_parameters("x $1", (b"1e3",), [0], param_oids=(701,))
+        == "x CAST(1000.0 AS DOUBLE)"
     )
     # Fractional edge forms Postgres accepts.
     assert (
@@ -217,6 +218,16 @@ def test_float4_binds_as_the_real_it_denotes() -> None:
 def test_float4_out_of_range_is_a_parameter_error() -> None:
     with pytest.raises(_BadParameterError, match="out of range"):
         substitute_parameters("x $1", (b"1e39",), [0], param_oids=(700,))
+
+
+def test_float8_binds_as_the_double_it_denotes() -> None:
+    """Postgres rounds a float8 parameter to a double; so does Bind (review of #516)."""
+    assert (
+        substitute_parameters("x $1", (b"9007199254740993",), [0], param_oids=(701,))
+        == "x CAST(9007199254740992.0 AS DOUBLE)"
+    )
+    with pytest.raises(_BadParameterError, match="out of range"):
+        substitute_parameters("x $1", (b"1e400",), [0], param_oids=(701,))
 
 
 def test_uuid_binds_in_canonical_form_and_refuses_garbage() -> None:

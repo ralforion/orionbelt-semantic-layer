@@ -34,6 +34,7 @@ from __future__ import annotations
 import datetime as _dt
 import decimal
 import logging
+import math
 import re
 import struct
 import uuid
@@ -650,6 +651,13 @@ def _render_literal(raw: bytes | None, fmt: int, oid: int) -> str:
         # A value like ``0 AND "x" = 'y'`` fails the parse and is rejected
         # instead of becoming active SQL.
         canonical = _canonical_numeric_text(text, oid)
+        if oid == _OID_FLOAT8:
+            # The value a double holds, as Postgres compares it for $1::float8;
+            # rendering it exactly also makes CAST(... AS DOUBLE) lossless.
+            as_double = float(canonical)
+            if not math.isfinite(as_double):
+                raise _BadParameterError(f"float8 parameter out of range: {text!r}")
+            return repr(as_double)
         if oid == _OID_FLOAT4:
             # The value a real holds: ``0.1`` is 0.10000000149011612, which is
             # what Postgres compares against for ``$1::real``. Rendering it

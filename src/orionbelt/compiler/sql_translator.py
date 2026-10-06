@@ -1649,16 +1649,18 @@ def _number_fits(value: decimal.Decimal, target: exp.DataType, params: list[int]
         return bool(
             value == value.to_integral_value() and -(2 ** (bits - 1)) <= value < 2 ** (bits - 1)
         )
+    # A float cast keeps the value only when the literal already is that float
+    # exactly: the translator keeps a literal a float cannot hold as a Decimal,
+    # so CAST(9007199254740993.00 AS DOUBLE), which is ...992, must not be read
+    # as ...993.
     if target.is_type(exp.DataType.Type.DOUBLE):
-        # The translator reads a number literal as a Python float already.
-        return True
+        return Decimal(repr(float(value))) == value
     if target.is_type(exp.DataType.Type.FLOAT):
-        as_float = float(value)
         try:
-            (as_real,) = struct.unpack("!f", struct.pack("!f", as_float))
+            (as_real,) = struct.unpack("!f", struct.pack("!f", float(value)))
         except OverflowError:  # beyond a real's range: the cast cannot keep it
             return False
-        return bool(as_real == as_float)
+        return Decimal(repr(as_real)) == value
     if target.is_type(exp.DataType.Type.DECIMAL) and len(params) == 2:
         precision, scale = params
         exponent = value.as_tuple().exponent

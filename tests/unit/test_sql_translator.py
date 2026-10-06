@@ -171,6 +171,9 @@ def test_bound_parameter_casts_read_as_literals(model: SemanticModel, predicate:
         '"Total Revenue" > CAST(3000000000 AS INTEGER)',  # out of range
         '"Total Revenue" > CAST(0.1 AS REAL)',  # not a float32
         '"Total Revenue" > CAST(1e39 AS REAL)',  # beyond a real's range
+        # Not a double / real exactly: the cast rounds to ...992 (review of #516).
+        '"Total Revenue" > CAST(9007199254740993.00 AS DOUBLE)',
+        '"Total Revenue" > CAST(9007199254740993.00 AS REAL)',
         "\"Customer Country\" = CAST('USA' AS VARCHAR(2))",  # truncates
         "\"Customer Country\" = CAST('US' AS CHAR(5))",  # pads
         "\"Total Revenue\" > CAST('5' AS INTEGER)",  # converts
@@ -197,6 +200,7 @@ def test_a_cast_that_can_change_the_value_is_not_a_literal(
     [
         ('"Total Revenue" = CAST(1.23 AS DECIMAL(5,2))', 1.23),
         ('"Total Revenue" > CAST(0.5 AS REAL)', 0.5),
+        ('"Total Revenue" > CAST(0.5 AS DOUBLE)', 0.5),
         ("\"Customer Country\" = CAST('2024-01-01' AS DATE)", "2024-01-01"),
         (
             "\"Customer Country\" = CAST('2024-01-01 00:00:00.678' AS TIMESTAMP(3))",
@@ -1194,6 +1198,8 @@ class TestPreparedStatementParameters:
     ("value", "oid"),
     [
         (b"0.1", 700),  # float4: bound as the real it denotes
+        (b"9007199254740993", 701),  # float8: bound as the double it denotes
+        (b"0.1", 701),
         (b"A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11", 2950),  # uuid: canonical form
         (b"2024-01-01", 1082),
         (b"2024-01-01 10:00:00.5", 1114),
