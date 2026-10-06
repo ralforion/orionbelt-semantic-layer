@@ -550,31 +550,43 @@ def sort_and_execute(
 def model_jump_targets(model_yaml: str) -> object:
     """Build the model-editor "Jump to" choices as ``(label, line#)`` pairs.
 
-    Two-level labels: each top-level section (``settings`` / ``dataObjects`` /
-    ``dimensions`` / ``measures`` / ``metrics`` / ``filters``) plus its named
-    children as ``"section / name"``. The value is the 1-based line number so the
-    editor JS can scroll there via ``.cm-scroller`` scrollTop.
+    Two-level labels: every top-level key, plus the named children of the
+    sections that hold them as ``"section / name"``: the mapping sections
+    (``dataObjects`` / ``dimensions`` / ``measures`` / ``metrics`` / ``filters``
+    / ``rules``) by key, ``examples`` by each item's ``name``. Any top-level key
+    ends the section before it, so a rule or an example is never filed under
+    the section above. The value is the 1-based line number so the editor JS
+    can scroll there via ``.cm-scroller`` scrollTop.
     """
     import re
 
-    top = ("version", "settings", "dataObjects", "dimensions", "measures", "metrics", "filters")
-    named = {"dataObjects", "dimensions", "measures", "metrics", "filters"}
+    named_maps = {"dataObjects", "dimensions", "measures", "metrics", "filters", "rules"}
+    named_lists = {"examples"}
     choices: list[tuple[str, str]] = []
     section: str | None = None
+    item_line: int | None = None  # a list item still waiting for its name
     for i, line in enumerate((model_yaml or "").split("\n"), start=1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        m = re.match(r"^([A-Za-z_]\w*):", line)
-        if m:
-            key = m.group(1)
-            if key in top:
-                choices.append((key, str(i)))
-                section = key if key in named else None
+        top = re.match(r"^([A-Za-z_]\w*):", line)
+        if top:
+            section, item_line = top.group(1), None
+            choices.append((section, str(i)))
             continue
-        if section:
-            m2 = re.match(r"^  (\S[^:]*):", line)  # exactly-2-space indented name
-            if m2:
-                choices.append((f"{section} / {m2.group(1).strip()}", str(i)))
+        if section in named_maps:
+            child = re.match(r"^  ([^\s-][^:]*):", line)  # exactly-2-space indented key
+            if child:
+                choices.append((f"{section} / {child.group(1).strip()}", str(i)))
+        elif section in named_lists:
+            item = re.match(r"^  - (.*)$", line)
+            if item:
+                item_line = i
+                line = "    " + item.group(1)  # the item's first key, as if on its own line
+            name = re.match(r"^    name:\s*(.+?)\s*$", line)
+            if name and item_line is not None:
+                label = name.group(1).strip("\"'")
+                choices.append((f"{section} / {label}", str(item_line)))
+                item_line = None
     return gr.update(choices=choices, value=None)
 
 
