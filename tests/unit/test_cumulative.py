@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Any
+
 import pytest
 
 from orionbelt.ast.nodes import (
@@ -51,6 +54,9 @@ dataObjects:
       Order Date:
         code: ORDER_DATE
         abstractType: date
+      Region:
+        code: REGION
+        abstractType: string
       Amount:
         code: AMOUNT
         abstractType: float
@@ -62,6 +68,17 @@ dimensions:
     column: Order Date
     resultType: date
     timeGrain: month
+
+  Order Year:
+    dataObject: Orders
+    column: Order Date
+    resultType: date
+    timeGrain: year
+
+  Region:
+    dataObject: Orders
+    column: Region
+    resultType: string
 
 measures:
   Revenue:
@@ -736,3 +753,76 @@ class TestCumulativeSQLGeneration:
         result = pipeline.compile(query, model, "duckdb")
         sql = result.sql.upper()
         assert "OVER" in sql
+
+
+# ── Partitioning by the query's other dimensions (executed on DuckDB) ─────
+
+
+class TestCumulativePartitionsByQueryDimensions:
+    """A cumulative metric accumulates per group of the query's other dimensions."""
+
+    @pytest.fixture
+    def orders(self) -> Iterator[Any]:
+        duckdb = pytest.importorskip("duckdb")
+        connection = duckdb.connect()
+        connection.execute("CREATE SCHEMA PUBLIC")
+        connection.execute(
+            "CREATE TABLE PUBLIC.ORDERS AS SELECT * FROM (VALUES "
+            "('1', DATE '2021-11-05', 'East', 10.0), "
+            "('2', DATE '2021-11-20', 'West', 1.0), "
+            "('3', DATE '2021-12-05', 'East', 20.0), "
+            "('4', DATE '2021-12-10', 'West', 2.0), "
+            "('5', DATE '2022-01-05', 'East', 40.0), "
+            "('6', DATE '2022-01-10', 'West', 4.0)"
+            ") AS t(ORDER_ID, ORDER_DATE, REGION, AMOUNT)"
+        )
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _run(connection: Any, dimensions: list[str], metric: str) -> dict[tuple[str, ...], float]:
+        query = QueryObject(select=QuerySelect(dimensions=dimensions, measures=[metric]))
+        sql = CompilationPipeline().compile(query, _load_model(), "duckdb").sql
+        return {
+            tuple(str(v) for v in row[:-1]): float(row[-1])
+            for row in connection.execute(sql).fetchall()
+        }
+
+    def test_running_total_per_region(self, orders: Any) -> None:
+        rows = self._run(orders, ["Region", "Order Date"], "Cumulative Revenue")
+        assert rows[("East", "2021-11-01")] == 10.0
+        assert rows[("West", "2021-11-01")] == 1.0
+        assert rows[("East", "2021-12-01")] == 30.0
+        assert rows[("West", "2021-12-01")] == 3.0
+        assert rows[("West", "2022-01-01")] == 7.0
+
+    def test_grain_to_date_per_region(self, orders: Any) -> None:
+        rows = self._run(orders, ["Region", "Order Date"], "YTD Revenue")
+        assert rows[("West", "2021-12-01")] == 3.0
+        assert rows[("East", "2022-01-01")] == 40.0
+        assert rows[("West", "2022-01-01")] == 4.0
+
+    def test_same_column_coarser_grain_does_not_partition(self, orders: Any) -> None:
+        # Order Year is a position on the time axis, not a group: the running
+        # total continues across the year boundary.
+        rows = self._run(orders, ["Order Year", "Order Date"], "Cumulative Revenue")
+        assert rows[("2022-01-01", "2022-01-01")] == 77.0
+
+    def test_partition_by_not_repeated_when_selected(self) -> None:
+        model = _load_model(
+            CUMULATIVE_MODEL_YAML
+            + """
+  Revenue by Region:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Date
+    partitionBy: [Region]
+"""
+        )
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Region", "Order Date"], measures=["Revenue by Region"])
+        )
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert 'PARTITION BY "Region" ORDER BY' in sql

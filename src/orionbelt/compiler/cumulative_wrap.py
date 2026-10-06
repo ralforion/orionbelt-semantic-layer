@@ -66,21 +66,24 @@ def _build_cumulative_window(
     measure: ResolvedMeasure,
     time_dim_name: str,
     dialect: Dialect | None = None,
+    group_dims: list[str] | None = None,
 ) -> Expr:
     """Build the window function expression for a cumulative metric.
 
-    ``cumulative_partition_by`` adds additional ``PARTITION BY`` keys beyond
-    the implicit ``DATE_TRUNC(grain, time)`` partition for grain-to-date.
-    For rolling and running totals, partition keys are the dimension names
-    only — the underlying ``base`` CTE already exposes them as bare aliases.
+    ``group_dims`` (the query's other dimensions, see :func:`_group_dimensions`)
+    and ``cumulative_partition_by`` are ``PARTITION BY`` keys, after the
+    implicit ``DATE_TRUNC(grain, time)`` partition for grain-to-date. They are
+    dimension names: the underlying ``base`` CTE exposes them as bare aliases.
     """
     func_name = _CUMULATIVE_AGG_MAP[measure.cumulative_type]
     base_ref = ColumnRef(name=measure.cumulative_measure or measure.name)
     time_ref = ColumnRef(name=time_dim_name)
     order_by = [OrderByItem(expr=time_ref)]
-    extra_partitions: list[Expr] = [
-        ColumnRef(name=dim_name) for dim_name in measure.cumulative_partition_by
-    ]
+    # The query's other dimensions partition the window, so the metric
+    # accumulates per group (per country, per product, ...), then any
+    # metric-level ``partitionBy`` keys that the query did not already add.
+    partition_names = list(dict.fromkeys([*(group_dims or []), *measure.cumulative_partition_by]))
+    extra_partitions: list[Expr] = [ColumnRef(name=dim_name) for dim_name in partition_names]
 
     if measure.cumulative_grain_to_date is not None:
         # Grain-to-date: PARTITION BY <truncated time_dim>, unbounded frame.
@@ -134,6 +137,29 @@ def _build_cumulative_window(
             end="CURRENT ROW",
         ),
     )
+
+
+def _group_dimensions(resolved: ResolvedQuery, time_dim_name: str) -> list[str]:
+    """The query's dimensions that split the result into groups for a cumulative metric.
+
+    Every selected dimension except the time dimension itself and dimensions
+    over the same date column at another grain (``Sales Year`` next to
+    ``Sales Month``): those are positions on the time axis, and partitioning
+    by them would restart a running total at each year.
+    """
+    time_dim = next((d for d in resolved.dimensions if d.name == time_dim_name), None)
+    groups: list[str] = []
+    for dim in resolved.dimensions:
+        if dim.name == time_dim_name:
+            continue
+        if (
+            time_dim is not None
+            and dim.object_name == time_dim.object_name
+            and dim.source_column == time_dim.source_column
+        ):
+            continue
+        groups.append(dim.name)
+    return groups
 
 
 def _component_base_column(
@@ -265,7 +291,12 @@ def wrap_with_cumulative(
         if m.is_cumulative:
             # Cumulative metric: build window function
             assert m.cumulative_time_dimension is not None
-            window_expr: Expr = _build_cumulative_window(m, m.cumulative_time_dimension, dialect)
+            window_expr: Expr = _build_cumulative_window(
+                m,
+                m.cumulative_time_dimension,
+                dialect,
+                _group_dimensions(resolved, m.cumulative_time_dimension),
+            )
             window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
             outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))
         else:

@@ -304,7 +304,10 @@ metrics:
 ```
 
 Every entry must be a dimension defined in the model and present in the
-query's SELECT. Default `[]` preserves prior behavior (no partition).
+query's SELECT. A cumulative metric is always partitioned by the query's
+other selected dimensions too (`Country, order_month, Revenue YTD` gives
+each country its own year-to-date); dimensions over the same date column at
+another grain do not partition. `partitionBy` adds keys on top.
 
 ### Window — rank, lag, lead, ntile, first/last value (v2.6+)
 
