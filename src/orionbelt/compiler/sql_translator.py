@@ -1903,10 +1903,13 @@ def _numbered_placeholder_sql(sql: str) -> str:
     literal is left alone, being data rather than a parameter.
     """
     from sqlglot import TokenType
-    from sqlglot.tokens import Tokenizer
+    from sqlglot.dialects.postgres import Postgres
 
+    # The Postgres tokenizer, as everything else here reads Postgres: the
+    # generic one does not know dollar quotes and takes the ``?`` in
+    # ``$$?$$`` for a parameter, rewriting the string's contents.
     try:
-        tokens = Tokenizer().tokenize(sql)
+        tokens = Postgres.tokenizer_class().tokenize(sql)
     except SqlglotError:
         return sql
     spots = [token for token in tokens if token.token_type == TokenType.PLACEHOLDER]

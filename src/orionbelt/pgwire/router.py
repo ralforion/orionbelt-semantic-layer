@@ -840,7 +840,7 @@ def _flatten_federation_subquery(sql: str) -> str:
     """
 
     try:
-        ast = sqlglot.parse_one(sql)
+        ast = sqlglot.parse_one(sql, read="postgres")
     except Exception:
         return sql
     if not isinstance(ast, exp.Select) or ast.args.get("joins"):
@@ -939,16 +939,17 @@ def _flatten_federation_subquery(sql: str) -> str:
         for extra in wheres[1:]:
             cond = exp.and_(cond, extra.copy())
         flat.set("where", exp.Where(this=cond))
-    # Render with sqlglot's default generator, NOT dialect="postgres": the
-    # postgres generator makes the default null ordering explicit (injects
-    # ``NULLS LAST`` into a plain ``ORDER BY ... DESC``), which the OBSQL
-    # translator would then capture and bake into the compiled SQL — changing
-    # top-N results for nullable measures versus what the client actually sent.
+    # Read and render as Postgres, the dialect the OBSQL translator reads.
+    # sqlglot records each ORDER BY item's null placement as the read dialect
+    # implies it, and a generator spells out only placements that differ
+    # from its own default. A generic round trip therefore dropped
+    # ``ASC NULLS FIRST`` and ``DESC NULLS LAST`` (both the generic default),
+    # and the translator then applied the Postgres default, the opposite.
     if order is not None:
         flat.set("order", order.copy())
     if limit is not None:
         flat.set("limit", limit.copy())
-    return flat.sql()
+    return flat.sql(dialect="postgres")
 
 
 def _normalize_for_obsql(sql: str) -> str:

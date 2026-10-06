@@ -1211,3 +1211,14 @@ def test_every_bound_parameter_reads_as_a_literal(
         f'SELECT "Customer Country", "Total Revenue" FROM m WHERE {where}', model
     )
     assert q.where or q.having
+
+
+def test_placeholder_numbering_leaves_dollar_quoted_strings_alone() -> None:
+    """``$$?$$`` is a string: binding must not rewrite its contents (review of #514)."""
+    sql = (
+        'SELECT "Customer Country" FROM m WHERE "Customer Country" = $$?$$ AND "Total Revenue" > ?'
+    )
+    bound = bind_placeholders(sql, [5])
+    assert "$$?$$" in bound or "'?'" in bound
+    assert "_obsl_param" not in bound
+    assert bound.endswith("> 5")

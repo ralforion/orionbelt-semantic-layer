@@ -883,3 +883,33 @@ def test_canned_select_1_honours_a_binary_request() -> None:
     name_end = row_description.index(b"\x00", 2)
     assert struct.unpack("!h", row_description[name_end + 17 : name_end + 19])[0] == 1
     assert data_row[2:] == struct.pack("!i", 4) + struct.pack("!i", 1)
+
+
+@pytest.mark.parametrize(
+    ("order", "nulls"),
+    [
+        ("ASC NULLS FIRST", "first"),  # the generic default: was dropped (review of #514)
+        ("DESC NULLS LAST", "last"),  # likewise
+        ("ASC", "last"),  # Postgres defaults
+        ("DESC", "first"),
+    ],
+)
+def test_federation_flatten_keeps_the_null_placement(order: str, nulls: str) -> None:
+    """Dremio's pushed-down wrapper must keep an explicit placement through flattening."""
+    from orionbelt.compiler.sql_translator import translate_sql_to_query
+    from orionbelt.parser.loader import TrackedLoader
+    from orionbelt.parser.resolver import ReferenceResolver
+
+    raw, source = TrackedLoader().load_string(SAMPLE_MODEL_YAML)
+    model, _ = ReferenceResolver().resolve(raw, source)
+    wrapped = (
+        'SELECT "Customer Country", "Total Revenue" FROM '
+        '(SELECT "model"."Customer Country", "model"."Total Revenue" '
+        'FROM "commerce"."model") AS "model" '
+        f'ORDER BY "Total Revenue" {order} FETCH NEXT 1 ROWS ONLY'
+    )
+    normalized = _normalize_for_obsql(wrapped)
+    assert "FROM (" not in normalized
+    q = translate_sql_to_query(normalized, model)
+    assert q.order_by[0].nulls is not None
+    assert q.order_by[0].nulls.value == nulls
