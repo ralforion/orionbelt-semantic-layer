@@ -69,7 +69,7 @@ spec-correct slot before `ORDER BY` / `LIMIT`.
 | `WHERE`    | `column op literal` atoms joined by `AND`. Measure / metric references are auto-routed to `HAVING`. Top-level `OR` is rejected. |
 | `HAVING`   | Same shape as `WHERE`; passes through unchanged. |
 | `GROUP BY` | Silently ignored — implicit from the dimensions in `SELECT`. BI tools auto-emit it; we tolerate it for compatibility. |
-| `ORDER BY` | Identifier (must be a SELECT alias) or 1-based position. Optional `ASC`/`DESC` and `NULLS FIRST`/`NULLS LAST`. Without the null position, dialect defaults apply (Postgres / Snowflake / DuckDB / Dremio put NULLs *last* on ASC; MySQL / ClickHouse / BigQuery / Databricks the opposite — set it explicitly for portable behavior). |
+| `ORDER BY` | Identifier (must be a SELECT alias) or 1-based position. Optional `ASC`/`DESC` and `NULLS FIRST`/`NULLS LAST`. Without the null position, Postgres semantics apply on every backend: NULLs *last* on ASC, *first* on DESC. The YAML / JSON query's `nulls` field is different: omitted, it keeps the executing dialect's default. |
 | `LIMIT`    | Integer literal. |
 | `OFFSET`   | Integer literal. Useful for keyset / page pagination after `ORDER BY`. |
 | `WITH ROLLUP` / `WITH CUBE` | Trailing modifier (or spec-position before `ORDER BY`) — see below. |

@@ -7,8 +7,13 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.compiler.sql_translator import SQLTranslationError, translate_sql_to_query
-from orionbelt.models.query import FilterOperator, Grouping
+from orionbelt.compiler.sql_translator import (
+    SQLTranslationError,
+    bind_placeholders,
+    strip_where_for_schema,
+    translate_sql_to_query,
+)
+from orionbelt.models.query import FilterOperator, Grouping, NullsPosition
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
@@ -212,6 +217,40 @@ def test_a_cast_that_keeps_the_value_reads_as_the_literal(
         f'SELECT "Customer Country", "Total Revenue" FROM m WHERE {predicate}', model
     )
     assert (q.where or q.having)[0].value == value
+
+
+@pytest.mark.parametrize(
+    ("clause", "direction", "nulls"),
+    [
+        # Postgres semantics on every backend: NULLs last ASC, first DESC.
+        ("", "asc", NullsPosition.LAST),
+        ("DESC", "desc", NullsPosition.FIRST),
+        ("NULLS FIRST", "asc", NullsPosition.FIRST),
+        ("DESC NULLS LAST", "desc", NullsPosition.LAST),
+    ],
+)
+def test_order_by_null_placement_is_postgres(
+    model: SemanticModel, clause: str, direction: str, nulls: NullsPosition
+) -> None:
+    """A plain ``ORDER BY`` used to come through as NULLS FIRST (generic sqlglot)."""
+    q = translate_sql_to_query(f'SELECT "Customer Country" FROM m ORDER BY 1 {clause}', model)
+    assert q.order_by[0].direction.value == direction
+    assert q.order_by[0].nulls == nulls
+
+
+def test_prepared_statement_rewrites_keep_an_explicit_nulls_first() -> None:
+    """NULLS FIRST on ASC is the generic default and was dropped on regeneration."""
+    sql = 'SELECT "Customer Country" FROM m WHERE "Customer Country" = ? ORDER BY 1 NULLS FIRST'
+    assert strip_where_for_schema(sql).endswith("ORDER BY 1 NULLS FIRST")
+    assert bind_placeholders(sql, ["US"]).endswith("ORDER BY 1 NULLS FIRST")
+
+
+def test_is_not_null_filter(model: SemanticModel) -> None:
+    """The Postgres reader builds a negated ``Is``; it must not read as IS NULL."""
+    q = translate_sql_to_query(
+        'SELECT "Customer Country" FROM m WHERE "Customer Country" IS NOT NULL', model
+    )
+    assert q.where[0].op == FilterOperator.IS_NOT_NULL
 
 
 def test_limit(model: SemanticModel) -> None:
@@ -1172,3 +1211,14 @@ def test_every_bound_parameter_reads_as_a_literal(
         f'SELECT "Customer Country", "Total Revenue" FROM m WHERE {where}', model
     )
     assert q.where or q.having
+
+
+def test_placeholder_numbering_leaves_dollar_quoted_strings_alone() -> None:
+    """``$$?$$`` is a string: binding must not rewrite its contents (review of #514)."""
+    sql = (
+        'SELECT "Customer Country" FROM m WHERE "Customer Country" = $$?$$ AND "Total Revenue" > ?'
+    )
+    bound = bind_placeholders(sql, [5])
+    assert "$$?$$" in bound or "'?'" in bound
+    assert "_obsl_param" not in bound
+    assert bound.endswith("> 5")
