@@ -76,3 +76,35 @@ def test_the_bundled_model_lists_every_named_child() -> None:
     for section in ("dataObjects", "dimensions", "measures", "metrics", "rules", "examples"):
         assert sum(label.startswith(f"{section} / ") for label in labels) == len(model[section])
     assert not [label for label in labels if "- " in label]
+
+
+def test_unindented_lists_keep_their_examples() -> None:
+    """``yaml.safe_dump`` writes ``- name:`` at column 0 (review of #517)."""
+    import yaml
+
+    text = (Path(__file__).parents[2] / "examples" / "orionbelt_1_commerce.yaml").read_text()
+    model = yaml.safe_load(text)
+    dumped = yaml.safe_dump(model, sort_keys=False)
+    assert "\n- name:" in dumped
+    labels = [label for label, _ in _choices(dumped)]
+    assert sum(label.startswith("examples / ") for label in labels) == len(model["examples"])
+    lines = dumped.split("\n")
+    for label, line in _choices(dumped):
+        if label.startswith("examples / "):
+            assert lines[int(line) - 1].startswith("- name: " + label.split(" / ", 1)[1])
+
+
+def test_a_key_starting_with_a_hyphen_keeps_its_target() -> None:
+    """``-Profit`` is a valid dimension name, not a list marker (review of #517)."""
+    text = "dimensions:\n  -Profit:\n    dataObject: Sales\n  Plain:\n    dataObject: Sales\n"
+    assert _choices(text) == [
+        ("dimensions", "1"),
+        ("dimensions / -Profit", "2"),
+        ("dimensions / Plain", "4"),
+    ]
+
+
+def test_yaml_that_does_not_parse_leaves_the_choices_alone() -> None:
+    """Mid-edit, the dropdown keeps its last good targets instead of emptying."""
+    update = model_jump_targets("metrics:\n  Average Sale: [unclosed\n")
+    assert "choices" not in update
