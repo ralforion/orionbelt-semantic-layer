@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
 from decimal import Decimal
 
@@ -218,10 +218,15 @@ def test_timestamp_binary_keeps_the_wall_clock_of_an_aware_value() -> None:
     assert pgtypes.encode_value(aware, "datetime", 1) == pgtypes.encode_value(naive, "datetime", 1)
 
 
-def test_interval_has_no_binary_form_and_stays_text() -> None:
-    from datetime import timedelta
-
-    assert pgtypes.encode_value(timedelta(days=1), "datetime", format_code=1) == "1 day, 0:00:00"
+@pytest.mark.parametrize("value", [timedelta(days=1), dt_time(10, 30)])
+def test_no_text_is_sent_after_binary_was_announced(value: object) -> None:
+    """A time of day or an interval has no TIMESTAMP binary form (review of #513)."""
+    assert not pgtypes.can_encode_binary_value(value, "datetime")
+    with pytest.raises(ValueError, match="no binary"):
+        pgtypes.encode_value(value, "datetime", format_code=1)
+    assert pgtypes.encode_value(value, "datetime", format_code=0) == str(
+        value.isoformat() if isinstance(value, dt_time) else value
+    )
 
 
 def test_bool_and_bytea_binary() -> None:

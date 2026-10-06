@@ -98,6 +98,32 @@ def can_encode_binary(type_hint: str) -> bool:
     return type_hint in _BINARY_HINTS
 
 
+def can_encode_binary_value(value: object, type_hint: str) -> bool:
+    """True when ``value`` has a binary form under ``type_hint``'s OID.
+
+    Only a few hints depend on the value: a ``"datetime"`` column announced
+    as TIMESTAMP can carry a time of day or an interval, which have no
+    TIMESTAMP form, and a ``"text_array"`` needs a list. The router sends such
+    a column as text, and says so in its RowDescription.
+    """
+
+    if value is None:
+        return True
+    if type_hint == "datetime":
+        if isinstance(value, (datetime, date)):
+            return True
+        if isinstance(value, str):
+            try:
+                datetime.fromisoformat(value)
+            except ValueError:
+                return False
+            return True
+        return False
+    if type_hint == "text_array":
+        return isinstance(value, (list, tuple))
+    return True
+
+
 _BINARY_HINTS: Final[frozenset[str]] = frozenset(
     {"string", "number", "decimal", "datetime", "boolean", "binary", "text_array"}
 )
@@ -133,8 +159,11 @@ def encode_value(
 
     if format_code == 1:
         binary = _encode_binary(value, type_hint, scale)
-        if binary is not None:
-            return binary
+        if binary is None:
+            # Text bytes under a binary format code would be misread by the
+            # client; the router checks :func:`can_encode_binary_value` first.
+            raise ValueError(f"{type(value).__name__} value has no binary {type_hint!r} form")
+        return binary
 
     if type_hint == "decimal":
         return _encode_decimal_text(value, scale)

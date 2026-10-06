@@ -40,7 +40,8 @@ from dataclasses import dataclass, field
 
 import sqlglot
 import sqlglot.errors
-from sqlglot import exp
+from sqlglot import TokenType, exp
+from sqlglot.dialects.postgres import Postgres
 
 from orionbelt.pgwire import protocol
 
@@ -68,7 +69,8 @@ def _is_preexec_safe(sql: str) -> bool:
     """True when ``sql`` starts with a verb we'll execute at Parse time.
 
     Skips leading SQL comments (line and block) before checking the
-    verb. Anything not matching — CREATE, DROP, INSERT, UPDATE,
+    verb, then rejects the read verbs that write (see below). Anything
+    not matching — CREATE, DROP, INSERT, UPDATE,
     DELETE, ALTER, TRUNCATE, MERGE, GRANT, REVOKE, SET, RESET,
     BEGIN, COMMIT, ROLLBACK, SAVEPOINT, COPY, … — returns False and
     defers execution to Bind. Tableau's connect-check fires CREATE
@@ -78,7 +80,40 @@ def _is_preexec_safe(sql: str) -> bool:
     fix.
     """
 
-    return _RE_PREEXEC_SAFE_VERB.match(sql) is not None
+    if _RE_PREEXEC_SAFE_VERB.match(sql) is None or _RE_EXPLAIN_ANALYZE.match(sql):
+        return False
+    # A read verb can still write: ``SELECT ... INTO [TEMP] t``, a data-
+    # modifying CTE (``WITH d AS (DELETE ...) SELECT ...``). The tokenizer
+    # keeps quoted identifiers, strings and comments out of the check, so a
+    # column called "Insert Date" is not a write. ``FOR UPDATE`` counts as one,
+    # which only costs the early run.
+    try:
+        tokens = _TOKENIZER.tokenize(sql)
+    except sqlglot.errors.SqlglotError:
+        return False
+    return not any(token.token_type in _WRITE_TOKENS for token in tokens)
+
+
+_RE_EXPLAIN_ANALYZE = re.compile(
+    r"^\s*(?:--[^\n]*\n|/\*.*?\*/|\s)*explain\s*(?:\([^)]*\banalyze\b|analyze\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+_TOKENIZER = Postgres.tokenizer_class()
+_WRITE_TOKENS = frozenset(
+    {
+        TokenType.INTO,
+        TokenType.INSERT,
+        TokenType.UPDATE,
+        TokenType.DELETE,
+        TokenType.MERGE,
+        TokenType.CREATE,
+        TokenType.DROP,
+        TokenType.ALTER,
+        TokenType.TRUNCATE,
+        TokenType.COPY,
+        TokenType.GRANT,
+    }
+)
 
 
 # Type alias matching :class:`PgWireServer`'s handler signature.
@@ -111,6 +146,10 @@ class PreparedStatement:
     # a named statement with Bind + Execute only, and a RowDescription it
     # did not ask for puts its reply queue out of step.
     row_description_sent: bool = False
+    # The column type OIDs that RowDescription announced. A later Bind whose
+    # result differs is refused (see ``_result_type_changed``): the client
+    # would decode the new bytes by the old types.
+    described_oids: tuple[int, ...] = ()
 
 
 @dataclass
@@ -155,6 +194,10 @@ class Portal:
     statement: PreparedStatement
     reply: PortalReply = field(default_factory=PortalReply)
     described: bool = False  # Tracks whether Describe('P') was issued for this portal.
+    # The client holds a description of the statement that this portal's
+    # result no longer matches. A Describe('P') hands it the right one;
+    # Execute without it is refused rather than misread.
+    stale_description: bool = False
 
 
 class ExtendedSession:
@@ -286,6 +329,9 @@ class ExtendedSession:
             )
             reply = _split_simple_reply(raw)
         portal = Portal(name=msg.portal_name, statement=stmt, reply=reply)
+        portal.stale_description = stmt.row_description_sent and _result_type_changed(
+            stmt, reply, msg.result_formats
+        )
         # If Describe('S') already sent the RowDescription, the client
         # has the schema. Per the Postgres protocol Bind.result_formats
         # overrides the format_code in RowDescription per column —
@@ -324,7 +370,7 @@ class ExtendedSession:
                 if reply.is_error:
                     return protocol.build_parameter_description(param_oids) + reply.error
                 if reply.row_description:
-                    stmt.row_description_sent = True
+                    _mark_described(stmt, reply.row_description)
                     return protocol.build_parameter_description(param_oids) + reply.row_description
             return protocol.build_parameter_description(param_oids) + protocol.build_no_data()
 
@@ -336,13 +382,14 @@ class ExtendedSession:
                 message=f"portal {msg.name!r} does not exist",
             )
         portal.described = True
+        portal.stale_description = False
         if portal.reply.is_error:
             return portal.reply.error
         if portal.reply.is_empty_query:
             return protocol.build_no_data()
         if not portal.reply.row_description:
             return protocol.build_no_data()
-        portal.statement.row_description_sent = True
+        _mark_described(portal.statement, portal.reply.row_description)
         return portal.reply.row_description
 
     async def _describe_parameterised(self, stmt: PreparedStatement) -> PortalReply | None:
@@ -351,7 +398,8 @@ class ExtendedSession:
         Real Postgres knows a statement's result columns at Parse; here they
         come from running it. The columns never depend on the parameter
         values, so this runs the statement without them: first the SQL as
-        written with every parameter NULL (the catalog path accepts that),
+        written with every parameter a typed NULL (the catalog path accepts
+        that),
         then, if that fails (OBSQL rejects ``= NULL``), a variant with WHERE,
         HAVING and OFFSET removed and ``LIMIT 0``. A statement that is not
         read-only, or for which neither works, keeps the ``NoData`` reply
@@ -362,7 +410,11 @@ class ExtendedSession:
             return stmt.describe_reply
         if not _is_preexec_safe(stmt.sql):
             return None
-        for sql in (_with_null_parameters(stmt.sql, stmt.param_oids), _shape_only(stmt.sql)):
+        candidates = (
+            _with_typed_nulls(stmt.sql, stmt.param_oids),
+            _shape_only(stmt.sql, stmt.param_oids),
+        )
+        for sql in candidates:
             if sql is None:
                 continue
             reply = _split_simple_reply(await self._handler(sql, self._database))
@@ -385,6 +437,13 @@ class ExtendedSession:
             )
         if portal.reply.is_error:
             return portal.reply.error
+        if portal.stale_description:
+            # Postgres refuses the same situation with this message.
+            return protocol.build_error_response(
+                severity="ERROR",
+                code=SQLSTATE_FEATURE_NOT_SUPPORTED,
+                message="cached plan must not change result type",
+            )
         if portal.reply.is_empty_query:
             return protocol.build_empty_query_response()
 
@@ -425,21 +484,84 @@ class _BadParameterError(Exception):
     """Raised when a text parameter can't be decoded."""
 
 
-def _with_null_parameters(sql: str, param_oids: tuple[int, ...]) -> str | None:
-    """``sql`` with every ``$N`` placeholder bound to NULL."""
+def _row_description_columns(row_description: bytes) -> list[tuple[int, int]]:
+    """``(type OID, format code)`` per column of a RowDescription frame."""
 
-    count = max([len(param_oids), *(int(n) for n in re.findall(r"\$(\d+)", sql))])
+    (count,) = struct.unpack("!H", row_description[5:7])
+    columns: list[tuple[int, int]] = []
+    pos = 7
+    for _ in range(count):
+        pos = row_description.index(b"\x00", pos) + 1
+        _, _, oid, _, _, fmt = struct.unpack("!IhIhih", row_description[pos : pos + 18])
+        columns.append((oid, fmt))
+        pos += 18
+    return columns
+
+
+def _mark_described(stmt: PreparedStatement, row_description: bytes) -> None:
+    """Record that the client now holds ``stmt``'s result columns."""
+
+    stmt.row_description_sent = True
+    stmt.described_oids = tuple(oid for oid, _ in _row_description_columns(row_description))
+
+
+def _result_type_changed(
+    stmt: PreparedStatement, reply: PortalReply, result_formats: tuple[int, ...]
+) -> bool:
+    """True when a Bind's result would be misread by a client that described it.
+
+    That client decodes each column by the type it was told and the format it
+    asked for in Bind, and gets no new RowDescription. A different type (the
+    describe-time placeholder bound differently), or a column the server can
+    only send as text after binary was asked for, would be decoded wrongly
+    without an error.
+    """
+
+    if reply.is_error or not reply.row_description:
+        return False
+    columns = _row_description_columns(reply.row_description)
+    if tuple(oid for oid, _ in columns) != stmt.described_oids:
+        return True
+    if not result_formats:
+        requested = [0] * len(columns)
+    elif len(result_formats) == 1:
+        requested = [result_formats[0]] * len(columns)
+    else:
+        requested = list(result_formats)
+    return [fmt for _, fmt in columns] != requested
+
+
+def _with_typed_nulls(sql: str, param_oids: tuple[int, ...]) -> str | None:
+    """``sql`` with every ``$N`` bound to a NULL of the type Bind would give it.
+
+    The scanner finds the placeholders, so a ``$N`` inside a literal or a
+    comment is not one, and nothing is allocated per index: ``$1000000`` in a
+    string costs nothing. An index past Postgres's own parameter limit, or one
+    the statement never declared, leaves the statement undescribed (None).
+    """
+
+    def render(idx: int) -> str:
+        if idx >= _MAX_PARAMETERS:
+            raise _BadParameterError(f"Placeholder ${idx + 1} exceeds the parameter limit")
+        oid = param_oids[idx] if idx < len(param_oids) else 0
+        return _TYPED_NULL.get(oid, "CAST(NULL AS VARCHAR)")
+
     try:
-        return _replace_placeholders(sql, ["NULL"] * count)
+        return _map_placeholders(sql, render)
     except _BadParameterError:
         return None
 
 
-def _shape_only(sql: str) -> str | None:
+#: Postgres caps a statement at 65535 parameters (an int16 count on the wire).
+_MAX_PARAMETERS = 65535
+
+
+def _shape_only(sql: str, param_oids: tuple[int, ...]) -> str | None:
     """A SELECT reduced to its result shape: no WHERE / HAVING / OFFSET, LIMIT 0.
 
     Placeholders left elsewhere (a JOIN condition, the select list) are bound
-    to NULL. None when ``sql`` is not a single SELECT sqlglot can round-trip.
+    to typed NULLs. None when ``sql`` is not a single SELECT sqlglot can
+    round-trip.
     """
 
     try:
@@ -450,7 +572,7 @@ def _shape_only(sql: str) -> str | None:
         return None
     for clause in ("where", "having", "offset"):
         tree.set(clause, None)
-    return _with_null_parameters(tree.limit(0).sql(dialect="postgres"), ())
+    return _with_typed_nulls(tree.limit(0).sql(dialect="postgres"), param_oids)
 
 
 def _expand_param_formats(formats: tuple[int, ...], n_params: int) -> list[int]:
@@ -547,6 +669,21 @@ _NUMERIC_TEXT_OIDS: frozenset[int] = frozenset(
 )
 _BOOL_TEXT_OIDS: frozenset[int] = frozenset({_OID_BOOL})
 
+#: The SQL type each parameter OID binds as in :func:`substitute_parameters`:
+#: numbers and booleans render unquoted, everything else as a quoted string.
+#: A float or numeric binds as a literal whose type follows its value (``1``
+#: is an integer, ``1.5`` a decimal); Bind's result-type check catches the
+#: rare select-list parameter where that differs from what Describe said.
+_TYPED_NULL: dict[int, str] = {
+    _OID_INT2: "CAST(NULL AS BIGINT)",
+    _OID_INT4: "CAST(NULL AS BIGINT)",
+    _OID_INT8: "CAST(NULL AS BIGINT)",
+    _OID_FLOAT4: "CAST(NULL AS DOUBLE)",
+    _OID_FLOAT8: "CAST(NULL AS DOUBLE)",
+    _OID_NUMERIC: "CAST(NULL AS DECIMAL)",
+    _OID_BOOL: "CAST(NULL AS BOOLEAN)",
+}
+
 
 def _canonical_numeric_text(text: str, oid: int) -> str:
     """Parse a text-format numeric parameter and re-render it canonically.
@@ -636,7 +773,18 @@ _DOLLAR_QUOTE_OPEN = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
 def _replace_placeholders(sql: str, rendered: list[str]) -> str:
-    """Replace ``$N`` bind placeholders with their rendered literal.
+    """Replace ``$N`` bind placeholders with their rendered literal."""
+
+    def render(idx: int) -> str:
+        if idx >= len(rendered):
+            raise _BadParameterError(f"Placeholder ${idx + 1} has no bound value")
+        return rendered[idx]
+
+    return _map_placeholders(sql, render)
+
+
+def _map_placeholders(sql: str, render: Callable[[int], str]) -> str:
+    """Replace each ``$N`` bind placeholder with ``render(N - 1)``.
 
     A small SQL-aware scanner substitutes ``$N`` **only** in default context.
     It skips over string literals (``'…''…'``), quoted identifiers (``"…""…"``),
@@ -725,9 +873,9 @@ def _replace_placeholders(sql: str, rendered: list[str]) -> str:
                 while j < n and sql[j].isdigit():
                     j += 1
                 idx = int(sql[i + 1 : j]) - 1
-                if idx < 0 or idx >= len(rendered):
+                if idx < 0:
                     raise _BadParameterError(f"Placeholder ${idx + 1} has no bound value")
-                out.append(rendered[idx])
+                out.append(render(idx))
                 i = j
                 continue
 

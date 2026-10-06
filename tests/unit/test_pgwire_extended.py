@@ -353,13 +353,14 @@ def test_describe_parameterised_statement_runs_it_with_null_parameters() -> None
     _parse(sess, "s1", "SELECT col FROM t WHERE col = $1", (protocol.OID_TEXT,))
     assert seen == []  # parameterised: nothing ran at Parse
     assert _describe(sess, b"S", "s1") == [b"t", b"T"]
-    assert seen == ["SELECT col FROM t WHERE col = NULL"]
+    assert seen == ["SELECT col FROM t WHERE col = CAST(NULL AS VARCHAR)"]
 
 
 def test_describe_parameterised_falls_back_to_shape_only() -> None:
-    """OBSQL rejects ``= NULL``; the WHERE-less ``LIMIT 0`` variant answers."""
+    """OBSQL rejects a NULL comparison; the WHERE-less ``LIMIT 0`` variant answers."""
     sess, seen = _recording_session(
-        {'SELECT "a" FROM m WHERE "a" = NULL LIMIT 5': _error_reply()}, _two_row_reply()
+        {'SELECT "a" FROM m WHERE "a" = CAST(NULL AS VARCHAR) LIMIT 5': _error_reply()},
+        _two_row_reply(),
     )
     _parse(sess, "s1", 'SELECT "a" FROM m WHERE "a" = $1 LIMIT 5', (protocol.OID_TEXT,))
     assert _describe(sess, b"S", "s1") == [b"t", b"T"]
@@ -377,6 +378,94 @@ def test_describe_parameterised_never_runs_a_write() -> None:
     _parse(sess, "s1", "INSERT INTO t VALUES ($1)", (protocol.OID_TEXT,))
     assert _describe(sess, b"S", "s1") == [b"t", b"n"]
     assert seen == []
+
+
+def test_describe_types_each_null_like_bind_renders_it() -> None:
+    """A TEXT parameter must not describe as a number (review of #513)."""
+    sess, seen = _recording_session({}, _two_row_reply())
+    _parse(sess, "s1", "SELECT $1, $2", (protocol.OID_TEXT, 23))
+    _describe(sess, b"S", "s1")
+    assert seen == ["SELECT CAST(NULL AS VARCHAR), CAST(NULL AS BIGINT)"]
+
+
+def test_describe_ignores_placeholders_inside_literals_and_comments() -> None:
+    """``'$1000000'`` once sized a list by that number."""
+    sess, seen = _recording_session({}, _two_row_reply())
+    _parse(sess, "s1", "SELECT '$1000000' /* $99 */, $1", (protocol.OID_TEXT,))
+    assert _describe(sess, b"S", "s1") == [b"t", b"T"]
+    assert seen == ["SELECT '$1000000' /* $99 */, CAST(NULL AS VARCHAR)"]
+
+
+def test_describe_refuses_a_placeholder_past_the_parameter_limit() -> None:
+    sess, seen = _recording_session({}, _two_row_reply())
+    _parse(sess, "s1", "SELECT $70000", ())
+    assert _describe(sess, b"S", "s1") == [b"t", b"n"]
+    assert seen == []
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT a INTO TEMP t FROM x WHERE b = $1",
+        "WITH d AS (DELETE FROM t WHERE id = $1 RETURNING *) SELECT * FROM d",
+        "EXPLAIN ANALYZE SELECT a FROM t WHERE b = $1",
+    ],
+)
+def test_describe_never_runs_a_write_shaped_read(sql: str) -> None:
+    """SELECT INTO ran at Describe, so Bind then failed with "already exists"."""
+    sess, seen = _recording_session({}, _two_row_reply())
+    _parse(sess, "s1", sql, (protocol.OID_TEXT,))
+    assert _describe(sess, b"S", "s1") == [b"t", b"n"]
+    assert seen == []
+
+
+def test_parse_does_not_pre_run_a_select_into() -> None:
+    sess, seen = _recording_session({}, _two_row_reply())
+    _parse(sess, "", "SELECT 1 AS a INTO TEMP t", ())
+    assert seen == []
+
+
+def test_a_quoted_identifier_is_not_a_write() -> None:
+    sess, seen = _recording_session({}, _two_row_reply())
+    _parse(sess, "s1", 'SELECT "Insert Date" FROM m WHERE "Update" = $1', (protocol.OID_TEXT,))
+    assert _describe(sess, b"S", "s1") == [b"t", b"T"]
+
+
+def _reply_with(oid: int, fmt: int, value: str | bytes) -> bytes:
+    return (
+        protocol.build_row_description([("c", oid, fmt)])
+        + protocol.build_data_row([value])
+        + protocol.build_command_complete("SELECT 1")
+    )
+
+
+def test_execute_refuses_a_result_the_held_description_misreads() -> None:
+    """Described as FLOAT8, bound as TEXT: refuse rather than misdecode."""
+    described = "SELECT CAST(NULL AS VARCHAR)"
+    sess, _ = _recording_session(
+        {described: _reply_with(701, 0, "")}, _reply_with(25, 0, "abcdefgh")
+    )
+    _parse(sess, "S_1", "SELECT $1", (protocol.OID_TEXT,))
+    assert _describe(sess, b"S", "S_1") == [b"t", b"T"]
+    _bind(sess, "S_1", (b"abcdefgh",))
+    reply = sess.execute(protocol.ExecuteMessage(portal_name="", max_rows=0))
+    frames = _parse_frames(reply)
+    assert [t for t, _ in frames] == [b"E"]
+    assert b"cached plan must not change result type" in frames[0][1]
+
+
+def test_a_fresh_describe_portal_clears_the_mismatch() -> None:
+    """A client that describes the portal gets the right types and is served."""
+    described = "SELECT CAST(NULL AS VARCHAR)"
+    sess, _ = _recording_session(
+        {described: _reply_with(701, 0, "")}, _reply_with(25, 0, "abcdefgh")
+    )
+    _parse(sess, "S_1", "SELECT $1", (protocol.OID_TEXT,))
+    _describe(sess, b"S", "S_1")
+    _bind(sess, "S_1", (b"abcdefgh",))
+    assert _describe(sess, b"P", "") == [b"T"]
+    reply = sess.execute(protocol.ExecuteMessage(portal_name="", max_rows=0))
+    assert [t for t, _ in _parse_frames(reply)] == [b"D", b"C"]
 
 
 def test_reused_statement_does_not_repeat_row_description() -> None:
