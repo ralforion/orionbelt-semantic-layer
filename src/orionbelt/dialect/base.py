@@ -6,6 +6,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from orionbelt.ast.nodes import (
     AliasedExpr,
@@ -1694,7 +1695,11 @@ class Dialect(ABC):
         """
         if right is not None and isinstance(right, Literal):
             value = right.value
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value != 0:
+            if (
+                isinstance(value, (int, float, Decimal))
+                and not isinstance(value, bool)
+                and value != 0
+            ):
                 return right_sql
         return f"NULLIF({right_sql}, 0)"
 
@@ -1921,6 +1926,10 @@ class Dialect(ABC):
                 return "FALSE"
             case Literal(value=v) if isinstance(v, str):
                 return self.quote_string_literal(v)
+            case Literal(value=v) if isinstance(v, Decimal):
+                # Plain notation: str() would write 1E-10, which some engines
+                # read as a double.
+                return format(v, "f")
             case Literal(value=v):
                 return str(v)
             case Star(table=None):

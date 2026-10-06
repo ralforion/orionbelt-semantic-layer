@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 from orionbelt.ast.nodes import (
     BinaryOp,
@@ -107,7 +108,7 @@ def _is_numeric_expr(expr: Expr) -> bool:
     match expr:
         case Literal(value=value):
             # bool is an int in Python and is not a number to ClickHouse.
-            return isinstance(value, int | float) and not isinstance(value, bool)
+            return isinstance(value, int | float | Decimal) and not isinstance(value, bool)
         case ColumnRef(abstract_type=abstract_type):
             # Recorded where the name was resolved against the model, in either
             # declaration form. A ref invented for a CTE alias has none, and

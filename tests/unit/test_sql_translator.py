@@ -5,6 +5,8 @@ Spec: design/PLAN_flight_natural_sql.md
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from orionbelt.compiler.sql_translator import (
@@ -1222,3 +1224,26 @@ def test_placeholder_numbering_leaves_dollar_quoted_strings_alone() -> None:
     assert "$$?$$" in bound or "'?'" in bound
     assert "_obsl_param" not in bound
     assert bound.endswith("> 5")
+
+
+@pytest.mark.parametrize(
+    ("literal", "value"),
+    [
+        # Past a float's ~15 significant digits the literal stays exact.
+        ("9007199254740993.00", Decimal("9007199254740993.00")),
+        ("-12345678901234567890.123", Decimal("-12345678901234567890.123")),
+        # Ordinary values are floats, as before.
+        ("1.5", 1.5),
+        ("0.1", 0.1),
+    ],
+)
+def test_decimal_literals_keep_their_digits(
+    model: SemanticModel, literal: str, value: object
+) -> None:
+    q = translate_sql_to_query(
+        f'SELECT "Customer Country", "Total Revenue" FROM m WHERE "Total Revenue" > {literal}',
+        model,
+    )
+    filt = (q.having or q.where)[0]
+    assert filt.value == value
+    assert type(filt.value) is type(value)

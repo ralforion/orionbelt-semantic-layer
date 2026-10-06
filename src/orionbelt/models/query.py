@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -154,11 +155,11 @@ class QueryFilter(BaseModel):
             return v.isoformat()
         if isinstance(v, date):
             return v.isoformat()
-        if isinstance(v, (str, int, float, bool)):
+        if isinstance(v, (str, int, float, bool, Decimal)):
             return v
         if isinstance(v, list):
             coerced = [i.isoformat() if isinstance(i, (date, datetime)) else i for i in v]
-            if all(isinstance(i, (str, int, float, bool)) for i in coerced):
+            if all(isinstance(i, (str, int, float, bool, Decimal)) for i in coerced):
                 return coerced
         if isinstance(v, dict) and all(isinstance(k, str) for k in v):
             return v

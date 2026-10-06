@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import StrEnum
 
 
@@ -22,14 +23,14 @@ class JoinType(StrEnum):
 class Literal:
     """A literal value: number, string, boolean, or NULL."""
 
-    value: str | int | float | bool | None
+    value: str | int | float | Decimal | bool | None
 
     @classmethod
     def string(cls, v: str) -> Literal:
         return cls(value=v)
 
     @classmethod
-    def number(cls, v: int | float) -> Literal:
+    def number(cls, v: int | float | Decimal) -> Literal:
         return cls(value=v)
 
     @classmethod

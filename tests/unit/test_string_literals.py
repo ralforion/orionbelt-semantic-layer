@@ -98,3 +98,13 @@ class TestControlCharacters:
         control-character pass.
         """
         assert "\t" in DialectRegistry.get(dialect).quote_string_literal("a\tb")
+
+
+@pytest.mark.parametrize("dialect", DialectRegistry.available())
+def test_decimal_literal_renders_exactly_in_plain_notation(dialect: str) -> None:
+    """A filter value past a float's precision stays exact, never in E notation."""
+    from decimal import Decimal
+
+    compile_expr = DialectRegistry.get(dialect).compile_expr
+    assert compile_expr(Literal(value=Decimal("9007199254740993.00"))) == "9007199254740993.00"
+    assert compile_expr(Literal(value=Decimal("1E-10"))) == "0.0000000001"

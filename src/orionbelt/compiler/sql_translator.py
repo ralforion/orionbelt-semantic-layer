@@ -1717,13 +1717,20 @@ _TEMPORAL_PARSERS: dict[Any, Callable[[str], object]] = {
 }
 
 
-def _literal_value(expr: exp.Expression) -> str | int | float | bool | None:
-    """Extract a Python scalar from a sqlglot literal node, or None for non-literals."""
+def _literal_value(expr: exp.Expression) -> str | int | float | Decimal | bool | None:
+    """Extract a Python scalar from a sqlglot literal node, or None for non-literals.
+
+    A decimal literal is a float unless a float cannot hold it: past about 15
+    significant digits (``9007199254740993.00``) it stays a ``Decimal``, so the
+    filter compiles to the value that was written.
+    """
     if isinstance(expr, exp.Literal):
         if expr.is_int:
             return int(expr.this)
         if expr.is_number:
-            return float(expr.this)
+            exact = Decimal(expr.this)
+            approx = float(exact)
+            return approx if Decimal(repr(approx)) == exact else exact
         return str(expr.this)
     if isinstance(expr, exp.Boolean):
         return bool(expr.this)
@@ -1731,7 +1738,7 @@ def _literal_value(expr: exp.Expression) -> str | int | float | bool | None:
         return None
     if isinstance(expr, exp.Neg) and isinstance(expr.this, exp.Literal):
         val = _literal_value(expr.this)
-        if isinstance(val, int | float):
+        if isinstance(val, int | float | Decimal) and not isinstance(val, bool):
             return -val
     return None
 
