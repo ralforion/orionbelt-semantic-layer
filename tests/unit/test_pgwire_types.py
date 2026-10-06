@@ -127,3 +127,20 @@ def test_encode_decimal_fixed_scale() -> None:
 
 def test_encode_decimal_without_scale_keeps_value() -> None:
     assert pgtypes.encode_value(Decimal("12.340"), "decimal", 0, None) == "12.340"
+
+
+def test_text_array_hint_maps_to_text_array_oid() -> None:
+    assert pgtypes.oid_for_type_hint("text_array") == pgtypes.OID_TEXT_ARRAY == 1009
+
+
+def test_encode_text_array_literal() -> None:
+    assert pgtypes.encode_value([], "text_array") == "{}"
+    assert (
+        pgtypes.encode_value(["fillfactor=70", "a b", "", None, "null", 'q"\\'], "text_array")
+        == '{fillfactor=70,"a b","",NULL,"null","q\\"\\\\"}'
+    )
+
+
+def test_text_array_is_never_sent_binary() -> None:
+    """pgjdbc asks for binary on text[]; the router then advertises text."""
+    assert not pgtypes.can_encode_binary("text_array")

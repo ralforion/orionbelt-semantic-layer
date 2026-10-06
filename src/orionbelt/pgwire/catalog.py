@@ -145,6 +145,13 @@ _STUB_MACROS: tuple[str, ...] = (
         WHEN 2950 THEN 'uuid'
         ELSE 'unknown' END""",
     "CREATE OR REPLACE MACRO pg_encoding_to_char(enc) AS 'UTF8'",
+    # SQLAlchemy 2.x reflection writes ``CAST(... AS REGCLASS)``, which the
+    # ``::regclass`` rewrite cannot reach. DuckDB has ``OID`` but no reg*
+    # types; text aliases keep the casts binding. ``pg_description`` carries
+    # no comments, so a text comparison against a regclass loses nothing.
+    "CREATE TYPE IF NOT EXISTS regclass AS VARCHAR",
+    "CREATE TYPE IF NOT EXISTS regtype AS VARCHAR",
+    "CREATE OR REPLACE MACRO pg_collation_is_visible(oid) AS true",
     # Superset's SQL Lab reads ``pg_backend_pid()`` before each query and
     # sends ``pg_terminate_backend(pid)`` to stop it. Cancellation is not
     # honoured, so the PID is a fixed placeholder and both signal functions
@@ -239,6 +246,32 @@ _TYPMOD_TRANSLATION_CASE = f"""
 #: base type in the shadow ``pg_type`` claims it as its namespace.
 _PG_CATALOG_OID = 11
 
+
+#: Macros whose body reads a shadow view. DuckDB binds a macro's subquery at
+#: CREATE time, so these run after ``_SHADOW_VIEWS``.
+_VIEW_MACROS: tuple[str, ...] = (
+    # Both lookups collect their shadow view into a list and pick the match
+    # with a lambda, rather than filter the view in a subquery. DuckDB
+    # substitutes a macro argument as text, so a caller's column argument
+    # (``current_setting(name)`` over pg_settings) would otherwise bind to the
+    # view's own column of that name inside the subquery. The lambda sees the
+    # caller's scope; its ``_obsl_row`` parameter is the only name it shadows.
+    #
+    # psycopg 3 resolves type names with ``to_regtype(name)``: the OID, or
+    # NULL when no such type exists (it probes for hstore on connect).
+    "CREATE OR REPLACE MACRO to_regtype(type_name) AS list_filter("
+    "(SELECT list({'n': typname, 'v': oid}) FROM _obsl_pg_type), "
+    "lambda _obsl_row: _obsl_row.n = type_name)[1].v",
+    # Postgres's current_setting reads pg_settings. Names are matched
+    # case-insensitively like GUCs; the Postgres rows (non-empty category)
+    # sort first, so they win over DuckDB's own settings of the same name.
+    # An unknown name is NULL, as with ``missing_ok``, instead of an error.
+    "CREATE OR REPLACE MACRO _obsl_current_setting(setting_name, missing_ok := false) AS "
+    "list_filter("
+    "(SELECT list({'n': lower(name), 'v': setting} ORDER BY category = '') "
+    "FROM _obsl_pg_settings), "
+    "lambda _obsl_row: _obsl_row.n = lower(setting_name))[1].v",
+)
 
 _SHADOW_VIEWS: tuple[str, ...] = (
     # Empty stubs for pg_catalog tables DuckDB doesn't expose but
@@ -374,6 +407,8 @@ _SHADOW_VIEWS: tuple[str, ...] = (
     # so Superset on "Test connection", fails the bind without it.
     # ``typdefault`` (no default) and ``typcollation`` (none) are read by
     # SQLAlchemy's domain lookup during table reflection.
+    # ``typdelim`` (',' for every base type) is read by psycopg 3's type
+    # lookup, which also needs ``to_regtype`` below.
     # ``typnamespace``: every base type below lives in ``pg_catalog``, as in
     # Postgres, and DuckDB's own ``postgres`` extension joins on it to
     # enumerate a catalog. Without the column the bind fails with "does not
@@ -390,7 +425,7 @@ _SHADOW_VIEWS: tuple[str, ...] = (
     # this oid resolve.
     f"""CREATE OR REPLACE TEMP VIEW _obsl_pg_type AS
         SELECT t.*, {_PG_CATALOG_OID} AS typnamespace,
-               NULL::VARCHAR AS typdefault, 0 AS typcollation
+               NULL::VARCHAR AS typdefault, 0 AS typcollation, ',' AS typdelim
         FROM (VALUES
             -- columns: oid, typname, typcategory, typlen, typtype,
             --          typnotnull, typtypmod, typbasetype, typelem, typrelid,
@@ -426,11 +461,13 @@ _SHADOW_VIEWS: tuple[str, ...] = (
     # <parameter1> is null". DuckDB's native pg_class always returns
     # NULL for these (no ACL system, no per-table reloptions). Keep
     # all other columns intact via SELECT * EXCLUDE so existing
-    # introspection probes work unchanged.
+    # introspection probes work unchanged. Both are empty ``VARCHAR[]``,
+    # sent as ``text[]``: the wire text stays ``{}`` for pgjdbc, and psycopg
+    # decodes an empty list, which SQLAlchemy 2.x needs to read reloptions.
     """CREATE OR REPLACE TEMP VIEW _obsl_pg_class AS
         SELECT * EXCLUDE (relacl, reloptions),
-               COALESCE(CAST(relacl AS VARCHAR), '{}') AS relacl,
-               COALESCE(CAST(reloptions AS VARCHAR), '{}') AS reloptions
+               COALESCE(CAST(relacl AS VARCHAR[]), []::VARCHAR[]) AS relacl,
+               COALESCE(CAST(reloptions AS VARCHAR[]), []::VARCHAR[]) AS reloptions
         FROM pg_catalog.pg_class""",
     # Shadow pg_namespace that hides DuckDB's internal ``main`` schema
     # from BI-tool schema browsers. The branded ``orionbelt`` ATTACHed
@@ -517,6 +554,8 @@ _SHADOW_VIEWS: tuple[str, ...] = (
         UNION ALL
         SELECT * FROM (VALUES
             ('max_index_keys',          '32',  'Preset Options',  'Number of index keys'),
+            ('default_table_access_method','heap','Client Connection Defaults',
+                                                       'Default table access method'),
             ('max_identifier_length',   '63',  'Preset Options',  'Identifier length'),
             ('block_size',              '8192','Preset Options',  'Block size'),
             ('server_version',          '15.0','Reporting',       'Server version'),
@@ -544,6 +583,37 @@ _SHADOW_VIEWS: tuple[str, ...] = (
             ('application_name',        '',    'Reporting',   'Application name'),
             ('extra_float_digits',      '3',   'Client Connection','Float precision')
         ) AS t(name, setting, category, short_desc)""",
+    # Empty pg_collation with Postgres's columns. DuckDB's has only ``oid``
+    # and ``collname``; SQLAlchemy 2.x column and domain reflection join
+    # ``collnamespace`` and read the rest. No custom collations exist.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_collation AS
+        SELECT * FROM (VALUES (
+            0::BIGINT, ''::VARCHAR, 0::BIGINT, 0::BIGINT, ''::VARCHAR,
+            true::BOOLEAN, -1::INTEGER, ''::VARCHAR, ''::VARCHAR
+        )) AS t(oid, collname, collnamespace, collowner, collprovider,
+                collisdeterministic, collencoding, collcollate, collctype)
+        WHERE false""",
+    # pg_index plus ``indnullsnotdistinct`` (Postgres 15+, default false).
+    # We report server_version 15, so SQLAlchemy 2.x constraint reflection
+    # selects it and DuckDB's pg_index has no such column.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_index AS
+        SELECT *, false AS indnullsnotdistinct FROM pg_catalog.pg_index""",
+    # Empty pg_opclass (DuckDB has none). SQLAlchemy 2.x index reflection
+    # loads the non-default operator classes up front; with no indexes there
+    # are none to name.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_opclass AS
+        SELECT * FROM (VALUES (
+            0::BIGINT, 0::BIGINT, ''::VARCHAR, 0::BIGINT, 0::BIGINT,
+            0::BIGINT, 0::BIGINT, true::BOOLEAN, 0::BIGINT
+        )) AS t(oid, opcmethod, opcname, opcnamespace, opcowner, opcfamily,
+                opcintype, opcdefault, opckeytype)
+        WHERE false""",
+    # Empty pg_inherits (no table inheritance). SQLAlchemy 2.x joins it
+    # when it reflects table options (``Table(..., autoload_with=...)``).
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_inherits AS
+        SELECT * FROM (VALUES (0::BIGINT, 0::BIGINT, 0::INTEGER, false::BOOLEAN))
+            AS t(inhrelid, inhparent, inhseqno, inhdetachpending)
+        WHERE false""",
     f"""CREATE OR REPLACE TEMP VIEW _obsl_pg_database AS
         SELECT * FROM (VALUES (
             16384::INTEGER,                         -- oid
@@ -702,6 +772,50 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"(?<![.\w])pg_database\b(?!\s*\()", re.IGNORECASE),
         "_obsl_pg_database",
+    ),
+    # pg_index — route to the shadow that adds ``indnullsnotdistinct``.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_index\b", re.IGNORECASE),
+        "_obsl_pg_index",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_index\b", re.IGNORECASE),
+        "_obsl_pg_index",
+    ),
+    # pg_opclass — route to the empty shadow.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_opclass\b", re.IGNORECASE),
+        "_obsl_pg_opclass",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_opclass\b", re.IGNORECASE),
+        "_obsl_pg_opclass",
+    ),
+    # pg_inherits — route to the empty shadow.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_inherits\b", re.IGNORECASE),
+        "_obsl_pg_inherits",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_inherits\b", re.IGNORECASE),
+        "_obsl_pg_inherits",
+    ),
+    # current_setting(...) → _obsl_current_setting(...), which reads the
+    # Postgres-flavoured pg_settings shadow. DuckDB's own current_setting
+    # raises on Postgres-only parameters, including when psycopg 3 binds the
+    # name server-side, so a literal-only rewrite would not reach it.
+    (
+        re.compile(r"\b(?:pg_catalog\s*\.\s*)?current_setting\s*\(", re.IGNORECASE),
+        "_obsl_current_setting(",
+    ),
+    # pg_collation — route to the shadow with the full column set.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_collation\b", re.IGNORECASE),
+        "_obsl_pg_collation",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_collation\b", re.IGNORECASE),
+        "_obsl_pg_collation",
     ),
     # pg_namespace — DuckDB's native view exposes ``main`` (the
     # default schema) next to our branded ``orionbelt`` schema, which
@@ -880,6 +994,9 @@ class CatalogEmulator:
         for view_ddl in _SHADOW_VIEWS:
             with contextlib.suppress(Exception):
                 self._con.execute(view_ddl)
+        for ddl in _VIEW_MACROS:
+            with contextlib.suppress(Exception):
+                self._con.execute(ddl)
         with contextlib.suppress(Exception):
             self._con.execute("USE memory")
         # Clients reach this connection with SQL of their own: catalog
@@ -1364,6 +1481,10 @@ def _duckdb_desc_to_hint(description_row: tuple[Any, ...]) -> str:
         # a DECIMAL model column agrees with information_schema.columns and the
         # query result's RowDescription (issue #116).
         return "decimal"
+    if name == "varchar[]":
+        # Before the substring checks: a list type name contains its element
+        # type's name.
+        return "text_array"
     if "interval" in name:
         # Must precede the numeric check: "interval" contains "int", so the
         # substring match below classified a duration as a number and

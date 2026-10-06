@@ -87,7 +87,7 @@ dev = [
     "ruff>=0.15",
     "mypy>=1.19",
     "pre-commit>=4.5",
-    "duckdb>=1.0",
+    "duckdb>=1.4",
     "testcontainers>=4.0",
     "psycopg2-binary>=2.9",
     "psycopg[binary]>=3.2",
@@ -143,6 +143,11 @@ flight = [
     "ob-databricks>=0.1",
     "ob-dremio>=0.1",
     "ob-duckdb>=0.1",
+    # The pgwire catalog emulator runs on DuckDB and needs 1.4: macros called
+    # with a defaulted argument positionally (pg_get_expr(e, oid, true)), and
+    # cursor descriptions that name a list's element type. Declared here too
+    # so it applies without waiting for an ob-duckdb release.
+    "duckdb>=1.4",
     "ob-mysql>=0.1",
     "ob-postgres>=0.1",
     "ob-snowflake>=0.1",
@@ -157,6 +162,7 @@ flight-duckdb-only = [
     "ob-flight-extension>=0.1",
     "ob-driver-core>=0.1",
     "ob-duckdb>=0.1",
+    "duckdb>=1.4",  # pgwire catalog emulator, see `flight`
     "osi-orionbelt>=0.2",
 ]
 
@@ -270,7 +276,7 @@ dev = [
     "ruff>=0.15",
     "mypy>=1.19",
     "pre-commit>=4.5",
-    "duckdb>=1.0",
+    "duckdb>=1.4",
     "testcontainers>=4.0",
     "psycopg2-binary>=2.9",
     "psycopg[binary]>=3.2",

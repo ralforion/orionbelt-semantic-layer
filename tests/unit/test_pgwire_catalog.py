@@ -456,6 +456,103 @@ class TestSqlalchemyPostgresReflection:
         assert "unknown" not in types.values()
 
 
+class TestSqlalchemy2Reflection:
+    """Probes SQLAlchemy 2.x sends on top of 1.4's, and psycopg 3's type lookup."""
+
+    @pytest.fixture
+    def emu(self, manager_with_model: SessionManager) -> CatalogEmulator:
+        emulator = CatalogEmulator()
+        emulator.refresh(manager_with_model)
+        return emulator
+
+    def test_regclass_and_oid_casts_bind(self, emu: CatalogEmulator) -> None:
+        result = emu.execute(
+            "SELECT CAST(CAST(pg_catalog.pg_get_serial_sequence("
+            "CAST(CAST(1 AS REGCLASS) AS TEXT), 'x') AS REGCLASS) AS OID), "
+            "CAST('some_table' AS REGCLASS)"
+        )
+        assert result.rows == [[None, "some_table"]]
+
+    def test_collation_join_binds(self, emu: CatalogEmulator) -> None:
+        result = emu.execute(
+            "SELECT pg_catalog.pg_collation.collname, pg_catalog.pg_namespace.nspname "
+            "FROM pg_catalog.pg_collation JOIN pg_catalog.pg_namespace "
+            "ON pg_catalog.pg_namespace.oid = pg_catalog.pg_collation.collnamespace "
+            "WHERE pg_catalog.pg_collation_is_visible(pg_catalog.pg_collation.oid)"
+        )
+        assert result.rows == []
+
+    def test_index_nulls_not_distinct_binds(self, emu: CatalogEmulator) -> None:
+        """Postgres 15+ column; we report server_version 15."""
+        result = emu.execute(
+            "SELECT pg_catalog.pg_index.indnullsnotdistinct FROM pg_catalog.pg_index"
+        )
+        assert all(row == [False] for row in result.rows)
+
+    def test_opclass_and_inherits_are_empty(self, emu: CatalogEmulator) -> None:
+        opclass = emu.execute(
+            "SELECT pg_catalog.pg_opclass.oid, pg_catalog.pg_opclass.opcname "
+            "FROM pg_catalog.pg_opclass WHERE NOT pg_catalog.pg_opclass.opcdefault"
+        )
+        inherits = emu.execute(
+            "SELECT inhrelid, inhparent FROM pg_catalog.pg_inherits "
+            "JOIN pg_catalog.pg_class ON pg_inherits.inhparent = pg_class.oid"
+        )
+        assert opclass.rows == []
+        assert inherits.rows == []
+
+    def test_reloptions_is_an_empty_text_array(self, emu: CatalogEmulator) -> None:
+        """psycopg decodes ``text[]`` ``{}`` to ``[]``; pgjdbc still reads ``{}``."""
+        result = emu.execute(
+            "SELECT relacl, reloptions FROM pg_catalog.pg_class WHERE relname = 'model'"
+        )
+        assert [c.type_hint for c in result.columns] == ["text_array", "text_array"]
+        assert result.rows == [[[], []]]
+
+    @pytest.mark.parametrize(
+        ("call", "expected"),
+        [
+            ("current_setting('default_table_access_method')", "heap"),
+            # psycopg 3 binds the name server-side; the router inlines it cast.
+            ("current_setting(CAST('default_table_access_method' AS TEXT))", "heap"),
+            ("pg_catalog.current_setting('server_version_num')", "150000"),
+            # The Postgres row wins over DuckDB's own TimeZone setting.
+            ("current_setting('timezone')", "UTC"),
+            ("current_setting('no_such_setting', true)", None),
+        ],
+    )
+    def test_current_setting_reads_postgres_settings(
+        self, emu: CatalogEmulator, call: str, expected: str | None
+    ) -> None:
+        assert emu.execute(f"SELECT {call}").rows == [[expected]]
+
+    def test_current_setting_of_a_column_uses_the_callers_row(self, emu: CatalogEmulator) -> None:
+        """An unqualified column argument must not bind inside the macro's lookup."""
+        result = emu.execute(
+            "SELECT name, current_setting(name) FROM pg_settings "
+            "WHERE name IN ('server_version', 'server_encoding') ORDER BY name"
+        )
+        assert result.rows == [["server_encoding", "UTF8"], ["server_version", "15.0"]]
+
+    def test_to_regtype_of_a_column_uses_the_callers_row(self, emu: CatalogEmulator) -> None:
+        """Was a multiple-row scalar-subquery error."""
+        result = emu.execute(
+            "SELECT typname, to_regtype(typname) FROM pg_type "
+            "WHERE typname IN ('int4', 'text', 'bool') ORDER BY typname"
+        )
+        assert result.rows == [["bool", 16], ["int4", 23], ["text", 25]]
+
+    def test_psycopg3_type_lookup(self, emu: CatalogEmulator) -> None:
+        """psycopg 3's TypeInfo query: hstore is absent, int4 resolves."""
+        query = (
+            "SELECT typname AS name, oid, typarray AS array_oid, "
+            "oid::regtype::text AS regtype, typdelim AS delimiter "
+            "FROM pg_type t WHERE t.oid = to_regtype('{}') ORDER BY t.oid"
+        )
+        assert emu.execute(query.format("hstore")).rows == []
+        assert emu.execute(query.format("int4")).rows == [["int4", 23, 1007, "23", ","]]
+
+
 class TestTypeNamespaceResolves:
     """``pg_type.typnamespace`` has to point at a namespace that exists.
 

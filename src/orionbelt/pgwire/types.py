@@ -28,6 +28,7 @@ OID_BOOL: Final[int] = 16
 OID_BYTEA: Final[int] = 17
 OID_INT8: Final[int] = 20
 OID_TEXT: Final[int] = 25
+OID_TEXT_ARRAY: Final[int] = 1009
 OID_FLOAT8: Final[int] = 701
 OID_NUMERIC: Final[int] = 1700
 OID_DATE: Final[int] = 1082
@@ -49,6 +50,8 @@ def oid_for_type_hint(type_hint: str) -> int:
         return OID_TIMESTAMP
     if type_hint == "binary":
         return OID_BYTEA
+    if type_hint == "text_array":
+        return OID_TEXT_ARRAY
     return OID_TEXT
 
 
@@ -121,6 +124,9 @@ def encode_value(
     if type_hint == "decimal":
         return _encode_decimal_text(value, scale)
 
+    if type_hint == "text_array" and isinstance(value, (list, tuple)):
+        return _encode_text_array(value)
+
     if isinstance(value, bool):
         return "t" if value else "f"
 
@@ -151,6 +157,27 @@ def encode_text_value(value: object, type_hint: str) -> str | bytes | None:
     """Alias for :func:`encode_value` — accepted for legacy call sites."""
 
     return encode_value(value, type_hint)
+
+
+def _encode_text_array(items: list[object] | tuple[object, ...]) -> str:
+    """Postgres text-format array literal: ``{a,"b c",NULL}``.
+
+    Elements are quoted when Postgres would quote them (empty, the word
+    NULL, or containing a delimiter, brace, quote, backslash or
+    whitespace), with ``"`` and ``\\`` backslash-escaped. An empty list is
+    ``{}``.
+    """
+
+    parts: list[str] = []
+    for item in items:
+        if item is None:
+            parts.append("NULL")
+            continue
+        text = str(item)
+        if text == "" or text.upper() == "NULL" or any(c in '{},"\\' or c.isspace() for c in text):
+            text = '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        parts.append(text)
+    return "{" + ",".join(parts) + "}"
 
 
 def _encode_float8_binary(value: object) -> bytes:

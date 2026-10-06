@@ -146,6 +146,29 @@ def test_limit(model: SemanticModel) -> None:
     assert q.limit == 50
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        'SELECT "Customer Country" FROM m LIMIT CAST(50 AS INT) OFFSET 10::BIGINT',
+        'SELECT "Customers"."Customer ID" FROM m LIMIT CAST(50 AS INT) OFFSET 10::BIGINT',
+    ],
+)
+def test_limit_offset_bound_parameter_cast(model: SemanticModel, sql: str) -> None:
+    """psycopg 3 under SQLAlchemy 2.x binds ``LIMIT $1::INTEGER`` server-side."""
+    q = translate_sql_to_query(sql, model)
+    assert q.limit == 50
+    assert q.offset == 10
+
+
+def test_limit_non_integer_cast_rejected(model: SemanticModel) -> None:
+    with pytest.raises(SQLTranslationError) as exc:
+        translate_sql_to_query('SELECT "Customer Country" FROM m LIMIT CAST(50 AS TEXT)', model)
+    assert any(
+        e.code == "UNSUPPORTED_SQL_FEATURE" and e.message.startswith("LIMIT")
+        for e in exc.value.errors
+    )
+
+
 def test_group_by_ignored(model: SemanticModel) -> None:
     """Explicit GROUP BY in Semantic QL is silently accepted (no error)."""
     q = translate_sql_to_query(

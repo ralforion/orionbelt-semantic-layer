@@ -2364,7 +2364,7 @@ sqlalchemy = [
 
 [package.metadata]
 requires-dist = [
-    { name = "duckdb", specifier = ">=1.0" },
+    { name = "duckdb", specifier = ">=1.4" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "ob-driver-core", editable = "drivers/ob-driver-core" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -2621,6 +2621,7 @@ docs = [
     { name = "mkdocstrings", extra = ["python"] },
 ]
 flight = [
+    { name = "duckdb" },
     { name = "ob-bigquery" },
     { name = "ob-clickhouse" },
     { name = "ob-databricks" },
@@ -2635,6 +2636,7 @@ flight = [
     { name = "pyarrow" },
 ]
 flight-duckdb-only = [
+    { name = "duckdb" },
     { name = "ob-driver-core" },
     { name = "ob-duckdb" },
     { name = "ob-flight-extension" },
@@ -2696,7 +2698,9 @@ dev = [
 requires-dist = [
     { name = "clickhouse-connect", marker = "extra == 'dev'", specifier = ">=0.7" },
     { name = "cryptography", marker = "extra == 'dev'", specifier = ">=42.0" },
-    { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.4" },
+    { name = "duckdb", marker = "extra == 'flight'", specifier = ">=1.4" },
+    { name = "duckdb", marker = "extra == 'flight-duckdb-only'", specifier = ">=1.4" },
     { name = "fastapi", specifier = ">=0.128,<1.0" },
     { name = "gradio", marker = "extra == 'ui'", specifier = ">=6.15.1,<7.0" },
     { name = "httpx", specifier = ">=0.28,<1.0" },
@@ -2756,7 +2760,7 @@ provides-extras = ["dev", "spark", "docs", "ui", "osi", "flight", "flight-duckdb
 dev = [
     { name = "adbc-driver-flightsql", specifier = ">=1.0" },
     { name = "clickhouse-connect", specifier = ">=0.7" },
-    { name = "duckdb", specifier = ">=1.0" },
+    { name = "duckdb", specifier = ">=1.4" },
     { name = "gradio", specifier = ">=6.15.1,<7.0" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "mkdocs-autorefs", specifier = ">=1.4" },
