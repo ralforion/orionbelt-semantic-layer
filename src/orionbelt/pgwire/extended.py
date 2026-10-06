@@ -644,7 +644,10 @@ def _render_literal(raw: bytes | None, fmt: int, oid: int) -> str:
             # The value a real holds: ``0.1`` is 0.10000000149011612, which is
             # what Postgres compares against for ``$1::real``. Rendering it
             # exactly also makes ``CAST(... AS REAL)`` provably lossless.
-            (as_real,) = struct.unpack("!f", struct.pack("!f", float(canonical)))
+            try:
+                (as_real,) = struct.unpack("!f", struct.pack("!f", float(canonical)))
+            except OverflowError:
+                raise _BadParameterError(f"float4 parameter out of range: {text!r}") from None
             return repr(as_real)
         return canonical
     if oid == _OID_UUID:

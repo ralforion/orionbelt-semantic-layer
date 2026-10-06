@@ -163,6 +163,7 @@ def test_bound_parameter_casts_read_as_literals(model: SemanticModel, predicate:
         '"Total Revenue" = CAST(1.2345 AS DECIMAL(5,2))',
         '"Total Revenue" > CAST(3000000000 AS INTEGER)',  # out of range
         '"Total Revenue" > CAST(0.1 AS REAL)',  # not a float32
+        '"Total Revenue" > CAST(1e39 AS REAL)',  # beyond a real's range
         "\"Customer Country\" = CAST('USA' AS VARCHAR(2))",  # truncates
         "\"Customer Country\" = CAST('US' AS CHAR(5))",  # pads
         "\"Total Revenue\" > CAST('5' AS INTEGER)",  # converts

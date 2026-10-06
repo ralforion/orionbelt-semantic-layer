@@ -213,6 +213,11 @@ def test_float4_binds_as_the_real_it_denotes() -> None:
     )
 
 
+def test_float4_out_of_range_is_a_parameter_error() -> None:
+    with pytest.raises(_BadParameterError, match="out of range"):
+        substitute_parameters("x $1", (b"1e39",), [0], param_oids=(700,))
+
+
 def test_uuid_binds_in_canonical_form_and_refuses_garbage() -> None:
     assert (
         substitute_parameters(

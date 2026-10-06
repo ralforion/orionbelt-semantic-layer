@@ -1644,7 +1644,10 @@ def _number_fits(value: decimal.Decimal, target: exp.DataType, params: list[int]
         return True
     if target.is_type(exp.DataType.Type.FLOAT):
         as_float = float(value)
-        (as_real,) = struct.unpack("!f", struct.pack("!f", as_float))
+        try:
+            (as_real,) = struct.unpack("!f", struct.pack("!f", as_float))
+        except OverflowError:  # beyond a real's range: the cast cannot keep it
+            return False
         return bool(as_real == as_float)
     if target.is_type(exp.DataType.Type.DECIMAL) and len(params) == 2:
         precision, scale = params

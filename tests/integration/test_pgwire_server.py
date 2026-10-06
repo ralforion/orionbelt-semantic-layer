@@ -523,6 +523,41 @@ async def test_extended_error_then_sync_recovers_session(
         await writer.wait_closed()
 
 
+async def test_out_of_range_float4_parameter_keeps_the_connection(
+    pgwire_with_router: PgWireServer,
+) -> None:
+    """``1e39`` as FLOAT4 is a parameter error, not a dropped connection (review of #513)."""
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
+    try:
+        writer.write(_startup_payload({"user": "obsl", "database": "commerce"}))
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        writer.write(
+            _build_parse("", "SELECT $1", (700,))
+            + _build_bind("", "", [b"1e39"])
+            + _build_execute("")
+            + _build_sync()
+        )
+        await writer.drain()
+        reply = await _drain_until_ready(reader)
+        tags = [t for t, _ in reply]
+        assert b"E" in tags
+        assert b"out of range" in dict(reply)[b"E"]
+        assert tags[-1] == b"Z"
+
+        writer.write(_query_frame("SELECT 1"))
+        await writer.drain()
+        after = await _drain_until_ready(reader)
+        assert [t for t, _ in after] == [b"T", b"D", b"C", b"Z"]
+    finally:
+        writer.write(_terminate_frame())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_unknown_database_returns_3d000(pgwire_with_router: PgWireServer) -> None:
     reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
     try:
