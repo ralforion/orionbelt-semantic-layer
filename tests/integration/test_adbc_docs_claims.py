@@ -11,6 +11,7 @@ live here too, phrased as assertions.
 # away from the suite that owns it.
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -141,16 +142,27 @@ class TestTheDuckDBRecipe:
     gets a skip rather than a hard requirement.
     """
 
-    @staticmethod
-    def _duckdb_with_adbc() -> Any:
+    @pytest.fixture
+    def adbc_duckdb(self) -> Iterator[Any]:
+        """A DuckDB connection with ``adbc_scanner`` loaded, closed explicitly.
+
+        Explicitly, not by dropping the last reference: DuckDB 1.5.6 frees a
+        connection holding an ``adbc_scanner`` handle with the GIL held, and
+        the extension's cleanup waits on the Flight SQL server. That server
+        runs in this process, its handlers need the GIL, and the test hung
+        once it returned. ``close()`` takes the path that does not wait.
+        """
         duckdb = pytest.importorskip("duckdb", reason="duckdb required")
         connection = duckdb.connect()
         try:
-            connection.execute("INSTALL adbc_scanner FROM community")
-            connection.execute("LOAD adbc_scanner")
-        except Exception as exc:  # noqa: BLE001 - network or unavailable build
-            pytest.skip(f"adbc_scanner community extension unavailable: {exc}")
-        return connection
+            try:
+                connection.execute("INSTALL adbc_scanner FROM community")
+                connection.execute("LOAD adbc_scanner")
+            except Exception as exc:  # noqa: BLE001 - network or unavailable build
+                pytest.skip(f"adbc_scanner community extension unavailable: {exc}")
+            yield connection
+        finally:
+            connection.close()
 
     @staticmethod
     def _handle(connection: Any, uri: str) -> Any:
@@ -159,8 +171,8 @@ class TestTheDuckDBRecipe:
             "SELECT adbc_connect(MAP {'driver': ?, 'uri': ?})", [driver, uri]
         ).fetchone()[0]
 
-    def test_a_duckdb_shell_queries_the_model(self, flight_uri: str) -> None:
-        connection = self._duckdb_with_adbc()
+    def test_a_duckdb_shell_queries_the_model(self, flight_uri: str, adbc_duckdb: Any) -> None:
+        connection = adbc_duckdb
         handle = self._handle(connection, flight_uri)
         rows = connection.execute(
             "SELECT * FROM adbc_scan(?, ?)",
@@ -169,10 +181,10 @@ class TestTheDuckDBRecipe:
         assert {r[0] for r in rows} == {"US", "UK"}
         assert all(isinstance(r[1], float) for r in rows)
 
-    def test_the_catalog_functions_answer(self, flight_uri: str) -> None:
+    def test_the_catalog_functions_answer(self, flight_uri: str, adbc_duckdb: Any) -> None:
         """``adbc_tables`` is the one that failed before #433: DuckDB asks for
         the four-column ``CommandGetTables`` shape and OBSL always sent five."""
-        connection = self._duckdb_with_adbc()
+        connection = adbc_duckdb
         handle = self._handle(connection, flight_uri)
         tables = connection.execute("SELECT * FROM adbc_tables(?)", [handle]).fetchall()
         assert "model" in {r[2] for r in tables}
@@ -183,9 +195,9 @@ class TestTheDuckDBRecipe:
         ).fetchall()
         assert "Customer Country" in {r[0] for r in columns}
 
-    def test_the_result_composes_with_local_sql(self, flight_uri: str) -> None:
+    def test_the_result_composes_with_local_sql(self, flight_uri: str, adbc_duckdb: Any) -> None:
         """The page claims filtering, aggregating and CREATE TABLE AS."""
-        connection = self._duckdb_with_adbc()
+        connection = adbc_duckdb
         handle = self._handle(connection, flight_uri)
         query = f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME}'
 
