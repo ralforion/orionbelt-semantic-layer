@@ -22,6 +22,7 @@ from __future__ import annotations
 import decimal
 import re
 import struct
+import uuid
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -1657,20 +1658,50 @@ def _number_fits(value: decimal.Decimal, target: exp.DataType, params: list[int]
 def _string_fits(text: str, target: exp.DataType, params: list[int]) -> bool:
     if target.is_type(exp.DataType.Type.VARCHAR, exp.DataType.Type.TEXT):
         return not params or len(text) <= params[0]
-    parsers: dict[Any, Callable[[str], object]] = {
-        exp.DataType.Type.DATE: date.fromisoformat,
-        exp.DataType.Type.TIME: time.fromisoformat,
-        exp.DataType.Type.TIMESTAMP: datetime.fromisoformat,
-        exp.DataType.Type.TIMESTAMPTZ: datetime.fromisoformat,
-    }
-    parse = parsers.get(target.this)
-    if parse is None:
+    if target.is_type(exp.DataType.Type.UUID):
+        try:
+            return str(uuid.UUID(text)) == text
+        except ValueError:
+            return False
+    if target.is_type(exp.DataType.Type.DATE):
+        return _parses(date.fromisoformat, text) and _RE_ISO_DATE.fullmatch(text) is not None
+    temporal = _TEMPORAL_FORMS.get(target.this)
+    if temporal is None:
         return False
+    match = temporal.fullmatch(text)
+    if match is None or not _parses(_TEMPORAL_PARSERS[target.this], text):
+        return False
+    # Fractional seconds beyond the target's precision are rounded away:
+    # CAST('... 00:00:00.678' AS TIMESTAMP(0)) is 00:00:01.
+    fraction = match.group("fraction") or ""
+    return len(fraction) <= (params[0] if params else 6)
+
+
+def _parses(parse: Callable[[str], object], text: str) -> bool:
     try:
         parse(text)
     except ValueError:
         return False
     return True
+
+
+_RE_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_TIME_PART = r"\d{2}:\d{2}(?::\d{2}(?:\.(?P<fraction>\d{1,6}))?)?"
+#: The canonical spellings whose cast is lossless. A TIMESTAMP must not carry
+#: an offset (the cast would drop or apply it); a TIMESTAMPTZ must carry one,
+#: or the instant would depend on the session time zone.
+_TEMPORAL_FORMS: dict[Any, re.Pattern[str]] = {
+    exp.DataType.Type.TIME: re.compile(_TIME_PART),
+    exp.DataType.Type.TIMESTAMP: re.compile(rf"\d{{4}}-\d{{2}}-\d{{2}}[ T]{_TIME_PART}"),
+    exp.DataType.Type.TIMESTAMPTZ: re.compile(
+        rf"\d{{4}}-\d{{2}}-\d{{2}}[ T]{_TIME_PART}(?:Z|[+-]\d{{2}}(?::?\d{{2}})?)"
+    ),
+}
+_TEMPORAL_PARSERS: dict[Any, Callable[[str], object]] = {
+    exp.DataType.Type.TIME: time.fromisoformat,
+    exp.DataType.Type.TIMESTAMP: datetime.fromisoformat,
+    exp.DataType.Type.TIMESTAMPTZ: datetime.fromisoformat,
+}
 
 
 def _literal_value(expr: exp.Expression) -> str | int | float | bool | None:

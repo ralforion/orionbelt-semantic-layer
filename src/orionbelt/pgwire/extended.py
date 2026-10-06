@@ -35,6 +35,7 @@ import decimal
 import logging
 import re
 import struct
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
@@ -638,7 +639,21 @@ def _render_literal(raw: bytes | None, fmt: int, oid: int) -> str:
         # per its declared numeric OID and re-render a canonical literal.
         # A value like ``0 AND "x" = 'y'`` fails the parse and is rejected
         # instead of becoming active SQL.
-        return _canonical_numeric_text(text, oid)
+        canonical = _canonical_numeric_text(text, oid)
+        if oid == _OID_FLOAT4:
+            # The value a real holds: ``0.1`` is 0.10000000149011612, which is
+            # what Postgres compares against for ``$1::real``. Rendering it
+            # exactly also makes ``CAST(... AS REAL)`` provably lossless.
+            (as_real,) = struct.unpack("!f", struct.pack("!f", float(canonical)))
+            return repr(as_real)
+        return canonical
+    if oid == _OID_UUID:
+        # Canonical form, as ``CAST(... AS UUID)`` would produce; an invalid
+        # value is refused, as Postgres refuses it.
+        try:
+            return f"'{uuid.UUID(text)}'"
+        except ValueError:
+            raise _BadParameterError(f"Invalid uuid parameter: {text!r}") from None
     if oid in _BOOL_TEXT_OIDS:
         return "TRUE" if text.lower() in {"t", "true", "1", "y", "yes"} else "FALSE"
     escaped = text.replace("'", "''")
@@ -661,6 +676,7 @@ _OID_NAME = 19
 _OID_BPCHAR = 1042
 
 _OID_NUMERIC = 1700
+_OID_UUID = 2950
 
 _INTEGER_TEXT_OIDS: frozenset[int] = frozenset({_OID_INT2, _OID_INT4, _OID_INT8})
 _INT_TEXT_RE = re.compile(r"[+-]?[0-9]+")
@@ -696,7 +712,7 @@ _PARAM_SQL_TYPE: dict[int, str] = {
     1184: "TIMESTAMPTZ",
     1186: "INTERVAL",
     1266: "TIMETZ",
-    2950: "UUID",
+    _OID_UUID: "UUID",
 }
 
 #: OID 0: the client left the type to the server. Postgres infers it from

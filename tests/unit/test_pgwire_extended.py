@@ -12,6 +12,7 @@ import pytest
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.extended import (
     ExtendedSession,
+    _BadParameterError,
     _split_simple_reply,
     substitute_parameters,
 )
@@ -203,6 +204,24 @@ def test_bound_parameters_keep_value_and_comparability(
 ) -> None:
     rendered = substitute_parameters(sql, (value,), [0], param_oids=(oid,))
     assert duckdb.connect().execute(rendered).fetchone() == (expected,)
+
+
+def test_float4_binds_as_the_real_it_denotes() -> None:
+    assert (
+        substitute_parameters("x $1", (b"0.1",), [0], param_oids=(700,))
+        == "x CAST(0.10000000149011612 AS REAL)"
+    )
+
+
+def test_uuid_binds_in_canonical_form_and_refuses_garbage() -> None:
+    assert (
+        substitute_parameters(
+            "x $1", (b"A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11",), [0], param_oids=(2950,)
+        )
+        == "x CAST('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' AS UUID)"
+    )
+    with pytest.raises(_BadParameterError, match="uuid"):
+        substitute_parameters("x $1", (b"not-a-uuid",), [0], param_oids=(2950,))
 
 
 def test_substitute_rejects_binary_format_for_unknown_oid() -> None:
