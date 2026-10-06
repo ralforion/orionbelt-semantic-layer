@@ -19,7 +19,10 @@ See ``design/PLAN_flight_natural_sql.md`` for the full design. Highlights:
 
 from __future__ import annotations
 
+import decimal
 import re
+import struct
+import uuid
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -146,6 +149,7 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
                 )
             ]
         ) from None
+    ast = ast.transform(_unwrap_literal_cast)
 
     if isinstance(ast, exp.Union):
         raise SQLTranslationError(
@@ -1584,6 +1588,123 @@ def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> Que
         )
     )
     return None
+
+
+def _unwrap_literal_cast(node: exp.Expression) -> exp.Expression:
+    """``CAST(<literal> AS <type>)`` as the bare literal, when the cast keeps the value.
+
+    The Postgres wire surface binds each parameter as a cast literal
+    (``CAST('US' AS VARCHAR)``, ``CAST(5 AS INTEGER)``, a typed NULL) so that
+    Describe and Bind agree on its type, and every predicate here reads bare
+    literals. A cast that could change the value stays a cast and is rejected
+    where a literal is required, as before: ``CAST(1.2345 AS DECIMAL(5,2))``
+    is 1.23, not 1.2345, and ``CAST('5' AS INTEGER)`` converts.
+    """
+
+    if isinstance(node, exp.Cast) and _cast_keeps_value(node.this, node.to):
+        inner: exp.Expression = node.this
+        return inner
+    return node
+
+
+_INTEGER_BITS = {
+    exp.DataType.Type.TINYINT: 8,
+    exp.DataType.Type.SMALLINT: 16,
+    exp.DataType.Type.INT: 32,
+    exp.DataType.Type.BIGINT: 64,
+}
+
+
+def _cast_keeps_value(inner: exp.Expression, target: exp.DataType) -> bool:
+    """True when casting the literal ``inner`` to ``target`` cannot change it."""
+
+    if isinstance(inner, exp.Null):
+        return True
+    if isinstance(inner, exp.Boolean):
+        return target.is_type(exp.DataType.Type.BOOLEAN)
+    params = [int(p.name) for p in target.expressions if p.name.isdigit()]
+    number = inner.this if isinstance(inner, exp.Neg) else inner
+    if isinstance(number, exp.Literal) and number.is_number:
+        value = decimal.Decimal(number.this)
+        value = -value if isinstance(inner, exp.Neg) else value
+        return _number_fits(value, target, params)
+    if isinstance(inner, exp.Literal) and inner.is_string:
+        return _string_fits(inner.this, target, params)
+    return False
+
+
+def _number_fits(value: decimal.Decimal, target: exp.DataType, params: list[int]) -> bool:
+    bits = _INTEGER_BITS.get(target.this)
+    if bits is not None:
+        return bool(
+            value == value.to_integral_value() and -(2 ** (bits - 1)) <= value < 2 ** (bits - 1)
+        )
+    if target.is_type(exp.DataType.Type.DOUBLE):
+        # The translator reads a number literal as a Python float already.
+        return True
+    if target.is_type(exp.DataType.Type.FLOAT):
+        as_float = float(value)
+        try:
+            (as_real,) = struct.unpack("!f", struct.pack("!f", as_float))
+        except OverflowError:  # beyond a real's range: the cast cannot keep it
+            return False
+        return bool(as_real == as_float)
+    if target.is_type(exp.DataType.Type.DECIMAL) and len(params) == 2:
+        precision, scale = params
+        exponent = value.as_tuple().exponent
+        if not isinstance(exponent, int) or -exponent > scale:
+            return False
+        return bool(value == 0 or value.adjusted() + 1 <= precision - scale)
+    return False
+
+
+def _string_fits(text: str, target: exp.DataType, params: list[int]) -> bool:
+    if target.is_type(exp.DataType.Type.VARCHAR, exp.DataType.Type.TEXT):
+        return not params or len(text) <= params[0]
+    if target.is_type(exp.DataType.Type.UUID):
+        try:
+            return str(uuid.UUID(text)) == text
+        except ValueError:
+            return False
+    if target.is_type(exp.DataType.Type.DATE):
+        return _parses(date.fromisoformat, text) and _RE_ISO_DATE.fullmatch(text) is not None
+    temporal = _TEMPORAL_FORMS.get(target.this)
+    if temporal is None:
+        return False
+    match = temporal.fullmatch(text)
+    if match is None or not _parses(_TEMPORAL_PARSERS[target.this], text):
+        return False
+    # Fractional seconds beyond the target's precision are rounded away:
+    # CAST('... 00:00:00.678' AS TIMESTAMP(0)) is 00:00:01.
+    fraction = match.group("fraction") or ""
+    return len(fraction) <= (params[0] if params else 6)
+
+
+def _parses(parse: Callable[[str], object], text: str) -> bool:
+    try:
+        parse(text)
+    except ValueError:
+        return False
+    return True
+
+
+_RE_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_TIME_PART = r"\d{2}:\d{2}(?::\d{2}(?:\.(?P<fraction>\d{1,6}))?)?"
+#: The canonical spellings whose cast is lossless. A TIMESTAMP must not carry
+#: an offset (the cast would drop or apply it); a TIMESTAMPTZ must carry one,
+#: or the instant would depend on the session time zone.
+_TEMPORAL_FORMS: dict[Any, re.Pattern[str]] = {
+    exp.DataType.Type.TIME: re.compile(_TIME_PART),
+    exp.DataType.Type.TIMESTAMP: re.compile(rf"\d{{4}}-\d{{2}}-\d{{2}}[ T]{_TIME_PART}"),
+    exp.DataType.Type.TIMESTAMPTZ: re.compile(
+        rf"\d{{4}}-\d{{2}}-\d{{2}}[ T]{_TIME_PART}(?:Z|[+-]\d{{2}}(?::?\d{{2}})?)"
+    ),
+}
+_TEMPORAL_PARSERS: dict[Any, Callable[[str], object]] = {
+    exp.DataType.Type.TIME: time.fromisoformat,
+    exp.DataType.Type.TIMESTAMP: datetime.fromisoformat,
+    exp.DataType.Type.TIMESTAMPTZ: datetime.fromisoformat,
+}
 
 
 def _literal_value(expr: exp.Expression) -> str | int | float | bool | None:

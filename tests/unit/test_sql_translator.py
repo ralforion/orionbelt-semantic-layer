@@ -138,6 +138,82 @@ def test_order_by_position(model: SemanticModel) -> None:
     assert q.order_by[0].direction.value == "desc"
 
 
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        "\"Customer Country\" = CAST('US' AS VARCHAR)",
+        "\"Customer Country\" IN (CAST('US' AS VARCHAR), CAST('DE' AS TEXT))",
+        "\"Customer Country\" LIKE CAST('U%' AS VARCHAR)",
+        '"Total Revenue" > CAST(5 AS BIGINT)',
+        '"Total Revenue" > CAST(-2.5 AS DOUBLE)',
+    ],
+)
+def test_bound_parameter_casts_read_as_literals(model: SemanticModel, predicate: str) -> None:
+    """pgwire binds each parameter as a cast literal of its own type."""
+    q = translate_sql_to_query(
+        f'SELECT "Customer Country", "Total Revenue" FROM m WHERE {predicate}', model
+    )
+    assert q.where or q.having
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        # Rounds to 1.23: the filter must not become = 1.2345 (review of #513).
+        '"Total Revenue" = CAST(1.2345 AS DECIMAL(5,2))',
+        '"Total Revenue" > CAST(3000000000 AS INTEGER)',  # out of range
+        '"Total Revenue" > CAST(0.1 AS REAL)',  # not a float32
+        '"Total Revenue" > CAST(1e39 AS REAL)',  # beyond a real's range
+        "\"Customer Country\" = CAST('USA' AS VARCHAR(2))",  # truncates
+        "\"Customer Country\" = CAST('US' AS CHAR(5))",  # pads
+        "\"Total Revenue\" > CAST('5' AS INTEGER)",  # converts
+        "\"Customer Country\" = CAST('not a date' AS DATE)",
+        "\"Customer Country\" = CAST('20240101' AS DATE)",  # not the canonical form
+        # Rounds to 00:00:01 (review of #513): filtering on .678 picks the wrong row.
+        "\"Customer Country\" = CAST('2024-01-01 00:00:00.678' AS TIMESTAMP(0))",
+        "\"Customer Country\" = CAST('2024-01-01 10:00:00+02' AS TIMESTAMP)",  # drops the offset
+        "\"Customer Country\" = CAST('2024-01-01 10:00:00' AS TIMESTAMPTZ)",  # session time zone
+        "\"Customer Country\" = CAST('A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11' AS UUID)",
+    ],
+)
+def test_a_cast_that_can_change_the_value_is_not_a_literal(
+    model: SemanticModel, predicate: str
+) -> None:
+    with pytest.raises(SQLTranslationError):
+        translate_sql_to_query(
+            f'SELECT "Customer Country", "Total Revenue" FROM m WHERE {predicate}', model
+        )
+
+
+@pytest.mark.parametrize(
+    ("predicate", "value"),
+    [
+        ('"Total Revenue" = CAST(1.23 AS DECIMAL(5,2))', 1.23),
+        ('"Total Revenue" > CAST(0.5 AS REAL)', 0.5),
+        ("\"Customer Country\" = CAST('2024-01-01' AS DATE)", "2024-01-01"),
+        (
+            "\"Customer Country\" = CAST('2024-01-01 00:00:00.678' AS TIMESTAMP(3))",
+            "2024-01-01 00:00:00.678",
+        ),
+        (
+            "\"Customer Country\" = CAST('2024-01-01 10:00:00+02' AS TIMESTAMPTZ)",
+            "2024-01-01 10:00:00+02",
+        ),
+        (
+            "\"Customer Country\" = CAST('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' AS UUID)",
+            "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+        ),
+    ],
+)
+def test_a_cast_that_keeps_the_value_reads_as_the_literal(
+    model: SemanticModel, predicate: str, value: object
+) -> None:
+    q = translate_sql_to_query(
+        f'SELECT "Customer Country", "Total Revenue" FROM m WHERE {predicate}', model
+    )
+    assert (q.where or q.having)[0].value == value
+
+
 def test_limit(model: SemanticModel) -> None:
     q = translate_sql_to_query(
         'SELECT "Customer Country" FROM m LIMIT 50',
@@ -1071,3 +1147,28 @@ class TestPreparedStatementParameters:
         dim = next(iter(sales_model.dimensions))
         schema = placeholder_arrow_schema(f'SELECT 1 FROM s WHERE "{dim}" = ? LIMIT ?', sales_model)
         assert [f.name for f in schema] == ["$1", "$2"]
+
+
+@pytest.mark.parametrize(
+    ("value", "oid"),
+    [
+        (b"0.1", 700),  # float4: bound as the real it denotes
+        (b"A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11", 2950),  # uuid: canonical form
+        (b"2024-01-01", 1082),
+        (b"2024-01-01 10:00:00.5", 1114),
+        (b"2024-01-01 10:00:00+02", 1184),
+        (b"9007199254740993.00", 1700),
+        (b"42", 23),
+    ],
+)
+def test_every_bound_parameter_reads_as_a_literal(
+    model: SemanticModel, value: bytes, oid: int
+) -> None:
+    """Whatever cast Bind writes, the translator must accept (review of #513)."""
+    from orionbelt.pgwire.extended import substitute_parameters
+
+    where = substitute_parameters('"Total Revenue" > $1', (value,), [0], param_oids=(oid,))
+    q = translate_sql_to_query(
+        f'SELECT "Customer Country", "Total Revenue" FROM m WHERE {where}', model
+    )
+    assert q.where or q.having

@@ -546,7 +546,10 @@ class PgWireServer:
                 timeout=self.query_timeout,
             )
         if tag == b"D":
-            return extended.describe(protocol.parse_describe(body))
+            return await asyncio.wait_for(
+                extended.describe(protocol.parse_describe(body)),
+                timeout=self.query_timeout,
+            )
         if tag == b"E":
             return extended.execute(protocol.parse_execute(body))
         if tag == b"C":

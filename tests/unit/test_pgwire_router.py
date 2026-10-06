@@ -10,6 +10,8 @@ import pytest
 
 from orionbelt.pgwire.router import (
     SemanticRouter,
+    _canned_in_requested_formats,
+    _encode_result,
     _flatten_federation_subquery,
     _normalize_for_obsql,
     _rewrite_fetch_to_limit,
@@ -843,3 +845,41 @@ class TestCountingRowsThroughAnEmptyProjection:
             assert project_the_whole_model("SELECT NULL FROM t", model) is None
         finally:
             mgr.stop()
+
+
+def test_a_column_with_a_value_without_binary_form_goes_out_as_text() -> None:
+    """Announced binary, sent text: the review of #513 found it for intervals."""
+    from datetime import date, timedelta
+
+    result = ExecutionResult(
+        columns=[
+            ColumnMeta(name="d", type_hint="datetime"),
+            ColumnMeta(name="span", type_hint="datetime"),
+        ],
+        raw_rows=[[date(2024, 1, 1), timedelta(days=2)]],
+        row_count=1,
+    )
+    frames = _parse_frames(_encode_result(result, (1,)))
+    row_description = frames[0][1]
+    formats = []
+    pos = 2
+    for _ in range(2):
+        pos = row_description.index(b"\x00", pos) + 1
+        formats.append(struct.unpack("!h", row_description[pos + 16 : pos + 18])[0])
+        pos += 18
+    assert formats == [1, 0]
+
+
+def test_canned_select_1_honours_a_binary_request() -> None:
+    """pgjdbc server-prepares ``SELECT 1`` and reads binary int4 (review of #513)."""
+    from orionbelt.pgwire.canned import match_canned
+
+    canned = match_canned("SELECT 1")
+    assert canned is not None
+    assert _canned_in_requested_formats(canned, ()) == canned
+    frames = _parse_frames(_canned_in_requested_formats(canned, (1,)))
+    assert [t for t, _ in frames] == [b"T", b"D", b"C"]
+    row_description, data_row = frames[0][1], frames[1][1]
+    name_end = row_description.index(b"\x00", 2)
+    assert struct.unpack("!h", row_description[name_end + 17 : name_end + 19])[0] == 1
+    assert data_row[2:] == struct.pack("!i", 4) + struct.pack("!i", 1)

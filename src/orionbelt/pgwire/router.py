@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+import struct
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +50,7 @@ from orionbelt.pgwire.catalog import CATALOG_SCHEMA, CatalogEmulator
 from orionbelt.pgwire.catalog_guard import catalog_rejection
 from orionbelt.pgwire.types import (
     can_encode_binary,
+    can_encode_binary_value,
     encode_value,
     oid_for_type_hint,
 )
@@ -180,7 +182,7 @@ class SemanticRouter:
         # 1. Canned protocol probes (SELECT 1, SHOW, SET, BEGIN, …).
         canned = match_canned(sql, database, self._effective_schema(database))
         if canned is not None:
-            return canned
+            return _canned_in_requested_formats(canned, result_formats)
 
         # 2. Catalog probes (pg_catalog.*, information_schema.*) AND
         #    BI-tool connect-check temp-table operations AND zero-row
@@ -1298,7 +1300,11 @@ def _encode_result(
     # binary on a column we can only encode as text makes pgjdbc /
     # asyncpg / psycopg misdecode the payload using the column's OID.
     per_col_formats = [
-        1 if requested_formats[i] == 1 and can_encode_binary(col.type_hint) else 0
+        1
+        if requested_formats[i] == 1
+        and can_encode_binary(col.type_hint)
+        and all(can_encode_binary_value(row[i], col.type_hint) for row in result.rows)
+        else 0
         for i, col in enumerate(result.columns)
     ]
     columns_for_desc = [
@@ -1335,6 +1341,66 @@ def _encode_result(
             _log_data_row(row_idx, row, encoded, result.columns)
         out += protocol.build_data_row(encoded)
     out += protocol.build_command_complete(f"SELECT {len(result.rows)}")
+    return out
+
+
+def _canned_in_requested_formats(reply: bytes, result_formats: tuple[int, ...]) -> bytes:
+    """A canned reply re-encoded in the formats the client asked for in Bind.
+
+    Canned replies are built as text. A client holding a statement's
+    description from ``Describe('S')`` (pgjdbc server-prepared ``SELECT 1``)
+    asks for binary ``int4`` and reads the bytes that way, so the value must
+    arrive in binary. Canned columns are ``int4`` or ``text``; anything else
+    stays text, announced as text.
+    """
+
+    if not any(fmt == 1 for fmt in result_formats):
+        return reply
+    frames: list[tuple[bytes, bytes]] = []
+    pos = 0
+    while pos < len(reply):
+        (length,) = struct.unpack("!I", reply[pos + 1 : pos + 5])
+        frames.append((reply[pos : pos + 1], reply[pos + 5 : pos + 1 + length]))
+        pos += 1 + length
+    if not frames or frames[0][0] != b"T":
+        return reply
+    columns: list[tuple[str, int]] = []
+    body = frames[0][1]
+    at = 2
+    for _ in range(struct.unpack("!H", body[:2])[0]):
+        end = body.index(b"\x00", at)
+        oid = struct.unpack("!I", body[end + 7 : end + 11])[0]
+        columns.append((body[at:end].decode("utf-8"), oid))
+        at = end + 19
+    requested = _expand_result_formats(result_formats, len(columns))
+    formats = [
+        1 if requested[i] == 1 and oid in (protocol.OID_INT4, protocol.OID_TEXT) else 0
+        for i, (_, oid) in enumerate(columns)
+    ]
+    out = protocol.build_row_description(
+        [(name, oid, formats[i]) for i, (name, oid) in enumerate(columns)]
+    )
+    for tag, payload in frames[1:]:
+        if tag != b"D":
+            out += tag + struct.pack("!I", len(payload) + 4) + payload
+            continue
+        values: list[str | bytes | None] = []
+        at = 2
+        for i in range(struct.unpack("!H", payload[:2])[0]):
+            (size,) = struct.unpack("!i", payload[at : at + 4])
+            at += 4
+            if size < 0:
+                values.append(None)
+                continue
+            raw = payload[at : at + size]
+            at += size
+            if formats[i] and columns[i][1] == protocol.OID_INT4:
+                values.append(struct.pack("!i", int(raw)))
+            elif formats[i]:
+                values.append(raw)
+            else:
+                values.append(raw.decode("utf-8"))
+        out += protocol.build_data_row(values)
     return out
 
 
