@@ -31,6 +31,7 @@ the trade space we revisit in Step 7:
 
 from __future__ import annotations
 
+import datetime as _dt
 import decimal
 import logging
 import re
@@ -413,6 +414,9 @@ class ExtendedSession:
             return None
         candidates = (
             _with_typed_nulls(stmt.sql, stmt.param_oids),
+            # pgjdbc binds dates and timestamps unspecified; as text they do
+            # not compare with a date, a bare NULL lets the context decide.
+            _with_typed_nulls(stmt.sql, stmt.param_oids, unspecified="NULL"),
             _shape_only(stmt.sql, stmt.param_oids),
         )
         for sql in candidates:
@@ -532,8 +536,14 @@ def _result_type_changed(
     return [fmt for _, fmt in columns] != requested
 
 
-def _with_typed_nulls(sql: str, param_oids: tuple[int, ...]) -> str | None:
+def _with_typed_nulls(
+    sql: str, param_oids: tuple[int, ...], unspecified: str = "CAST(NULL AS VARCHAR)"
+) -> str | None:
     """``sql`` with every ``$N`` bound to a NULL of the type Bind would give it.
+
+    An unspecified parameter (OID 0) takes ``unspecified``: text by default,
+    the type Postgres gives an unknown in a select list, or a bare NULL where
+    the context must decide (``DATE '2024-01-02' > $1``).
 
     The scanner finds the placeholders, so a ``$N`` inside a literal or a
     comment is not one, and nothing is allocated per index: ``$1000000`` in a
@@ -545,7 +555,7 @@ def _with_typed_nulls(sql: str, param_oids: tuple[int, ...]) -> str | None:
         if idx >= _MAX_PARAMETERS:
             raise _BadParameterError(f"Placeholder ${idx + 1} exceeds the parameter limit")
         oid = param_oids[idx] if idx < len(param_oids) else 0
-        return "CAST(NULL AS VARCHAR)" if oid == _OID_UNSPECIFIED else _typed("NULL", oid)
+        return unspecified if oid == _OID_UNSPECIFIED else _typed("NULL", oid)
 
     try:
         return _map_placeholders(sql, render)
@@ -834,10 +844,130 @@ def _decode_binary_param(raw: bytes, oid: int) -> str:
         return "'" + text.replace("'", "''") + "'"
     if oid == _OID_BYTEA:
         return "'\\x" + raw.hex() + "'::bytea"
+    decode = _TEMPORAL_DECODERS.get(oid)
+    if decode is not None:
+        return decode(raw)
+    if oid == _OID_NUMERIC:
+        return _decode_binary_numeric(raw)
+    if oid == _OID_UUID:
+        if len(raw) != 16:
+            raise _BadParameterError(f"UUID binary param must be 16 bytes, got {len(raw)}")
+        return f"'{uuid.UUID(bytes=raw)}'"
     raise _BinaryParameterError(
-        f"Binary-format parameter for OID {oid} not supported "
-        "(supported: INT2/INT4/INT8/BOOL/FLOAT4/FLOAT8/TEXT/VARCHAR/NAME/BPCHAR/BYTEA)"
+        f"Binary-format parameter for OID {oid} not supported (supported: INT2/INT4/INT8/"
+        "BOOL/FLOAT4/FLOAT8/NUMERIC/TEXT/VARCHAR/NAME/BPCHAR/BYTEA/DATE/TIME/TIMESTAMP/"
+        "TIMESTAMPTZ/INTERVAL/UUID)"
     )
+
+
+# Postgres's binary date / time formats count from its own epoch, 2000-01-01,
+# in days (date) or microseconds (time, timestamp); a timestamptz is UTC.
+# psycopg 3 binds dates, datetimes and timedeltas in this format by default.
+_PG_EPOCH_DATE = _dt.date(2000, 1, 1)
+_PG_EPOCH = _dt.datetime(2000, 1, 1)
+# int32 / int64 extremes are Postgres's -infinity / infinity.
+_INFINITE = {2**31 - 1, -(2**31), 2**63 - 1, -(2**63)}
+
+
+def _fixed(raw: bytes, size: int, name: str) -> None:
+    if len(raw) != size:
+        raise _BadParameterError(f"{name} binary param must be {size} bytes, got {len(raw)}")
+
+
+def _finite(value: int, name: str) -> int:
+    if value in _INFINITE:
+        raise _BadParameterError(f"Infinite {name} parameter not supported")
+    return value
+
+
+def _decode_binary_date(raw: bytes) -> str:
+    _fixed(raw, 4, "DATE")
+    (days,) = struct.unpack("!i", raw)
+    try:
+        value = _PG_EPOCH_DATE + _dt.timedelta(days=_finite(days, "date"))
+    except OverflowError:
+        raise _BadParameterError("DATE parameter out of range") from None
+    return f"'{value.isoformat()}'"
+
+
+def _timestamp(raw: bytes, name: str) -> _dt.datetime:
+    _fixed(raw, 8, name)
+    (micros,) = struct.unpack("!q", raw)
+    try:
+        return _PG_EPOCH + _dt.timedelta(microseconds=_finite(micros, name.lower()))
+    except OverflowError:
+        raise _BadParameterError(f"{name} parameter out of range") from None
+
+
+def _decode_binary_timestamp(raw: bytes) -> str:
+    return f"'{_timestamp(raw, 'TIMESTAMP').isoformat(sep=' ')}'"
+
+
+def _decode_binary_timestamptz(raw: bytes) -> str:
+    # The wire value is UTC; spell the offset so the instant is unambiguous.
+    instant = _timestamp(raw, "TIMESTAMPTZ").replace(tzinfo=_dt.UTC)
+    return f"'{instant.isoformat(sep=' ')}'"
+
+
+def _decode_binary_time(raw: bytes) -> str:
+    _fixed(raw, 8, "TIME")
+    (micros,) = struct.unpack("!q", raw)
+    if not 0 <= micros <= 86_400_000_000:
+        raise _BadParameterError("TIME parameter out of range")
+    if micros == 86_400_000_000:
+        return "'24:00:00'"
+    seconds, micro = divmod(micros, 1_000_000)
+    return f"'{_dt.time(seconds // 3600, seconds // 60 % 60, seconds % 60, micro).isoformat()}'"
+
+
+def _decode_binary_interval(raw: bytes) -> str:
+    _fixed(raw, 16, "INTERVAL")
+    micros, days, months = struct.unpack("!qii", raw)
+    return f"'{months} months {days} days {micros} microseconds'"
+
+
+_TEMPORAL_DECODERS: dict[int, Callable[[bytes], str]] = {
+    1082: _decode_binary_date,
+    1083: _decode_binary_time,
+    1114: _decode_binary_timestamp,
+    1184: _decode_binary_timestamptz,
+    1186: _decode_binary_interval,
+}
+
+_NUMERIC_NEG = 0x4000
+_NUMERIC_POS = 0x0000
+
+
+def _decode_binary_numeric(raw: bytes) -> str:
+    """Postgres NUMERIC binary (``numeric_send``) as a plain decimal literal.
+
+    ``ndigits, weight, sign, dscale`` then ``ndigits`` base-10000 digits; the
+    first digit is worth 10000 ** weight. NaN and infinities are refused, as
+    the text path refuses them.
+    """
+
+    if len(raw) < 8:
+        raise _BadParameterError("NUMERIC binary param is shorter than its header")
+    ndigits, weight, sign, dscale = struct.unpack("!hhHH", raw[:8])
+    if sign not in (_NUMERIC_POS, _NUMERIC_NEG):
+        raise _BadParameterError("Non-finite NUMERIC parameter not allowed")
+    if ndigits < 0 or len(raw) != 8 + 2 * ndigits:
+        raise _BadParameterError("NUMERIC binary param has a malformed digit count")
+    digits = struct.unpack(f"!{ndigits}H", raw[8:])
+    if any(digit > 9999 for digit in digits):
+        raise _BadParameterError("NUMERIC binary param has an invalid digit")
+    # Built from its digit tuple, which is exact: decimal arithmetic would
+    # round to the context's 28 significant digits.
+    figures = [int(ch) for ch in "".join(f"{digit:04d}" for digit in digits)] or [0]
+    exponent = 4 * (weight - ndigits + 1) if digits else 0
+    if exponent > -dscale:  # pad to the display scale
+        figures += [0] * (exponent + dscale)
+        exponent = -dscale
+    while exponent < -dscale and figures[-1] == 0 and len(figures) > 1:
+        figures.pop()  # trailing zero groups below the display scale
+        exponent += 1
+    value = decimal.Decimal((1 if sign == _NUMERIC_NEG else 0, tuple(figures), exponent))
+    return format(value, "f")
 
 
 # Opener for a dollar-quoted string: ``$$`` or ``$tag$`` where ``tag`` is a
