@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import decimal
 import struct
 
+import duckdb
 import pytest
 
 from orionbelt.pgwire import protocol
@@ -61,17 +63,17 @@ def _error_reply() -> bytes:
 
 def test_substitute_inlines_text_value() -> None:
     sql = substitute_parameters("SELECT * FROM t WHERE x = $1", (b"abc",), [0])
-    assert sql == "SELECT * FROM t WHERE x = CAST('abc' AS VARCHAR)"
+    assert sql == "SELECT * FROM t WHERE x = 'abc'"
 
 
 def test_substitute_inlines_null() -> None:
     sql = substitute_parameters("SELECT $1", (None,), [0])
-    assert sql == "SELECT CAST(NULL AS VARCHAR)"
+    assert sql == "SELECT NULL"
 
 
 def test_substitute_escapes_single_quote() -> None:
     sql = substitute_parameters("SELECT $1", (b"O'Hara",), [0])
-    assert sql == "SELECT CAST('O''Hara' AS VARCHAR)"
+    assert sql == "SELECT 'O''Hara'"
 
 
 def test_substitute_handles_multiple_placeholders() -> None:
@@ -80,10 +82,7 @@ def test_substitute_handles_multiple_placeholders() -> None:
         (b"a", b"b", b"c"),
         [0, 0, 0],
     )
-    assert sql == (
-        "SELECT CAST('a' AS VARCHAR), CAST('b' AS VARCHAR), CAST('c' AS VARCHAR) "
-        "FROM t WHERE y = CAST('b' AS VARCHAR)"
-    )
+    assert sql == "SELECT 'a', 'b', 'c' FROM t WHERE y = 'b'"
 
 
 def test_substitute_skips_inside_single_quotes() -> None:
@@ -92,7 +91,7 @@ def test_substitute_skips_inside_single_quotes() -> None:
         (b"val",),
         [0],
     )
-    assert sql == "SELECT '$1 is literal' AS note, CAST('val' AS VARCHAR)"
+    assert sql == "SELECT '$1 is literal' AS note, 'val'"
 
 
 def test_substitute_skips_inside_double_quotes() -> None:
@@ -101,7 +100,7 @@ def test_substitute_skips_inside_double_quotes() -> None:
         (b"val",),
         [0],
     )
-    assert sql == 'SELECT "$1" AS "$1", CAST(\'val\' AS VARCHAR)'
+    assert sql == 'SELECT "$1" AS "$1", \'val\''
 
 
 def test_substitute_numeric_text_rejects_injection() -> None:
@@ -124,14 +123,15 @@ def test_substitute_numeric_text_canonicalizes() -> None:
     )
     assert (
         substitute_parameters("x $1", (b"3.14",), [0], param_oids=(1700,))
-        == "x CAST(3.14 AS DOUBLE)"
+        == "x CAST(3.14 AS DECIMAL(3, 2))"
     )
     assert (
         substitute_parameters("x $1", (b"1e3",), [0], param_oids=(701,)) == "x CAST(1E+3 AS DOUBLE)"
     )
     # Fractional edge forms Postgres accepts.
     assert (
-        substitute_parameters("x $1", (b".5",), [0], param_oids=(1700,)) == "x CAST(0.5 AS DOUBLE)"
+        substitute_parameters("x $1", (b".5",), [0], param_oids=(1700,))
+        == "x CAST(0.5 AS DECIMAL(2, 1))"
     )
     assert (
         substitute_parameters("x $1", (b"-2.5E-3",), [0], param_oids=(701,))
@@ -160,27 +160,49 @@ def test_substitute_numeric_text_rejects_non_finite() -> None:
 
 def test_substitute_skips_inside_line_comment() -> None:
     sql = substitute_parameters("SELECT 1 -- $1\nWHERE x = $1", (b"v",), [0])
-    assert sql == "SELECT 1 -- $1\nWHERE x = CAST('v' AS VARCHAR)"
+    assert sql == "SELECT 1 -- $1\nWHERE x = 'v'"
 
 
 def test_substitute_skips_inside_block_comment() -> None:
     sql = substitute_parameters("SELECT /* $1 nested /* $1 */ */ $1", (b"v",), [0])
-    assert sql == "SELECT /* $1 nested /* $1 */ */ CAST('v' AS VARCHAR)"
+    assert sql == "SELECT /* $1 nested /* $1 */ */ 'v'"
 
 
 def test_substitute_skips_inside_dollar_quote() -> None:
-    assert substitute_parameters("SELECT $$ $1 $$, $1", (b"v",), [0]) == (
-        "SELECT $$ $1 $$, CAST('v' AS VARCHAR)"
-    )
+    assert substitute_parameters("SELECT $$ $1 $$, $1", (b"v",), [0]) == "SELECT $$ $1 $$, 'v'"
     assert (
         substitute_parameters("SELECT $tag$ $1 $tag$, $1", (b"v",), [0])
-        == "SELECT $tag$ $1 $tag$, CAST('v' AS VARCHAR)"
+        == "SELECT $tag$ $1 $tag$, 'v'"
     )
 
 
 def test_substitute_dollar_digit_is_placeholder_not_tag() -> None:
     """``$1`` is a placeholder even next to a stray ``$`` (digit-led tags are invalid)."""
-    assert substitute_parameters("SELECT $1$", (b"v",), [0]) == "SELECT CAST('v' AS VARCHAR)$"
+    assert substitute_parameters("SELECT $1$", (b"v",), [0]) == "SELECT 'v'$"
+
+
+@pytest.mark.parametrize(
+    ("sql", "value", "oid", "expected"),
+    [
+        # Exact NUMERIC, not a DOUBLE round trip (review of #513).
+        (
+            "SELECT CAST($1 AS DECIMAL(38,2))",
+            b"9007199254740993.00",
+            1700,
+            decimal.Decimal("9007199254740993.00"),
+        ),
+        # A DATE parameter compares as a date.
+        ("SELECT DATE '2024-01-02' > $1", b"2024-01-01", 1082, True),
+        # OID 0 leaves the type to the context, a NULL included.
+        ("SELECT DATE '2024-01-02' > $1", b"2024-01-01", 0, True),
+        ("SELECT DATE '2024-01-02' > $1", None, 0, None),
+    ],
+)
+def test_bound_parameters_keep_value_and_comparability(
+    sql: str, value: bytes | None, oid: int, expected: object
+) -> None:
+    rendered = substitute_parameters(sql, (value,), [0], param_oids=(oid,))
+    assert duckdb.connect().execute(rendered).fetchone() == (expected,)
 
 
 def test_substitute_rejects_binary_format_for_unknown_oid() -> None:

@@ -544,7 +544,7 @@ def _with_typed_nulls(sql: str, param_oids: tuple[int, ...]) -> str | None:
         if idx >= _MAX_PARAMETERS:
             raise _BadParameterError(f"Placeholder ${idx + 1} exceeds the parameter limit")
         oid = param_oids[idx] if idx < len(param_oids) else 0
-        return _typed("NULL", oid)
+        return "CAST(NULL AS VARCHAR)" if oid == _OID_UNSPECIFIED else _typed("NULL", oid)
 
     try:
         return _map_placeholders(sql, render)
@@ -674,31 +674,70 @@ _NUMERIC_TEXT_OIDS: frozenset[int] = frozenset(
 )
 _BOOL_TEXT_OIDS: frozenset[int] = frozenset({_OID_BOOL})
 
-#: The SQL type each parameter binds as, by its declared OID; anything else
-#: (text, varchar, dates, OID 0 "unspecified") binds as text, as its quoted
-#: literal always did. Bind and Describe both render every parameter as
+#: The SQL type each parameter binds as, by its declared OID; other declared
+#: types (text, varchar, name, ...) bind as text, as their quoted literal
+#: always did. Bind and Describe both render a parameter as
 #: ``CAST(<value> AS <type>)``, a NULL included, so the result type a
 #: describe-time run reports is the one Bind produces whatever the value:
 #: ``SELECT $1`` bound to ``1`` must not turn into the canned ``SELECT 1``.
-#: ``numeric`` maps to DOUBLE because DuckDB's bare DECIMAL is (18, 3) and
-#: would round; the semantic translator unwraps such casts, so filter values
-#: stay exact there.
+#: Temporal OIDs keep their type, so ``DATE '2024-01-02' > $1`` still
+#: compares dates. ``numeric`` is sized from the value (``_numeric_type``).
 _PARAM_SQL_TYPE: dict[int, str] = {
     _OID_INT2: "SMALLINT",
     _OID_INT4: "INTEGER",
     _OID_INT8: "BIGINT",
     _OID_FLOAT4: "REAL",
     _OID_FLOAT8: "DOUBLE",
-    _OID_NUMERIC: "DOUBLE",
     _OID_BOOL: "BOOLEAN",
     _OID_BYTEA: "BLOB",
+    1082: "DATE",
+    1083: "TIME",
+    1114: "TIMESTAMP",
+    1184: "TIMESTAMPTZ",
+    1186: "INTERVAL",
+    1266: "TIMETZ",
+    2950: "UUID",
 }
+
+#: OID 0: the client left the type to the server. Postgres infers it from
+#: context, which an explicit cast would take away (``date > $1`` with a
+#: date string, or a NULL), so Bind leaves the literal bare. Describe has no
+#: value to bind and uses text, the type Postgres gives an unknown in a
+#: select list.
+_OID_UNSPECIFIED = 0
+
+#: DuckDB's widest exact DECIMAL.
+_MAX_DECIMAL_PRECISION = 38
 
 
 def _typed(literal: str, oid: int) -> str:
     """``literal`` cast to the SQL type a parameter of ``oid`` binds as."""
 
+    if oid == _OID_UNSPECIFIED:
+        return literal
+    if oid == _OID_NUMERIC:
+        sql_type = _numeric_type(literal)
+        return literal if sql_type is None else f"CAST({literal} AS {sql_type})"
     return f"CAST({literal} AS {_PARAM_SQL_TYPE.get(oid, 'VARCHAR')})"
+
+
+def _numeric_type(literal: str) -> str | None:
+    """The exact ``DECIMAL(p, s)`` for a numeric parameter, None past 38 digits.
+
+    A fixed type would round (DuckDB's bare DECIMAL is (18, 3)) or, as DOUBLE,
+    lose digits: ``9007199254740993.00`` must stay that value. A NULL takes the
+    widest type; its OID, NUMERIC, is what Describe and Bind must agree on.
+    """
+
+    if literal == "NULL":
+        return f"DECIMAL({_MAX_DECIMAL_PRECISION}, 10)"
+    value = decimal.Decimal(literal)
+    exponent = value.as_tuple().exponent
+    scale = max(0, -exponent) if isinstance(exponent, int) else 0
+    precision = max(1, value.adjusted() + 1) + scale
+    if precision > _MAX_DECIMAL_PRECISION:
+        return None
+    return f"DECIMAL({precision}, {scale})"
 
 
 def _canonical_numeric_text(text: str, oid: int) -> str:

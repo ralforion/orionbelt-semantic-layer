@@ -156,13 +156,43 @@ def test_bound_parameter_casts_read_as_literals(model: SemanticModel, predicate:
     assert q.where or q.having
 
 
-def test_a_converting_cast_is_not_a_literal(model: SemanticModel) -> None:
-    """Only a cast to the literal's own kind is the identity."""
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        # Rounds to 1.23: the filter must not become = 1.2345 (review of #513).
+        '"Total Revenue" = CAST(1.2345 AS DECIMAL(5,2))',
+        '"Total Revenue" > CAST(3000000000 AS INTEGER)',  # out of range
+        '"Total Revenue" > CAST(0.1 AS REAL)',  # not a float32
+        "\"Customer Country\" = CAST('USA' AS VARCHAR(2))",  # truncates
+        "\"Customer Country\" = CAST('US' AS CHAR(5))",  # pads
+        "\"Total Revenue\" > CAST('5' AS INTEGER)",  # converts
+        "\"Customer Country\" = CAST('not a date' AS DATE)",
+    ],
+)
+def test_a_cast_that_can_change_the_value_is_not_a_literal(
+    model: SemanticModel, predicate: str
+) -> None:
     with pytest.raises(SQLTranslationError):
         translate_sql_to_query(
-            'SELECT "Customer Country" FROM m WHERE "Total Revenue" > CAST(\'5\' AS INTEGER)',
-            model,
+            f'SELECT "Customer Country", "Total Revenue" FROM m WHERE {predicate}', model
         )
+
+
+@pytest.mark.parametrize(
+    ("predicate", "value"),
+    [
+        ('"Total Revenue" = CAST(1.23 AS DECIMAL(5,2))', 1.23),
+        ('"Total Revenue" > CAST(0.5 AS REAL)', 0.5),
+        ("\"Customer Country\" = CAST('2024-01-01' AS DATE)", "2024-01-01"),
+    ],
+)
+def test_a_cast_that_keeps_the_value_reads_as_the_literal(
+    model: SemanticModel, predicate: str, value: object
+) -> None:
+    q = translate_sql_to_query(
+        f'SELECT "Customer Country", "Total Revenue" FROM m WHERE {predicate}', model
+    )
+    assert (q.where or q.having)[0].value == value
 
 
 def test_limit(model: SemanticModel) -> None:
