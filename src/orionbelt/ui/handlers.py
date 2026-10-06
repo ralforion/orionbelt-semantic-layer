@@ -547,34 +547,61 @@ def sort_and_execute(
     return (new_query, *result, filter_chip_update(new_query), sort_state_str(new_query))
 
 
+#: Sections whose children are listed: mappings by key, lists by ``name``.
+_JUMP_MAP_SECTIONS = ("dataObjects", "dimensions", "measures", "metrics", "filters", "rules")
+_JUMP_LIST_SECTIONS = ("examples",)
+
+
 def model_jump_targets(model_yaml: str) -> object:
     """Build the model-editor "Jump to" choices as ``(label, line#)`` pairs.
 
-    Two-level labels: each top-level section (``settings`` / ``dataObjects`` /
-    ``dimensions`` / ``measures`` / ``metrics`` / ``filters``) plus its named
-    children as ``"section / name"``. The value is the 1-based line number so the
-    editor JS can scroll there via ``.cm-scroller`` scrollTop.
-    """
-    import re
+    Two-level labels: every top-level key, plus the named children of the
+    sections that hold them as ``"section / name"``: the mapping sections
+    (``dataObjects`` / ``dimensions`` / ``measures`` / ``metrics`` / ``filters``
+    / ``rules``) by key, ``examples`` by each item's ``name``. The value is the
+    1-based line number so the editor JS can scroll there via ``.cm-scroller``
+    scrollTop.
 
-    top = ("version", "settings", "dataObjects", "dimensions", "measures", "metrics", "filters")
-    named = {"dataObjects", "dimensions", "measures", "metrics", "filters"}
+    Lines come from the YAML parser's source positions rather than from
+    matching text, so any valid layout works: lists indented or not (the
+    ``yaml.safe_dump`` style), quoted keys, a key that starts with a hyphen.
+    While the editor holds YAML that does not parse (mid-edit), the choices
+    are left as they were.
+    """
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    try:
+        data = YAML(typ="rt").load(model_yaml or "")
+    except Exception:  # noqa: BLE001 — any parse failure: keep the last good list
+        return gr.update()
+    if not isinstance(data, CommentedMap):
+        return gr.update(choices=[], value=None)
+
+    def line_of(node: Any, key: Any, item: bool = False) -> str | None:
+        try:
+            line, _ = node.lc.item(key) if item else node.lc.key(key)
+        except Exception:  # noqa: BLE001 — no recorded position
+            return None
+        return str(line + 1)
+
     choices: list[tuple[str, str]] = []
-    section: str | None = None
-    for i, line in enumerate((model_yaml or "").split("\n"), start=1):
-        if not line.strip() or line.lstrip().startswith("#"):
+    for section, body in data.items():
+        line = line_of(data, section)
+        if line is None:
             continue
-        m = re.match(r"^([A-Za-z_]\w*):", line)
-        if m:
-            key = m.group(1)
-            if key in top:
-                choices.append((key, str(i)))
-                section = key if key in named else None
-            continue
-        if section:
-            m2 = re.match(r"^  (\S[^:]*):", line)  # exactly-2-space indented name
-            if m2:
-                choices.append((f"{section} / {m2.group(1).strip()}", str(i)))
+        choices.append((str(section), line))
+        if section in _JUMP_MAP_SECTIONS and isinstance(body, CommentedMap):
+            for child in body:
+                child_line = line_of(body, child)
+                if child_line is not None:
+                    choices.append((f"{section} / {child}", child_line))
+        elif section in _JUMP_LIST_SECTIONS and isinstance(body, CommentedSeq):
+            for index, entry in enumerate(body):
+                name = entry.get("name") if isinstance(entry, CommentedMap) else None
+                item_line = line_of(body, index, item=True)
+                if isinstance(name, str) and name and item_line is not None:
+                    choices.append((f"{section} / {name}", item_line))
     return gr.update(choices=choices, value=None)
 
 
