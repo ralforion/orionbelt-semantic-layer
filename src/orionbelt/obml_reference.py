@@ -318,6 +318,14 @@ includes January and February, and March's month-over-month change still
 compares with February. A filter group counts when every filter in it is on
 that column. Other filters limit the history as usual.
 
+A query that does not select a cumulative metric's timeDimension evaluates it
+as of one period, per group of its other dimensions: the value that period's
+row would show with the time dimension selected. The period holds the query's
+`asOf` date (QueryObject field, e.g. `asOf: 2025-12-17`), or else is the
+latest period with data under the query's filters. Not under
+`grouping: rollup/cube`, nor beside another dimension over the same date
+column.
+
 ### Window — rank, lag, lead, ntile, first/last value (v2.6+)
 
 ```yaml

@@ -1184,6 +1184,27 @@ class QueryResolver:
         if ctx.errors:
             raise ResolutionError(ctx.errors)
 
+        selected = {d.name for d in ctx.result.dimensions}
+        if query.as_of is not None and not any(
+            m.is_cumulative and m.cumulative_time_dimension not in selected
+            for m in ctx.result.measures
+        ):
+            ctx.result.warnings.append(
+                warning(
+                    code=WarningCode.CUMULATIVE_CONSTRAINT_VIOLATED,
+                    message=(
+                        f"asOf {query.as_of.isoformat()} has no effect: it applies to a "
+                        f"cumulative metric whose timeDimension the query does not select, "
+                        f"and this query has none."
+                    ),
+                    hint=(
+                        "Drop asOf, or drop the time dimension to evaluate the cumulative "
+                        "metrics as of that date."
+                    ),
+                    context={"asOf": query.as_of.isoformat()},
+                )
+            )
+
         return ctx.result
 
     # -- raw mode fields -----------------------------------------------------

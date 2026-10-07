@@ -379,6 +379,33 @@ This only suppresses the warning; the generated SQL is unchanged. The
 measure-level `allowFanOut` is stronger: in the grain-deduplication pass it also
 skips the rewrite.
 
+## As-of Date (`asOf`)
+
+A cumulative metric whose `timeDimension` the query does not select is
+evaluated as of one period, per group of the selected dimensions: the value
+its row for that period would show with the time dimension selected. `asOf`
+names the date; it is read at the time dimension's grain, so `2025-12-17` is
+December for a monthly year-to-date and that day for a daily rolling window.
+
+```json
+{
+  "select": { "dimensions": ["Region"], "measures": ["Revenue", "Revenue YTD"] },
+  "asOf": "2025-12-17"
+}
+```
+
+Without `asOf` the metric is evaluated at the latest period with data under
+the query's filters. A time filter therefore picks the period: filtered to
+`Order Month < 2025-07-01`, year-to-date is June's, read from January. The
+plain measures respect the filter as usual. A group without data in the
+metric's range gets NULL.
+
+`asOf` has no effect on a cumulative metric whose time dimension is selected,
+and a query that sets it with no such metric compiles with a
+`CUMULATIVE_CONSTRAINT_VIOLATED` warning. The SQL surfaces (OBSQL, Flight SQL,
+the Postgres wire) have no `asOf`; a time filter's upper bound picks the
+period there.
+
 ## Filters
 
 Filters restrict the result set. **Dimension filters** go in `where` (become SQL `WHERE`), and **measure filters** go in `having` (become SQL `HAVING`).

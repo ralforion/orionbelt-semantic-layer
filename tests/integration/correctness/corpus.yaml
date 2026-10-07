@@ -122,3 +122,18 @@
     windows count calendar days, not rows: 2021-02-20 has no sales, and each
     window reads the January days the filter excludes.
   lastVerifiedBy: tests/integration/correctness/test_calendar_rolling_windows.py::test_rolling_windows_under_a_time_filter
+
+- id: 20_cumulative_as_of_date
+  description: >-
+    Corpus #20: cumulative metrics without their time dimension, evaluated as
+    of 2021-03-18 per region. Each value equals the region's row for that
+    period (March for the monthly metrics, the day for the daily ones) in the
+    same query with the time dimension selected.
+  lastVerifiedBy: tests/integration/correctness/test_cumulative_as_of.py::test_as_of_a_date_equals_the_row_for_its_period
+
+- id: 21_cumulative_as_of_time_filter
+  description: >-
+    Corpus #21: cumulative metrics without their time dimension under a time
+    filter. The filter picks the as-of period, the latest month with data
+    before July 2021; year-to-date still reads from January.
+  lastVerifiedBy: tests/integration/correctness/test_cumulative_as_of.py::test_a_time_filter_picks_the_period_not_the_history

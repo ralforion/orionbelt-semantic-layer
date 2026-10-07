@@ -369,19 +369,32 @@ metrics:
         assert any("NonExistent" in e.message for e in result.errors)
         assert any(e.code == "CUMULATIVE_UNKNOWN_TIME_DIMENSION" for e in result.errors)
 
-    def test_cumulative_time_dim_not_in_select_error(self) -> None:
-        """timeDimension must be in the query's selected dimensions."""
-        model = _load_model()
-        resolver = QueryResolver()
-        # Select Cumulative Revenue but NOT Order Date
+    def test_cumulative_time_dim_may_be_left_out(self) -> None:
+        """Without its timeDimension selected, the metric is evaluated as of one period."""
+        query = QueryObject(select=QuerySelect(dimensions=[], measures=["Cumulative Revenue"]))
+        resolved = QueryResolver().resolve(query, _load_model())
+        assert [m.name for m in resolved.measures] == ["Cumulative Revenue"]
+        assert not resolved.warnings
+
+    def test_cumulative_time_dim_not_in_select_under_grouping_error(self) -> None:
+        """A subtotal row has no single group to evaluate the metric as of a period for."""
         query = QueryObject(
-            select=QuerySelect(dimensions=[], measures=["Cumulative Revenue"]),
+            select=QuerySelect(dimensions=["Region"], measures=["Cumulative Revenue"]),
+            grouping="rollup",
         )
         with pytest.raises(ResolutionError) as exc_info:
-            resolver.resolve(query, model)
+            QueryResolver().resolve(query, _load_model())
         assert any(
             "CUMULATIVE_TIME_DIMENSION_NOT_IN_SELECT" in e.code for e in exc_info.value.errors
         )
+
+    def test_as_of_with_the_time_dim_selected_warns(self) -> None:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Order Date"], measures=["Cumulative Revenue"]),
+            asOf="2021-04-15",
+        )
+        resolved = QueryResolver().resolve(query, _load_model())
+        assert [w.code for w in resolved.warnings] == ["CUMULATIVE_CONSTRAINT_VIOLATED"]
 
 
 # ── Wrapper CTE tests ─────────────────────────────────────────────────────
@@ -877,6 +890,41 @@ class TestCumulativePartitionsByQueryDimensions:
         assert 'PARTITION BY "Region" ORDER BY' in sql
 
 
+@pytest.fixture
+def gappy() -> Iterator[Any]:
+    """East has no March; West sold only in May."""
+    duckdb = pytest.importorskip("duckdb")
+    connection = duckdb.connect()
+    connection.execute("CREATE SCHEMA PUBLIC")
+    connection.execute(
+        "CREATE TABLE PUBLIC.ORDERS AS SELECT * FROM (VALUES "
+        "('1', DATE '2021-01-05', 'East', 1.0), "
+        "('2', DATE '2021-02-05', 'East', 10.0), "
+        "('3', DATE '2021-04-05', 'East', 1000.0), "
+        "('4', DATE '2021-05-05', 'East', 100.0), "
+        "('5', DATE '2021-05-07', 'West', 5.0)"
+        ") AS t(ORDER_ID, ORDER_DATE, REGION, AMOUNT)"
+    )
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+def _run_gappy(
+    connection: Any, query: QueryObject, model_yaml: str
+) -> dict[tuple[str, ...], tuple[float | None, ...]]:
+    """Rows keyed by their dimension values, the measures as floats."""
+    sql = CompilationPipeline().compile(query, _load_model(model_yaml), "duckdb").sql
+    width = len(query.select.dimensions)
+    return {
+        tuple(str(v) for v in row[:width]): tuple(
+            None if v is None else float(v) for v in row[width:]
+        )
+        for row in connection.execute(sql).fetchall()
+    }
+
+
 class TestRollingWindowCountsCalendarPeriods:
     """``window: N`` reaches back N periods of the time dimension's grain.
 
@@ -896,36 +944,10 @@ class TestRollingWindowCountsCalendarPeriods:
   # Cumulative: rolling max""",
     )
 
-    @pytest.fixture
-    def gappy(self) -> Iterator[Any]:
-        duckdb = pytest.importorskip("duckdb")
-        connection = duckdb.connect()
-        connection.execute("CREATE SCHEMA PUBLIC")
-        connection.execute(
-            "CREATE TABLE PUBLIC.ORDERS AS SELECT * FROM (VALUES "
-            "('1', DATE '2021-01-05', 'East', 1.0), "
-            "('2', DATE '2021-02-05', 'East', 10.0), "
-            "('3', DATE '2021-04-05', 'East', 1000.0), "
-            "('4', DATE '2021-05-05', 'East', 100.0), "
-            "('5', DATE '2021-05-07', 'West', 5.0)"
-            ") AS t(ORDER_ID, ORDER_DATE, REGION, AMOUNT)"
-        )
-        try:
-            yield connection
-        finally:
-            connection.close()
-
     def _run(
         self, connection: Any, query: QueryObject
     ) -> dict[tuple[str, ...], tuple[float | None, ...]]:
-        sql = CompilationPipeline().compile(query, _load_model(self.MODEL_YAML), "duckdb").sql
-        width = len(query.select.dimensions)
-        return {
-            tuple(str(v) for v in row[:width]): tuple(
-                None if v is None else float(v) for v in row[width:]
-            )
-            for row in connection.execute(sql).fetchall()
-        }
+        return _run_gappy(connection, query, self.MODEL_YAML)
 
     def test_a_gap_counts_as_a_period(self, gappy: Any) -> None:
         rows = self._run(
@@ -991,6 +1013,81 @@ class TestRollingWindowCountsCalendarPeriods:
         sql = CompilationPipeline().compile(query, _load_model(self.MODEL_YAML), "duckdb").sql
         assert "cumulative_rolling" not in sql
         assert "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW" in sql
+
+
+class TestAsOf:
+    """Without its time dimension selected, a cumulative metric is evaluated as of one period.
+
+    Each group gets the value its row for that period shows with the time
+    dimension selected, also when the group has no data in the period itself.
+    """
+
+    MODEL_YAML = TestRollingWindowCountsCalendarPeriods.MODEL_YAML
+    METRICS = ["Cumulative Revenue", "Rolling 3 Revenue", "YTD Revenue", "MTD Revenue"]
+
+    def _run(
+        self,
+        connection: Any,
+        dimensions: list[str],
+        as_of: str | None = None,
+        where: list[QueryFilter] | None = None,
+    ) -> dict[tuple[str, ...], tuple[float | None, ...]]:
+        query = QueryObject(
+            select=QuerySelect(dimensions=dimensions, measures=self.METRICS),
+            where=where or [],
+            asOf=as_of,
+        )
+        return _run_gappy(connection, query, self.MODEL_YAML)
+
+    def test_the_latest_period_with_data_by_default(self, gappy: Any) -> None:
+        assert self._run(gappy, ["Region"]) == {
+            ("East",): (1111.0, 1100.0, 1111.0, 100.0),
+            ("West",): (5.0, 5.0, 5.0, 5.0),
+        }
+
+    def test_equals_the_row_for_the_period_with_the_time_dimension_selected(
+        self, gappy: Any
+    ) -> None:
+        by_month = _run_gappy(
+            gappy,
+            QueryObject(
+                select=QuerySelect(dimensions=["Region", "Order Date"], measures=self.METRICS)
+            ),
+            self.MODEL_YAML,
+        )
+        assert self._run(gappy, ["Region"], as_of="2021-04-15") == {
+            ("East",): by_month[("East", "2021-04-01")],
+            ("West",): (None, None, None, None),  # nothing until May
+        }
+
+    def test_a_period_without_data_reads_the_periods_before_it(self, gappy: Any) -> None:
+        """No March anywhere: the running total and the window read January and
+        February; month-to-date has no March to read."""
+        assert self._run(gappy, ["Region"], as_of="2021-03-10")[("East",)] == (
+            11.0,
+            11.0,
+            11.0,
+            None,
+        )
+
+    def test_without_dimensions_one_row(self, gappy: Any) -> None:
+        assert self._run(gappy, []) == {(): (1116.0, 1105.0, 1116.0, 105.0)}
+
+    def test_a_time_filter_picks_the_period(self, gappy: Any) -> None:
+        before_may = [QueryFilter(field="Order Date", op="lt", value="2021-05-01")]
+        assert self._run(gappy, ["Region"], where=before_may) == {
+            ("East",): (1011.0, 1010.0, 1011.0, 1000.0),
+        }
+
+    def test_another_grain_of_the_same_date_is_refused(self) -> None:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Order Year"], measures=["Cumulative Revenue"])
+        )
+        with pytest.raises(ResolutionError) as exc_info:
+            CompilationPipeline().compile(query, _load_model(self.MODEL_YAML), "duckdb")
+        assert [e.code for e in exc_info.value.errors] == [
+            "CUMULATIVE_TIME_DIMENSION_NOT_IN_SELECT"
+        ]
 
 
 class TestTimeFilterDoesNotCutTheLookBack:

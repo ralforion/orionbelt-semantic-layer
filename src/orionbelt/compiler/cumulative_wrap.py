@@ -13,6 +13,10 @@ A rolling window counts calendar periods, so it cannot be a ``ROWS`` frame (a
 gap would make it reach too far back), and Dremio rejects ``RANGE`` frames with
 an offset; see :func:`_rolling_query`.
 
+A query that does not select a metric's time dimension evaluates it *as of*
+one period, per group: the value the row for that period would show with the
+time dimension selected. See :func:`_as_of_ctes`.
+
 The wrapper follows the same CTE pattern as ``total_wrap.py``:
 the planner output becomes a base CTE, and an outer query applies
 the cumulative window functions.
@@ -20,7 +24,8 @@ the cumulative window functions.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
@@ -28,6 +33,7 @@ from orionbelt.ast.nodes import (
     AliasedExpr,
     BinaryOp,
     CaseExpr,
+    Cast,
     ColumnRef,
     Expr,
     From,
@@ -43,18 +49,20 @@ from orionbelt.ast.nodes import (
     WindowFunction,
 )
 from orionbelt.compiler.outer_order_by import outer_order_by
-from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import lookback_query, null_safe_eq, time_filters
 from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
 )
 from orionbelt.compiler.window_wrap import partition_keys, wraps_a_cte
+from orionbelt.models.errors import SemanticError
+from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import CumulativeAggType, GrainToDate, TimeGrain
 
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
-    from orionbelt.models.semantic import SemanticModel
+    from orionbelt.models.semantic import DataObject, SemanticModel
 
 # Map CumulativeAggType → SQL window function name
 _CUMULATIVE_AGG_MAP: dict[CumulativeAggType, str] = {
@@ -230,6 +238,8 @@ def wrap_with_cumulative(
     *,
     model: SemanticModel | None = None,
     dialect: Dialect | None = None,
+    qualify_table: Callable[[DataObject], str] | None = None,
+    query: QueryObject | None = None,
 ) -> Select:
     """Wrap a planner AST with a CTE + outer query for cumulative metrics.
 
@@ -244,16 +254,42 @@ def wrap_with_cumulative(
     silently violates the metric's declared ``dataType``. Both kwargs
     are optional so legacy callers continue to compile (without the
     casts).
+
+    ``qualify_table`` and ``query`` plan the periods a metric evaluated as of
+    one period reads, and are required when the query does not select a
+    cumulative metric's time dimension.
     """
     if not resolved.has_cumulative:
         return ast
 
-    cumulative_measures: list[ResolvedMeasure] = [m for m in resolved.measures if m.is_cumulative]
+    selected = {d.name for d in resolved.dimensions}
+    cumulative_measures: list[ResolvedMeasure] = [
+        m for m in resolved.measures if m.is_cumulative and m.cumulative_time_dimension in selected
+    ]
+    as_of_measures = [
+        m for m in resolved.measures if m.is_cumulative and m not in cumulative_measures
+    ]
 
     cte_name = "cumulative_base"
     over_cte = wraps_a_cte(ast)
     base_cte = CTE(name=cte_name, query=_base_query(ast, resolved, model, dialect, over_cte))
-    value_ctes = _value_ctes(ast, resolved, cumulative_measures, model, dialect, cte_name, over_cte)
+    value_ctes = _value_ctes(
+        ast,
+        resolved,
+        cumulative_measures,
+        model,
+        dialect,
+        cte_name,
+        over_cte,
+        joined=bool(as_of_measures),
+    )
+    if as_of_measures:
+        if model is None or dialect is None or qualify_table is None or query is None:
+            raise ValueError(
+                "A cumulative metric without its time dimension selected needs the "
+                "model, dialect, table qualifier and query to plan its periods"
+            )
+        value_ctes += _as_of_ctes(query, resolved, as_of_measures, model, dialect, qualify_table)
     order_by = outer_order_by(resolved, model)
 
     if not value_ctes:
@@ -289,9 +325,10 @@ def wrap_with_cumulative(
     for m in resolved.measures:
         table = window_of.get(m.name, cte_name)
         joined_columns.append(AliasedExpr(expr=ColumnRef(table=table, name=m.name), alias=m.name))
+    # Without dimensions every value CTE is one row, the query's own total.
     joins: list[Join | Unnest] = [
         Join(
-            join_type=JoinType.LEFT,
+            join_type=JoinType.LEFT if resolved.dimensions else JoinType.CROSS,
             source=name,
             alias=name,
             on=_all_of(
@@ -403,6 +440,8 @@ def _value_ctes(
     dialect: Dialect | None,
     base_name: str,
     over_cte: bool,
+    *,
+    joined: bool = False,
 ) -> list[tuple[str, list[CTE], list[ResolvedMeasure]]]:
     """The CTEs that compute the cumulative metrics apart from the shown rows.
 
@@ -421,6 +460,9 @@ def _value_ctes(
 
     ``HAVING`` stays in the look-back: it picks groups, not periods, and
     without a time filter the windows read only the groups it keeps.
+
+    *joined* says the shown rows take values from other CTEs anyway (an as-of
+    metric's), so every metric gets one here too.
     """
     if ast.grouping is not None:
         return []
@@ -433,8 +475,10 @@ def _value_ctes(
             groups.append((predicates, [m]))
         else:
             group[1].append(m)
-    if all(not predicates for predicates, _ in groups) and not any(
-        _is_rolling(m) for m in cumulative_measures
+    if (
+        not joined
+        and all(not predicates for predicates, _ in groups)
+        and not any(_is_rolling(m) for m in cumulative_measures)
     ):
         return []
 
@@ -486,6 +530,166 @@ def _value_ctes(
             values.append((name, ctes, same_axis))
             ctes = []
     return values
+
+
+def _as_of_ctes(
+    query: QueryObject,
+    resolved: ResolvedQuery,
+    metrics: list[ResolvedMeasure],
+    model: SemanticModel,
+    dialect: Dialect,
+    qualify_table: Callable[[DataObject], str],
+) -> list[tuple[str, list[CTE], list[ResolvedMeasure]]]:
+    """Cumulative metrics evaluated as of one period, per group of the query.
+
+    Without its time dimension selected, a metric has no periods in the result
+    to accumulate over. It takes the value the row for the *as-of* period would
+    show with that dimension selected: its aggregate over the periods that the
+    running total, grain-to-date or rolling window reaches back from there,
+    per group. A group without data in that range gets NULL.
+
+    The periods are planned as a query in their own right: the query's
+    dimensions plus the time dimension, with the base measures and the query's
+    filters. As with the time dimension selected, a time filter picks the
+    period shown rather than cutting the history, so the values are read from
+    the look-back copy without it.
+
+    The as-of period is the one holding the query's ``asOf`` date, or else the
+    latest period with data under all the query's filters: filtered to the
+    first half of a year, year-to-date is evaluated as of June.
+    """
+    # Imported here: the pipeline owns the phase order, and importing it at
+    # module scope would be a cycle back through ``compiler.passes``.
+    from orionbelt.compiler.pipeline import plan_in_own_right
+
+    by_axis: dict[str, list[ResolvedMeasure]] = {}
+    for m in metrics:
+        assert m.cumulative_time_dimension is not None
+        by_axis.setdefault(m.cumulative_time_dimension, []).append(m)
+    values: list[tuple[str, list[CTE], list[ResolvedMeasure]]] = []
+    for index, (time_dim_name, same_axis) in enumerate(by_axis.items(), 1):
+        suffix = "" if index == 1 else f"_{index}"
+        periods_query = QueryObject(
+            select=QuerySelect(
+                dimensions=[*query.select.dimensions, time_dim_name],
+                measures=list(dict.fromkeys(m.cumulative_measure or m.name for m in same_axis)),
+            ),
+            where=list(query.where),
+            use_path_names=list(query.use_path_names),
+            allow_fan_out=query.allow_fan_out,
+            dimensions_exclude=query.dimensions_exclude,
+        )
+        shown, periods_resolved = plan_in_own_right(periods_query, model, dialect, qualify_table)
+        # Another grain of the same date (``Sales Date`` beside a metric over
+        # ``Sales Month``) is a position on the time axis, not a group: the
+        # periods would split by it, and every row but the as-of period's
+        # would come back NULL.
+        on_axis = sorted(
+            {d.name for d in resolved.dimensions}
+            - set(_group_dimensions(periods_resolved, time_dim_name))
+        )
+        if on_axis:
+            raise ResolutionError(
+                [
+                    SemanticError(
+                        code="CUMULATIVE_TIME_DIMENSION_NOT_IN_SELECT",
+                        message=(
+                            f"Cumulative metric(s) {', '.join(repr(m.name) for m in same_axis)} "
+                            f"accumulate over '{time_dim_name}', which the query does not "
+                            f"select, while it selects {', '.join(repr(n) for n in on_axis)} "
+                            f"over the same date column."
+                        ),
+                        path="select.dimensions",
+                        hint=(
+                            f"Select '{time_dim_name}' to show the metric per period, or drop "
+                            f"{', '.join(repr(n) for n in on_axis)} to evaluate it as of one "
+                            f"period."
+                        ),
+                    )
+                ]
+            )
+        resolved.warnings.extend(w for w in periods_resolved.warnings if w not in resolved.warnings)
+        ctes: list[CTE] = []
+        periods_name = f"cumulative_as_of_periods{suffix}"
+        shown_name = periods_name
+        predicates = time_filters(periods_resolved, time_dim_name)
+        lookback = (
+            lookback_query(shown, predicates, "_lookback", periods_resolved) if predicates else None
+        )
+        periods = shown
+        if lookback is not None:
+            added, body = lookback
+            shown_name = f"cumulative_as_of_shown{suffix}"
+            ctes.append(CTE(name=shown_name, query=shown))
+            periods = replace(body, ctes=[*shown.ctes, *added])
+        ctes.append(CTE(name=periods_name, query=periods))
+
+        joins: list[Join | Unnest] = []
+        as_of: Expr
+        if query.as_of is not None:
+            as_of = Cast(expr=Literal.string(query.as_of.isoformat()), type_name="date")
+        else:
+            point_name = f"cumulative_as_of_point{suffix}"
+            latest = FunctionCall(name="MAX", args=[ColumnRef(name=time_dim_name)])
+            ctes.append(
+                CTE(
+                    name=point_name,
+                    query=Select(
+                        columns=[AliasedExpr(expr=latest, alias="as_of")],
+                        from_=From(source=shown_name, alias=shown_name),
+                    ),
+                )
+            )
+            joins.append(Join(join_type=JoinType.CROSS, source=point_name, alias=point_name))
+            as_of = ColumnRef(table=point_name, name="as_of")
+
+        time_dim = next(d for d in periods_resolved.dimensions if d.name == time_dim_name)
+        period = ColumnRef(table=periods_name, name=time_dim_name)
+        unit = time_dim.grain.value if time_dim.grain is not None else "day"
+        periods_back = FunctionCall(name="date_diff", args=[Literal.string(unit), period, as_of])
+        columns: list[Expr] = [
+            AliasedExpr(expr=ColumnRef(table=periods_name, name=d.name), alias=d.name)
+            for d in resolved.dimensions
+        ]
+        for m in same_axis:
+            value: Expr = ColumnRef(table=periods_name, name=m.cumulative_measure or m.name)
+            reaches = _as_of_reach(m, periods_back, period, as_of)
+            if reaches is not None:
+                value = CaseExpr(when_clauses=[(reaches, value)])
+            aggregate = FunctionCall(name=_CUMULATIVE_AGG_MAP[m.cumulative_type], args=[value])
+            columns.append(AliasedExpr(expr=aggregate, alias=m.name))
+        name = f"cumulative_as_of{suffix}"
+        ctes.append(
+            CTE(
+                name=name,
+                query=Select(
+                    columns=columns,
+                    from_=From(source=periods_name, alias=periods_name),
+                    joins=joins,
+                    where=BinaryOp(left=periods_back, op=">=", right=Literal.number(0)),
+                    group_by=[
+                        ColumnRef(table=periods_name, name=d.name) for d in resolved.dimensions
+                    ],
+                ),
+            )
+        )
+        values.append((name, ctes, same_axis))
+    return values
+
+
+def _as_of_reach(m: ResolvedMeasure, periods_back: Expr, period: Expr, as_of: Expr) -> Expr | None:
+    """Whether a period up to the as-of one is in *m*'s range, if not all of them are.
+
+    Grain-to-date reads the periods in the as-of period's year (quarter, ...),
+    a rolling window the N periods ending at it, a running total every one.
+    """
+    if m.cumulative_grain_to_date is not None:
+        grain = _GRAIN_TRUNC_MAP[m.cumulative_grain_to_date]
+        same = FunctionCall(name="date_diff", args=[Literal.string(grain), period, as_of])
+        return BinaryOp(left=same, op="=", right=Literal.number(0))
+    if m.cumulative_window is not None:
+        return BinaryOp(left=periods_back, op="<=", right=Literal.number(m.cumulative_window - 1))
+    return None
 
 
 def _is_rolling(m: ResolvedMeasure) -> bool:

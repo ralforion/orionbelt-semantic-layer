@@ -311,6 +311,17 @@ class QueryObject(BaseModel):
             "selected dimension so callers can distinguish subtotal/grand-total rows."
         ),
     )
+    as_of: date | None = Field(
+        default=None,
+        alias="asOf",
+        description=(
+            "The date a cumulative metric is evaluated at when the query does not select "
+            "its timeDimension, read at that dimension's grain (2025-12-17 is December "
+            "for a monthly one). Without it, the metric is evaluated at the latest period "
+            "with data under the query's filters. Has no effect on a cumulative metric "
+            "whose timeDimension is selected."
+        ),
+    )
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
