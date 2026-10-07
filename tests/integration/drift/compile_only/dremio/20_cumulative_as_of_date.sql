@@ -29,9 +29,9 @@ LEFT JOIN "orionbelt_1"."regions" AS "Regions" ON "Countries"."region" = "Region
 GROUP BY "Regions"."regionname", CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE)
 ),
 "cumulative_as_of_2" AS (
-SELECT "cumulative_as_of_periods_2"."Sales Region Name" AS "Sales Region Name", SUM(CASE WHEN TIMESTAMPDIFF(MONTH, DATE_TRUNC('month', "cumulative_as_of_periods_2"."Sales Date"), DATE_TRUNC('month', CAST(DATE_TRUNC('day', CAST('2021-03-18' AS DATE)) AS DATE))) = 0 THEN "cumulative_as_of_periods_2"."Total Sales" END) AS "MTD Sales", AVG(CASE WHEN TIMESTAMPDIFF(DAY, DATE_TRUNC('day', "cumulative_as_of_periods_2"."Sales Date"), DATE_TRUNC('day', CAST(DATE_TRUNC('day', CAST('2021-03-18' AS DATE)) AS DATE))) <= 29 THEN "cumulative_as_of_periods_2"."Total Sales" END) AS "Rolling 30 Day Sales", MAX(CASE WHEN TIMESTAMPDIFF(DAY, DATE_TRUNC('day', "cumulative_as_of_periods_2"."Sales Date"), DATE_TRUNC('day', CAST(DATE_TRUNC('day', CAST('2021-03-18' AS DATE)) AS DATE))) <= 29 THEN "cumulative_as_of_periods_2"."Total Sales" END) AS "Peak Daily Sales 30D"
+SELECT "cumulative_as_of_periods_2"."Sales Region Name" AS "Sales Region Name", SUM(CASE WHEN TIMESTAMPDIFF(MONTH, DATE_TRUNC('month', "cumulative_as_of_periods_2"."Sales Date"), DATE_TRUNC('month', CAST('2021-03-18' AS DATE))) = 0 THEN "cumulative_as_of_periods_2"."Total Sales" END) AS "MTD Sales", AVG(CASE WHEN TIMESTAMPDIFF(DAY, DATE_TRUNC('day', "cumulative_as_of_periods_2"."Sales Date"), DATE_TRUNC('day', CAST('2021-03-18' AS DATE))) <= 29 THEN "cumulative_as_of_periods_2"."Total Sales" END) AS "Rolling 30 Day Sales", MAX(CASE WHEN TIMESTAMPDIFF(DAY, DATE_TRUNC('day', "cumulative_as_of_periods_2"."Sales Date"), DATE_TRUNC('day', CAST('2021-03-18' AS DATE))) <= 29 THEN "cumulative_as_of_periods_2"."Total Sales" END) AS "Peak Daily Sales 30D"
 FROM "cumulative_as_of_periods_2" AS "cumulative_as_of_periods_2"
-WHERE TIMESTAMPDIFF(DAY, DATE_TRUNC('day', "cumulative_as_of_periods_2"."Sales Date"), DATE_TRUNC('day', CAST(DATE_TRUNC('day', CAST('2021-03-18' AS DATE)) AS DATE))) >= 0
+WHERE TIMESTAMPDIFF(DAY, DATE_TRUNC('day', "cumulative_as_of_periods_2"."Sales Date"), DATE_TRUNC('day', CAST('2021-03-18' AS DATE))) >= 0
 GROUP BY "cumulative_as_of_periods_2"."Sales Region Name"
 ),
 "cumulative_joined" AS (

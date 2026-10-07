@@ -1135,6 +1135,41 @@ class TestAsOf:
             asOf="2021-03-10",
         )
         assert _run_gappy(gappy, query, model_yaml)[("East",)] == (None, 2.0)
+        before_any = QueryObject(
+            select=QuerySelect(measures=["Monthly Order Count", "Running Order Count"]),
+            asOf="2020-12-01",
+        )
+        assert _run_gappy(gappy, before_any, model_yaml) == {(): (None, None)}
+
+    def test_a_date_is_not_truncated_to_a_finer_grain(self) -> None:
+        """A date already starts its hour; BigQuery truncates only a
+        timestamp to one."""
+        model_yaml = self.MODEL_YAML.replace(
+            "  Region:\n    dataObject: Orders",
+            """  Order Hour:
+    dataObject: Orders
+    column: Order Date
+    resultType: timestamp
+    timeGrain: hour
+
+  Region:
+    dataObject: Orders""",
+        ).replace(
+            "  # Cumulative: rolling max",
+            """  Hourly Running Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Hour
+
+  # Cumulative: rolling max""",
+        )
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Region"], measures=["Hourly Running Revenue"]),
+            asOf="2025-02-01",
+        )
+        sql = CompilationPipeline().compile(query, _load_model(model_yaml), "bigquery").sql
+        assert "CAST('2025-02-01' AS DATE)" in sql
+        assert "DATE_TRUNC(CAST('2025-02-01'" not in sql
 
     def test_the_tables_the_periods_read_key_the_cache(self) -> None:
         """The time dimension comes from a calendar the shown rows do not join."""

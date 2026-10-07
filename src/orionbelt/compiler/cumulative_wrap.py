@@ -73,6 +73,11 @@ _CUMULATIVE_AGG_MAP: dict[CumulativeAggType, str] = {
     CumulativeAggType.COUNT: "COUNT",
 }
 
+#: Grains whose period can start before the day a date names.
+_COARSER_THAN_A_DAY = frozenset(
+    {TimeGrain.WEEK, TimeGrain.MONTH, TimeGrain.QUARTER, TimeGrain.YEAR}
+)
+
 # Map GrainToDate → DATE_TRUNC grain string
 _GRAIN_TRUNC_MAP: dict[GrainToDate, str] = {
     GrainToDate.YEAR: "year",
@@ -635,9 +640,10 @@ def _as_of_ctes(
         if query.as_of is not None:
             # The period holding the date, truncated as the time dimension is:
             # a week starting in January is January's, also as of February 1.
-            # Cast back, as the dimension is: MySQL truncates to a label.
+            # Cast back, as the dimension is: MySQL truncates to a label. A
+            # date already starts its day, hour, minute and second.
             as_of = Cast(expr=Literal.string(query.as_of.isoformat()), type_name="date")
-            if time_dim.grain is not None:
+            if time_dim.grain in _COARSER_THAN_A_DAY:
                 as_of = Cast(
                     expr=dialect.render_time_grain(as_of, time_dim.grain), type_name="date"
                 )
@@ -671,12 +677,15 @@ def _as_of_ctes(
             aggregate: Expr = FunctionCall(
                 name=_CUMULATIVE_AGG_MAP[m.cumulative_type], args=[value]
             )
-            if reaches is not None and m.cumulative_type is CumulativeAggType.COUNT:
+            if m.cumulative_type is CumulativeAggType.COUNT:
                 # COUNT of an empty range is 0, where every other aggregate
                 # gives the NULL of a group without data in the range.
-                periods_in_range = FunctionCall(
-                    name="COUNT", args=[CaseExpr(when_clauses=[(reaches, Literal.number(1))])]
+                in_reach: Expr = (
+                    Literal.number(1)
+                    if reaches is None
+                    else CaseExpr(when_clauses=[(reaches, Literal.number(1))])
                 )
+                periods_in_range = FunctionCall(name="COUNT", args=[in_reach])
                 in_range = BinaryOp(left=periods_in_range, op=">", right=Literal.number(0))
                 aggregate = CaseExpr(when_clauses=[(in_range, aggregate)])
             columns.append(AliasedExpr(expr=aggregate, alias=m.name))
