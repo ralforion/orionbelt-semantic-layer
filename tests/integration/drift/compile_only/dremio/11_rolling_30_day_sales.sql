@@ -6,7 +6,7 @@ GROUP BY CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE)
 "cumulative_rolling" AS (
 SELECT "cumulative_current"."Sales Date" AS "Sales Date", AVG("cumulative_prior"."Total Sales") AS "Rolling 30 Day Sales"
 FROM "cumulative_base" AS "cumulative_current"
-INNER JOIN "cumulative_base" AS "cumulative_prior" ON TIMESTAMPDIFF(DAY, DATE_TRUNC('day', "cumulative_prior"."Sales Date"), DATE_TRUNC('day', "cumulative_current"."Sales Date")) >= 0 AND TIMESTAMPDIFF(DAY, DATE_TRUNC('day', "cumulative_prior"."Sales Date"), DATE_TRUNC('day', "cumulative_current"."Sales Date")) <= 29
+INNER JOIN "cumulative_base" AS "cumulative_prior" ON TIMESTAMPDIFF(DAY, DATE_TRUNC('day', "cumulative_prior"."Sales Date"), DATE_TRUNC('day', "cumulative_current"."Sales Date")) >= 0 AND TIMESTAMPDIFF(DAY, DATE_TRUNC('day', "cumulative_prior"."Sales Date"), DATE_TRUNC('day', "cumulative_current"."Sales Date")) <= 29 OR "cumulative_current"."Sales Date" IS NULL AND "cumulative_prior"."Sales Date" IS NULL
 GROUP BY "cumulative_current"."Sales Date"
 ),
 "cumulative_joined" AS (

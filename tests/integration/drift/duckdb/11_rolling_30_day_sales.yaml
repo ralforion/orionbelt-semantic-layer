@@ -17,7 +17,8 @@ sql: 'WITH "cumulative_base" AS (
   FROM "cumulative_base" AS "cumulative_current"
 
   INNER JOIN "cumulative_base" AS "cumulative_prior" ON DATE_DIFF(''day'', "cumulative_prior"."Sales Date", "cumulative_current"."Sales
-  Date") >= 0 AND DATE_DIFF(''day'', "cumulative_prior"."Sales Date", "cumulative_current"."Sales Date") <= 29
+  Date") >= 0 AND DATE_DIFF(''day'', "cumulative_prior"."Sales Date", "cumulative_current"."Sales Date") <= 29 OR "cumulative_current"."Sales
+  Date" IS NULL AND "cumulative_prior"."Sales Date" IS NULL
 
   GROUP BY ALL
 

@@ -12,7 +12,7 @@ GROUP BY ALL
 `cumulative_rolling` AS (
 SELECT `cumulative_current`.`Sales Date` AS `Sales Date`, AVG(`cumulative_prior`.`Total Sales`) AS `Rolling 30 Day Sales`, MAX(`cumulative_prior`.`Total Sales`) AS `Peak Daily Sales 30D`
 FROM `cumulative_lookback` AS `cumulative_current`
-INNER JOIN `cumulative_lookback` AS `cumulative_prior` ON DATE_DIFF(`cumulative_current`.`Sales Date`, `cumulative_prior`.`Sales Date`, DAY) >= 0 AND DATE_DIFF(`cumulative_current`.`Sales Date`, `cumulative_prior`.`Sales Date`, DAY) <= 29
+INNER JOIN `cumulative_lookback` AS `cumulative_prior` ON DATE_DIFF(CAST(`cumulative_current`.`Sales Date` AS DATETIME), CAST(`cumulative_prior`.`Sales Date` AS DATETIME), DAY) >= 0 AND DATE_DIFF(CAST(`cumulative_current`.`Sales Date` AS DATETIME), CAST(`cumulative_prior`.`Sales Date` AS DATETIME), DAY) <= 29 OR `cumulative_current`.`Sales Date` IS NULL AND `cumulative_prior`.`Sales Date` IS NULL
 GROUP BY ALL
 ),
 `cumulative_joined` AS (

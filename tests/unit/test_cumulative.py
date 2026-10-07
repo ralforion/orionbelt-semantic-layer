@@ -552,10 +552,15 @@ class TestRollingWindow:
 
     @staticmethod
     def _reach(query: Select) -> Literal:
-        """The upper bound of the join's ``date_diff(...) <= N - 1``."""
+        """The upper bound of the join's ``date_diff(...) <= N - 1``.
+
+        The join is ``(0 <= date_diff <= N - 1) OR (both dates NULL)``.
+        """
         on = query.joins[0].on
-        assert isinstance(on, BinaryOp) and on.op == "AND"
-        upper = on.right
+        assert isinstance(on, BinaryOp) and on.op == "OR"
+        within = on.left
+        assert isinstance(within, BinaryOp) and within.op == "AND"
+        upper = within.right
         assert isinstance(upper, BinaryOp) and upper.op == "<="
         assert isinstance(upper.left, FunctionCall) and upper.left.name == "date_diff"
         assert isinstance(upper.right, Literal)
@@ -963,6 +968,21 @@ class TestRollingWindowCountsCalendarPeriods:
             ),
         )
         assert rows == {("2021-05-01",): (1105.0,)}
+
+    def test_a_row_without_a_date_keeps_its_own_value(self, gappy: Any) -> None:
+        """A NULL date has no periods before it; the join used to drop it."""
+        gappy.execute("INSERT INTO PUBLIC.ORDERS VALUES ('6', NULL, 'East', 20.0)")
+        rows = self._run(
+            gappy,
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Region", "Order Date"],
+                    measures=["Rolling 3 Revenue", "7-Day Rolling Avg Revenue"],
+                )
+            ),
+        )
+        assert rows[("East", "None")] == (20.0, 20.0)
+        assert rows[("East", "2021-05-01")] == (1100.0, 277.75)
 
     def test_running_totals_keep_their_window_function(self) -> None:
         query = QueryObject(

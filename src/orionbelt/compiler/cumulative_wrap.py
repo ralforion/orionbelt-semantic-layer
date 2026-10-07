@@ -32,6 +32,7 @@ from orionbelt.ast.nodes import (
     Expr,
     From,
     FunctionCall,
+    IsNull,
     Join,
     JoinType,
     Literal,
@@ -519,7 +520,9 @@ def _rolling_query(
 
     The metrics share one join, as wide as the widest window; a narrower one
     takes only the periods its own window reaches. A time dimension without a
-    grain counts days.
+    grain counts days. A row without a date has no periods before it: it reads
+    its own value, as a ``RANGE`` frame's NULL peers would, rather than leaving
+    the join.
     """
     time_dim = next(d for d in resolved.dimensions if d.name == time_dim_name)
     unit = time_dim.grain.value if time_dim.grain is not None else "day"
@@ -532,15 +535,23 @@ def _rolling_query(
             ColumnRef(table=current, name=time_dim_name),
         ],
     )
+    undated = IsNull(expr=ColumnRef(table=prior, name=time_dim_name))
     widest = max(m.cumulative_window or 1 for m in metrics)
+    within = BinaryOp(
+        left=BinaryOp(left=periods_back, op=">=", right=Literal.number(0)),
+        op="AND",
+        right=BinaryOp(left=periods_back, op="<=", right=Literal.number(widest - 1)),
+    )
+    both_undated = BinaryOp(
+        left=IsNull(expr=ColumnRef(table=current, name=time_dim_name)), op="AND", right=undated
+    )
     on = _all_of(
         [
             *(
                 null_safe_eq(ColumnRef(table=current, name=p), ColumnRef(table=prior, name=p))
                 for p in partitions
             ),
-            BinaryOp(left=periods_back, op=">=", right=Literal.number(0)),
-            BinaryOp(left=periods_back, op="<=", right=Literal.number(widest - 1)),
+            BinaryOp(left=within, op="OR", right=both_undated),
         ]
     )
     columns: list[Expr] = [
@@ -551,7 +562,11 @@ def _rolling_query(
         span = m.cumulative_window or 1
         value: Expr = ColumnRef(table=prior, name=m.cumulative_measure or m.name)
         if span < widest:
-            reaches = BinaryOp(left=periods_back, op="<=", right=Literal.number(span - 1))
+            reaches = BinaryOp(
+                left=BinaryOp(left=periods_back, op="<=", right=Literal.number(span - 1)),
+                op="OR",
+                right=undated,
+            )
             value = CaseExpr(when_clauses=[(reaches, value)])
         aggregate = FunctionCall(name=_CUMULATIVE_AGG_MAP[m.cumulative_type], args=[value])
         columns.append(AliasedExpr(expr=aggregate, alias=m.name))

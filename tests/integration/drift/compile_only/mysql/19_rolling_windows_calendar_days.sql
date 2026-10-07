@@ -12,7 +12,7 @@ GROUP BY CAST(DATE_FORMAT(`Sales`.`salesdate`, '%Y-%m-%d') AS DATE)
 `cumulative_rolling` AS (
 SELECT `cumulative_current`.`Sales Date` AS `Sales Date`, AVG(`cumulative_prior`.`Total Sales`) AS `Rolling 30 Day Sales`, MAX(`cumulative_prior`.`Total Sales`) AS `Peak Daily Sales 30D`
 FROM `cumulative_lookback` AS `cumulative_current`
-INNER JOIN `cumulative_lookback` AS `cumulative_prior` ON TIMESTAMPDIFF(DAY, CAST(DATE_FORMAT(`cumulative_prior`.`Sales Date`, '%Y-%m-%d') AS DATE), CAST(DATE_FORMAT(`cumulative_current`.`Sales Date`, '%Y-%m-%d') AS DATE)) >= 0 AND TIMESTAMPDIFF(DAY, CAST(DATE_FORMAT(`cumulative_prior`.`Sales Date`, '%Y-%m-%d') AS DATE), CAST(DATE_FORMAT(`cumulative_current`.`Sales Date`, '%Y-%m-%d') AS DATE)) <= 29
+INNER JOIN `cumulative_lookback` AS `cumulative_prior` ON TIMESTAMPDIFF(DAY, CAST(DATE_FORMAT(`cumulative_prior`.`Sales Date`, '%Y-%m-%d') AS DATE), CAST(DATE_FORMAT(`cumulative_current`.`Sales Date`, '%Y-%m-%d') AS DATE)) >= 0 AND TIMESTAMPDIFF(DAY, CAST(DATE_FORMAT(`cumulative_prior`.`Sales Date`, '%Y-%m-%d') AS DATE), CAST(DATE_FORMAT(`cumulative_current`.`Sales Date`, '%Y-%m-%d') AS DATE)) <= 29 OR `cumulative_current`.`Sales Date` IS NULL AND `cumulative_prior`.`Sales Date` IS NULL
 GROUP BY `cumulative_current`.`Sales Date`
 ),
 `cumulative_joined` AS (

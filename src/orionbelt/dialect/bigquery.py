@@ -310,9 +310,18 @@ class BigQueryDialect(Dialect):
         )
 
     def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
-        """BigQuery reverses the operands and takes the unit last."""
+        """BigQuery reverses the operands and takes the unit last.
+
+        Both ends are cast to DATETIME. On a TIMESTAMP, DATE_DIFF follows
+        TIMESTAMP_DIFF: it rejects MONTH, QUARTER and YEAR, and counts DAY as
+        24-hour spans (23:00 to 01:00 the next morning is 0, not 1). A
+        ``timestamp_tz`` column, and its ``timeGrain`` bucket, is a TIMESTAMP
+        here. The cast reads the instant in UTC, as DATE_TRUNC does, and leaves
+        a DATE or a DATETIME as it was.
+        """
         return (
-            f"DATE_DIFF({self.compile_expr(end)}, {self.compile_expr(start)}, "
+            f"DATE_DIFF({self.compile_expr(Cast(expr=end, type_name='DATETIME'))}, "
+            f"{self.compile_expr(Cast(expr=start, type_name='DATETIME'))}, "
             f"{self._SQL_UNITS[unit]})"
         )
 
