@@ -191,7 +191,12 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
             name=PASS_CUMULATIVE,
             applies=lambda r: r.has_cumulative,
             run=lambda ast, ctx: wrap_with_cumulative(
-                ast, ctx.resolved, model=ctx.model, dialect=ctx.dialect
+                ast,
+                ctx.resolved,
+                model=ctx.model,
+                dialect=ctx.dialect,
+                qualify_table=ctx.qualify_table,
+                query=ctx.query,
             ),
         ),
         CompilerPass(

@@ -319,17 +319,24 @@ def resolve_cumulative_metric(
         )
         return None
 
-    # Validate timeDimension is in the query's selected dimensions
+    # Without its timeDimension selected, the metric is evaluated as of one
+    # period (``cumulative_wrap``). A rolled-up query has subtotal rows, which
+    # have no single group to evaluate it for.
     dim_names = {d.name for d in ctx.result.dimensions}
-    if metric.time_dimension not in dim_names:
+    if metric.time_dimension not in dim_names and ctx.result.grouping is not None:
         ctx.errors.append(
             SemanticError(
                 code="CUMULATIVE_TIME_DIMENSION_NOT_IN_SELECT",
                 message=(
                     f"Cumulative metric '{name}' requires timeDimension "
-                    f"'{metric.time_dimension}' to be in the query's selected dimensions"
+                    f"'{metric.time_dimension}' to be in the query's selected dimensions "
+                    f"under grouping '{ctx.result.grouping.value}'"
                 ),
                 path=f"metrics.{name}.timeDimension",
+                hint=(
+                    "Select the time dimension, or drop the grouping to evaluate the "
+                    "metric as of one period."
+                ),
             )
         )
         return None

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 
+from orionbelt.ast.nodes import Select
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.fanout import detect_fanout
@@ -16,6 +18,7 @@ from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
 from orionbelt.compiler.scope_check import out_of_scope_tables
 from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
 from orionbelt.compiler.validator import validate_sql
+from orionbelt.dialect.base import Dialect
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryFilterItem, QueryObject
@@ -209,6 +212,47 @@ def _compute_physical_tables(
             seen.add(ref)
             out.append(ref)
     return out
+
+
+def plan_in_own_right(
+    query: QueryObject,
+    model: SemanticModel,
+    dialect: Dialect,
+    qualify_table: Callable[[DataObject], str],
+    prepare: Callable[[ResolvedQuery], None] | None = None,
+) -> tuple[Select, ResolvedQuery]:
+    """Plan an aggregate query a wrapper derives, as the pipeline plans any query.
+
+    Resolved, checked for replication, planned (star or CFL, decided the way
+    the pipeline decides it) and wrapped by the aggregate passes: the base
+    object, the join path and the fanout check have to be derived for *this*
+    query, and the plan of the query that asked for it was built for another.
+    *prepare* adjusts the resolution before anything reads it.
+    """
+    resolved = QueryResolver().resolve(query, model, qualify_table=qualify_table)
+    if prepare is not None:
+        prepare(resolved)
+    CompilationPipeline.detect_replication(resolved, model)
+    if resolved.requires_cfl or resolved.dimensions_exclude:
+        plan = CFLPlanner().plan(
+            resolved,
+            model,
+            qualify_table=qualify_table,
+            union_by_name=dialect.capabilities.supports_union_all_by_name,
+            dialect=dialect,
+        )
+    else:
+        plan = StarSchemaPlanner().plan(
+            resolved, model, qualify_table=qualify_table, dialect=dialect
+        )
+    ctx = CompileContext(
+        resolved=resolved,
+        model=model,
+        dialect=dialect,
+        qualify_table=qualify_table,
+        query=query,
+    )
+    return apply_aggregate_passes(plan.ast, ctx), resolved
 
 
 class CompilationPipeline:

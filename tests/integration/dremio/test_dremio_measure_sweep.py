@@ -199,3 +199,25 @@ def test_rolling_windows_count_calendar_days_on_dremio(pgwire_cursor) -> None:  
         end = date.fromisoformat(day)
         reach = {str(end - timedelta(back)) for back in range(30)}
         assert peak == max(v for d, v in daily.items() if d in reach), day
+
+
+def test_cumulative_as_of_on_dremio(pgwire_cursor) -> None:  # type: ignore[no-untyped-def]
+    """Without ``Sales Month`` selected, YTD is evaluated as of one month.
+
+    Over OBSQL there is no ``asOf``: the time filter's upper bound picks the
+    month, the latest with data before July 2021. Each region's value equals
+    its June row of the same query with the month selected.
+    """
+    before_july = "WHERE \"Sales Month\" < '2021-07-01'"
+    pgwire_cursor.execute(
+        f'SELECT "Sales Region Name", "Sales Month", "YTD Sales" FROM {OBSL_MODEL_NAME} '
+        + before_july
+    )
+    june = {row[0]: row[2] for row in pgwire_cursor.fetchall() if str(row[1])[:10] == "2021-06-01"}
+    pgwire_cursor.execute(
+        f'SELECT "Sales Region Name", "YTD Sales" FROM {OBSL_MODEL_NAME} ' + before_july
+    )
+    tile = {row[0]: row[1] for row in pgwire_cursor.fetchall()}
+
+    assert june
+    assert tile == june

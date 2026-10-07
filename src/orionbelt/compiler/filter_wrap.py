@@ -46,7 +46,6 @@ from orionbelt.compiler.resolution import (
     make_column_expr,
     make_dimension_expr,
 )
-from orionbelt.compiler.star import StarSchemaPlanner
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import (
@@ -285,41 +284,14 @@ def _plan_isolated_scan(
     )
     # Imported here: the pipeline owns the phase order, and importing it at
     # module scope would be a cycle back through ``compiler.passes``.
-    from orionbelt.compiler.cfl import CFLPlanner
-    from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
-    from orionbelt.compiler.pipeline import CompilationPipeline
-    from orionbelt.compiler.resolution import QueryResolver
+    from orionbelt.compiler.pipeline import plan_in_own_right
 
-    sub_resolved = QueryResolver().resolve(sub_query, model, qualify_table=qualify_table)
-    sub_resolved.where_filters = list(filters)
-    # The context is this scan's own, not something to apply again inside it.
-    sub_resolved.measures = [replace(m, filter_context=None) for m in sub_resolved.measures]
-    CompilationPipeline.detect_replication(sub_resolved, model)
-    # Which planner, decided the way the pipeline decides it. Grouping by fact
-    # leaves only one way here: a single measure whose own arguments span facts
-    # no join reaches, which is a union in its own right.
-    if sub_resolved.requires_cfl:
-        plan = CFLPlanner().plan(
-            sub_resolved,
-            model,
-            qualify_table=qualify_table,
-            union_by_name=dialect.capabilities.supports_union_all_by_name,
-            dialect=dialect,
-        )
-    else:
-        plan = StarSchemaPlanner().plan(
-            sub_resolved, model, qualify_table=qualify_table, dialect=dialect
-        )
-    scan = apply_aggregate_passes(
-        plan.ast,
-        CompileContext(
-            resolved=sub_resolved,
-            model=model,
-            dialect=dialect,
-            qualify_table=qualify_table,
-            query=sub_query,
-        ),
-    )
+    def prepare(sub_resolved: ResolvedQuery) -> None:
+        sub_resolved.where_filters = list(filters)
+        # The context is this scan's own, not something to apply again inside it.
+        sub_resolved.measures = [replace(m, filter_context=None) for m in sub_resolved.measures]
+
+    scan, sub_resolved = plan_in_own_right(sub_query, model, dialect, qualify_table, prepare)
     # The scan is planned in its own right, warnings included - and those are
     # about this query, so they belong to it. Left on the sub-query they went
     # nowhere: the same measure warned of a fan trap when selected plainly and

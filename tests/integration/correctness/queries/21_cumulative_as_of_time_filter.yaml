@@ -1,0 +1,7 @@
+select:
+  dimensions: [Sales Region Name]
+  measures: [Total Sales, YTD Sales, Cumulative Sales]
+where:
+  - field: Sales Month
+    op: lt
+    value: '2021-07-01'

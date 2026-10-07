@@ -929,8 +929,8 @@ metrics:
     window: 30
 ```
 
-!!! note "Time dimension requirement"
- The `timeDimension` must be included in the query's selected dimensions. Cumulative metrics without their time dimension in the SELECT will raise a validation error.
+!!! note "Without the time dimension: as of one period"
+ A query that does not select the `timeDimension` evaluates the metric *as of* one period, per group of its other dimensions: `Region, Revenue YTD` gives each region the year-to-date its row for that month would show with `Order Month` selected. The period is the one holding the query's [`asOf`](query-language.md#as-of-date-asof) date, or else the latest period with data under the query's filters, so a filter `Order Month < 2025-07-01` evaluates year-to-date as of June. A period without data of its own still reads the periods before it. Two cases still require the time dimension in the SELECT: `grouping: rollup` / `cube`, and another dimension over the same date column (`Order Year` beside a metric over `Order Month`).
 
 !!! tip "Partition by dimension"
  A cumulative metric accumulates per group of the query's other selected dimensions: `Country, Order Month, Revenue YTD` gives each country its own year-to-date. Dimensions over the same date column at another grain (`Order Year` next to `Order Month`) do not partition. Add `partitionBy: [Country, ...]` for extra keys; every entry must be a model dimension present in the query's SELECT. See [Trend Analysis](trend-analysis.md#1-partitioned-rolling-windows) for worked examples.

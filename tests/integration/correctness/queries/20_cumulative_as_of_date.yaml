@@ -1,0 +1,4 @@
+select:
+  dimensions: [Sales Region Name]
+  measures: [Total Sales, YTD Sales, Cumulative Sales, MTD Sales, Rolling 30 Day Sales, Peak Daily Sales 30D]
+asOf: '2021-03-18'
