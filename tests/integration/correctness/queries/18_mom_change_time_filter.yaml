@@ -1,0 +1,10 @@
+select:
+  dimensions: [Sales Month]
+  measures: [Total Sales, Sales MoM Change]
+where:
+  - field: Sales Month
+    op: gte
+    value: '2021-03-01'
+  - field: Sales Month
+    op: lt
+    value: '2021-05-01'

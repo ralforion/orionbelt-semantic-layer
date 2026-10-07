@@ -26,7 +26,7 @@ from orionbelt.compiler.resolution import (
     ResolvedMeasure,
     ResolvedQuery,
 )
-from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryObject, QuerySelect
 from orionbelt.models.semantic import (
     CumulativeAggType,
     GrainToDate,
@@ -793,28 +793,29 @@ class TestCumulativeSQLGeneration:
 # ── Partitioning by the query's other dimensions (executed on DuckDB) ─────
 
 
+@pytest.fixture
+def orders() -> Iterator[Any]:
+    duckdb = pytest.importorskip("duckdb")
+    connection = duckdb.connect()
+    connection.execute("CREATE SCHEMA PUBLIC")
+    connection.execute(
+        "CREATE TABLE PUBLIC.ORDERS AS SELECT * FROM (VALUES "
+        "('1', DATE '2021-11-05', 'East', 10.0), "
+        "('2', DATE '2021-11-20', 'West', 1.0), "
+        "('3', DATE '2021-12-05', 'East', 20.0), "
+        "('4', DATE '2021-12-10', 'West', 2.0), "
+        "('5', DATE '2022-01-05', 'East', 40.0), "
+        "('6', DATE '2022-01-10', 'West', 4.0)"
+        ") AS t(ORDER_ID, ORDER_DATE, REGION, AMOUNT)"
+    )
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
 class TestCumulativePartitionsByQueryDimensions:
     """A cumulative metric accumulates per group of the query's other dimensions."""
-
-    @pytest.fixture
-    def orders(self) -> Iterator[Any]:
-        duckdb = pytest.importorskip("duckdb")
-        connection = duckdb.connect()
-        connection.execute("CREATE SCHEMA PUBLIC")
-        connection.execute(
-            "CREATE TABLE PUBLIC.ORDERS AS SELECT * FROM (VALUES "
-            "('1', DATE '2021-11-05', 'East', 10.0), "
-            "('2', DATE '2021-11-20', 'West', 1.0), "
-            "('3', DATE '2021-12-05', 'East', 20.0), "
-            "('4', DATE '2021-12-10', 'West', 2.0), "
-            "('5', DATE '2022-01-05', 'East', 40.0), "
-            "('6', DATE '2022-01-10', 'West', 4.0)"
-            ") AS t(ORDER_ID, ORDER_DATE, REGION, AMOUNT)"
-        )
-        try:
-            yield connection
-        finally:
-            connection.close()
 
     @staticmethod
     def _run(connection: Any, dimensions: list[str], metric: str) -> dict[tuple[str, ...], float]:
@@ -869,6 +870,197 @@ class TestCumulativePartitionsByQueryDimensions:
         )
         sql = CompilationPipeline().compile(query, model, "duckdb").sql
         assert 'PARTITION BY "Region" ORDER BY' in sql
+
+
+class TestTimeFilterDoesNotCutTheLookBack:
+    """A time filter picks the periods shown; the cumulative values read past it.
+
+    Applied to the source rows, the filter cut the history away: year-to-date
+    started at the first month shown, and a running total at the filter's
+    start. The plain measures still respect the filter.
+    """
+
+    #: A measure that ignores the query's filters, and a period-over-period
+    #: metric: each puts CTEs of its own under the cumulative wrapper.
+    EXTENDED_MODEL_YAML = CUMULATIVE_MODEL_YAML.replace(
+        "\nmetrics:\n",
+        """
+  Unfiltered Revenue:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    resultType: float
+    aggregation: sum
+    filterContext:
+      mode: FIXED
+
+metrics:
+  Order Count MoM:
+    type: period_over_period
+    expression: '{[Order Count]}'
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+""",
+        1,
+    )
+
+    @staticmethod
+    def _run(
+        connection: Any,
+        dimensions: list[str],
+        measures: list[str],
+        where: list[QueryFilter | QueryFilterGroup],
+        model_yaml: str = CUMULATIVE_MODEL_YAML,
+    ) -> dict[tuple[str, ...], tuple[float | None, ...]]:
+        query = QueryObject(
+            select=QuerySelect(dimensions=dimensions, measures=measures), where=where
+        )
+        sql = CompilationPipeline().compile(query, _load_model(model_yaml), "duckdb").sql
+        width = len(dimensions)
+        return {
+            tuple(str(v) for v in row[:width]): tuple(
+                None if v is None else float(v) for v in row[width:]
+            )
+            for row in connection.execute(sql).fetchall()
+        }
+
+    def test_year_to_date_reads_the_months_before_the_filter(self, orders: Any) -> None:
+        rows = self._run(
+            orders,
+            ["Region", "Order Date"],
+            ["Revenue", "YTD Revenue"],
+            [QueryFilter(field="Order Date", op="gte", value="2021-12-01")],
+        )
+        assert set(rows) == {
+            ("East", "2021-12-01"),
+            ("West", "2021-12-01"),
+            ("East", "2022-01-01"),
+            ("West", "2022-01-01"),
+        }
+        assert rows[("East", "2021-12-01")] == (20.0, 30.0)
+        assert rows[("West", "2021-12-01")] == (2.0, 3.0)
+        assert rows[("East", "2022-01-01")] == (40.0, 40.0)
+
+    def test_a_coarser_grain_of_the_same_column_is_a_time_filter(self, orders: Any) -> None:
+        rows = self._run(
+            orders,
+            ["Region", "Order Date"],
+            ["Cumulative Revenue"],
+            [QueryFilter(field="Order Year", op="gte", value="2022-01-01")],
+        )
+        assert rows == {
+            ("East", "2022-01-01"): (70.0,),
+            ("West", "2022-01-01"): (7.0,),
+        }
+
+    def test_a_filter_inside_a_period_still_filters_the_plain_measure(self, orders: Any) -> None:
+        # East's December order is on the 5th: the row disappears, and West's
+        # December revenue counts the 10th only, while its year-to-date reads
+        # the whole history.
+        rows = self._run(
+            orders,
+            ["Region", "Order Date"],
+            ["Revenue", "YTD Revenue"],
+            [QueryFilter(field="Order Date", op="gte", value="2021-12-08")],
+        )
+        assert ("East", "2021-12-01") not in rows
+        assert rows[("West", "2021-12-01")] == (2.0, 3.0)
+        assert rows[("West", "2022-01-01")] == (4.0, 4.0)
+
+    def test_a_filter_on_another_dimension_still_limits_the_history(self, orders: Any) -> None:
+        rows = self._run(
+            orders,
+            ["Order Date"],
+            ["Cumulative Revenue"],
+            [
+                QueryFilter(field="Region", op="equals", value="East"),
+                QueryFilter(field="Order Date", op="gte", value="2022-01-01"),
+            ],
+        )
+        assert rows == {("2022-01-01",): (70.0,)}
+
+    def test_a_date_range_written_as_a_group_is_a_time_filter(self, orders: Any) -> None:
+        rows = self._run(
+            orders,
+            ["Order Date"],
+            ["Cumulative Revenue"],
+            [
+                QueryFilterGroup(
+                    logic="and",
+                    filters=[
+                        QueryFilter(field="Order Date", op="gte", value="2021-12-01"),
+                        QueryFilter(field="Order Date", op="lt", value="2022-02-01"),
+                    ],
+                )
+            ],
+        )
+        assert rows == {("2021-12-01",): (33.0,), ("2022-01-01",): (77.0,)}
+
+    def test_a_static_filter_survives_a_group_repeating_it(self, orders: Any) -> None:
+        # The group's lower bound is also the model's static filter. Taking the
+        # group out conjunct by conjunct took the static filter with it, and
+        # November entered December's running total.
+        static = (
+            "\nfilters:\n"
+            "  - dataObject: Orders\n"
+            "    column: Order Date\n"
+            '    operator: ">="\n'
+            "    value: 2021-12-01\n"
+        )
+        rows = self._run(
+            orders,
+            ["Order Date"],
+            ["Cumulative Revenue"],
+            [
+                QueryFilterGroup(
+                    logic="and",
+                    filters=[
+                        QueryFilter(field="Order Date", op="gte", value="2021-12-01"),
+                        QueryFilter(field="Order Date", op="lt", value="2022-01-01"),
+                    ],
+                )
+            ],
+            CUMULATIVE_MODEL_YAML + static,
+        )
+        assert rows == {("2021-12-01",): (22.0,)}
+
+    def test_beside_a_measure_with_its_own_filter_context(self, orders: Any) -> None:
+        # The filterContext measure puts the query in CTEs of its own, so the
+        # look-back reads the base measure by alias. It re-derived it over the
+        # fact table instead, which that CTE does not join.
+        rows = self._run(
+            orders,
+            ["Order Date"],
+            ["Unfiltered Revenue", "YTD Revenue"],
+            [QueryFilter(field="Order Date", op="gte", value="2021-12-01")],
+            self.EXTENDED_MODEL_YAML,
+        )
+        assert rows == {("2021-12-01",): (22.0, 33.0), ("2022-01-01",): (44.0, 44.0)}
+
+    def test_beside_a_period_over_period_metric(self, orders: Any) -> None:
+        # The comparison's CTEs are SQL text with no WHERE to take the filter
+        # out of; the running total reads the comparison's own look-back.
+        rows = self._run(
+            orders,
+            ["Order Date"],
+            ["Cumulative Revenue", "Order Count MoM"],
+            [QueryFilter(field="Order Date", op="gte", value="2021-12-01")],
+            self.EXTENDED_MODEL_YAML,
+        )
+        assert rows == {("2021-12-01",): (33.0, 0.0), ("2022-01-01",): (77.0, 0.0)}
+
+    def test_no_time_filter_keeps_the_single_window(self) -> None:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Order Date"], measures=["Cumulative Revenue"]),
+            where=[QueryFilter(field="Region", op="equals", value="East")],
+        )
+        sql = CompilationPipeline().compile(query, _load_model(), "duckdb").sql
+        assert "cumulative_lookback" not in sql
+        assert "cumulative_window" not in sql
 
 
 class TestFloatPartitionKeys:

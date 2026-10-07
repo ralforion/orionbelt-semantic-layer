@@ -23,6 +23,7 @@ than an expression over tables it has not joined yet.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from textwrap import indent
 from typing import TYPE_CHECKING
 
@@ -48,6 +49,7 @@ from orionbelt.compiler.resolution import (
     make_column_expr,
     make_dimension_expr,
 )
+from orionbelt.compiler.time_lookback import time_filters
 from orionbelt.compiler.type_resolver import (
     apply_exact_integer_avg,
     apply_exact_integer_sum,
@@ -248,46 +250,73 @@ def wrap_with_pop(
     offset_grain = pop_config.pop_offset_grain.value
     time_dim_name = pop_config.pop_time_dimension
 
-    # --- CTE 1: date_range ---
-    date_range_sql = _build_date_range_sql(
-        resolved, model, dialect, qualify_table, grain, time_dim_name
-    )
-    # RawSQL: dialect-specific date aggregation/casts the SQL AST does not model.
-    # Covered by the PoP drift snapshots. See tests/architecture/test_rawsql_guard.py.
-    date_range_cte = CTE(name="date_range", query=RawSQL(sql=date_range_sql))
+    # A time filter picks the periods shown, not the ones compared against: the
+    # prior periods come from a look-back, the same date range, spine and
+    # aggregation with the time filters left out. Its own spine keeps the empty
+    # periods, whose values (a count of 0) a comparison reads like any other.
+    time_predicates = time_filters(resolved, time_dim_name)
+    variants = [_PopVariant("", "pop_base", "pop_compare", None)]
+    if time_predicates:
+        variants.append(
+            _PopVariant("_lookback", "pop_lookback", "pop_compare_lookback", time_predicates)
+        )
+    prior = variants[-1]
 
-    # --- CTE 2: date_spine ---
-    # Use scalar subqueries so every dialect can resolve date_range references
-    # without needing date_range in their FROM clause (universally compatible).
-    # Quote the CTE name so it matches the quoted declaration on case-folding
-    # dialects (Snowflake folds a bare ``date_range`` to ``DATE_RANGE``).
-    date_range_ref = dialect.quote_identifier("date_range")
-    spine_sql = dialect.render_date_spine_cte_sql(
-        min_date=f"(SELECT min_date FROM {date_range_ref})",
-        max_date=f"(SELECT max_date FROM {date_range_ref})",
-        grain=grain,
-        offset=offset,
-        offset_grain=offset_grain,
-    )
-    # RawSQL: per-dialect date-spine generator (recursive CTE / generate_series /
-    # sequence) — not expressible as a typed Select. Covered by PoP drift snapshots.
-    date_spine_cte = CTE(name="date_spine", query=RawSQL(sql=spine_sql))
+    # --- CTEs 1-3 per variant: date_range, date_spine, pop_base ---
+    variant_ctes: list[CTE] = []
+    for variant in variants:
+        # RawSQL: dialect-specific date aggregation/casts the SQL AST does not
+        # model. Covered by the PoP drift snapshots. See
+        # tests/architecture/test_rawsql_guard.py.
+        date_range_sql = _build_date_range_sql(
+            resolved, model, dialect, qualify_table, grain, time_dim_name, variant.without
+        )
+        variant_ctes.append(CTE(name=variant.date_range, query=RawSQL(sql=date_range_sql)))
 
-    # --- CTE 3: pop_base ---
-    # Build FROM date_spine with LEFT JOINs to fact and dimension tables
-    # Re-use the planner's join structure but restructured
-    pop_base_sql = _build_pop_base_sql(
-        resolved, model, dialect, qualify_table, grain, time_dim_name
-    )
-    # RawSQL: restructured join tree anchored on the date spine with dialect date
-    # arithmetic; not the planner's Select shape. Covered by PoP drift snapshots.
-    pop_base_cte = CTE(name="pop_base", query=RawSQL(sql=pop_base_sql))
+        # Use scalar subqueries so every dialect can resolve date_range
+        # references without needing date_range in their FROM clause
+        # (universally compatible). Quote the CTE name so it matches the quoted
+        # declaration on case-folding dialects (Snowflake folds a bare
+        # ``date_range`` to ``DATE_RANGE``).
+        date_range_ref = dialect.quote_identifier(variant.date_range)
+        spine_sql = dialect.render_date_spine_cte_sql(
+            min_date=f"(SELECT min_date FROM {date_range_ref})",
+            max_date=f"(SELECT max_date FROM {date_range_ref})",
+            grain=grain,
+            offset=offset,
+            offset_grain=offset_grain,
+        )
+        # RawSQL: per-dialect date-spine generator (recursive CTE /
+        # generate_series / sequence) — not expressible as a typed Select.
+        # Covered by PoP drift snapshots.
+        variant_ctes.append(CTE(name=variant.date_spine, query=RawSQL(sql=spine_sql)))
 
-    # --- CTE 4: pop_compare ---
-    pop_compare_sql = _build_pop_compare_sql(resolved, dialect, pop_measures)
+        # RawSQL: restructured join tree anchored on the date spine with dialect
+        # date arithmetic; not the planner's Select shape. Covered by PoP drift
+        # snapshots and, for the look-back, the look-back tests.
+        base_sql = _build_pop_base_sql(
+            resolved, model, dialect, qualify_table, grain, time_dim_name, variant
+        )
+        variant_ctes.append(CTE(name=variant.base, query=RawSQL(sql=base_sql)))
+
+    # --- CTE 4: pop_compare, each period against its prior one. A cumulative
+    # metric in the same query reads past the time filters too, so it gets the
+    # look-back's own comparison to run its windows over. ---
+    compared = [(variants[0], prior)]
+    if time_predicates and resolved.has_cumulative:
+        compared.append((prior, prior))
+        resolved.lookback_ctes[variants[0].compare] = (time_predicates, prior.compare)
     # RawSQL: dynamic self-joins (one per distinct PoP offset) with inline date
     # arithmetic; not a fixed typed Select. Covered by PoP drift snapshots.
-    pop_compare_cte = CTE(name="pop_compare", query=RawSQL(sql=pop_compare_sql))
+    compare_ctes = [
+        CTE(
+            name=shown.compare,
+            query=RawSQL(
+                sql=_build_pop_compare_sql(resolved, dialect, pop_measures, shown, against)
+            ),
+        )
+        for shown, against in compared
+    ]
 
     # --- Final SELECT from pop_compare ---
     outer_columns: list[Expr] = []
@@ -346,8 +375,7 @@ def wrap_with_pop(
             else BinaryOp(left=outer_where, op="AND", right=predicate)
         )
 
-    # Collect all CTEs (planner CTEs + our 4 new ones)
-    all_ctes = list(ast.ctes) + [date_range_cte, date_spine_cte, pop_base_cte, pop_compare_cte]
+    all_ctes = [*ast.ctes, *variant_ctes, *compare_ctes]
 
     return Select(
         columns=outer_columns,
@@ -433,6 +461,29 @@ def _time_column_sql(time_dim: ResolvedDimension, model: SemanticModel, dialect:
     return dialect.compile_expr(make_column_expr(model, time_dim.object_name, time_dim.column_name))
 
 
+@dataclass(frozen=True)
+class _PopVariant:
+    """One set of PoP CTEs: the query's own, or its look-back.
+
+    The look-back is the same date range, spine and aggregation with the time
+    filters (*without*) left out, under its own names, so both sets sit in one
+    statement.
+    """
+
+    suffix: str
+    base: str
+    compare: str
+    without: list[Expr] | None
+
+    @property
+    def date_range(self) -> str:
+        return f"date_range{self.suffix}"
+
+    @property
+    def date_spine(self) -> str:
+        return f"date_spine{self.suffix}"
+
+
 #: The derived table both PoP CTEs read their source rows from, and the column
 #: it projects the time dimension's bucket as. Prefixed like every other name
 #: the compiler invents, so it cannot collide with a modelled alias.
@@ -471,6 +522,7 @@ def _source_tree_sql(
     dialect: Dialect,
     qualify_table: Callable[[DataObject], str],
     projections: list[str],
+    without: list[Expr] | None = None,
 ) -> str:
     """The query's own join tree, as a subquery projecting *projections*.
 
@@ -487,6 +539,9 @@ def _source_tree_sql(
     what lets the time dimension be an expression over more than its own object:
     the bucket is computed here, where everything it names is in scope, and the
     spine joins a plain column (#358 review).
+
+    *without* drops filters from the tree: the time filters, for the look-back
+    that reads the prior periods past them.
     """
     root = resolved.base_object or next(iter(resolved.required_objects), "")
     root_obj = model.data_objects[root]
@@ -512,11 +567,9 @@ def _source_tree_sql(
         )
         joined.add(step.to_object)
 
-    if resolved.where_filters:
-        predicates = " AND ".join(
-            dialect.compile_expr(rf.expression) for rf in resolved.where_filters
-        )
-        clauses.append(f"  WHERE {predicates}")
+    kept = [rf.expression for rf in resolved.where_filters if rf.expression not in (without or [])]
+    if kept:
+        clauses.append(f"  WHERE {' AND '.join(dialect.compile_expr(e) for e in kept)}")
 
     select_clause = ",\n       ".join(projections)
     return "SELECT " + select_clause + "\n" + "\n".join(clauses)
@@ -529,11 +582,13 @@ def _build_date_range_sql(
     qualify_table: Callable[[DataObject], str],
     grain: str,
     time_dim_name: str,
+    without: list[Expr] | None = None,
 ) -> str:
     """Build the raw SQL body for the date_range CTE.
 
     The extent of the time dimension over the rows the query asks for, which is
-    what the spine is generated across.
+    what the spine is generated across. *without* drops filters from those
+    rows: the time filters, for the look-back's range.
 
     ``MIN`` of the bucket rather than the bucket of ``MIN``: truncation is
     monotonic, so the two are the same value, and reading the column the source
@@ -549,6 +604,7 @@ def _build_date_range_sql(
         dialect,
         qualify_table,
         [f"{_bucket_sql(time_dim, model, dialect, grain)} AS {bucket_q}"],
+        without,
     )
     bucket_ref = f"{src_q}.{bucket_q}"
     return (
@@ -565,6 +621,7 @@ def _build_pop_base_sql(
     qualify_table: Callable[[DataObject], str],
     grain: str,
     time_dim_name: str,
+    variant: _PopVariant,
 ) -> str:
     """Build the raw SQL body for the pop_base CTE.
 
@@ -577,8 +634,12 @@ def _build_pop_base_sql(
     the ON, so the time dimension may be an expression over more than one object
     (#358 review), and what puts the query's filters where the measures can see
     them (#365).
+
+    *variant* names the spine it joins and the filters it leaves out: none for
+    ``pop_base``, the time filters for ``pop_lookback``, which carries the
+    periods before the first one shown for a comparison to read.
     """
-    spine_cte = dialect.quote_identifier("date_spine")
+    spine_cte = dialect.quote_identifier(variant.date_spine)
     src_q = dialect.quote_identifier(_SRC_ALIAS)
     time_dim = next(d for d in resolved.dimensions if d.name == time_dim_name)
 
@@ -700,6 +761,7 @@ def _build_pop_base_sql(
 
     # 3. The CTE, reading its rows through one derived table.
     selects: list[str] = []
+    bucket_ref = f"{src_q}.{dialect.quote_identifier(_BUCKET_COLUMN)}"
     for alias, dim_projection in dim_entries:
         if dim_projection is None:
             selects.append(f"{spine_cte}.spine_date AS {dialect.quote_identifier(alias)}")
@@ -713,8 +775,7 @@ def _build_pop_base_sql(
             f"{dialect.compile_expr(_repoint(expr))} AS {dialect.quote_identifier(alias)}"
         )
 
-    source = _source_tree_sql(resolved, model, dialect, qualify_table, projections)
-    bucket_ref = f"{src_q}.{dialect.quote_identifier(_BUCKET_COLUMN)}"
+    source = _source_tree_sql(resolved, model, dialect, qualify_table, projections, variant.without)
     return (
         "SELECT " + ",\n       ".join(selects) + "\n"
         f"  FROM {spine_cte}\n"
@@ -728,15 +789,21 @@ def _build_pop_compare_sql(
     resolved: ResolvedQuery,
     dialect: Dialect,
     pop_measures: list[ResolvedMeasure],
+    shown: _PopVariant,
+    prior: _PopVariant,
 ) -> str:
     """Build the raw SQL body for the pop_compare CTE.
 
-    Self-joins ``pop_base`` to compare each period against a prior one. PoP
-    metrics may use *different* comparison offsets (e.g. month-over-month and
-    year-over-year in the same query): the first measure's offset is served by
-    the spine's precomputed ``spine_date_prev`` (so the common single-offset
-    SQL is unchanged), and each additional distinct offset gets its own
-    self-join whose prior date is computed inline with ``date_add_sql``.
+    Joins *shown*'s ``pop_base`` to *prior*'s to compare each period against a
+    prior one: the same CTE, or the look-back when a time filter left the prior
+    periods out of the shown one. PoP metrics may use *different* comparison
+    offsets (e.g. month-over-month and year-over-year in the same query): the
+    first measure's offset is served by the spine's precomputed
+    ``spine_date_prev`` (so the common single-offset SQL is unchanged), and
+    each additional distinct offset gets its own join whose prior date is
+    computed inline with ``date_add_sql``. The spine is *prior*'s:
+    ``spine_date_prev`` is NULL before the spine's first period, and the
+    look-back's spine starts before the first period shown.
     """
     pop_time_dim = pop_measures[0].pop_time_dimension
     time_q = dialect.quote_identifier(pop_time_dim or "")
@@ -745,8 +812,9 @@ def _build_pop_compare_sql(
     # Quote the CTE names so references match the quoted declarations on
     # case-folding dialects (Snowflake). The self-join aliases (``pop_prev``)
     # stay bare — they are declared and referenced bare, so they already agree.
-    base_cte = dialect.quote_identifier("pop_base")
-    spine_cte = dialect.quote_identifier("date_spine")
+    base_cte = dialect.quote_identifier(shown.base)
+    prior_q = dialect.quote_identifier(prior.base)
+    spine_cte = dialect.quote_identifier(prior.date_spine)
 
     def _dim_match(alias: str) -> str:
         parts = [
@@ -774,7 +842,7 @@ def _build_pop_compare_sql(
             # NB: alias is ``pop_prev`` (not ``prev``) — ``prev`` is a reserved
             # word in Dremio and rejects as an unquoted table alias.
             join_clauses.append(
-                f"  LEFT JOIN {base_cte} AS {alias}\n"
+                f"  LEFT JOIN {prior_q} AS {alias}\n"
                 f"    ON {spine_cte}.spine_date_prev = {alias}.{time_q}{_dim_match(alias)}"
             )
         else:
@@ -782,7 +850,7 @@ def _build_pop_compare_sql(
             grain_val = m.pop_offset_grain.value if m.pop_offset_grain else "month"
             prev_date = dialect.date_add_sql(f"{base_cte}.{time_q}", grain_val, m.pop_offset or 0)
             join_clauses.append(
-                f"  LEFT JOIN {base_cte} AS {alias}\n"
+                f"  LEFT JOIN {prior_q} AS {alias}\n"
                 f"    ON {alias}.{time_q} = {prev_date}{_dim_match(alias)}"
             )
         alias_by_key[key] = alias

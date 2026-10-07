@@ -153,3 +153,20 @@ def test_metric_executes_on_dremio(pgwire_cursor, metric: str) -> None:  # type:
     dims = [time_dim] if time_dim else ["Product Category"]
     pgwire_cursor.execute(_sql(metric, dims))
     pgwire_cursor.fetchall()  # raises on a Dremio execution error
+
+
+@pytest.mark.parametrize("metric", ["YTD Sales", "Sales MoM Change"])
+def test_a_time_filter_does_not_cut_the_look_back_on_dremio(pgwire_cursor, metric: str) -> None:  # type: ignore[no-untyped-def]
+    """A time filter picks the months shown; the metric still reads the months
+    before them, so the filtered rows equal the unfiltered query's rows for
+    those months. Dremio runs the look-back CTEs only a filtered query
+    compiles to."""
+    select = f'SELECT "Sales Month", "Total Sales", "{metric}" FROM {OBSL_MODEL_NAME}'
+    window = "\"Sales Month\" >= '2021-03-01' AND \"Sales Month\" < '2021-05-01'"
+    pgwire_cursor.execute(f"{select} WHERE {window}")
+    filtered = {str(row[0])[:10]: row for row in pgwire_cursor.fetchall()}
+    pgwire_cursor.execute(select)
+    unfiltered = {str(row[0])[:10]: row for row in pgwire_cursor.fetchall()}
+    assert sorted(filtered) == ["2021-03-01", "2021-04-01"]
+    for month, row in filtered.items():
+        assert row == unfiltered[month], month

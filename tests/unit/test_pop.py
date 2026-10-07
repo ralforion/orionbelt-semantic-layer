@@ -12,7 +12,13 @@ from orionbelt.compiler.resolution import (
     QueryResolver,
     ResolutionError,
 )
-from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
+from orionbelt.models.query import (
+    FilterOperator,
+    QueryFilter,
+    QueryFilterGroup,
+    QueryObject,
+    QuerySelect,
+)
 from orionbelt.models.semantic import (
     Metric,
     MetricType,
@@ -1249,3 +1255,160 @@ metrics:
         ]
         without = [(row[0].isoformat()[:10], row[1]) for row in self._rows(["Total"])]
         assert with_metric == without
+
+
+class TestPopTimeFilterLookBack:
+    """A time filter picks the periods shown; the comparison reads the one before.
+
+    Applied to the source rows, the filter cut the prior period away: the first
+    month shown had no previous month to compare with, and its change was NULL.
+    """
+
+    def _rows(self, where: list[QueryFilter]) -> dict[tuple[str, str], tuple]:
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Occurred Month", "Region"], measures=["Total", "Total MoM"]
+            ),
+            where=where,
+        )
+        model = TestPopFilters()._model()
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE event AS SELECT * FROM (VALUES"
+            " (DATE '2024-01-10', 'EU', 10.0),"
+            " (DATE '2024-02-10', 'EU', 20.0),"
+            " (DATE '2024-02-20', 'US', 5.0),"
+            " (DATE '2024-03-10', 'EU', 50.0)"
+            ") t(occurred, region, amount)"
+        )
+        return {
+            (row[0].isoformat()[:10], row[1]): (row[2], row[3])
+            for row in con.execute(sql).fetchall()
+        }
+
+    def test_the_first_month_shown_compares_with_the_month_before(self) -> None:
+        rows = self._rows(
+            [QueryFilter(field="Occurred Month", op=FilterOperator.GTE, value="2024-02-01")]
+        )
+        assert rows == {
+            ("2024-02-01", "EU"): (Decimal("20.00"), Decimal("10.00")),
+            ("2024-02-01", "US"): (Decimal("5.00"), None),
+            ("2024-03-01", "EU"): (Decimal("50.00"), Decimal("30.00")),
+        }
+
+    def test_a_filter_inside_a_month_still_filters_the_measure(self) -> None:
+        # February's EU sale is on the 10th, so February EU is not shown; March
+        # still compares with the whole of February.
+        rows = self._rows(
+            [QueryFilter(field="Occurred Month", op=FilterOperator.GTE, value="2024-02-15")]
+        )
+        assert rows == {
+            ("2024-02-01", "US"): (Decimal("5.00"), None),
+            ("2024-03-01", "EU"): (Decimal("50.00"), Decimal("30.00")),
+        }
+
+    def test_a_filter_on_another_dimension_still_limits_the_prior_period(self) -> None:
+        rows = self._rows(
+            [
+                QueryFilter(field="Region", op=FilterOperator.EQ, value="US"),
+                QueryFilter(field="Occurred Month", op=FilterOperator.GTE, value="2024-02-01"),
+            ]
+        )
+        assert rows == {("2024-02-01", "US"): (Decimal("5.00"), None)}
+
+    def test_a_static_filter_survives_a_group_repeating_it(self) -> None:
+        # The model's static filter starts at February, and the query's
+        # date-range group repeats that bound. February has no January to
+        # compare with: the static filter limits the prior periods too.
+        model_yaml = TestPopFilters.MODEL_YAML + (
+            "filters:\n"
+            "  - dataObject: Event\n"
+            "    column: Occurred\n"
+            '    operator: ">="\n'
+            "    value: 2024-02-01\n"
+        )
+        raw, source_map = TrackedLoader().load_string(model_yaml)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Occurred Month"], measures=["Total", "Total MoM"]),
+            where=[
+                QueryFilterGroup(
+                    logic="and",
+                    filters=[
+                        QueryFilter(
+                            field="Occurred Month", op=FilterOperator.GTE, value="2024-02-01"
+                        ),
+                        QueryFilter(
+                            field="Occurred Month", op=FilterOperator.LT, value="2024-04-01"
+                        ),
+                    ],
+                )
+            ],
+        )
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE event AS SELECT * FROM (VALUES"
+            " (DATE '2024-01-10', 'EU', 10.0),"
+            " (DATE '2024-02-10', 'EU', 20.0),"
+            " (DATE '2024-03-10', 'EU', 50.0)"
+            ") t(occurred, region, amount)"
+        )
+        rows = {row[0].isoformat()[:10]: row[1:] for row in con.execute(sql).fetchall()}
+        assert rows == {
+            "2024-02-01": (Decimal("20.00"), None),
+            "2024-03-01": (Decimal("50.00"), Decimal("30.00")),
+        }
+
+    def test_an_empty_prior_period_keeps_its_value(self) -> None:
+        # December has no events: its count is 0, so January's change is +1.
+        # The look-back aggregated only the periods with rows, and January
+        # read no December at all: NULL, once a filter was added that every
+        # row passes.
+        model_yaml = TestPopFilters.MODEL_YAML.replace(
+            "metrics:\n",
+            "  Events:\n"
+            "    columns: [{dataObject: Event, column: Region}]\n"
+            "    resultType: int\n"
+            "    aggregation: count\n"
+            "metrics:\n"
+            "  Events MoM:\n"
+            "    type: period_over_period\n"
+            "    expression: '{[Events]}'\n"
+            "    periodOverPeriod:\n"
+            "      timeDimension: Occurred Month\n"
+            "      grain: month\n"
+            "      offset: -1\n"
+            "      offsetGrain: month\n"
+            "      comparison: difference\n",
+            1,
+        )
+        raw, source_map = TrackedLoader().load_string(model_yaml)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE event AS SELECT * FROM (VALUES"
+            " (DATE '2023-11-10', 'EU', 1.0),"
+            " (DATE '2024-01-10', 'EU', 1.0)"
+            ") t(occurred, region, amount)"
+        )
+
+        def changes(where: list[QueryFilter]) -> dict[str, object]:
+            query = QueryObject(
+                select=QuerySelect(dimensions=["Occurred Month"], measures=["Events MoM"]),
+                where=where,
+            )
+            sql = CompilationPipeline().compile(query, model, "duckdb").sql
+            return {row[0].isoformat()[:10]: row[1] for row in con.execute(sql).fetchall()}
+
+        unfiltered = changes([])
+        assert unfiltered["2024-01-01"] == 1
+        assert (
+            changes(
+                [QueryFilter(field="Occurred Month", op=FilterOperator.GTE, value="2023-01-01")]
+            )
+            == unfiltered
+        )

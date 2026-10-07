@@ -629,6 +629,11 @@ class ResolvedFilter:
     expression: Expr
     is_aggregate: bool = False
     referenced_fields: frozenset[str] = field(default_factory=frozenset)
+    #: The ``(data object, column)`` a query ``where`` filter tests, when its
+    #: subject is a dimension or a qualified column. ``None`` for static model
+    #: filters, ``having`` and ``exists``: those are never a time filter that a
+    #: cumulative or period-over-period look-back may read past.
+    subject: tuple[str, str] | None = None
 
 
 @dataclass
@@ -703,6 +708,15 @@ class ResolvedQuery:
     and the resolved expression is exactly right there. The CFL planner records
     *every* measure, because its outer query reads the composite CTE the union
     legs feed and none of the fact tables are in scope at all."""
+
+    lookback_ctes: dict[str, tuple[list[Expr], str]] = field(default_factory=dict)
+    """CTEs a pass built as SQL text, mapped to the time filters left out of a
+    copy of them and that copy's name.
+
+    Set by the period-over-period pass, read by the cumulative one: a look-back
+    takes the time filters out of every ``WHERE`` it can see, and a CTE held as
+    text has none it can see. Without its copy, a cumulative metric beside a
+    period-over-period one read only the periods shown."""
 
     anchored_measures: dict[str, str] = field(default_factory=dict)
     """Measures whose expression is evaluated at a declared object's grain,

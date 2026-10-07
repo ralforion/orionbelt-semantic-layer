@@ -309,6 +309,13 @@ other selected dimensions too (`Country, order_month, Revenue YTD` gives
 each country its own year-to-date); dimensions over the same date column at
 another grain do not partition. `partitionBy` adds keys on top.
 
+A filter on the time dimension (or on another dimension over the same date
+column) picks the periods shown; it does not cut what a cumulative or
+period-over-period metric reads. Filtered to March-April, YTD for March still
+includes January and February, and March's month-over-month change still
+compares with February. A filter group counts when every filter in it is on
+that column. Other filters limit the history as usual.
+
 ### Window — rank, lag, lead, ntile, first/last value (v2.6+)
 
 ```yaml
