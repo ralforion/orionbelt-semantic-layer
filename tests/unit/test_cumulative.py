@@ -1079,6 +1079,121 @@ class TestAsOf:
             ("East",): (1011.0, 1010.0, 1011.0, 1000.0),
         }
 
+    def test_an_as_of_date_is_read_at_the_time_dimension_grain(self, gappy: Any) -> None:
+        """2021-05-01 is a Saturday: its week starts on April 26, so it is
+        April's week, and month-to-date over weeks reads April."""
+        model_yaml = self.MODEL_YAML.replace(
+            "  Region:\n    dataObject: Orders",
+            """  Order Week:
+    dataObject: Orders
+    column: Order Date
+    resultType: date
+    timeGrain: week
+
+  Region:
+    dataObject: Orders""",
+        ).replace(
+            "  # Cumulative: rolling max",
+            """  Weekly MTD Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Week
+    grainToDate: month
+
+  # Cumulative: rolling max""",
+        )
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Region"], measures=["Weekly MTD Revenue"]),
+            asOf="2021-05-01",
+        )
+        assert _run_gappy(gappy, query, model_yaml)[("East",)] == (1000.0,)
+
+    def test_a_count_over_an_empty_range_is_null(self, gappy: Any) -> None:
+        """No March: a one-month count as of March has nothing to count, while
+        the running count reads January and February."""
+        model_yaml = self.MODEL_YAML.replace(
+            "  # Cumulative: rolling max",
+            """  Monthly Order Count:
+    type: cumulative
+    measure: Order Count
+    timeDimension: Order Date
+    cumulativeType: count
+    window: 1
+
+  Running Order Count:
+    type: cumulative
+    measure: Order Count
+    timeDimension: Order Date
+    cumulativeType: count
+
+  # Cumulative: rolling max""",
+        )
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Region"], measures=["Monthly Order Count", "Running Order Count"]
+            ),
+            asOf="2021-03-10",
+        )
+        assert _run_gappy(gappy, query, model_yaml)[("East",)] == (None, 2.0)
+
+    def test_the_tables_the_periods_read_key_the_cache(self) -> None:
+        """The time dimension comes from a calendar the shown rows do not join."""
+        model_yaml = (
+            self.MODEL_YAML.replace(
+                """      Region Code:
+        abstractType: string
+        expression: "upper({Region})"
+""",
+                """      Region Code:
+        abstractType: string
+        expression: "upper({Region})"
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom:
+          - Order Date
+        columnsTo:
+          - Day
+
+  Calendar:
+    code: CALENDAR
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Day:
+        code: DAY
+        abstractType: date
+""",
+            )
+            .replace(
+                "  Region:\n    dataObject: Orders",
+                """  Calendar Month:
+    dataObject: Calendar
+    column: Day
+    resultType: date
+    timeGrain: month
+
+  Region:
+    dataObject: Orders""",
+            )
+            .replace(
+                "  # Cumulative: rolling max",
+                """  Calendar YTD Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Calendar Month
+    grainToDate: year
+
+  # Cumulative: rolling max""",
+            )
+        )
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Region"], measures=["Calendar YTD Revenue"])
+        )
+        result = CompilationPipeline().compile(query, _load_model(model_yaml), "duckdb")
+        assert '"CALENDAR"' in result.sql
+        assert result.physical_tables == ["WAREHOUSE.PUBLIC.CALENDAR", "WAREHOUSE.PUBLIC.ORDERS"]
+
     def test_another_grain_of_the_same_date_is_refused(self) -> None:
         query = QueryObject(
             select=QuerySelect(dimensions=["Order Year"], measures=["Cumulative Revenue"])

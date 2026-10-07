@@ -386,6 +386,8 @@ evaluated as of one period, per group of the selected dimensions: the value
 its row for that period would show with the time dimension selected. `asOf`
 names the date; it is read at the time dimension's grain, so `2025-12-17` is
 December for a monthly year-to-date and that day for a daily rolling window.
+Over weeks it is the week holding the date: as of a Saturday, February 1, a
+month-to-date reads January if that week began in January.
 
 ```json
 {
@@ -398,7 +400,7 @@ Without `asOf` the metric is evaluated at the latest period with data under
 the query's filters. A time filter therefore picks the period: filtered to
 `Order Month < 2025-07-01`, year-to-date is June's, read from January. The
 plain measures respect the filter as usual. A group without data in the
-metric's range gets NULL.
+metric's range gets NULL, also with `cumulativeType: count`.
 
 `asOf` has no effect on a cumulative metric whose time dimension is selected,
 and a query that sets it with no such metric compiles with a

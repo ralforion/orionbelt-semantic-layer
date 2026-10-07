@@ -609,6 +609,11 @@ def _as_of_ctes(
                 ]
             )
         resolved.warnings.extend(w for w in periods_resolved.warnings if w not in resolved.warnings)
+        # The periods may read objects the shown rows do not (a calendar the
+        # time dimension comes from); the freshness cache keys on them too.
+        resolved.subquery_objects.update(
+            periods_resolved.required_objects, periods_resolved.subquery_objects
+        )
         ctes: list[CTE] = []
         periods_name = f"cumulative_as_of_periods{suffix}"
         shown_name = periods_name
@@ -624,10 +629,18 @@ def _as_of_ctes(
             periods = replace(body, ctes=[*shown.ctes, *added])
         ctes.append(CTE(name=periods_name, query=periods))
 
+        time_dim = next(d for d in periods_resolved.dimensions if d.name == time_dim_name)
         joins: list[Join | Unnest] = []
         as_of: Expr
         if query.as_of is not None:
+            # The period holding the date, truncated as the time dimension is:
+            # a week starting in January is January's, also as of February 1.
+            # Cast back, as the dimension is: MySQL truncates to a label.
             as_of = Cast(expr=Literal.string(query.as_of.isoformat()), type_name="date")
+            if time_dim.grain is not None:
+                as_of = Cast(
+                    expr=dialect.render_time_grain(as_of, time_dim.grain), type_name="date"
+                )
         else:
             point_name = f"cumulative_as_of_point{suffix}"
             latest = FunctionCall(name="MAX", args=[ColumnRef(name=time_dim_name)])
@@ -643,7 +656,6 @@ def _as_of_ctes(
             joins.append(Join(join_type=JoinType.CROSS, source=point_name, alias=point_name))
             as_of = ColumnRef(table=point_name, name="as_of")
 
-        time_dim = next(d for d in periods_resolved.dimensions if d.name == time_dim_name)
         period = ColumnRef(table=periods_name, name=time_dim_name)
         unit = time_dim.grain.value if time_dim.grain is not None else "day"
         periods_back = FunctionCall(name="date_diff", args=[Literal.string(unit), period, as_of])
@@ -656,7 +668,17 @@ def _as_of_ctes(
             reaches = _as_of_reach(m, periods_back, period, as_of)
             if reaches is not None:
                 value = CaseExpr(when_clauses=[(reaches, value)])
-            aggregate = FunctionCall(name=_CUMULATIVE_AGG_MAP[m.cumulative_type], args=[value])
+            aggregate: Expr = FunctionCall(
+                name=_CUMULATIVE_AGG_MAP[m.cumulative_type], args=[value]
+            )
+            if reaches is not None and m.cumulative_type is CumulativeAggType.COUNT:
+                # COUNT of an empty range is 0, where every other aggregate
+                # gives the NULL of a group without data in the range.
+                periods_in_range = FunctionCall(
+                    name="COUNT", args=[CaseExpr(when_clauses=[(reaches, Literal.number(1))])]
+                )
+                in_range = BinaryOp(left=periods_in_range, op=">", right=Literal.number(0))
+                aggregate = CaseExpr(when_clauses=[(in_range, aggregate)])
             columns.append(AliasedExpr(expr=aggregate, alias=m.name))
         name = f"cumulative_as_of{suffix}"
         ctes.append(

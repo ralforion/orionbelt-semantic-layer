@@ -15,9 +15,9 @@ LEFT JOIN `orionbelt_1`.`regions` AS `Regions` ON `Countries`.`region` = `Region
 GROUP BY ALL
 ),
 `cumulative_as_of` AS (
-SELECT `cumulative_as_of_periods`.`Sales Region Name` AS `Sales Region Name`, SUM(CASE WHEN date_diff(YEAR, DATE_TRUNC('year', `cumulative_as_of_periods`.`Sales Month`), DATE_TRUNC('year', CAST('2021-03-18' AS DATE))) = 0 THEN `cumulative_as_of_periods`.`Total Sales` END) AS `YTD Sales`, SUM(`cumulative_as_of_periods`.`Total Sales`) AS `Cumulative Sales`
+SELECT `cumulative_as_of_periods`.`Sales Region Name` AS `Sales Region Name`, SUM(CASE WHEN date_diff(YEAR, DATE_TRUNC('year', `cumulative_as_of_periods`.`Sales Month`), DATE_TRUNC('year', CAST(DATE_TRUNC('month', CAST('2021-03-18' AS DATE)) AS DATE))) = 0 THEN `cumulative_as_of_periods`.`Total Sales` END) AS `YTD Sales`, SUM(`cumulative_as_of_periods`.`Total Sales`) AS `Cumulative Sales`
 FROM `cumulative_as_of_periods` AS `cumulative_as_of_periods`
-WHERE date_diff(MONTH, DATE_TRUNC('month', `cumulative_as_of_periods`.`Sales Month`), DATE_TRUNC('month', CAST('2021-03-18' AS DATE))) >= 0
+WHERE date_diff(MONTH, DATE_TRUNC('month', `cumulative_as_of_periods`.`Sales Month`), DATE_TRUNC('month', CAST(DATE_TRUNC('month', CAST('2021-03-18' AS DATE)) AS DATE))) >= 0
 GROUP BY ALL
 ),
 `cumulative_as_of_periods_2` AS (
@@ -29,9 +29,9 @@ LEFT JOIN `orionbelt_1`.`regions` AS `Regions` ON `Countries`.`region` = `Region
 GROUP BY ALL
 ),
 `cumulative_as_of_2` AS (
-SELECT `cumulative_as_of_periods_2`.`Sales Region Name` AS `Sales Region Name`, SUM(CASE WHEN date_diff(MONTH, DATE_TRUNC('month', `cumulative_as_of_periods_2`.`Sales Date`), DATE_TRUNC('month', CAST('2021-03-18' AS DATE))) = 0 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `MTD Sales`, AVG(CASE WHEN date_diff(DAY, `cumulative_as_of_periods_2`.`Sales Date`, CAST('2021-03-18' AS DATE)) <= 29 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `Rolling 30 Day Sales`, MAX(CASE WHEN date_diff(DAY, `cumulative_as_of_periods_2`.`Sales Date`, CAST('2021-03-18' AS DATE)) <= 29 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `Peak Daily Sales 30D`
+SELECT `cumulative_as_of_periods_2`.`Sales Region Name` AS `Sales Region Name`, SUM(CASE WHEN date_diff(MONTH, DATE_TRUNC('month', `cumulative_as_of_periods_2`.`Sales Date`), DATE_TRUNC('month', CAST(DATE_TRUNC('day', CAST('2021-03-18' AS DATE)) AS DATE))) = 0 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `MTD Sales`, AVG(CASE WHEN date_diff(DAY, `cumulative_as_of_periods_2`.`Sales Date`, CAST(DATE_TRUNC('day', CAST('2021-03-18' AS DATE)) AS DATE)) <= 29 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `Rolling 30 Day Sales`, MAX(CASE WHEN date_diff(DAY, `cumulative_as_of_periods_2`.`Sales Date`, CAST(DATE_TRUNC('day', CAST('2021-03-18' AS DATE)) AS DATE)) <= 29 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `Peak Daily Sales 30D`
 FROM `cumulative_as_of_periods_2` AS `cumulative_as_of_periods_2`
-WHERE date_diff(DAY, `cumulative_as_of_periods_2`.`Sales Date`, CAST('2021-03-18' AS DATE)) >= 0
+WHERE date_diff(DAY, `cumulative_as_of_periods_2`.`Sales Date`, CAST(DATE_TRUNC('day', CAST('2021-03-18' AS DATE)) AS DATE)) >= 0
 GROUP BY ALL
 ),
 `cumulative_joined` AS (

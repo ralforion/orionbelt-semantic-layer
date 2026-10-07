@@ -732,13 +732,15 @@ class ResolvedQuery:
     anchor exists to avoid."""
 
     subquery_objects: set[str] = field(default_factory=set)
-    """Data objects read inside a correlated ``EXISTS`` body.
+    """Data objects read outside the outer FROM/JOIN chain.
 
-    The subquery's own target, the hops its correlation path walked through,
-    and anything a subquery filter reached through the join graph. Deliberately
-    absent from :attr:`required_objects` — none of them is in the outer
-    FROM/JOIN chain — but the compiled SQL does read them, so the freshness
-    cache has to key on them all the same."""
+    A correlated ``EXISTS`` body's own target, the hops its correlation path
+    walked through, and anything a subquery filter reached through the join
+    graph; and the objects of a query a wrapper plans in its own right, such
+    as the periods a cumulative metric is evaluated as of. Deliberately absent
+    from :attr:`required_objects` — none of them is in the outer FROM/JOIN
+    chain — but the compiled SQL does read them, so the freshness cache has to
+    key on them all the same."""
 
     having_only_measures: set[str] = field(default_factory=set)
     """Measures auto-included by HAVING (not in ``select.measures``).
