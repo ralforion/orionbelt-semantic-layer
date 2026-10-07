@@ -993,6 +993,32 @@ class TestTheModelTable:
         finally:
             mgr.stop()
 
+    def test_fetch_first_reads_the_table(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``FETCH FIRST n ROWS ONLY`` is a ``Fetch`` node, not a ``Limit``;
+        the probe check read it as one, raised, and the client's connection
+        was closed."""
+        mgr, _ = _make_manager_with_model()
+        compiled: list[str] = []
+
+        def fake_execute(sql: str, **_kwargs: Any) -> ExecutionResult:
+            compiled.append(sql)
+            return ExecutionResult(columns=[], raw_rows=[], row_count=0)
+
+        monkeypatch.setattr("orionbelt.pgwire.router.execute_sql", fake_execute)
+        router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+        try:
+            reply = asyncio.run(
+                router.handle(
+                    'SELECT * FROM "commerce"."model" FETCH FIRST 1 ROW ONLY',
+                    database="commerce",
+                )
+            )
+            assert b"E" not in [t for t, _ in _parse_frames(reply)]
+            assert len(compiled) == 1
+            assert "LIMIT 1" in compiled[0]
+        finally:
+            mgr.stop()
+
     def test_a_row_count_is_refused_with_the_count_measures(self) -> None:
         mgr, _ = _make_manager_with_model()
         router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")

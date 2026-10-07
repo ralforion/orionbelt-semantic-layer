@@ -91,6 +91,11 @@ def test_anything_else_is_left_alone(model: SemanticModel, sql: str) -> None:
         ('SELECT * FROM "sales"."model" WHERE 1=0', True),
         ('SELECT * FROM "sales"."model" LIMIT 0', True),
         ('SELECT * FROM "sales"."model" WHERE false', True),
+        ('SELECT * FROM "sales"."model" FETCH FIRST 0 ROWS ONLY', True),
+        # FETCH keeps its count elsewhere than LIMIT; reading it as one raised.
+        ('SELECT * FROM "sales"."model" FETCH FIRST 1 ROW ONLY', False),
+        ('SELECT * FROM "sales"."model" FETCH NEXT ROWS ONLY', False),
+        ('SELECT * FROM "sales"."model" LIMIT ALL', False),
         ('SELECT * FROM "sales"."model" WHERE 0 = 1 AND "Customer Country" = \'US\'', True),
         ('SELECT * FROM "sales"."model" WHERE 1=0 OR "Customer Country" = \'US\'', False),
         # Text that only looks like a zero-row clause.

@@ -70,12 +70,31 @@ def _is_false_literal(node: exp.Expr) -> bool:
     return False
 
 
+def _row_limit(select: exp.Select) -> str | None:
+    """The row count a ``LIMIT n`` or ``FETCH FIRST n ROWS ONLY`` asks for, as SQL.
+
+    The two are different nodes: ``Limit`` keeps the count in ``expression``,
+    ``Fetch`` in ``count`` - and reading ``expression`` off a ``Fetch`` raised,
+    which closed a pgwire client's connection. ``None`` when there is no
+    limit, or a ``FETCH`` without a count (one row).
+    """
+    limit = select.args.get("limit")
+    if isinstance(limit, exp.Limit):
+        count = limit.expression
+    elif isinstance(limit, exp.Fetch):
+        count = limit.args.get("count")
+    else:
+        return None
+    return count.sql() if count is not None else None
+
+
 def is_metadata_probe(sql: str) -> bool:
     """Return ``True`` for ``SELECT *`` column-discovery probes.
 
     BI tools (Tableau, Power BI, DBeaver, ...) ask "what columns does this
     table have" with ``SELECT * FROM x WHERE 1=0`` or ``SELECT * FROM x LIMIT
-    0``. The answer is the table's column shape and no rows.
+    0`` (``FETCH FIRST 0 ROWS ONLY`` is the same probe). The answer is the
+    table's column shape and no rows.
 
     Crucially, the gate is BOTH ``SELECT *`` AND the zero-row clause.
     ``SELECT "Customer Country" FROM commerce LIMIT 0`` has explicit columns
@@ -89,8 +108,7 @@ def is_metadata_probe(sql: str) -> bool:
     select = _parse_select(sql)
     if select is None or not _is_lone_plain_star(select):
         return False
-    limit = select.args.get("limit")
-    if limit is not None and limit.expression.sql() == "0":
+    if _row_limit(select) == "0":
         return True
     where = select.args.get("where")
     if where is None:
