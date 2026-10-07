@@ -1000,6 +1000,34 @@ metrics:
         )
         assert rows == {("2021-12-01",): (33.0,), ("2022-01-01",): (77.0,)}
 
+    def test_a_static_filter_survives_a_group_repeating_it(self, orders: Any) -> None:
+        # The group's lower bound is also the model's static filter. Taking the
+        # group out conjunct by conjunct took the static filter with it, and
+        # November entered December's running total.
+        static = (
+            "\nfilters:\n"
+            "  - dataObject: Orders\n"
+            "    column: Order Date\n"
+            '    operator: ">="\n'
+            "    value: 2021-12-01\n"
+        )
+        rows = self._run(
+            orders,
+            ["Order Date"],
+            ["Cumulative Revenue"],
+            [
+                QueryFilterGroup(
+                    logic="and",
+                    filters=[
+                        QueryFilter(field="Order Date", op="gte", value="2021-12-01"),
+                        QueryFilter(field="Order Date", op="lt", value="2022-01-01"),
+                    ],
+                )
+            ],
+            CUMULATIVE_MODEL_YAML + static,
+        )
+        assert rows == {("2021-12-01",): (22.0,)}
+
     def test_beside_a_measure_with_its_own_filter_context(self, orders: Any) -> None:
         # The filterContext measure puts the query in CTEs of its own, so the
         # look-back reads the base measure by alias. It re-derived it over the

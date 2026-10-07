@@ -67,58 +67,71 @@ def lookback_query(
     ast: Select,
     predicates: list[Expr],
     suffix: str,
-    copies: dict[str, tuple[list[Expr], str]],
+    resolved: ResolvedQuery,
 ) -> tuple[list[CTE], Select] | None:
     """*ast* with *predicates* removed from every ``WHERE``, ready to sit beside it.
+
+    *predicates* are among *resolved*'s ``where`` filters. A ``WHERE`` reads as
+    its separate conjuncts, so an ``and`` filter group among them is removed
+    conjunct by conjunct - except a conjunct that a filter which stays also
+    holds. A static filter ``Order Date >= 2021-12-01`` still applies when a
+    query's date-range group repeats that bound.
 
     Returns the CTEs the copy needs in addition to ``ast.ctes`` and the copy's
     body, which reads them. A CTE the removal changes is added under its name
     plus *suffix* (and so is every CTE that reads a renamed one), because both versions
     end up in one statement. A CTE held as SQL text has no ``WHERE`` to remove
-    from; when *copies* (``ResolvedQuery.lookback_ctes``) names a copy of it
-    built without the same predicates, the copy is read instead. Returns
-    ``None`` when no predicate was found, so the caller keeps the query as it is.
+    from; when ``resolved.lookback_ctes`` names a copy of it built without the
+    same predicates, the copy is read instead. Returns ``None`` when nothing
+    was removed, so the caller keeps the query as it is.
     """
+    kept = [
+        conjunct
+        for f in resolved.where_filters
+        if f.expression not in predicates
+        for conjunct in _conjuncts(f.expression)
+    ]
+    removed = [c for p in predicates for c in _conjuncts(p) if c not in kept]
     renamed: dict[str, str] = {}
     added: list[CTE] = []
     for cte in ast.ctes:
-        copy = copies.get(cte.name)
+        copy = resolved.lookback_ctes.get(cte.name)
         if copy is not None and copy[0] == predicates:
             renamed[cte.name] = copy[1]
             continue
-        query = _rename_query(_strip_query(cte.query, predicates), renamed)
+        query = _rename_query(_strip_query(cte.query, removed), renamed)
         if query != cte.query:
             renamed[cte.name] = cte.name + suffix
             added.append(CTE(name=renamed[cte.name], query=query))
     own = replace(ast, ctes=[])
-    body = _rename_select(_strip_select(own, predicates), renamed)
+    body = _rename_select(_strip_select(own, removed), renamed)
     if not added and body == own:
         return None
     return added, body
 
 
-def _strip_query(query: CTEQuery, predicates: list[Expr]) -> CTEQuery:
+def _strip_query(query: CTEQuery, removed: list[Expr]) -> CTEQuery:
     match query:
         case Select():
-            return _strip_select(query, predicates)
+            return _strip_select(query, removed)
         case UnionAll():
-            return replace(query, queries=[_strip_select(q, predicates) for q in query.queries])
+            return replace(query, queries=[_strip_select(q, removed) for q in query.queries])
         case Except():
             return replace(
                 query,
-                left=_strip_select(query.left, predicates),
-                right=_strip_select(query.right, predicates),
+                left=_strip_select(query.left, removed),
+                right=_strip_select(query.right, removed),
             )
     return query
 
 
-def _strip_select(select: Select, predicates: list[Expr]) -> Select:
-    """*select* with every conjunct equal to one of *predicates* removed."""
+def _strip_select(select: Select, removed: list[Expr]) -> Select:
+    """*select* with every ``WHERE`` conjunct equal to one of *removed* taken out."""
     source = select.from_
     if source is not None and isinstance(source.source, Select):
-        source = replace(source, source=_strip_select(source.source, predicates))
+        source = replace(source, source=_strip_select(source.source, removed))
     joins = [
-        replace(j, source=_strip_select(j.source, predicates))
+        replace(j, source=_strip_select(j.source, removed))
         if isinstance(j, Join) and isinstance(j.source, Select)
         else j
         for j in select.joins
@@ -127,20 +140,15 @@ def _strip_select(select: Select, predicates: list[Expr]) -> Select:
         select,
         from_=source,
         joins=joins,
-        where=_without(select.where, predicates),
-        ctes=[replace(c, query=_strip_query(c.query, predicates)) for c in select.ctes],
+        where=_without(select.where, removed),
+        ctes=[replace(c, query=_strip_query(c.query, removed)) for c in select.ctes],
     )
 
 
-def _without(where: Expr | None, predicates: list[Expr]) -> Expr | None:
-    """*where* minus the ``AND``-ed conjuncts of *predicates*.
-
-    Both sides are split: an ``and`` filter group arrives as one predicate, and
-    the ``WHERE`` it was rendered into reads as its separate conjuncts.
-    """
+def _without(where: Expr | None, removed: list[Expr]) -> Expr | None:
+    """*where* minus its ``AND``-ed conjuncts equal to one of *removed*."""
     if where is None:
         return None
-    removed = [c for predicate in predicates for c in _conjuncts(predicate)]
     result: Expr | None = None
     for conjunct in _conjuncts(where):
         if conjunct in removed:

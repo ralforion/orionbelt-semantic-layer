@@ -12,7 +12,13 @@ from orionbelt.compiler.resolution import (
     QueryResolver,
     ResolutionError,
 )
-from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
+from orionbelt.models.query import (
+    FilterOperator,
+    QueryFilter,
+    QueryFilterGroup,
+    QueryObject,
+    QuerySelect,
+)
 from orionbelt.models.semantic import (
     Metric,
     MetricType,
@@ -1310,6 +1316,51 @@ class TestPopTimeFilterLookBack:
             ]
         )
         assert rows == {("2024-02-01", "US"): (Decimal("5.00"), None)}
+
+    def test_a_static_filter_survives_a_group_repeating_it(self) -> None:
+        # The model's static filter starts at February, and the query's
+        # date-range group repeats that bound. February has no January to
+        # compare with: the static filter limits the prior periods too.
+        model_yaml = TestPopFilters.MODEL_YAML + (
+            "filters:\n"
+            "  - dataObject: Event\n"
+            "    column: Occurred\n"
+            '    operator: ">="\n'
+            "    value: 2024-02-01\n"
+        )
+        raw, source_map = TrackedLoader().load_string(model_yaml)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Occurred Month"], measures=["Total", "Total MoM"]),
+            where=[
+                QueryFilterGroup(
+                    logic="and",
+                    filters=[
+                        QueryFilter(
+                            field="Occurred Month", op=FilterOperator.GTE, value="2024-02-01"
+                        ),
+                        QueryFilter(
+                            field="Occurred Month", op=FilterOperator.LT, value="2024-04-01"
+                        ),
+                    ],
+                )
+            ],
+        )
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE event AS SELECT * FROM (VALUES"
+            " (DATE '2024-01-10', 'EU', 10.0),"
+            " (DATE '2024-02-10', 'EU', 20.0),"
+            " (DATE '2024-03-10', 'EU', 50.0)"
+            ") t(occurred, region, amount)"
+        )
+        rows = {row[0].isoformat()[:10]: row[1:] for row in con.execute(sql).fetchall()}
+        assert rows == {
+            "2024-02-01": (Decimal("20.00"), None),
+            "2024-03-01": (Decimal("50.00"), Decimal("30.00")),
+        }
 
     def test_an_empty_prior_period_keeps_its_value(self) -> None:
         # December has no events: its count is 0, so January's change is +1.

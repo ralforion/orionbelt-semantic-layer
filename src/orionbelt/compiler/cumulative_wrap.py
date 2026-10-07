@@ -429,9 +429,7 @@ def _lookback_windows(
         ctes: list[CTE] = []
         source = base_name
         lookback = (
-            lookback_query(ast, predicates, f"_lookback{suffix}", resolved.lookback_ctes)
-            if predicates
-            else None
+            lookback_query(ast, predicates, f"_lookback{suffix}", resolved) if predicates else None
         )
         if lookback is not None:
             added, body = lookback
