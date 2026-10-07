@@ -78,7 +78,7 @@ README:
 | Client | Trust a specific certificate | Skip verification |
 |---|---|---|
 | Python ADBC | `adbc.flight.sql.client_option.tls_root_certs` (PEM text) | `...tls_skip_verify` = `"true"` |
-| DuckDB `adbc_scanner` | the same keys, in the `adbc_connect` MAP | as above |
+| DuckDB `adbc_scanner` | the same keys, as `ATTACH` options | as above |
 | Flight SQL JDBC | `trustStore` **plus `useSystemTrustStore=false`** | `disableCertificateVerification=true` |
 
 The JDBC row carries a trap worth reading twice: **`trustStore` on its own does
@@ -112,16 +112,16 @@ conn = dbapi.connect(
 )
 ```
 
-From DuckDB, the option key must be a **literal** in the MAP — only values can
-be bound, and a parameterised key scrambles the pairs into an error about
-failing to load the driver:
+From DuckDB, the key is an `ATTACH` option, double-quoted because it contains
+dots. `ATTACH` options are literals, not bound parameters:
 
 ```sql
-SELECT adbc_connect(MAP {
-    'driver': '/path/to/libadbc_driver_flightsql.so',
-    'uri':    'grpc+tls://obsl.example.com:8815',
-    'adbc.flight.sql.client_option.tls_root_certs': '<PEM text>'
-});
+ATTACH '' AS obsl (
+    TYPE adbc,
+    driver '/path/to/libadbc_driver_flightsql.so',
+    uri    'grpc+tls://obsl.example.com:8815',
+    "adbc.flight.sql.client_option.tls_root_certs" '<PEM text>'
+);
 ```
 
 `tls_skip_verify` exists and works, and it verifies nothing: it accepts any
@@ -218,27 +218,34 @@ queries governed measures and joins the result to local tables:
 INSTALL adbc_scanner FROM community;
 LOAD adbc_scanner;
 
-CREATE OR REPLACE TABLE h AS
-SELECT adbc_connect(MAP {
-    'driver': '/path/to/libadbc_driver_flightsql.so',
-    'uri':    'grpc://127.0.0.1:8815'
-}) AS handle;
+ATTACH '' AS obsl (
+    TYPE adbc,
+    driver '/path/to/libadbc_driver_flightsql.so',
+    uri    'grpc://127.0.0.1:8815'
+);
 
 SELECT * FROM adbc_scan(
-    (SELECT handle FROM h),
+    'obsl',
     'SELECT "Customer Country", "Total Revenue" FROM sales'
 );
 ```
 
 Two things it needs that the Python recipe does not: `adbc_scanner` is a
-**community** extension rather than a bundled one, and `adbc_connect` wants a
+**community** extension rather than a bundled one, and its `driver` option wants a
 filesystem path to the Flight SQL driver library. Any ADBC install has one -
 `python -c "import adbc_driver_flightsql as d; print(d._driver_path())"` prints
 it - but it is a path, not a package name.
 
-`adbc_tables(handle)` lists the model and its metadata views, and
-`adbc_schema(handle, 'model', schema := 'sales')` gives column types without
-executing anything.
+`adbc_tables('obsl')` lists the model and its metadata views, and
+`adbc_schema('obsl', 'model', schema := 'sales')` gives column types without
+executing anything. `DETACH obsl` closes the connection.
+
+!!! note "Older `adbc_scanner` builds"
+    Builds up to `3485fb0` connected with `adbc_connect(MAP {...})` and
+    passed the returned handle to every function. Build `03b5b7f` removed
+    `adbc_connect` and `adbc_disconnect` in favour of `ATTACH ... (TYPE adbc)`
+    and `DETACH`. An installed copy keeps the old API until
+    `UPDATE EXTENSIONS (adbc_scanner);`.
 
 See **[Using DuckDB as a client](duckdb.md)** for the full guide, including the
 `ATTACH ... (TYPE postgres)` route that addresses the model as a table rather

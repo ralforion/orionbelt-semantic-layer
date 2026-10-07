@@ -15,7 +15,7 @@ than in what you get back.
 
 | | Postgres wire (`ATTACH`) | Arrow Flight SQL (`adbc_scan`) |
 |---|---|---|
-| Addressing | `FROM obsl.sales.model` - a real table | `adbc_scan(handle, 'SELECT ... FROM sales')` - OBSQL in a string |
+| Addressing | `FROM obsl.sales.model` - a real table | `adbc_scan('obsl_flight', 'SELECT ... FROM sales')` - OBSQL in a string |
 | Extension | `postgres` (ships with DuckDB) | `adbc_scanner` (community) |
 | Extra setup | one `SET`, one `ATTACH` | a filesystem path to the Flight SQL driver library |
 | Transport | Postgres text protocol | Arrow, end to end |
@@ -116,7 +116,7 @@ SCRAM the key never crosses the wire, but the results do.
 
 ## Route 2: `adbc_scan` over Arrow Flight SQL
 
-`adbc_scanner` is a **community** extension, and `adbc_connect` wants a
+`adbc_scanner` is a **community** extension, and its `driver` option wants a
 filesystem path to the Flight SQL driver library rather than a package name.
 Any ADBC install has one:
 
@@ -128,33 +128,40 @@ python -c "import adbc_driver_flightsql as d; print(d._driver_path())"
 INSTALL adbc_scanner FROM community;
 LOAD adbc_scanner;
 
-CREATE OR REPLACE TABLE h AS
-SELECT adbc_connect(MAP {
-    'driver': '/path/to/libadbc_driver_flightsql.so',
-    'uri':    'grpc://127.0.0.1:8815'
-}) AS handle;
+ATTACH '' AS obsl_flight (
+    TYPE adbc,
+    driver '/path/to/libadbc_driver_flightsql.so',
+    uri    'grpc://127.0.0.1:8815'
+);
 
 SELECT * FROM adbc_scan(
-    (SELECT handle FROM h),
+    'obsl_flight',
     'SELECT "Country Name", "Total Sales" FROM commerce'
 );
 ```
 
+Builds of `adbc_scanner` up to `3485fb0` connected with `adbc_connect(MAP {...})`
+and passed a handle around instead; `03b5b7f` replaced that with `ATTACH` and
+`DETACH`. Run `UPDATE EXTENSIONS (adbc_scanner);` if `ATTACH ... (TYPE adbc)` is
+not recognised.
+
 The string is [OBSQL](semantic-ql.md), and the model is addressed by name
 (`commerce`), not as `<schema>.model` - that shape belongs to the wire surface.
 
-What else the handle gives you:
+What else the attached database gives you:
 
 | | |
 |---|---|
-| `adbc_tables(handle)` | Lists `model` and the `dimensions` / `measures` / `metrics` views |
-| `adbc_schema(handle, 'model', schema := 'commerce')` | Column names and types without executing anything |
-| `adbc_columns(handle)` | The same, across every table |
+| `adbc_tables('obsl_flight')` | Lists `model` and the `dimensions` / `measures` / `metrics` views |
+| `adbc_schema('obsl_flight', 'model', schema := 'commerce')` | Column names and types without executing anything |
+| `adbc_columns('obsl_flight')` | The same, across every table |
 
-`adbc_scan_table(handle, '<table>')` does **not** work against OBSL. It builds
-`SELECT * FROM <table>`, and OBSQL rejects `SELECT *`: a semantic query names
-the dimensions and measures it wants, because "everything" is not a grain. Use
-`adbc_scan` with an explicit column list.
+The attached database also lists the model as a table, and a query naming its
+columns works: `SELECT "Country Name", "Total Sales" FROM obsl_flight.commerce.model`.
+`SELECT *` over it does **not**, and neither does
+`adbc_scan_table('obsl_flight', 'model')`, which sends one. Both fail with
+`ADBC result column count differs from the bound schema`. Name the columns, or
+use the `ATTACH ... (TYPE postgres)` route, where DuckDB expands the star itself.
 
 ## Where the work happens
 
@@ -207,7 +214,7 @@ listed by `SELECT "Customer Name"` but is not a row of the model.
 | Limitation | Route | Note |
 |---|---|---|
 | `SET pg_use_text_protocol = true` required | `ATTACH` | The default reads with binary `COPY`, which OBSL does not implement |
-| `adbc_scan_table()` unsupported | `adbc_scan` | It generates `SELECT *`, which OBSQL rejects; name the columns |
+| `adbc_scan_table()` and `SELECT *` unsupported | `adbc_scan` | Both send `SELECT *`; name the columns |
 | `SELECT *` unsupported inside an OBSQL string | `adbc_scan` | The `ATTACH` route is unaffected: DuckDB expands the star itself |
 | Read-only | both | OBSL is a semantic layer; writes go to the warehouse, not through it |
 

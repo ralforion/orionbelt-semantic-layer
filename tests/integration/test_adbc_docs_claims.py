@@ -22,7 +22,13 @@ from tests.integration.test_adbc_flightsql import (  # noqa: E402
     MODEL_NAME,
     conn,  # noqa: F401
     flight_uri,  # noqa: F401
+    tls_server,  # noqa: F401
 )
+
+
+def _sql_string(text: str) -> str:
+    """*text* as a DuckDB string literal."""
+    return "'" + text.replace("'", "''") + "'"
 
 
 class TestTheConnectRecipe:
@@ -143,12 +149,12 @@ class TestTheDuckDBRecipe:
     """
 
     @pytest.fixture
-    def adbc_duckdb(self) -> Iterator[Any]:
+    def duckdb_with_adbc(self) -> Iterator[Any]:
         """A DuckDB connection with ``adbc_scanner`` loaded, closed explicitly.
 
         Explicitly, not by dropping the last reference: DuckDB 1.5.6 frees a
-        connection holding an ``adbc_scanner`` handle with the GIL held, and
-        the extension's cleanup waits on the Flight SQL server. That server
+        connection holding an ``adbc_scanner`` connection with the GIL held,
+        and the extension's cleanup waits on the Flight SQL server. That server
         runs in this process, its handlers need the GIL, and the test hung
         once it returned. ``close()`` takes the path that does not wait.
         """
@@ -165,47 +171,76 @@ class TestTheDuckDBRecipe:
             connection.close()
 
     @staticmethod
-    def _handle(connection: Any, uri: str) -> Any:
-        driver = pytest.importorskip("adbc_driver_flightsql")._driver_path()
-        return connection.execute(
-            "SELECT adbc_connect(MAP {'driver': ?, 'uri': ?})", [driver, uri]
-        ).fetchone()[0]
+    def _attach(connection: Any, uri: str, **options: str) -> None:
+        """The page's ``ATTACH`` statement, naming the database ``obsl``.
 
-    def test_a_duckdb_shell_queries_the_model(self, flight_uri: str, adbc_duckdb: Any) -> None:
-        connection = adbc_duckdb
-        handle = self._handle(connection, flight_uri)
-        rows = connection.execute(
-            "SELECT * FROM adbc_scan(?, ?)",
-            [handle, f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME}'],
+        ATTACH options cannot be bound parameters, so the recipe's literals
+        are filled in here, quoted as SQL strings.
+        """
+        driver = pytest.importorskip("adbc_driver_flightsql")._driver_path()
+        extra = "".join(f', "{key}" {_sql_string(value)}' for key, value in options.items())
+        connection.execute(
+            f"ATTACH '' AS obsl (TYPE adbc, driver {_sql_string(driver)}, "
+            f"uri {_sql_string(uri)}{extra})"
+        )
+
+    @pytest.fixture
+    def adbc_duckdb(self, duckdb_with_adbc: Any, flight_uri: str) -> Any:
+        """``duckdb_with_adbc`` with the test server attached as ``obsl``."""
+        self._attach(duckdb_with_adbc, flight_uri)
+        return duckdb_with_adbc
+
+    def test_a_duckdb_shell_queries_the_model(self, adbc_duckdb: Any) -> None:
+        rows = adbc_duckdb.execute(
+            "SELECT * FROM adbc_scan('obsl', ?)",
+            [f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME}'],
         ).fetchall()
         assert {r[0] for r in rows} == {"US", "UK"}
         assert all(isinstance(r[1], float) for r in rows)
 
-    def test_the_catalog_functions_answer(self, flight_uri: str, adbc_duckdb: Any) -> None:
+    def test_the_attached_model_answers_a_named_column_list(self, adbc_duckdb: Any) -> None:
+        rows = adbc_duckdb.execute(
+            f'SELECT "Customer Country", "Total Revenue" FROM obsl.{MODEL_NAME}.model'
+        ).fetchall()
+        assert {r[0] for r in rows} == {"US", "UK"}
+
+    def test_the_catalog_functions_answer(self, adbc_duckdb: Any) -> None:
         """``adbc_tables`` is the one that failed before #433: DuckDB asks for
         the four-column ``CommandGetTables`` shape and OBSL always sent five."""
-        connection = adbc_duckdb
-        handle = self._handle(connection, flight_uri)
-        tables = connection.execute("SELECT * FROM adbc_tables(?)", [handle]).fetchall()
+        tables = adbc_duckdb.execute("SELECT * FROM adbc_tables('obsl')").fetchall()
         assert "model" in {r[2] for r in tables}
 
-        columns = connection.execute(
-            "SELECT * FROM adbc_schema(?, 'model', schema := ?) LIMIT 20",
-            [handle, MODEL_NAME],
+        columns = adbc_duckdb.execute(
+            "SELECT * FROM adbc_schema('obsl', 'model', schema := ?) LIMIT 20",
+            [MODEL_NAME],
         ).fetchall()
         assert "Customer Country" in {r[0] for r in columns}
 
-    def test_the_result_composes_with_local_sql(self, flight_uri: str, adbc_duckdb: Any) -> None:
+    def test_tls_trust_goes_in_attach_options(
+        self, duckdb_with_adbc: Any, tls_server: tuple[str, bytes]
+    ) -> None:
+        """The TLS section's DuckDB form: the driver option as an ATTACH option."""
+        uri, cert_pem = tls_server
+        self._attach(
+            duckdb_with_adbc,
+            uri,
+            **{"adbc.flight.sql.client_option.tls_root_certs": cert_pem.decode()},
+        )
+        rows = duckdb_with_adbc.execute(
+            "SELECT * FROM adbc_scan('obsl', ?)",
+            [f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME}'],
+        ).fetchall()
+        assert len(rows) == 2
+
+    def test_the_result_composes_with_local_sql(self, adbc_duckdb: Any) -> None:
         """The page claims filtering, aggregating and CREATE TABLE AS."""
-        connection = adbc_duckdb
-        handle = self._handle(connection, flight_uri)
         query = f'SELECT "Customer Country", "Total Revenue" FROM {MODEL_NAME}'
 
-        total = connection.execute(
-            'SELECT sum("Total Revenue") FROM adbc_scan(?, ?)', [handle, query]
+        total = adbc_duckdb.execute(
+            "SELECT sum(\"Total Revenue\") FROM adbc_scan('obsl', ?)", [query]
         ).fetchone()[0]
-        connection.execute("CREATE TABLE local AS SELECT * FROM adbc_scan(?, ?)", [handle, query])
-        materialised = connection.execute('SELECT sum("Total Revenue") FROM local').fetchone()[0]
+        adbc_duckdb.execute("CREATE TABLE local AS SELECT * FROM adbc_scan('obsl', ?)", [query])
+        materialised = adbc_duckdb.execute('SELECT sum("Total Revenue") FROM local').fetchone()[0]
         assert materialised == total
 
 
