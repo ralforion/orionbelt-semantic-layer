@@ -24,6 +24,7 @@ does not expose the commerce measures.
 from __future__ import annotations
 
 import os
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -170,3 +171,31 @@ def test_a_time_filter_does_not_cut_the_look_back_on_dremio(pgwire_cursor, metri
     assert sorted(filtered) == ["2021-03-01", "2021-04-01"]
     for month, row in filtered.items():
         assert row == unfiltered[month], month
+
+
+def test_rolling_windows_count_calendar_days_on_dremio(pgwire_cursor) -> None:  # type: ignore[no-untyped-def]
+    """A 30-day window reads the 30 calendar days up to each day, not 30 rows.
+
+    February 2021 has a day without sales (the 20th), and its windows read
+    January, which the filter excludes. The expected values come from the
+    daily totals of the same Dremio source, windowed here. Dremio rejects
+    ``RANGE`` frames with an offset, so this runs the self-join every engine
+    gets.
+    """
+    pgwire_cursor.execute(
+        f'SELECT "Sales Date", "Total Sales" FROM {OBSL_MODEL_NAME} '
+        "WHERE \"Sales Date\" >= '2021-01-01' AND \"Sales Date\" < '2021-03-01'"
+    )
+    daily = {str(row[0])[:10]: row[1] for row in pgwire_cursor.fetchall()}
+    pgwire_cursor.execute(
+        f'SELECT "Sales Date", "Peak Daily Sales 30D" FROM {OBSL_MODEL_NAME} '
+        "WHERE \"Sales Date\" >= '2021-02-01' AND \"Sales Date\" < '2021-03-01'"
+    )
+    peaks = {str(row[0])[:10]: row[1] for row in pgwire_cursor.fetchall()}
+
+    assert "2021-02-20" not in peaks
+    assert len(peaks) == 27
+    for day, peak in peaks.items():
+        end = date.fromisoformat(day)
+        reach = {str(end - timedelta(back)) for back in range(30)}
+        assert peak == max(v for d, v in daily.items() if d in reach), day

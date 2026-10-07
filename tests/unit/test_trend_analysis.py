@@ -328,7 +328,8 @@ class TestStatisticalAggregationArity:
 
 
 class TestCumulativePartitionBy:
-    def test_partition_by_appears_in_sql(self) -> None:
+    def test_partition_by_keeps_the_window_within_the_partition(self) -> None:
+        """A rolling window reads its own partition's prior periods only."""
         model = _load_model()
         query = QueryObject(
             select=QuerySelect(
@@ -337,8 +338,8 @@ class TestCumulativePartitionBy:
             )
         )
         result = CompilationPipeline().compile(query, model, "postgres")
-        assert 'PARTITION BY "Country"' in result.sql
-        assert "ROWS BETWEEN 2 PRECEDING AND CURRENT ROW" in result.sql
+        assert '"cumulative_current"."Country" = "cumulative_prior"."Country"' in result.sql
+        assert ") <= 2" in result.sql
 
     def test_partition_dim_must_be_in_select(self) -> None:
         model = _load_model()
@@ -365,9 +366,9 @@ class TestCumulativePartitionBy:
             CompilationPipeline().compile(query, model, "postgres")
         assert any(e.code == "UNKNOWN_PARTITION_DIMENSION" for e in exc.value.errors)
 
-    def test_empty_partition_by_preserves_legacy_sql(self) -> None:
-        """A cumulative metric without partitionBy must produce a window
-        function with no PARTITION BY clause — same SQL as v2.5."""
+    def test_empty_partition_by_joins_on_the_period_only(self) -> None:
+        """Without partitionBy, and with no other dimension selected, the
+        rolling window reads every prior period in reach."""
         yaml = TREND_MODEL_YAML.replace("partitionBy: [Country]", "")
         model = _load_model(yaml)
         query = QueryObject(
@@ -377,8 +378,8 @@ class TestCumulativePartitionBy:
             )
         )
         result = CompilationPipeline().compile(query, model, "postgres")
-        # No PARTITION BY in the SQL when partitionBy is omitted
         assert "PARTITION BY" not in result.sql
+        assert ' = "cumulative_prior".' not in result.sql
 
 
 # ── Compilation: window metrics ────────────────────────────────────────────

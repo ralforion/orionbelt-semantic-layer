@@ -304,7 +304,9 @@ metrics:
 ```
 
 Every entry must be a dimension defined in the model and present in the
-query's SELECT. A cumulative metric is always partitioned by the query's
+query's SELECT. `window: N` counts N periods of the time dimension's grain,
+not N rows: a month without data still counts as one, and `avg` averages
+the periods in the window that have data. A cumulative metric is always partitioned by the query's
 other selected dimensions too (`Country, order_month, Revenue YTD` gives
 each country its own year-to-date); dimensions over the same date column at
 another grain do not partition. `partitionBy` adds keys on top.

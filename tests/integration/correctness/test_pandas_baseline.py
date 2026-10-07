@@ -150,11 +150,13 @@ def test_rolling_30_day_sales(
     run_query: Callable[[QueryObject], list[dict[str, Any]]],
     commerce_db: duckdb.DuckDBPyConnection,
 ) -> None:
-    """OBSL ``Rolling 30 Day Sales`` == 30-row rolling AVG of daily totals.
+    """OBSL ``Rolling 30 Day Sales`` == 30-day calendar rolling AVG of daily totals.
 
-    Note: OBSL emits ``ROWS BETWEEN 29 PRECEDING AND CURRENT ROW`` — a
-    *row*-based window, not a 30-day calendar window. The baseline
-    matches with ``rolling(30)`` over densely-grouped daily rows.
+    ``window: 30`` over a day-grain time dimension is 30 calendar days: the
+    day itself and the 29 before it, averaging the days with sales. The seed
+    has 21 days without sales, so a 30-*row* window reads differently around
+    each of them. The baseline is pandas' time-based ``rolling("30D")``, which
+    covers ``(day - 30 days, day]``.
 
     The metric declares ``decimal(18, 0)`` (whole dollars) so the half-
     cent boundary that diverged across engines (DuckDB HALF_UP vs
@@ -174,7 +176,9 @@ def test_rolling_30_day_sales(
     # Mirror DuckDB's window-AVG: float intermediate, quantize at the
     # end to whole dollars. Whole-dollar quantization is engine-stable
     # (the .5 boundary requires hundredths to surface).
-    base["expected_float"] = base["total"].astype(float).rolling(window=30, min_periods=1).mean()
+    base["expected_float"] = (
+        base.assign(total=base["total"].astype(float)).rolling("30D", on="day")["total"].mean()
+    )
     expected: dict[_dt.date, Decimal] = {
         _to_date(row.day): _quantize(Decimal(repr(row.expected_float)), scale=0)
         for row in base.itertuples(index=False)
@@ -198,9 +202,8 @@ def test_rolling_30_day_sales(
         assert obsl[day] == expected[day], (
             f"Rolling 30 Day Sales for {day}: OBSL={obsl[day]}, "
             f"pandas baseline={expected[day]}, diff={obsl[day] - expected[day]}. "
-            f"A mismatch suggests a window-frame bug (e.g. ``30 "
-            f"PRECEDING`` interpreted as 30 days rather than 30 rows) "
-            f"or wrong sort order."
+            f"A mismatch suggests a window-frame bug (e.g. 30 rows read "
+            f"rather than 30 calendar days) or wrong sort order."
         )
 
     # Ensure ``_FLOAT_REL``/``_FLOAT_ABS`` aren't dead — they're used by YoY.

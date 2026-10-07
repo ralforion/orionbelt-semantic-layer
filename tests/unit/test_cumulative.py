@@ -9,6 +9,7 @@ import pytest
 
 from orionbelt.ast.nodes import (
     AliasedExpr,
+    BinaryOp,
     ColumnRef,
     From,
     FunctionCall,
@@ -531,14 +532,13 @@ class TestRunningTotal:
 
 
 class TestRollingWindow:
-    def test_rolling_7_period(self) -> None:
-        ast = _make_ast(measure_names=["Revenue", "Rolling Avg"])
+    """A rolling window joins the periods its window reaches, not the rows."""
+
+    @staticmethod
+    def _rolling(window: int, cum_type: CumulativeAggType) -> Select:
+        ast = _make_ast(measure_names=["Revenue", "Rolling"])
         revenue = _make_measure()
-        cum = _make_cumulative(
-            name="Rolling Avg",
-            cum_type=CumulativeAggType.AVG,
-            window=7,
-        )
+        cum = _make_cumulative(name="Rolling", cum_type=cum_type, window=window)
         resolved = ResolvedQuery(
             dimensions=[_make_dim()],
             measures=[revenue, cum],
@@ -546,32 +546,31 @@ class TestRollingWindow:
             metric_components={"Revenue": revenue},
         )
         result = wrap_with_cumulative(ast, resolved)
-        cum_col = result.columns[2]
-        assert isinstance(cum_col, AliasedExpr)
-        assert isinstance(cum_col.expr, WindowFunction)
-        assert cum_col.expr.func_name == "AVG"
-        assert cum_col.expr.frame is not None
-        assert cum_col.expr.frame.start == "6 PRECEDING"
-        assert cum_col.expr.frame.end == "CURRENT ROW"
-        assert cum_col.expr.partition_by == []
+        rolling = next(c for c in result.ctes if c.name == "cumulative_rolling")
+        assert isinstance(rolling.query, Select)
+        return rolling.query
+
+    @staticmethod
+    def _reach(query: Select) -> Literal:
+        """The upper bound of the join's ``date_diff(...) <= N - 1``."""
+        on = query.joins[0].on
+        assert isinstance(on, BinaryOp) and on.op == "AND"
+        upper = on.right
+        assert isinstance(upper, BinaryOp) and upper.op == "<="
+        assert isinstance(upper.left, FunctionCall) and upper.left.name == "date_diff"
+        assert isinstance(upper.right, Literal)
+        return upper.right
+
+    def test_rolling_7_period(self) -> None:
+        query = self._rolling(7, CumulativeAggType.AVG)
+        aggregate = query.columns[-1]
+        assert isinstance(aggregate, AliasedExpr) and aggregate.alias == "Rolling"
+        assert isinstance(aggregate.expr, FunctionCall) and aggregate.expr.name == "AVG"
+        assert self._reach(query).value == 6
 
     def test_rolling_window_1(self) -> None:
-        """window=1 means current row only (0 PRECEDING)."""
-        ast = _make_ast(measure_names=["Revenue", "Current"])
-        revenue = _make_measure()
-        cum = _make_cumulative(name="Current", window=1)
-        resolved = ResolvedQuery(
-            dimensions=[_make_dim()],
-            measures=[revenue, cum],
-            base_object="Orders",
-            metric_components={"Revenue": revenue},
-        )
-        result = wrap_with_cumulative(ast, resolved)
-        cum_col = result.columns[2]
-        assert isinstance(cum_col, AliasedExpr)
-        assert isinstance(cum_col.expr, WindowFunction)
-        assert cum_col.expr.frame is not None
-        assert cum_col.expr.frame.start == "0 PRECEDING"
+        """window=1 reaches the current period only."""
+        assert self._reach(self._rolling(1, CumulativeAggType.SUM)).value == 0
 
 
 class TestGrainToDate:
@@ -728,7 +727,8 @@ class TestCumulativeSQLGeneration:
         result = pipeline.compile(query, model, "duckdb")
         sql = result.sql.upper()
         assert "AVG" in sql
-        assert "6 PRECEDING" in sql
+        assert "DATE_DIFF('MONTH'" in sql
+        assert "PRECEDING" not in sql.split('"CUMULATIVE_ROLLING" AS')[1]
 
     def test_grain_to_date_sql(self) -> None:
         model = _load_model()
@@ -870,6 +870,107 @@ class TestCumulativePartitionsByQueryDimensions:
         )
         sql = CompilationPipeline().compile(query, model, "duckdb").sql
         assert 'PARTITION BY "Region" ORDER BY' in sql
+
+
+class TestRollingWindowCountsCalendarPeriods:
+    """``window: N`` reaches back N periods of the time dimension's grain.
+
+    Framed by rows, a window over months with a gap reached past the gap: East
+    has no March, so May's three-row window read February. A period without
+    data contributes nothing, and ``avg`` averages the periods that have data.
+    """
+
+    MODEL_YAML = CUMULATIVE_MODEL_YAML.replace(
+        "  # Cumulative: rolling max",
+        """  Rolling 3 Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Date
+    window: 3
+
+  # Cumulative: rolling max""",
+    )
+
+    @pytest.fixture
+    def gappy(self) -> Iterator[Any]:
+        duckdb = pytest.importorskip("duckdb")
+        connection = duckdb.connect()
+        connection.execute("CREATE SCHEMA PUBLIC")
+        connection.execute(
+            "CREATE TABLE PUBLIC.ORDERS AS SELECT * FROM (VALUES "
+            "('1', DATE '2021-01-05', 'East', 1.0), "
+            "('2', DATE '2021-02-05', 'East', 10.0), "
+            "('3', DATE '2021-04-05', 'East', 1000.0), "
+            "('4', DATE '2021-05-05', 'East', 100.0), "
+            "('5', DATE '2021-05-07', 'West', 5.0)"
+            ") AS t(ORDER_ID, ORDER_DATE, REGION, AMOUNT)"
+        )
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    def _run(
+        self, connection: Any, query: QueryObject
+    ) -> dict[tuple[str, ...], tuple[float | None, ...]]:
+        sql = CompilationPipeline().compile(query, _load_model(self.MODEL_YAML), "duckdb").sql
+        width = len(query.select.dimensions)
+        return {
+            tuple(str(v) for v in row[:width]): tuple(
+                None if v is None else float(v) for v in row[width:]
+            )
+            for row in connection.execute(sql).fetchall()
+        }
+
+    def test_a_gap_counts_as_a_period(self, gappy: Any) -> None:
+        rows = self._run(
+            gappy,
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Region", "Order Date"], measures=["Rolling 3 Revenue"]
+                )
+            ),
+        )
+        assert rows == {
+            ("East", "2021-01-01"): (1.0,),
+            ("East", "2021-02-01"): (11.0,),
+            ("East", "2021-04-01"): (1010.0,),  # February to April
+            ("East", "2021-05-01"): (1100.0,),  # March to May; rows read 1110
+            ("West", "2021-05-01"): (5.0,),
+        }
+
+    def test_windows_of_different_widths_in_one_query(self, gappy: Any) -> None:
+        rows = self._run(
+            gappy,
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Region", "Order Date"],
+                    measures=["Rolling 3 Revenue", "7-Day Rolling Avg Revenue"],
+                )
+            ),
+        )
+        # Seven months back from May reach January: the four East months with
+        # data average 277.75.
+        assert rows[("East", "2021-05-01")] == (1100.0, 277.75)
+        assert rows[("East", "2021-04-01")] == (1010.0, 337.0)
+
+    def test_a_time_filter_does_not_cut_the_window(self, gappy: Any) -> None:
+        rows = self._run(
+            gappy,
+            QueryObject(
+                select=QuerySelect(dimensions=["Order Date"], measures=["Rolling 3 Revenue"]),
+                where=[QueryFilter(field="Order Date", op="gte", value="2021-05-01")],
+            ),
+        )
+        assert rows == {("2021-05-01",): (1105.0,)}
+
+    def test_running_totals_keep_their_window_function(self) -> None:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Order Date"], measures=["Cumulative Revenue"])
+        )
+        sql = CompilationPipeline().compile(query, _load_model(self.MODEL_YAML), "duckdb").sql
+        assert "cumulative_rolling" not in sql
+        assert "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW" in sql
 
 
 class TestTimeFilterDoesNotCutTheLookBack:

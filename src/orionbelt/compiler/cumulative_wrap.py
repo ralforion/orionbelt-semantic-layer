@@ -1,13 +1,17 @@
 """Wrapper CTE for cumulative (running/rolling/grain-to-date) metrics.
 
-Cumulative metrics are window functions applied to already-aggregated measures,
-ordered by a time dimension. Three core patterns:
+Cumulative metrics aggregate already-aggregated measures along a time
+dimension. Three core patterns:
 
-| Pattern        | SQL Frame                                           |
-|----------------|-----------------------------------------------------|
-| Running total  | ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW    |
-| Rolling window | ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW          |
-| Grain-to-date  | PARTITION BY TRUNC(grain) + ROWS UNBOUNDED PRECEDING |
+| Pattern        | SQL                                                          |
+|----------------|--------------------------------------------------------------|
+| Running total  | ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW             |
+| Rolling window | self-join on ``date_diff(grain, prior, current) <= N - 1``   |
+| Grain-to-date  | PARTITION BY TRUNC(grain) + ROWS UNBOUNDED PRECEDING         |
+
+A rolling window counts calendar periods, so it cannot be a ``ROWS`` frame (a
+gap would make it reach too far back), and Dremio rejects ``RANGE`` frames with
+an offset; see :func:`_rolling_query`.
 
 The wrapper follows the same CTE pattern as ``total_wrap.py``:
 the planner output becomes a base CTE, and an outer query applies
@@ -23,6 +27,7 @@ from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
     BinaryOp,
+    CaseExpr,
     ColumnRef,
     Expr,
     From,
@@ -118,7 +123,9 @@ def _build_cumulative_window(
         )
 
     if measure.cumulative_window is not None:
-        # Rolling window: ROWS BETWEEN (window-1) PRECEDING AND CURRENT ROW
+        # Rolling window over rows: only under ROLLUP / CUBE, where there is
+        # no single group to join a calendar window back to. Everywhere else
+        # ``_rolling_query`` counts calendar periods instead.
         preceding = measure.cumulative_window - 1
         return WindowFunction(
             func_name=func_name,
@@ -245,12 +252,10 @@ def wrap_with_cumulative(
     cte_name = "cumulative_base"
     over_cte = wraps_a_cte(ast)
     base_cte = CTE(name=cte_name, query=_base_query(ast, resolved, model, dialect, over_cte))
-    lookbacks = _lookback_windows(
-        ast, resolved, cumulative_measures, model, dialect, cte_name, over_cte
-    )
+    value_ctes = _value_ctes(ast, resolved, cumulative_measures, model, dialect, cte_name, over_cte)
     order_by = outer_order_by(resolved, model)
 
-    if not lookbacks:
+    if not value_ctes:
         outer_columns: list[Expr] = []
         for dim in resolved.dimensions:
             outer_columns.append(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
@@ -270,15 +275,16 @@ def wrap_with_cumulative(
             ctes=[*ast.ctes, base_cte],
         )
 
-    # A time filter selects the rows shown; the windows read past it. Each
-    # window CTE carries one row per group with the metric's value, and the
-    # rows the query asked for pick theirs up by their dimensions.
+    # A time filter selects the rows shown; the windows read past it, and a
+    # rolling window reads calendar periods rather than rows. Each value CTE
+    # carries one row per group with the metric's value, and the rows the
+    # query asked for pick theirs up by their dimensions.
     joined_name = "cumulative_joined"
     joined_columns: list[Expr] = [
         AliasedExpr(expr=ColumnRef(table=cte_name, name=d.name), alias=d.name)
         for d in resolved.dimensions
     ]
-    window_of = {m.name: name for name, _, metrics in lookbacks for m in metrics}
+    window_of = {m.name: name for name, _, metrics in value_ctes for m in metrics}
     for m in resolved.measures:
         table = window_of.get(m.name, cte_name)
         joined_columns.append(AliasedExpr(expr=ColumnRef(table=table, name=m.name), alias=m.name))
@@ -294,7 +300,7 @@ def wrap_with_cumulative(
                 for d in resolved.dimensions
             ),
         )
-        for name, _, _ in lookbacks
+        for name, _, _ in value_ctes
     ]
     joined_cte = CTE(
         name=joined_name,
@@ -321,7 +327,7 @@ def wrap_with_cumulative(
         ctes=[
             *ast.ctes,
             base_cte,
-            *(cte for _, ctes, _ in lookbacks for cte in ctes),
+            *(cte for _, ctes, _ in value_ctes for cte in ctes),
             joined_cte,
         ],
     )
@@ -388,7 +394,7 @@ def _window_for(
     )
 
 
-def _lookback_windows(
+def _value_ctes(
     ast: Select,
     resolved: ResolvedQuery,
     cumulative_measures: list[ResolvedMeasure],
@@ -397,13 +403,20 @@ def _lookback_windows(
     base_name: str,
     over_cte: bool,
 ) -> list[tuple[str, list[CTE], list[ResolvedMeasure]]]:
-    """One window CTE per set of time filters, when any metric has one.
+    """The CTEs that compute the cumulative metrics apart from the shown rows.
 
-    Returns ``(window CTE name, CTEs to add, metrics it computes)``; empty when
-    no cumulative metric's time dimension is filtered, or the query rolls up
-    (a subtotal row has no single group to look its value up by). Metrics with
-    no time filter get a window CTE over ``base_name`` itself, so every
-    metric is read the same way once one of them has to look back.
+    Returns ``(value CTE name, CTEs to add, metrics it computes)``. Needed
+    when a metric's time dimension is filtered, so the values read past the
+    filter, or when a metric is a rolling window, which reads calendar periods
+    (:func:`_rolling_query`). Empty otherwise, and when the query rolls up: a
+    subtotal row has no single group to look its value up by, so there every
+    metric stays a window over the shown rows.
+
+    Metrics are grouped by their set of time filters, and each group reads
+    one source: the look-back copy of the query without those filters, or
+    ``base_name`` itself. Within a group the running and grain-to-date metrics
+    share one window CTE, and the rolling ones one CTE per time dimension and
+    partition.
 
     ``HAVING`` stays in the look-back: it picks groups, not periods, and
     without a time filter the windows read only the groups it keeps.
@@ -419,13 +432,15 @@ def _lookback_windows(
             groups.append((predicates, [m]))
         else:
             group[1].append(m)
-    if all(not predicates for predicates, _ in groups):
+    if all(not predicates for predicates, _ in groups) and not any(
+        _is_rolling(m) for m in cumulative_measures
+    ):
         return []
 
-    windows: list[tuple[str, list[CTE], list[ResolvedMeasure]]] = []
+    values: list[tuple[str, list[CTE], list[ResolvedMeasure]]] = []
+    rolling_count = 0
     for index, (predicates, metrics) in enumerate(groups, 1):
         suffix = "" if index == 1 else f"_{index}"
-        name = f"cumulative_window{suffix}"
         ctes: list[CTE] = []
         source = base_name
         lookback = (
@@ -436,18 +451,116 @@ def _lookback_windows(
             source = f"cumulative_lookback{suffix}"
             base = _base_query(body, resolved, model, dialect, over_cte)
             ctes += [*added, CTE(name=source, query=base)]
-        columns: list[Expr] = [
-            AliasedExpr(expr=ColumnRef(name=d.name), alias=d.name) for d in resolved.dimensions
+
+        windowed = [m for m in metrics if not _is_rolling(m)]
+        if windowed:
+            name = f"cumulative_window{suffix}"
+            columns: list[Expr] = [
+                AliasedExpr(expr=ColumnRef(name=d.name), alias=d.name) for d in resolved.dimensions
+            ]
+            columns += [
+                AliasedExpr(expr=_window_for(m, resolved, model, dialect), alias=m.name)
+                for m in windowed
+            ]
+            ctes.append(
+                CTE(
+                    name=name,
+                    query=Select(columns=columns, from_=From(source=source, alias=source)),
+                )
+            )
+            values.append((name, ctes, windowed))
+            ctes = []
+
+        rolling: dict[tuple[str, tuple[str, ...]], list[ResolvedMeasure]] = {}
+        for m in metrics:
+            if _is_rolling(m):
+                assert m.cumulative_time_dimension is not None
+                key = (m.cumulative_time_dimension, tuple(_partition_names(m, resolved)))
+                rolling.setdefault(key, []).append(m)
+        for (time_dim_name, partitions), same_axis in rolling.items():
+            rolling_count += 1
+            name = "cumulative_rolling" + ("" if rolling_count == 1 else f"_{rolling_count}")
+            query = _rolling_query(source, same_axis, time_dim_name, list(partitions), resolved)
+            ctes.append(CTE(name=name, query=query))
+            values.append((name, ctes, same_axis))
+            ctes = []
+    return values
+
+
+def _is_rolling(m: ResolvedMeasure) -> bool:
+    """A rolling window: ``window: N``, and no grain-to-date taking precedence."""
+    return m.cumulative_window is not None and m.cumulative_grain_to_date is None
+
+
+def _partition_names(m: ResolvedMeasure, resolved: ResolvedQuery) -> list[str]:
+    """The dimensions a cumulative metric accumulates within, as in the window."""
+    assert m.cumulative_time_dimension is not None
+    groups = _group_dimensions(resolved, m.cumulative_time_dimension)
+    return list(dict.fromkeys([*groups, *m.cumulative_partition_by]))
+
+
+def _rolling_query(
+    source: str,
+    metrics: list[ResolvedMeasure],
+    time_dim_name: str,
+    partitions: list[str],
+    resolved: ResolvedQuery,
+) -> Select:
+    """Rolling windows of *metrics* over *source*, counting calendar periods.
+
+    A window over the rows counted rows: ``window: 3`` over months with a gap
+    reached back past the gap, to a month outside the three. Each row here
+    instead reads the rows of its own group whose period lies at most N-1
+    periods of the time dimension's grain before its own, which a self-join on
+    ``date_diff`` states on every engine (Dremio rejects ``RANGE`` frames with
+    an offset). A period without data contributes nothing: the aggregate runs
+    over the periods in the window that have a row, so ``avg`` is the average
+    of those periods.
+
+    The metrics share one join, as wide as the widest window; a narrower one
+    takes only the periods its own window reaches. A time dimension without a
+    grain counts days.
+    """
+    time_dim = next(d for d in resolved.dimensions if d.name == time_dim_name)
+    unit = time_dim.grain.value if time_dim.grain is not None else "day"
+    current, prior = "cumulative_current", "cumulative_prior"
+    periods_back = FunctionCall(
+        name="date_diff",
+        args=[
+            Literal.string(unit),
+            ColumnRef(table=prior, name=time_dim_name),
+            ColumnRef(table=current, name=time_dim_name),
+        ],
+    )
+    widest = max(m.cumulative_window or 1 for m in metrics)
+    on = _all_of(
+        [
+            *(
+                null_safe_eq(ColumnRef(table=current, name=p), ColumnRef(table=prior, name=p))
+                for p in partitions
+            ),
+            BinaryOp(left=periods_back, op=">=", right=Literal.number(0)),
+            BinaryOp(left=periods_back, op="<=", right=Literal.number(widest - 1)),
         ]
-        columns += [
-            AliasedExpr(expr=_window_for(m, resolved, model, dialect), alias=m.name)
-            for m in metrics
-        ]
-        ctes.append(
-            CTE(name=name, query=Select(columns=columns, from_=From(source=source, alias=source)))
-        )
-        windows.append((name, ctes, metrics))
-    return windows
+    )
+    columns: list[Expr] = [
+        AliasedExpr(expr=ColumnRef(table=current, name=d.name), alias=d.name)
+        for d in resolved.dimensions
+    ]
+    for m in metrics:
+        span = m.cumulative_window or 1
+        value: Expr = ColumnRef(table=prior, name=m.cumulative_measure or m.name)
+        if span < widest:
+            reaches = BinaryOp(left=periods_back, op="<=", right=Literal.number(span - 1))
+            value = CaseExpr(when_clauses=[(reaches, value)])
+        aggregate = FunctionCall(name=_CUMULATIVE_AGG_MAP[m.cumulative_type], args=[value])
+        columns.append(AliasedExpr(expr=aggregate, alias=m.name))
+    return Select(
+        columns=columns,
+        from_=From(source=source, alias=current),
+        joins=[Join(join_type=JoinType.INNER, source=source, alias=prior, on=on)],
+        group_by=[ColumnRef(table=current, name=d.name) for d in resolved.dimensions],
+    )
 
 
 def _all_of(predicates: Iterable[Expr]) -> Expr | None:
