@@ -34,6 +34,11 @@ from orionbelt.api.query_cache import (
     execution_result_from_data,
 )
 from orionbelt.compiler.fanout import FanoutError
+from orionbelt.compiler.model_table import (
+    expand_model_star,
+    is_metadata_probe,
+    model_table_columns,
+)
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.sql_translator import SQLTranslationError, translate_sql_to_query
 from orionbelt.dialect.base import (
@@ -249,6 +254,10 @@ class SemanticRouter:
                 null_arity = None
             else:
                 semantic_sql = rewritten
+        else:
+            # ``SELECT * FROM "<model>"."model"`` reads the table the catalog
+            # announced: every column it listed.
+            semantic_sql = expand_model_star(sql, target.model) or sql
 
         try:
             query = translate_sql_to_query(_normalize_for_obsql(semantic_sql), target.model)
@@ -691,17 +700,6 @@ def references_temp_table(sql: str) -> bool:
     return '"#' in sql
 
 
-# Tableau (and other Postgres clients) probe column metadata with
-# ``SELECT * FROM "schema"."table" WHERE 1=0``. The catalog DuckDB
-# already knows every model's column shape, so it answers correctly
-# with zero rows; routing this to the semantic translator would
-# (incorrectly) reject ``SELECT *`` and the ``1=0`` predicate.
-_RE_ZERO_ROW_METADATA_PROBE = re.compile(
-    r"\bwhere\s+(?:1\s*=\s*0|0\s*=\s*1|false)\b",
-    re.IGNORECASE,
-)
-_RE_LIMIT_ZERO_PROBE = re.compile(r"\blimit\s+0\b", re.IGNORECASE)
-
 # Dremio's Postgres JDBC connector annotates every text column in
 # pushdown SQL with ``COLLATE "C"`` to force byte-order comparison
 # semantics across federated sources. The annotation is meaningless to
@@ -1005,9 +1003,6 @@ def _unwrap_model_qualifier(sql: str) -> str:
     return sql
 
 
-_RE_SELECT_STAR = re.compile(r"^\s*select\s+\*", re.IGNORECASE)
-
-
 #: A ``SELECT`` with no ``FROM`` at all. ``FROM`` is matched at a word
 #: boundary so ``SELECT from_date`` and ``SELECT x AS fromage`` are not
 #: mistaken for one, and a subquery's own ``FROM`` is why this is a search
@@ -1038,33 +1033,6 @@ def is_tableless_select(sql: str) -> bool:
     if stripped[:6].lower() != "select":
         return False
     return _RE_HAS_FROM.search(stripped) is None
-
-
-def is_metadata_probe(sql: str) -> bool:
-    """Return ``True`` for ``SELECT *`` column-discovery probes.
-
-    BI tools (Tableau, Power BI, DBeaver, …) ask "what columns does
-    this table have" with ``SELECT * FROM x WHERE 1=0`` or
-    ``SELECT * FROM x LIMIT 0``. We route those to the catalog DuckDB
-    so the column shape comes back from the registered virtual table
-    instead of bouncing off the semantic translator (which rejects
-    ``SELECT *``).
-
-    Crucially, the gate is BOTH ``SELECT *`` AND the zero-row clause.
-    A normal semantic query like
-    ``SELECT "Customer Country" FROM commerce LIMIT 0`` has explicit
-    columns the BI tool already knows about — it belongs in the
-    translator path, not the catalog. Without the ``SELECT *`` gate,
-    every legitimate ``LIMIT 0`` / ``WHERE 1=0`` query gets misrouted
-    and returns ``Table not found`` from DuckDB.
-    """
-
-    if _RE_SELECT_STAR.match(sql) is None:
-        return False
-    return (
-        _RE_ZERO_ROW_METADATA_PROBE.search(sql) is not None
-        or _RE_LIMIT_ZERO_PROBE.search(sql) is not None
-    )
 
 
 def references_catalog(sql: str) -> bool:
@@ -1558,7 +1526,7 @@ def project_the_whole_model(sql: str, model: SemanticModel) -> str | None:
     ``SELECT *`` returned, which is the one number it has to agree with.
 
     Projecting dimensions + measures + metrics is exactly what ``SELECT *``
-    over the virtual table expands to (see ``catalog._model_columns``), so the
+    over the virtual table expands to (see ``model_table.model_table_columns``), so the
     count matches it by construction rather than by coincidence.
 
     ``WHERE`` / ``ORDER BY`` / ``LIMIT`` are left alone, so a filtered count
@@ -1566,7 +1534,7 @@ def project_the_whole_model(sql: str, model: SemanticModel) -> str | None:
     columns at all, which leaves the translator to reject the query as before
     rather than inventing an answer.
     """
-    names = [*model.dimensions, *model.effective_measures, *model.metrics]
+    names = model_table_columns(model)
     if not names:
         return None
     try:

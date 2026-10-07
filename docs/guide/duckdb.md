@@ -158,12 +158,17 @@ What else the attached database gives you:
 | `adbc_schema('obsl_flight', 'model', schema := 'commerce')` | Column names and types without executing anything |
 | `adbc_columns('obsl_flight')` | The same, across every table |
 
-The attached database also lists the model as a table, and a query naming its
-columns works: `SELECT "Country Name", "Total Sales" FROM obsl_flight.commerce.model`.
-`SELECT *` over it does **not**, and neither does
-`adbc_scan_table('obsl_flight', 'model')`, which sends one. Both fail with
-`ADBC result column count differs from the bound schema`. Name the columns, or
-use the `ATTACH ... (TYPE postgres)` route, where DuckDB expands the star itself.
+The attached database also lists the model as a table, so it can be read like
+one, without an OBSQL string:
+
+```sql
+SELECT * FROM obsl_flight.commerce.model WHERE "Country Name" = 'Germany';
+SELECT * FROM adbc_scan_table('obsl_flight', 'model', schema := 'commerce');
+```
+
+`SELECT *` returns every column the catalog announced - the dimensions, the
+measures including the synthesized counts, and the metrics - as one semantic
+query, and a filter on it reaches the semantic layer.
 
 ## Where the work happens
 
@@ -205,18 +210,23 @@ And lands in a local table:
 CREATE TABLE snapshot AS SELECT * FROM obsl.commerce.model;
 ```
 
-`SELECT count(*)` over the model returns exactly the number of rows
-`SELECT *` returns. Note that this is not the same as the number of distinct
-dimension combinations: asking for measures anchors the query to the facts, so
-a dimension value with no facts behind it (a customer who has never ordered) is
-listed by `SELECT "Customer Name"` but is not a row of the model.
+`SELECT count(*)` over an attached model is counted by DuckDB itself, from
+the rows `SELECT *` returns: the number of rows at the model's finest grain,
+not a business count. Use a count measure for that (`"Orders Count"`, or one the
+model declares). Sent to the semantic layer directly - in an OBSQL string, or
+from a Postgres or Flight SQL client - `COUNT(*)` is refused with a message
+that names the model's count measures.
+
+The row count is also not the number of distinct dimension combinations:
+asking for measures anchors the query to the facts, so a dimension value with
+no facts behind it (a customer who has never ordered) is listed by
+`SELECT "Customer Name"` but is not a row of the model.
 
 ## Known limitations
 
 | Limitation | Route | Note |
 |---|---|---|
 | `SET pg_use_text_protocol = true` required | `ATTACH` | The default reads with binary `COPY`, which OBSL does not implement |
-| `adbc_scan_table()` and `SELECT *` unsupported | `adbc_scan` | Both send `SELECT *`; name the columns |
 | `SELECT *` unsupported inside an OBSQL string | `adbc_scan` | The `ATTACH` route is unaffected: DuckDB expands the star itself |
 | Read-only | both | OBSL is a semantic layer; writes go to the warehouse, not through it |
 

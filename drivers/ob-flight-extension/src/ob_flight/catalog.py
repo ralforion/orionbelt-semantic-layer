@@ -198,7 +198,9 @@ def model_to_virtual_table_schema(model: Any) -> pa.Schema:
 
     Columns are the union of dimensions + measures + metrics, typed by each
     artefact's ``result_type``. This is the schema BI tools see when they
-    pick from the catalog tree.
+    pick from the catalog tree. Measures include the synthesized counts, as
+    in ``model_table.model_table_columns``: ``SELECT *`` expands to that list,
+    and a client checks the result against this schema.
     """
     fields: list[pa.Field] = []
     if hasattr(model, "dimensions") and model.dimensions:
@@ -207,8 +209,8 @@ def model_to_virtual_table_schema(model: Any) -> pa.Schema:
             rt = getattr(dim, "result_type", None)
             rt_name = getattr(rt, "value", None) or "string"
             fields.append(pa.field(display, _obml_type_to_arrow(rt_name)))
-    if hasattr(model, "measures") and model.measures:
-        for label, meas in model.measures.items():
+    if hasattr(model, "effective_measures") and model.effective_measures:
+        for label, meas in model.effective_measures.items():
             display = getattr(meas, "label", label) or label
             rt = getattr(meas, "result_type", None)
             rt_name = getattr(rt, "value", None) or "float"

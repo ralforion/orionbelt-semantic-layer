@@ -77,6 +77,18 @@ class TestWhatYouCanSend:
             cur.execute(f"SELECT * FROM {MODEL_NAME}")
             cur.fetch_arrow_table()
 
+    def test_the_model_table_reads_with_a_star(self, conn: Any) -> None:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT * FROM {MODEL_NAME}.model")
+            table = cur.fetch_arrow_table()
+        assert {"Customer Country", "Total Revenue", "Orders Count"} <= set(table.column_names)
+        assert table.num_rows == 2
+
+    def test_a_row_count_is_refused_as_documented(self, conn: Any) -> None:
+        with conn.cursor() as cur, pytest.raises(Exception, match="count measure"):
+            cur.execute(f"SELECT COUNT(*) FROM {MODEL_NAME}.model")
+            cur.fetch_arrow_table()
+
     def test_an_unknown_relation_errors_rather_than_returning_nothing(self, conn: Any) -> None:
         """The page promises a client can tell 'nothing matched' from
         'not allowed'."""
@@ -202,6 +214,22 @@ class TestTheDuckDBRecipe:
         rows = adbc_duckdb.execute(
             f'SELECT "Customer Country", "Total Revenue" FROM obsl.{MODEL_NAME}.model'
         ).fetchall()
+        assert {r[0] for r in rows} == {"US", "UK"}
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            f"SELECT * FROM obsl.{MODEL_NAME}.model",
+            f"SELECT * FROM adbc_scan_table('obsl', 'model', schema := '{MODEL_NAME}')",
+        ],
+    )
+    def test_the_attached_model_reads_with_a_star(self, adbc_duckdb: Any, statement: str) -> None:
+        """Both read every announced column; before, both failed on a
+        column-count mismatch."""
+        relation = adbc_duckdb.execute(statement)
+        columns = [d[0] for d in relation.description]
+        rows = relation.fetchall()
+        assert {"Customer Country", "Total Revenue", "Orders Count"} <= set(columns)
         assert {r[0] for r in rows} == {"US", "UK"}
 
     def test_the_catalog_functions_answer(self, adbc_duckdb: Any) -> None:

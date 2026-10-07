@@ -20,6 +20,7 @@ from ob_flight.catalog import (
     build_dimensions_data,
     build_measures_data,
     build_metrics_data,
+    model_to_virtual_table_schema,
 )
 from ob_flight.converters import schema_from_description
 from ob_flight.flight_sql import (
@@ -155,15 +156,10 @@ def _dispatch_catalog_sql(
         if bare == "_metrics_metadata" or bare == "metrics":
             return answer_catalog_view(build_metrics_data(model), ast, project=project)
         if bare == "model":
-            # ``SELECT * FROM <model>.model`` — column-shape probe
-            # from a BI tool clicking the model table. Same payload
-            # as the canonical ``information_schema.columns`` view
-            # (one row per dim/measure/metric), and so the same
-            # treatment: it is a SELECT with a FROM, so it can carry a
-            # WHERE and a select list. Returning the view directly
-            # discarded both *and* reported the filter as applied, which
-            # is worse than either - the bind check believed it.
-            return answer_catalog_view(catalog_columns_table(model), ast, project=project)
+            # ``SELECT * FROM <model>.model WHERE 1=0`` - a zero-row probe
+            # for the column shape (the only query on ``model`` the
+            # classifier routes here). The shape is the announced one.
+            return model_to_virtual_table_schema(model).empty_table(), True
 
     # Unknown catalog probe — empty result. Tool moves on.
     return catalog_empty_table(), True

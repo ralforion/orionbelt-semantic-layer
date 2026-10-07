@@ -187,6 +187,22 @@ The following are answered from the **model** server-side:
 
 Unknown catalog probes return empty result sets — tools adapt.
 
+## 4a. The ``model`` table
+
+The catalogs list each model as a table ``<model>.model`` whose columns are
+its dimensions, measures (declared and synthesized counts) and metrics. A
+client that reads it gets those columns:
+
+* ``SELECT * FROM <model>.model [WHERE ...] [ORDER BY ...] [LIMIT n]`` expands
+  the star to every column and runs as one semantic query.
+* ``SELECT * FROM <model>.model WHERE 1=0`` (or ``LIMIT 0``) returns the
+  column shape with no rows.
+* ``SELECT COUNT(*)`` is refused with ``UNSUPPORTED_SQL_FEATURE``, naming the
+  model's count measures: a model has no fixed rows to count.
+
+``SELECT * FROM <model>`` (the OBSQL form) stays refused: an OBSQL query names
+what it wants.
+
 ## 5. Hard rejections (no flag to bypass)
 
 | Code | Trigger |
@@ -195,7 +211,7 @@ Unknown catalog probes return empty result sets — tools adapt.
 | ``UNKNOWN_FILTER_FIELD`` | WHERE / HAVING field not a known column |
 | ``UNKNOWN_ORDER_BY_FIELD`` | ORDER BY identifier not in SELECT |
 | ``INVALID_ORDER_BY_POSITION`` | Numeric position outside 1..n |
-| ``UNSUPPORTED_SQL_FEATURE`` | JOIN, CTE, subquery, UNION, window, ``SELECT *``, mismatched aggregate wrap, metric wrapped in aggregate, top-level OR |
+| ``UNSUPPORTED_SQL_FEATURE`` | JOIN, CTE, subquery, UNION, window, ``SELECT *`` (except over ``<model>.model``), ``COUNT(*)``, mismatched aggregate wrap, metric wrapped in aggregate, top-level OR |
 | ``MIXED_RAW_AND_AGGREGATE_MODE`` | Raw qualified columns mixed with bare aggregate labels |
 | ``RAW_SQL_REJECTED`` | FROM target is neither the virtual table nor a catalog source |
 | ``WRITE_OPERATION_REJECTED`` | DDL / DML / TCL — OBSL is read-only |

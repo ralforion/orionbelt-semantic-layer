@@ -259,7 +259,7 @@ fails to pass through Dremio cleanly. In practice this means:
 | `COUNT(DISTINCT <count-distinct measure>)` | ❌ Dremio rewrites as subquery → OBSL: *"Subqueries not supported"* |
 | `AVG(<any measure>)` | ❌ Dremio rewrites as `SUM/COUNT` subqueries |
 | `MEASURE(<any measure>)` | ❌ Calcite: *"No match found for function signature MEASURE(…)"* |
-| `COUNT(*)` | ❌ OBSL: *"Aggregate `COUNT(*)` must wrap a single measure label"* |
+| `COUNT(*)` | ❌ OBSL: *"`COUNT(*)` counts rows, and a semantic model has no fixed rows to count. Use a count measure: …"* |
 
 ```sql
 -- ✅ Bare label — works for any measure, no GROUP BY:

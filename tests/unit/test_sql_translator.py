@@ -1373,3 +1373,15 @@ def test_an_oversized_numeric_literal_is_refused(model: SemanticModel, literal: 
             f'SELECT "Customer Country", "Total Revenue" FROM m WHERE "Total Revenue" > {literal}',
             model,
         )
+
+
+@pytest.mark.parametrize("count", ["COUNT(*)", "COUNT(1)"])
+def test_a_row_count_names_the_count_measures(model: SemanticModel, count: str) -> None:
+    """A model has no fixed rows; its counts are measures, so the refusal names them."""
+    with pytest.raises(SQLTranslationError) as excinfo:
+        translate_sql_to_query(f'SELECT "Customer Country", {count} FROM m', model)
+    message = str(excinfo.value)
+    assert "counts rows" in message
+    for name, measure in model.effective_measures.items():
+        if measure.aggregation in ("count", "count_distinct"):
+            assert f'"{name}"' in message

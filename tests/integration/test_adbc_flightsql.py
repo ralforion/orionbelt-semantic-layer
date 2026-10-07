@@ -686,26 +686,47 @@ class TestExecution:
         with pytest.raises(Exception, match="(?i)unsupported|reject|translation|\\*"):
             _fetch(conn, f'SELECT *, "Total Revenue" FROM "{MODEL_NAME}"."model"')
 
-    def test_qualified_qualified_star_still_previews_metadata(self, conn: Any) -> None:
-        """``t.*`` carries no artefact reference, so it stays a preview."""
-        table = _fetch(conn, f'SELECT "model".* FROM "{MODEL_NAME}"."model"')
-        assert "column_name" in table.column_names, table.column_names
+    @staticmethod
+    def _model_columns() -> list[str]:
+        from orionbelt.compiler.model_table import model_table_columns
+        from orionbelt.parser.loader import TrackedLoader
+        from orionbelt.parser.resolver import ReferenceResolver
 
-    def test_qualified_count_star_still_previews_metadata(self, conn: Any) -> None:
-        """``COUNT(*)`` references no artefact, so it stays a preview probe."""
-        table = _fetch(conn, f'SELECT COUNT(*) FROM "{MODEL_NAME}"."model"')
-        assert "column_name" in table.column_names, table.column_names
+        raw, source_map = TrackedLoader().load_string(SAMPLE_MODEL_YAML)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        return model_table_columns(model)
 
-    def test_qualified_star_still_previews_metadata(self, conn: Any) -> None:
-        """``SELECT *`` over a qualified model stays a metadata preview.
+    @pytest.mark.parametrize("star", ["*", '"model".*'])
+    def test_qualified_star_reads_the_model_table(self, conn: Any, star: str) -> None:
+        """``SELECT *`` over ``<model>.model`` returns the announced columns.
 
-        Guards the narrowing that fixed ``test_qualified_from_target``:
-        BI tools fire this after picking the table out of the schema tree
-        and expect introspection rows, so only artefact projections were
-        rerouted to the semantic path.
+        It answered with nine columns of metadata, while the catalog had
+        announced the model's own: a client that bound the announced schema
+        (DuckDB's ``ATTACH ... (TYPE adbc)``) failed on the count mismatch.
         """
-        table = _fetch(conn, f'SELECT * FROM "{MODEL_NAME}"."model"')
-        assert "column_name" in table.column_names, table.column_names
+        table = _fetch(conn, f'SELECT {star} FROM "{MODEL_NAME}"."model"')
+        assert table.column_names == self._model_columns()
+        assert sorted(table.column("Customer Country").to_pylist()) == ["UK", "US"]
+
+    def test_qualified_star_keeps_its_filter(self, conn: Any) -> None:
+        table = _fetch(
+            conn,
+            f'SELECT * FROM "{MODEL_NAME}"."model" WHERE "Customer Country" = \'US\'',
+        )
+        assert table.column("Customer Country").to_pylist() == ["US"]
+
+    @pytest.mark.parametrize("clause", ["WHERE 1=0", "LIMIT 0"])
+    def test_a_zero_row_probe_returns_the_announced_shape(self, conn: Any, clause: str) -> None:
+        table = _fetch(conn, f'SELECT * FROM "{MODEL_NAME}"."model" {clause}')
+        assert table.num_rows == 0
+        assert table.column_names == self._model_columns()
+
+    @pytest.mark.parametrize("count", ["COUNT(*)", "COUNT(1)"])
+    def test_a_row_count_is_refused_with_the_count_measures(self, conn: Any, count: str) -> None:
+        """A model has no fixed rows; its counts are measures, and the error
+        names them."""
+        with pytest.raises(Exception, match='counts rows.*"Order Count"'):
+            _fetch(conn, f'SELECT {count} FROM "{MODEL_NAME}"."model"')
 
     def test_empty_result_keeps_its_schema(self, conn: Any) -> None:
         """A zero-row result must still describe its columns."""
@@ -1221,28 +1242,20 @@ class TestPreparedStatementParameters:
         assert params is not None
         assert str(params.field(0).type) == "string"
 
-    def test_the_model_preview_honours_its_statement(self, conn: Any) -> None:
-        """``<model>.model`` is the column-shape probe a BI tool sends when it
-        clicks the model table. It answered with the whole metadata view and
-        reported the filter as applied, so a bound value passed the check and
-        was then ignored - nine columns and every row came back.
-        """
+    def test_the_model_table_honours_a_bound_value(self, conn: Any) -> None:
+        """``<model>.model`` answered with the whole metadata view and reported
+        a bound filter as applied, so the value was ignored. Read as the
+        model's table, the bound value filters its rows."""
         cur = conn.cursor()
         try:
-            cur.execute(f'SELECT * FROM "{MODEL_NAME}"."model"')
-            everything = cur.fetch_arrow_table()
-            cur.execute(f'SELECT column_name FROM "{MODEL_NAME}"."model"')
-            projected = cur.fetch_arrow_table()
             cur.execute(
-                f'SELECT column_name FROM "{MODEL_NAME}"."model" WHERE column_name = ?',
-                parameters=("__no_such_column__",),
+                f'SELECT * FROM "{MODEL_NAME}"."model" WHERE "Customer Country" = ?',
+                parameters=("UK",),
             )
-            none = cur.fetch_arrow_table()
+            table = cur.fetch_arrow_table()
         finally:
             cur.close()
-        assert len(everything.column_names) > 1
-        assert projected.column_names == ["column_name"]
-        assert none.num_rows == 0
+        assert table.column("Customer Country").to_pylist() == ["UK"]
 
     def test_a_catalog_listing_sorts(self, conn: Any) -> None:
         """BI tools sort catalog listings; the view's insertion order used to

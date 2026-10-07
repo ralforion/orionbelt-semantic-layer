@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from orionbelt.compiler.model_table import model_table_columns
 from orionbelt.pgwire.router import (
     SemanticRouter,
     _canned_in_requested_formats,
@@ -962,3 +963,45 @@ def test_reads_and_returning_keep_their_rows() -> None:
     frames = run('INSERT INTO "#Tableau_ret" VALUES (7) RETURNING id')
     assert [t for t, _ in frames] == [b"T", b"D", b"C"]
     assert b"7" in frames[1][1]
+
+
+class TestTheModelTable:
+    """``"<model>"."model"`` is the table the catalog announced; reading it
+    with ``SELECT *`` returns its columns, and a row count is refused."""
+
+    def test_select_star_reads_every_announced_column(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr, model_id = _make_manager_with_model()
+        compiled: list[str] = []
+
+        def fake_execute(sql: str, **_kwargs: Any) -> ExecutionResult:
+            compiled.append(sql)
+            return ExecutionResult(columns=[], raw_rows=[], row_count=0)
+
+        monkeypatch.setattr("orionbelt.pgwire.router.execute_sql", fake_execute)
+        router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+        try:
+            model = mgr.get_or_create_named("commerce").get_model(model_id)
+            reply = asyncio.run(
+                router.handle('SELECT * FROM "commerce"."model"', database="commerce")
+            )
+            assert b"E" not in [t for t, _ in _parse_frames(reply)]
+            assert len(compiled) == 1
+            for name in model_table_columns(model):
+                assert f'AS "{name}"' in compiled[0]
+        finally:
+            mgr.stop()
+
+    def test_a_row_count_is_refused_with_the_count_measures(self) -> None:
+        mgr, _ = _make_manager_with_model()
+        router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+        try:
+            reply = asyncio.run(
+                router.handle('SELECT count(*) FROM "commerce"."model"', database="commerce")
+            )
+            frames = _parse_frames(reply)
+            assert [t for t, _ in frames] == [b"E"]
+            assert b'"Order Count"' in frames[0][1]
+        finally:
+            mgr.stop()

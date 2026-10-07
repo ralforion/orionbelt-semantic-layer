@@ -44,7 +44,7 @@ from orionbelt.models.query import (
     SortDirection,
     Subquery,
 )
-from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.semantic import AggregationType, SemanticModel
 
 __all__ = ["SQLTranslationError", "translate_sql_to_query"]
 
@@ -262,6 +262,9 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
             agg_name, _is_distinct, inner = agg_wrap
             inner_label = _column_name(inner)
             if inner_label is None:
+                if agg_name == "count" and isinstance(inner, exp.Star | exp.Literal):
+                    errors.append(_row_count_refusal(item, model))
+                    continue
                 errors.append(
                     SemanticError(
                         code="UNSUPPORTED_SQL_FEATURE",
@@ -1140,6 +1143,31 @@ def _atom_to_raw_filter(
         )
     )
     return None
+
+
+def _row_count_refusal(item: exp.Expression, model: SemanticModel) -> SemanticError:
+    """The refusal for ``COUNT(*)`` / ``COUNT(1)``, naming the model's counts.
+
+    A row count over a semantic model has no answer: its rows are whatever
+    grain the query picks, so "how many" is only meaningful as a measure that
+    says what it counts. The model has those, declared or synthesized.
+    """
+    counts = [
+        name
+        for name, measure in model.effective_measures.items()
+        if measure.aggregation in (AggregationType.COUNT, AggregationType.COUNT_DISTINCT)
+    ]
+    hint = (
+        "Use a count measure: " + ", ".join(f'"{name}"' for name in counts) + "."
+        if counts
+        else "Declare a count measure for what should be counted."
+    )
+    return SemanticError(
+        code="UNSUPPORTED_SQL_FEATURE",
+        message=(
+            f"`{item.sql()}` counts rows, and a semantic model has no fixed rows to count. " + hint
+        ),
+    )
 
 
 def _classify_aggregate_wrap(
