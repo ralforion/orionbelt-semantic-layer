@@ -152,6 +152,8 @@ def _make_model_with_dim(name: str = "sales_model") -> MagicMock:
     model.data_objects = {"Sales": obj}
     model.dimensions = {"Region": dim}
     model.measures = {"Total Sales": meas}
+    # Declared plus synthesized; the mock declares the one and synthesizes none.
+    model.effective_measures = model.measures
     model.metrics = {}
     return model
 
@@ -737,13 +739,14 @@ class TestEveryCatalogViewHonoursTheStatement:
     believed it. It was missed because each view is a separate branch of one
     dispatch and the earlier fix went view by view. This asks all of them the
     same three questions, so the next branch added has to answer them too.
+    (``<model>.model`` has since become a data query; only its zero-row probe
+    is answered here, see ``TestTheModelTableProbe``.)
     """
 
     #: Every SELECT-with-a-FROM branch of the dispatch.
     VIEWS = [
         "information_schema.tables",
         "information_schema.columns",
-        '"sales_model"."model"',
         "_dimensions_metadata",
         "_measures_metadata",
     ]
@@ -949,3 +952,25 @@ class TestCatalogLimit:
             self._table(), sqlglot.parse_one("SELECT n FROM t ORDER BY n DESC LIMIT 2")
         )
         assert answered.column("n").to_pylist() == ["e", "d"]
+
+
+class TestTheModelTableProbe:
+    """``SELECT * FROM <model>.model WHERE 1=0`` is answered with the shape the
+    catalog announced, not with column metadata: a client binds that shape and
+    then reads the table."""
+
+    @pytest.mark.parametrize("clause", ["WHERE 1=0", "LIMIT 0"])
+    def test_the_probe_returns_the_announced_shape(self, clause: str) -> None:
+        from orionbelt.compiler.model_table import model_table_columns
+
+        from ob_flight.catalog import model_to_virtual_table_schema
+        from ob_flight.server_catalog import handle_catalog_sql_checked
+
+        model = TestEveryCatalogViewHonoursTheStatement()._model()
+        table, applied = handle_catalog_sql_checked(
+            None, f'SELECT * FROM "sales_model"."model" {clause}', model
+        )
+        assert table.num_rows == 0
+        assert applied
+        assert table.schema == model_to_virtual_table_schema(model)
+        assert table.column_names == model_table_columns(model)

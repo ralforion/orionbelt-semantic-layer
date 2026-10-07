@@ -275,7 +275,9 @@ SELECT "Orders"."Amount" FROM sales
 
 | Statement | Result |
 |---|---|
-| `SELECT * FROM sales` | Refused. A model has no `*` — a star would have to invent a column list, and which columns a semantic layer returns is a governance decision. |
+| `SELECT * FROM sales` | Refused. An OBSQL query names the dimensions and measures it wants. |
+| `SELECT * FROM sales.model` | Allowed: `model` is the table the catalog announced, and `*` is its announced columns (dimensions, measures including the synthesized counts, metrics), run as one semantic query. With `WHERE 1=0` or `LIMIT 0`, the column shape and no rows. |
+| `SELECT COUNT(*) ...` | Refused, naming the model's count measures. A model has no fixed rows to count. |
 | `SELECT ... FROM nonexistent_relation` | Refused, as an error rather than an empty result. |
 | Arbitrary warehouse SQL | Not forwarded. There is no escape hatch to the underlying database. |
 
