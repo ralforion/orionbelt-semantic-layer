@@ -21,6 +21,8 @@ from orionbelt.models.types import OBMLType
 class DremioDialect(Dialect):
     """Dremio dialect — reduced function surface, quoting differences."""
 
+    like_needs_escape_clause = True
+
     @property
     def name(self) -> str:
         return "dremio"
@@ -131,6 +133,18 @@ class DremioDialect(Dialect):
                 right=Literal.string("%"),
             ),
         )
+
+    def compile_ilike_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """Dremio has the ``ILIKE(value, pattern, escape)`` function, not the operator.
+
+        The escape argument is the operator's ``ESCAPE`` clause: without it the
+        backslash is a literal character here too (measured).
+        """
+        col_sql = self.compile_expr(column)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        esc_sql = self.quote_string_literal("\\")
+        call = f"ILIKE({col_sql}, {pat_sql}, {esc_sql})"
+        return f"NOT {call}" if negated else call
 
     def _render_concat(self, args: list[Expr]) -> str:
         """Dremio's ``CONCAT`` ignores NULL arguments, where the catalog says

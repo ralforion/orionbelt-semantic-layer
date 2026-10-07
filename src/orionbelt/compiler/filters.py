@@ -16,6 +16,7 @@ from orionbelt.ast.nodes import (
     IsNull,
     Join,
     JoinType,
+    LikeMatch,
     Literal,
     RegexMatch,
     RelativeDateRange,
@@ -84,34 +85,25 @@ def build_filter_expr(col: Expr, qf: QueryFilter, errors: list[SemanticError]) -
             return IsNull(expr=col, negated=True)
         case FilterOperator.NOT_SET | FilterOperator.IS_NULL:
             return IsNull(expr=col, negated=False)
-        case FilterOperator.CONTAINS:
-            return BinaryOp(
-                left=col,
-                op="LIKE",
-                right=Literal.string(f"%{_escape_like(str(val))}%"),
-            )
-        case FilterOperator.NOT_CONTAINS:
-            return BinaryOp(
-                left=col,
-                op="NOT LIKE",
-                right=Literal.string(f"%{_escape_like(str(val))}%"),
+        case FilterOperator.CONTAINS | FilterOperator.NOT_CONTAINS:
+            return LikeMatch(
+                column=col,
+                pattern=f"%{_escape_like(str(val))}%",
+                negated=op == FilterOperator.NOT_CONTAINS,
             )
         case FilterOperator.STARTS_WITH:
-            return BinaryOp(
-                left=col,
-                op="LIKE",
-                right=Literal.string(f"{_escape_like(str(val))}%"),
-            )
+            return LikeMatch(column=col, pattern=f"{_escape_like(str(val))}%")
         case FilterOperator.ENDS_WITH:
-            return BinaryOp(
-                left=col,
-                op="LIKE",
-                right=Literal.string(f"%{_escape_like(str(val))}"),
+            return LikeMatch(column=col, pattern=f"%{_escape_like(str(val))}")
+        case FilterOperator.LIKE | FilterOperator.NOT_LIKE:
+            return LikeMatch(column=col, pattern=str(val), negated=op == FilterOperator.NOT_LIKE)
+        case FilterOperator.ILIKE | FilterOperator.NOT_ILIKE:
+            return LikeMatch(
+                column=col,
+                pattern=str(val),
+                negated=op == FilterOperator.NOT_ILIKE,
+                case_insensitive=True,
             )
-        case FilterOperator.LIKE:
-            return BinaryOp(left=col, op="LIKE", right=Literal.string(str(val)))
-        case FilterOperator.NOT_LIKE:
-            return BinaryOp(left=col, op="NOT LIKE", right=Literal.string(str(val)))
         case FilterOperator.BETWEEN:
             if isinstance(val, list) and len(val) >= 2:
                 return Between(
@@ -394,26 +386,30 @@ def _build_single_measure_filter(
             return IsNull(expr=col, negated=True)
         case "notset":
             return IsNull(expr=col, negated=False)
-        case "contains":
+        case "contains" | "notcontains":
             v = values[0] if values else ""
-            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"%{_escape_like(str(v))}%"))
-        case "notcontains":
-            v = values[0] if values else ""
-            return BinaryOp(
-                left=col, op="NOT LIKE", right=Literal.string(f"%{_escape_like(str(v))}%")
+            return LikeMatch(
+                column=col,
+                pattern=f"%{_escape_like(str(v))}%",
+                negated=op_str == "notcontains",
             )
         case "starts_with":
             v = values[0] if values else ""
-            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"{_escape_like(str(v))}%"))
+            return LikeMatch(column=col, pattern=f"{_escape_like(str(v))}%")
         case "ends_with":
             v = values[0] if values else ""
-            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"%{_escape_like(str(v))}"))
-        case "like":
+            return LikeMatch(column=col, pattern=f"%{_escape_like(str(v))}")
+        case "like" | "notlike":
             v = values[0] if values else ""
-            return BinaryOp(left=col, op="LIKE", right=Literal.string(str(v)))
-        case "notlike":
+            return LikeMatch(column=col, pattern=str(v), negated=op_str == "notlike")
+        case "ilike" | "notilike":
             v = values[0] if values else ""
-            return BinaryOp(left=col, op="NOT LIKE", right=Literal.string(str(v)))
+            return LikeMatch(
+                column=col,
+                pattern=str(v),
+                negated=op_str == "notilike",
+                case_insensitive=True,
+            )
         case "between":
             if len(values) >= 2:
                 return Between(

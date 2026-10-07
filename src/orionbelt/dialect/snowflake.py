@@ -44,6 +44,8 @@ class SnowflakeDialect(Dialect):
 
     backslash_escapes_strings = True
 
+    like_needs_escape_clause = True
+
     @property
     def name(self) -> str:
         return "snowflake"

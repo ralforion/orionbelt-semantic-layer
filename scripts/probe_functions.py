@@ -285,6 +285,17 @@ CANDIDATES: list[tuple[str, str, str]] = [
     ("date", "current_date", "current_date"),
     ("date", "current_date()", "current_date()"),
     ("date", "current_timestamp", "current_timestamp"),
+    # Case-insensitive LIKE (filter operator ``ilike``). Expected: true, false,
+    # true, true, true, NULL; ``strasse`` shows whether folding is ASCII-only.
+    ("ilike", "native", "'Mexico' ILIKE 'mex%'"),
+    ("ilike", "native negated", "'Mexico' NOT ILIKE 'mex%'"),
+    ("ilike", "lower both", "LOWER('Mexico') LIKE LOWER('MEX%')"),
+    ("ilike", "native non-ASCII", "'ÄRGER' ILIKE 'är%'"),
+    ("ilike", "lower non-ASCII", "LOWER('ÄRGER') LIKE LOWER('är%')"),
+    ("ilike", "native NULL", "NULLIF('a', 'a') ILIKE 'a%'"),
+    ("ilike", "native sharp s", "'STRASSE' ILIKE 'straße'"),
+    ("ilike", "CH function", "ilike('Mexico', 'mex%')"),
+    ("ilike", "plain LIKE (MySQL collation)", "'Mexico' LIKE 'mex%'"),
 ]
 
 
@@ -562,6 +573,41 @@ def cast_candidates(engine: str) -> list[tuple[str, str, str]]:
     return rendered
 
 
+#: LIKE patterns with a backslash escape, as ``(value, pattern, expected)``.
+#: OBML reads ``\\`` as the escape character in a pattern (Postgres' default,
+#: and how OBSQL parses one); the question per engine is whether its LIKE does
+#: too, or needs ``ESCAPE``, or has no way to say it.
+LIKE_ESCAPE_CASES: list[tuple[str, str, bool]] = [
+    ("a_b", "a\\_b", True),
+    ("axb", "a\\_b", False),
+    ("100%", "100\\%", True),
+    ("1000", "100\\%", False),
+    ("a\\b", "a\\\\b", True),
+]
+
+
+def like_escape_candidates(engine: str) -> list[tuple[str, str, str]]:
+    """:data:`LIKE_ESCAPE_CASES` per operator form, quoted by *engine*'s dialect."""
+    from orionbelt.dialect.registry import DialectRegistry
+
+    dialect = DialectRegistry.get(engine)
+    q = dialect.quote_string_literal
+    escape = f" ESCAPE {q(chr(92))}"
+    rendered: list[tuple[str, str, str]] = []
+    for value, pattern, expected in LIKE_ESCAPE_CASES:
+        v, p = q(value), q(pattern)
+        tag = f"{value}~{pattern}={'T' if expected else 'F'}"
+        rendered += [
+            ("likeescape", f"LIKE {tag}", f"{v} LIKE {p}"),
+            ("likeescape", f"LIKE ESC {tag}", f"{v} LIKE {p}{escape}"),
+            ("likeescape", f"NOT LIKE ESC {tag}", f"{v} NOT LIKE {p}{escape}"),
+            ("likeescape", f"ILIKE {tag}", f"{v} ILIKE {p}"),
+            ("likeescape", f"ILIKE ESC {tag}", f"{v} ILIKE {p}{escape}"),
+            ("likeescape", f"LOWER ESC {tag}", f"LOWER({v}) LIKE LOWER({p}){escape}"),
+        ]
+    return rendered
+
+
 def probe(
     execute: Callable[[str], object],
     groups: set[str] | None = None,
@@ -573,6 +619,7 @@ def probe(
         *CANDIDATES,
         *TO_NUMBER_CANDIDATES,
         *cast_candidates(engine),
+        *like_escape_candidates(engine),
     ]:
         if groups and group not in groups:
             continue

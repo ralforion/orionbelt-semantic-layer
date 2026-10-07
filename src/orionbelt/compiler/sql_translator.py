@@ -1103,9 +1103,7 @@ def _atom_to_raw_filter(
         return QueryFilter(field=field, op=FilterOperator.IS_NULL)
 
     if isinstance(predicate, exp.Like | exp.ILike):
-        like_op = _like_operator(predicate, negated, errors)
-        if like_op is None:
-            return None
+        like_op = _like_operator(predicate, negated)
         field = _qualified_field(predicate.this)
         pattern = _literal_value(predicate.expression)
         if field is None or pattern is None:
@@ -1381,9 +1379,7 @@ def _atom_to_query_filter(
 
     # LIKE / NOT LIKE
     if isinstance(predicate, exp.Like | exp.ILike):
-        like_op = _like_operator(predicate, negated, errors)
-        if like_op is None:
-            return None
+        like_op = _like_operator(predicate, negated)
         name = _column_name(predicate.this)
         pattern = _literal_value(predicate.expression)
         if name is None or pattern is None:
@@ -1620,9 +1616,7 @@ def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> Que
             return None
         return QueryFilter(field=name, op=FilterOperator.IS_NOT_NULL)
     if isinstance(predicate, exp.Like | exp.ILike):
-        like_op = _like_operator(predicate, negated, errors)
-        if like_op is None:
-            return None
+        like_op = _like_operator(predicate, negated)
         name = _column_name(predicate.this)
         pattern = _literal_value(predicate.expression)
         if name is None or pattern is None:
@@ -1965,25 +1959,10 @@ def _as_written(node: exp.Expression) -> str:
     return node.sql(dialect=_DIALECT)
 
 
-def _like_operator(
-    predicate: exp.Like | exp.ILike, negated: bool, errors: list[SemanticError]
-) -> FilterOperator | None:
-    """``like`` / ``notlike`` for a LIKE predicate; ILIKE is refused.
-
-    The filter operators match case-sensitively, so ILIKE has no translation:
-    answered as LIKE, ``ILIKE 'mex%'`` found no ``Mexico``.
-    """
+def _like_operator(predicate: exp.Like | exp.ILike, negated: bool) -> FilterOperator:
+    """The filter operator for a ``[NOT] LIKE`` or ``[NOT] ILIKE`` predicate."""
     if isinstance(predicate, exp.ILike):
-        errors.append(
-            SemanticError(
-                code="UNSUPPORTED_SQL_FEATURE",
-                message=(
-                    "ILIKE is not supported: OBSQL filters match case-sensitively. "
-                    f"Use LIKE with the exact case - got `{_as_written(predicate)}`."
-                ),
-            )
-        )
-        return None
+        return FilterOperator.NOT_ILIKE if negated else FilterOperator.ILIKE
     return FilterOperator.NOT_LIKE if negated else FilterOperator.LIKE
 
 

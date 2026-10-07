@@ -24,6 +24,7 @@ from orionbelt.compiler.anchored import (
     conformed_join_type,
     plan_conformed_facts,
 )
+from orionbelt.compiler.expr_rewrite import inline_measure_aliases
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.grain_dedup import detect_dedup_measures
 from orionbelt.compiler.graph import JoinGraph, JoinStep
@@ -128,14 +129,6 @@ __all__ = [
     "UnsupportedAggregationForCFLError",
     "WithinGroupNotSupportedInCFLError",
 ]
-
-
-def _expand_cfl_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
-    """Replace bare ColumnRef aliases in HAVING with their full aggregate expressions.
-
-    Thin delegator to :func:`cfl_projection.expand_cfl_measure_refs`.
-    """
-    return cfl_projection.expand_cfl_measure_refs(expr, measure_exprs)
 
 
 class CFLPlanner:
@@ -938,7 +931,7 @@ class CFLPlanner:
         for hf in resolved.having_filters:
             if hf.referenced_fields & deferred:
                 continue
-            outer_builder.having(_expand_cfl_measure_refs(hf.expression, outer_measure_exprs))
+            outer_builder.having(inline_measure_aliases(hf.expression, outer_measure_exprs))
 
         # ORDER BY and LIMIT — remap to CTE aliases
         for expr, desc, nulls in resolved.order_by_exprs:

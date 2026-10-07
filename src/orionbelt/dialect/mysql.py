@@ -722,6 +722,10 @@ class MySQLDialect(Dialect):
             f") AS spine"
         )
 
+    def compile_ilike_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """MySQL has no ILIKE: compare ``LOWER`` of both sides."""
+        return self._compile_lower_like(column, pattern, negated=negated)
+
     def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
         """MySQL uses ``REGEXP`` / ``NOT REGEXP``."""
         col_sql = self.compile_expr(column)

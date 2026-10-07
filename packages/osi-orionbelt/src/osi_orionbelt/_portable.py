@@ -122,13 +122,20 @@ def _filter_text(fv: dict[str, Any]) -> str:
     return ""
 
 
+def _escape_clause(pattern: str) -> str:
+    """``ESCAPE '\\'`` when *pattern* uses OBML's backslash escape, else nothing.
+
+    ANSI LIKE has no default escape character.
+    """
+    return " ESCAPE '\\'" if "\\" in pattern else ""
+
+
 def _like(col: str, pattern_parts: tuple[str, str], value: str, negated: bool) -> str:
     """``col [NOT] LIKE`` with *value* matched literally between the wildcards."""
     escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     op = "NOT LIKE" if negated else "LIKE"
     pattern = _string_literal(pattern_parts[0] + escaped + pattern_parts[1])
-    escape = " ESCAPE '\\'" if escaped != value else ""
-    return f"{col} {op} {pattern}{escape}"
+    return f"{col} {op} {pattern}{_escape_clause(escaped)}"
 
 
 def synthesized_counts(obml: dict[str, Any]) -> dict[str, str]:
@@ -297,7 +304,11 @@ class PortableRenderer:
             return _like(col, ("%", ""), text, negated=False)
         if op in ("like", "notlike"):
             keyword = "NOT LIKE" if op == "notlike" else "LIKE"
-            return f"{col} {keyword} {_string_literal(text)}"
+            return f"{col} {keyword} {_string_literal(text)}{_escape_clause(text)}"
+        if op in ("ilike", "notilike"):
+            # ILIKE is not ANSI; LOWER of both sides is.
+            keyword = "NOT LIKE" if op == "notilike" else "LIKE"
+            return f"LOWER({col}) {keyword} LOWER({_string_literal(text)}){_escape_clause(text)}"
         if op in ("between", "notbetween"):
             if len(values) < 2:
                 return f"{col} {'<>' if op == 'notbetween' else '='} {first}"

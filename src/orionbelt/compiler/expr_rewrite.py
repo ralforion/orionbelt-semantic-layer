@@ -25,6 +25,7 @@ from orionbelt.ast.nodes import (
     InList,
     InTimeZone,
     IsNull,
+    LikeMatch,
     NestedField,
     OrderByItem,
     RegexMatch,
@@ -107,6 +108,13 @@ def map_nodes(expr: Expr, fn: Callable[[Expr], Expr | None]) -> Expr:
                 pattern=pattern,
                 negated=negated,
             )
+        case LikeMatch(column=column):
+            return LikeMatch(
+                column=map_nodes(column, fn),
+                pattern=expr.pattern,
+                negated=expr.negated,
+                case_insensitive=expr.case_insensitive,
+            )
         case RelativeDateRange(column=column):
             return RelativeDateRange(
                 column=map_nodes(column, fn),
@@ -143,6 +151,19 @@ def map_column_refs(expr: Expr, fn: Callable[[ColumnRef], Expr]) -> Expr:
     A specialisation of :func:`map_nodes` that only intercepts leaves.
     """
     return map_nodes(expr, lambda node: fn(node) if isinstance(node, ColumnRef) else None)
+
+
+def inline_measure_aliases(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
+    """Replace each unqualified ``ColumnRef`` naming a measure with its aggregate.
+
+    For ``HAVING``, which cannot see SELECT aliases on Postgres. Every
+    predicate node counts: an earlier ``BinaryOp`` / ``FunctionCall`` chain
+    left ``HAVING "First Country" LIKE 'U%'`` as an alias once LIKE became
+    its own node, and missed ``IS NULL``, ``IN`` and ``BETWEEN`` all along.
+    """
+    return map_column_refs(
+        expr, lambda ref: measure_exprs.get(ref.name, ref) if ref.table is None else ref
+    )
 
 
 def rewrite_column_refs(expr: Expr, mapping: dict[tuple[str, str | None], ColumnRef]) -> Expr:

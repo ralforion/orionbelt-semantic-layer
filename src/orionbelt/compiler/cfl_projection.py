@@ -53,33 +53,6 @@ if TYPE_CHECKING:
     from orionbelt.compiler.cfl import CFLPlanner
 
 
-def expand_cfl_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
-    """Replace bare ColumnRef aliases in HAVING with their full aggregate expressions.
-
-    Recurses through ``BinaryOp`` and ``FunctionCall.args`` so a metric
-    formula like ``{Total Refunds} / NULLIF({Total Sales}, 0)`` correctly
-    inlines both refs in HAVING / outer-SELECT contexts.
-    """
-    if isinstance(expr, ColumnRef) and expr.table is None and expr.name in measure_exprs:
-        return measure_exprs[expr.name]
-    if isinstance(expr, BinaryOp):
-        new_left = expand_cfl_measure_refs(expr.left, measure_exprs)
-        new_right = expand_cfl_measure_refs(expr.right, measure_exprs)
-        if new_left is not expr.left or new_right is not expr.right:
-            return BinaryOp(left=new_left, op=expr.op, right=new_right)
-    if isinstance(expr, FunctionCall):
-        new_args = [expand_cfl_measure_refs(a, measure_exprs) for a in expr.args]
-        if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
-            return FunctionCall(
-                name=expr.name,
-                args=new_args,
-                distinct=expr.distinct,
-                order_by=expr.order_by,
-                separator=expr.separator,
-            )
-    return expr
-
-
 def group_dimensions_into_legs(
     resolved: ResolvedQuery,
     model: SemanticModel,

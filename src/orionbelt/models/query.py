@@ -36,6 +36,9 @@ class FilterOperator(StrEnum):
     NOT_BETWEEN = "notbetween"
     LIKE = "like"
     NOT_LIKE = "notlike"
+    # Case-insensitive LIKE (per-dialect implementation; pattern is the value).
+    ILIKE = "ilike"
+    NOT_ILIKE = "notilike"
     # Simplified operators from spec §4.2
     EQ = "="
     NEQ = "!="
