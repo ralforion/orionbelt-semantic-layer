@@ -26,7 +26,7 @@ from orionbelt.compiler.resolution import (
     ResolvedMeasure,
     ResolvedQuery,
 )
-from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect
+from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryObject, QuerySelect
 from orionbelt.models.semantic import (
     CumulativeAggType,
     GrainToDate,
@@ -880,20 +880,51 @@ class TestTimeFilterDoesNotCutTheLookBack:
     start. The plain measures still respect the filter.
     """
 
+    #: A measure that ignores the query's filters, and a period-over-period
+    #: metric: each puts CTEs of its own under the cumulative wrapper.
+    EXTENDED_MODEL_YAML = CUMULATIVE_MODEL_YAML.replace(
+        "\nmetrics:\n",
+        """
+  Unfiltered Revenue:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    resultType: float
+    aggregation: sum
+    filterContext:
+      mode: FIXED
+
+metrics:
+  Order Count MoM:
+    type: period_over_period
+    expression: '{[Order Count]}'
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+""",
+        1,
+    )
+
     @staticmethod
     def _run(
         connection: Any,
         dimensions: list[str],
         measures: list[str],
-        where: list[QueryFilter],
-    ) -> dict[tuple[str, ...], tuple[float, ...]]:
+        where: list[QueryFilter | QueryFilterGroup],
+        model_yaml: str = CUMULATIVE_MODEL_YAML,
+    ) -> dict[tuple[str, ...], tuple[float | None, ...]]:
         query = QueryObject(
             select=QuerySelect(dimensions=dimensions, measures=measures), where=where
         )
-        sql = CompilationPipeline().compile(query, _load_model(), "duckdb").sql
+        sql = CompilationPipeline().compile(query, _load_model(model_yaml), "duckdb").sql
         width = len(dimensions)
         return {
-            tuple(str(v) for v in row[:width]): tuple(float(v) for v in row[width:])
+            tuple(str(v) for v in row[:width]): tuple(
+                None if v is None else float(v) for v in row[width:]
+            )
             for row in connection.execute(sql).fetchall()
         }
 
@@ -951,6 +982,48 @@ class TestTimeFilterDoesNotCutTheLookBack:
             ],
         )
         assert rows == {("2022-01-01",): (70.0,)}
+
+    def test_a_date_range_written_as_a_group_is_a_time_filter(self, orders: Any) -> None:
+        rows = self._run(
+            orders,
+            ["Order Date"],
+            ["Cumulative Revenue"],
+            [
+                QueryFilterGroup(
+                    logic="and",
+                    filters=[
+                        QueryFilter(field="Order Date", op="gte", value="2021-12-01"),
+                        QueryFilter(field="Order Date", op="lt", value="2022-02-01"),
+                    ],
+                )
+            ],
+        )
+        assert rows == {("2021-12-01",): (33.0,), ("2022-01-01",): (77.0,)}
+
+    def test_beside_a_measure_with_its_own_filter_context(self, orders: Any) -> None:
+        # The filterContext measure puts the query in CTEs of its own, so the
+        # look-back reads the base measure by alias. It re-derived it over the
+        # fact table instead, which that CTE does not join.
+        rows = self._run(
+            orders,
+            ["Order Date"],
+            ["Unfiltered Revenue", "YTD Revenue"],
+            [QueryFilter(field="Order Date", op="gte", value="2021-12-01")],
+            self.EXTENDED_MODEL_YAML,
+        )
+        assert rows == {("2021-12-01",): (22.0, 33.0), ("2022-01-01",): (44.0, 44.0)}
+
+    def test_beside_a_period_over_period_metric(self, orders: Any) -> None:
+        # The comparison's CTEs are SQL text with no WHERE to take the filter
+        # out of; the running total reads the comparison's own look-back.
+        rows = self._run(
+            orders,
+            ["Order Date"],
+            ["Cumulative Revenue", "Order Count MoM"],
+            [QueryFilter(field="Order Date", op="gte", value="2021-12-01")],
+            self.EXTENDED_MODEL_YAML,
+        )
+        assert rows == {("2021-12-01",): (33.0, 0.0), ("2022-01-01",): (77.0, 0.0)}
 
     def test_no_time_filter_keeps_the_single_window(self) -> None:
         query = QueryObject(

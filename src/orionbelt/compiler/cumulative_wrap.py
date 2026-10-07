@@ -243,8 +243,11 @@ def wrap_with_cumulative(
     cumulative_measures: list[ResolvedMeasure] = [m for m in resolved.measures if m.is_cumulative]
 
     cte_name = "cumulative_base"
-    base_cte = CTE(name=cte_name, query=_base_query(ast, resolved, model, dialect))
-    lookbacks = _lookback_windows(ast, resolved, cumulative_measures, model, dialect, cte_name)
+    over_cte = wraps_a_cte(ast)
+    base_cte = CTE(name=cte_name, query=_base_query(ast, resolved, model, dialect, over_cte))
+    lookbacks = _lookback_windows(
+        ast, resolved, cumulative_measures, model, dialect, cte_name, over_cte
+    )
     order_by = outer_order_by(resolved, model)
 
     if not lookbacks:
@@ -329,11 +332,17 @@ def _base_query(
     resolved: ResolvedQuery,
     model: SemanticModel | None,
     dialect: Dialect | None,
-    *,
-    keep_having: bool = True,
+    over_cte: bool,
 ) -> Select:
     """The planner output re-projected for the windows: each cumulative metric
-    replaced by its base measure, ungrouped by nothing, unordered."""
+    replaced by its base measure, unordered.
+
+    *over_cte* says whether the query being wrapped reads a CTE an earlier pass
+    built, in which case the base measure is taken by alias. It is the wrapped
+    query's, passed in rather than read off *ast*: a look-back body has its
+    CTEs split off, and read from that it looked like the planner's own output
+    and re-derived the aggregate over tables it does not join.
+    """
     cumulative_names = {m.name for m in resolved.measures if m.is_cumulative}
     direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
     base_columns: list[Expr] = []
@@ -347,9 +356,7 @@ def _base_query(
                 comp = resolved.metric_components.get(comp_name)
                 if comp and not any(_get_alias(c) == comp_name for c in base_columns):
                     base_columns.append(
-                        _component_base_column(
-                            col_node, comp, resolved, model, dialect, wraps_a_cte(ast)
-                        )
+                        _component_base_column(col_node, comp, resolved, model, dialect, over_cte)
                     )
             # If the base measure is already a direct measure, it's already in the columns
         else:
@@ -360,7 +367,7 @@ def _base_query(
         joins=ast.joins,
         where=ast.where,
         group_by=ast.group_by,
-        having=ast.having if keep_having else None,
+        having=ast.having,
         grouping=ast.grouping,
     )
 
@@ -388,6 +395,7 @@ def _lookback_windows(
     model: SemanticModel | None,
     dialect: Dialect | None,
     base_name: str,
+    over_cte: bool,
 ) -> list[tuple[str, list[CTE], list[ResolvedMeasure]]]:
     """One window CTE per set of time filters, when any metric has one.
 
@@ -396,6 +404,9 @@ def _lookback_windows(
     (a subtotal row has no single group to look its value up by). Metrics with
     no time filter get a window CTE over ``base_name`` itself, so every
     metric is read the same way once one of them has to look back.
+
+    ``HAVING`` stays in the look-back: it picks groups, not periods, and
+    without a time filter the windows read only the groups it keeps.
     """
     if ast.grouping is not None:
         return []
@@ -417,12 +428,15 @@ def _lookback_windows(
         name = f"cumulative_window{suffix}"
         ctes: list[CTE] = []
         source = base_name
-        lookback = lookback_query(ast, predicates, f"_lookback{suffix}") if predicates else None
+        lookback = (
+            lookback_query(ast, predicates, f"_lookback{suffix}", resolved.lookback_ctes)
+            if predicates
+            else None
+        )
         if lookback is not None:
             added, body = lookback
             source = f"cumulative_lookback{suffix}"
-            # HAVING picks the rows shown, so the history keeps every group.
-            base = _base_query(body, resolved, model, dialect, keep_having=False)
+            base = _base_query(body, resolved, model, dialect, over_cte)
             ctes += [*added, CTE(name=source, query=base)]
         columns: list[Expr] = [
             AliasedExpr(expr=ColumnRef(name=d.name), alias=d.name) for d in resolved.dimensions

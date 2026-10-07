@@ -709,6 +709,15 @@ class ResolvedQuery:
     *every* measure, because its outer query reads the composite CTE the union
     legs feed and none of the fact tables are in scope at all."""
 
+    lookback_ctes: dict[str, tuple[list[Expr], str]] = field(default_factory=dict)
+    """CTEs a pass built as SQL text, mapped to the time filters left out of a
+    copy of them and that copy's name.
+
+    Set by the period-over-period pass, read by the cumulative one: a look-back
+    takes the time filters out of every ``WHERE`` it can see, and a CTE held as
+    text has none it can see. Without its copy, a cumulative metric beside a
+    period-over-period one read only the periods shown."""
+
     anchored_measures: dict[str, str] = field(default_factory=dict)
     """Measures whose expression is evaluated at a declared object's grain,
     mapped to that anchor object.

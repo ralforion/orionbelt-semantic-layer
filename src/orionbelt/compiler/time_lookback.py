@@ -64,19 +64,28 @@ def null_safe_eq(left: Expr, right: Expr) -> Expr:
 
 
 def lookback_query(
-    ast: Select, predicates: list[Expr], suffix: str
+    ast: Select,
+    predicates: list[Expr],
+    suffix: str,
+    copies: dict[str, tuple[list[Expr], str]],
 ) -> tuple[list[CTE], Select] | None:
     """*ast* with *predicates* removed from every ``WHERE``, ready to sit beside it.
 
     Returns the CTEs the copy needs in addition to ``ast.ctes`` and the copy's
     body, which reads them. A CTE the removal changes is added under its name
     plus *suffix* (and so is every CTE that reads a renamed one), because both versions
-    end up in one statement. Returns ``None`` when no predicate was found, so
-    the caller keeps the query as it is.
+    end up in one statement. A CTE held as SQL text has no ``WHERE`` to remove
+    from; when *copies* (``ResolvedQuery.lookback_ctes``) names a copy of it
+    built without the same predicates, the copy is read instead. Returns
+    ``None`` when no predicate was found, so the caller keeps the query as it is.
     """
     renamed: dict[str, str] = {}
     added: list[CTE] = []
     for cte in ast.ctes:
+        copy = copies.get(cte.name)
+        if copy is not None and copy[0] == predicates:
+            renamed[cte.name] = copy[1]
+            continue
         query = _rename_query(_strip_query(cte.query, predicates), renamed)
         if query != cte.query:
             renamed[cte.name] = cte.name + suffix
@@ -124,12 +133,17 @@ def _strip_select(select: Select, predicates: list[Expr]) -> Select:
 
 
 def _without(where: Expr | None, predicates: list[Expr]) -> Expr | None:
-    """*where* minus the ``AND``-ed conjuncts equal to one of *predicates*."""
+    """*where* minus the ``AND``-ed conjuncts of *predicates*.
+
+    Both sides are split: an ``and`` filter group arrives as one predicate, and
+    the ``WHERE`` it was rendered into reads as its separate conjuncts.
+    """
     if where is None:
         return None
+    removed = [c for predicate in predicates for c in _conjuncts(predicate)]
     result: Expr | None = None
     for conjunct in _conjuncts(where):
-        if conjunct in predicates:
+        if conjunct in removed:
             continue
         result = conjunct if result is None else BinaryOp(left=result, op="AND", right=conjunct)
     return result

@@ -1310,3 +1310,54 @@ class TestPopTimeFilterLookBack:
             ]
         )
         assert rows == {("2024-02-01", "US"): (Decimal("5.00"), None)}
+
+    def test_an_empty_prior_period_keeps_its_value(self) -> None:
+        # December has no events: its count is 0, so January's change is +1.
+        # The look-back aggregated only the periods with rows, and January
+        # read no December at all: NULL, once a filter was added that every
+        # row passes.
+        model_yaml = TestPopFilters.MODEL_YAML.replace(
+            "metrics:\n",
+            "  Events:\n"
+            "    columns: [{dataObject: Event, column: Region}]\n"
+            "    resultType: int\n"
+            "    aggregation: count\n"
+            "metrics:\n"
+            "  Events MoM:\n"
+            "    type: period_over_period\n"
+            "    expression: '{[Events]}'\n"
+            "    periodOverPeriod:\n"
+            "      timeDimension: Occurred Month\n"
+            "      grain: month\n"
+            "      offset: -1\n"
+            "      offsetGrain: month\n"
+            "      comparison: difference\n",
+            1,
+        )
+        raw, source_map = TrackedLoader().load_string(model_yaml)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE event AS SELECT * FROM (VALUES"
+            " (DATE '2023-11-10', 'EU', 1.0),"
+            " (DATE '2024-01-10', 'EU', 1.0)"
+            ") t(occurred, region, amount)"
+        )
+
+        def changes(where: list[QueryFilter]) -> dict[str, object]:
+            query = QueryObject(
+                select=QuerySelect(dimensions=["Occurred Month"], measures=["Events MoM"]),
+                where=where,
+            )
+            sql = CompilationPipeline().compile(query, model, "duckdb").sql
+            return {row[0].isoformat()[:10]: row[1] for row in con.execute(sql).fetchall()}
+
+        unfiltered = changes([])
+        assert unfiltered["2024-01-01"] == 1
+        assert (
+            changes(
+                [QueryFilter(field="Occurred Month", op=FilterOperator.GTE, value="2023-01-01")]
+            )
+            == unfiltered
+        )

@@ -133,8 +133,8 @@ OrionBelt compiles PoP metrics into a 4-CTE structure. Each CTE builds on the pr
 | `date_range` | Discover `MIN`/`MAX` date from fact tables with ALL query filters pushed down |
 | `date_spine` | Generate date series with `spine_date` and `spine_date_prev` columns |
 | `pop_base` | Aggregate measures using the spine as `FROM`, with facts LEFT JOINed |
-| `pop_lookback` | Only when the query filters its time dimension: `pop_base`'s aggregation without the time filter, one row per period with data |
-| `pop_compare` | Join `pop_base` to the prior period (`pop_base` via `spine_date_prev`, or `pop_lookback` by date) for the comparison |
+| `date_range_lookback`, `date_spine_lookback`, `pop_lookback` | Only when the query filters its time dimension: the three CTEs above without the time filter, so the prior periods (empty ones included) are there to compare with |
+| `pop_compare` | Join `pop_base` to the prior period via `spine_date_prev`, from `pop_lookback` when there is one |
 
 ### Filter Push-Down
 
@@ -157,8 +157,13 @@ February:
 A filter counts as a time filter when it is on the time dimension or on another
 dimension (or qualified column) over the same date column, such as `Sales Year`
 next to `Sales Month`. The shown periods and the plain measures still respect it,
-including a boundary inside a period. Every other filter - another dimension, a
-model's static filters - still limits the prior period too.
+including a boundary inside a period. A filter group counts when every filter
+in it is on that column, such as a date range written as one `and` group. Every
+other filter - another dimension, a group mixing columns, a model's static
+filters - still limits the prior period too.
+
+A prior period with no rows keeps its value under a time filter, as it does
+without one: a count of 0 compares as 0.
 
 ### Generated SQL Example
 

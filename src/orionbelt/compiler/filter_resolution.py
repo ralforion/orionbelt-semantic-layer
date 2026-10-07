@@ -183,11 +183,13 @@ def resolve_filter_group(
 
     child_exprs: list[Expr] = []
     all_fields: set[str] = set()
+    subjects: set[tuple[str, str] | None] = set()
     for child in group.filters:
         resolved = resolver._resolve_filter_item(ctx, child, is_having=is_having)
         if resolved:
             child_exprs.append(resolved.expression)
             all_fields.update(resolved.referenced_fields)
+            subjects.add(resolved.subject)
 
     if not child_exprs:
         return None
@@ -202,10 +204,14 @@ def resolve_filter_group(
     if group.negated:
         combined = UnaryOp(op="NOT", operand=combined)
 
+    # A group over one column tests that column, whatever its logic: a date
+    # range written as a group is as much a time filter as two leaf filters.
+    # A group mixing columns has no single subject.
     return ResolvedFilter(
         expression=combined,
         is_aggregate=is_having,
         referenced_fields=frozenset(all_fields),
+        subject=next(iter(subjects)) if len(subjects) == 1 else None,
     )
 
 

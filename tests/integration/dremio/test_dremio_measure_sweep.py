@@ -159,8 +159,8 @@ def test_metric_executes_on_dremio(pgwire_cursor, metric: str) -> None:  # type:
 def test_a_time_filter_does_not_cut_the_look_back_on_dremio(pgwire_cursor, metric: str) -> None:  # type: ignore[no-untyped-def]
     """A time filter picks the months shown; the metric still reads the months
     before them, so the filtered rows equal the unfiltered query's rows for
-    those months. Dremio runs the look-back CTEs and the inline prior-period
-    join only a filtered query compiles to."""
+    those months. Dremio runs the look-back CTEs only a filtered query
+    compiles to."""
     select = f'SELECT "Sales Month", "Total Sales", "{metric}" FROM {OBSL_MODEL_NAME}'
     window = "\"Sales Month\" >= '2021-03-01' AND \"Sales Month\" < '2021-05-01'"
     pgwire_cursor.execute(f"{select} WHERE {window}")
