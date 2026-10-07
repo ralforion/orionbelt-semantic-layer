@@ -142,8 +142,10 @@ SELECT * FROM adbc_scan(
 
 Builds of `adbc_scanner` up to `3485fb0` connected with `adbc_connect(MAP {...})`
 and passed a handle around instead; `03b5b7f` replaced that with `ATTACH` and
-`DETACH`. Run `UPDATE EXTENSIONS (adbc_scanner);` if `ATTACH ... (TYPE adbc)` is
-not recognised.
+`DETACH`. If `ATTACH ... (TYPE adbc)` is not recognised, run
+`UPDATE EXTENSIONS (adbc_scanner);`, then **restart DuckDB** and run `LOAD` and
+`ATTACH` again: the update replaces the installed file, but a process that has
+already loaded the old build keeps using it.
 
 The string is [OBSQL](semantic-ql.md), and the model is addressed by name
 (`commerce`), not as `<schema>.model` - that shape belongs to the wire surface.

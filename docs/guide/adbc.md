@@ -245,7 +245,8 @@ executing anything. `DETACH obsl` closes the connection.
     passed the returned handle to every function. Build `03b5b7f` removed
     `adbc_connect` and `adbc_disconnect` in favour of `ATTACH ... (TYPE adbc)`
     and `DETACH`. An installed copy keeps the old API until
-    `UPDATE EXTENSIONS (adbc_scanner);`.
+    `UPDATE EXTENSIONS (adbc_scanner);`, and a running process keeps the build
+    it loaded: restart DuckDB after the update, then `LOAD` and `ATTACH` again.
 
 See **[Using DuckDB as a client](duckdb.md)** for the full guide, including the
 `ATTACH ... (TYPE postgres)` route that addresses the model as a table rather
