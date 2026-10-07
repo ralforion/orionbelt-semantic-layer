@@ -1,0 +1,10 @@
+select:
+  dimensions: [Sales Date]
+  measures: [Total Sales, Rolling 30 Day Sales, Peak Daily Sales 30D]
+where:
+  - field: Sales Date
+    op: gte
+    value: '2021-02-01'
+  - field: Sales Date
+    op: lt
+    value: '2021-03-01'

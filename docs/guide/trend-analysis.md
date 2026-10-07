@@ -36,15 +36,24 @@ metrics:
     partitionBy: [Country]
 ```
 
-Compiles to:
+Each row reads the 12 calendar months ending at its own month, within its
+own country, as a self-join of the aggregated rows (abridged, Postgres):
 
 ```sql
-AVG("Revenue") OVER (
-  PARTITION BY "Country"
-  ORDER BY "order_month"
-  ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
-) AS "Revenue MA12 by Country"
+SELECT cur."Country", cur."order_month",
+       AVG(prior."Revenue") AS "Revenue MA12 by Country"
+FROM cumulative_base AS cur
+JOIN cumulative_base AS prior
+  ON cur."Country" = prior."Country"
+ AND <months from prior."order_month" to cur."order_month"> BETWEEN 0 AND 11
+GROUP BY cur."Country", cur."order_month"
 ```
+
+The window counts months, not rows: a country with no sales in some month
+still averages over the 12 months ending at each one, and the months without
+data contribute nothing. A `ROWS BETWEEN 11 PRECEDING` frame would reach back
+past the gap. (`RANGE` frames with an offset would say the same, but Dremio
+rejects them, so every engine gets the join.)
 
 A cumulative metric is always partitioned by the query's other selected
 dimensions as well: `Country, order_month, Revenue YTD` accumulates per

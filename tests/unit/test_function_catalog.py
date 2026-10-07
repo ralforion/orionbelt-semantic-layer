@@ -937,6 +937,15 @@ class TestPinnedSemantics:
         sql = _render("date_diff('month', {[S].[A]}, {[S].[B]})", "mysql")
         assert sql.startswith("TIMESTAMPDIFF(MONTH, CAST(DATE_FORMAT(")
 
+    def test_date_diff_reads_a_bigquery_timestamp_as_a_datetime(self) -> None:
+        """On a TIMESTAMP, BigQuery's DATE_DIFF rejects MONTH, QUARTER and YEAR,
+        and counts DAY as 24-hour spans: 23:00 to 01:00 the next morning is 0.
+        On DATETIMEs it counts boundaries, 2 months and 1 day for those cases.
+        """
+        assert _render("date_diff('month', {[S].[A]}, {[S].[B]})", "bigquery") == (
+            "DATE_DIFF(CAST(`S].[B` AS DATETIME), CAST(`S].[A` AS DATETIME), MONTH)"
+        )
+
     def test_week_is_iso_where_the_engine_numbers_from_sunday(self) -> None:
         """MySQL and BigQuery answer 32 for 2026-08-15; ISO week 33 is the rule."""
         assert _render("extract('week', {[S].[D]})", "mysql").startswith("WEEK(")

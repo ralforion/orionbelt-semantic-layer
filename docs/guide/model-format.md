@@ -883,10 +883,10 @@ All artefacts (data objects, dimensions, measures, metrics) have unique names. A
 
 A **cumulative metric** applies a window function to an existing measure, ordered by a time dimension. Three patterns are supported:
 
-| Pattern | Configuration | SQL Frame |
+| Pattern | Configuration | SQL |
 |---------|--------------|-----------|
 | Running total | (default — no `window` or `grainToDate`) | `ROWS UNBOUNDED PRECEDING` |
-| Rolling window | `window: N` | `ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW` |
+| Rolling window | `window: N` | the N periods ending at each period: a self-join on `date_diff(grain, prior, current) <= N-1` |
 | Grain-to-date | `grainToDate: month` | `PARTITION BY DATE_TRUNC('month', ...)` + unbounded |
 
 ```yaml
@@ -934,6 +934,9 @@ metrics:
 
 !!! tip "Partition by dimension"
  A cumulative metric accumulates per group of the query's other selected dimensions: `Country, Order Month, Revenue YTD` gives each country its own year-to-date. Dimensions over the same date column at another grain (`Order Year` next to `Order Month`) do not partition. Add `partitionBy: [Country, ...]` for extra keys; every entry must be a model dimension present in the query's SELECT. See [Trend Analysis](trend-analysis.md#1-partitioned-rolling-windows) for worked examples.
+
+!!! tip "Rolling windows count calendar periods"
+ `window: N` reaches back N periods of the time dimension's grain, not N rows: over `Order Month`, `window: 3` for May reads March, April and May, also when one of them has no data. A period without data contributes nothing, so `cumulativeType: avg` averages the periods in the window that have data. A time dimension without a grain counts days. A row whose date is NULL has no periods before it and shows its own value. Under `grouping: rollup` / `cube` a rolling window still counts rows, since a subtotal row has no single group to read its periods from.
 
 !!! tip "Time filters pick the periods shown"
  A filter on the time dimension, or on another dimension over the same date column (`Order Year` next to `Order Month`), selects which periods are *shown*; it does not cut what the metric reads. Filtered to March-April, `Revenue YTD` for March still includes January and February, and a running total still starts at the first period with data. The plain measures in the same query respect the filter as usual, also when its boundary falls inside a period. A filter group counts when every filter in it is on that column, such as a date range written as one `and` group. Every other filter (another dimension, a group mixing columns, a static model filter) still limits the history. Period-over-period metrics follow the same rule: the first period shown compares with the one before it.
@@ -1022,7 +1025,7 @@ Window metrics compose freely with derived metrics — `expression: '{[Revenue]}
 | `measure` | string | — | Name of base measure (required for cumulative and window) |
 | `timeDimension` | string | — | Dimension used for ordering (required for cumulative and for lag/lead window metrics) |
 | `cumulativeType` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` | `"sum"` | Window aggregation function |
-| `window` | integer | — | Rolling window size in periods (mutually exclusive with `grainToDate`) |
+| `window` | integer | — | Rolling window size in periods of the time dimension's grain, counted on the calendar (mutually exclusive with `grainToDate`) |
 | `grainToDate` | `"year"` \| `"quarter"` \| `"month"` \| `"week"` | — | Reset boundary (mutually exclusive with `window`) |
 | `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics. Each entry must be a model dimension in the query's SELECT. Cumulative metrics are also partitioned by the query's other dimensions. |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |

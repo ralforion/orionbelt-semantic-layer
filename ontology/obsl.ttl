@@ -489,7 +489,7 @@ obsl:cumulativeType a owl:DatatypeProperty ;
 
 obsl:window a owl:DatatypeProperty ;
     rdfs:label "window" ;
-    rdfs:comment "Rolling window size in periods for a cumulative metric.  Absent means unbounded (running total)." ;
+    rdfs:comment "Rolling window size for a cumulative metric, in periods of the time dimension's grain counted on the calendar, not in rows.  Absent means unbounded (running total)." ;
     rdfs:domain obsl:CumulativeMetric ;
     rdfs:range xsd:integer .
 

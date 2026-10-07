@@ -71,7 +71,7 @@
   lastVerifiedBy: tests/integration/correctness/test_pandas_baseline.py::test_cumulative_sales_by_month
 
 - id: 11_rolling_30_day_sales
-  description: Corpus #11 — 30-row rolling AVG over daily Total Sales.
+  description: Corpus #11 — 30-day calendar rolling AVG over daily Total Sales.
   lastVerifiedBy: tests/integration/correctness/test_pandas_baseline.py::test_rolling_30_day_sales
 
 - id: 12_total_sales_country_in_filter
@@ -115,3 +115,10 @@
     Corpus #18 — month-over-month change under a time filter. The first month
     shown compares with the month before it, which the filter excludes.
   lastVerifiedBy: tests/integration/correctness/test_time_filter_lookback.py::test_mom_change_under_a_time_filter
+
+- id: 19_rolling_windows_calendar_days
+  description: >-
+    Corpus #19: 30-day rolling average and peak over February 2021. The
+    windows count calendar days, not rows: 2021-02-20 has no sales, and each
+    window reads the January days the filter excludes.
+  lastVerifiedBy: tests/integration/correctness/test_calendar_rolling_windows.py::test_rolling_windows_under_a_time_filter

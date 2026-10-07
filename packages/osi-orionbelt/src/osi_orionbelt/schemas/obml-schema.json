@@ -940,7 +940,7 @@
         },
         "window": {
           "type": "integer",
-          "description": "Rolling window size in periods (omit for unbounded running total). Mutually exclusive with grainToDate.",
+          "description": "Rolling window size in periods of the time dimension's grain, counted on the calendar rather than in rows (omit for unbounded running total). Mutually exclusive with grainToDate.",
           "minimum": 1
         },
         "grainToDate": {
