@@ -715,6 +715,29 @@ class TestExecution:
         )
         assert table.column("Customer Country").to_pylist() == ["US"]
 
+    def test_a_zero_row_clause_in_a_comment_is_not_a_probe(self, conn: Any) -> None:
+        """The probe is read from the statement: a ``LIMIT 0`` in a comment
+        turned a real query into a probe, and it came back empty."""
+        table = _fetch(
+            conn,
+            f'SELECT * FROM "{MODEL_NAME}"."model" /* LIMIT 0 */ WHERE "Customer Country" = \'US\'',
+        )
+        assert table.column("Customer Country").to_pylist() == ["US"]
+
+    @pytest.mark.parametrize(
+        "star",
+        [
+            '* REPLACE (0 AS "Total Revenue")',
+            '* EXCLUDE ("Customer Country")',
+            '"model".* EXCLUDE ("Customer Country")',
+        ],
+    )
+    def test_a_decorated_star_is_refused(self, conn: Any, star: str) -> None:
+        """Expanding it to the plain column list dropped the modifier: REPLACE
+        returned the real revenues, EXCLUDE kept the column."""
+        with pytest.raises(Exception, match=r"SELECT \* is not supported|`\*` is not a dimension"):
+            _fetch(conn, f'SELECT {star} FROM "{MODEL_NAME}"."model"')
+
     @pytest.mark.parametrize("clause", ["WHERE 1=0", "LIMIT 0"])
     def test_a_zero_row_probe_returns_the_announced_shape(self, conn: Any, clause: str) -> None:
         table = _fetch(conn, f'SELECT * FROM "{MODEL_NAME}"."model" {clause}')

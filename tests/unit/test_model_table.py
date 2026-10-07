@@ -75,6 +75,10 @@ def test_the_rest_of_the_statement_is_kept(model: SemanticModel) -> None:
         'SELECT * FROM "sales"."model" JOIN other ON TRUE',
         "SELECT * FROM (SELECT 1) AS model",
         "not sql at all (((",
+        # Modifiers change the columns; expanding would silently drop them.
+        'SELECT * REPLACE (0 AS "Total Revenue") FROM sales.model',
+        'SELECT * EXCLUDE ("Customer Country") FROM sales.model',
+        'SELECT m.* EXCLUDE ("Customer Country") FROM sales.model AS m',
     ],
 )
 def test_anything_else_is_left_alone(model: SemanticModel, sql: str) -> None:
@@ -87,6 +91,13 @@ def test_anything_else_is_left_alone(model: SemanticModel, sql: str) -> None:
         ('SELECT * FROM "sales"."model" WHERE 1=0', True),
         ('SELECT * FROM "sales"."model" LIMIT 0', True),
         ('SELECT * FROM "sales"."model" WHERE false', True),
+        ('SELECT * FROM "sales"."model" WHERE 0 = 1 AND "Customer Country" = \'US\'', True),
+        ('SELECT * FROM "sales"."model" WHERE 1=0 OR "Customer Country" = \'US\'', False),
+        # Text that only looks like a zero-row clause.
+        ('SELECT * FROM "sales"."model" /* LIMIT 0 */ WHERE "Customer Country" = \'US\'', False),
+        ('SELECT * FROM "sales"."model" WHERE "Customer Country" = \'LIMIT 0\'', False),
+        ('SELECT * FROM "sales"."model" WHERE "Customer Country" = \'WHERE 1=0\'', False),
+        ('SELECT * EXCLUDE ("Customer Country") FROM "sales"."model" LIMIT 0', False),
         ('SELECT * FROM "sales"."model"', False),
         ('SELECT "Customer Country" FROM "sales"."model" LIMIT 0', False),
     ],

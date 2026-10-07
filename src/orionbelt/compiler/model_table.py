@@ -15,7 +15,6 @@ columns where the announced schema had six.
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 
 import sqlglot
@@ -27,17 +26,6 @@ if TYPE_CHECKING:
 #: The name the ``model`` table goes by in every model's schema.
 MODEL_TABLE = "model"
 
-# Tableau (and other Postgres clients) probe column metadata with
-# ``SELECT * FROM "schema"."table" WHERE 1=0`` or ``... LIMIT 0``. The answer
-# is the table's column shape with no rows; the semantic translator would
-# (correctly, on its own terms) reject the ``1=0`` predicate.
-_RE_SELECT_STAR = re.compile(r"^\s*select\s+\*", re.IGNORECASE)
-_RE_ZERO_ROW_METADATA_PROBE = re.compile(
-    r"\bwhere\s+(?:1\s*=\s*0|0\s*=\s*1|false)\b",
-    re.IGNORECASE,
-)
-_RE_LIMIT_ZERO_PROBE = re.compile(r"\blimit\s+0\b", re.IGNORECASE)
-
 
 def model_table_columns(model: SemanticModel) -> list[str]:
     """The ``model`` table's columns, in order: dimensions, measures, metrics.
@@ -47,6 +35,39 @@ def model_table_columns(model: SemanticModel) -> list[str]:
     model's table.
     """
     return [*model.dimensions, *model.effective_measures, *model.metrics]
+
+
+def _parse_select(sql: str) -> exp.Select | None:
+    """*sql* as a ``SELECT``, or ``None`` for anything else or unparseable."""
+    try:
+        parsed = sqlglot.parse_one(sql, read="postgres")
+    except sqlglot.errors.SqlglotError:  # unparseable is "not this shape"
+        return None
+    return parsed if isinstance(parsed, exp.Select) else None
+
+
+def _is_lone_plain_star(select: exp.Select) -> bool:
+    """Whether the projection is exactly ``*`` or ``t.*``, undecorated.
+
+    ``* EXCLUDE (...)``, ``* REPLACE (...)`` and ``* RENAME (...)`` change the
+    columns; expanding them to the plain list would drop the modifier and
+    answer a different query, so they are left to the translator's refusal.
+    """
+    if len(select.expressions) != 1:
+        return False
+    item = select.expressions[0]
+    star = item.this if isinstance(item, exp.Column) else item
+    return isinstance(star, exp.Star) and not any(star.args.values())
+
+
+def _is_false_literal(node: exp.Expr) -> bool:
+    """``FALSE``, ``1 = 0`` or ``0 = 1``: the forms BI tools probe with."""
+    if isinstance(node, exp.Boolean):
+        return node.this is False
+    if isinstance(node, exp.EQ):
+        sides = {node.left.sql(), node.right.sql()}
+        return sides == {"0", "1"}
+    return False
 
 
 def is_metadata_probe(sql: str) -> bool:
@@ -60,13 +81,23 @@ def is_metadata_probe(sql: str) -> bool:
     ``SELECT "Customer Country" FROM commerce LIMIT 0`` has explicit columns
     the BI tool already knows about - it is a semantic query, and routing every
     ``LIMIT 0`` / ``WHERE 1=0`` query away from the translator misroutes it.
+
+    Read from the parsed statement, not the text: a ``/* LIMIT 0 */`` comment
+    or a ``'LIMIT 0'`` string literal turned a real query into a probe and
+    answered it with no rows.
     """
-    if _RE_SELECT_STAR.match(sql) is None:
+    select = _parse_select(sql)
+    if select is None or not _is_lone_plain_star(select):
         return False
-    return (
-        _RE_ZERO_ROW_METADATA_PROBE.search(sql) is not None
-        or _RE_LIMIT_ZERO_PROBE.search(sql) is not None
-    )
+    limit = select.args.get("limit")
+    if limit is not None and limit.expression.sql() == "0":
+        return True
+    where = select.args.get("where")
+    if where is None:
+        return False
+    condition = where.this
+    conjuncts = condition.flatten() if isinstance(condition, exp.And) else [condition]
+    return any(_is_false_literal(conjunct) for conjunct in conjuncts)
 
 
 def expand_model_star(sql: str, model: SemanticModel) -> str | None:
@@ -86,18 +117,15 @@ def expand_model_star(sql: str, model: SemanticModel) -> str | None:
     columns = model_table_columns(model)
     if not columns:
         return None
-    try:
-        parsed = sqlglot.parse_one(sql, read="postgres")
-    except sqlglot.errors.SqlglotError:  # unparseable is "not this shape"
-        return None
-    if not isinstance(parsed, exp.Select) or parsed.args.get("joins"):
+    parsed = _parse_select(sql)
+    if parsed is None or parsed.args.get("joins"):
         return None
     source = parsed.args.get("from_")
     if source is None or not isinstance(source.this, exp.Table):
         return None
     if source.this.name.lower() != MODEL_TABLE:
         return None
-    if len(parsed.expressions) != 1 or not parsed.expressions[0].is_star:
+    if not _is_lone_plain_star(parsed):
         return None
     parsed.set("expressions", [exp.column(name, quoted=True) for name in columns])
     return parsed.sql(dialect="postgres")
