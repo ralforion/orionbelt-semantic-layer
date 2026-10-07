@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING
 from orionbelt.ast.builder import QueryBuilder
 from orionbelt.ast.nodes import (
     AliasedExpr,
-    BinaryOp,
     ColumnRef,
     Expr,
     FunctionCall,
     Select,
 )
 from orionbelt.compiler.anchored import conformed_join_type, plan_conformed_facts
+from orionbelt.compiler.expr_rewrite import inline_measure_aliases
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.nested import emit_join_step
@@ -72,32 +72,6 @@ def _substitute_measure_refs(
     resolve — see :mod:`orionbelt.compiler.metric_expansion`.
     """
     return expand_metric_expression(expr, components, lambda comp: comp.expression)
-
-
-def _expand_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
-    """Replace bare ColumnRef aliases in HAVING with their full aggregate expressions.
-
-    Recurses through ``BinaryOp`` and ``FunctionCall.args`` for the same
-    reason as :func:`_substitute_measure_refs`.
-    """
-    if isinstance(expr, ColumnRef) and expr.table is None and expr.name in measure_exprs:
-        return measure_exprs[expr.name]
-    if isinstance(expr, BinaryOp):
-        new_left = _expand_measure_refs(expr.left, measure_exprs)
-        new_right = _expand_measure_refs(expr.right, measure_exprs)
-        if new_left is not expr.left or new_right is not expr.right:
-            return BinaryOp(left=new_left, op=expr.op, right=new_right)
-    if isinstance(expr, FunctionCall):
-        new_args = [_expand_measure_refs(a, measure_exprs) for a in expr.args]
-        if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
-            return FunctionCall(
-                name=expr.name,
-                args=new_args,
-                distinct=expr.distinct,
-                order_by=expr.order_by,
-                separator=expr.separator,
-            )
-    return expr
 
 
 @dataclass
@@ -270,7 +244,7 @@ class StarSchemaPlanner:
         for hf in resolved.having_filters:
             if hf.referenced_fields & deferred:
                 continue
-            builder.having(_expand_measure_refs(hf.expression, measure_exprs))
+            builder.having(inline_measure_aliases(hf.expression, measure_exprs))
 
         # ORDER BY (use alias for time-grained dimensions)
         grained_cols: dict[tuple[str, str | None], str] = {
