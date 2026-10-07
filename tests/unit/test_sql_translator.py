@@ -143,6 +143,8 @@ _COUNTRY = '"Customer Country"'
         (f"{_COUNTRY} ILIKE 'u%'", FilterOperator.ILIKE, "u%"),
         (f"{_COUNTRY} NOT ILIKE 'u%'", FilterOperator.NOT_ILIKE, "u%"),
         (f"NOT ({_COUNTRY} ILIKE 'u%')", FilterOperator.NOT_ILIKE, "u%"),
+        # The backslash escape is OBML's own, so the pattern passes unchanged.
+        (f"{_COUNTRY} LIKE 'a\\_b'", FilterOperator.LIKE, "a\\_b"),
     ],
 )
 def test_negated_and_range_predicates(
@@ -170,6 +172,7 @@ def test_between_on_a_measure_routes_to_having(model: SemanticModel) -> None:
     [
         (f"{_COUNTRY} BETWEEN SYMMETRIC 'M' AND 'A'", "BETWEEN SYMMETRIC 'M' AND 'A'"),
         (f"{_COUNTRY} BETWEEN {_COUNTRY} AND 'Z'", "BETWEEN bounds must be literals"),
+        (f"{_COUNTRY} LIKE 'a!_b' ESCAPE '!'", "Unsupported predicate"),
     ],
 )
 def test_predicates_without_a_faithful_translation_are_refused(

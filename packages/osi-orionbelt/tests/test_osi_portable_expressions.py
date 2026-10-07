@@ -113,7 +113,7 @@ _MODEL: dict[str, Any] = {
                 {
                     "column": {"dataObject": "Order Lines", "column": "Status"},
                     "operator": "ilike",
-                    "values": [{"dataType": "string", "valueString": "VOID%"}],
+                    "values": [{"dataType": "string", "valueString": "VOID\\_%"}],
                 },
             ],
         },
@@ -241,10 +241,10 @@ class TestSemanticsSpelledOut:
             f") THEN {AMT} END)"
         )
 
-    def test_ilike_filter_lowers_both_sides(self) -> None:
+    def test_ilike_filter_lowers_both_sides_and_keeps_the_escape(self) -> None:
         osi, _ = _export()
         assert _sql(osi)["Void Sales"] == (
-            f"SUM(CASE WHEN LOWER({STATUS}) LIKE LOWER('VOID%') THEN {AMT} END)"
+            f"SUM(CASE WHEN LOWER({STATUS}) LIKE LOWER('VOID\\_%') ESCAPE '\\' THEN {AMT} END)"
         )
 
     def test_total_becomes_grand_total_window(self) -> None:

@@ -20,11 +20,11 @@ from orionbelt.ast.nodes import (
     Expr,
     From,
     FunctionCall,
-    ILikeMatch,
     InList,
     InTimeZone,
     IsNull,
     Join,
+    LikeMatch,
     Literal,
     NestedField,
     OrderByItem,
@@ -615,6 +615,15 @@ class Dialect(ABC):
     #: escaping breaks on Postgres and DuckDB, which take the backslash
     #: literally and would double it.
     backslash_escapes_strings: bool = False
+
+    #: Whether ``LIKE`` needs ``ESCAPE '\\'`` for a backslash to escape ``%``
+    #: and ``_``. OBML patterns escape with a backslash: Postgres' default, how
+    #: OBSQL parses a pattern, and what ``contains`` writes. Measured: Postgres,
+    #: MySQL, ClickHouse, BigQuery and Databricks read it so without a clause
+    #: (BigQuery rejects one); DuckDB and Dremio take the backslash literally,
+    #: so ``a\\_b`` matched neither ``a_b`` nor ``axb``. Snowflake documents
+    #: no default escape character.
+    like_needs_escape_clause: bool = False
 
     def quote_string_literal(self, value: str) -> str:
         """*value* as a quoted string literal for this engine.
@@ -2073,8 +2082,11 @@ class Dialect(ABC):
                 return self._render_in_timezone(inner, zone, from_zone)
             case RegexMatch(column=column, pattern=pattern, negated=negated):
                 return self.compile_regex_match(column, pattern, negated=negated)
-            case ILikeMatch(column=column, pattern=pattern, negated=negated):
-                sql = self.compile_ilike_match(column, pattern, negated=negated)
+            case LikeMatch(column=column, pattern=pattern, negated=negated, case_insensitive=ci):
+                if ci:
+                    sql = self.compile_ilike_match(column, pattern, negated=negated)
+                else:
+                    sql = self.compile_like_match(column, pattern, negated=negated)
                 return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case RelativeDateRange(
                 column=column,
@@ -2127,6 +2139,19 @@ class Dialect(ABC):
         op_sql = f"REGEXP_LIKE({col_sql}, {pat_sql})"
         return f"NOT {op_sql}" if negated else op_sql
 
+    def _like_escape_sql(self) -> str:
+        """The ``ESCAPE`` clause a LIKE pattern needs here, or nothing."""
+        if not self.like_needs_escape_clause:
+            return ""
+        return " ESCAPE " + self.quote_string_literal("\\")
+
+    def compile_like_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """Compile ``column [NOT] LIKE pattern``, backslash escaping included."""
+        col_sql = self.compile_expr(column, _parent_prec=self._PREC_CMP)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        op = "NOT LIKE" if negated else "LIKE"
+        return f"{col_sql} {op} {pat_sql}{self._like_escape_sql()}"
+
     def compile_ilike_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
         """Compile a case-insensitive LIKE. Default is the ``ILIKE`` operator.
 
@@ -2137,14 +2162,14 @@ class Dialect(ABC):
         col_sql = self.compile_expr(column, _parent_prec=self._PREC_CMP)
         pat_sql = self.compile_expr(Literal.string(pattern))
         op = "NOT ILIKE" if negated else "ILIKE"
-        return f"{col_sql} {op} {pat_sql}"
+        return f"{col_sql} {op} {pat_sql}{self._like_escape_sql()}"
 
     def _compile_lower_like(self, column: Expr, pattern: str, *, negated: bool) -> str:
         """``LOWER(column) [NOT] LIKE LOWER(pattern)``, for engines without ILIKE."""
         col_sql = self.compile_expr(FunctionCall(name="LOWER", args=[column]))
         pat_sql = self.compile_expr(FunctionCall(name="LOWER", args=[Literal.string(pattern)]))
         op = "NOT LIKE" if negated else "LIKE"
-        return f"{col_sql} {op} {pat_sql}"
+        return f"{col_sql} {op} {pat_sql}{self._like_escape_sql()}"
 
     def compile_relative_date_range(
         self,

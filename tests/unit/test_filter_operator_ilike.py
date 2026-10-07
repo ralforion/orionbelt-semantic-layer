@@ -64,14 +64,14 @@ def _compile(op: FilterOperator, value: object, dialect: str = "duckdb") -> str:
     ("dialect", "ilike", "notilike"),
     [
         ("postgres", '"Customers"."COUNTRY" ILIKE \'u%\'', None),
-        ("snowflake", '"Customers"."COUNTRY" ILIKE \'u%\'', None),
-        ("duckdb", '"Customers"."COUNTRY" ILIKE \'u%\'', None),
+        ("snowflake", "\"Customers\".\"COUNTRY\" ILIKE 'u%' ESCAPE '\\\\'", None),
+        ("duckdb", "\"Customers\".\"COUNTRY\" ILIKE 'u%' ESCAPE '\\'", None),
         ("clickhouse", '"Customers"."COUNTRY" ILIKE \'u%\'', None),
         ("databricks", "`Customers`.`COUNTRY` ILIKE 'u%'", None),
         (
             "dremio",
-            'ILIKE("Customers"."COUNTRY", \'u%\')',
-            'NOT ILIKE("Customers"."COUNTRY", \'u%\')',
+            "ILIKE(\"Customers\".\"COUNTRY\", 'u%', '\\')",
+            "NOT ILIKE(\"Customers\".\"COUNTRY\", 'u%', '\\')",
         ),
         (
             "bigquery",
@@ -123,6 +123,47 @@ class TestExecutedOnDuckDB:
 
     def test_non_ascii_folds(self, customers: Any) -> None:
         assert self._countries(customers, FilterOperator.ILIKE, "äg%") == ["ÄGYPTEN"]
+
+
+class TestBackslashEscapeOnDuckDB:
+    """A backslash escapes ``%`` and ``_`` in every pattern operator.
+
+    DuckDB reads the backslash literally unless told ``ESCAPE '\\'``: before,
+    ``a\\_b`` matched neither ``a_b`` nor ``axb``, and ``contains: a_b`` (which
+    escapes the underscore itself) matched nothing.
+    """
+
+    @pytest.fixture
+    def customers(self) -> Iterator[Any]:
+        duckdb = pytest.importorskip("duckdb")
+        connection = duckdb.connect()
+        connection.execute("CREATE SCHEMA PUBLIC")
+        connection.execute(
+            "CREATE TABLE PUBLIC.CUSTOMERS AS SELECT * FROM (VALUES "
+            "('1', 'a_b'), ('2', 'axb'), ('3', 'A_B')"
+            ") AS t(CUSTOMER_ID, COUNTRY)"
+        )
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    @pytest.mark.parametrize(
+        ("op", "value", "expected"),
+        [
+            (FilterOperator.LIKE, "a\\_b", ["a_b"]),
+            (FilterOperator.NOT_LIKE, "a\\_b", ["A_B", "axb"]),
+            (FilterOperator.ILIKE, "a\\_b", ["A_B", "a_b"]),
+            (FilterOperator.NOT_ILIKE, "a\\_b", ["axb"]),
+            (FilterOperator.CONTAINS, "a_b", ["a_b"]),
+            (FilterOperator.STARTS_WITH, "a_", ["a_b"]),
+        ],
+    )
+    def test_escaped_wildcard(
+        self, customers: Any, op: FilterOperator, value: str, expected: list[str]
+    ) -> None:
+        rows = customers.execute(_compile(op, value)).fetchall()
+        assert sorted(row[0] for row in rows) == expected
 
 
 def test_measure_filter_ilike() -> None:

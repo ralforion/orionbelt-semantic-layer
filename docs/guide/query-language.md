@@ -571,9 +571,15 @@ OrionBelt supports two operator naming conventions — OBML style and SQL style.
 | `notilike` | `NOT ILIKE 'pattern'` (dialect-specific) | string |
 
 `ilike` / `notilike` match case-insensitively. Postgres, Snowflake, DuckDB,
-Databricks and ClickHouse use `ILIKE`; Dremio uses its `ILIKE(value, pattern)`
+Databricks and ClickHouse use `ILIKE`; Dremio uses its `ILIKE(value, pattern, escape)`
 function; BigQuery and MySQL, which have no `ILIKE`, compare `LOWER` of both
 sides. Non-ASCII letters fold on every engine (`'ÄRGER'` matches `'är%'`).
+
+In a `like` / `ilike` pattern, a backslash escapes the next `%`, `_` or
+backslash: `a\_b` matches `a_b` but not `axb`. This holds on every engine.
+DuckDB, Dremio and Snowflake get an explicit `ESCAPE '\'`, because they read the
+backslash literally without one. `contains`, `starts_with` and `ends_with` take
+a plain value and escape its wildcards themselves.
 
 #### Regex Operators
 

@@ -22,10 +22,10 @@ from orionbelt.ast.nodes import (
     ColumnRef,
     Expr,
     FunctionCall,
-    ILikeMatch,
     InList,
     InTimeZone,
     IsNull,
+    LikeMatch,
     NestedField,
     OrderByItem,
     RegexMatch,
@@ -108,8 +108,13 @@ def map_nodes(expr: Expr, fn: Callable[[Expr], Expr | None]) -> Expr:
                 pattern=pattern,
                 negated=negated,
             )
-        case ILikeMatch(column=column, pattern=pattern, negated=negated):
-            return ILikeMatch(column=map_nodes(column, fn), pattern=pattern, negated=negated)
+        case LikeMatch(column=column):
+            return LikeMatch(
+                column=map_nodes(column, fn),
+                pattern=expr.pattern,
+                negated=expr.negated,
+                case_insensitive=expr.case_insensitive,
+            )
         case RelativeDateRange(column=column):
             return RelativeDateRange(
                 column=map_nodes(column, fn),

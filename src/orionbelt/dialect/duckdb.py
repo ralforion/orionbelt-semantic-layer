@@ -27,6 +27,8 @@ from orionbelt.models.types import DecimalType, OBMLType
 class DuckDBDialect(Dialect):
     """DuckDB dialect — PostgreSQL-like syntax, ILIKE, UNION ALL BY NAME."""
 
+    like_needs_escape_clause = True
+
     @property
     def name(self) -> str:
         return "duckdb"

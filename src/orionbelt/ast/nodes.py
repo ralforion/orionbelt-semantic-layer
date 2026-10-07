@@ -270,17 +270,23 @@ class RegexMatch:
 
 
 @dataclass(frozen=True)
-class ILikeMatch:
-    """Case-insensitive LIKE predicate. Each dialect renders its native syntax.
+class LikeMatch:
+    """``[NOT] [I]LIKE`` predicate. Each dialect renders its native syntax.
 
-    Postgres / Snowflake / DuckDB / Databricks / ClickHouse use ``ILIKE``;
-    Dremio has only the ``ILIKE(value, pattern)`` function; BigQuery and MySQL
-    have neither and compare ``LOWER`` of both sides.
+    A backslash in *pattern* escapes ``%``, ``_`` and itself, as in Postgres
+    and as OBSQL parses a pattern; each dialect says so in its own terms (see
+    ``Dialect.like_needs_escape_clause``).
+
+    Case-insensitive: Postgres / Snowflake / DuckDB / Databricks / ClickHouse
+    use ``ILIKE``; Dremio has only the ``ILIKE(value, pattern, escape)``
+    function; BigQuery and MySQL have neither and compare ``LOWER`` of both
+    sides.
     """
 
     column: Expr
     pattern: str
     negated: bool = False
+    case_insensitive: bool = False
 
 
 @dataclass(frozen=True)
@@ -353,7 +359,7 @@ Expr = (
     | RawSQL
     | Between
     | RegexMatch
-    | ILikeMatch
+    | LikeMatch
     | RelativeDateRange
     | InTimeZone
     | WindowFunction

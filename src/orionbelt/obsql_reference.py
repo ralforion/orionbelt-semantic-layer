@@ -70,6 +70,9 @@ already at the query grain.
   ``NOT (...)`` around ``IN``, ``BETWEEN``, ``LIKE`` or ``ILIKE`` works too.
 * ``ILIKE`` matches case-insensitively on every backend, also those without
   the operator (BigQuery and MySQL compare ``LOWER`` of both sides).
+* In a ``LIKE`` / ``ILIKE`` pattern a backslash escapes ``%``, ``_`` and itself
+  on every backend (``'a\\_b'`` matches ``a_b`` only). An explicit ``ESCAPE``
+  clause rejects with ``UNSUPPORTED_SQL_FEATURE``.
 * ``BETWEEN SYMMETRIC`` rejects with ``UNSUPPORTED_SQL_FEATURE``: a reversed
   range has no faithful form.
 * References to **measures or metrics** in WHERE auto-route to HAVING.
