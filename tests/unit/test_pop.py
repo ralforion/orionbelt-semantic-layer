@@ -1249,3 +1249,64 @@ metrics:
         ]
         without = [(row[0].isoformat()[:10], row[1]) for row in self._rows(["Total"])]
         assert with_metric == without
+
+
+class TestPopTimeFilterLookBack:
+    """A time filter picks the periods shown; the comparison reads the one before.
+
+    Applied to the source rows, the filter cut the prior period away: the first
+    month shown had no previous month to compare with, and its change was NULL.
+    """
+
+    def _rows(self, where: list[QueryFilter]) -> dict[tuple[str, str], tuple]:
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Occurred Month", "Region"], measures=["Total", "Total MoM"]
+            ),
+            where=where,
+        )
+        model = TestPopFilters()._model()
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE event AS SELECT * FROM (VALUES"
+            " (DATE '2024-01-10', 'EU', 10.0),"
+            " (DATE '2024-02-10', 'EU', 20.0),"
+            " (DATE '2024-02-20', 'US', 5.0),"
+            " (DATE '2024-03-10', 'EU', 50.0)"
+            ") t(occurred, region, amount)"
+        )
+        return {
+            (row[0].isoformat()[:10], row[1]): (row[2], row[3])
+            for row in con.execute(sql).fetchall()
+        }
+
+    def test_the_first_month_shown_compares_with_the_month_before(self) -> None:
+        rows = self._rows(
+            [QueryFilter(field="Occurred Month", op=FilterOperator.GTE, value="2024-02-01")]
+        )
+        assert rows == {
+            ("2024-02-01", "EU"): (Decimal("20.00"), Decimal("10.00")),
+            ("2024-02-01", "US"): (Decimal("5.00"), None),
+            ("2024-03-01", "EU"): (Decimal("50.00"), Decimal("30.00")),
+        }
+
+    def test_a_filter_inside_a_month_still_filters_the_measure(self) -> None:
+        # February's EU sale is on the 10th, so February EU is not shown; March
+        # still compares with the whole of February.
+        rows = self._rows(
+            [QueryFilter(field="Occurred Month", op=FilterOperator.GTE, value="2024-02-15")]
+        )
+        assert rows == {
+            ("2024-02-01", "US"): (Decimal("5.00"), None),
+            ("2024-03-01", "EU"): (Decimal("50.00"), Decimal("30.00")),
+        }
+
+    def test_a_filter_on_another_dimension_still_limits_the_prior_period(self) -> None:
+        rows = self._rows(
+            [
+                QueryFilter(field="Region", op=FilterOperator.EQ, value="US"),
+                QueryFilter(field="Occurred Month", op=FilterOperator.GTE, value="2024-02-01"),
+            ]
+        )
+        assert rows == {("2024-02-01", "US"): (Decimal("5.00"), None)}

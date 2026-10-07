@@ -1,0 +1,28 @@
+last_verified_by: tests/integration/correctness/test_time_filter_lookback.py::test_mom_change_under_a_time_filter
+sql: "WITH \"date_range\" AS (\nSELECT MIN(\"__ob_pop_src\".\"__ob_bucket\") AS min_date,\n       MAX(\"__ob_pop_src\".\"\
+  __ob_bucket\") AS max_date\n  FROM (\n    SELECT date_trunc('month', \"Sales\".\"salesdate\") AS \"__ob_bucket\"\n     \
+  \ FROM \"orionbelt_1\".\"sales\" AS \"Sales\"\n      WHERE \"Sales\".\"salesdate\" >= '2021-03-01' AND \"Sales\".\"salesdate\"\
+  \ < '2021-05-01'\n  ) AS \"__ob_pop_src\"\n),\n\"date_spine\" AS (\nSELECT d::date AS spine_date,\n       CASE WHEN (d +\
+  \ INTERVAL '-1 month')::date >= (SELECT min_date FROM \"date_range\")\n            THEN (d + INTERVAL '-1 month')::date\
+  \ END AS spine_date_prev\nFROM generate_series((SELECT min_date FROM \"date_range\")::timestamp, (SELECT max_date FROM \"\
+  date_range\")::timestamp, INTERVAL '1 month') AS t(d)\n),\n\"pop_base\" AS (\nSELECT \"date_spine\".spine_date AS \"Sales\
+  \ Month\",\n       CAST(SUM(\"__ob_pop_src\".\"Sales__salesamount\") AS DECIMAL(18, 2)) AS \"Total Sales\"\n  FROM \"date_spine\"\
+  \n  LEFT JOIN (\n    SELECT date_trunc('month', \"Sales\".\"salesdate\") AS \"__ob_bucket\",\n           \"Sales\".\"salesamount\"\
+  \ AS \"Sales__salesamount\"\n      FROM \"orionbelt_1\".\"sales\" AS \"Sales\"\n      WHERE \"Sales\".\"salesdate\" >= '2021-03-01'\
+  \ AND \"Sales\".\"salesdate\" < '2021-05-01'\n  ) AS \"__ob_pop_src\"\n    ON \"__ob_pop_src\".\"__ob_bucket\" = \"date_spine\"\
+  .spine_date\n  GROUP BY 1\n),\n\"pop_lookback\" AS (\nSELECT \"__ob_pop_src\".\"__ob_bucket\" AS \"Sales Month\",\n    \
+  \   CAST(SUM(\"__ob_pop_src\".\"Sales__salesamount\") AS DECIMAL(18, 2)) AS \"Total Sales\"\n  FROM (\n    SELECT date_trunc('month',\
+  \ \"Sales\".\"salesdate\") AS \"__ob_bucket\",\n           \"Sales\".\"salesamount\" AS \"Sales__salesamount\"\n      FROM\
+  \ \"orionbelt_1\".\"sales\" AS \"Sales\"\n  ) AS \"__ob_pop_src\"\n  GROUP BY 1\n),\n\"pop_compare\" AS (\nSELECT \"pop_base\"\
+  .\"Sales Month\" AS \"Sales Month\",\n       \"pop_base\".\"Total Sales\" AS \"Total Sales\",\n       \"pop_base\".\"Total\
+  \ Sales\" - pop_prev_0.\"Total Sales\" AS \"Sales MoM Change\"\n  FROM \"pop_base\"\n  LEFT JOIN \"pop_lookback\" AS pop_prev_0\n\
+  \    ON pop_prev_0.\"Sales Month\" = \"pop_base\".\"Sales Month\" + INTERVAL '-1 month'\n)\nSELECT \"Sales Month\" AS \"\
+  Sales Month\", \"Total Sales\" AS \"Total Sales\", CAST(\"Sales MoM Change\" AS DECIMAL(18, 2)) AS \"Sales MoM Change\"\n\
+  FROM \"pop_compare\" AS \"pop_compare\"\n"
+rows:
+- - '2021-03-01'
+  - '302261.62'
+  - '-136811.32'
+- - '2021-04-01'
+  - '645294.79'
+  - '343033.17'

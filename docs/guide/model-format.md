@@ -935,6 +935,9 @@ metrics:
 !!! tip "Partition by dimension"
  A cumulative metric accumulates per group of the query's other selected dimensions: `Country, Order Month, Revenue YTD` gives each country its own year-to-date. Dimensions over the same date column at another grain (`Order Year` next to `Order Month`) do not partition. Add `partitionBy: [Country, ...]` for extra keys; every entry must be a model dimension present in the query's SELECT. See [Trend Analysis](trend-analysis.md#1-partitioned-rolling-windows) for worked examples.
 
+!!! tip "Time filters pick the periods shown"
+ A filter on the time dimension, or on another dimension over the same date column (`Order Year` next to `Order Month`), selects which periods are *shown*; it does not cut what the metric reads. Filtered to March-April, `Revenue YTD` for March still includes January and February, and a running total still starts at the first period with data. The plain measures in the same query respect the filter as usual, also when its boundary falls inside a period. Every other filter (another dimension, a static model filter) still limits the history. Period-over-period metrics follow the same rule: the first period shown compares with the one before it.
+
 ### Period-over-Period Metrics
 
 A **period-over-period metric** compares a measure against a prior time period. The `expression` references the base measure, and the `periodOverPeriod` block configures how to shift time and compute the comparison.

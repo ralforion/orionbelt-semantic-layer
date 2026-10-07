@@ -102,3 +102,16 @@
   handSql:
     refFile: total_sales_by_email_domain.sql
     sortKeys: [Sales Client Email Domain]
+
+- id: 17_ytd_sales_time_filter
+  description: >-
+    Corpus #17 — year-to-date under a time filter. The filter picks the months
+    shown; YTD still reads January and February, so the rows equal the
+    unfiltered query's rows for those months.
+  lastVerifiedBy: tests/integration/correctness/test_time_filter_lookback.py::test_ytd_sales_under_a_time_filter
+
+- id: 18_mom_change_time_filter
+  description: >-
+    Corpus #18 — month-over-month change under a time filter. The first month
+    shown compares with the month before it, which the filter excludes.
+  lastVerifiedBy: tests/integration/correctness/test_time_filter_lookback.py::test_mom_change_under_a_time_filter

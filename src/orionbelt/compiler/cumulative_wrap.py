@@ -16,23 +16,29 @@ the cumulative window functions.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
+    BinaryOp,
     ColumnRef,
     Expr,
     From,
     FunctionCall,
+    Join,
+    JoinType,
     Literal,
     OrderByItem,
     Select,
+    Unnest,
     WindowFrame,
     WindowFunction,
 )
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.time_lookback import lookback_query, null_safe_eq, time_filters
 from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
@@ -234,98 +240,209 @@ def wrap_with_cumulative(
     if not resolved.has_cumulative:
         return ast
 
-    # Find time dimension names used by cumulative metrics
     cumulative_measures: list[ResolvedMeasure] = [m for m in resolved.measures if m.is_cumulative]
 
-    # --- Build base CTE columns from the planner's AST ---
-    # We need to decompose cumulative metrics into their base measure components
-    # in the base CTE, then apply window functions in the outer query.
-    direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
-    cumulative_names = {m.name for m in cumulative_measures}
+    cte_name = "cumulative_base"
+    base_cte = CTE(name=cte_name, query=_base_query(ast, resolved, model, dialect))
+    lookbacks = _lookback_windows(ast, resolved, cumulative_measures, model, dialect, cte_name)
+    order_by = outer_order_by(resolved, model)
 
+    if not lookbacks:
+        outer_columns: list[Expr] = []
+        for dim in resolved.dimensions:
+            outer_columns.append(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
+        for m in resolved.measures:
+            if m.is_cumulative:
+                window_expr = _window_for(m, resolved, model, dialect)
+                window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
+                outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))
+            else:
+                outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
+        return Select(
+            columns=outer_columns,
+            from_=From(source=cte_name, alias=cte_name),
+            order_by=order_by,
+            limit=ast.limit,
+            offset=ast.offset,
+            ctes=[*ast.ctes, base_cte],
+        )
+
+    # A time filter selects the rows shown; the windows read past it. Each
+    # window CTE carries one row per group with the metric's value, and the
+    # rows the query asked for pick theirs up by their dimensions.
+    joined_name = "cumulative_joined"
+    joined_columns: list[Expr] = [
+        AliasedExpr(expr=ColumnRef(table=cte_name, name=d.name), alias=d.name)
+        for d in resolved.dimensions
+    ]
+    window_of = {m.name: name for name, _, metrics in lookbacks for m in metrics}
+    for m in resolved.measures:
+        table = window_of.get(m.name, cte_name)
+        joined_columns.append(AliasedExpr(expr=ColumnRef(table=table, name=m.name), alias=m.name))
+    joins: list[Join | Unnest] = [
+        Join(
+            join_type=JoinType.LEFT,
+            source=name,
+            alias=name,
+            on=_all_of(
+                null_safe_eq(
+                    ColumnRef(table=cte_name, name=d.name), ColumnRef(table=name, name=d.name)
+                )
+                for d in resolved.dimensions
+            ),
+        )
+        for name, _, _ in lookbacks
+    ]
+    joined_cte = CTE(
+        name=joined_name,
+        query=Select(
+            columns=joined_columns,
+            from_=From(source=cte_name, alias=cte_name),
+            joins=joins,
+        ),
+    )
+    outer: list[Expr] = [
+        AliasedExpr(expr=ColumnRef(name=d.name), alias=d.name) for d in resolved.dimensions
+    ]
+    for m in resolved.measures:
+        column: Expr = ColumnRef(name=m.name)
+        if m.is_cumulative:
+            column = _apply_metric_cast(column, m.name, model, dialect)
+        outer.append(AliasedExpr(expr=column, alias=m.name))
+    return Select(
+        columns=outer,
+        from_=From(source=joined_name, alias=joined_name),
+        order_by=order_by,
+        limit=ast.limit,
+        offset=ast.offset,
+        ctes=[
+            *ast.ctes,
+            base_cte,
+            *(cte for _, ctes, _ in lookbacks for cte in ctes),
+            joined_cte,
+        ],
+    )
+
+
+def _base_query(
+    ast: Select,
+    resolved: ResolvedQuery,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+    *,
+    keep_having: bool = True,
+) -> Select:
+    """The planner output re-projected for the windows: each cumulative metric
+    replaced by its base measure, ungrouped by nothing, unordered."""
+    cumulative_names = {m.name for m in resolved.measures if m.is_cumulative}
+    direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
     base_columns: list[Expr] = []
     for col_node in ast.columns:
         alias = _get_alias(col_node)
         if alias and alias in cumulative_names:
             # Replace cumulative metric with its base measure component
-            cum_metric = next(m for m in cumulative_measures if m.name == alias)
+            cum_metric = next(m for m in resolved.measures if m.name == alias)
             comp_name = cum_metric.cumulative_measure
             if comp_name and comp_name not in direct_measure_names:
                 comp = resolved.metric_components.get(comp_name)
-                if comp:
-                    # Only add the component if not already present
-                    already_in_base = any(_get_alias(c) == comp_name for c in base_columns)
-                    if not already_in_base:
-                        base_columns.append(
-                            _component_base_column(
-                                col_node, comp, resolved, model, dialect, wraps_a_cte(ast)
-                            )
+                if comp and not any(_get_alias(c) == comp_name for c in base_columns):
+                    base_columns.append(
+                        _component_base_column(
+                            col_node, comp, resolved, model, dialect, wraps_a_cte(ast)
                         )
+                    )
             # If the base measure is already a direct measure, it's already in the columns
         else:
             base_columns.append(col_node)
-
-    # --- Build base CTE ---
-    base_cte_query = Select(
+    return Select(
         columns=base_columns,
         from_=ast.from_,
         joins=ast.joins,
         where=ast.where,
         group_by=ast.group_by,
-        having=ast.having,
-        order_by=[],
-        limit=None,
-        offset=None,
-        ctes=[],
+        having=ast.having if keep_having else None,
         grouping=ast.grouping,
     )
 
-    cte_name = "cumulative_base"
-    base_cte = CTE(name=cte_name, query=base_cte_query)
 
-    # --- Build outer SELECT ---
-    outer_columns: list[Expr] = []
-
-    # Dimensions: pass-through
-    for dim in resolved.dimensions:
-        outer_columns.append(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
-
-    # Measures and metrics
-    for m in resolved.measures:
-        if m.is_cumulative:
-            # Cumulative metric: build window function
-            assert m.cumulative_time_dimension is not None
-            window_expr: Expr = _build_cumulative_window(
-                m,
-                m.cumulative_time_dimension,
-                dialect,
-                _group_dimensions(resolved, m.cumulative_time_dimension),
-                model,
-            )
-            window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
-            outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))
-        else:
-            # Regular measure or derived metric: pass-through
-            outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
-
-    # --- ORDER BY remapping ---
-    order_by = outer_order_by(resolved, model)
-
-    # --- Assemble final Select ---
-    all_ctes = list(ast.ctes) + [base_cte]
-
-    return Select(
-        columns=outer_columns,
-        from_=From(source=cte_name, alias=cte_name),
-        joins=[],
-        where=None,
-        group_by=[],
-        having=None,
-        order_by=order_by,
-        limit=ast.limit,
-        offset=ast.offset,
-        ctes=all_ctes,
+def _window_for(
+    m: ResolvedMeasure,
+    resolved: ResolvedQuery,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> Expr:
+    assert m.cumulative_time_dimension is not None
+    return _build_cumulative_window(
+        m,
+        m.cumulative_time_dimension,
+        dialect,
+        _group_dimensions(resolved, m.cumulative_time_dimension),
+        model,
     )
+
+
+def _lookback_windows(
+    ast: Select,
+    resolved: ResolvedQuery,
+    cumulative_measures: list[ResolvedMeasure],
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+    base_name: str,
+) -> list[tuple[str, list[CTE], list[ResolvedMeasure]]]:
+    """One window CTE per set of time filters, when any metric has one.
+
+    Returns ``(window CTE name, CTEs to add, metrics it computes)``; empty when
+    no cumulative metric's time dimension is filtered, or the query rolls up
+    (a subtotal row has no single group to look its value up by). Metrics with
+    no time filter get a window CTE over ``base_name`` itself, so every
+    metric is read the same way once one of them has to look back.
+    """
+    if ast.grouping is not None:
+        return []
+    groups: list[tuple[list[Expr], list[ResolvedMeasure]]] = []
+    for m in cumulative_measures:
+        assert m.cumulative_time_dimension is not None
+        predicates = time_filters(resolved, m.cumulative_time_dimension)
+        group = next((g for g in groups if g[0] == predicates), None)
+        if group is None:
+            groups.append((predicates, [m]))
+        else:
+            group[1].append(m)
+    if all(not predicates for predicates, _ in groups):
+        return []
+
+    windows: list[tuple[str, list[CTE], list[ResolvedMeasure]]] = []
+    for index, (predicates, metrics) in enumerate(groups, 1):
+        suffix = "" if index == 1 else f"_{index}"
+        name = f"cumulative_window{suffix}"
+        ctes: list[CTE] = []
+        source = base_name
+        lookback = lookback_query(ast, predicates, f"_lookback{suffix}") if predicates else None
+        if lookback is not None:
+            added, body = lookback
+            source = f"cumulative_lookback{suffix}"
+            # HAVING picks the rows shown, so the history keeps every group.
+            base = _base_query(body, resolved, model, dialect, keep_having=False)
+            ctes += [*added, CTE(name=source, query=base)]
+        columns: list[Expr] = [
+            AliasedExpr(expr=ColumnRef(name=d.name), alias=d.name) for d in resolved.dimensions
+        ]
+        columns += [
+            AliasedExpr(expr=_window_for(m, resolved, model, dialect), alias=m.name)
+            for m in metrics
+        ]
+        ctes.append(
+            CTE(name=name, query=Select(columns=columns, from_=From(source=source, alias=source)))
+        )
+        windows.append((name, ctes, metrics))
+    return windows
+
+
+def _all_of(predicates: Iterable[Expr]) -> Expr | None:
+    result: Expr | None = None
+    for predicate in predicates:
+        result = predicate if result is None else BinaryOp(left=result, op="AND", right=predicate)
+    return result
 
 
 def _apply_measure_cast(

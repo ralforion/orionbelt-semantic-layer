@@ -233,6 +233,7 @@ def resolve_filter(
     # 1. Try dimension name
     col_expr: Expr
     subject_object: str | None = None
+    subject_column = ""
     dim = ctx.model.dimensions.get(qf.field)
     if dim:
         obj_name = dim.view
@@ -242,7 +243,7 @@ def resolve_filter(
         if not _join_expression_objects(resolver, ctx, obj_name, col_name, filter_path, qf.field):
             return None
         col_expr = make_column_expr(ctx.model, obj_name, col_name)
-        subject_object = obj_name
+        subject_object, subject_column = obj_name, col_name
 
     # 2. HAVING: try measure or metric name
     elif is_having and (qf.field in ctx.model.effective_measures or qf.field in ctx.model.metrics):
@@ -279,7 +280,7 @@ def resolve_filter(
         if not _join_expression_objects(resolver, ctx, obj_name, col_name, filter_path, qf.field):
             return None
         col_expr = make_column_expr(ctx.model, obj_name, col_name)
-        subject_object = obj_name
+        subject_object, subject_column = obj_name, col_name
 
     else:
         ctx.errors.append(
@@ -341,10 +342,16 @@ def resolve_filter(
 
     if filter_expr is None:
         return None
+    is_row_filter = not is_having and qf.op not in (FilterOperator.EXISTS, FilterOperator.NONEXISTS)
     return ResolvedFilter(
         expression=filter_expr,
         is_aggregate=is_having,
         referenced_fields=frozenset({qf.field}),
+        subject=(
+            (subject_object, subject_column)
+            if is_row_filter and subject_object is not None
+            else None
+        ),
     )
 
 

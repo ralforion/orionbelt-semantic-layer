@@ -133,7 +133,8 @@ OrionBelt compiles PoP metrics into a 4-CTE structure. Each CTE builds on the pr
 | `date_range` | Discover `MIN`/`MAX` date from fact tables with ALL query filters pushed down |
 | `date_spine` | Generate date series with `spine_date` and `spine_date_prev` columns |
 | `pop_base` | Aggregate measures using the spine as `FROM`, with facts LEFT JOINed |
-| `pop_compare` | Self-join `pop_base` via `spine_date_prev` for period comparison |
+| `pop_lookback` | Only when the query filters its time dimension: `pop_base`'s aggregation without the time filter, one row per period with data |
+| `pop_compare` | Join `pop_base` to the prior period (`pop_base` via `spine_date_prev`, or `pop_lookback` by date) for the comparison |
 
 ### Filter Push-Down
 
@@ -141,6 +142,23 @@ OrionBelt compiles PoP metrics into a 4-CTE structure. Each CTE builds on the pr
     ALL query `WHERE` filters -- both time filters and dimension filters -- are pushed into the `date_range` CTE. This means that dimension filters like `Country = 'Germany'` correctly narrow the date range. If sales in Germany only started in 2024, the spine will not extend further back than that.
 
 This design ensures the date spine is scoped to the actual data range relevant to the query, avoiding unnecessary NULL rows for periods with no matching data.
+
+### Time filters pick the periods shown
+
+A filter on the time dimension says which periods to *show*, not which periods
+the comparison may *read*. Filtered to March-April, March still compares with
+February:
+
+| Query | March `Sales MoM Change` |
+|---|---|
+| unfiltered | -136,811.32 |
+| `Sales Month >= 2021-03-01 AND < 2021-05-01` | -136,811.32 (NULL before this was fixed: the filter removed February) |
+
+A filter counts as a time filter when it is on the time dimension or on another
+dimension (or qualified column) over the same date column, such as `Sales Year`
+next to `Sales Month`. The shown periods and the plain measures still respect it,
+including a boundary inside a period. Every other filter - another dimension, a
+model's static filters - still limits the prior period too.
 
 ### Generated SQL Example
 

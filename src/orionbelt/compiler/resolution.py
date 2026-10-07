@@ -629,6 +629,11 @@ class ResolvedFilter:
     expression: Expr
     is_aggregate: bool = False
     referenced_fields: frozenset[str] = field(default_factory=frozenset)
+    #: The ``(data object, column)`` a query ``where`` filter tests, when its
+    #: subject is a dimension or a qualified column. ``None`` for static model
+    #: filters, ``having`` and ``exists``: those are never a time filter that a
+    #: cumulative or period-over-period look-back may read past.
+    subject: tuple[str, str] | None = None
 
 
 @dataclass
