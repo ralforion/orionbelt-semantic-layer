@@ -43,10 +43,15 @@ from orionbelt.ast.nodes import (
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import null_safe_eq
-from orionbelt.compiler.type_resolver import resolve_metric_data_type
+from orionbelt.compiler.type_resolver import (
+    exact_reaggregate_avg,
+    resolve_measure_data_type,
+    resolve_metric_data_type,
+)
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import DataObject, ReaggregateAggType, SemanticModel
+from orionbelt.models.types import OBMLType
 
 _BASE = "reagg_base"
 
@@ -94,6 +99,9 @@ def _stage_one(
     scan, sub_resolved = plan_in_own_right(sub_query, model, dialect, qualify_table)
     # Its warnings are about this query - a fan trap in the scan is one here.
     resolved.warnings.extend(sub_resolved.warnings)
+    # So are its tables: a ``per`` dimension can join one the query does not,
+    # and the result cache has to see it change.
+    resolved.subquery_objects.update(sub_resolved.required_objects, sub_resolved.subquery_objects)
     return scan
 
 
@@ -110,12 +118,19 @@ def _stage_two(
     ]
     for m in metrics:
         assert m.reaggregate_measure is not None and m.reaggregate_aggregation is not None
-        expr: Expr = FunctionCall(
-            name=_FUNCTIONS[m.reaggregate_aggregation],
-            args=[ColumnRef(name=m.reaggregate_measure, table=inner)],
-        )
+        arg = ColumnRef(name=m.reaggregate_measure, table=inner)
         metric = model.metrics.get(m.name)
-        target = resolve_metric_data_type(metric, model.settings) if metric else None
+        exact: tuple[Expr, OBMLType] | None = None
+        target: OBMLType | None
+        if metric is not None and m.reaggregate_aggregation is ReaggregateAggType.AVG:
+            base = model.effective_measures.get(m.reaggregate_measure)
+            stage_one_type = resolve_measure_data_type(base, model.settings) if base else None
+            exact = exact_reaggregate_avg(metric, stage_one_type, model.settings, dialect, arg)
+        if exact is not None:
+            expr, target = exact
+        else:
+            expr = FunctionCall(name=_FUNCTIONS[m.reaggregate_aggregation], args=[arg])
+            target = resolve_metric_data_type(metric, model.settings) if metric else None
         if target is not None:
             expr = dialect.cast_to_obml_type(expr, target)
         columns.append(AliasedExpr(expr=expr, alias=m.name))

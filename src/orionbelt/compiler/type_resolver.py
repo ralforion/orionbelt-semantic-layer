@@ -233,6 +233,46 @@ def rewrite_exact_integer_avg(
     return None
 
 
+def exact_reaggregate_avg(
+    metric: Metric,
+    stage_one_type: OBMLType | None,
+    settings: ModelSettings | None,
+    dialect: Dialect,
+    arg: Expr,
+) -> tuple[Expr, OBMLType] | None:
+    """An exact second-stage ``AVG`` of integer values, and the type to cast it to.
+
+    A reaggregate metric averages its measure's per-group values. When those are
+    integers - a count, an integer sum - the engines with a floating-point
+    ``AVG`` round them exactly as they would an ``avg`` measure's integer column,
+    so the same route applies: :meth:`Dialect.exact_integer_avg` where the engine
+    needs a rewrite, the plain aggregate where it is already exact, and in both
+    cases a type wide enough for a 64-bit integer part unless the metric declares
+    one. ``None`` leaves the plain ``AVG`` and the metric's own type.
+    """
+    if not (isinstance(stage_one_type, SimpleType) and stage_one_type.name in _INTEGER_NAMES):
+        return None
+    declared = parse_data_type(metric.data_type) if metric.data_type else None
+    if declared is not None and not isinstance(declared, DecimalType):
+        return None
+    if declared is not None:
+        target: OBMLType = declared
+    else:
+        default = _get_default(settings)
+        if not isinstance(default, DecimalType):
+            return None
+        target = _widen_to_integer_range(default)
+    exact = dialect.exact_integer_avg(arg, target)
+    if exact is not None:
+        return exact, target
+    if dialect.avg_over_integers_is_exact:
+        return FunctionCall(name="AVG", args=[arg]), target
+    return None
+
+
+_INTEGER_NAMES = frozenset({"bigint", "integer"})
+
+
 def apply_exact_integer_sum(
     expr: Expr,
     measure: Measure,

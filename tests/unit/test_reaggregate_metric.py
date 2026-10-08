@@ -440,6 +440,90 @@ class TestCompile:
         assert "REAGGREGATE_COMBINATION_NOT_SUPPORTED" in _refusal(model, query)
 
 
+JOINED_MODEL_YAML = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: ORDERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Country: {code: COUNTRY, abstractType: string}
+      Amount: {code: AMOUNT, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Customer ID]
+        columnsTo: [Customer ID]
+  Customers:
+    code: CUSTOMERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Segment: {code: SEGMENT, abstractType: string}
+  Weather:
+    code: WEATHER
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Station: {code: STATION, abstractType: string}
+dimensions:
+  Country: {dataObject: Orders, column: Country, resultType: string}
+  Segment: {dataObject: Customers, column: Segment, resultType: string}
+  Station: {dataObject: Weather, column: Station, resultType: string}
+measures:
+  Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+metrics:
+  Avg Revenue per Segment:
+    type: reaggregate
+    measure: Revenue
+    per: [Segment]
+    aggregation: avg
+  Avg Revenue per Station:
+    type: reaggregate
+    measure: Revenue
+    per: [Station]
+    aggregation: avg
+"""
+
+
+@pytest.fixture(scope="module")
+def joined_model() -> SemanticModel:
+    resolved, result = _resolve(JOINED_MODEL_YAML)
+    assert result.valid, result.errors
+    return resolved
+
+
+class TestPerDimensionObjects:
+    """A ``per`` dimension's table counts wherever the query's own tables do."""
+
+    def test_cache_sees_the_table_per_joins(self, joined_model: SemanticModel) -> None:
+        result = _compile(
+            joined_model,
+            QueryObject(
+                select=QuerySelect(dimensions=["Country"], measures=["Avg Revenue per Segment"])
+            ),
+        )
+        assert "CUSTOMERS" in result.sql
+        assert set(result.physical_tables) == {
+            "WAREHOUSE.PUBLIC.ORDERS",
+            "WAREHOUSE.PUBLIC.CUSTOMERS",
+        }
+
+    @pytest.mark.parametrize("anchors", [[], ["Country"]])
+    def test_unreachable_per_not_offered(
+        self, joined_model: SemanticModel, anchors: list[str]
+    ) -> None:
+        result = resolve_composables_for_anchors(joined_model, anchors)
+        offered = set(result.metrics) | set(result.cfl_metrics)
+        assert "Avg Revenue per Segment" in offered
+        assert "Avg Revenue per Station" not in offered
+
+
 class TestJsonSchema:
     def _validate(self, metric: dict[str, Any]) -> list[str]:
         doc = {
