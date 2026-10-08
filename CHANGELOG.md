@@ -4,6 +4,30 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.34.0] - 2026-10-08
+
+### Added
+
+- **Cumulative metrics without their time dimension, as of one period.** A query that does not select a cumulative metric's `timeDimension` now evaluates it per group of its other dimensions, with the value that period's row would show with the time dimension selected: `Region, YTD Sales` gives each region its year-to-date. The new query field `asOf` names the date, read at the time dimension's grain (a week that began in January is January's). Without it, the period is the latest one with data under the query's filters, so a filter `Sales Month < 2025-07-01` evaluates year-to-date as of June, still read from January. A period without data of its own still reads the periods before it; a group without data in the metric's range gets NULL, counts included. The SQL surfaces (OBSQL, Flight SQL, pgwire) pick the period with a time filter's upper bound. Before, such a query failed with `CUMULATIVE_TIME_DIMENSION_NOT_IN_SELECT`, which now only remains for `grouping: rollup` / `cube` and for another dimension over the same date column (#527, #529).
+- **`NON_ADDITIVE_CUMULATIVE_SUM` warning.** A cumulative metric aggregates its measure's value per period, so a `sum` is the measure over the range only when the measure is a sum or a count. Summed monthly distinct customers count a customer once per month. Such a metric now loads with a warning when its measure aggregates with anything else or aggregates distinct values; `avg`, `min` and `max` over the values per period do not warn (#528).
+- **`ilike` / `notilike` filter operators.** Case-insensitive pattern matching in query filters, OBSQL (`[NOT] ILIKE`, refused before), rule conditions, static model filters and measure filters, rendered per dialect from an executed probe of all eight engines (#522).
+- **`SELECT *` on the model table.** Flight SQL and pgwire both read `SELECT * FROM <model>.model` as one semantic query over every announced column, keeping `WHERE`, `ORDER BY` and `LIMIT`; Flight answered with a metadata listing before, which broke DuckDB's `ATTACH ... (TYPE adbc)`. Both surfaces announce the same columns, synthesized counts included, and `COUNT(*)` names the count measures (#524).
+
+### Fixed
+
+- **Cumulative metrics accumulate per group.** With another dimension selected, a running total, rolling window or grain-to-date ran across groups: Sweden's January year-to-date included Mexico's. The query's other dimensions now partition the window (#520).
+- **A time filter no longer cuts the cumulative and period-over-period look-back.** Filtered to March-April, `YTD Sales` for March started in March and `Sales MoM Change` had no February to compare with. A filter on the time dimension's column now picks the periods shown, and the metrics read the history before them; other filters still limit it (#525).
+- **Rolling windows count calendar periods, not rows.** `window: 3` over months with a gap reached back past the gap. Each period now reads the periods at most N-1 of the time dimension's grain before it, on every engine, including BigQuery `TIMESTAMP` columns and rows without a date (#526).
+- **OBSQL `NOT LIKE` is no longer inverted.** `NOT LIKE 'M%'` returned only the matching rows, and `ILIKE` matched case-sensitively; `BETWEEN`, `NOT BETWEEN` and `NOT IN` are now translated instead of refused (#521). A plain `ORDER BY` puts NULLs last, as Postgres does, also through Dremio federation (#514).
+- **pgwire works with Apache Superset, SQLAlchemy 2.x, psycopg 3 and pgjdbc.** Catalog probes for connect and reflection are answered (#509, #512); parameterised statements are described and binary results honoured for every announced type, so DBeaver no longer fails on a reused prepared statement (#513, #511); binary date, time, numeric and UUID parameters decode, decimal literals stay exact, and temp-table writes answer with Postgres command tags (#516).
+- **The DuckDB `adbc_scanner` recipes use its new `ATTACH` API**, after the community build replaced `adbc_connect` (#523).
+- **UI "Jump to" files rules and examples under their own sections** instead of under `metrics` (#517).
+- **The demo calendar runs through 2026-01-31** (#515).
+
+### Changed
+
+- **Dependencies**: duckdb 1.5.6 (the `adbc_scanner` tests now close their connections explicitly, which avoided a deadlock), fastapi 0.142.2, sqlglot 30.21.0, snowflake-connector-python 4.8.0, sqlalchemy 2.1.3, cryptography 50.0.2 (#518, #519).
+
 ## [2.33.1] - 2026-10-02
 
 ### Security
