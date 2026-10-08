@@ -1127,6 +1127,25 @@ class Measure(BaseModel):
         return self
 
 
+#: The ``Metric`` fields a reaggregate metric may set; any other is refused.
+_REAGGREGATE_FIELDS = frozenset(
+    {
+        "name",
+        "type",
+        "measure",
+        "per",
+        "aggregation",
+        "data_type",
+        "description",
+        "format",
+        "owner",
+        "synonyms",
+        "custom_extensions",
+        "external_concept_mappings",
+    }
+)
+
+
 class Metric(BaseModel):
     """A metric: derived expression, cumulative window, or period-over-period comparison.
 
@@ -1269,21 +1288,13 @@ class Metric(BaseModel):
             raise ValueError("Reaggregate metric 'per' entries must be unique")
         if self.aggregation is None:
             raise ValueError("Reaggregate metrics require 'aggregation'")
-        foreign = [
-            alias
-            for alias, present in (
-                ("expression", self.expression is not None),
-                ("timeDimension", self.time_dimension is not None),
-                ("window", self.window is not None),
-                ("grainToDate", self.grain_to_date is not None),
-                ("partitionBy", bool(self.partition_by)),
-                ("periodOverPeriod", self.period_over_period is not None),
-                ("windowFunction", self.window_function is not None),
-                ("offset", self.offset is not None),
-                ("buckets", self.buckets is not None),
-            )
-            if present
-        ]
+        # Checked against what was supplied, not against values: a default such
+        # as cumulativeType 'sum' is fine, an explicit one is a setting that
+        # would have no effect.
+        foreign = sorted(
+            Metric.model_fields[field].alias or field
+            for field in self.model_fields_set - _REAGGREGATE_FIELDS
+        )
         if foreign:
             raise ValueError(f"Reaggregate metrics must not have {', '.join(foreign)}")
 

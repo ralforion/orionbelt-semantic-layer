@@ -21,7 +21,13 @@ from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.errors import ValidationResult
 from orionbelt.models.query import QueryObject, QuerySelect
-from orionbelt.models.semantic import Metric, MetricType, ReaggregateAggType, SemanticModel
+from orionbelt.models.semantic import (
+    _REAGGREGATE_FIELDS,
+    Metric,
+    MetricType,
+    ReaggregateAggType,
+    SemanticModel,
+)
 from orionbelt.obsl.exporter import export_obsl
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
@@ -185,6 +191,30 @@ class TestMetricValidation:
         with pytest.raises(ValidationError, match=message):
             self._metric(**override)
 
+    @pytest.mark.parametrize(
+        ("override", "alias"),
+        [
+            ({"cumulative_type": "sum"}, "cumulativeType"),
+            ({"order_direction": "desc"}, "orderDirection"),
+            ({"default_value": 0}, "defaultValue"),
+        ],
+    )
+    def test_explicit_settings_of_other_types_refused(
+        self, override: dict[str, Any], alias: str
+    ) -> None:
+        # Refused even when the value equals the default: it was written down
+        # and has no effect on a reaggregate metric.
+        with pytest.raises(ValidationError, match=f"must not have {alias}"):
+            self._metric(**override)
+
+    def test_defaults_of_other_types_are_not_refused(self) -> None:
+        met = self._metric()
+        assert met.cumulative_type.value == "sum"
+        assert met.order_direction == "desc"
+
+    def test_allowlist_names_real_fields(self) -> None:
+        assert _REAGGREGATE_FIELDS.issubset(Metric.model_fields)
+
     def test_per_only_on_reaggregate(self) -> None:
         with pytest.raises(ValidationError, match="only valid on reaggregate"):
             Metric(name="D", expression="{[Revenue]}", per=["Customer"])
@@ -230,6 +260,21 @@ class TestReferences:
             (
                 "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
                 "partitionBy: [Country]",
+                "METRIC_PARSE_ERROR",
+            ),
+            (
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+                "cumulativeType: sum",
+                "METRIC_PARSE_ERROR",
+            ),
+            (
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+                "orderDirection: asc",
+                "METRIC_PARSE_ERROR",
+            ),
+            (
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+                "defaultValue: 0",
                 "METRIC_PARSE_ERROR",
             ),
         ],
