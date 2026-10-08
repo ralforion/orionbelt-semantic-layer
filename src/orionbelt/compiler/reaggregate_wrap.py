@@ -45,7 +45,7 @@ from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import null_safe_eq
 from orionbelt.compiler.type_resolver import (
     exact_reaggregate_avg,
-    resolve_measure_data_type,
+    measure_yields_integers,
     resolve_metric_data_type,
 )
 from orionbelt.dialect.base import Dialect
@@ -124,8 +124,10 @@ def _stage_two(
         target: OBMLType | None
         if metric is not None and m.reaggregate_aggregation is ReaggregateAggType.AVG:
             base = model.effective_measures.get(m.reaggregate_measure)
-            stage_one_type = resolve_measure_data_type(base, model.settings) if base else None
-            exact = exact_reaggregate_avg(metric, stage_one_type, model.settings, dialect, arg)
+            integer_values = base is not None and measure_yields_integers(
+                base, model.settings, model
+            )
+            exact = exact_reaggregate_avg(metric, integer_values, model.settings, dialect, arg)
         if exact is not None:
             expr, target = exact
         else:

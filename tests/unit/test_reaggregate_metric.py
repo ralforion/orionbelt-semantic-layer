@@ -20,10 +20,12 @@ from rdflib.namespace import RDF
 from orionbelt.compiler.composability import resolve_composables_for_anchors
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.compiler.resolution import ResolutionError
+from orionbelt.compiler.type_resolver import measure_yields_integers
 from orionbelt.models.errors import ValidationResult
 from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import (
     _REAGGREGATE_FIELDS,
+    Measure,
     Metric,
     MetricType,
     ReaggregateAggType,
@@ -522,6 +524,64 @@ class TestPerDimensionObjects:
         offered = set(result.metrics) | set(result.cfl_metrics)
         assert "Avg Revenue per Segment" in offered
         assert "Avg Revenue per Station" not in offered
+
+
+_TYPED_MODEL_YAML = """\
+version: 1.0
+dataObjects:
+  T:
+    code: T
+    database: D
+    schema: S
+    columns:
+      Units: {code: UNITS, abstractType: int}
+      Price: {code: PRICE, abstractType: float}
+"""
+
+
+@pytest.fixture(scope="module")
+def typed_model() -> SemanticModel:
+    resolved, result = _resolve(_TYPED_MODEL_YAML)
+    assert result.valid, result.errors
+    return resolved
+
+
+class TestMeasureYieldsIntegers:
+    """Which first-stage values take the exact-integer second-stage AVG."""
+
+    @pytest.mark.parametrize(
+        ("fields", "expected"),
+        [
+            ({"columns": [{"dataObject": "T", "column": "Units"}], "aggregation": "count"}, True),
+            (
+                {
+                    "columns": [{"dataObject": "T", "column": "Units"}],
+                    "aggregation": "sum",
+                    "resultType": "int",
+                },
+                True,
+            ),
+            ({"columns": [{"dataObject": "T", "column": "Units"}], "aggregation": "max"}, True),
+            ({"columns": [{"dataObject": "T", "column": "Units"}], "aggregation": "mode"}, True),
+            ({"columns": [{"dataObject": "T", "column": "Price"}], "aggregation": "max"}, False),
+            ({"columns": [{"dataObject": "T", "column": "Units"}], "aggregation": "median"}, False),
+            (
+                {
+                    "columns": [{"dataObject": "T", "column": "Units"}],
+                    "aggregation": "min",
+                    "defaultValue": 0.5,
+                },
+                False,
+            ),
+            ({"expression": "{[T].[Units]} * 2", "aggregation": "max", "resultType": "int"}, True),
+            ({"expression": "{[T].[Units]} * 2", "aggregation": "max"}, False),
+        ],
+    )
+    def test_answer(
+        self, typed_model: SemanticModel, fields: dict[str, Any], expected: bool
+    ) -> None:
+        measure = Measure.model_validate({"name": "M", **fields})
+        assert measure_yields_integers(measure, typed_model.settings, typed_model) is expected
 
 
 class TestJsonSchema:

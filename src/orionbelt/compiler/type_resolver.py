@@ -235,7 +235,7 @@ def rewrite_exact_integer_avg(
 
 def exact_reaggregate_avg(
     metric: Metric,
-    stage_one_type: OBMLType | None,
+    integer_values: bool,
     settings: ModelSettings | None,
     dialect: Dialect,
     arg: Expr,
@@ -249,8 +249,10 @@ def exact_reaggregate_avg(
     needs a rewrite, the plain aggregate where it is already exact, and in both
     cases a type wide enough for a 64-bit integer part unless the metric declares
     one. ``None`` leaves the plain ``AVG`` and the metric's own type.
+
+    *integer_values* is :func:`measure_yields_integers` for the base measure.
     """
-    if not (isinstance(stage_one_type, SimpleType) and stage_one_type.name in _INTEGER_NAMES):
+    if not integer_values:
         return None
     declared = parse_data_type(metric.data_type) if metric.data_type else None
     if declared is not None and not isinstance(declared, DecimalType):
@@ -271,6 +273,42 @@ def exact_reaggregate_avg(
 
 
 _INTEGER_NAMES = frozenset({"bigint", "integer"})
+
+#: Aggregates that answer one of their input values, so an integer column gives
+#: an integer. ``MEDIAN`` is absent: it interpolates between two values.
+_VALUE_PRESERVING_AGGREGATIONS = frozenset({"MIN", "MAX", "ANY_VALUE", "MODE"})
+
+
+def measure_yields_integers(
+    measure: Measure, settings: ModelSettings | None, model: SemanticModel | None
+) -> bool:
+    """Whether every value of *measure* is an integer.
+
+    Its resolved type says so for a count or an integer sum. A value-preserving
+    aggregate - ``MIN``, ``MAX`` - resolves to no type at all, meaning "no
+    cast", and keeps its input's: an integer when every column it reads is
+    declared ``int``, or when an ``expression`` measure declares ``resultType:
+    int``. A ``defaultValue`` that is not a whole number written as one makes the
+    value something else, as in :func:`measure_source_is_exact`.
+    """
+    resolved = resolve_measure_data_type(measure, settings)
+    if resolved is not None:
+        return isinstance(resolved, SimpleType) and resolved.name in _INTEGER_NAMES
+    if measure.aggregation.upper() not in _VALUE_PRESERVING_AGGREGATIONS:
+        return False
+    default = measure.default_value
+    if default is not None and (isinstance(default, bool) or not isinstance(default, int)):
+        return False
+    if measure.expression or not measure.columns:
+        return measure.result_type is DataType.INT
+    if model is None:
+        return False
+    for ref in measure.columns:
+        obj = model.data_objects.get(ref.view or "")
+        column = obj.columns.get(ref.column) if obj and ref.column else None
+        if column is None or column.abstract_type is not DataType.INT:
+            return False
+    return True
 
 
 def apply_exact_integer_sum(

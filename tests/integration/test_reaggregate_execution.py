@@ -190,7 +190,10 @@ def test_order_by_names_the_metric_asked_for(
     assert [r["Country"] for r in rows] == [first]
 
 
-INTEGER_MODEL_YAML = """\
+_INTEGER_AGGREGATIONS = ["sum", "min", "max", "any_value", "mode"]
+
+INTEGER_MODEL_YAML = (
+    """\
 version: 1.0
 dataObjects:
   Shipments:
@@ -202,21 +205,30 @@ dataObjects:
 dimensions:
   Customer: {dataObject: Shipments, column: Customer, resultType: string}
 measures:
-  Units:
-    columns: [{dataObject: Shipments, column: Units}]
+"""
+    + "".join(
+        f"""  Units {agg}:
+    columns: [{{dataObject: Shipments, column: Units}}]
     resultType: int
-    aggregation: sum
-metrics:
-  Avg Units per Customer:
+    aggregation: {agg}
+"""
+        for agg in _INTEGER_AGGREGATIONS
+    )
+    + "metrics:\n"
+    + "".join(
+        f"""  Avg Units {agg}:
     type: reaggregate
-    measure: Units
+    measure: Units {agg}
     per: [Customer]
     aggregation: avg
 """
+        for agg in _INTEGER_AGGREGATIONS
+    )
+)
 
 
-def test_integer_average_is_exact(conn: Any) -> None:
-    """Per-customer integer totals past 2^53 average exactly, as an avg measure does."""
+@pytest.fixture(scope="module")
+def integer_model(conn: Any) -> SemanticModel:
     raw, source_map = TrackedLoader().load_string(INTEGER_MODEL_YAML)
     model, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
@@ -225,5 +237,16 @@ def test_integer_average_is_exact(conn: Any) -> None:
         'INSERT INTO "PUBLIC"."SHIPMENTS" VALUES (?, ?)',
         [("a", 9007199254740991), ("b", 9007199254740990)],
     )
-    rows = _run(model, conn, QueryObject(select=QuerySelect(measures=["Avg Units per Customer"])))
-    assert rows == [{"Avg Units per Customer": Decimal("9007199254740990.50")}]
+    return model
+
+
+@pytest.mark.parametrize("agg", _INTEGER_AGGREGATIONS)
+def test_integer_average_is_exact(integer_model: SemanticModel, conn: Any, agg: str) -> None:
+    """Per-customer integer values past 2^53 average exactly, as an avg measure does.
+
+    Each customer has one row, so every first-stage aggregate answers that row's
+    value; a floating-point AVG answers 9007199254740989.44.
+    """
+    metric = f"Avg Units {agg}"
+    rows = _run(integer_model, conn, QueryObject(select=QuerySelect(measures=[metric])))
+    assert rows == [{metric: Decimal("9007199254740990.50")}]
