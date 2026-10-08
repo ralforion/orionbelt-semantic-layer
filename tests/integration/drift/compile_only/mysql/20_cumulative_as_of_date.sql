@@ -15,9 +15,9 @@ LEFT JOIN `orionbelt_1`.`regions` AS `Regions` ON `Countries`.`region` = `Region
 GROUP BY `Regions`.`regionname`, CAST(DATE_FORMAT(`Sales`.`salesdate`, '%Y-%m-01') AS DATE)
 ),
 `cumulative_as_of` AS (
-SELECT `cumulative_as_of_periods`.`Sales Region Name` AS `Sales Region Name`, SUM(CASE WHEN TIMESTAMPDIFF(YEAR, CAST(DATE_FORMAT(`cumulative_as_of_periods`.`Sales Month`, '%Y-01-01') AS DATE), CAST(DATE_FORMAT(CAST(CAST(DATE_FORMAT(CAST('2021-03-18' AS DATE), '%Y-%m-01') AS DATE) AS DATE), '%Y-01-01') AS DATE)) = 0 THEN `cumulative_as_of_periods`.`Total Sales` END) AS `YTD Sales`, SUM(`cumulative_as_of_periods`.`Total Sales`) AS `Cumulative Sales`
+SELECT `cumulative_as_of_periods`.`Sales Region Name` AS `Sales Region Name`, SUM(CASE WHEN TIMESTAMPDIFF(YEAR, CAST(DATE_FORMAT(`cumulative_as_of_periods`.`Sales Month`, '%Y-01-01') AS DATE), CAST(DATE_FORMAT(CAST(CAST(DATE_FORMAT(CAST('2022-03-18' AS DATE), '%Y-%m-01') AS DATE) AS DATE), '%Y-01-01') AS DATE)) = 0 THEN `cumulative_as_of_periods`.`Total Sales` END) AS `YTD Sales`, SUM(`cumulative_as_of_periods`.`Total Sales`) AS `Cumulative Sales`
 FROM `cumulative_as_of_periods` AS `cumulative_as_of_periods`
-WHERE TIMESTAMPDIFF(MONTH, CAST(DATE_FORMAT(`cumulative_as_of_periods`.`Sales Month`, '%Y-%m-01') AS DATE), CAST(DATE_FORMAT(CAST(CAST(DATE_FORMAT(CAST('2021-03-18' AS DATE), '%Y-%m-01') AS DATE) AS DATE), '%Y-%m-01') AS DATE)) >= 0
+WHERE TIMESTAMPDIFF(MONTH, CAST(DATE_FORMAT(`cumulative_as_of_periods`.`Sales Month`, '%Y-%m-01') AS DATE), CAST(DATE_FORMAT(CAST(CAST(DATE_FORMAT(CAST('2022-03-18' AS DATE), '%Y-%m-01') AS DATE) AS DATE), '%Y-%m-01') AS DATE)) >= 0
 GROUP BY `cumulative_as_of_periods`.`Sales Region Name`
 ),
 `cumulative_as_of_periods_2` AS (
@@ -29,9 +29,9 @@ LEFT JOIN `orionbelt_1`.`regions` AS `Regions` ON `Countries`.`region` = `Region
 GROUP BY `Regions`.`regionname`, CAST(DATE_FORMAT(`Sales`.`salesdate`, '%Y-%m-%d') AS DATE)
 ),
 `cumulative_as_of_2` AS (
-SELECT `cumulative_as_of_periods_2`.`Sales Region Name` AS `Sales Region Name`, SUM(CASE WHEN TIMESTAMPDIFF(MONTH, CAST(DATE_FORMAT(`cumulative_as_of_periods_2`.`Sales Date`, '%Y-%m-01') AS DATE), CAST(DATE_FORMAT(CAST('2021-03-18' AS DATE), '%Y-%m-01') AS DATE)) = 0 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `MTD Sales`, AVG(CASE WHEN TIMESTAMPDIFF(DAY, CAST(DATE_FORMAT(`cumulative_as_of_periods_2`.`Sales Date`, '%Y-%m-%d') AS DATE), CAST(DATE_FORMAT(CAST('2021-03-18' AS DATE), '%Y-%m-%d') AS DATE)) <= 29 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `Rolling 30 Day Sales`, MAX(CASE WHEN TIMESTAMPDIFF(DAY, CAST(DATE_FORMAT(`cumulative_as_of_periods_2`.`Sales Date`, '%Y-%m-%d') AS DATE), CAST(DATE_FORMAT(CAST('2021-03-18' AS DATE), '%Y-%m-%d') AS DATE)) <= 29 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `Peak Daily Sales 30D`
+SELECT `cumulative_as_of_periods_2`.`Sales Region Name` AS `Sales Region Name`, SUM(CASE WHEN TIMESTAMPDIFF(MONTH, CAST(DATE_FORMAT(`cumulative_as_of_periods_2`.`Sales Date`, '%Y-%m-01') AS DATE), CAST(DATE_FORMAT(CAST('2022-03-18' AS DATE), '%Y-%m-01') AS DATE)) = 0 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `MTD Sales`, AVG(CASE WHEN TIMESTAMPDIFF(DAY, CAST(DATE_FORMAT(`cumulative_as_of_periods_2`.`Sales Date`, '%Y-%m-%d') AS DATE), CAST(DATE_FORMAT(CAST('2022-03-18' AS DATE), '%Y-%m-%d') AS DATE)) <= 29 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `Rolling 30 Day Sales`, MAX(CASE WHEN TIMESTAMPDIFF(DAY, CAST(DATE_FORMAT(`cumulative_as_of_periods_2`.`Sales Date`, '%Y-%m-%d') AS DATE), CAST(DATE_FORMAT(CAST('2022-03-18' AS DATE), '%Y-%m-%d') AS DATE)) <= 29 THEN `cumulative_as_of_periods_2`.`Total Sales` END) AS `Peak Daily Sales 30D`
 FROM `cumulative_as_of_periods_2` AS `cumulative_as_of_periods_2`
-WHERE TIMESTAMPDIFF(DAY, CAST(DATE_FORMAT(`cumulative_as_of_periods_2`.`Sales Date`, '%Y-%m-%d') AS DATE), CAST(DATE_FORMAT(CAST('2021-03-18' AS DATE), '%Y-%m-%d') AS DATE)) >= 0
+WHERE TIMESTAMPDIFF(DAY, CAST(DATE_FORMAT(`cumulative_as_of_periods_2`.`Sales Date`, '%Y-%m-%d') AS DATE), CAST(DATE_FORMAT(CAST('2022-03-18' AS DATE), '%Y-%m-%d') AS DATE)) >= 0
 GROUP BY `cumulative_as_of_periods_2`.`Sales Region Name`
 ),
 `cumulative_joined` AS (

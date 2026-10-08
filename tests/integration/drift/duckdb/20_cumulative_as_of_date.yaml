@@ -35,12 +35,12 @@ sql: 'WITH "cumulative_base" AS (
   "cumulative_as_of" AS (
 
   SELECT "cumulative_as_of_periods"."Sales Region Name" AS "Sales Region Name", SUM(CASE WHEN DATE_DIFF(''year'', "cumulative_as_of_periods"."Sales
-  Month", CAST(DATE_TRUNC(''month'', CAST(''2021-03-18'' AS DATE)) AS DATE)) = 0 THEN "cumulative_as_of_periods"."Total Sales"
+  Month", CAST(DATE_TRUNC(''month'', CAST(''2022-03-18'' AS DATE)) AS DATE)) = 0 THEN "cumulative_as_of_periods"."Total Sales"
   END) AS "YTD Sales", SUM("cumulative_as_of_periods"."Total Sales") AS "Cumulative Sales"
 
   FROM "cumulative_as_of_periods" AS "cumulative_as_of_periods"
 
-  WHERE DATE_DIFF(''month'', "cumulative_as_of_periods"."Sales Month", CAST(DATE_TRUNC(''month'', CAST(''2021-03-18'' AS DATE))
+  WHERE DATE_DIFF(''month'', "cumulative_as_of_periods"."Sales Month", CAST(DATE_TRUNC(''month'', CAST(''2022-03-18'' AS DATE))
   AS DATE)) >= 0
 
   GROUP BY ALL
@@ -67,14 +67,14 @@ sql: 'WITH "cumulative_base" AS (
   "cumulative_as_of_2" AS (
 
   SELECT "cumulative_as_of_periods_2"."Sales Region Name" AS "Sales Region Name", SUM(CASE WHEN DATE_DIFF(''month'', "cumulative_as_of_periods_2"."Sales
-  Date", CAST(''2021-03-18'' AS DATE)) = 0 THEN "cumulative_as_of_periods_2"."Total Sales" END) AS "MTD Sales", AVG(CASE WHEN
-  DATE_DIFF(''day'', "cumulative_as_of_periods_2"."Sales Date", CAST(''2021-03-18'' AS DATE)) <= 29 THEN "cumulative_as_of_periods_2"."Total
-  Sales" END) AS "Rolling 30 Day Sales", MAX(CASE WHEN DATE_DIFF(''day'', "cumulative_as_of_periods_2"."Sales Date", CAST(''2021-03-18''
+  Date", CAST(''2022-03-18'' AS DATE)) = 0 THEN "cumulative_as_of_periods_2"."Total Sales" END) AS "MTD Sales", AVG(CASE WHEN
+  DATE_DIFF(''day'', "cumulative_as_of_periods_2"."Sales Date", CAST(''2022-03-18'' AS DATE)) <= 29 THEN "cumulative_as_of_periods_2"."Total
+  Sales" END) AS "Rolling 30 Day Sales", MAX(CASE WHEN DATE_DIFF(''day'', "cumulative_as_of_periods_2"."Sales Date", CAST(''2022-03-18''
   AS DATE)) <= 29 THEN "cumulative_as_of_periods_2"."Total Sales" END) AS "Peak Daily Sales 30D"
 
   FROM "cumulative_as_of_periods_2" AS "cumulative_as_of_periods_2"
 
-  WHERE DATE_DIFF(''day'', "cumulative_as_of_periods_2"."Sales Date", CAST(''2021-03-18'' AS DATE)) >= 0
+  WHERE DATE_DIFF(''day'', "cumulative_as_of_periods_2"."Sales Date", CAST(''2022-03-18'' AS DATE)) >= 0
 
   GROUP BY ALL
 
@@ -108,36 +108,36 @@ sql: 'WITH "cumulative_base" AS (
 rows:
 - - Asia Pacific
   - '15744421.79'
-  - '477739.10'
-  - '477739.10'
-  - '59612.11'
-  - '9007'
-  - '112121.61'
+  - '595120.46'
+  - '3284334.41'
+  - '116535.11'
+  - '7791'
+  - '38852.87'
 - - Europe
   - '14024821.91'
-  - '366856.52'
-  - '366856.52'
-  - '41153.46'
-  - '4926'
-  - '22281.21'
+  - '598527.35'
+  - '2633132.72'
+  - '160990.78'
+  - '8718'
+  - '53702.12'
 - - Latin America
   - '7541499.03'
-  - '114480.28'
-  - '114480.28'
-  - '43248.70'
-  - '3681'
-  - '21109.27'
+  - '237873.32'
+  - '1418957.73'
+  - '43396.04'
+  - '3954'
+  - '13520.17'
 - - Middle East & Africa
   - '3146038.21'
-  - '51747.45'
-  - '51747.45'
-  - '14674.08'
-  - '4379'
-  - '21216.67'
+  - '136572.28'
+  - '512872.25'
+  - '39152.82'
+  - '6939'
+  - '28446.68'
 - - North America
   - '2001728.67'
-  - '11733.59'
-  - '11733.59'
-  - '3859.78'
-  - '1584'
-  - '1963.64'
+  - '26899.88'
+  - '238594.00'
+  - '5460.87'
+  - '3293'
+  - '5460.87'

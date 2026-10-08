@@ -3,5 +3,8 @@ select:
   measures: [Total Sales, YTD Sales, Cumulative Sales]
 where:
   - field: Sales Month
+    op: gte
+    value: '2022-03-01'
+  - field: Sales Month
     op: lt
-    value: '2021-07-01'
+    value: '2022-07-01'
