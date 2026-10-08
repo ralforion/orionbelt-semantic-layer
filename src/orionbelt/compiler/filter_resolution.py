@@ -384,7 +384,7 @@ def resolve_order_by_field(
 
     for meas in ctx.result.measures:
         if meas.name == field_name:
-            # Window / cumulative / period-over-period metrics are
+            # Window / cumulative / period-over-period / reaggregate metrics are
             # exposed by the outer SELECT as a bare alias after their
             # wrapper CTE runs — ordering by ``meas.expression`` here
             # would point ORDER BY at the *base measure's* inner
@@ -392,7 +392,7 @@ def resolve_order_by_field(
             # the windowed output the user asked for. Same pattern as
             # coalesce_aliases above: emit a table-less ColumnRef so
             # both star and CFL outer SELECTs bind it correctly.
-            if meas.is_window or meas.is_cumulative or meas.is_pop:
+            if meas.is_window or meas.is_cumulative or meas.is_pop or meas.is_reaggregate:
                 return ColumnRef(name=meas.name)
             return meas.expression
 

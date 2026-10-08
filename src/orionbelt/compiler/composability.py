@@ -70,10 +70,21 @@ def measure_join_requirements(model: SemanticModel, name: str) -> set[str]:
 
 
 def metric_join_requirements(model: SemanticModel, name: str) -> set[str]:
-    """``measure_join_requirements`` across every measure a metric reaches."""
+    """``measure_join_requirements`` across every measure a metric reaches.
+
+    A reaggregate metric's first stage also groups by its ``per`` dimensions, so
+    their objects have to be reachable from the measure's as well.
+    """
     result: set[str] = set()
     for component in metric_leaf_measures(model, name):
         result |= measure_join_requirements(model, component)
+    met = model.metrics.get(name)
+    if met is not None and met.type == MetricType.REAGGREGATE:
+        for entry in met.per:
+            dim_name = entry if entry in model.dimensions else entry.rpartition(":")[0]
+            dim = model.dimensions.get(dim_name)
+            if dim is not None and dim.view:
+                result |= {dim.view} | model.dimension_join_objects(dim_name)
     return result
 
 
@@ -476,11 +487,15 @@ class ComposabilityResolver:
         land in one query, so a component on the *one* side is replicated by a
         sibling on the many side even when the anchor reaches neither.
 
-        A reaggregate metric is always excluded for now: it has no SQL lowering
-        yet, so the compiler refuses every query that selects one.
+        A reaggregate metric whose ``per`` names a time grain is excluded: that
+        form is not compiled yet, so every query selecting it is refused.
         """
         met = self.model.metrics.get(name)
-        if met is not None and met.type == MetricType.REAGGREGATE:
+        if (
+            met is not None
+            and met.type == MetricType.REAGGREGATE
+            and any(entry not in self.model.dimensions and ":" in entry for entry in met.per)
+        ):
             return True
         leaves = metric_leaf_measures(self.model, name)
         behind_wrapper = self._wrapper_backed_measures(name)
