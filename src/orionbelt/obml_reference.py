@@ -326,6 +326,11 @@ latest period with data under the query's filters. Not under
 `grouping: rollup/cube`, nor beside another dimension over the same date
 column.
 
+`cumulativeType` aggregates the measure's value per period. A `sum` over a
+measure that does not add up across periods (any aggregation but sum or
+count, or a distinct one) loads with a `NON_ADDITIVE_CUMULATIVE_SUM` warning: summed monthly distinct customers
+count a customer once per month.
+
 ### Window — rank, lag, lead, ntile, first/last value (v2.6+)
 
 ```yaml

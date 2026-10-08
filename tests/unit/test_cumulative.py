@@ -37,6 +37,7 @@ from orionbelt.models.semantic import (
 )
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
+from orionbelt.parser.validator import SemanticValidator
 
 # ── OBML YAML with cumulative metrics ──────────────────────────────────────
 
@@ -1454,3 +1455,92 @@ class TestFloatPartitionKeys:
     def test_non_float_key_not_cast_on_bigquery(self) -> None:
         sql = self._sql(["Region", "Order Date"], "Cumulative Revenue", "bigquery")
         assert "PARTITION BY `Region` ORDER BY" in sql
+
+
+class TestNonAdditiveCumulativeSum:
+    """A cumulative ``sum`` adds up values per period, which only a measure that
+    adds up across periods turns into its value over the range."""
+
+    MODEL_YAML = CUMULATIVE_MODEL_YAML.replace(
+        """      Booked Date:""",
+        """      Stock Level:
+        code: STOCK_LEVEL
+        abstractType: int
+        numClass: non-additive
+      Booked Date:""",
+    ).replace(
+        "metrics:\n",
+        """  Customers:
+    columns:
+      - dataObject: Orders
+        column: Order ID
+    resultType: int
+    aggregation: count_distinct
+
+  Distinct Revenue:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    resultType: float
+    aggregation: sum
+    distinct: true
+
+  Average Order:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    resultType: float
+    aggregation: avg
+
+  Stock:
+    columns:
+      - dataObject: Orders
+        column: Stock Level
+    resultType: int
+    aggregation: sum
+
+metrics:
+""",
+        1,
+    )
+
+    def _warnings(self, measure: str, cumulative_type: str = "sum") -> list[str]:
+        model_yaml = self.MODEL_YAML.replace(
+            "  # Cumulative: rolling max",
+            f"""  Accumulated:
+    type: cumulative
+    measure: {measure}
+    timeDimension: Order Date
+    cumulativeType: {cumulative_type}
+
+  # Cumulative: rolling max""",
+        )
+        return [
+            e.message
+            for e in SemanticValidator().validate(_load_model(model_yaml))
+            if e.code == "NON_ADDITIVE_CUMULATIVE_SUM" and e.severity == "warning"
+        ]
+
+    @pytest.mark.parametrize(
+        ("measure", "reason"),
+        [
+            ("Customers", "aggregates with 'count_distinct'"),
+            ("Average Order", "aggregates with 'avg'"),
+            ("Distinct Revenue", "aggregates distinct values"),
+        ],
+    )
+    def test_a_sum_over_a_measure_that_does_not_add_up_warns(
+        self, measure: str, reason: str
+    ) -> None:
+        assert self._warnings(measure) == [
+            f"Cumulative metric 'Accumulated' sums the values per period of measure "
+            f"'{measure}', which {reason}: the sum is not '{measure}' over the whole range."
+        ]
+
+    @pytest.mark.parametrize("measure", ["Revenue", "Order Count", "Orders Count", "Stock"])
+    def test_a_sum_over_sums_and_counts_does_not_warn(self, measure: str) -> None:
+        assert self._warnings(measure) == []
+
+    @pytest.mark.parametrize("cumulative_type", ["avg", "min", "max", "count"])
+    def test_other_cumulative_types_do_not_warn(self, cumulative_type: str) -> None:
+        assert self._warnings("Customers", cumulative_type) == []

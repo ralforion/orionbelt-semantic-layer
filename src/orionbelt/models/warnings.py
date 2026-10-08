@@ -27,6 +27,9 @@ class WarningCode:
     # PoP / Cumulative metric constraint violations
     POP_CONSTRAINT_VIOLATED = "POP_CONSTRAINT_VIOLATED"
     CUMULATIVE_CONSTRAINT_VIOLATED = "CUMULATIVE_CONSTRAINT_VIOLATED"
+    # A cumulative sum adds up per-period values of a measure that does not
+    # add up across periods (distinct counts, averages, extremes)
+    NON_ADDITIVE_CUMULATIVE_SUM = "NON_ADDITIVE_CUMULATIVE_SUM"
 
     # Multi-fact / fan-trap / structural risks
     FAN_TRAP_RISK = "FAN_TRAP_RISK"

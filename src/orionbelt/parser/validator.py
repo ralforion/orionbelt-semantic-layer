@@ -20,6 +20,8 @@ from orionbelt.models.semantic import (
     CASTABLE_TEMPORAL_TYPES,
     DATE_BEARING_TYPES,
     SUB_DAY_GRAINS,
+    AggregationType,
+    CumulativeAggType,
     DataColumnRef,
     DataType,
     Dimension,
@@ -28,6 +30,7 @@ from orionbelt.models.semantic import (
     MeasureFilter,
     MeasureFilterGroup,
     MeasureFilterItem,
+    MetricType,
     SemanticModel,
     TimeGrain,
     result_type_holds_grain,
@@ -46,6 +49,9 @@ _TARGET_INTEGER_DIGITS: dict[str, int] = {"integer": 10, "bigint": 19}
 #: rather than imported from ``compiler.type_resolver``: the parser does not
 #: depend on the compiler, and this is a property of the format, not the planner.
 _INT64_DIGITS = 19
+
+#: Aggregations whose values per period add up to the value over the periods.
+_PERIOD_ADDITIVE = frozenset({AggregationType.SUM, AggregationType.COUNT})
 
 
 def _integer_digits(declared: OBMLType) -> int | None:
@@ -78,6 +84,19 @@ def _measure_source_columns(measure: Measure) -> list[tuple[str, str]]:
             seen.add(pair)
             unique.append(pair)
     return unique
+
+
+def _why_not_additive(measure: Measure) -> str | None:
+    """Why *measure*'s values per period do not add up to its value over them, if so.
+
+    The aggregation decides, not the columns' ``numClass``: a non-additive
+    price is summed soundly as ``price * quantity``.
+    """
+    if measure.aggregation not in _PERIOD_ADDITIVE:
+        return f"aggregates with '{measure.aggregation.value}'"
+    if measure.distinct:
+        return "aggregates distinct values"
+    return None
 
 
 class SemanticValidator:
@@ -125,6 +144,7 @@ class SemanticValidator:
         errors.extend(self._check_measure_anchors(model))
         errors.extend(self._check_nested_objects(model))
         errors.extend(self._check_narrowing_data_types(model))
+        errors.extend(self._check_cumulative_sum_additivity(model))
         return errors
 
     def _check_nested_objects(self, model: SemanticModel) -> list[SemanticError]:
@@ -1932,6 +1952,46 @@ class SemanticValidator:
                 )
             )
         return errors
+
+    def _check_cumulative_sum_additivity(self, model: SemanticModel) -> list[SemanticError]:
+        """Warn when a cumulative ``sum`` adds up values that do not add up.
+
+        A cumulative metric aggregates its measure's value per period. Summed,
+        that is the measure over the whole range only when the measure adds up
+        across periods: summing distinct customers per month counts a customer
+        once for every month they bought in.
+        """
+        warnings: list[SemanticError] = []
+        for name, metric in model.metrics.items():
+            if (
+                metric.type is not MetricType.CUMULATIVE
+                or metric.cumulative_type is not CumulativeAggType.SUM
+                or metric.measure is None
+            ):
+                continue
+            measure = model.effective_measures.get(metric.measure)
+            reason = _why_not_additive(measure) if measure is not None else None
+            if reason is None:
+                continue
+            warnings.append(
+                SemanticError(
+                    code=WarningCode.NON_ADDITIVE_CUMULATIVE_SUM,
+                    message=(
+                        f"Cumulative metric '{name}' sums the values per period of measure "
+                        f"'{metric.measure}', which {reason}: the sum is not "
+                        f"'{metric.measure}' over the whole range."
+                    ),
+                    path=f"metrics.{name}.cumulativeType",
+                    hint=(
+                        "Set cumulativeType to avg, min or max to aggregate the values per "
+                        "period, or accumulate a measure that adds up across periods (a sum "
+                        "or a count)."
+                    ),
+                    severity="warning",
+                    context={"metric": name, "measure": metric.measure},
+                )
+            )
+        return warnings
 
     def _check_missing_via(self, model: SemanticModel) -> list[SemanticError]:
         """Warn when a dimension's target has direct joins from multiple fact tables.
