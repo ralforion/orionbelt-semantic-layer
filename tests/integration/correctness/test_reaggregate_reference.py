@@ -60,6 +60,13 @@ _METRICS: dict[str, dict[str, Any]] = {
     "Avg Monthly Sales": {"measure": "Total Sales", "per": ["Sales Month"], "aggregation": "avg"},
 }
 
+# Derived metrics over a reaggregate metric: one over the same fact, one across
+# facts (the base query is then a CFL plan).
+_DERIVED: dict[str, str] = {
+    "Avg Client Share": "{[Avg Sales per Client]} / {[Total Sales]}",
+    "Avg Client Less Returns": "{[Avg Sales per Client]} - {[Total Returns]}",
+}
+
 # Stage 1 per client, by country: the joins the model declares, by hand.
 _PER_CLIENT_BY_COUNTRY = """
     SELECT co.countryname AS country, c.clientname AS client,
@@ -79,6 +86,8 @@ def model() -> SemanticModel:
     raw, source_map = TrackedLoader().load(COMMERCE_MODEL_YAML)
     for name, body in _METRICS.items():
         raw["metrics"][name] = {"type": "reaggregate", **body}
+    for name, expression in _DERIVED.items():
+        raw["metrics"][name] = {"expression": expression}
     resolved, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     return resolved
@@ -256,3 +265,93 @@ def test_order_by_and_limit(run: Callable) -> None:
     assert [r["Avg Sales per Client"] for r in top] == [
         r["Avg Sales per Client"] for r in ranked[:3]
     ]
+
+
+def _by_country(run: Callable, measures: list[str], **query: Any) -> dict[Any, dict[str, Any]]:
+    rows = run(
+        QueryObject(
+            select=QuerySelect(dimensions=["Sales Country Name"], measures=measures), **query
+        )
+    )
+    return _by(rows, "Sales Country Name")
+
+
+@pytest.fixture(scope="module")
+def plain(run: Callable) -> dict[Any, dict[str, Any]]:
+    """Each value queried on its own, to compose against."""
+    alone: dict[Any, dict[str, Any]] = {}
+    for measure in ("Avg Sales per Client", "Total Sales", "Total Returns"):
+        for country, row in _by_country(run, [measure]).items():
+            alone.setdefault(country, {})[measure] = row[measure]
+    return alone
+
+
+def test_beside_another_fact(run: Callable, plain: dict) -> None:
+    """With a Returns measure the base is a CFL plan; each value is unchanged."""
+    got = _by_country(run, ["Total Returns", "Avg Sales per Client"])
+    assert set(got) == set(plain)
+    for country, row in got.items():
+        assert row["Total Returns"] == plain[country].get("Total Returns")
+        assert row["Avg Sales per Client"] == plain[country]["Avg Sales per Client"]
+
+
+def test_derived_over_reaggregate(run: Callable, plain: dict) -> None:
+    got = _by_country(run, ["Avg Client Share"])
+    assert set(got) == set(plain)
+    for country, row in got.items():
+        expected = plain[country]["Avg Sales per Client"] / plain[country]["Total Sales"]
+        assert row["Avg Client Share"] == expected.quantize(Decimal("0.000001"))
+
+
+def test_derived_over_reaggregate_across_facts(run: Callable, plain: dict) -> None:
+    got = _by_country(run, ["Avg Client Less Returns"])
+    assert set(got) == set(plain)
+    for country, row in got.items():
+        returns = plain[country].get("Total Returns")
+        expected = None if returns is None else plain[country]["Avg Sales per Client"] - returns
+        assert row["Avg Client Less Returns"] == expected
+
+
+def _threshold(plain: dict) -> Decimal:
+    return sorted(r["Avg Sales per Client"] for r in plain.values())[len(plain) // 2]
+
+
+@pytest.mark.parametrize("selected", [["Avg Sales per Client"], ["Total Sales"]])
+def test_having_on_the_metric(run: Callable, plain: dict, selected: list[str]) -> None:
+    """Keeps exactly the groups whose second-stage value passes, selected or not."""
+    threshold = _threshold(plain)
+    got = _by_country(
+        run,
+        selected,
+        having=[QueryFilter(field="Avg Sales per Client", op=">", value=float(threshold))],
+    )
+    assert set(got) == {c for c, r in plain.items() if r["Avg Sales per Client"] > threshold}
+    for row in got.values():
+        assert set(row) == {"Sales Country Name", *selected}
+
+
+def test_having_on_a_derived_metric(run: Callable, plain: dict) -> None:
+    shares = {
+        c: (r["Avg Sales per Client"] / r["Total Sales"]).quantize(Decimal("0.000001"))
+        for c, r in plain.items()
+    }
+    cut = sorted(shares.values())[len(shares) // 2]
+    got = _by_country(
+        run,
+        ["Avg Client Share"],
+        having=[QueryFilter(field="Avg Client Share", op=">", value=float(cut))],
+    )
+    assert set(got) == {c for c, v in shares.items() if v > cut}
+
+
+def test_order_by_a_derived_metric(run: Callable) -> None:
+    full = _by_country(run, ["Avg Client Share"])
+    top = run(
+        QueryObject(
+            select=QuerySelect(dimensions=["Sales Country Name"], measures=["Avg Client Share"]),
+            order_by=[QueryOrderBy(field="Avg Client Share", direction="desc")],
+            limit=3,
+        )
+    )
+    ranked = sorted(full.values(), key=lambda r: r["Avg Client Share"], reverse=True)
+    assert [r["Avg Client Share"] for r in top] == [r["Avg Client Share"] for r in ranked[:3]]

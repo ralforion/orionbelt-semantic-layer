@@ -434,12 +434,30 @@ class TestCompile:
         )
         assert "REAGGREGATE_COMBINATION_NOT_SUPPORTED" in _refusal(model, query)
 
-    def test_having_on_the_metric_refused(self, model: SemanticModel) -> None:
-        query = QueryObject(
-            select=QuerySelect(dimensions=["Country"], measures=["Avg Revenue per Customer"]),
-            having=[QueryFilter(field="Avg Revenue per Customer", op=">", value=10)],
+    def test_having_on_the_metric_filters_after_the_second_stage(
+        self, model: SemanticModel
+    ) -> None:
+        sql = _compile(
+            model,
+            QueryObject(
+                select=QuerySelect(dimensions=["Country"], measures=["Avg Revenue per Customer"]),
+                having=[QueryFilter(field="Avg Revenue per Customer", op=">", value=10)],
+            ),
+        ).sql
+        # Held back from the planner's query and applied over the final rows.
+        assert "HAVING" not in sql
+        assert 'WHERE "Avg Revenue per Customer" > 10' in sql
+
+    def test_derived_metric_rebuilt_over_components(self) -> None:
+        probe_model, result = _resolve(
+            _with_metric("expression: '{[Avg Revenue per Customer]} / {[Revenue]}'")
         )
-        assert "REAGGREGATE_COMBINATION_NOT_SUPPORTED" in _refusal(model, query)
+        assert result.valid, result.errors
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"])),
+        ).sql
+        assert '"reagg_1"."Avg Revenue per Customer" / NULLIF("reagg_base"."Revenue", 0)' in sql
 
 
 JOINED_MODEL_YAML = """\
@@ -490,6 +508,8 @@ metrics:
     measure: Revenue
     per: [Station]
     aggregation: avg
+  Station Share:
+    expression: '{[Avg Revenue per Station]} / {[Revenue]}'
 """
 
 
@@ -524,6 +544,8 @@ class TestPerDimensionObjects:
         offered = set(result.metrics) | set(result.cfl_metrics)
         assert "Avg Revenue per Segment" in offered
         assert "Avg Revenue per Station" not in offered
+        # The same holds through a derived metric over it.
+        assert "Station Share" not in offered
 
 
 _TYPED_MODEL_YAML = """\

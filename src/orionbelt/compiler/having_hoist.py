@@ -51,6 +51,7 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler.expr_rewrite import map_column_refs
+from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.models.errors import SemanticError
 
@@ -91,6 +92,9 @@ def _unbindable(unbound: list[str]) -> ResolutionError:
 def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
     """Every alias whose value a window wrapper produces in this query.
 
+    Also every alias ``reaggregate_wrap`` finishes: its second stage is computed
+    after the planner's query, so the same reasoning holds for it.
+
     One answer for the whole query, covering all three wrappers, because they
     nest: a query with both a ``total: true`` measure and a rank metric runs
     totals and then window, and neither may leave the other's predicate behind
@@ -124,6 +128,14 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
             or bool(_ddm_window_components(measure, resolved.metric_components))
             # cumulative_wrap: a running total.
             or measure.is_cumulative
+            # reaggregate_wrap: a second-stage value, or a derived metric over
+            # one. Not a window, but finished by a wrapper all the same, so a
+            # predicate on it is held back until the value exists.
+            or measure.is_reaggregate
+            or any(
+                c.is_reaggregate
+                for c in metric_leaf_components(measure, resolved.metric_components)
+            )
             # total_wrap: a direct measure with total: true or a grain override.
             or (
                 totals_run

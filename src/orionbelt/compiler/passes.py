@@ -523,10 +523,11 @@ def _refuse_reaggregate_combinations(resolved: ResolvedQuery) -> None:
     Each of these wrappers restructures the planner's projection, and the
     reaggregate pass reads that projection by alias; the combinations are not
     built, so they are refused rather than compiled into a query that reads the
-    wrong column. A HAVING on a reaggregate metric would be evaluated in the
-    planner's query, against the placeholder rather than the metric.
+    wrong column.
     """
-    names = {m.name for m in resolved.measures if m.is_reaggregate}
+    names = {m.name for m in resolved.measures if m.is_reaggregate} | {
+        c.name for c in resolved.metric_components.values() if c.is_reaggregate
+    }
     features = [
         label
         for label, present in (
@@ -536,10 +537,6 @@ def _refuse_reaggregate_combinations(resolved: ResolvedQuery) -> None:
             ("a total or grain override", resolved.has_totals),
             ("a cumulative metric", resolved.has_cumulative),
             ("a window metric", window_pass_applies(resolved)),
-            (
-                "a HAVING filter on a reaggregate metric",
-                any(hf.referenced_fields & names for hf in resolved.having_filters),
-            ),
         )
         if present
     ]

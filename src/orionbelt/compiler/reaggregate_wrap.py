@@ -40,6 +40,7 @@ from orionbelt.ast.nodes import (
     Select,
     Unnest,
 )
+from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import null_safe_eq
@@ -160,8 +161,28 @@ def wrap_with_reaggregate(
     qualify_table: Callable[[DataObject], str],
     query: QueryObject,
 ) -> Select:
-    """Replace each reaggregate placeholder with its two-stage value."""
+    """Replace each reaggregate placeholder with its two-stage value.
+
+    A derived metric over a reaggregate metric is rebuilt here too. The planner
+    inlined the placeholder into the metric's one column, so the column is
+    dropped from ``reagg_base``, the metric's other components are projected
+    there in their own right, and the formula is re-expanded in the outer query
+    over each component's column - the route ``filter_wrap`` takes for a metric
+    over a filter-contexted measure.
+    """
+    leaves = {
+        m.name: metric_leaf_components(m, resolved.metric_components) for m in resolved.measures
+    }
+    split = {
+        m.name: m
+        for m in resolved.measures
+        if not m.is_reaggregate and any(c.is_reaggregate for c in leaves[m.name])
+    }
     reaggregates = [m for m in resolved.measures if m.is_reaggregate]
+    for metric_name in split:
+        for comp in leaves[metric_name]:
+            if comp.is_reaggregate and comp.name not in {r.name for r in reaggregates}:
+                reaggregates.append(comp)
     if not reaggregates:
         return ast
     names = {m.name for m in reaggregates}
@@ -175,7 +196,20 @@ def wrap_with_reaggregate(
         groups.setdefault((m.reaggregate_measure, tuple(m.reaggregate_per)), []).append(m)
 
     ctes = list(ast.ctes)
-    base_columns = [c for c in ast.columns if _alias(c) not in names]
+    base_columns = [c for c in ast.columns if _alias(c) not in names | split.keys()]
+    # A rebuilt metric's plain components, which its dropped column carried.
+    projected = {a for c in base_columns if (a := _alias(c)) is not None}
+    for metric_name in split:
+        for comp in leaves[metric_name]:
+            if comp.is_reaggregate or comp.name in projected:
+                continue
+            base_columns.append(
+                AliasedExpr(
+                    expr=resolved.projected_expressions.get(comp.name, comp.expression),
+                    alias=comp.name,
+                )
+            )
+            projected.add(comp.name)
     # With no dimensions and nothing else selected the base projects nothing;
     # each stage-2 CTE is then the one row the query returns.
     keep_base = bool(base_columns)
@@ -230,13 +264,26 @@ def wrap_with_reaggregate(
         )
 
     def read(alias: str) -> ColumnRef:
+        if alias in split:
+            # Assembled in the outer projection, so it is read by its alias.
+            return ColumnRef(name=alias)
         return ColumnRef(name=alias, table=source_of.get(alias, anchor))
 
     columns: list[Expr] = []
     for col in ast.columns:
         alias = _alias(col)
         assert alias is not None, "planner columns are always aliased"
-        columns.append(AliasedExpr(expr=read(alias), alias=alias))
+        if alias in split:
+            value: Expr = metric_over_components(
+                split[alias],
+                resolved.metric_components,
+                lambda name: ColumnRef(name=name, table=source_of.get(name, anchor)),
+                model,
+                dialect,
+            )
+        else:
+            value = read(alias)
+        columns.append(AliasedExpr(expr=value, alias=alias))
 
     # The ordering keys come back as bare aliases; both sides of each join
     # carry the dimension columns, so each key names the CTE it reads.
