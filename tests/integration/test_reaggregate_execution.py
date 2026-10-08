@@ -15,7 +15,7 @@ import pytest
 duckdb = pytest.importorskip("duckdb", reason="duckdb required")
 
 from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
-from orionbelt.models.query import QueryObject, QueryOrderBy, QuerySelect  # noqa: E402
+from orionbelt.models.query import QueryFilter, QueryObject, QueryOrderBy, QuerySelect  # noqa: E402
 from orionbelt.models.semantic import SemanticModel  # noqa: E402
 from orionbelt.parser.loader import TrackedLoader  # noqa: E402
 from orionbelt.parser.resolver import ReferenceResolver  # noqa: E402
@@ -250,3 +250,71 @@ def test_integer_average_is_exact(integer_model: SemanticModel, conn: Any, agg: 
     metric = f"Avg Units {agg}"
     rows = _run(integer_model, conn, QueryObject(select=QuerySelect(measures=[metric])))
     assert rows == [{metric: Decimal("9007199254740990.50")}]
+
+
+def test_having_with_order_by_and_limit(model: SemanticModel, conn: Any) -> None:
+    """HAVING runs over the final rows, and ORDER BY still binds out there."""
+    rows = _run(
+        model,
+        conn,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Country"], measures=["Avg Revenue per Customer", "Customers"]
+            ),
+            having=[QueryFilter(field="Customers", op=">=", value=2)],
+            order_by=[QueryOrderBy(field="Avg Revenue per Customer", direction="desc")],
+            limit=1,
+        ),
+    )
+    # DE (3 customers, 27.00), FR (2, 502.50), NULL (2, 20.00) all pass; FR leads.
+    assert rows == [
+        {"Country": "FR", "Avg Revenue per Customer": Decimal("502.50"), "Customers": 2}
+    ]
+
+
+SHARE_MODEL_YAML = """\
+version: 1.0
+dataObjects:
+  Payments:
+    code: PAYMENTS
+    schema: PUBLIC
+    columns:
+      Customer: {code: CUSTOMER_ID, abstractType: string}
+      Amount: {code: AMOUNT, abstractType: float}
+dimensions:
+  Customer: {dataObject: Payments, column: Customer, resultType: string}
+measures:
+  Paid:
+    columns: [{dataObject: Payments, column: Amount}]
+    aggregation: sum
+metrics:
+  Avg Paid per Customer:
+    type: reaggregate
+    measure: Paid
+    per: [Customer]
+    aggregation: avg
+  Avg Paid Share:
+    expression: '{[Avg Paid per Customer]} / {[Paid]}'
+"""
+
+
+@pytest.mark.parametrize("measures", [["Avg Paid Share"], ["Paid", "Avg Paid Share"]])
+def test_derived_value_does_not_depend_on_what_else_is_selected(
+    conn: Any, measures: list[str]
+) -> None:
+    """The formula reads the bare aggregate, as the planner inlines it.
+
+    Each customer paid 0.014: per customer that is 0.01 at the measure's
+    decimal(18, 2), averaged 0.01, over a total of 0.028 - 0.357143. Selecting
+    ``Paid`` too projects it cast to 0.03, which the formula must not read.
+    """
+    raw, source_map = TrackedLoader().load_string(SHARE_MODEL_YAML)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS "PUBLIC"."PAYMENTS" (CUSTOMER_ID VARCHAR, AMOUNT DOUBLE)'
+    )
+    conn.execute('DELETE FROM "PUBLIC"."PAYMENTS"')
+    conn.executemany('INSERT INTO "PUBLIC"."PAYMENTS" VALUES (?, ?)', [("a", 0.014), ("b", 0.014)])
+    rows = _run(model, conn, QueryObject(select=QuerySelect(measures=measures)))
+    assert rows[0]["Avg Paid Share"] == Decimal("0.357143")

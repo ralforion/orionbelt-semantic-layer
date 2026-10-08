@@ -1321,7 +1321,9 @@ class ReferenceResolver:
                     # metric, expanded in place down to real aggregates, or a
                     # window metric, which the window wrapper projects as a
                     # column of its base CTE — that is what makes
-                    # ``{[Revenue]} - {[Revenue Prior Month]}`` work.
+                    # ``{[Revenue]} - {[Revenue Prior Month]}`` work, or a
+                    # reaggregate metric, which reaggregate_wrap rebuilds the
+                    # formula over.
                     expression = raw_metric.get("expression", "")
                     self._validate_metric_expression_refs(
                         name,
@@ -1331,7 +1333,11 @@ class ReferenceResolver:
                         source_map,
                         metrics,
                         synthesized_measure_names,
-                        composable_metric_types=(MetricType.DERIVED, MetricType.WINDOW),
+                        composable_metric_types=(
+                            MetricType.DERIVED,
+                            MetricType.WINDOW,
+                            MetricType.REAGGREGATE,
+                        ),
                     )
 
                     metrics[name] = Metric(

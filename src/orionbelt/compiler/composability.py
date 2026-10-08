@@ -33,7 +33,7 @@ from orionbelt.compiler.graph import JoinGraph
 from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.query import CoalesceDimension, QueryObject, UsePathName
 from orionbelt.models.roles import expand_role_objects, role_targets
-from orionbelt.models.semantic import MetricType, SemanticModel
+from orionbelt.models.semantic import Metric, MetricType, SemanticModel
 
 # Measure expression column refs: ``{[DataObject].[Column]}``
 # Derived metric measure refs: ``{[Measure Name]}``
@@ -69,17 +69,35 @@ def measure_join_requirements(model: SemanticModel, name: str) -> set[str]:
     return model.measure_join_objects(name)
 
 
+def reachable_metrics(model: SemanticModel, name: str) -> list[Metric]:
+    """*name* and every metric its formula reaches, at any depth."""
+    found: list[Metric] = []
+    seen: set[str] = set()
+    pending = [name]
+    while pending:
+        current = pending.pop()
+        met = model.metrics.get(current)
+        if met is None or current in seen:
+            continue
+        seen.add(current)
+        found.append(met)
+        pending.extend(metric_measure_names(model, current))
+    return found
+
+
 def metric_join_requirements(model: SemanticModel, name: str) -> set[str]:
     """``measure_join_requirements`` across every measure a metric reaches.
 
     A reaggregate metric's first stage also groups by its ``per`` dimensions, so
-    their objects have to be reachable from the measure's as well.
+    their objects have to be reachable from the measure's as well - whether the
+    metric is asked for directly or through a derived metric over it.
     """
     result: set[str] = set()
     for component in metric_leaf_measures(model, name):
         result |= measure_join_requirements(model, component)
-    met = model.metrics.get(name)
-    if met is not None and met.type == MetricType.REAGGREGATE:
+    for met in reachable_metrics(model, name):
+        if met.type != MetricType.REAGGREGATE:
+            continue
         for entry in met.per:
             dim_name = entry if entry in model.dimensions else entry.rpartition(":")[0]
             dim = model.dimensions.get(dim_name)
@@ -487,14 +505,14 @@ class ComposabilityResolver:
         land in one query, so a component on the *one* side is replicated by a
         sibling on the many side even when the anchor reaches neither.
 
-        A reaggregate metric whose ``per`` names a time grain is excluded: that
-        form is not compiled yet, so every query selecting it is refused.
+        A reaggregate metric whose ``per`` names a time grain is excluded, and so
+        is any derived metric that reaches one: that form is not compiled yet,
+        so every query selecting either is refused.
         """
-        met = self.model.metrics.get(name)
-        if (
-            met is not None
-            and met.type == MetricType.REAGGREGATE
+        if any(
+            met.type == MetricType.REAGGREGATE
             and any(entry not in self.model.dimensions and ":" in entry for entry in met.per)
+            for met in reachable_metrics(self.model, name)
         ):
             return True
         leaves = metric_leaf_measures(self.model, name)

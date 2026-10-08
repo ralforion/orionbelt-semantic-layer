@@ -41,6 +41,8 @@ sets are disjoint: :func:`windowed_aliases` excludes deduplicated measures via
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
@@ -51,6 +53,7 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler.expr_rewrite import map_column_refs
+from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.models.errors import SemanticError
 
@@ -91,6 +94,9 @@ def _unbindable(unbound: list[str]) -> ResolutionError:
 def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
     """Every alias whose value a window wrapper produces in this query.
 
+    Also every alias ``reaggregate_wrap`` finishes: its second stage is computed
+    after the planner's query, so the same reasoning holds for it.
+
     One answer for the whole query, covering all three wrappers, because they
     nest: a query with both a ``total: true`` measure and a rank metric runs
     totals and then window, and neither may leave the other's predicate behind
@@ -124,6 +130,14 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
             or bool(_ddm_window_components(measure, resolved.metric_components))
             # cumulative_wrap: a running total.
             or measure.is_cumulative
+            # reaggregate_wrap: a second-stage value, or a derived metric over
+            # one. Not a window, but finished by a wrapper all the same, so a
+            # predicate on it is held back until the value exists.
+            or measure.is_reaggregate
+            or any(
+                c.is_reaggregate
+                for c in metric_leaf_components(measure, resolved.metric_components)
+            )
             # total_wrap: a direct measure with total: true or a grain override.
             or (
                 totals_run
@@ -186,7 +200,9 @@ def apply_having_hoist(
 
     ``ORDER BY`` / ``LIMIT`` / ``OFFSET`` move out to the filtering query: a
     limit applied before the predicate would count rows the caller asked to
-    exclude.
+    exclude. An ordering key qualified with a table of *outer* names a column
+    the CTE now projects, so it is rebound to the CTE; the table itself is out
+    of scope there.
     """
     if not hoisted:
         return outer
@@ -215,7 +231,20 @@ def apply_having_hoist(
         ],
         from_=From(source=cte_name, alias=cte_name),
         where=_combine(hoisted),
-        order_by=outer.order_by,
+        order_by=[
+            replace(
+                item,
+                expr=map_column_refs(
+                    item.expr,
+                    lambda ref: (
+                        ColumnRef(name=ref.name, table=cte_name)
+                        if ref.table is not None and ref.name in projected
+                        else ref
+                    ),
+                ),
+            )
+            for item in outer.order_by
+        ],
         limit=outer.limit,
         offset=outer.offset,
         ctes=[*outer.ctes, CTE(name=cte_name, query=inner)],

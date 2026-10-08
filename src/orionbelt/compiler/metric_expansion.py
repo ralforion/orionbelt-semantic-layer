@@ -11,8 +11,8 @@ one place rather than being re-derived per pass:
 * A component that is itself a **derived** metric is expanded *recursively*.
   Substituting one level only left the inner metric's own placeholders in the
   output as bare column names, which no engine can bind.
-* A component that is a **cumulative**, **window**, or **period-over-period**
-  metric is not. Those are computed by their own wrapper, which projects the
+* A component that is a **cumulative**, **window**, **period-over-period** or
+  **reaggregate** metric is not. Those are computed by their own wrapper, which projects the
   value under the component's name in a CTE beneath the current query, so the
   reference has to survive as a name for that wrapper to resolve.
 """

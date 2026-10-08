@@ -620,12 +620,12 @@ class ResolvedMeasure:
         The boundary
         :func:`~orionbelt.compiler.metric_expansion.expand_metric_expression`
         recurses through: a derived metric has no wrapper of its own, so its
-        placeholders have to be expanded in place. Cumulative, window, and
-        period-over-period metrics are computed by their wrapper and referenced
-        by name instead.
+        placeholders have to be expanded in place. Cumulative, window,
+        period-over-period and reaggregate metrics are computed by their wrapper
+        and referenced by name instead.
         """
         return bool(self.component_measures) and not (
-            self.is_cumulative or self.is_pop or self.is_window
+            self.is_cumulative or self.is_pop or self.is_window or self.is_reaggregate
         )
 
 
@@ -841,8 +841,10 @@ class ResolvedQuery:
 
     @property
     def has_reaggregate(self) -> bool:
-        """Check if any selected metric is a reaggregate metric."""
-        return any(m.is_reaggregate for m in self.measures)
+        """Whether a reaggregate metric is selected or read through a derived one."""
+        return any(m.is_reaggregate for m in self.measures) or any(
+            c.is_reaggregate for c in self.metric_components.values()
+        )
 
 
 @dataclass
