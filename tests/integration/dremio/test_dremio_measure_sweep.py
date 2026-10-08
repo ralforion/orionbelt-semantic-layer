@@ -205,17 +205,16 @@ def test_cumulative_as_of_on_dremio(pgwire_cursor) -> None:  # type: ignore[no-u
     """Without ``Sales Month`` selected, YTD is evaluated as of one month.
 
     Over OBSQL there is no ``asOf``: the time filter's upper bound picks the
-    month, the latest with data before July 2021. Each region's value equals
-    its June row of the same query with the month selected.
+    month, June 2022. Each region's value equals its June row of the same
+    query with the month selected, read from January past the filter's start.
     """
-    before_july = "WHERE \"Sales Month\" < '2021-07-01'"
+    window = "WHERE \"Sales Month\" >= '2022-03-01' AND \"Sales Month\" < '2022-07-01'"
     pgwire_cursor.execute(
-        f'SELECT "Sales Region Name", "Sales Month", "YTD Sales" FROM {OBSL_MODEL_NAME} '
-        + before_july
+        f'SELECT "Sales Region Name", "Sales Month", "YTD Sales" FROM {OBSL_MODEL_NAME} ' + window
     )
-    june = {row[0]: row[2] for row in pgwire_cursor.fetchall() if str(row[1])[:10] == "2021-06-01"}
+    june = {row[0]: row[2] for row in pgwire_cursor.fetchall() if str(row[1])[:10] == "2022-06-01"}
     pgwire_cursor.execute(
-        f'SELECT "Sales Region Name", "YTD Sales" FROM {OBSL_MODEL_NAME} ' + before_july
+        f'SELECT "Sales Region Name", "YTD Sales" FROM {OBSL_MODEL_NAME} ' + window
     )
     tile = {row[0]: row[1] for row in pgwire_cursor.fetchall()}
 

@@ -4,7 +4,7 @@ FROM `orionbelt_1`.`sales` AS `Sales`
 LEFT JOIN `orionbelt_1`.`clients` AS `Clients` ON `Sales`.`salesclient` = `Clients`.`clientid`
 LEFT JOIN `orionbelt_1`.`countries` AS `Countries` ON `Clients`.`clientcountryid` = `Countries`.`countryid`
 LEFT JOIN `orionbelt_1`.`regions` AS `Regions` ON `Countries`.`region` = `Regions`.`regionid`
-WHERE `Sales`.`salesdate` < '2021-07-01'
+WHERE `Sales`.`salesdate` >= '2022-03-01' AND `Sales`.`salesdate` < '2022-07-01'
 GROUP BY `Regions`.`regionname`
 ),
 `cumulative_as_of_shown` AS (
@@ -13,7 +13,7 @@ FROM `orionbelt_1`.`sales` AS `Sales`
 LEFT JOIN `orionbelt_1`.`clients` AS `Clients` ON `Sales`.`salesclient` = `Clients`.`clientid`
 LEFT JOIN `orionbelt_1`.`countries` AS `Countries` ON `Clients`.`clientcountryid` = `Countries`.`countryid`
 LEFT JOIN `orionbelt_1`.`regions` AS `Regions` ON `Countries`.`region` = `Regions`.`regionid`
-WHERE `Sales`.`salesdate` < '2021-07-01'
+WHERE `Sales`.`salesdate` >= '2022-03-01' AND `Sales`.`salesdate` < '2022-07-01'
 GROUP BY `Regions`.`regionname`, CAST(DATE_FORMAT(`Sales`.`salesdate`, '%Y-%m-01') AS DATE)
 ),
 `cumulative_as_of_periods` AS (

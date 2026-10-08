@@ -11,7 +11,7 @@ sql: 'WITH "cumulative_base" AS (
 
   LEFT JOIN "orionbelt_1"."regions" AS "Regions" ON "Countries"."region" = "Regions"."regionid"
 
-  WHERE "Sales"."salesdate" < ''2021-07-01''
+  WHERE "Sales"."salesdate" >= ''2022-03-01'' AND "Sales"."salesdate" < ''2022-07-01''
 
   GROUP BY ALL
 
@@ -30,7 +30,7 @@ sql: 'WITH "cumulative_base" AS (
 
   LEFT JOIN "orionbelt_1"."regions" AS "Regions" ON "Countries"."region" = "Regions"."regionid"
 
-  WHERE "Sales"."salesdate" < ''2021-07-01''
+  WHERE "Sales"."salesdate" >= ''2022-03-01'' AND "Sales"."salesdate" < ''2022-07-01''
 
   GROUP BY ALL
 
@@ -97,22 +97,22 @@ sql: 'WITH "cumulative_base" AS (
   '
 rows:
 - - Asia Pacific
-  - '1119477.18'
-  - '1119477.18'
-  - '1119477.18'
+  - '571047.39'
+  - '934443.85'
+  - '3623657.80'
 - - Europe
-  - '1110542.71'
-  - '1110542.71'
-  - '1110542.71'
+  - '764258.29'
+  - '1156588.76'
+  - '3191194.13'
 - - Latin America
-  - '391566.47'
-  - '391566.47'
-  - '391566.47'
+  - '338000.55'
+  - '467801.55'
+  - '1648885.96'
 - - Middle East & Africa
-  - '135728.85'
-  - '135728.85'
-  - '135728.85'
+  - '182487.51'
+  - '270354.59'
+  - '646654.56'
 - - North America
-  - '115531.36'
-  - '115531.36'
-  - '115531.36'
+  - '51512.73'
+  - '67905.17'
+  - '279599.29'

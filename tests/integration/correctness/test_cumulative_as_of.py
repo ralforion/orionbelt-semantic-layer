@@ -58,11 +58,13 @@ def _as_of(
 def test_as_of_a_date_equals_the_row_for_its_period(
     run_query: Callable[[QueryObject], list[dict[str, Any]]],
 ) -> None:
-    """Corpus #20. 2021-03-18 is March for the monthly metrics, that day for the daily ones."""
-    as_of = _dt.date(2021, 3, 18)
-    monthly = _rows_at(run_query, "Sales Month", _BY_MONTH, "2021-03-01")
-    daily = _rows_at(run_query, "Sales Date", _BY_DAY, "2021-03-18")
+    """Corpus #20. 2022-03-18 is March for the monthly metrics, that day for the daily ones."""
+    as_of = _dt.date(2022, 3, 18)
+    monthly = _rows_at(run_query, "Sales Month", _BY_MONTH, "2022-03-01")
+    daily = _rows_at(run_query, "Sales Date", _BY_DAY, "2022-03-18")
     assert monthly and daily
+    # The second year of data: year-to-date no longer equals the running total.
+    assert all(row["YTD Sales"] < row["Cumulative Sales"] for row in monthly.values())
 
     assert _as_of(run_query, _BY_MONTH, as_of) == monthly
     tile = _as_of(run_query, _BY_DAY, as_of)
@@ -103,7 +105,17 @@ def test_without_as_of_the_latest_period_with_data(
 def test_a_time_filter_picks_the_period_not_the_history(
     run_query: Callable[[QueryObject], list[dict[str, Any]]],
 ) -> None:
-    """Corpus #21. Filtered to before July 2021, year-to-date is June's, read from January."""
-    first_half = [QueryFilter(field="Sales Month", op=FilterOperator.LT, value="2021-07-01")]
-    june = _rows_at(run_query, "Sales Month", _BY_MONTH, "2021-06-01")
-    assert _as_of(run_query, _BY_MONTH, where=first_half) == june
+    """Corpus #21. Filtered to March-June 2022, year-to-date is June's, read from January.
+
+    The plain measure keeps to the filter, year-to-date reads January and
+    February too, and the running total all of 2021: three different values.
+    """
+    window = [
+        QueryFilter(field="Sales Month", op=FilterOperator.GTE, value="2022-03-01"),
+        QueryFilter(field="Sales Month", op=FilterOperator.LT, value="2022-07-01"),
+    ]
+    june = _rows_at(run_query, "Sales Month", _BY_MONTH, "2022-06-01")
+    tile = _as_of(run_query, ["Total Sales", *_BY_MONTH], where=window)
+    assert {region: {m: row[m] for m in _BY_MONTH} for region, row in tile.items()} == june
+    for row in tile.values():
+        assert row["Total Sales"] < row["YTD Sales"] < row["Cumulative Sales"]
