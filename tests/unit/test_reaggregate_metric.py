@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from rdflib import Literal, URIRef
 from rdflib.namespace import RDF
 
+from orionbelt.compiler.composability import resolve_composables_for_anchors
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.errors import ValidationResult
@@ -24,6 +25,7 @@ from orionbelt.models.semantic import Metric, MetricType, ReaggregateAggType, Se
 from orionbelt.obsl.exporter import export_obsl
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
+from orionbelt.parser.validator import SemanticValidator
 from orionbelt.service.lineage import LineageBuilder
 
 _SCHEMA = json.loads(
@@ -241,6 +243,70 @@ class TestReferences:
         )
         err = next(e for e in result.errors if e.code == "REAGGREGATE_UNKNOWN_DIMENSION")
         assert "Customer" in err.suggestions
+
+
+class TestStrayFields:
+    """``per`` / ``aggregation`` on another metric type is refused, not dropped."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "expression: '{[Revenue]}'\nper: [Customer]",
+            "expression: '{[Revenue]}'\naggregation: avg",
+            "type: cumulative\nmeasure: Revenue\ntimeDimension: Order Date\nper: [Customer]",
+        ],
+    )
+    def test_refused(self, body: str) -> None:
+        _model, result = _resolve(_with_metric(body))
+        assert any(
+            e.code == "METRIC_PARSE_ERROR" and "only valid on reaggregate" in e.message
+            for e in result.errors
+        )
+
+
+class TestPerGrain:
+    """A ``per`` grain obeys the same column and resultType rules as a query's."""
+
+    def _validator_codes(self, per: str) -> set[str]:
+        model, result = _resolve(
+            _with_metric(f"type: reaggregate\nmeasure: Revenue\nper: ['{per}']\naggregation: avg")
+        )
+        assert result.valid, result.errors
+        return {e.code for e in SemanticValidator().validate(model)}
+
+    def test_fixture_is_clean(self, model: SemanticModel) -> None:
+        assert SemanticValidator().validate(model) == []
+
+    def test_grain_on_a_string_column(self) -> None:
+        assert "TIME_GRAIN_ON_NON_TEMPORAL" in self._validator_codes("Customer:day")
+
+    def test_grain_finer_than_the_result_type(self) -> None:
+        assert "RESULT_TYPE_LOSES_GRAIN" in self._validator_codes("Order Date:hour")
+
+    def test_invalid_grain_reported_once_by_the_parser(self) -> None:
+        model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\nper: ['Order Date:fortnight']\n"
+                "aggregation: avg"
+            )
+        )
+        assert {e.code for e in result.errors} == {"REAGGREGATE_INVALID_PER"}
+        assert SemanticValidator().validate(model) == []
+
+
+class TestComposability:
+    """Not offered as a query choice while every query selecting it is refused."""
+
+    @pytest.mark.parametrize("anchors", [[], ["Country"]])
+    def test_excluded(self, model: SemanticModel, anchors: list[str]) -> None:
+        result = resolve_composables_for_anchors(model, anchors)
+        offered = set(result.metrics) | set(result.cfl_metrics)
+        assert not offered & {
+            "Avg Revenue per Customer",
+            "Avg Orders per Customer",
+            "Avg Daily Revenue",
+        }
+        assert "Revenue" in result.measures
 
 
 class TestCompile:

@@ -1090,6 +1090,14 @@ class ReferenceResolver:
                         source_map,
                     )
                 metric_type = raw_metric.get("type", "derived")
+                # The other branches pass only their own fields to the model, so
+                # these would be dropped silently rather than refused there.
+                if metric_type != MetricType.REAGGREGATE and (
+                    "per" in raw_metric or "aggregation" in raw_metric
+                ):
+                    raise ValueError(
+                        "'per' and 'aggregation' are only valid on reaggregate metrics"
+                    )
                 concept_links = _parse_concept_mappings(
                     raw_metric, f"metrics.{name}", prefixes, errors, source_map
                 )
