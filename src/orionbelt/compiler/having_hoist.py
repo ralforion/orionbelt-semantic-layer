@@ -41,6 +41,8 @@ sets are disjoint: :func:`windowed_aliases` excludes deduplicated measures via
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
@@ -198,7 +200,9 @@ def apply_having_hoist(
 
     ``ORDER BY`` / ``LIMIT`` / ``OFFSET`` move out to the filtering query: a
     limit applied before the predicate would count rows the caller asked to
-    exclude.
+    exclude. An ordering key qualified with a table of *outer* names a column
+    the CTE now projects, so it is rebound to the CTE; the table itself is out
+    of scope there.
     """
     if not hoisted:
         return outer
@@ -227,7 +231,20 @@ def apply_having_hoist(
         ],
         from_=From(source=cte_name, alias=cte_name),
         where=_combine(hoisted),
-        order_by=outer.order_by,
+        order_by=[
+            replace(
+                item,
+                expr=map_column_refs(
+                    item.expr,
+                    lambda ref: (
+                        ColumnRef(name=ref.name, table=cte_name)
+                        if ref.table is not None and ref.name in projected
+                        else ref
+                    ),
+                ),
+            )
+            for item in outer.order_by
+        ],
         limit=outer.limit,
         offset=outer.offset,
         ctes=[*outer.ctes, CTE(name=cte_name, query=inner)],

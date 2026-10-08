@@ -197,19 +197,24 @@ def wrap_with_reaggregate(
 
     ctes = list(ast.ctes)
     base_columns = [c for c in ast.columns if _alias(c) not in names | split.keys()]
-    # A rebuilt metric's plain components, which its dropped column carried.
-    projected = {a for c in base_columns if (a := _alias(c)) is not None}
+    # A rebuilt metric's plain components, which its dropped column carried. Each
+    # gets a column of its own, never the selected measure's: the planner inlines
+    # a component's bare aggregate into a formula, and the selected column is
+    # cast to the measure's type, so reading it would make the metric's value
+    # depend on whether the measure is selected too.
+    component_alias: dict[str, str] = {}
     for metric_name in split:
         for comp in leaves[metric_name]:
-            if comp.is_reaggregate or comp.name in projected:
+            if comp.is_reaggregate or comp.name in component_alias:
                 continue
+            private = f"_reagg_component_{len(component_alias) + 1}"
+            component_alias[comp.name] = private
             base_columns.append(
                 AliasedExpr(
                     expr=resolved.projected_expressions.get(comp.name, comp.expression),
-                    alias=comp.name,
+                    alias=private,
                 )
             )
-            projected.add(comp.name)
     # With no dimensions and nothing else selected the base projects nothing;
     # each stage-2 CTE is then the one row the query returns.
     keep_base = bool(base_columns)
@@ -277,7 +282,9 @@ def wrap_with_reaggregate(
             value: Expr = metric_over_components(
                 split[alias],
                 resolved.metric_components,
-                lambda name: ColumnRef(name=name, table=source_of.get(name, anchor)),
+                lambda name: ColumnRef(
+                    name=component_alias.get(name, name), table=source_of.get(name, anchor)
+                ),
                 model,
                 dialect,
             )

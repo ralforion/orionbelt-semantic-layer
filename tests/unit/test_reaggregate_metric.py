@@ -126,6 +126,8 @@ metrics:
     measure: Revenue
     per: ['Order Date:day']
     aggregation: avg
+  Daily Revenue Share:
+    expression: '{[Avg Daily Revenue]} / {[Revenue]}'
 """
 
 
@@ -352,6 +354,8 @@ class TestComposability:
         assert {"Avg Revenue per Customer", "Avg Orders per Customer"} <= offered
         # per: ['Order Date:day'] is refused until a per grain compiles.
         assert "Avg Daily Revenue" not in offered
+        # And so is a derived metric over it, which would be refused the same way.
+        assert "Daily Revenue Share" not in offered
 
 
 def _compile(model: SemanticModel, query: QueryObject) -> CompilationResult:
@@ -457,7 +461,11 @@ class TestCompile:
             probe_model,
             QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"])),
         ).sql
-        assert '"reagg_1"."Avg Revenue per Customer" / NULLIF("reagg_base"."Revenue", 0)' in sql
+        # The component is read from a column of its own, never a selected one.
+        assert (
+            '"reagg_1"."Avg Revenue per Customer" / NULLIF("reagg_base"."_reagg_component_1", 0)'
+            in sql
+        )
 
 
 JOINED_MODEL_YAML = """\
