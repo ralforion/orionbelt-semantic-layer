@@ -115,6 +115,7 @@ class SemanticValidator:
         errors.extend(self._check_num_class_on_numeric_columns(model))
         errors.extend(self._check_time_grain_on_temporal_columns(model))
         errors.extend(self._check_result_type_holds_the_grain(model))
+        errors.extend(self._check_reaggregate_per_grains(model))
         errors.extend(self._check_measure_filter_refs(model))
         errors.extend(self._check_within_group_refs(model))
         # An expression whose references do not resolve is reported once, by the
@@ -808,6 +809,65 @@ class SemanticValidator:
                     path=f"dimensions.{name}",
                 )
             )
+        return errors
+
+    def _check_reaggregate_per_grains(self, model: SemanticModel) -> list[SemanticError]:
+        """Hold a reaggregate metric's ``per: [name:grain]`` to the dimension rules.
+
+        A ``per`` grain groups the first stage by that bucket exactly as a query's
+        ``dimension:grain`` would, so it needs a date-bearing column and a
+        ``resultType`` that can hold the bucket - the two checks above, applied to
+        a grain the dimension never declared.
+        """
+        errors: list[SemanticError] = []
+        for name, met in model.metrics.items():
+            if met.type is not MetricType.REAGGREGATE:
+                continue
+            path = f"metrics.{name}.per"
+            for entry in met.per:
+                dim_name, _, grain_text = entry.rpartition(":")
+                if entry in model.dimensions or not dim_name:
+                    continue
+                dim = model.dimensions.get(dim_name)
+                obj = model.data_objects.get(dim.view) if dim and dim.view else None
+                if (
+                    dim is None
+                    or obj is None
+                    or dim.column not in obj.columns
+                    or grain_text not in TimeGrain
+                ):
+                    # Unknown names and grains are reported by the parser.
+                    continue
+                grain = TimeGrain(grain_text)
+                column = obj.columns[dim.column]
+                if column.abstract_type not in DATE_BEARING_TYPES:
+                    errors.append(
+                        SemanticError(
+                            code="TIME_GRAIN_ON_NON_TEMPORAL",
+                            message=(
+                                f"Reaggregate metric '{name}' groups by '{entry}' but "
+                                f"column '{dim.view}.{dim.column}' has abstractType "
+                                f"'{column.abstract_type.value}'. A time grain requires "
+                                f"the column to be date, timestamp, or timestamp_tz."
+                            ),
+                            path=path,
+                        )
+                    )
+                elif not result_type_holds_grain(grain, dim.result_type):
+                    keeps = "timestamp" if grain in SUB_DAY_GRAINS else "date or timestamp"
+                    errors.append(
+                        SemanticError(
+                            code="RESULT_TYPE_LOSES_GRAIN",
+                            message=(
+                                f"Reaggregate metric '{name}' groups by '{entry}' but "
+                                f"dimension '{dim_name}' declares resultType "
+                                f"'{dim.result_type.value}', which cannot hold it: "
+                                f"{self._why_it_cannot_hold(grain, dim.result_type)} "
+                                f"Declare {keeps}, or use the grain the type implies."
+                            ),
+                            path=path,
+                        )
+                    )
         return errors
 
     @staticmethod

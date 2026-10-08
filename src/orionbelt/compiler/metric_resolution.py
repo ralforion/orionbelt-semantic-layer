@@ -42,6 +42,18 @@ def resolve_metric(
         return resolver._resolve_pop_metric(ctx, name, metric)
     if metric.type == MetricType.WINDOW:
         return resolver._resolve_window_metric(ctx, name, metric)
+    if metric.type == MetricType.REAGGREGATE:
+        ctx.errors.append(
+            SemanticError(
+                code="REAGGREGATE_NOT_SUPPORTED",
+                message=(
+                    f"Reaggregate metric '{name}' is defined in the model but cannot be "
+                    f"compiled yet."
+                ),
+                path=f"metrics.{name}",
+            )
+        )
+        return None
     return resolver._resolve_derived_metric(ctx, name, metric)
 
 

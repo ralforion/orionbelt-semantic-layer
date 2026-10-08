@@ -475,7 +475,13 @@ class ComposabilityResolver:
         Every leaf measure's sources count as drivers for every other: they all
         land in one query, so a component on the *one* side is replicated by a
         sibling on the many side even when the anchor reaches neither.
+
+        A reaggregate metric is always excluded for now: it has no SQL lowering
+        yet, so the compiler refuses every query that selects one.
         """
+        met = self.model.metrics.get(name)
+        if met is not None and met.type == MetricType.REAGGREGATE:
+            return True
         leaves = metric_leaf_measures(self.model, name)
         behind_wrapper = self._wrapper_backed_measures(name)
         drivers = set(anchor)

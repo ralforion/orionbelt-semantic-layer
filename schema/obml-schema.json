@@ -842,6 +842,16 @@
         "count"
       ]
     },
+    "reaggregateAggType": {
+      "description": "Second-stage aggregation for reaggregate metrics",
+      "enum": [
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "count"
+      ]
+    },
     "grainToDate": {
       "description": "Reset boundary for grain-to-date cumulative metrics",
       "enum": [
@@ -909,15 +919,16 @@
     },
     "metric": {
       "type": "object",
-      "description": "Metric definition. A derived metric (expression referencing measures), a cumulative metric (window function over a measure), or a period-over-period metric (comparing a measure across time periods).",
+      "description": "Metric definition. A derived metric (expression referencing measures), a cumulative metric (window function over a measure), a period-over-period metric (comparing a measure across time periods), a window metric, or a reaggregate metric (a measure aggregated per group, then aggregated again).",
       "properties": {
         "type": {
-          "description": "Metric category: derived (expression-based), cumulative (windowed aggregation over a measure), period_over_period (time comparison), or window (rank/lag/lead/ntile/first_value/last_value).",
+          "description": "Metric category: derived (expression-based), cumulative (windowed aggregation over a measure), period_over_period (time comparison), window (rank/lag/lead/ntile/first_value/last_value), or reaggregate (a measure aggregated at the query grain plus 'per', then aggregated again).",
           "enum": [
             "derived",
             "cumulative",
             "period_over_period",
-            "window"
+            "window",
+            "reaggregate"
           ],
           "default": "derived"
         },
@@ -927,7 +938,7 @@
         },
         "measure": {
           "type": "string",
-          "description": "Name of base measure (required for cumulative metrics)"
+          "description": "Name of base measure (required for cumulative and reaggregate metrics; a reaggregate metric's measure must not have a grain, total or filterContext override)"
         },
         "timeDimension": {
           "type": "string",
@@ -984,6 +995,19 @@
         },
         "defaultValue": {
           "description": "Default value for LAG/LEAD (NULL when omitted)"
+        },
+        "per": {
+          "type": "array",
+          "description": "Reaggregate metrics: dimensions added to the query grain for the first stage, each a dimension name or name:grain for a time dimension (e.g. 'Order Date:day').",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "aggregation": {
+          "$ref": "#/definitions/reaggregateAggType",
+          "description": "Reaggregate metrics: the second-stage aggregation over the per-group values. avg is the unweighted mean of those values."
         },
         "description": {
           "type": "string",
@@ -1085,13 +1109,49 @@
         },
         {
           "if": {
+            "properties": {
+              "type": {
+                "const": "reaggregate"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "measure",
+              "per",
+              "aggregation"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "per"
+                  ]
+                },
+                {
+                  "required": [
+                    "aggregation"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
             "not": {
               "properties": {
                 "type": {
                   "enum": [
                     "cumulative",
                     "period_over_period",
-                    "window"
+                    "window",
+                    "reaggregate"
                   ]
                 }
               },

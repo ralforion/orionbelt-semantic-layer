@@ -1905,11 +1905,11 @@ class QueryResolver:
 
         metric = ctx.model.metrics.get(name)
         if metric:
-            if metric.type == MetricType.CUMULATIVE and metric.measure:
-                # Cumulative metric: source objects come from the referenced measure
-                result.update(self._get_measure_source_objects(ctx, metric.measure))
-            elif metric.type == MetricType.WINDOW and metric.measure:
-                # Window metric: source objects come from the referenced measure
+            if (
+                metric.type in (MetricType.CUMULATIVE, MetricType.WINDOW, MetricType.REAGGREGATE)
+                and metric.measure
+            ):
+                # Measure-based metric: source objects come from the referenced measure
                 result.update(self._get_measure_source_objects(ctx, metric.measure))
             elif metric.expression:
                 # Derived or PoP metric: parse expression for measure references

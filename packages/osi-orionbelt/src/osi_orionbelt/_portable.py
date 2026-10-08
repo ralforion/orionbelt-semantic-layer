@@ -373,6 +373,11 @@ class PortableRenderer:
                 f"metric '{name}' compares against a period shifted on a date spine, "
                 f"which one expression cannot reproduce when periods are missing"
             )
+        if kind == "reaggregate":
+            raise NotPortableError(
+                f"metric '{name}' aggregates '{met.get('measure')}' per group and then "
+                f"aggregates those values again, which needs a second query layer"
+            )
         template = met.get("expression")
         if not template:
             raise NotPortableError(f"metric '{name}' has no expression")

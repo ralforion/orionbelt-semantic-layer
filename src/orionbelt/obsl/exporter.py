@@ -810,6 +810,13 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             for part_dim in met.partition_by:
                 g.add((met_uri, OBSL.partitionBy, Literal(part_dim)))
 
+        # Reaggregate metric extended properties
+        if met.type == MetricType.REAGGREGATE and met.aggregation is not None:
+            g.add((met_uri, RDF.type, OBSL.ReaggregateMetric))
+            g.add((met_uri, OBSL.aggregation, Literal(met.aggregation.value)))
+            for per_dim in met.per:
+                g.add((met_uri, OBSL.per, Literal(per_dim)))
+
         if met.description:
             g.add((met_uri, RDFS.comment, Literal(met.description)))
         if met.owner:

@@ -63,7 +63,7 @@ obsl:Measure a owl:Class ;
 
 obsl:Metric a owl:Class ;
     rdfs:label "Metric" ;
-    rdfs:comment "A derived, cumulative, or period-over-period calculation built on top of one or more measures." .
+    rdfs:comment "A derived, cumulative, period-over-period, window, or reaggregate calculation built on top of one or more measures." .
 
 obsl:CumulativeMetric a owl:Class ;
     rdfs:subClassOf obsl:Metric ;
@@ -79,6 +79,11 @@ obsl:WindowMetric a owl:Class ;
     rdfs:subClassOf obsl:Metric ;
     rdfs:label "Window Metric" ;
     rdfs:comment "A metric that applies a single-row-output SQL window function (RANK, DENSE_RANK, ROW_NUMBER, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE) optionally partitioned and ordered." .
+
+obsl:ReaggregateMetric a owl:Class ;
+    rdfs:subClassOf obsl:Metric ;
+    rdfs:label "Reaggregate Metric" ;
+    rdfs:comment "A two-stage metric: its base measure is aggregated at the query grain plus the obsl:per dimensions, then those values are aggregated again (obsl:aggregation) to the query grain.  An avg is the unweighted mean of the per-group values." .
 
 obsl:CustomExtension a owl:Class ;
     rdfs:label "Custom Extension" ;
@@ -293,7 +298,7 @@ obsl:aggregation a owl:DatatypeProperty ;
 
 obsl:metricType a owl:DatatypeProperty ;
     rdfs:label "metric type" ;
-    rdfs:comment "Kind of metric calculation: derived, cumulative, period_over_period." ;
+    rdfs:comment "Kind of metric calculation: derived, cumulative, period_over_period, window, reaggregate." ;
     rdfs:range xsd:string .
 
 obsl:cardinality a owl:DatatypeProperty ;
@@ -553,6 +558,15 @@ obsl:windowDefaultValue a owl:DatatypeProperty ;
     rdfs:label "window default value" ;
     rdfs:comment "Default value to substitute when LAG / LEAD would return NULL (the three-argument form)." ;
     rdfs:domain obsl:WindowMetric ;
+    rdfs:range xsd:string .
+
+# Reaggregate-metric property: the dimensions added to the query grain for the
+# first stage. Each entry is a dimension label, optionally with a time grain
+# ("Order Date:day"). The second-stage function reuses obsl:aggregation.
+obsl:per a owl:DatatypeProperty ;
+    rdfs:label "per" ;
+    rdfs:comment "Dimension label (optionally name:grain) added to the query grain for the first stage of a reaggregate metric.  Multi-valued." ;
+    rdfs:domain obsl:ReaggregateMetric ;
     rdfs:range xsd:string .
 
 # =============================================================================

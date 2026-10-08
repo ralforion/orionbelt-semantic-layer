@@ -197,6 +197,7 @@ class MetricType(StrEnum):
     CUMULATIVE = "cumulative"
     PERIOD_OVER_PERIOD = "period_over_period"
     WINDOW = "window"
+    REAGGREGATE = "reaggregate"
 
 
 class WindowFunctionKind(StrEnum):
@@ -226,6 +227,20 @@ class PeriodOverPeriodComparison(StrEnum):
 
 
 class CumulativeAggType(StrEnum):
+    SUM = "sum"
+    AVG = "avg"
+    MIN = "min"
+    MAX = "max"
+    COUNT = "count"
+
+
+class ReaggregateAggType(StrEnum):
+    """Second-stage aggregation of a ``reaggregate`` metric.
+
+    Applied to the measure's per-group values, so ``avg`` is the unweighted
+    mean of those values, not the row-weighted mean of the measure.
+    """
+
     SUM = "sum"
     AVG = "avg"
     MIN = "min"
@@ -1112,6 +1127,25 @@ class Measure(BaseModel):
         return self
 
 
+#: The ``Metric`` fields a reaggregate metric may set; any other is refused.
+_REAGGREGATE_FIELDS = frozenset(
+    {
+        "name",
+        "type",
+        "measure",
+        "per",
+        "aggregation",
+        "data_type",
+        "description",
+        "format",
+        "owner",
+        "synonyms",
+        "custom_extensions",
+        "external_concept_mappings",
+    }
+)
+
+
 class Metric(BaseModel):
     """A metric: derived expression, cumulative window, or period-over-period comparison.
 
@@ -1120,6 +1154,9 @@ class Metric(BaseModel):
     dimension.  Supports running totals, rolling windows, and grain-to-date resets.
     **Period-over-Period**: compares a measure's value against a prior time period using
     a synthetical date spine.  Supports ratio, difference, previous value, and percent change.
+    **Reaggregate**: aggregates a measure at the query grain plus the ``per`` dimensions,
+    then aggregates those values again to the query grain (e.g. average revenue per
+    customer, by country).
     """
 
     name: str
@@ -1143,6 +1180,10 @@ class Metric(BaseModel):
     buckets: int | None = None
     order_direction: str = Field("desc", alias="orderDirection")
     default_value: str | int | float | bool | None = Field(None, alias="defaultValue")
+    # Reaggregate metrics: dimensions added to the query grain for the first
+    # stage (``name`` or ``name:grain``), and the second-stage aggregation.
+    per: list[str] = Field(default_factory=list)
+    aggregation: ReaggregateAggType | None = None
     # Common
     data_type: str | None = Field(None, alias="dataType")
     description: str | None = None
@@ -1165,6 +1206,11 @@ class Metric(BaseModel):
 
     @model_validator(mode="after")
     def _validate_metric_type(self) -> Metric:
+        if self.type == MetricType.REAGGREGATE:
+            self._validate_reaggregate()
+            return self
+        if self.per or self.aggregation is not None:
+            raise ValueError("'per' and 'aggregation' are only valid on reaggregate metrics")
         if self.type == MetricType.DERIVED:
             if not self.expression:
                 raise ValueError("Derived metrics require 'expression'")
@@ -1232,6 +1278,25 @@ class Metric(BaseModel):
             if self.order_direction.lower() not in {"asc", "desc"}:
                 raise ValueError("'orderDirection' must be 'asc' or 'desc'")
         return self
+
+    def _validate_reaggregate(self) -> None:
+        if not self.measure:
+            raise ValueError("Reaggregate metrics require 'measure'")
+        if not self.per:
+            raise ValueError("Reaggregate metrics require at least one 'per' dimension")
+        if len(set(self.per)) != len(self.per):
+            raise ValueError("Reaggregate metric 'per' entries must be unique")
+        if self.aggregation is None:
+            raise ValueError("Reaggregate metrics require 'aggregation'")
+        # Checked against what was supplied, not against values: a default such
+        # as cumulativeType 'sum' is fine, an explicit one is a setting that
+        # would have no effect.
+        foreign = sorted(
+            Metric.model_fields[field].alias or field
+            for field in self.model_fields_set - _REAGGREGATE_FIELDS
+        )
+        if foreign:
+            raise ValueError(f"Reaggregate metrics must not have {', '.join(foreign)}")
 
 
 class ModelSettings(BaseModel):

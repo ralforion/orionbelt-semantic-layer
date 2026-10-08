@@ -1368,6 +1368,12 @@ def _metric_formula(metric: object) -> str:
             formula += f" over {time_dim}"
         return formula
 
+    if mtype == "reaggregate":
+        agg = str(getattr(metric, "aggregation", "") or "")
+        base = getattr(metric, "measure", "") or ""
+        per = ", ".join(getattr(metric, "per", None) or [])
+        return f"{agg}({base} per {per})"
+
     if mtype == "period_over_period":
         pop = getattr(metric, "period_over_period", None)
         base = expression or (getattr(metric, "measure", "") or "")
