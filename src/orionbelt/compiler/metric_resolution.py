@@ -1,6 +1,6 @@
 """Metric resolution extracted from ``QueryResolver``.
 
-Covers derived, window, cumulative, and period-over-period metrics plus the
+Covers derived, window, cumulative, period-over-period, and reaggregate metrics plus the
 shared ``partitionBy`` validation. Functions take the owning
 ``QueryResolver`` as their first argument (``resolver``); ``QueryResolver``
 keeps one-line delegators so its public surface is unchanged. Pure code
@@ -18,11 +18,13 @@ from orionbelt.compiler.expr_parser import (
     tokenize_metric_formula,
 )
 from orionbelt.models.errors import SemanticError
+from orionbelt.models.query import DimensionRef
 from orionbelt.models.semantic import (
     Metric,
     MetricType,
     WindowFunctionKind,
 )
+from orionbelt.models.warnings import WarningCode, warning
 
 if TYPE_CHECKING:
     from orionbelt.compiler.resolution import (
@@ -43,17 +45,7 @@ def resolve_metric(
     if metric.type == MetricType.WINDOW:
         return resolver._resolve_window_metric(ctx, name, metric)
     if metric.type == MetricType.REAGGREGATE:
-        ctx.errors.append(
-            SemanticError(
-                code="REAGGREGATE_NOT_SUPPORTED",
-                message=(
-                    f"Reaggregate metric '{name}' is defined in the model but cannot be "
-                    f"compiled yet."
-                ),
-                path=f"metrics.{name}",
-            )
-        )
-        return None
+        return resolve_reaggregate_metric(resolver, ctx, name, metric)
     return resolver._resolve_derived_metric(ctx, name, metric)
 
 
@@ -380,6 +372,111 @@ def resolve_cumulative_metric(
         cumulative_window=metric.window,
         cumulative_grain_to_date=metric.grain_to_date,
         cumulative_partition_by=list(metric.partition_by),
+    )
+
+
+def resolve_reaggregate_metric(
+    resolver: QueryResolver, ctx: _ResolutionContext, name: str, metric: Metric
+) -> ResolvedMeasure | None:
+    """Resolve a reaggregate metric to a placeholder over its measure.
+
+    Like a cumulative metric, the planner projects the base measure's aggregate
+    under the metric's name, at the query grain. That value is not the metric:
+    ``reaggregate_wrap`` replaces it with the second stage, computed over a scan
+    of its own at the query grain plus the ``per`` dimensions.
+    """
+    from orionbelt.compiler.resolution import ResolvedMeasure
+
+    path = f"metrics.{name}"
+    if metric.measure is None or metric.aggregation is None:
+        ctx.errors.append(
+            SemanticError(
+                code="INVALID_METRIC",
+                message=f"Reaggregate metric '{name}' needs 'measure' and 'aggregation'",
+                path=path,
+            )
+        )
+        return None
+    base_measure = ctx.model.effective_measures.get(metric.measure)
+    if base_measure is None:
+        ctx.errors.append(
+            SemanticError(
+                code="UNKNOWN_MEASURE",
+                message=(
+                    f"Reaggregate metric '{name}' references unknown measure '{metric.measure}'"
+                ),
+                path=f"{path}.measure",
+            )
+        )
+        return None
+    # A rolled-up query has subtotal rows, each needing a second stage over its
+    # own finer groups; one scan at one grain cannot answer them.
+    if ctx.result.grouping is not None:
+        ctx.errors.append(
+            SemanticError(
+                code="REAGGREGATE_WITH_ROLLUP",
+                message=(
+                    f"Reaggregate metric '{name}' cannot be computed under grouping "
+                    f"'{ctx.result.grouping.value}'"
+                ),
+                path="select.measures",
+                hint="Drop the grouping, or select the metric in a query of its own.",
+            )
+        )
+        return None
+
+    in_query = {d.name: d.grain for d in ctx.result.dimensions}
+    for entry in metric.per:
+        ref = DimensionRef.parse(entry) if entry not in ctx.model.dimensions else None
+        declared = ctx.model.dimensions.get(entry)
+        # The same dimension in the query at another grain would make this entry
+        # a silent no-op rather than the finer bucket it names.
+        regrained = (
+            declared is not None
+            and entry in in_query
+            and in_query[entry] not in (None, declared.time_grain)
+        )
+        if regrained or (ref is not None and ref.grain is not None):
+            ctx.errors.append(
+                SemanticError(
+                    code="REAGGREGATE_PER_GRAIN_NOT_SUPPORTED",
+                    message=(
+                        f"Reaggregate metric '{name}' groups by '{entry}'; a 'per' entry "
+                        f"with a time grain cannot be compiled yet."
+                    ),
+                    path=f"{path}.per",
+                    hint="Name a dimension whose declared timeGrain is the bucket you need.",
+                )
+            )
+            return None
+    if all(entry in in_query for entry in metric.per):
+        ctx.result.warnings.append(
+            warning(
+                WarningCode.REAGGREGATE_NO_OP,
+                (
+                    f"Every 'per' dimension of reaggregate metric '{name}' is already in the "
+                    f"query, so each group has one value of '{metric.measure}' and the "
+                    f"metric equals {metric.aggregation.value} of that one value."
+                ),
+                path=f"{path}.per",
+            )
+        )
+
+    if metric.measure not in ctx.result.metric_components:
+        comp = resolver._resolve_measure(ctx, metric.measure)
+        if comp:
+            ctx.result.metric_components[metric.measure] = comp
+
+    return ResolvedMeasure(
+        name=name,
+        aggregation=metric.aggregation.value,
+        expression=ColumnRef(name=metric.measure),
+        is_expression=True,
+        component_measures=[metric.measure],
+        is_reaggregate=True,
+        reaggregate_measure=metric.measure,
+        reaggregate_per=list(metric.per),
+        reaggregate_aggregation=metric.aggregation,
     )
 
 

@@ -30,6 +30,9 @@ class WarningCode:
     # A cumulative sum adds up per-period values of a measure that does not
     # add up across periods (distinct counts, averages, extremes)
     NON_ADDITIVE_CUMULATIVE_SUM = "NON_ADDITIVE_CUMULATIVE_SUM"
+    # Every ``per`` dimension of a reaggregate metric is already in the query,
+    # so its second stage aggregates one value per group
+    REAGGREGATE_NO_OP = "REAGGREGATE_NO_OP"
 
     # Multi-fact / fan-trap / structural risks
     FAN_TRAP_RISK = "FAN_TRAP_RISK"

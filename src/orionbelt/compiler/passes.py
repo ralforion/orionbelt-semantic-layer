@@ -47,6 +47,7 @@ from orionbelt.compiler.having_hoist import (
 )
 from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.pop_wrap import wrap_with_pop
+from orionbelt.compiler.reaggregate_wrap import wrap_with_reaggregate
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.compiler.total_wrap import is_avg_total, wrap_with_totals
 from orionbelt.compiler.window_wrap import (
@@ -63,6 +64,7 @@ from orionbelt.models.warnings import WarningCode, warning
 # Canonical pass names. Used as identifiers in ordering, compatibility
 # metadata, and tests — keep them stable.
 PASS_GRAIN_DEDUP = "grain_dedup"
+PASS_REAGGREGATE = "reaggregate"
 PASS_FILTER_CONTEXT = "filter_context"
 PASS_PERIOD_OVER_PERIOD = "period_over_period"
 PASS_TOTALS = "totals"
@@ -163,6 +165,13 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
                     PASS_CUMULATIVE,
                     PASS_WINDOW,
                 }
+            ),
+        ),
+        CompilerPass(
+            name=PASS_REAGGREGATE,
+            applies=lambda r: r.has_reaggregate,
+            run=lambda ast, ctx: wrap_with_reaggregate(
+                ast, ctx.resolved, ctx.model, ctx.dialect, ctx.qualify_table, ctx.query
             ),
         ),
         CompilerPass(
@@ -508,6 +517,51 @@ def evaluate_compatibility(
     return CompatibilityResult(warnings=warnings, suppressed=frozenset(suppressed))
 
 
+def _refuse_reaggregate_combinations(resolved: ResolvedQuery) -> None:
+    """Refuse what ``reaggregate_wrap`` does not compose with yet.
+
+    Each of these wrappers restructures the planner's projection, and the
+    reaggregate pass reads that projection by alias; the combinations are not
+    built, so they are refused rather than compiled into a query that reads the
+    wrong column. A HAVING on a reaggregate metric would be evaluated in the
+    planner's query, against the placeholder rather than the metric.
+    """
+    names = {m.name for m in resolved.measures if m.is_reaggregate}
+    features = [
+        label
+        for label, present in (
+            ("grain deduplication", bool(resolved.dedup_targets)),
+            ("a filterContext", resolved.has_filter_context),
+            ("a period-over-period metric", resolved.has_pop),
+            ("a total or grain override", resolved.has_totals),
+            ("a cumulative metric", resolved.has_cumulative),
+            ("a window metric", window_pass_applies(resolved)),
+            (
+                "a HAVING filter on a reaggregate metric",
+                any(hf.referenced_fields & names for hf in resolved.having_filters),
+            ),
+        )
+        if present
+    ]
+    if not features:
+        return
+    listed = ", ".join(f"'{name}'" for name in sorted(names))
+    raise ResolutionError(
+        [
+            SemanticError(
+                code="REAGGREGATE_COMBINATION_NOT_SUPPORTED",
+                message=(
+                    f"Reaggregate metric(s) {listed} cannot be combined with "
+                    f"{', '.join(features)} in one query yet."
+                ),
+                path="select.measures",
+                hint="Query the reaggregate metric on its own, or with plain measures.",
+                context={"metrics": sorted(names), "features": features},
+            )
+        ]
+    )
+
+
 def apply_aggregate_passes(ast: Select, ctx: CompileContext) -> Select:
     """Run the aggregate-mode passes against ``ast``.
 
@@ -593,6 +647,9 @@ def apply_aggregate_passes(ast: Select, ctx: CompileContext) -> Select:
                 )
             ]
         )
+
+    if ctx.resolved.has_reaggregate:
+        _refuse_reaggregate_combinations(ctx.resolved)
 
     if not ctx.resolved.allow_fan_out:
         flagged = mixed_grain_measures(ctx.resolved, ctx.model)

@@ -476,11 +476,15 @@ class ComposabilityResolver:
         land in one query, so a component on the *one* side is replicated by a
         sibling on the many side even when the anchor reaches neither.
 
-        A reaggregate metric is always excluded for now: it has no SQL lowering
-        yet, so the compiler refuses every query that selects one.
+        A reaggregate metric whose ``per`` names a time grain is excluded: that
+        form is not compiled yet, so every query selecting it is refused.
         """
         met = self.model.metrics.get(name)
-        if met is not None and met.type == MetricType.REAGGREGATE:
+        if (
+            met is not None
+            and met.type == MetricType.REAGGREGATE
+            and any(entry not in self.model.dimensions and ":" in entry for entry in met.per)
+        ):
             return True
         leaves = metric_leaf_measures(self.model, name)
         behind_wrapper = self._wrapper_backed_measures(name)

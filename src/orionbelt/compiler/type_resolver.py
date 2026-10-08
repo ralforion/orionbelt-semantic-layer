@@ -24,8 +24,10 @@ from orionbelt.models.semantic import (
     DataType,
     Measure,
     Metric,
+    MetricType,
     ModelSettings,
     PeriodOverPeriodComparison,
+    ReaggregateAggType,
     SemanticModel,
 )
 from orionbelt.models.types import (
@@ -132,6 +134,16 @@ def resolve_metric_data_type(
     # 2. Structural inference: division in expression → decimal(18, 6)
     if metric.expression and "/" in metric.expression:
         return DIVISION_DEFAULT
+
+    # 2a. A reaggregate metric's second stage: an average is a new numeric value
+    # and takes the default, as an ``avg`` measure does; a count is an integer;
+    # sum, min and max carry the base measure's units and inherit.
+    if metric.type is MetricType.REAGGREGATE:
+        if metric.aggregation is ReaggregateAggType.AVG:
+            return _get_default(settings)
+        if metric.aggregation is ReaggregateAggType.COUNT:
+            return SimpleType(name="bigint")
+        return None
 
     # 2b. A period-over-period metric divides too, but the division is in the
     # comparison rather than the expression: its ``expression`` names the base

@@ -22,6 +22,7 @@ from orionbelt.compiler.passes import (
     PASS_HAVING_CLEANUP,
     PASS_HAVING_WINDOW,
     PASS_PERIOD_OVER_PERIOD,
+    PASS_REAGGREGATE,
     PASS_TOTALS,
     PASS_WINDOW,
     build_default_passes,
@@ -79,6 +80,7 @@ def test_pass_order_is_declared_once() -> None:
     names = [p.name for p in build_default_passes()]
     assert names == [
         PASS_GRAIN_DEDUP,
+        PASS_REAGGREGATE,
         PASS_FILTER_CONTEXT,
         PASS_PERIOD_OVER_PERIOD,
         PASS_TOTALS,

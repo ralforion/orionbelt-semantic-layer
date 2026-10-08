@@ -1,7 +1,8 @@
 """Reaggregate metrics: the OBML surface (model, parser, schema, graph, lineage).
 
-The SQL lowering is not built yet, so a query selecting one is refused with
-``REAGGREGATE_NOT_SUPPORTED`` rather than compiled through the derived path.
+Compiled results are checked against hand-written SQL in
+``tests/integration/correctness/test_reaggregate_reference.py``; here the SQL
+shape, the warnings and the refusals.
 """
 
 from __future__ import annotations
@@ -17,10 +18,10 @@ from rdflib import Literal, URIRef
 from rdflib.namespace import RDF
 
 from orionbelt.compiler.composability import resolve_composables_for_anchors
-from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.errors import ValidationResult
-from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import (
     _REAGGREGATE_FIELDS,
     Metric,
@@ -340,28 +341,103 @@ class TestPerGrain:
 
 
 class TestComposability:
-    """Not offered as a query choice while every query selecting it is refused."""
+    """Offered as a query choice, except the form every query refuses."""
 
     @pytest.mark.parametrize("anchors", [[], ["Country"]])
-    def test_excluded(self, model: SemanticModel, anchors: list[str]) -> None:
+    def test_offered(self, model: SemanticModel, anchors: list[str]) -> None:
         result = resolve_composables_for_anchors(model, anchors)
         offered = set(result.metrics) | set(result.cfl_metrics)
-        assert not offered & {
-            "Avg Revenue per Customer",
-            "Avg Orders per Customer",
-            "Avg Daily Revenue",
-        }
-        assert "Revenue" in result.measures
+        assert {"Avg Revenue per Customer", "Avg Orders per Customer"} <= offered
+        # per: ['Order Date:day'] is refused until a per grain compiles.
+        assert "Avg Daily Revenue" not in offered
+
+
+def _compile(model: SemanticModel, query: QueryObject) -> CompilationResult:
+    return CompilationPipeline().compile(query, model, "duckdb")
+
+
+def _refusal(model: SemanticModel, query: QueryObject) -> set[str]:
+    with pytest.raises(ResolutionError) as exc_info:
+        _compile(model, query)
+    return {e.code for e in exc_info.value.errors}
 
 
 class TestCompile:
-    def test_query_is_refused_until_lowered(self, model: SemanticModel) -> None:
-        query = QueryObject(
-            select=QuerySelect(dimensions=["Country"], measures=["Avg Revenue per Customer"])
+    def test_two_stages_joined_back(self, model: SemanticModel) -> None:
+        sql = _compile(
+            model,
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Country"], measures=["Revenue", "Avg Revenue per Customer"]
+                )
+            ),
+        ).sql
+        assert '"reagg_1_inner"' in sql
+        assert 'AVG("reagg_1_inner"."Revenue")' in sql
+        assert 'LEFT JOIN "reagg_1"' in sql
+        # The placeholder the planner projected is not in the base CTE.
+        base = sql.split('"reagg_1_inner" AS')[0]
+        assert '"Avg Revenue per Customer"' not in base
+
+    def test_shared_scan(self, model: SemanticModel) -> None:
+        resolved = _with_metric(
+            "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: max"
         )
-        with pytest.raises(ResolutionError) as exc_info:
-            CompilationPipeline().compile(query, model, "duckdb")
-        assert any(e.code == "REAGGREGATE_NOT_SUPPORTED" for e in exc_info.value.errors)
+        probe_model, result = _resolve(resolved)
+        assert result.valid
+        sql = _compile(
+            probe_model,
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Country"], measures=["Avg Revenue per Customer", "Probe"]
+                )
+            ),
+        ).sql
+        assert sql.count('_inner" AS (') == 1
+
+    def test_per_already_in_query_warns(self, model: SemanticModel) -> None:
+        result = _compile(
+            model,
+            QueryObject(
+                select=QuerySelect(dimensions=["Customer"], measures=["Avg Revenue per Customer"])
+            ),
+        )
+        assert "REAGGREGATE_NO_OP" in {w.code for w in result.warnings}
+
+    def test_refused_under_rollup(self, model: SemanticModel) -> None:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Country"], measures=["Avg Revenue per Customer"]),
+            grouping="rollup",
+        )
+        assert "REAGGREGATE_WITH_ROLLUP" in _refusal(model, query)
+
+    def test_per_grain_refused(self, model: SemanticModel) -> None:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Country"], measures=["Avg Daily Revenue"])
+        )
+        assert "REAGGREGATE_PER_GRAIN_NOT_SUPPORTED" in _refusal(model, query)
+
+    def test_per_in_query_at_another_grain_refused(self) -> None:
+        probe_model, result = _resolve(
+            _with_metric("type: reaggregate\nmeasure: Revenue\nper: [Order Date]\naggregation: avg")
+        )
+        assert result.valid
+        query = QueryObject(select=QuerySelect(dimensions=["Order Date:year"], measures=["Probe"]))
+        assert "REAGGREGATE_PER_GRAIN_NOT_SUPPORTED" in _refusal(probe_model, query)
+
+    @pytest.mark.parametrize("other", ["Total Revenue", "Unfiltered Revenue"])
+    def test_combination_refused(self, model: SemanticModel, other: str) -> None:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Country"], measures=["Avg Revenue per Customer", other])
+        )
+        assert "REAGGREGATE_COMBINATION_NOT_SUPPORTED" in _refusal(model, query)
+
+    def test_having_on_the_metric_refused(self, model: SemanticModel) -> None:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Country"], measures=["Avg Revenue per Customer"]),
+            having=[QueryFilter(field="Avg Revenue per Customer", op=">", value=10)],
+        )
+        assert "REAGGREGATE_COMBINATION_NOT_SUPPORTED" in _refusal(model, query)
 
 
 class TestJsonSchema:

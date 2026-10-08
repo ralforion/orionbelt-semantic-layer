@@ -67,6 +67,7 @@ from orionbelt.models.semantic import (
     ModelFilter,
     ModelSettings,
     PeriodOverPeriodComparison,
+    ReaggregateAggType,
     SemanticModel,
     TimeGrain,
     WindowFunctionKind,
@@ -574,6 +575,12 @@ class ResolvedMeasure:
     window_buckets: int | None = None
     window_order_direction: str = "desc"
     window_default_value: str | int | float | bool | None = None
+    # Reaggregate metric fields: the measure is computed at the query grain plus
+    # ``reaggregate_per``, then aggregated again by ``reaggregate_aggregation``
+    is_reaggregate: bool = False
+    reaggregate_measure: str | None = None
+    reaggregate_per: list[str] = field(default_factory=list)
+    reaggregate_aggregation: ReaggregateAggType | None = None
 
     @property
     def aggregate(self) -> Expr:
@@ -831,6 +838,11 @@ class ResolvedQuery:
     def has_window(self) -> bool:
         """Check if any selected metric is a window (rank/lag/lead/ntile/...)."""
         return any(m.is_window for m in self.measures)
+
+    @property
+    def has_reaggregate(self) -> bool:
+        """Check if any selected metric is a reaggregate metric."""
+        return any(m.is_reaggregate for m in self.measures)
 
 
 @dataclass
