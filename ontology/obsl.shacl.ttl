@@ -416,6 +416,37 @@ obsl:CumulativeMetricShape a sh:NodeShape ;
     ] .
 
 # -----------------------------------------------------------------------------
+# Reaggregate Metric --- a measure aggregated per group, then aggregated again
+# -----------------------------------------------------------------------------
+
+obsl:ReaggregateMetricShape a sh:NodeShape ;
+    sh:targetClass obsl:ReaggregateMetric ;
+    rdfs:label "OBSL Reaggregate Metric Shape" ;
+    rdfs:comment "Validates two-stage metrics: one base measure, at least one per dimension, one second-stage aggregation." ;
+    sh:property [
+        sh:path obsl:baseMeasure ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "base measure" ;
+        sh:message "Reaggregate metrics must reference exactly one obsl:baseMeasure."
+    ] ;
+    sh:property [
+        sh:path obsl:per ;
+        sh:minCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "per" ;
+        sh:message "Reaggregate metrics must name at least one obsl:per dimension."
+    ] ;
+    sh:property [
+        sh:path obsl:aggregation ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "sum" "avg" "min" "max" "count" ) ;
+        sh:name "aggregation" ;
+        sh:message "Reaggregate metrics must specify exactly one obsl:aggregation (sum, avg, min, max, count)."
+    ] .
+
+# -----------------------------------------------------------------------------
 # Period-over-Period Metric --- compares values across time periods
 # -----------------------------------------------------------------------------
 

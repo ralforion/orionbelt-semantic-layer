@@ -36,10 +36,11 @@ OBSL-Core is not intended to represent:
 - joins (with optional secondary-path naming)
 - dimensions (with optional `via` for role-playing paths, and `pathName` to pin a dimension to one named join from `via`)
 - measures (with optional grain override, filter context, LISTAGG `delimiter` + `withinGroup` ordering)
-- metrics — four types: derived, cumulative, period-over-period, **window** (`rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value`)
+- metrics — five types: derived, cumulative, period-over-period, **window** (`rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value`), **reaggregate**
 - cumulative metric metadata (time dimension, window, grain-to-date, optional `partitionBy`)
 - period-over-period metric metadata (time dimension, offset, comparison)
 - window metric metadata (window function, offset, buckets, order direction, default value, `partitionBy`)
+- reaggregate metric metadata (`per` dimensions, second-stage aggregation)
 - canonical example queries (`ModelExample` with name, description, query payload, intent tags)
 - vendor-keyed `CustomExtension` blocks attached to any modeling element (model, data object, column, dimension, measure, metric)
 - `ExternalConceptMapping` links from a model, data object, dimension, measure, metric or rule to a concept in an external ontology (SKOS mapping relation plus provenance)
@@ -273,6 +274,14 @@ Additional required:
 - `obsl:offset`
 - `obsl:offsetGrain`
 - `obsl:comparison`
+
+### 5.9a ReaggregateMetric (subclass of Metric)
+Represents a two-stage metric: the base measure is aggregated at the query grain plus the `per` dimensions, then those values are aggregated again to the query grain.
+
+Additional required:
+- `obsl:baseMeasure`
+- `obsl:per` (one or more dimension labels, optionally `name:grain`)
+- `obsl:aggregation` (second-stage function: sum, avg, min, max, count)
 
 ### 5.10 ExternalConceptMapping
 Represents a qualified link from a modeling element to a concept in an external ontology (a corporate glossary, FIBO, schema.org). Descriptive metadata only: it never affects SQL planning or execution.
@@ -512,6 +521,10 @@ Any of model, data object, dimension, measure, metric:
 - `periodOverPeriod.offsetGrain` -> `obsl:offsetGrain`
 - `periodOverPeriod.comparison` -> `obsl:comparison`
 
+### 10.9a Reaggregate Metrics (type: reaggregate → rdf:type obsl:ReaggregateMetric)
+- `per` -> `obsl:per` (one triple per entry)
+- `aggregation` -> `obsl:aggregation`
+
 Fields intentionally excluded from Core mapping:
 - expression AST nodes
 
@@ -590,6 +603,7 @@ Classes:
 - `obsl:Metric`
 - `obsl:CumulativeMetric` (subclass of `obsl:Metric`)
 - `obsl:PeriodOverPeriodMetric` (subclass of `obsl:Metric`)
+- `obsl:ReaggregateMetric` (subclass of `obsl:Metric`)
 
 Core object properties:
 - `obsl:hasDataObject`

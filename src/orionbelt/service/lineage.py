@@ -12,7 +12,8 @@ What an artefact depends on, by kind:
   its ``withinGroup`` column, the dimensions of a grain override (``grain``),
   its ``anchor`` object; a synthesized count reads its data object's rows;
 * metric - the measures and metrics its expression names; for cumulative and
-  window metrics, the measure plus the time and partition dimensions;
+  window metrics, the measure plus the time and partition dimensions; for
+  reaggregate metrics, the measure plus its ``per`` dimensions;
 * rule - the dimensions and measures its condition reads, the rules it
   references, and its grain dimensions;
 * query - its dimensions, measures and metrics, its filter and order fields,
@@ -142,6 +143,7 @@ _METRIC_CLASSES = {
     "cumulative": "CumulativeMetric",
     "period_over_period": "PeriodOverPeriodMetric",
     "window": "WindowMetric",
+    "reaggregate": "ReaggregateMetric",
 }
 
 
@@ -424,6 +426,10 @@ class LineageBuilder:
         for dim in met.partition_by:
             if dim in self.model.dimensions:
                 self._edge(self._dimension(dim), node, "partition")
+        for entry in met.per:
+            dim = entry if entry in self.model.dimensions else entry.rpartition(":")[0]
+            if dim in self.model.dimensions:
+                self._edge(self._dimension(dim), node, "per")
         return node
 
     def _rule(self, name: str) -> str:

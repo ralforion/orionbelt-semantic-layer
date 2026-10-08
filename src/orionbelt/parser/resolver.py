@@ -19,6 +19,7 @@ from orionbelt.models.concept_links import (
 )
 from orionbelt.models.errors import SemanticError, ValidationResult
 from orionbelt.models.expressions import find_malformed_measure_refs, find_qualified_refs
+from orionbelt.models.query import DimensionRef
 from orionbelt.models.rules import (
     AGGREGATE,
     ROW_LEVEL,
@@ -56,6 +57,7 @@ from orionbelt.models.semantic import (
     RuleCondition,
     RuleType,
     SemanticModel,
+    TimeGrain,
 )
 from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN, count_label, count_pattern_error
 from orionbelt.parser.loader import SourceMap
@@ -1222,6 +1224,32 @@ class ReferenceResolver:
                         custom_extensions=_parse_extensions(raw_metric),
                         external_concept_mappings=concept_links,
                     )
+                elif metric_type == MetricType.REAGGREGATE:
+                    self._check_reaggregate_refs(
+                        name,
+                        raw_metric,
+                        measures,
+                        synthesized_measure_names,
+                        set(raw_metrics),
+                        dimensions,
+                        errors,
+                        source_map,
+                    )
+                    # Every recognised key is passed on, so a field of another
+                    # metric type is refused by the model instead of dropped.
+                    metrics[name] = Metric.model_validate(
+                        {
+                            **{
+                                key: value
+                                for key, value in raw_metric.items()
+                                if key in _METRIC_KEYS
+                                and key not in ("customExtensions", "externalConceptMappings")
+                            },
+                            "name": name,
+                            "customExtensions": _parse_extensions(raw_metric),
+                            "externalConceptMappings": concept_links,
+                        }
+                    )
                 elif metric_type == MetricType.WINDOW:
                     # Window metric (rank/lag/lead/ntile/first_value/last_value)
                     ref_measure = raw_metric.get("measure")
@@ -1847,6 +1875,95 @@ class ReferenceResolver:
                     span=span,
                 )
             )
+
+    @staticmethod
+    def _check_reaggregate_refs(
+        name: str,
+        raw_metric: dict[str, Any],
+        measures: dict[str, Measure],
+        synthesized_measures: set[str],
+        metric_names: set[str],
+        dimensions: dict[str, Dimension],
+        errors: list[SemanticError],
+        source_map: SourceMap | None,
+    ) -> None:
+        """Check what a reaggregate metric's ``measure`` and ``per`` name.
+
+        The first stage is the measure's own SQL at a finer grain, so the
+        measure must be a plain one: a ``grain``/``total`` override or a
+        ``filterContext`` already runs in a wrapper of its own, and stacking the
+        two stages on top of it is not supported yet.
+        """
+        path = f"metrics.{name}"
+
+        def report(
+            code: str, field: str, message: str, suggestions: list[str] | None = None
+        ) -> None:
+            errors.append(
+                SemanticError(
+                    code=code,
+                    message=message,
+                    path=f"{path}.{field}",
+                    span=source_map.get(f"{path}.{field}") if source_map else None,
+                    suggestions=suggestions or [],
+                )
+            )
+
+        ref = raw_metric.get("measure")
+        if isinstance(ref, str) and ref:
+            measure = measures.get(ref)
+            if ref in metric_names and measure is None:
+                report(
+                    "REAGGREGATE_MEASURE_ONLY",
+                    "measure",
+                    f"Reaggregate metric '{name}' references metric '{ref}'; "
+                    f"'measure' must name a measure.",
+                )
+            elif measure is None and ref not in synthesized_measures:
+                report(
+                    "UNKNOWN_MEASURE",
+                    "measure",
+                    f"Reaggregate metric '{name}' references unknown measure '{ref}'",
+                    _suggest_similar(ref, [*measures, *synthesized_measures]),
+                )
+            elif measure is not None and (measure.total or measure.grain is not None):
+                report(
+                    "REAGGREGATE_INNER_GRAIN",
+                    "measure",
+                    f"Reaggregate metric '{name}' references measure '{ref}', which has a "
+                    f"'grain' or 'total' override; reaggregating it is not supported.",
+                )
+            elif measure is not None and measure.filter_context is not None:
+                report(
+                    "REAGGREGATE_INNER_FILTER_CONTEXT",
+                    "measure",
+                    f"Reaggregate metric '{name}' references measure '{ref}', which has a "
+                    f"'filterContext'; reaggregating it is not supported.",
+                )
+
+        per = raw_metric.get("per")
+        if not isinstance(per, list):
+            return
+        for entry in per:
+            if not isinstance(entry, str):
+                continue
+            try:
+                dim_ref = DimensionRef.parse(entry)
+            except ValueError:
+                report(
+                    "REAGGREGATE_INVALID_PER",
+                    "per",
+                    f"Reaggregate metric '{name}' has 'per' entry '{entry}' with an unknown "
+                    f"time grain; use one of {', '.join(g.value for g in TimeGrain)}.",
+                )
+                continue
+            if dim_ref.name not in dimensions:
+                report(
+                    "REAGGREGATE_UNKNOWN_DIMENSION",
+                    "per",
+                    f"Reaggregate metric '{name}' references unknown dimension '{dim_ref.name}'",
+                    _suggest_similar(dim_ref.name, list(dimensions)),
+                )
 
     def _validate_metric_expression_refs(
         self,

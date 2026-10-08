@@ -197,6 +197,7 @@ class MetricType(StrEnum):
     CUMULATIVE = "cumulative"
     PERIOD_OVER_PERIOD = "period_over_period"
     WINDOW = "window"
+    REAGGREGATE = "reaggregate"
 
 
 class WindowFunctionKind(StrEnum):
@@ -226,6 +227,20 @@ class PeriodOverPeriodComparison(StrEnum):
 
 
 class CumulativeAggType(StrEnum):
+    SUM = "sum"
+    AVG = "avg"
+    MIN = "min"
+    MAX = "max"
+    COUNT = "count"
+
+
+class ReaggregateAggType(StrEnum):
+    """Second-stage aggregation of a ``reaggregate`` metric.
+
+    Applied to the measure's per-group values, so ``avg`` is the unweighted
+    mean of those values, not the row-weighted mean of the measure.
+    """
+
     SUM = "sum"
     AVG = "avg"
     MIN = "min"
@@ -1120,6 +1135,9 @@ class Metric(BaseModel):
     dimension.  Supports running totals, rolling windows, and grain-to-date resets.
     **Period-over-Period**: compares a measure's value against a prior time period using
     a synthetical date spine.  Supports ratio, difference, previous value, and percent change.
+    **Reaggregate**: aggregates a measure at the query grain plus the ``per`` dimensions,
+    then aggregates those values again to the query grain (e.g. average revenue per
+    customer, by country).
     """
 
     name: str
@@ -1143,6 +1161,10 @@ class Metric(BaseModel):
     buckets: int | None = None
     order_direction: str = Field("desc", alias="orderDirection")
     default_value: str | int | float | bool | None = Field(None, alias="defaultValue")
+    # Reaggregate metrics: dimensions added to the query grain for the first
+    # stage (``name`` or ``name:grain``), and the second-stage aggregation.
+    per: list[str] = Field(default_factory=list)
+    aggregation: ReaggregateAggType | None = None
     # Common
     data_type: str | None = Field(None, alias="dataType")
     description: str | None = None
@@ -1165,6 +1187,11 @@ class Metric(BaseModel):
 
     @model_validator(mode="after")
     def _validate_metric_type(self) -> Metric:
+        if self.type == MetricType.REAGGREGATE:
+            self._validate_reaggregate()
+            return self
+        if self.per or self.aggregation is not None:
+            raise ValueError("'per' and 'aggregation' are only valid on reaggregate metrics")
         if self.type == MetricType.DERIVED:
             if not self.expression:
                 raise ValueError("Derived metrics require 'expression'")
@@ -1232,6 +1259,33 @@ class Metric(BaseModel):
             if self.order_direction.lower() not in {"asc", "desc"}:
                 raise ValueError("'orderDirection' must be 'asc' or 'desc'")
         return self
+
+    def _validate_reaggregate(self) -> None:
+        if not self.measure:
+            raise ValueError("Reaggregate metrics require 'measure'")
+        if not self.per:
+            raise ValueError("Reaggregate metrics require at least one 'per' dimension")
+        if len(set(self.per)) != len(self.per):
+            raise ValueError("Reaggregate metric 'per' entries must be unique")
+        if self.aggregation is None:
+            raise ValueError("Reaggregate metrics require 'aggregation'")
+        foreign = [
+            alias
+            for alias, present in (
+                ("expression", self.expression is not None),
+                ("timeDimension", self.time_dimension is not None),
+                ("window", self.window is not None),
+                ("grainToDate", self.grain_to_date is not None),
+                ("partitionBy", bool(self.partition_by)),
+                ("periodOverPeriod", self.period_over_period is not None),
+                ("windowFunction", self.window_function is not None),
+                ("offset", self.offset is not None),
+                ("buckets", self.buckets is not None),
+            )
+            if present
+        ]
+        if foreign:
+            raise ValueError(f"Reaggregate metrics must not have {', '.join(foreign)}")
 
 
 class ModelSettings(BaseModel):

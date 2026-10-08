@@ -21,6 +21,9 @@ enums:
   CumulativeAggType:
     python: orionbelt.models.semantic.CumulativeAggType
     values: ['sum', 'avg', 'min', 'max', 'count']
+  ReaggregateAggType:
+    python: orionbelt.models.semantic.ReaggregateAggType
+    values: ['sum', 'avg', 'min', 'max', 'count']
   DataType:
     python: orionbelt.models.semantic.DataType
     values: ['string', 'json', 'int', 'float', 'date', 'time', 'time_tz', 'timestamp', 'timestamp_tz', 'boolean']
@@ -41,7 +44,7 @@ enums:
     values: ['left', 'inner', 'right', 'full']
   MetricType:
     python: orionbelt.models.semantic.MetricType
-    values: ['derived', 'cumulative', 'period_over_period', 'window']
+    values: ['derived', 'cumulative', 'period_over_period', 'window', 'reaggregate']
   NumClass:
     python: orionbelt.models.semantic.NumClass
     values: ['categorical', 'additive', 'non-additive']
@@ -915,6 +918,18 @@ classes:
         type: "str | int | float | bool | None"
         json_schema: true
         ontology_property: windowDefaultValue
+        osi_roundtrip: true
+      per:
+        alias: per
+        type: "list[str]"
+        json_schema: true
+        ontology_property: per
+        osi_roundtrip: true
+      aggregation:
+        alias: aggregation
+        type: "ReaggregateAggType | None"
+        json_schema: true
+        ontology_property: aggregation
         osi_roundtrip: true
       data_type:
         alias: dataType
