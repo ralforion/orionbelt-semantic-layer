@@ -93,6 +93,10 @@ _METRICS["Peak Monthly Returns"] = {
     "per": ["Return Year Month"],
     "aggregation": "max",
 }
+# A formula over one, reached before the metric itself is.
+_METRICS["Avg Purchases per Supplier Doubled"] = {
+    "expression": "{[Avg Purchases per Supplier]} * 2"
+}
 
 _GERMANY = [QueryFilter(field="Country Name", op="=", value="Germany")]
 _DIMENSIONS = [[], ["Country Name"], ["Sales Year"]]
@@ -238,12 +242,17 @@ _MULTI_FACT = [
         "Total Returns",
         "Total Sales",
     ],
+    ["Avg Purchases per Supplier Doubled", "Avg Purchases per Supplier", "Total Sales"],
+    ["Avg Purchases per Supplier Doubled", "Peak Monthly Returns"],
 ]
 
 
 @pytest.mark.parametrize("measures", _MULTI_FACT, ids=" + ".join)
-@pytest.mark.parametrize("dimensions", [["Channel Name"], ["Year Month"], ["Currency"]], ids=str)
+@pytest.mark.parametrize(
+    "dimensions", [["Channel Name"], ["Year Month"], ["Currency"], ["Employee Name"]], ids=str
+)
 def test_multi_fact(run: Callable, dimensions: list[str], measures: list[str]) -> None:
-    """Each reaggregate metric stays on its own fact's leg: a group only one
-    fact has is kept, and no leg reads a table it does not join."""
+    """Each reaggregate metric stays on its own fact's leg, reached directly or
+    through a formula over it: a group only one fact has is kept, and no leg
+    reads a table it does not join."""
     _same_as_separate(run, dimensions, measures)

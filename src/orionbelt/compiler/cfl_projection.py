@@ -809,7 +809,15 @@ def _measure_objects(
     model: SemanticModel,
     measure: ResolvedMeasure,
 ) -> set[str]:
-    """The data objects a measure reads, declared or referenced."""
+    """The data objects a measure reads, declared or referenced.
+
+    A reaggregate metric reads its measure's objects: its placeholder reads no
+    column, and its leg is the one that carries the groups that measure's fact
+    has.
+    """
+    if measure.reaggregate_measure:
+        inner = model.effective_measures.get(measure.reaggregate_measure)
+        return set(inner.source_objects) if inner else set()
     model_measure = model.effective_measures.get(measure.name)
     if model_measure and model_measure.columns:
         return {f.view for f in model_measure.columns if f.view}
@@ -871,23 +879,18 @@ def group_measures_by_object(
                     if leg is not None:
                         groups.setdefault(leg, [])
                     continue
-                model_measure = model.effective_measures.get(comp.name)
-                if model_measure and model_measure.columns:
-                    comp_objects = {f.view for f in model_measure.columns if f.view}
-                else:
-                    # Declared as an expression rather than ``columns:`` — the
-                    # source objects are in the aggregate's own table references.
-                    # Falling back to the base object put the component in the
-                    # wrong leg, which then projected a column its FROM has not
-                    # joined.
-                    comp_objects = set()
-                    planner._collect_table_refs(comp.expression, comp_objects)
+                # A measure declared as an expression rather than ``columns:``
+                # reads the objects in its aggregate's own table references.
+                # Falling back to the base object put the component in the
+                # wrong leg, which then projected a column its FROM has not
+                # joined.
+                comp_objects = _measure_objects(planner, resolved, model, comp)
                 # An anchored component belongs to its anchor's leg, exactly
                 # as a directly selected anchored measure does. A metric reaches
                 # the planner only through its components, so routing the direct
                 # branch alone left this one classified cross-fact and projected
                 # by no leg.
-                comp_anchor = resolved.anchored_measures.get(comp.name)
+                comp_anchor = resolved.anchored_measures.get(comp.reaggregate_measure or comp.name)
                 if comp_anchor:
                     groups.setdefault(comp_anchor, []).append(comp)
                     continue
@@ -905,25 +908,13 @@ def group_measures_by_object(
             if measure.name in seen:
                 continue
             seen.add(measure.name)
-            # A reaggregate metric belongs to its measure's leg, which carries
-            # the groups that measure's fact has. Its placeholder reads no
-            # column, so the leg projects nothing it does not join.
+            # A reaggregate metric belongs to its measure's leg.
             source = measure.reaggregate_measure or measure.name
-            model_measure = model.effective_measures.get(source)
-            if not model_measure:
+            if source not in model.effective_measures:
                 groups.setdefault(resolved.base_object, []).append(measure)
                 continue
 
-            # Collect source objects: from explicit columns or expression AST
-            field_objects: set[str]
-            if source != measure.name:
-                field_objects = set(model_measure.source_objects)
-            elif model_measure.columns:
-                field_objects = {f.view for f in model_measure.columns if f.view}
-            else:
-                # Expression-based measure: extract table refs from the AST
-                field_objects = set()
-                planner._collect_table_refs(measure.expression, field_objects)
+            field_objects = _measure_objects(planner, resolved, model, measure)
             # An anchored measure belongs to its anchor's leg. Its other facts
             # are conformed into subqueries joined inside that leg, so they are
             # not legs of their own and the measure is not cross-fact: one leg
