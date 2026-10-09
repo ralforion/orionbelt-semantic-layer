@@ -400,11 +400,13 @@ rows. Select it beside other measures (other facts too), in `having` and
 {[Revenue]}'`).
 
 - `measure:` a measure without `grain`, `total` or `filterContext`
-- `per:` model dimensions; for a time bucket name a dimension whose
-  `timeGrain` is that bucket (a `'Dim:grain'` entry is refused at compile time)
+- `per:` model dimensions, optionally at a time grain (`'Order Date:day'`); by
+  `Order Date:month` that averages daily totals within each month (only days
+  with rows count)
 - `aggregation:` required; `avg` is exact over integers, `count` is bigint,
   `sum`/`min`/`max` keep the measure's type
-- Every `per` dimension already in the query: `REAGGREGATE_NO_OP` warning
+- Every `per` dimension already in the query (at its grain or finer):
+  `REAGGREGATE_NO_OP` warning
 - Not yet in one query with `grouping: rollup/cube`, or with filterContext,
   period-over-period, cumulative, window or total/grain measures
   (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`)

@@ -22,6 +22,8 @@ from orionbelt.models.query import DimensionRef
 from orionbelt.models.semantic import (
     Metric,
     MetricType,
+    SemanticModel,
+    TimeGrain,
     WindowFunctionKind,
 )
 from orionbelt.models.warnings import WarningCode, warning
@@ -29,9 +31,68 @@ from orionbelt.models.warnings import WarningCode, warning
 if TYPE_CHECKING:
     from orionbelt.compiler.resolution import (
         QueryResolver,
+        ResolvedDimension,
         ResolvedMeasure,
         _ResolutionContext,
     )
+
+_GRAIN_RANK = {
+    TimeGrain.SECOND: 0,
+    TimeGrain.MINUTE: 1,
+    TimeGrain.HOUR: 2,
+    TimeGrain.DAY: 3,
+    TimeGrain.WEEK: 4,
+    TimeGrain.MONTH: 5,
+    TimeGrain.QUARTER: 6,
+    TimeGrain.YEAR: 7,
+}
+
+
+def _nests_in(inner: TimeGrain | None, outer: TimeGrain | None) -> bool:
+    """Whether every *inner* bucket lies within one *outer* bucket.
+
+    ``None`` is the dimension's value itself, which lies within any bucket. A
+    week crosses month, quarter and year boundaries, so it nests only in
+    itself, and only days and finer nest in it.
+    """
+    if inner == outer or inner is None:
+        return True
+    if outer is None:
+        return False
+    if TimeGrain.WEEK in (inner, outer):
+        return outer is TimeGrain.WEEK and _GRAIN_RANK[inner] <= _GRAIN_RANK[TimeGrain.DAY]
+    return _GRAIN_RANK[inner] < _GRAIN_RANK[outer]
+
+
+def reaggregate_per_ref(model: SemanticModel, entry: str) -> DimensionRef:
+    """A ``per`` entry as a dimension at the grain it groups by.
+
+    A bare name groups by the dimension's declared ``timeGrain``, as a query
+    naming it does.
+    """
+    declared = model.dimensions.get(entry)
+    if declared is not None:
+        return DimensionRef(name=entry, grain=declared.time_grain)
+    return DimensionRef.parse(entry)
+
+
+def reaggregate_per_covered(
+    model: SemanticModel, ref: DimensionRef, dims: list[ResolvedDimension]
+) -> bool:
+    """Whether the query's own grouping already splits rows as finely as *ref*.
+
+    It does when the query has the same dimension at a grain that nests in the
+    ``per`` bucket - by day under a ``per`` of month, each day's rows are
+    already one month's - so grouping by *ref* as well changes nothing.
+    """
+    for d in dims:
+        if d.name != ref.name:
+            continue
+        declared = model.dimensions.get(d.name)
+        grain = d.grain or (declared.time_grain if declared else None)
+        if _nests_in(grain, ref.grain):
+            return True
+    return False
 
 
 def resolve_metric(
@@ -425,38 +486,20 @@ def resolve_reaggregate_metric(
         )
         return None
 
-    in_query = {d.name: d.grain for d in ctx.result.dimensions}
-    for entry in metric.per:
-        ref = DimensionRef.parse(entry) if entry not in ctx.model.dimensions else None
-        declared = ctx.model.dimensions.get(entry)
-        # The same dimension in the query at another grain would make this entry
-        # a silent no-op rather than the finer bucket it names.
-        regrained = (
-            declared is not None
-            and entry in in_query
-            and in_query[entry] not in (None, declared.time_grain)
+    if all(
+        reaggregate_per_covered(
+            ctx.model, reaggregate_per_ref(ctx.model, entry), ctx.result.dimensions
         )
-        if regrained or (ref is not None and ref.grain is not None):
-            ctx.errors.append(
-                SemanticError(
-                    code="REAGGREGATE_PER_GRAIN_NOT_SUPPORTED",
-                    message=(
-                        f"Reaggregate metric '{name}' groups by '{entry}'; a 'per' entry "
-                        f"with a time grain cannot be compiled yet."
-                    ),
-                    path=f"{path}.per",
-                    hint="Name a dimension whose declared timeGrain is the bucket you need.",
-                )
-            )
-            return None
-    if all(entry in in_query for entry in metric.per):
+        for entry in metric.per
+    ):
         ctx.result.warnings.append(
             warning(
                 WarningCode.REAGGREGATE_NO_OP,
                 (
                     f"Every 'per' dimension of reaggregate metric '{name}' is already in the "
-                    f"query, so each group has one value of '{metric.measure}' and the "
-                    f"metric equals {metric.aggregation.value} of that one value."
+                    f"query at its grain or a finer one, so each group has one value of "
+                    f"'{metric.measure}' and the metric equals {metric.aggregation.value} "
+                    f"of that one value."
                 ),
                 path=f"{path}.per",
             )

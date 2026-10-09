@@ -25,6 +25,7 @@ rows in stage 1 and the join finds it.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 from orionbelt.ast.nodes import (
     CTE,
@@ -41,6 +42,7 @@ from orionbelt.ast.nodes import (
     Unnest,
 )
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
+from orionbelt.compiler.metric_resolution import reaggregate_per_covered, reaggregate_per_ref
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import null_safe_eq
@@ -82,11 +84,22 @@ def _stage_one(
 
     Only the query's row filters carry over: its HAVING, ORDER BY and LIMIT
     describe the final result, not this scan.
+
+    A ``per`` entry the query's grouping already covers is left out. One that
+    names a dimension the query has at a coarser grain - ``Order Date:day``
+    under ``Order Date:month`` - groups the scan by both buckets, and the
+    planner names both columns after the dimension; the ``per`` one is renamed
+    to ``name:grain`` so the second stage reads the query's.
     """
-    in_query = {d.name for d in resolved.dimensions}
+    refs = [reaggregate_per_ref(model, p) for p in per]
+    added = [
+        (entry, ref)
+        for entry, ref in zip(per, refs, strict=True)
+        if not reaggregate_per_covered(model, ref, resolved.dimensions)
+    ]
     sub_query = QueryObject(
         select=QuerySelect(
-            dimensions=[*query.select.dimensions, *(p for p in per if p not in in_query)],
+            dimensions=[*query.select.dimensions, *(entry for entry, _ in added)],
             measures=[measure],
         ),
         where=list(query.where),
@@ -103,7 +116,17 @@ def _stage_one(
     # So are its tables: a ``per`` dimension can join one the query does not,
     # and the result cache has to see it change.
     resolved.subquery_objects.update(sub_resolved.required_objects, sub_resolved.subquery_objects)
-    return scan
+
+    in_query = {d.name for d in resolved.dimensions}
+    columns = list(scan.columns)
+    for position, (_, ref) in enumerate(added, start=len(query.select.dimensions)):
+        if ref.name not in in_query:
+            continue
+        col = columns[position]
+        assert isinstance(col, AliasedExpr) and col.alias == ref.name
+        grain = ref.grain.value if ref.grain else "value"
+        columns[position] = AliasedExpr(expr=col.expr, alias=f"{ref.name}:{grain}")
+    return replace(scan, columns=columns)
 
 
 def _stage_two(

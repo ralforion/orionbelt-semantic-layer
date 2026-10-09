@@ -58,6 +58,13 @@ _METRICS: dict[str, dict[str, Any]] = {
         "aggregation": "avg",
     },
     "Avg Monthly Sales": {"measure": "Total Sales", "per": ["Sales Month"], "aggregation": "avg"},
+    # The same dimension as the query's, at a finer grain: declared, then named.
+    "Avg Daily Sales": {"measure": "Total Sales", "per": ["Sales Date"], "aggregation": "avg"},
+    "Avg Sales per Month": {
+        "measure": "Total Sales",
+        "per": ["Sales Date:month"],
+        "aggregation": "avg",
+    },
 }
 
 # Derived metrics over a reaggregate metric: one over the same fact, one across
@@ -218,6 +225,65 @@ def test_monthly_average_by_year(run: Callable, ref: Callable) -> None:
     assert {r["Sales Year"]: r["Avg Monthly Sales"] for r in rows} == {
         r["y"]: r["v"] for r in expected
     }
+
+
+def test_daily_average_by_month_counts_only_days_with_sales(run: Callable, ref: Callable) -> None:
+    """``per: [Sales Date]`` (declared day) under the query's month of that dimension.
+
+    The population is the days with a sale: a month with quiet days averages
+    over fewer than its calendar days, and at least one month here has some.
+    """
+    rows = run(
+        QueryObject(
+            select=QuerySelect(dimensions=["Sales Date:month"], measures=["Avg Daily Sales"])
+        )
+    )
+    expected = ref(
+        """
+        SELECT m, CAST(AVG(sales) AS DECIMAL(18, 2)) AS v, COUNT(*) AS days,
+               MAX(DAYOFMONTH(LAST_DAY(m))) AS calendar_days
+        FROM (
+            SELECT CAST(DATE_TRUNC('month', salesdate) AS DATE) AS m,
+                   CAST(DATE_TRUNC('day', salesdate) AS DATE) AS d,
+                   CAST(SUM(salesamount) AS DECIMAL(18, 2)) AS sales
+            FROM orionbelt_1.sales
+            GROUP BY 1, 2
+        )
+        GROUP BY m
+        """
+    )
+    assert {r["Sales Date"]: r["Avg Daily Sales"] for r in rows} == {
+        r["m"]: r["v"] for r in expected
+    }
+    assert any(r["days"] < r["calendar_days"] for r in expected)
+
+
+def test_named_per_grain_matches_a_declared_grain_dimension(run: Callable) -> None:
+    """``per: ['Sales Date:month']`` by ``Sales Date:year`` is ``per: [Sales Month]`` by year."""
+    named = run(
+        QueryObject(
+            select=QuerySelect(dimensions=["Sales Date:year"], measures=["Avg Sales per Month"])
+        )
+    )
+    declared = run(
+        QueryObject(select=QuerySelect(dimensions=["Sales Year"], measures=["Avg Monthly Sales"]))
+    )
+    assert len(named) > 1
+    assert {r["Sales Date"]: r["Avg Sales per Month"] for r in named} == {
+        r["Sales Year"]: r["Avg Monthly Sales"] for r in declared
+    }
+
+
+def test_per_grain_at_the_query_grain_is_the_measure(run: Callable) -> None:
+    rows = run(
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Sales Date:month"], measures=["Total Sales", "Avg Sales per Month"]
+            )
+        )
+    )
+    assert rows
+    assert all(r["Avg Sales per Month"] == r["Total Sales"] for r in rows)
 
 
 def test_where_applies_to_the_first_stage(run: Callable, ref: Callable) -> None:

@@ -5,7 +5,9 @@ DuckDB. The two-stage plan leans on things each engine spells its own way: the
 NULL-safe join back to the query grain, the CROSS JOIN when there is no
 dimension, the cast of the second-stage result, the HAVING wrapper, and the
 exact integer AVG, which takes a different route on almost every engine. So
-the same answers, worked out by hand, are asserted on all of them.
+the same answers, worked out by hand, are asserted on all of them. A ``per``
+with a time grain adds each engine's truncation, beside the query's own bucket
+of the same date.
 
 The rows are built per engine rather than read from the corpus seed: the seed
 has no NULL group and no integers past a double's mantissa, and Dremio has no
@@ -14,6 +16,8 @@ seed at all.
 Per customer:  DE c1 = 10 + 20 = 30, DE c2 = 50, DE c7 = 1,
                FR c3 = 5, FR c6 = 1000,
                NULL c4 = 7 + 3 = 10, NULL c5 = 30.
+Per day:       Jan 5 = 30, Jan 20 = 50 + 5 = 55,
+               Feb 3 = 1 + 1000 = 1001, Feb 10 = 10, Feb 28 = 30.
 """
 
 from __future__ import annotations
@@ -48,28 +52,28 @@ SCHEMAS = {
     "dremio": "$scratch",
 }
 
-#: (string, double, bigint) as each engine spells them in a CAST.
-TYPES: dict[str, tuple[str, str, str]] = {
-    "duckdb": ("VARCHAR", "DOUBLE", "BIGINT"),
-    "postgres": ("TEXT", "DOUBLE PRECISION", "BIGINT"),
-    "mysql": ("CHAR(8)", "DOUBLE", "SIGNED"),
-    "clickhouse": ("Nullable(String)", "Float64", "Int64"),
-    "snowflake": ("VARCHAR", "DOUBLE", "BIGINT"),
-    "bigquery": ("STRING", "FLOAT64", "INT64"),
-    "databricks": ("STRING", "DOUBLE", "BIGINT"),
-    "dremio": ("VARCHAR", "DOUBLE", "BIGINT"),
+#: (string, double, bigint, date) as each engine spells them in a CAST.
+TYPES: dict[str, tuple[str, str, str, str]] = {
+    "duckdb": ("VARCHAR", "DOUBLE", "BIGINT", "DATE"),
+    "postgres": ("TEXT", "DOUBLE PRECISION", "BIGINT", "DATE"),
+    "mysql": ("CHAR(8)", "DOUBLE", "SIGNED", "DATE"),
+    "clickhouse": ("Nullable(String)", "Float64", "Int64", "Date"),
+    "snowflake": ("VARCHAR", "DOUBLE", "BIGINT", "DATE"),
+    "bigquery": ("STRING", "FLOAT64", "INT64", "DATE"),
+    "databricks": ("STRING", "DOUBLE", "BIGINT", "DATE"),
+    "dremio": ("VARCHAR", "DOUBLE", "BIGINT", "DATE"),
 }
 
-ORDER_ROWS: list[tuple[str, str | None, int]] = [
-    ("c1", "DE", 10),
-    ("c1", "DE", 20),
-    ("c2", "DE", 50),
-    ("c7", "DE", 1),
-    ("c3", "FR", 5),
-    ("c6", "FR", 1000),
-    ("c4", None, 7),
-    ("c4", None, 3),
-    ("c5", None, 30),
+ORDER_ROWS: list[tuple[str, str | None, int, str]] = [
+    ("c1", "DE", 10, "2026-01-05"),
+    ("c1", "DE", 20, "2026-01-05"),
+    ("c2", "DE", 50, "2026-01-20"),
+    ("c7", "DE", 1, "2026-02-03"),
+    ("c3", "FR", 5, "2026-01-20"),
+    ("c6", "FR", 1000, "2026-02-03"),
+    ("c4", None, 7, "2026-02-10"),
+    ("c4", None, 3, "2026-02-10"),
+    ("c5", None, 30, "2026-02-28"),
 ]
 
 #: One row per customer, so every first-stage aggregate answers that row's
@@ -87,6 +91,7 @@ dataObjects:
       Customer: {{code: customer_id, abstractType: string}}
       Country: {{code: country, abstractType: string}}
       Amount: {{code: amount, abstractType: float}}
+      Order Date: {{code: order_date, abstractType: date}}
   Shipments:
     code: {shipments}
     schema: '{schema}'
@@ -96,6 +101,7 @@ dataObjects:
 dimensions:
   Customer: {{dataObject: Orders, column: Customer, resultType: string}}
   Country: {{dataObject: Orders, column: Country, resultType: string}}
+  Order Date: {{dataObject: Orders, column: Order Date, resultType: date}}
   Shipment Customer: {{dataObject: Shipments, column: Customer, resultType: string}}
 measures:
   Revenue:
@@ -132,6 +138,16 @@ metrics:
     aggregation: avg
   Avg Revenue Share:
     expression: '{{[Avg Revenue per Customer]}} / {{[Revenue]}}'
+  Avg Daily Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: ['Order Date:day']
+    aggregation: avg
+  Avg Monthly Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: ['Order Date:month']
+    aggregation: avg
   Avg Units Sum:
     type: reaggregate
     measure: Units Sum
@@ -190,7 +206,12 @@ def _create(
 
 
 def _prepare(target: VendorTarget) -> SemanticModel:
-    _create(target, ORDERS, [("customer_id", 0), ("country", 0), ("amount", 1)], ORDER_ROWS)
+    _create(
+        target,
+        ORDERS,
+        [("customer_id", 0), ("country", 0), ("amount", 1), ("order_date", 3)],
+        ORDER_ROWS,
+    )
     _create(target, SHIPMENTS, [("customer_id", 0), ("units", 2)], SHIPMENT_ROWS)
     return _model(target)
 
@@ -277,6 +298,41 @@ def _assert_derived(target: VendorTarget, model: SemanticModel) -> None:
     assert rounded == want, f"{target.name}: {got}"
 
 
+def _assert_time_grained_per(target: VendorTarget, model: SemanticModel) -> None:
+    """A ``per`` bucket finer than the query's bucket of the same date.
+
+    Stage 1 groups by both truncations of one column, which the engine has to
+    keep apart; only days with an order count, so January averages two.
+    """
+    by_month = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Order Date:month"], measures=["Avg Daily Revenue"])
+        ),
+    )
+    # Engines hand a month back as a date, a datetime or a string.
+    got = {str(r["order date"])[:7]: _number(r["avg daily revenue"]) for r in by_month}
+    want = {"2026-01": Decimal("42.5"), "2026-02": Decimal(347)}
+    assert got == want, f"{target.name}: {got}"
+
+    by_year = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Order Date:year"], measures=["Avg Monthly Revenue"])
+        ),
+    )
+    # (85 + 1041) / 2 months.
+    got = {str(r["order date"])[:4]: _number(r["avg monthly revenue"]) for r in by_year}
+    assert got == {"2026": Decimal(563)}, f"{target.name}: {got}"
+
+    total = _run(target, model, QueryObject(select=QuerySelect(measures=["Avg Daily Revenue"])))
+    # 1126 over five days.
+    got_total = [_number(r["avg daily revenue"]) for r in total]
+    assert got_total == [Decimal("225.2")], f"{target.name}: {got_total}"
+
+
 def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) -> None:
     measures = ["Avg Units Sum", "Avg Units Min"]
     rows = _run(target, model, QueryObject(select=QuerySelect(measures=measures)))
@@ -291,6 +347,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_ungrouped(target, model)
     _assert_having_order_limit(target, model)
     _assert_derived(target, model)
+    _assert_time_grained_per(target, model)
     _assert_exact_integer_average(target, model)
 
 
