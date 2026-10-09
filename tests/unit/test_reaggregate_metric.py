@@ -15,7 +15,7 @@ import jsonschema
 import pytest
 from pydantic import ValidationError
 from rdflib import Literal, URIRef
-from rdflib.namespace import RDF
+from rdflib.namespace import RDF, RDFS
 
 from orionbelt.compiler.composability import resolve_composables_for_anchors
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
@@ -238,8 +238,13 @@ class TestReferences:
                 "UNKNOWN_MEASURE",
             ),
             (
-                "type: reaggregate\nmeasure: Avg Daily Revenue\nper: [Customer]\naggregation: max",
+                "type: reaggregate\nmeasure: Daily Revenue Share\nper: [Customer]\n"
+                "aggregation: max",
                 "REAGGREGATE_MEASURE_ONLY",
+            ),
+            (
+                "type: reaggregate\nmeasure: Probe\nper: [Customer]\naggregation: max",
+                "REAGGREGATE_CYCLE",
             ),
             (
                 "type: reaggregate\nmeasure: Revenue\nper: [Custmer]\naggregation: avg",
@@ -274,6 +279,24 @@ class TestReferences:
     )
     def test_refused(self, body: str, code: str) -> None:
         assert code in _codes(_with_metric(body))
+
+    def test_over_a_reaggregate_metric(self) -> None:
+        body = "type: reaggregate\nmeasure: Avg Daily Revenue\nper: [Customer]\naggregation: max"
+        assert _codes(_with_metric(body)) == set()
+
+    def test_cycle_named_once_per_metric_on_it(self) -> None:
+        yaml_text = _with_metric(
+            "type: reaggregate\nmeasure: Other\nper: [Customer]\naggregation: max"
+        ) + (
+            "  Other:\n    type: reaggregate\n    measure: Probe\n"
+            "    per: [Country]\n    aggregation: avg\n"
+        )
+        _model, result = _resolve(yaml_text)
+        messages = sorted(e.message for e in result.errors if e.code == "REAGGREGATE_CYCLE")
+        assert messages == [
+            "Reaggregate metrics reference each other in a cycle: Other -> Probe -> Other",
+            "Reaggregate metrics reference each other in a cycle: Probe -> Other -> Probe",
+        ]
 
     def test_unknown_dimension_suggests(self) -> None:
         _model, result = _resolve(
@@ -567,6 +590,26 @@ class TestCompile:
         assert '"reagg_1_inner_base" AS (' in sql
         assert 'FROM "reagg_1_inner_base" AS "base"' in sql
 
+    def test_over_a_reaggregate_metric_nests_its_stages(self) -> None:
+        """The inner metric is the first stage, planned as a query of its own,
+        so its two stages run inside it, named under it."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Avg Revenue per Customer\n"
+                "per: ['Order Date:month']\naggregation: max"
+            )
+        )
+        assert result.valid, result.errors
+        query = QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"]))
+        sql = _compile(probe_model, query).sql
+        positions = [
+            sql.index(f'"{cte}" AS (')
+            for cte in ("reagg_1_inner_reagg_1_inner", "reagg_1_inner_reagg_1", "reagg_1")
+        ]
+        assert positions == sorted(positions)
+        assert sql.count("AVG(") == 1
+        assert sql.count("MAX(") == 1 + sql.count("MAX(CAST(NULL")
+
     def test_untyped_placeholder_takes_the_source_column_type(self) -> None:
         """A ``min`` over a ``max`` measure declares no type anywhere; an
         untyped NULL is text on Postgres, which ``* 2`` does not bind to."""
@@ -591,6 +634,41 @@ class TestCompile:
         query = QueryObject(
             select=QuerySelect(
                 dimensions=["Country"], measures=["Smallest Peak Doubled", "Total Revenue"]
+            )
+        )
+        sql = CompilationPipeline().compile(query, probe_model, "postgres").sql
+        assert "MAX(NULL)" not in sql
+        assert "MAX(CAST(NULL AS FLOAT))" in sql
+
+    def test_untyped_nested_placeholder_takes_the_source_column_type(self) -> None:
+        """A ``max`` over a ``min`` over a ``max`` measure declares no type at
+        any stage; the placeholder still takes the column's."""
+        yaml_text = MODEL_YAML.replace(
+            "metrics:\n",
+            "  Largest Order:\n"
+            "    columns:\n"
+            "      - dataObject: Orders\n"
+            "        column: Amount\n"
+            "    aggregation: max\n"
+            "metrics:\n"
+            "  Smallest Peak:\n"
+            "    type: reaggregate\n"
+            "    measure: Largest Order\n"
+            "    per: [Customer]\n"
+            "    aggregation: min\n"
+            "  Daily Smallest Peak:\n"
+            "    type: reaggregate\n"
+            "    measure: Smallest Peak\n"
+            "    per: ['Order Date:day']\n"
+            "    aggregation: max\n"
+            "  Daily Smallest Peak Doubled:\n"
+            "    expression: '{[Daily Smallest Peak]} * 2'\n",
+        )
+        probe_model, result = _resolve(yaml_text)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Country"], measures=["Daily Smallest Peak Doubled", "Total Revenue"]
             )
         )
         sql = CompilationPipeline().compile(query, probe_model, "postgres").sql
@@ -820,6 +898,22 @@ class TestGraph:
         assert len(subjects) == 3
         met = next(s for s in subjects if (s, URIRef(obsl + "per"), Literal("Order Date:day")) in g)
         assert (met, URIRef(obsl + "aggregation"), Literal("avg")) in g
+
+    def test_over_a_reaggregate_metric_links_the_metric(self) -> None:
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Avg Daily Revenue\nper: [Customer]\naggregation: max"
+            )
+        )
+        assert result.valid, result.errors
+        g = export_obsl(probe_model, "m")
+        obsl = "https://ralforion.com/ns/obsl#"
+        probe, inner = (
+            next(s for s in g.subjects(RDFS.label, Literal(n)))
+            for n in ("Probe", "Avg Daily Revenue")
+        )
+        assert (probe, URIRef(obsl + "baseMetric"), inner) in g
+        assert not set(g.objects(probe, URIRef(obsl + "baseMeasure")))
 
     def test_lineage_has_per_edges(self, model: SemanticModel) -> None:
         lineage = LineageBuilder(model).metric("Avg Daily Revenue")

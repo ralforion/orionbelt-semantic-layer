@@ -52,8 +52,8 @@ from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, Reso
 from orionbelt.compiler.time_lookback import null_safe_eq, rename_cte_sources
 from orionbelt.compiler.type_resolver import (
     exact_reaggregate_avg,
-    measure_yields_integers,
-    resolve_measure_data_type,
+    reaggregated_data_type,
+    reaggregated_values_are_integers,
     resolve_metric_data_type,
 )
 from orionbelt.dialect.base import Dialect
@@ -187,10 +187,7 @@ def _stage_two(
         exact: tuple[Expr, OBMLType] | None = None
         target: OBMLType | None
         if metric is not None and m.reaggregate_aggregation is ReaggregateAggType.AVG:
-            base = model.effective_measures.get(m.reaggregate_measure)
-            integer_values = base is not None and measure_yields_integers(
-                base, model.settings, model
-            )
+            integer_values = reaggregated_values_are_integers(model, m.reaggregate_measure)
             exact = exact_reaggregate_avg(metric, integer_values, model.settings, dialect, arg)
         if exact is not None:
             expr, target = exact
@@ -305,16 +302,13 @@ def _placeholder_value(m: ResolvedMeasure, model: SemanticModel, dialect: Dialec
     bind to. It takes the inner measure's source column type, as CFL's NULL
     pads do.
     """
-    metric = model.metrics.get(m.name)
-    inner = model.effective_measures.get(m.reaggregate_measure or "")
-    target = (resolve_metric_data_type(metric, model.settings) if metric else None) or (
-        resolve_measure_data_type(inner, model.settings) if inner else None
-    )
+    target = reaggregated_data_type(model, m.name)
+    base = model.reaggregated_measure(m.reaggregate_measure or "")
     null: Expr = Literal(value=None)
     if target is not None:
         null = dialect.cast_to_obml_type(null, target)
-    elif inner is not None:
-        null = Cast(expr=null, type_name=_source_type(inner, model))
+    elif base is not None:
+        null = Cast(expr=null, type_name=_source_type(base[1], model))
     return FunctionCall(name="MAX", args=[null])
 
 

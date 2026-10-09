@@ -238,6 +238,7 @@ Required:
 A metric MUST define at least one semantic source:
 - `obsl:expressionSource`
 - `obsl:baseMeasure`
+- `obsl:baseMetric` (reaggregate metrics only)
 
 Optional:
 - `obsl:referencesMeasure`
@@ -247,7 +248,7 @@ Optional:
 Cardinality:
 - exactly one `rdfs:label`
 - exactly one `obsl:metricType`
-- at least one of `obsl:expressionSource` or `obsl:baseMeasure`
+- at least one of `obsl:expressionSource`, `obsl:baseMeasure` or `obsl:baseMetric`
 
 Out of scope for Core:
 - `obsl:hasExpression`
@@ -279,7 +280,7 @@ Additional required:
 Represents a two-stage metric: the base measure is aggregated at the query grain plus the `per` dimensions, then those values are aggregated again to the query grain.
 
 Additional required:
-- `obsl:baseMeasure`
+- exactly one of `obsl:baseMeasure` or `obsl:baseMetric` (another `obsl:ReaggregateMetric`, whose two stages then run as this metric's first)
 - `obsl:per` (one or more dimension labels, optionally `name:grain`)
 - `obsl:aggregation` (second-stage function: sum, avg, min, max, count)
 
@@ -505,7 +506,7 @@ Any of model, data object, dimension, measure, metric:
 ### 10.7 Metrics
 - `type` -> `obsl:metricType`
 - `expression` -> `obsl:expressionSource`
-- `measure` -> `obsl:baseMeasure`
+- `measure` -> `obsl:baseMeasure`, or `obsl:baseMetric` when a reaggregate metric names another reaggregate metric
 - derived measure references parsed from `expression` -> `obsl:referencesMeasure`
 
 ### 10.8 Cumulative Metrics (type: cumulative → rdf:type obsl:CumulativeMetric)
@@ -619,6 +620,7 @@ Core object properties:
 - `obsl:column` (functional)
 - `obsl:sourceColumn`
 - `obsl:baseMeasure`
+- `obsl:baseMetric`
 - `obsl:referencesMeasure`
 - `obsl:timeDimension`
 - `obsl:belongsToModel` (inverse of `obsl:hasDataObject`)

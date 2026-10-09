@@ -21,7 +21,7 @@ OBSL-Core 0.2 maps every OBML concept to RDF triples using standard vocabularies
 | Metric | `obsl:Metric` | `obsl:metricType`, `obsl:expressionSource`, `obsl:baseMeasure`, `obsl:referencesMeasure`, `obsl:owner`, `obsl:dataType`, `obsl:format` |
 | Cumulative Metric | `obsl:CumulativeMetric` | `obsl:timeDimension`, `obsl:cumulativeType`, `obsl:window`, `obsl:grainToDate` |
 | Period-over-Period Metric | `obsl:PeriodOverPeriodMetric` | `obsl:timeDimension`, `obsl:timeGrain`, `obsl:offset`, `obsl:offsetGrain`, `obsl:comparison` |
-| Reaggregate Metric | `obsl:ReaggregateMetric` | `obsl:per`, `obsl:aggregation` |
+| Reaggregate Metric | `obsl:ReaggregateMetric` | `obsl:per`, `obsl:aggregation`, `obsl:baseMetric` (when its measure is another reaggregate metric) |
 | External concept mapping | `obsl:ExternalConceptMapping` (plus a direct `skos:*Match` triple on the artefact) | `obsl:sourceObject`, `obsl:targetConcept`, `obsl:authoredConcept`, `obsl:mappingRelation`, `obsl:mappingJustification`, `obsl:mappingSource`, `obsl:ontologyVersion`, `obsl:confidence`, `obsl:mappingComment` |
 
 Labels use `rdfs:label`, synonyms use `obsl:synonym`, and descriptions use `rdfs:comment`.

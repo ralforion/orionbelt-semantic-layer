@@ -803,6 +803,16 @@ def _dimension_carrying_leg(
     return root if dim_objects & reachable else None
 
 
+def _leg_measure(model: SemanticModel, measure: ResolvedMeasure) -> str:
+    """The measure whose leg *measure* belongs to: a reaggregate metric's
+    is the measure at the bottom of its stages."""
+    if measure.reaggregate_measure:
+        base = model.reaggregated_measure(measure.reaggregate_measure)
+        if base is not None:
+            return base[0]
+    return measure.name
+
+
 def _measure_objects(
     planner: CFLPlanner,
     resolved: ResolvedQuery,
@@ -816,8 +826,8 @@ def _measure_objects(
     has.
     """
     if measure.reaggregate_measure:
-        inner = model.effective_measures.get(measure.reaggregate_measure)
-        return set(inner.source_objects) if inner else set()
+        base = model.reaggregated_measure(measure.reaggregate_measure)
+        return set(base[1].source_objects) if base else set()
     model_measure = model.effective_measures.get(measure.name)
     if model_measure and model_measure.columns:
         return {f.view for f in model_measure.columns if f.view}
@@ -890,7 +900,7 @@ def group_measures_by_object(
                 # the planner only through its components, so routing the direct
                 # branch alone left this one classified cross-fact and projected
                 # by no leg.
-                comp_anchor = resolved.anchored_measures.get(comp.reaggregate_measure or comp.name)
+                comp_anchor = resolved.anchored_measures.get(_leg_measure(model, comp))
                 if comp_anchor:
                     groups.setdefault(comp_anchor, []).append(comp)
                     continue
@@ -909,7 +919,7 @@ def group_measures_by_object(
                 continue
             seen.add(measure.name)
             # A reaggregate metric belongs to its measure's leg.
-            source = measure.reaggregate_measure or measure.name
+            source = _leg_measure(model, measure)
             if source not in model.effective_measures:
                 groups.setdefault(resolved.base_object, []).append(measure)
                 continue

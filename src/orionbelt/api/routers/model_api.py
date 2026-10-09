@@ -324,6 +324,12 @@ def _explain_reaggregate(name: str, met: Metric, model: SemanticModel) -> Explai
                 type="measure", name=met.measure or "", detail=f"aggregation={inner.aggregation}"
             )
         )
+    elif met.measure in model.metrics:
+        lineage.append(
+            ExplainLineageItem(
+                type="metric", name=met.measure, detail="reaggregate metric (stage 1)"
+            )
+        )
     lineage.extend(
         ExplainLineageItem(type="dimension", name=entry, detail="per (stage 1 only)")
         for entry in met.per

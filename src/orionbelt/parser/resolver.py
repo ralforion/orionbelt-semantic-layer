@@ -1238,7 +1238,7 @@ class ReferenceResolver:
                         raw_metric,
                         measures,
                         synthesized_measure_names,
-                        set(raw_metrics),
+                        raw_metrics,
                         dimensions,
                         errors,
                         source_map,
@@ -1896,17 +1896,17 @@ class ReferenceResolver:
         raw_metric: dict[str, Any],
         measures: dict[str, Measure],
         synthesized_measures: set[str],
-        metric_names: set[str],
+        raw_metrics: dict[str, Any],
         dimensions: dict[str, Dimension],
         errors: list[SemanticError],
         source_map: SourceMap | None,
     ) -> None:
         """Check what a reaggregate metric's ``measure`` and ``per`` name.
 
-        The first stage is the measure's own SQL at a finer grain, so the
-        measure must be a plain one: a ``grain``/``total`` override or a
-        ``filterContext`` already runs in a wrapper of its own, and stacking the
-        two stages on top of it is not supported yet.
+        The first stage is ``measure`` as a query of its own at a finer grain:
+        a measure, or another reaggregate metric, whose two stages then run
+        inside it. Any other metric is refused, and so is a chain of reaggregate
+        metrics that comes back to one it started from.
         """
         path = f"metrics.{name}"
 
@@ -1926,13 +1926,21 @@ class ReferenceResolver:
         ref = raw_metric.get("measure")
         if isinstance(ref, str) and ref:
             measure = measures.get(ref)
-            if ref in metric_names and measure is None:
-                report(
-                    "REAGGREGATE_MEASURE_ONLY",
-                    "measure",
-                    f"Reaggregate metric '{name}' references metric '{ref}'; "
-                    f"'measure' must name a measure.",
-                )
+            if ref in raw_metrics and measure is None:
+                if not _is_reaggregate(raw_metrics[ref]):
+                    report(
+                        "REAGGREGATE_MEASURE_ONLY",
+                        "measure",
+                        f"Reaggregate metric '{name}' references metric '{ref}'; "
+                        f"'measure' must name a measure or a reaggregate metric.",
+                    )
+                elif cycle := _reaggregate_cycle(name, raw_metrics):
+                    report(
+                        "REAGGREGATE_CYCLE",
+                        "measure",
+                        "Reaggregate metrics reference each other in a cycle: "
+                        + " -> ".join(cycle),
+                    )
             elif measure is None and ref not in synthesized_measures:
                 report(
                     "UNKNOWN_MEASURE",
@@ -2118,6 +2126,20 @@ class ReferenceResolver:
                         context={"metric": metric_name, "references": ref_name},
                     )
                 )
+
+
+def _is_reaggregate(raw_metric: object) -> bool:
+    return isinstance(raw_metric, dict) and raw_metric.get("type") == MetricType.REAGGREGATE
+
+
+def _reaggregate_cycle(name: str, raw_metrics: dict[str, Any]) -> list[str]:
+    """The chain of reaggregate metrics from *name* back to itself, if it has one."""
+    chain = [name]
+    ref = raw_metrics[name].get("measure")
+    while isinstance(ref, str) and ref not in chain and _is_reaggregate(raw_metrics.get(ref)):
+        chain.append(ref)
+        ref = raw_metrics[ref].get("measure")
+    return [*chain, name] if ref == name else []
 
 
 def _suggest_similar(name: str, candidates: list[str], max_suggestions: int = 3) -> list[str]:

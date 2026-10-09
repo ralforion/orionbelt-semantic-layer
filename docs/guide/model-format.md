@@ -1075,12 +1075,25 @@ By `Order Date:month`, stage 1 groups by month and day and stage 2 averages the 
 !!! note "Which groups are counted"
     Stage 1 groups the rows that reach the measure after the query's `where`, so a customer without orders in the filtered range is not part of the average, and `count` counts customers with a non-NULL stage-1 value. `having` on the metric filters the final rows, like any metric.
 
+A reaggregate metric over another one adds a stage. Its stage 1 is the inner metric, computed as a query at the query's dimensions plus the outer `per` would compute it, in its own two stages:
+
+```yaml
+metrics:
+  Peak Month Avg Customer:
+    type: reaggregate
+    measure: Avg Revenue per Customer
+    per: ['Order Date:month']
+    aggregation: max
+```
+
+By `Country`, this averages revenue per customer within each country and month, then takes each country's best month.
+
 !!! tip "Composes like a measure"
     A reaggregate metric can be selected beside any other measure or metric (other facts, totals and grain overrides, filterContext, cumulative, period-over-period and window metrics), used in `having` and `orderBy`, and referenced from a derived metric: `expression: '{[Avg Revenue per Customer]} / {[Revenue]}'`.
 
 Rules:
 
-- `measure` must name a measure, not a metric (`REAGGREGATE_MEASURE_ONLY`). A measure with `total`, `grain` or `filterContext` is allowed, and is computed as a query at the stage-1 grouping would compute it: a `total` is over every stage-1 row, a `grain` override is relative to the stage-1 dimensions, and a `filterContext` changes the query's `where` for stage 1. A `grain` with `mode: FIXED` has to be covered by the query's dimensions plus `per`, as in any query (`GRAIN_NOT_SUBSET`, prefixed with the stage it was raised in).
+- `measure` names a measure or another reaggregate metric; any other metric is refused (`REAGGREGATE_MEASURE_ONLY`), and so is a chain of reaggregate metrics that leads back to itself (`REAGGREGATE_CYCLE`). A measure with `total`, `grain` or `filterContext` is allowed, and is computed as a query at the stage-1 grouping would compute it: a `total` is over every stage-1 row, a `grain` override is relative to the stage-1 dimensions, and a `filterContext` changes the query's `where` for stage 1. A `grain` with `mode: FIXED` has to be covered by the query's dimensions plus `per`, as in any query (`GRAIN_NOT_SUBSET`, prefixed with the stage it was raised in).
 - `per` lists model dimensions (`REAGGREGATE_UNKNOWN_DIMENSION`), each optionally at a time grain (`'Order Date:day'`); a bare name groups by the dimension's declared `timeGrain`. The grain needs a date-bearing column and a `resultType` that can hold the bucket, as in a query.
 - If every `per` dimension is already in the query, at its grain or a finer one, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
 - Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type. A declared `dataType` wins.
@@ -1092,7 +1105,7 @@ Rules:
 |----------|------|---------|-------------|
 | `type` | `"derived"` \| `"cumulative"` \| `"period_over_period"` \| `"window"` \| `"reaggregate"` | `"derived"` | Metric category |
 | `expression` | string | — | Expression with `{[Measure Name]}` placeholders (required for derived and period_over_period) |
-| `measure` | string | — | Name of base measure (required for cumulative, window and reaggregate) |
+| `measure` | string | — | Name of base measure (required for cumulative, window and reaggregate; a reaggregate metric may name another reaggregate metric) |
 | `timeDimension` | string | — | Dimension used for ordering (required for cumulative and for lag/lead window metrics) |
 | `cumulativeType` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` | `"sum"` | Window aggregation function |
 | `window` | integer | — | Rolling window size in periods of the time dimension's grain, counted on the calendar (mutually exclusive with `grainToDate`) |

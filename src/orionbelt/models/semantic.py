@@ -1789,6 +1789,29 @@ class SemanticModel(BaseModel):
             scope[id(self)] = (self, merged)
         return merged
 
+    def reaggregated_measure(self, name: str) -> tuple[str, Measure] | None:
+        """The measure a reaggregate metric's first stage reads, with its name.
+
+        Follows ``measure`` through nested reaggregate metrics down to the
+        measure at the bottom: that is the fact every stage reads and the
+        source of the values each one aggregates again. ``None`` when the
+        chain ends anywhere else.
+        """
+        seen: set[str] = set()
+        measures = self.effective_measures
+        while name not in measures:
+            metric = self.metrics.get(name)
+            if (
+                metric is None
+                or metric.type is not MetricType.REAGGREGATE
+                or metric.measure is None
+                or name in seen
+            ):
+                return None
+            seen.add(name)
+            name = metric.measure
+        return name, measures[name]
+
     @field_validator("name", mode="before")
     @classmethod
     def _validate_name(cls, v: str | None) -> str | None:
