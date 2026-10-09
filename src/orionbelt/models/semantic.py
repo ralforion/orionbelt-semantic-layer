@@ -1127,6 +1127,39 @@ class Measure(BaseModel):
         return self
 
 
+class ReaggregateHaving(BaseModel):
+    """A condition on the first stage of a ``reaggregate`` metric.
+
+    Applied like a query's HAVING to each group of the first stage, at the
+    query grain plus ``per``: only the groups it keeps are aggregated again.
+    ``field`` names a measure, ``op`` and ``value`` are a query filter's.
+    """
+
+    field: str
+    op: str
+    value: Any = None
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+    @field_validator("op")
+    @classmethod
+    def _validate_op(cls, v: str) -> str:
+        from orionbelt.models.query import FilterOperator
+
+        try:
+            op = FilterOperator(v)
+        except ValueError:
+            raise ValueError(f"unknown operator '{v}'") from None
+        if op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
+            raise ValueError(f"operator '{v}' is not allowed in a reaggregate 'having'")
+        return v
+
+    @property
+    def text(self) -> str:
+        """The condition as one line, e.g. ``Order Count > 5``."""
+        return f"{self.field} {self.op}" + ("" if self.value is None else f" {self.value}")
+
+
 #: The ``Metric`` fields a reaggregate metric may set; any other is refused.
 _REAGGREGATE_FIELDS = frozenset(
     {
@@ -1135,6 +1168,7 @@ _REAGGREGATE_FIELDS = frozenset(
         "measure",
         "per",
         "aggregation",
+        "having",
         "data_type",
         "description",
         "format",
@@ -1184,6 +1218,9 @@ class Metric(BaseModel):
     # stage (``name`` or ``name:grain``), and the second-stage aggregation.
     per: list[str] = Field(default_factory=list)
     aggregation: ReaggregateAggType | None = None
+    # Conditions on the first-stage groups; only those meeting all of them are
+    # aggregated again.
+    having: list[ReaggregateHaving] = Field(default_factory=list)
     # Common
     data_type: str | None = Field(None, alias="dataType")
     description: str | None = None
@@ -1209,8 +1246,10 @@ class Metric(BaseModel):
         if self.type == MetricType.REAGGREGATE:
             self._validate_reaggregate()
             return self
-        if self.per or self.aggregation is not None:
-            raise ValueError("'per' and 'aggregation' are only valid on reaggregate metrics")
+        if self.per or self.aggregation is not None or self.having:
+            raise ValueError(
+                "'per', 'aggregation' and 'having' are only valid on reaggregate metrics"
+            )
         if self.type == MetricType.DERIVED:
             if not self.expression:
                 raise ValueError("Derived metrics require 'expression'")

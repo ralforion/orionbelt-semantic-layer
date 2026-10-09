@@ -575,6 +575,12 @@ obsl:per a owl:DatatypeProperty ;
     rdfs:domain obsl:ReaggregateMetric ;
     rdfs:range xsd:string .
 
+obsl:reaggregateHaving a owl:DatatypeProperty ;
+    rdfs:label "reaggregate having" ;
+    rdfs:comment "Condition on the first-stage groups of a reaggregate metric, as a human-readable expression string over a measure (e.g. \"Order Count > 5\").  Only the groups meeting every condition are aggregated again.  Multi-valued." ;
+    rdfs:domain obsl:ReaggregateMetric ;
+    rdfs:range xsd:string .
+
 # =============================================================================
 # 8.5 REFRESH POLICY --- freshness contract on a data object's source table
 # =============================================================================

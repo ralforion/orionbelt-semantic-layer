@@ -263,6 +263,9 @@ class TestExplain:
             "  Peak Customer Average:\n    type: reaggregate\n"
             "    measure: Avg Revenue per Customer\n"
             "    per: [Order Customer]\n    aggregation: max\n"
+            "  Avg Repeat Customer Revenue:\n    type: reaggregate\n"
+            "    measure: Total Revenue\n    per: [Order Customer]\n    aggregation: avg\n"
+            "    having: [{field: Total Revenue, op: '>', value: 100}]\n"
         )
         sid = (await client.post("/v1/sessions")).json()["session_id"]
         resp = await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": model_yaml})
@@ -279,6 +282,14 @@ class TestExplain:
         resp = await client.get(f"/v1/sessions/{sid}/models/{mid}/explain/Peak Customer Average")
         lineage = [(i["type"], i["name"], i["detail"]) for i in resp.json()["lineage"]]
         assert ("metric", "Avg Revenue per Customer", "reaggregate metric (stage 1)") in lineage
+
+        # A ``having`` names the groups stage 1 keeps, and the measure it reads.
+        resp = await client.get(
+            f"/v1/sessions/{sid}/models/{mid}/explain/Avg Repeat Customer Revenue"
+        )
+        lineage = [(i["type"], i["name"], i["detail"]) for i in resp.json()["lineage"]]
+        assert "keeping the groups where Total Revenue > 100" in lineage[1][2]
+        assert ("measure", "Total Revenue", "having (stage 1): Total Revenue > 100") in lineage
 
     async def test_explain_not_found(
         self, client: AsyncClient, session_with_model: tuple[str, str]

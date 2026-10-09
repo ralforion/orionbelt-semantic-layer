@@ -819,6 +819,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             g.add((met_uri, OBSL.aggregation, Literal(met.aggregation.value)))
             for per_dim in met.per:
                 g.add((met_uri, OBSL.per, Literal(per_dim)))
+            for condition in met.having:
+                g.add((met_uri, OBSL.reaggregateHaving, Literal(condition.text)))
 
         if met.description:
             g.add((met_uri, RDFS.comment, Literal(met.description)))

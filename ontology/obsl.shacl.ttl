@@ -466,6 +466,12 @@ obsl:ReaggregateMetricShape a sh:NodeShape ;
         sh:message "Reaggregate metrics must name at least one obsl:per dimension."
     ] ;
     sh:property [
+        sh:path obsl:reaggregateHaving ;
+        sh:datatype xsd:string ;
+        sh:name "reaggregate having" ;
+        sh:message "obsl:reaggregateHaving must be a string condition."
+    ] ;
+    sh:property [
         sh:path obsl:aggregation ;
         sh:minCount 1 ;
         sh:maxCount 1 ;

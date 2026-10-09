@@ -13,7 +13,8 @@ What an artefact depends on, by kind:
   its ``anchor`` object; a synthesized count reads its data object's rows;
 * metric - the measures and metrics its expression names; for cumulative and
   window metrics, the measure plus the time and partition dimensions; for
-  reaggregate metrics, the measure plus its ``per`` dimensions;
+  reaggregate metrics, the measure plus its ``per`` dimensions and the
+  measures its ``having`` reads;
 * rule - the dimensions and measures its condition reads, the rules it
   references, and its grain dimensions;
 * query - its dimensions, measures and metrics, its filter and order fields,
@@ -430,6 +431,10 @@ class LineageBuilder:
             dim = entry if entry in self.model.dimensions else entry.rpartition(":")[0]
             if dim in self.model.dimensions:
                 self._edge(self._dimension(dim), node, "per")
+        for condition in met.having:
+            source = self._field(condition.field)
+            if source:
+                self._edge(source, node, "having")
         return node
 
     def _rule(self, name: str) -> str:

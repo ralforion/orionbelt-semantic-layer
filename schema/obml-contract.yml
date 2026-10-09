@@ -535,6 +535,29 @@ classes:
         json_schema: true
         ontology_property: null
         osi_roundtrip: true
+  ReaggregateHaving:
+    python: orionbelt.models.semantic.ReaggregateHaving
+    json_schema_def: reaggregateHaving
+    ontology_class: null
+    fields:
+      field:
+        alias: field
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      op:
+        alias: op
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      value:
+        alias: value
+        type: "Any"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
   FilterContextFilter:
     python: orionbelt.models.semantic.FilterContextFilter
     json_schema_def: filterContextFilter
@@ -930,6 +953,12 @@ classes:
         type: "ReaggregateAggType | None"
         json_schema: true
         ontology_property: aggregation
+        osi_roundtrip: true
+      having:
+        alias: having
+        type: "list[ReaggregateHaving]"
+        json_schema: true
+        ontology_property: reaggregateHaving
         osi_roundtrip: true
       data_type:
         alias: dataType

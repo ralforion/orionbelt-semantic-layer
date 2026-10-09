@@ -1073,7 +1073,24 @@ metrics:
 By `Order Date:month`, stage 1 groups by month and day and stage 2 averages the daily totals within each month. Only days with orders count: a month with ten trading days averages ten values. A `per` bucket that does not nest in the query's is still split by it: under `Order Date:week`, a `per` of `'Order Date:month'` takes a week that crosses a month boundary as two values.
 
 !!! note "Which groups are counted"
-    Stage 1 groups the rows that reach the measure after the query's `where`, so a customer without orders in the filtered range is not part of the average, and `count` counts customers with a non-NULL stage-1 value. `having` on the metric filters the final rows, like any metric.
+    Stage 1 groups the rows that reach the measure after the query's `where`, so a customer without orders in the filtered range is not part of the average, and `count` counts customers with a non-NULL stage-1 value. A query's `having` on the metric filters the final rows, like any metric; the metric's own `having` (below) filters the stage-1 groups.
+
+The metric's `having` keeps only the stage-1 groups that meet every condition, each over a measure at the query's dimensions plus `per`:
+
+```yaml
+metrics:
+  Avg Revenue per Repeat Customer:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: avg
+    having:
+      - field: Orders Count
+        op: ">"
+        value: 5
+```
+
+By `Country`, stage 1 computes revenue and the order count per country and customer, keeps the customers with more than five orders, and stage 2 averages their revenue. The condition's measure need not be the metric's own; it is computed in stage 1 and not returned. A country with no customer left has NULL, or 0 for `count`.
 
 A reaggregate metric over another one adds a stage. Its stage 1 is the inner metric, computed as a query at the query's dimensions plus the outer `per` would compute it, in its own two stages:
 
@@ -1094,6 +1111,7 @@ By `Country`, this averages revenue per customer within each country and month, 
 Rules:
 
 - `measure` names a measure or another reaggregate metric; any other metric is refused (`REAGGREGATE_MEASURE_ONLY`), and so is a chain of reaggregate metrics that leads back to itself (`REAGGREGATE_CYCLE`). A measure with `total`, `grain` or `filterContext` is allowed, and is computed as a query at the stage-1 grouping would compute it: a `total` is over every stage-1 row, a `grain` override is relative to the stage-1 dimensions, and a `filterContext` changes the query's `where` for stage 1. A `grain` with `mode: FIXED` has to be covered by the query's dimensions plus `per`, as in any query (`GRAIN_NOT_SUBSET`, prefixed with the stage it was raised in).
+- `having` is a list of conditions, all of which a stage-1 group has to meet. Each takes a query filter's `field`, `op` and `value` (any operator but `exists` / `nonexists`), and `field` names a measure, a synthesized count included: a metric is refused (`REAGGREGATE_HAVING_MEASURE_ONLY`), an unknown name is `UNKNOWN_MEASURE`. Metrics that differ only in their `aggregation` share stage 1 when their `having` is the same too.
 - `per` lists model dimensions (`REAGGREGATE_UNKNOWN_DIMENSION`), each optionally at a time grain (`'Order Date:day'`); a bare name groups by the dimension's declared `timeGrain`. The grain needs a date-bearing column and a `resultType` that can hold the bucket, as in a query.
 - If every `per` dimension is already in the query, at its grain or a finer one, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
 - Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type. A declared `dataType` wins.
@@ -1113,6 +1131,7 @@ Rules:
 | `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics. Each entry must be a model dimension in the query's SELECT. Cumulative metrics are also partitioned by the query's other dimensions. |
 | `per` | list | — | Dimensions added to the query's grain for the first stage (required for reaggregate) |
 | `aggregation` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` | — | Second-stage aggregation (required for reaggregate) |
+| `having` | list | — | Conditions (`field`, `op`, `value`) over measures that each stage-1 group has to meet (reaggregate only) |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
 | `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics) |
 | `offset` | integer | — | Row offset for `lag` / `lead` (>= 1) |

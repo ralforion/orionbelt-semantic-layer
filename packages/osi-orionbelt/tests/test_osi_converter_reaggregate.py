@@ -16,7 +16,8 @@ _REAGGREGATE: dict[str, Any] = {
     "measure": "Revenue",
     "per": ["Customer", "Order Date:day"],
     "aggregation": "avg",
-    "description": "Average revenue per customer and day",
+    "having": [{"field": "Revenue", "op": ">", "value": 100}],
+    "description": "Average revenue per customer and day, of the groups above 100",
 }
 
 _OBML: dict[str, Any] = {

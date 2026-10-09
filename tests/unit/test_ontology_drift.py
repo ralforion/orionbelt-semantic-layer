@@ -197,6 +197,8 @@ _NAME_REMAP = {
     # ``required`` on a join is ``obsl:joinRequired`` — plain "required" is too
     # generic for a vocabulary shared with other producers.
     "required": "joinRequired",
+    # Likewise a metric's ``having``, which only a reaggregate metric has.
+    "having": "reaggregateHaving",
     "vendor": "vendor",
     "data": "extensionData",
     "synonyms": "synonym",
