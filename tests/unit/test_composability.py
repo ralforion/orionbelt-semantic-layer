@@ -828,6 +828,17 @@ metrics:
     per: [Purchase Channel]
     aggregation: avg
     having: [{field: Spend, op: is_null}]
+  Sales Channel Revenue, No Spend:
+    type: reaggregate
+    measure: Revenue
+    per: [Sales Channel]
+    aggregation: sum
+    having: [{field: Spend, op: is_null}]
+  Peak Purchase Channel Revenue, No Spend:
+    type: reaggregate
+    measure: Sales Channel Revenue, No Spend
+    per: [Purchase Channel]
+    aggregation: max
   Revenue Rank:
     type: window
     windowFunction: rank
@@ -889,6 +900,17 @@ def test_a_per_dimension_through_via_follows_its_stage() -> None:
     assert not _compiles(model, [], ["Avg Purchase Channel Revenue"])
     assert "Avg Purchase Channel Revenue, No Spend" in offered
     assert _compiles(model, [], ["Avg Purchase Channel Revenue, No Spend"])
+
+
+def test_each_nested_stage_keeps_its_own_facts() -> None:
+    """The inner stage reads Sales and Purchases and pads its waypoints; the
+    outer stage reads the inner metric, planned over Sales alone, so its
+    ``Purchase Channel`` needs Purchases joined, which Sales cannot reach."""
+    model = _load(VIA_YAML)
+    assert "Sales Channel Revenue, No Spend" in _offered(model, [])
+    assert _compiles(model, [], ["Sales Channel Revenue, No Spend"])
+    assert "Peak Purchase Channel Revenue, No Spend" not in _offered(model, [])
+    assert not _compiles(model, [], ["Peak Purchase Channel Revenue, No Spend"])
 
 
 def test_a_window_metric_wraps_the_cfl_result() -> None:

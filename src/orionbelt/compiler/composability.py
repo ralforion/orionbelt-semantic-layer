@@ -124,12 +124,24 @@ class MetricLeg:
 
     sources: frozenset[str]
     required: frozenset[str]
-    #: The facts of the innermost reaggregate first stage it is computed in, a
-    #: query of its own; ``None`` outside any.
-    stage_facts: frozenset[str] | None = None
-    #: The ``via`` objects of the ``per`` dimensions of the stages it is in:
-    #: required over a single fact, padded over several (see :func:`_per_waypoints`).
-    waypoints: frozenset[str] = frozenset()
+    #: Each reaggregate first stage it is computed in, outermost first, as
+    #: (the facts that stage's query reads, its waypoints): the ``via``
+    #: objects of its ``per`` dimensions and of every enclosing stage's, which
+    #: group it too. Required over a single fact, padded over several.
+    stages: tuple[tuple[frozenset[str], frozenset[str]], ...] = ()
+
+
+def _stage_facts(model: SemanticModel, met: Metric) -> frozenset[str]:
+    """The facts a reaggregate metric's first-stage query reads.
+
+    Its measure as that query's own plan reads it (a nested reaggregate by its
+    bottom measure; that one's ``having`` belongs to the stage below), and its
+    ``having`` measures.
+    """
+    facts = metric_plan_sources(model, met.measure) if met.measure else set()
+    for condition in met.having:
+        facts |= measure_source_objects(model, condition.field)
+    return frozenset(facts)
 
 
 def metric_plan_sources(model: SemanticModel, name: str) -> set[str]:
@@ -160,8 +172,10 @@ def metric_plan_sources(model: SemanticModel, name: str) -> set[str]:
 
 
 #: A metric reached in :func:`metric_legs`: its name, the enclosing ``per``
-#: objects and waypoints, and the facts of its innermost reaggregate stage.
-_LegState = tuple[str, frozenset[str], frozenset[str], frozenset[str] | None]
+#: objects and waypoints, and the enclosing stages (see :class:`MetricLeg`).
+_LegState = tuple[
+    str, frozenset[str], frozenset[str], tuple[tuple[frozenset[str], frozenset[str]], ...]
+]
 
 
 def metric_legs(model: SemanticModel, name: str) -> list[MetricLeg]:
@@ -177,21 +191,20 @@ def metric_legs(model: SemanticModel, name: str) -> list[MetricLeg]:
     # A dependency shared by several formulas is walked once per enclosing
     # state, not once per path to it; this also ends a cycle.
     visited: set[_LegState] = set()
-    pending: list[_LegState] = [(name, frozenset(), frozenset(), None)]
+    pending: list[_LegState] = [(name, frozenset(), frozenset(), ())]
     while pending:
         state = pending.pop()
         if state in visited:
             continue
         visited.add(state)
-        ref, per_objects, per_waypoints, stage = state
+        ref, per_objects, per_waypoints, stages = state
         met = model.metrics.get(ref)
         if met is None:
             if ref in model.effective_measures:
                 leg = MetricLeg(
                     frozenset(measure_source_objects(model, ref)),
                     frozenset(measure_join_requirements(model, ref) | per_objects),
-                    stage,
-                    per_waypoints - per_objects,
+                    stages,
                 )
                 legs[leg] = None
             continue
@@ -202,9 +215,10 @@ def metric_legs(model: SemanticModel, name: str) -> list[MetricLeg]:
             # too or are refused beside another fact anyway.
             per_objects |= _per_objects(model, met)
             per_waypoints |= _per_waypoints(model, met)
-            stage = frozenset(metric_source_objects(model, ref))
+            stages = (*stages, (_stage_facts(model, met), per_waypoints - per_objects))
         pending.extend(
-            (child, per_objects, per_waypoints, stage) for child in metric_measure_names(model, ref)
+            (child, per_objects, per_waypoints, stages)
+            for child in metric_measure_names(model, ref)
         )
     return list(legs)
 
@@ -567,18 +581,21 @@ class ComposabilityResolver:
         measures already selected, which are legs of their own.
 
         A reaggregate first stage over a single fact is a star query of its own,
-        whatever else the outer query reads, so its legs need the waypoints too,
-        the query's and those of its ``per`` dimensions. Over several facts the
-        stage is CFL, which pads both.
+        whatever else the outer query reads, so a leg it reads needs that
+        stage's waypoints too: the query's and those of its ``per`` dimensions.
+        Each stage is judged by its own facts; one over several is CFL and pads
+        them, which an inner stage's extra fact does not do for an outer one.
         """
         for leg in metric_legs(self.model, name):
-            stage_waypoints = (waypoints or set()) | leg.waypoints
-            if stage_waypoints and leg.stage_facts is not None and len(leg.stage_facts) <= 1:
-                needed = spine | stage_waypoints | leg.sources | leg.required
-                if not self._has_common_root(needed):
-                    return False
-            elif not self._join_requirements_reachable(set(leg.required), spine | leg.sources):
+            if not self._join_requirements_reachable(set(leg.required), spine | leg.sources):
                 return False
+            for facts, stage_waypoints in leg.stages:
+                single_fact_star = len(facts) <= 1 and (not leg.sources or leg.sources & facts)
+                needed_waypoints = (waypoints or set()) | stage_waypoints
+                if single_fact_star and needed_waypoints:
+                    needed = spine | needed_waypoints | leg.sources | leg.required
+                    if not self._has_common_root(needed):
+                        return False
         return True
 
     def _dedup_disposition(self, name: str, drivers: set[str]) -> str | None:
