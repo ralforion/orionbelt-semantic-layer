@@ -99,7 +99,7 @@ def lookback_query(
         if copy is not None and copy[0] == predicates:
             renamed[cte.name] = copy[1]
             continue
-        query = _rename_query(_strip_query(cte.query, removed), renamed)
+        query = rename_cte_sources(_strip_query(cte.query, removed), renamed)
         if query != cte.query:
             renamed[cte.name] = cte.name + suffix
             added.append(CTE(name=renamed[cte.name], query=query))
@@ -163,7 +163,8 @@ def _conjuncts(expr: Expr) -> list[Expr]:
     return [expr]
 
 
-def _rename_query(query: CTEQuery, renamed: dict[str, str]) -> CTEQuery:
+def rename_cte_sources(query: CTEQuery, renamed: dict[str, str]) -> CTEQuery:
+    """*query* reading each CTE in *renamed* under its new name, aliased as before."""
     match query:
         case Select():
             return _rename_select(query, renamed)

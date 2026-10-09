@@ -198,6 +198,8 @@ metrics:
     measure: Country Revenue
     per: [Customer]
     aggregation: sum
+  Revenue Total Doubled:
+    expression: '{{[Revenue Total]}} * 2'
   Peak Day All Countries:
     type: reaggregate
     measure: Revenue All Countries
@@ -577,6 +579,18 @@ def _assert_over_wrapped_measures(target: VendorTarget, model: SemanticModel) ->
     )
     peaks = {str(r["order month"])[:7]: _number(r["peak day all countries"]) for r in rows}
     assert peaks == {"2026-01": Decimal(55), "2026-02": Decimal(1001)}, f"{target.name}: {peaks}"
+
+    # Beside a formula over the same total measure, and a window metric: the
+    # formula's total is not the reaggregate metric's. Revenue: DE 81, FR 1005,
+    # NULL 40, so ranks 2, 1, 3.
+    measures = ["Avg Customer Grand Total", "Revenue Total Doubled", "Revenue Rank"]
+    shared = _by_country(target, model, measures)
+    want_shared = {
+        "DE": (Decimal(1126), Decimal(2252), Decimal(2)),
+        "FR": (Decimal(1126), Decimal(2252), Decimal(1)),
+        None: (Decimal(1126), Decimal(2252), Decimal(3)),
+    }
+    assert shared == want_shared, f"{target.name}: {shared}"
 
 
 def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) -> None:

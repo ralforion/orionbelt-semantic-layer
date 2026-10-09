@@ -74,6 +74,12 @@ _METRICS["Peak Share of Grand Total"] = {
 }
 # The measure itself, read by a formula: a component with its total.
 _METRICS["Grand Total Doubled"] = {"expression": "{[Grand Total Sales]} * 2"}
+_METRICS["Sales Rank"] = {
+    "type": "window",
+    "measure": "Total Sales",
+    "windowFunction": "rank",
+    "orderDirection": "desc",
+}
 # Reaggregates over other facts, each in a leg of its own.
 _METRICS["Avg Purchases per Supplier"] = {
     "type": "reaggregate",
@@ -212,12 +218,15 @@ def _same_as_separate(run: Callable, dimensions: list[str], measures: list[str])
         assert {m: combined[key][m] for m in measures} == {m: row.get(m) for m in measures}
 
 
+@pytest.mark.parametrize("window", [False, True], ids=["", "and a window metric"])
 @pytest.mark.parametrize("first", [True, False], ids=["reaggregate first", "formula first"])
-def test_beside_a_formula_over_the_same_measure(run: Callable, first: bool) -> None:
+def test_beside_a_formula_over_the_same_measure(run: Callable, first: bool, window: bool) -> None:
     """The formula reads the measure with its total; the reaggregate metric's
-    first stage reads it too. Neither takes the other's form of it."""
+    first stage reads it too. Neither takes the other's form of it, and the
+    outer wrappers do not take the reaggregate metric for one over a total."""
     pair = ["avg of Grand Total Sales per Sales Client Name", "Grand Total Doubled"]
-    _same_as_separate(run, ["Country Name"], pair if first else pair[::-1])
+    measures = pair if first else pair[::-1]
+    _same_as_separate(run, ["Country Name"], [*measures, *(["Sales Rank"] if window else [])])
 
 
 _MULTI_FACT = [

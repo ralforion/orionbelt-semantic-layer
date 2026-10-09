@@ -533,7 +533,7 @@ class TestCompile:
         [
             ("Total Revenue", "OVER ()"),
             ("Region Revenue", 'OVER (PARTITION BY "Country")'),
-            ("Unfiltered Revenue", '"fc_0" AS ('),
+            ("Unfiltered Revenue", '"reagg_1_inner_fc_0" AS ('),
         ],
     )
     def test_over_a_wrapped_measure(self, inner: str, wrapper: str) -> None:
@@ -548,6 +548,24 @@ class TestCompile:
         stage_one = sql.index('"reagg_1_inner" AS (')
         assert sql.count(wrapper) == 1
         assert stage_one < sql.index(wrapper) < sql.index('"reagg_1" AS (')
+
+    def test_stage_one_ctes_named_apart_from_the_outer_query(self) -> None:
+        """Both the outer query and the first stage have a total, so both have a
+        ``base`` CTE; the nested one must not share the name (Snowflake reads a
+        nested reference by the outer CTE's name)."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Total Revenue\nper: [Customer]\naggregation: avg"
+            )
+        )
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Country"], measures=["Probe", "Total Revenue"])
+        )
+        sql = _compile(probe_model, query).sql
+        assert sql.count('"base" AS (') == 1
+        assert '"reagg_1_inner_base" AS (' in sql
+        assert 'FROM "reagg_1_inner_base" AS "base"' in sql
 
     def test_untyped_placeholder_takes_the_source_column_type(self) -> None:
         """A ``min`` over a ``max`` measure declares no type anywhere; an

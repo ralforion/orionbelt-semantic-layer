@@ -874,9 +874,6 @@ class _ResolutionContext:
     # (e.g. DuckDB) — production code paths thread the dialect's
     # ``format_table_ref``.
     qualify_table: Callable[[DataObject], str] | None = None
-    # Components a reaggregate metric registered as its measure's plain
-    # aggregate. A metric that reads the measure itself replaces the entry.
-    plain_components: set[str] = field(default_factory=set)
 
 
 def _resolve_effective_grain(grain: GrainOverride, query_dims: list[str]) -> list[str]:

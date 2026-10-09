@@ -905,14 +905,20 @@ def group_measures_by_object(
             if measure.name in seen:
                 continue
             seen.add(measure.name)
-            model_measure = model.effective_measures.get(measure.name)
+            # A reaggregate metric belongs to its measure's leg, which carries
+            # the groups that measure's fact has. Its placeholder reads no
+            # column, so the leg projects nothing it does not join.
+            source = measure.reaggregate_measure or measure.name
+            model_measure = model.effective_measures.get(source)
             if not model_measure:
                 groups.setdefault(resolved.base_object, []).append(measure)
                 continue
 
             # Collect source objects: from explicit columns or expression AST
             field_objects: set[str]
-            if model_measure.columns:
+            if source != measure.name:
+                field_objects = set(model_measure.source_objects)
+            elif model_measure.columns:
                 field_objects = {f.view for f in model_measure.columns if f.view}
             else:
                 # Expression-based measure: extract table refs from the AST
@@ -922,7 +928,7 @@ def group_measures_by_object(
             # are conformed into subqueries joined inside that leg, so they are
             # not legs of their own and the measure is not cross-fact: one leg
             # projects the whole expression.
-            anchor = resolved.anchored_measures.get(measure.name)
+            anchor = resolved.anchored_measures.get(source)
             if anchor:
                 groups.setdefault(anchor, []).append(measure)
                 continue
