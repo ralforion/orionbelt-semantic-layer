@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from orionbelt.ast.nodes import ColumnRef, Literal
+from orionbelt.ast.nodes import ColumnRef, FunctionCall, Literal
 from orionbelt.compiler.expr_parser import (
     parse_expression,
     tokenize_metric_formula,
@@ -441,10 +441,21 @@ def resolve_reaggregate_metric(
 ) -> ResolvedMeasure | None:
     """Resolve a reaggregate metric to a placeholder over its measure.
 
-    Like a cumulative metric, the planner projects the base measure's aggregate
-    under the metric's name, at the query grain. That value is not the metric:
-    ``reaggregate_wrap`` replaces it with the second stage, computed over a scan
-    of its own at the query grain plus the ``per`` dimensions.
+    The planner projects an aggregate NULL under the metric's name, which the
+    components pass types. That value is not the metric: ``reaggregate_wrap``
+    replaces it with the second stage, computed over a scan of its own at the
+    query grain plus the ``per`` dimensions.
+
+    The base measure is deliberately not a component of this query, and the
+    placeholder reads none of its columns. Its ``total``, ``grain``,
+    ``filterContext`` and deduplication belong to that scan, which plans the
+    measure as a query of its own; as a component here, every wrapper of the
+    outer query would compute it too, at the wrong grain, and refuse what the
+    scan answers (a ``FIXED`` grain the query's dimensions do not cover, a
+    total on a deduplicated measure). Shared with a formula that reads the
+    measure itself, those wrappers would take the placeholder for a metric
+    over it. The CFL planner places the metric on its measure's leg by
+    ``reaggregate_measure``.
     """
     from orionbelt.compiler.resolution import ResolvedMeasure
 
@@ -505,17 +516,11 @@ def resolve_reaggregate_metric(
             )
         )
 
-    if metric.measure not in ctx.result.metric_components:
-        comp = resolver._resolve_measure(ctx, metric.measure)
-        if comp:
-            ctx.result.metric_components[metric.measure] = comp
-
     return ResolvedMeasure(
         name=name,
         aggregation=metric.aggregation.value,
-        expression=ColumnRef(name=metric.measure),
+        expression=FunctionCall(name="MAX", args=[Literal(value=None)]),
         is_expression=True,
-        component_measures=[metric.measure],
         is_reaggregate=True,
         reaggregate_measure=metric.measure,
         reaggregate_per=list(metric.per),

@@ -124,6 +124,10 @@ measures:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
     filterContext: {{mode: RELATIVE, exclude: [Country]}}
+  Country Revenue:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    grain: {{mode: FIXED, include: [Country]}}
   Units Sum:
     columns: [{{dataObject: Shipments, column: Units}}]
     resultType: int
@@ -184,6 +188,23 @@ metrics:
     aggregation: min
   Smallest Customer Peak Doubled:
     expression: '{{[Smallest Customer Peak]}} * 2'
+  Avg Customer Grand Total:
+    type: reaggregate
+    measure: Revenue Total
+    per: [Customer]
+    aggregation: avg
+  Customers Country Revenue:
+    type: reaggregate
+    measure: Country Revenue
+    per: [Customer]
+    aggregation: sum
+  Revenue Total Doubled:
+    expression: '{{[Revenue Total]}} * 2'
+  Peak Day All Countries:
+    type: reaggregate
+    measure: Revenue All Countries
+    per: ['Order Date:day']
+    aggregation: max
   Running Revenue:
     type: cumulative
     measure: Revenue
@@ -531,6 +552,47 @@ def _assert_beside_other_wrappers(target: VendorTarget, model: SemanticModel) ->
     assert peak == want_peak, f"{target.name}: {peak}"
 
 
+def _assert_over_wrapped_measures(target: VendorTarget, model: SemanticModel) -> None:
+    """The inner measure's own wrapper, in the first stage's nested query.
+
+    The total is over every first-stage row (1126); each customer's country
+    revenue is its country's (DE 81, FR 1005, NULL 40), summed per customer;
+    the filterContext daily revenue ignores the country filter on the days
+    German rows fall on (Jan 5: 30, Jan 20: 50 + 5, Feb 3: 1 + 1000).
+    """
+    measures = ["Avg Customer Grand Total", "Customers Country Revenue"]
+    got = _by_country(target, model, measures)
+    want = {
+        "DE": (Decimal(1126), Decimal(243)),
+        "FR": (Decimal(1126), Decimal(2010)),
+        None: (Decimal(1126), Decimal(80)),
+    }
+    assert got == want, f"{target.name}: {got}"
+
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Order Month"], measures=["Peak Day All Countries"]),
+            where=[QueryFilter(field="Country", op="=", value="DE")],
+        ),
+    )
+    peaks = {str(r["order month"])[:7]: _number(r["peak day all countries"]) for r in rows}
+    assert peaks == {"2026-01": Decimal(55), "2026-02": Decimal(1001)}, f"{target.name}: {peaks}"
+
+    # Beside a formula over the same total measure, and a window metric: the
+    # formula's total is not the reaggregate metric's. Revenue: DE 81, FR 1005,
+    # NULL 40, so ranks 2, 1, 3.
+    measures = ["Avg Customer Grand Total", "Revenue Total Doubled", "Revenue Rank"]
+    shared = _by_country(target, model, measures)
+    want_shared = {
+        "DE": (Decimal(1126), Decimal(2252), Decimal(2)),
+        "FR": (Decimal(1126), Decimal(2252), Decimal(1)),
+        None: (Decimal(1126), Decimal(2252), Decimal(3)),
+    }
+    assert shared == want_shared, f"{target.name}: {shared}"
+
+
 def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) -> None:
     measures = ["Avg Units Sum", "Avg Units Min"]
     rows = _run(target, model, QueryObject(select=QuerySelect(measures=measures)))
@@ -548,6 +610,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_time_grained_per(target, model)
     _assert_two_per_buckets_of_one_date(target, model)
     _assert_beside_other_wrappers(target, model)
+    _assert_over_wrapped_measures(target, model)
     _assert_exact_integer_average(target, model)
 
 

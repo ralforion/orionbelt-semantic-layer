@@ -399,7 +399,8 @@ rows. Select it beside other measures (other facts too), in `having` and
 `orderBy`, and inside derived metrics (`'{[Avg Revenue per Customer]} /
 {[Revenue]}'`).
 
-- `measure:` a measure without `grain`, `total` or `filterContext`
+- `measure:` a measure; its `total`, `grain`, `filterContext` and dedup apply
+  in stage 1, at the query's dimensions plus `per`
 - `per:` model dimensions, optionally at a time grain (`'Order Date:day'`); by
   `Order Date:month` that averages daily totals within each month (only days
   with rows count)

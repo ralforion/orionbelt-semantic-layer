@@ -1940,20 +1940,6 @@ class ReferenceResolver:
                     f"Reaggregate metric '{name}' references unknown measure '{ref}'",
                     _suggest_similar(ref, [*measures, *synthesized_measures]),
                 )
-            elif measure is not None and (measure.total or measure.grain is not None):
-                report(
-                    "REAGGREGATE_INNER_GRAIN",
-                    "measure",
-                    f"Reaggregate metric '{name}' references measure '{ref}', which has a "
-                    f"'grain' or 'total' override; reaggregating it is not supported.",
-                )
-            elif measure is not None and measure.filter_context is not None:
-                report(
-                    "REAGGREGATE_INNER_FILTER_CONTEXT",
-                    "measure",
-                    f"Reaggregate metric '{name}' references measure '{ref}', which has a "
-                    f"'filterContext'; reaggregating it is not supported.",
-                )
 
         per = raw_metric.get("per")
         if not isinstance(per, list):

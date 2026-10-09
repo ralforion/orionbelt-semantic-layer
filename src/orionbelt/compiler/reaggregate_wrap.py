@@ -48,8 +48,8 @@ from orionbelt.ast.nodes import (
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
 from orionbelt.compiler.metric_resolution import reaggregate_per_covered, reaggregate_per_ref
 from orionbelt.compiler.outer_order_by import outer_order_by
-from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
-from orionbelt.compiler.time_lookback import null_safe_eq
+from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.time_lookback import null_safe_eq, rename_cte_sources
 from orionbelt.compiler.type_resolver import (
     exact_reaggregate_avg,
     measure_yields_integers,
@@ -115,7 +115,21 @@ def _stage_one(
     # module scope would be a cycle back through ``compiler.passes``.
     from orionbelt.compiler.pipeline import plan_in_own_right
 
-    scan, sub_resolved = plan_in_own_right(sub_query, model, dialect, qualify_table)
+    try:
+        scan, sub_resolved = plan_in_own_right(sub_query, model, dialect, qualify_table)
+    except ResolutionError as exc:
+        # The dimensions such an error names are the scan's, not the query's.
+        raise ResolutionError(
+            [
+                e.model_copy(
+                    update={
+                        "message": f"In the first stage of reaggregating '{measure}' "
+                        f"per {per}: {e.message}"
+                    }
+                )
+                for e in exc.errors
+            ]
+        ) from exc
     # Its warnings are about this query - a fan trap in the scan is one here.
     resolved.warnings.extend(sub_resolved.warnings)
     # So are its tables: a ``per`` dimension can join one the query does not,
@@ -191,6 +205,29 @@ def _stage_two(
         from_=From(source=inner, alias=inner),
         group_by=[ColumnRef(name=d, table=inner) for d in dim_names],
     )
+
+
+def _own_cte_names(scan: Select, prefix: str) -> Select:
+    """*scan* with each of its CTEs, nested ones too, named under *prefix*.
+
+    The first stage is planned as a query of its own, so its wrappers name
+    their CTEs as the outer query's do (``base``, ``main``), and it is nested
+    inside the outer query. Snowflake resolves a nested ``FROM "base"`` to the
+    outer query's CTE of that name, which has none of the first stage's
+    columns. Unique names leave no reference to resolve the wrong way.
+    """
+    renamed: dict[str, str] = {}
+    ctes: list[CTE] = []
+    for cte in scan.ctes:
+        name = f"{prefix}{cte.name}"
+        own = cte.query
+        if isinstance(own, Select):
+            own = _own_cte_names(own, f"{name}_")
+        ctes.append(CTE(name=name, query=rename_cte_sources(own, renamed)))
+        renamed[cte.name] = name
+    renamed_scan = rename_cte_sources(replace(scan, ctes=ctes), renamed)
+    assert isinstance(renamed_scan, Select)
+    return renamed_scan
 
 
 def _hoist_ctes(ctes: list[CTE], captured: list[CTE]) -> None:
@@ -417,14 +454,8 @@ def wrap_with_reaggregate(
     for idx, ((measure, per), metrics) in enumerate(groups.items(), start=1):
         inner_name = f"reagg_{idx}_inner"
         outer_name = f"reagg_{idx}"
-        ctes.append(
-            CTE(
-                name=inner_name,
-                query=_stage_one(
-                    measure, list(per), resolved, query, model, dialect, qualify_table
-                ),
-            )
-        )
+        scan = _stage_one(measure, list(per), resolved, query, model, dialect, qualify_table)
+        ctes.append(CTE(name=inner_name, query=_own_cte_names(scan, f"{inner_name}_")))
         ctes.append(
             CTE(name=outer_name, query=_stage_two(inner_name, metrics, dim_names, model, dialect))
         )
