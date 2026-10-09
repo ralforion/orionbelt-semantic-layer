@@ -201,13 +201,19 @@ def test_count_is_zero_where_no_group_is_left(run: Callable) -> None:
     assert {c for c, v in rows.items() if v == 0} == {c for c, v in averages.items() if v is None}
 
 
-@pytest.mark.parametrize("anchors", [[], ["Year Month"]], ids=["no anchor", "Year Month"])
+@pytest.mark.parametrize(
+    "anchors",
+    [[], ["Year Month"], ["Total Sales"], ["Total Sales", "Year Month"]],
+    ids=" + ".join,
+)
 def test_composability_offers_a_condition_on_another_fact(
     model: SemanticModel, run: Callable, anchors: list[str]
 ) -> None:
     """Each fact is a leg of its own and reaches ``Year Month`` by itself; no
-    root has to reach both."""
+    root has to reach both, nor the fact of a measure already selected."""
     name = "avg month sales, big purchases"
     result = resolve_composables_for_anchors(model, anchors)
     assert name in set(result.metrics) | set(result.cfl_metrics)
-    assert len(run(anchors, [name])) >= 1
+    dimensions = [a for a in anchors if a in model.dimensions]
+    measures = [a for a in anchors if a not in model.dimensions]
+    assert len(run(dimensions, [*measures, name])) >= 1

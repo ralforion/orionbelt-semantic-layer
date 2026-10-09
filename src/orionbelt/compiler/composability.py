@@ -89,28 +89,28 @@ def metric_legs(model: SemanticModel, name: str) -> list[tuple[set[str], set[str
     stage's measure and its ``having`` measures alike, whether the metric is
     asked for directly or through a derived metric over it.
     """
-    legs: list[tuple[set[str], set[str]]] = []
-
-    def walk(ref: str, per_objects: frozenset[str], path: frozenset[str]) -> None:
+    legs: dict[tuple[str, frozenset[str]], tuple[set[str], set[str]]] = {}
+    # A dependency shared by several formulas is walked once per set of
+    # enclosing ``per`` objects, not once per path to it; this also ends a cycle.
+    visited: set[tuple[str, frozenset[str]]] = set()
+    pending: list[tuple[str, frozenset[str]]] = [(name, frozenset())]
+    while pending:
+        ref, per_objects = pending.pop()
+        if (ref, per_objects) in visited:
+            continue
+        visited.add((ref, per_objects))
         met = model.metrics.get(ref)
         if met is None:
             if ref in model.effective_measures:
-                legs.append(
-                    (
-                        measure_source_objects(model, ref),
-                        measure_join_requirements(model, ref) | per_objects,
-                    )
+                legs[(ref, per_objects)] = (
+                    measure_source_objects(model, ref),
+                    measure_join_requirements(model, ref) | per_objects,
                 )
-            return
-        if ref in path:
-            return
+            continue
         if met.type == MetricType.REAGGREGATE:
             per_objects |= _per_objects(model, met)
-        for child in metric_measure_names(model, ref):
-            walk(child, per_objects, path | {ref})
-
-    walk(name, frozenset(), frozenset())
-    return legs
+        pending.extend((child, per_objects) for child in metric_measure_names(model, ref))
+    return list(legs.values())
 
 
 def metric_join_requirements(model: SemanticModel, name: str) -> set[str]:
@@ -355,8 +355,10 @@ class ComposabilityResolver:
         cfl_measures: list[str] = []
         for name in self.model.effective_measures:
             sources = measure_source_objects(self.model, name)
+            # Planned with the query's dimensions; a fact of a measure already
+            # selected is a leg of its own and need not share a root with it.
             if not self._join_requirements_reachable(
-                measure_join_requirements(self.model, name), anchor | sources
+                measure_join_requirements(self.model, name), spine | sources
             ):
                 continue
             if self._measure_blocked(name, anchor):
@@ -373,7 +375,7 @@ class ComposabilityResolver:
         cfl_metrics: list[str] = []
         for name in self.model.metrics:
             sources = metric_source_objects(self.model, name)
-            if not self._metric_legs_reachable(name, anchor):
+            if not self._metric_legs_reachable(name, spine):
                 continue
             if self._metric_blocked(name, anchor):
                 continue
@@ -411,15 +413,17 @@ class ComposabilityResolver:
             return True
         return self._has_common_root(context | required)
 
-    def _metric_legs_reachable(self, name: str, anchor: set[str]) -> bool:
+    def _metric_legs_reachable(self, name: str, spine: set[str]) -> bool:
         """``_join_requirements_reachable`` for each leg of a metric on its own.
 
         Asked of the metric's sources together, a metric over two facts with a
         requirement on either needed one root over both, though each fact is
-        planned as a leg of its own.
+        planned as a leg of its own. Each leg is planned with the query's
+        dimensions (*spine*), not with the facts of measures already selected,
+        which are legs of their own.
         """
         return all(
-            self._join_requirements_reachable(required, anchor | sources)
+            self._join_requirements_reachable(required, spine | sources)
             for sources, required in metric_legs(self.model, name)
         )
 
