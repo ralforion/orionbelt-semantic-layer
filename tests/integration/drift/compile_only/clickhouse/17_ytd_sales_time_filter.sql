@@ -16,7 +16,7 @@ FROM "cumulative_lookback" AS "cumulative_lookback"
 "cumulative_joined" AS (
 SELECT "cumulative_base"."Sales Month" AS "Sales Month", "cumulative_base"."Total Sales" AS "Total Sales", "cumulative_window"."YTD Sales" AS "YTD Sales"
 FROM "cumulative_base" AS "cumulative_base"
-LEFT JOIN "cumulative_window" AS "cumulative_window" ON "cumulative_base"."Sales Month" = "cumulative_window"."Sales Month" OR "cumulative_base"."Sales Month" IS NULL AND "cumulative_window"."Sales Month" IS NULL
+LEFT JOIN "cumulative_window" AS "cumulative_window" ON isNotDistinctFrom("cumulative_base"."Sales Month", "cumulative_window"."Sales Month")
 )
 SELECT "Sales Month" AS "Sales Month", "Total Sales" AS "Total Sales", CAST(round(toDecimal256(toString("YTD Sales"), 3), 2) AS Nullable(Decimal(18, 2))) AS "YTD Sales"
 FROM "cumulative_joined" AS "cumulative_joined"

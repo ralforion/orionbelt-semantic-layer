@@ -477,6 +477,26 @@ class TestClickHouseDialect:
         sql = dialect.compile_expr(Cast(expr=col("amt"), type_name="Decimal(18)"))
         assert sql == 'CAST("amt" AS Nullable(Decimal(18)))', sql
 
+    def test_null_safe_join_keys_use_is_not_distinct_from(self, dialect: ClickHouseDialect) -> None:
+        """From the second LEFT JOIN of a chain, the OR spelling has no join key."""
+
+        def null_safe(name: str) -> Expr:
+            left, right = col(name, "main"), col(name, "cte")
+            return BinaryOp(
+                BinaryOp(left, "=", right),
+                "OR",
+                BinaryOp(IsNull(expr=left), "AND", IsNull(expr=right)),
+            )
+
+        on = BinaryOp(BinaryOp(null_safe("a"), "AND", null_safe("b")), "AND", eq(col("c"), lit(1)))
+        sql = dialect.compile_expr(dialect.join_condition(on))
+        assert sql == (
+            'isNotDistinctFrom("main"."a", "cte"."a") AND '
+            'isNotDistinctFrom("main"."b", "cte"."b") AND "c" = 1'
+        ), sql
+        # Every other engine keeps the portable spelling.
+        assert PostgresDialect().join_condition(on) is on
+
 
 class TestDatabricksDialect:
     @pytest.fixture

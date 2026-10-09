@@ -1889,8 +1889,12 @@ class Dialect(ABC):
 
         parts = [f"{node.join_type.value} JOIN {source}"]
         if node.on:
-            parts.append(f"ON {self.compile_expr(node.on)}")
+            parts.append(f"ON {self.compile_expr(self.join_condition(node.on))}")
         return " ".join(parts)
+
+    def join_condition(self, on: Expr) -> Expr:
+        """*on* as this engine accepts it in a ``JOIN ... ON``. Unchanged here."""
+        return on
 
     def _render_source_string(self, source: str) -> str:
         """Render a ``From``/``Join`` string source.

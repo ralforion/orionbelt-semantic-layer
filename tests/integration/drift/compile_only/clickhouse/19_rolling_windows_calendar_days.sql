@@ -18,7 +18,7 @@ GROUP BY ALL
 "cumulative_joined" AS (
 SELECT "cumulative_base"."Sales Date" AS "Sales Date", "cumulative_base"."Total Sales" AS "Total Sales", "cumulative_rolling"."Rolling 30 Day Sales" AS "Rolling 30 Day Sales", "cumulative_rolling"."Peak Daily Sales 30D" AS "Peak Daily Sales 30D"
 FROM "cumulative_base" AS "cumulative_base"
-LEFT JOIN "cumulative_rolling" AS "cumulative_rolling" ON "cumulative_base"."Sales Date" = "cumulative_rolling"."Sales Date" OR "cumulative_base"."Sales Date" IS NULL AND "cumulative_rolling"."Sales Date" IS NULL
+LEFT JOIN "cumulative_rolling" AS "cumulative_rolling" ON isNotDistinctFrom("cumulative_base"."Sales Date", "cumulative_rolling"."Sales Date")
 )
 SELECT "Sales Date" AS "Sales Date", "Total Sales" AS "Total Sales", CAST(round(toDecimal256(toString("Rolling 30 Day Sales"), 1), 0) AS Nullable(Decimal(18, 0))) AS "Rolling 30 Day Sales", CAST(round(toDecimal256(toString("Peak Daily Sales 30D"), 3), 2) AS Nullable(Decimal(18, 2))) AS "Peak Daily Sales 30D"
 FROM "cumulative_joined" AS "cumulative_joined"

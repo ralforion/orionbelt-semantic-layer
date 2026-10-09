@@ -38,7 +38,7 @@ GROUP BY ALL
 "cumulative_joined" AS (
 SELECT "cumulative_base"."Sales Region Name" AS "Sales Region Name", "cumulative_base"."Total Sales" AS "Total Sales", "cumulative_as_of"."YTD Sales" AS "YTD Sales", "cumulative_as_of"."Cumulative Sales" AS "Cumulative Sales"
 FROM "cumulative_base" AS "cumulative_base"
-LEFT JOIN "cumulative_as_of" AS "cumulative_as_of" ON "cumulative_base"."Sales Region Name" = "cumulative_as_of"."Sales Region Name" OR "cumulative_base"."Sales Region Name" IS NULL AND "cumulative_as_of"."Sales Region Name" IS NULL
+LEFT JOIN "cumulative_as_of" AS "cumulative_as_of" ON isNotDistinctFrom("cumulative_base"."Sales Region Name", "cumulative_as_of"."Sales Region Name")
 )
 SELECT "Sales Region Name" AS "Sales Region Name", "Total Sales" AS "Total Sales", CAST(round(toDecimal256(toString("YTD Sales"), 3), 2) AS Nullable(Decimal(18, 2))) AS "YTD Sales", CAST(round(toDecimal256(toString("Cumulative Sales"), 3), 2) AS Nullable(Decimal(18, 2))) AS "Cumulative Sales"
 FROM "cumulative_joined" AS "cumulative_joined"

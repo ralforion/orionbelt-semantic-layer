@@ -392,3 +392,63 @@ def vendor_databricks() -> VendorTarget:
         yield VendorTarget(name="databricks", dialect="databricks", execute=_execute)
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Dremio (local container from ``demo/dremio`` - no testcontainer module)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def vendor_dremio() -> VendorTarget:
+    """Dremio over Arrow Flight SQL, with no commerce seed.
+
+    Nothing seeds Dremio with the corpus, so only tests that build their own
+    tables use this fixture, in ``$scratch``. Start the engine and its admin
+    user as ``scripts/probe_types.py`` describes, then set ``DREMIO_HOST``,
+    ``DREMIO_PORT``, ``DREMIO_USERNAME`` and ``DREMIO_PASSWORD``. Skipped
+    unless ``DREMIO_HOST`` is set, and again if the engine cannot be reached.
+    """
+    flightsql = pytest.importorskip(
+        "adbc_driver_flightsql.dbapi",
+        reason="adbc-driver-flightsql required for dremio vendor exec",
+    )
+    host = os.environ.get("DREMIO_HOST")
+    if not host:
+        pytest.skip("DREMIO_HOST not set")
+    options = {
+        "username": os.environ.get("DREMIO_USERNAME", ""),
+        "password": os.environ.get("DREMIO_PASSWORD", ""),
+    }
+    uri = f"grpc://{host}:{os.environ.get('DREMIO_PORT', '32010')}"
+    try:
+        conn = flightsql.connect(uri, db_kwargs=options, autocommit=True)
+    except Exception as exc:  # noqa: BLE001 - an unreachable engine is a skip, not a failure
+        pytest.skip(f"Could not connect to Dremio: {exc}")
+
+    def _execute(sql: str) -> list[dict[str, Any]]:
+        # One cursor per statement: ADBC skips re-preparing an unchanged
+        # statement, and Dremio then answers with the previous rows.
+        cur = conn.cursor()
+        try:
+            cur.execute(sql)
+            if sql.lstrip().upper().startswith(("CREATE", "DROP")):
+                # A statement only runs once its answer is fetched. A DROP
+                # answer (ok, summary) is described NOT NULL and streamed
+                # nullable, which ADBC refuses after the drop has happened;
+                # nothing in it is needed.
+                try:
+                    cur.fetchall()
+                except Exception as exc:  # noqa: BLE001 - re-raised unless it is that mismatch
+                    if "inconsistent schema" not in str(exc):
+                        raise
+                return []
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+        finally:
+            cur.close()
+
+    try:
+        yield VendorTarget(name="dremio", dialect="dremio", execute=_execute)
+    finally:
+        conn.close()
