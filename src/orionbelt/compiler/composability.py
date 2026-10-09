@@ -504,17 +504,7 @@ class ComposabilityResolver:
         Every leaf measure's sources count as drivers for every other: they all
         land in one query, so a component on the *one* side is replicated by a
         sibling on the many side even when the anchor reaches neither.
-
-        A reaggregate metric whose ``per`` names a time grain is excluded, and so
-        is any derived metric that reaches one: that form is not compiled yet,
-        so every query selecting either is refused.
         """
-        if any(
-            met.type == MetricType.REAGGREGATE
-            and any(entry not in self.model.dimensions and ":" in entry for entry in met.per)
-            for met in reachable_metrics(self.model, name)
-        ):
-            return True
         leaves = metric_leaf_measures(self.model, name)
         behind_wrapper = self._wrapper_backed_measures(name)
         drivers = set(anchor)

@@ -24,7 +24,9 @@ rows in stage 1 and the join finds it.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
+from dataclasses import replace
 
 from orionbelt.ast.nodes import (
     CTE,
@@ -41,6 +43,7 @@ from orionbelt.ast.nodes import (
     Unnest,
 )
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
+from orionbelt.compiler.metric_resolution import reaggregate_per_covered, reaggregate_per_ref
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import null_safe_eq
@@ -50,7 +53,7 @@ from orionbelt.compiler.type_resolver import (
     resolve_metric_data_type,
 )
 from orionbelt.dialect.base import Dialect
-from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.models.query import DimensionRef, QueryObject, QuerySelect
 from orionbelt.models.semantic import DataObject, ReaggregateAggType, SemanticModel
 from orionbelt.models.types import OBMLType
 
@@ -82,11 +85,21 @@ def _stage_one(
 
     Only the query's row filters carry over: its HAVING, ORDER BY and LIMIT
     describe the final result, not this scan.
+
+    A ``per`` entry the query's grouping already covers is left out, and so is
+    one naming the same bucket as an earlier entry.
     """
-    in_query = {d.name for d in resolved.dimensions}
+    added: list[tuple[str, DimensionRef]] = []
+    for entry in per:
+        ref = reaggregate_per_ref(model, entry)
+        if reaggregate_per_covered(model, ref, resolved.dimensions) or any(
+            ref == other for _, other in added
+        ):
+            continue
+        added.append((entry, ref))
     sub_query = QueryObject(
         select=QuerySelect(
-            dimensions=[*query.select.dimensions, *(p for p in per if p not in in_query)],
+            dimensions=[*query.select.dimensions, *(entry for entry, _ in added)],
             measures=[measure],
         ),
         where=list(query.where),
@@ -103,7 +116,38 @@ def _stage_one(
     # So are its tables: a ``per`` dimension can join one the query does not,
     # and the result cache has to see it change.
     resolved.subquery_objects.update(sub_resolved.required_objects, sub_resolved.subquery_objects)
-    return scan
+    return _name_per_buckets(scan, [d.name for d in resolved.dimensions], [r for _, r in added])
+
+
+def _name_per_buckets(scan: Select, query_dims: list[str], refs: list[DimensionRef]) -> Select:
+    """Give each ``per`` bucket of a dimension named twice a column of its own.
+
+    The planner names a dimension's column after the dimension at any grain, so
+    ``Order Date:day`` beside the query's ``Order Date:month``, or beside a
+    second ``per`` bucket of that date, would leave two columns of one name,
+    which most engines reject in a CTE and the second stage could not tell
+    apart. Such a ``per`` column becomes ``name:grain``. The query's own
+    columns come first in the scan and keep their names.
+    """
+    names = [*query_dims, *(r.name for r in refs)]
+    pending = {name: [r for r in refs if r.name == name] for name in names if names.count(name) > 1}
+    if not pending:
+        return scan
+    query_columns = Counter(query_dims)
+    columns: list[Expr] = []
+    for col in scan.columns:
+        alias = _alias(col)
+        if isinstance(col, AliasedExpr) and alias in pending and pending[alias]:
+            if query_columns[alias]:
+                query_columns[alias] -= 1
+            else:
+                ref = pending[alias].pop(0)
+                grain = ref.grain.value if ref.grain else "value"
+                col = AliasedExpr(expr=col.expr, alias=f"{ref.name}:{grain}")
+        columns.append(col)
+    if any(pending.values()):
+        raise RuntimeError(f"reaggregate stage 1 lost a 'per' column: {pending}")
+    return replace(scan, columns=columns)
 
 
 def _stage_two(

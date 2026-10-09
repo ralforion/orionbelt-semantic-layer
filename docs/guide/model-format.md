@@ -1059,6 +1059,19 @@ With `Country` in the query, `Avg Revenue per Customer` is computed in two stage
 
 Each customer counts once in the average, however many orders they placed, so it differs from a row-weighted average. The stages compile into CTEs that join back to the query's rows on its dimensions, NULL values included. Without dimensions, stage 2 is one row.
 
+A `per` entry can name a time bucket, also of a date the query groups by at a coarser grain:
+
+```yaml
+metrics:
+  Avg Daily Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: ['Order Date:day']
+    aggregation: avg
+```
+
+By `Order Date:month`, stage 1 groups by month and day and stage 2 averages the daily totals within each month. Only days with orders count: a month with ten trading days averages ten values. A `per` bucket that does not nest in the query's is still split by it: under `Order Date:week`, a `per` of `'Order Date:month'` takes a week that crosses a month boundary as two values.
+
 !!! note "Which groups are counted"
     Stage 1 groups the rows that reach the measure after the query's `where`, so a customer without orders in the filtered range is not part of the average, and `count` counts customers with a non-NULL stage-1 value. `having` on the metric filters the final rows, like any metric.
 
@@ -1068,8 +1081,8 @@ Each customer counts once in the average, however many orders they placed, so it
 Rules:
 
 - `measure` must name a measure, not a metric (`REAGGREGATE_MEASURE_ONLY`). A measure with `grain` or `total` (`REAGGREGATE_INNER_GRAIN`) or with `filterContext` (`REAGGREGATE_INNER_FILTER_CONTEXT`) is refused at model load.
-- `per` lists model dimensions (`REAGGREGATE_UNKNOWN_DIMENSION`). For a time bucket, name a dimension whose `timeGrain` is that bucket (`per: [Order Day]`); a `per` entry with its own grain (`'Order Date:day'`) is accepted by the model but refused at compile time (`REAGGREGATE_PER_GRAIN_NOT_SUPPORTED`), as is a query that selects a `per` dimension at another grain.
-- If every `per` dimension is already in the query, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
+- `per` lists model dimensions (`REAGGREGATE_UNKNOWN_DIMENSION`), each optionally at a time grain (`'Order Date:day'`); a bare name groups by the dimension's declared `timeGrain`. The grain needs a date-bearing column and a `resultType` that can hold the bucket, as in a query.
+- If every `per` dimension is already in the query, at its grain or a finer one, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
 - Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type. A declared `dataType` wins.
 - Not available yet in the same query: `grouping: rollup` / `cube` (`REAGGREGATE_WITH_ROLLUP`), and a filterContext measure, a period-over-period, cumulative or window metric, or a measure with `total` / `grain` (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`). Query those separately.
 

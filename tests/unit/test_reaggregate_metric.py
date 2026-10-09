@@ -345,17 +345,18 @@ class TestPerGrain:
 
 
 class TestComposability:
-    """Offered as a query choice, except the form every query refuses."""
+    """Offered as a query choice."""
 
     @pytest.mark.parametrize("anchors", [[], ["Country"]])
     def test_offered(self, model: SemanticModel, anchors: list[str]) -> None:
         result = resolve_composables_for_anchors(model, anchors)
         offered = set(result.metrics) | set(result.cfl_metrics)
-        assert {"Avg Revenue per Customer", "Avg Orders per Customer"} <= offered
-        # per: ['Order Date:day'] is refused until a per grain compiles.
-        assert "Avg Daily Revenue" not in offered
-        # And so is a derived metric over it, which would be refused the same way.
-        assert "Daily Revenue Share" not in offered
+        assert {
+            "Avg Revenue per Customer",
+            "Avg Orders per Customer",
+            "Avg Daily Revenue",
+            "Daily Revenue Share",
+        } <= offered
 
 
 def _compile(model: SemanticModel, query: QueryObject) -> CompilationResult:
@@ -417,19 +418,108 @@ class TestCompile:
         )
         assert "REAGGREGATE_WITH_ROLLUP" in _refusal(model, query)
 
-    def test_per_grain_refused(self, model: SemanticModel) -> None:
-        query = QueryObject(
-            select=QuerySelect(dimensions=["Country"], measures=["Avg Daily Revenue"])
+    def test_per_grain_beside_the_query_dimension_at_a_coarser_grain(
+        self, model: SemanticModel
+    ) -> None:
+        """Stage 1 groups by month and day; the day column gets its own name."""
+        result = _compile(
+            model,
+            QueryObject(
+                select=QuerySelect(dimensions=["Order Date:month"], measures=["Avg Daily Revenue"])
+            ),
         )
-        assert "REAGGREGATE_PER_GRAIN_NOT_SUPPORTED" in _refusal(model, query)
+        inner = result.sql.split('"reagg_1_inner" AS (')[1].split("),")[0]
+        assert "DATE_TRUNC('month'" in inner
+        assert "DATE_TRUNC('day'" in inner
+        assert 'AS "Order Date:day"' in inner
+        assert "REAGGREGATE_NO_OP" not in {w.code for w in result.warnings}
 
-    def test_per_in_query_at_another_grain_refused(self) -> None:
+    def test_per_grain_without_the_dimension_in_the_query(self, model: SemanticModel) -> None:
+        sql = _compile(
+            model,
+            QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Avg Daily Revenue"])),
+        ).sql
+        inner = sql.split('"reagg_1_inner" AS (')[1].split("),")[0]
+        assert "DATE_TRUNC('day'" in inner
+        assert '"Order Date:day"' not in inner
+
+    def test_declared_grain_under_a_coarser_query_grain(self) -> None:
+        """A bare ``per`` name groups by the dimension's declared timeGrain."""
         probe_model, result = _resolve(
             _with_metric("type: reaggregate\nmeasure: Revenue\nper: [Order Date]\naggregation: avg")
         )
         assert result.valid
-        query = QueryObject(select=QuerySelect(dimensions=["Order Date:year"], measures=["Probe"]))
-        assert "REAGGREGATE_PER_GRAIN_NOT_SUPPORTED" in _refusal(probe_model, query)
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Order Date:year"], measures=["Probe"])),
+        ).sql
+        inner = sql.split('"reagg_1_inner" AS (')[1].split("),")[0]
+        assert "DATE_TRUNC('year'" in inner
+        assert (
+            'DATE_TRUNC(\'month\', "Orders"."ORDER_DATE") AS DATE) AS "Order Date:month"' in inner
+        )
+
+    def test_per_grain_already_in_the_query_is_a_no_op(self, model: SemanticModel) -> None:
+        result = _compile(
+            model,
+            QueryObject(
+                select=QuerySelect(dimensions=["Order Date:day"], measures=["Avg Daily Revenue"])
+            ),
+        )
+        assert "REAGGREGATE_NO_OP" in {w.code for w in result.warnings}
+        inner = result.sql.split('"reagg_1_inner" AS (')[1].split("),")[0]
+        assert inner.count("DATE_TRUNC(") == 1
+
+    @pytest.mark.parametrize("dimensions", [["Country"], []])
+    def test_two_per_buckets_of_one_date_get_their_own_columns(self, dimensions: list[str]) -> None:
+        """Without the date in the query, its two ``per`` buckets still collide."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\n"
+                "per: ['Order Date:month', 'Order Date:week']\naggregation: avg"
+            )
+        )
+        assert result.valid
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=dimensions, measures=["Probe"])),
+        ).sql
+        inner = sql.split('"reagg_1_inner" AS (')[1].split("),")[0]
+        assert 'AS "Order Date:month"' in inner
+        assert 'AS "Order Date:week"' in inner
+        assert 'AS "Order Date",' not in inner
+
+    def test_per_entries_naming_one_bucket_group_once(self) -> None:
+        """``Order Date`` is declared at month, so both entries are the month."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\n"
+                "per: ['Order Date', 'Order Date:month']\naggregation: avg"
+            )
+        )
+        assert result.valid
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"])),
+        ).sql
+        inner = sql.split('"reagg_1_inner" AS (')[1].split("),")[0]
+        assert inner.count("DATE_TRUNC('month'") == 1
+        assert 'AS "Order Date"' in inner
+
+    def test_week_does_not_nest_in_month(self) -> None:
+        """Weeks cross months, so a query by week still splits them per month."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\nper: ['Order Date:month']\naggregation: avg"
+            )
+        )
+        assert result.valid
+        result_ = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Order Date:week"], measures=["Probe"])),
+        )
+        assert "REAGGREGATE_NO_OP" not in {w.code for w in result_.warnings}
+        assert 'AS "Order Date:month"' in result_.sql
 
     @pytest.mark.parametrize("other", ["Total Revenue", "Unfiltered Revenue"])
     def test_combination_refused(self, model: SemanticModel, other: str) -> None:
