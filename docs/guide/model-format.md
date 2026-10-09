@@ -1054,7 +1054,7 @@ With `Country` in the query, `Avg Revenue per Customer` is computed in two stage
 
 | Stage | Computes | Grouped by |
 |-------|----------|------------|
-| 1 | `Revenue`, exactly as the measure is defined (its filters, anchor and type apply) | the query's dimensions plus `per`: `Country, Customer` |
+| 1 | `Revenue`, exactly as the measure is defined (its filters, anchor, type, `total`, `grain`, `filterContext` and deduplication apply) | the query's dimensions plus `per`: `Country, Customer` |
 | 2 | `avg` over the stage-1 values | the query's dimensions: `Country` |
 
 Each customer counts once in the average, however many orders they placed, so it differs from a row-weighted average. The stages compile into CTEs that join back to the query's rows on its dimensions, NULL values included. Without dimensions, stage 2 is one row.
@@ -1080,7 +1080,7 @@ By `Order Date:month`, stage 1 groups by month and day and stage 2 averages the 
 
 Rules:
 
-- `measure` must name a measure, not a metric (`REAGGREGATE_MEASURE_ONLY`). A measure with `grain` or `total` (`REAGGREGATE_INNER_GRAIN`) or with `filterContext` (`REAGGREGATE_INNER_FILTER_CONTEXT`) is refused at model load.
+- `measure` must name a measure, not a metric (`REAGGREGATE_MEASURE_ONLY`). A measure with `total`, `grain` or `filterContext` is allowed, and is computed as a query at the stage-1 grouping would compute it: a `total` is over every stage-1 row, a `grain` override is relative to the stage-1 dimensions, and a `filterContext` changes the query's `where` for stage 1. A `grain` with `mode: FIXED` has to be covered by the query's dimensions plus `per`, as in any query (`GRAIN_NOT_SUBSET`, prefixed with the stage it was raised in).
 - `per` lists model dimensions (`REAGGREGATE_UNKNOWN_DIMENSION`), each optionally at a time grain (`'Order Date:day'`); a bare name groups by the dimension's declared `timeGrain`. The grain needs a date-bearing column and a `resultType` that can hold the bucket, as in a query.
 - If every `per` dimension is already in the query, at its grain or a finer one, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
 - Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type. A declared `dataType` wins.

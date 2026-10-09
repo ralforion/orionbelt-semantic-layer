@@ -48,7 +48,7 @@ from orionbelt.ast.nodes import (
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
 from orionbelt.compiler.metric_resolution import reaggregate_per_covered, reaggregate_per_ref
 from orionbelt.compiler.outer_order_by import outer_order_by
-from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import null_safe_eq
 from orionbelt.compiler.type_resolver import (
     exact_reaggregate_avg,
@@ -115,7 +115,21 @@ def _stage_one(
     # module scope would be a cycle back through ``compiler.passes``.
     from orionbelt.compiler.pipeline import plan_in_own_right
 
-    scan, sub_resolved = plan_in_own_right(sub_query, model, dialect, qualify_table)
+    try:
+        scan, sub_resolved = plan_in_own_right(sub_query, model, dialect, qualify_table)
+    except ResolutionError as exc:
+        # The dimensions such an error names are the scan's, not the query's.
+        raise ResolutionError(
+            [
+                e.model_copy(
+                    update={
+                        "message": f"In the first stage of reaggregating '{measure}' "
+                        f"per {per}: {e.message}"
+                    }
+                )
+                for e in exc.errors
+            ]
+        ) from exc
     # Its warnings are about this query - a fan trap in the scan is one here.
     resolved.warnings.extend(sub_resolved.warnings)
     # So are its tables: a ``per`` dimension can join one the query does not,
