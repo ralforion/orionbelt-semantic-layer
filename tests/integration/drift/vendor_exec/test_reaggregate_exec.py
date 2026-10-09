@@ -148,6 +148,11 @@ metrics:
     measure: Revenue
     per: ['Order Date:month']
     aggregation: avg
+  Avg Revenue per Month and Day:
+    type: reaggregate
+    measure: Revenue
+    per: ['Order Date:month', 'Order Date:day']
+    aggregation: avg
   Avg Units Sum:
     type: reaggregate
     measure: Units Sum
@@ -333,6 +338,22 @@ def _assert_time_grained_per(target: VendorTarget, model: SemanticModel) -> None
     assert got_total == [Decimal("225.2")], f"{target.name}: {got_total}"
 
 
+def _assert_two_per_buckets_of_one_date(target: VendorTarget, model: SemanticModel) -> None:
+    """Two buckets of one date, neither in the query, each a column of its own.
+
+    Days nest in months, so the groups are the days: per country DE has three
+    (30, 50, 1), FR two (5, 1000), NULL two (10, 30).
+    """
+    got = _by_country(target, model, ["Avg Revenue per Month and Day"])
+    want = {"DE": (Decimal(27),), "FR": (Decimal("502.5"),), None: (Decimal(20),)}
+    assert got == want, f"{target.name}: {got}"
+    rows = _run(
+        target, model, QueryObject(select=QuerySelect(measures=["Avg Revenue per Month and Day"]))
+    )
+    got_total = [_number(r["avg revenue per month and day"]) for r in rows]
+    assert got_total == [Decimal("225.2")], f"{target.name}: {got_total}"
+
+
 def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) -> None:
     measures = ["Avg Units Sum", "Avg Units Min"]
     rows = _run(target, model, QueryObject(select=QuerySelect(measures=measures)))
@@ -348,6 +369,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_having_order_limit(target, model)
     _assert_derived(target, model)
     _assert_time_grained_per(target, model)
+    _assert_two_per_buckets_of_one_date(target, model)
     _assert_exact_integer_average(target, model)
 
 

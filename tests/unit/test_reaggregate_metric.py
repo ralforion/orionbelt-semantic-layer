@@ -470,6 +470,42 @@ class TestCompile:
         inner = result.sql.split('"reagg_1_inner" AS (')[1].split("),")[0]
         assert inner.count("DATE_TRUNC(") == 1
 
+    @pytest.mark.parametrize("dimensions", [["Country"], []])
+    def test_two_per_buckets_of_one_date_get_their_own_columns(self, dimensions: list[str]) -> None:
+        """Without the date in the query, its two ``per`` buckets still collide."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\n"
+                "per: ['Order Date:month', 'Order Date:week']\naggregation: avg"
+            )
+        )
+        assert result.valid
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=dimensions, measures=["Probe"])),
+        ).sql
+        inner = sql.split('"reagg_1_inner" AS (')[1].split("),")[0]
+        assert 'AS "Order Date:month"' in inner
+        assert 'AS "Order Date:week"' in inner
+        assert 'AS "Order Date",' not in inner
+
+    def test_per_entries_naming_one_bucket_group_once(self) -> None:
+        """``Order Date`` is declared at month, so both entries are the month."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\n"
+                "per: ['Order Date', 'Order Date:month']\naggregation: avg"
+            )
+        )
+        assert result.valid
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"])),
+        ).sql
+        inner = sql.split('"reagg_1_inner" AS (')[1].split("),")[0]
+        assert inner.count("DATE_TRUNC('month'") == 1
+        assert 'AS "Order Date"' in inner
+
     def test_week_does_not_nest_in_month(self) -> None:
         """Weeks cross months, so a query by week still splits them per month."""
         probe_model, result = _resolve(
