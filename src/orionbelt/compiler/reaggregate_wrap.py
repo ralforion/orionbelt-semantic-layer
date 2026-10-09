@@ -33,6 +33,7 @@ from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
     BinaryOp,
+    Cast,
     ColumnRef,
     Expr,
     From,
@@ -57,7 +58,7 @@ from orionbelt.compiler.type_resolver import (
 )
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.query import DimensionRef, QueryObject, QuerySelect
-from orionbelt.models.semantic import DataObject, ReaggregateAggType, SemanticModel
+from orionbelt.models.semantic import DataObject, Measure, ReaggregateAggType, SemanticModel
 from orionbelt.models.types import OBMLType
 
 _BASE = "reagg_base"
@@ -261,6 +262,11 @@ def _placeholder_value(m: ResolvedMeasure, model: SemanticModel, dialect: Dialec
     with nothing else to aggregate - a filterContext moves its measure into a
     CTE of its own - stays one row without dimensions, also over no rows,
     rather than one per fact row.
+
+    A ``min`` or ``max`` over a ``min`` or ``max`` measure declares no type
+    anywhere, and an untyped NULL is text on Postgres, which ``* 2`` will not
+    bind to. It takes the inner measure's source column type, as CFL's NULL
+    pads do.
     """
     metric = model.metrics.get(m.name)
     inner = model.effective_measures.get(m.reaggregate_measure or "")
@@ -270,7 +276,20 @@ def _placeholder_value(m: ResolvedMeasure, model: SemanticModel, dialect: Dialec
     null: Expr = Literal(value=None)
     if target is not None:
         null = dialect.cast_to_obml_type(null, target)
+    elif inner is not None:
+        null = Cast(expr=null, type_name=_source_type(inner, model))
     return FunctionCall(name="MAX", args=[null])
+
+
+def _source_type(measure: Measure, model: SemanticModel) -> str:
+    """The abstract type of a single-column measure's column, else its
+    declared ``resultType``."""
+    if len(measure.columns) == 1:
+        ref = measure.columns[0]
+        obj = model.data_objects.get(ref.view) if ref.view else None
+        if obj is not None and ref.column in obj.columns:
+            return obj.columns[ref.column].abstract_type.value
+    return measure.result_type.value
 
 
 def capture_reaggregate_components(

@@ -113,6 +113,9 @@ measures:
   Last Customer:
     columns: [{{dataObject: Orders, column: Customer}}]
     aggregation: max
+  Largest Order:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: max
   Revenue Total:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -174,6 +177,13 @@ metrics:
     aggregation: count
   Named Customers Doubled:
     expression: '{{[Named Customers]}} * 2'
+  Smallest Customer Peak:
+    type: reaggregate
+    measure: Largest Order
+    per: [Customer]
+    aggregation: min
+  Smallest Customer Peak Doubled:
+    expression: '{{[Smallest Customer Peak]}} * 2'
   Running Revenue:
     type: cumulative
     measure: Revenue
@@ -507,6 +517,18 @@ def _assert_beside_other_wrappers(target: VendorTarget, model: SemanticModel) ->
         None: (Decimal(4), Decimal(1126)),
     }
     assert named == want_named, f"{target.name}: {named}"
+
+    # A minimum over a ``max`` measure declares no type anywhere: the
+    # placeholder takes the source column's, not an untyped NULL that
+    # Postgres resolves as text. Peaks per customer: DE 20, 50, 1; FR 5,
+    # 1000; NULL 7, 30.
+    peak = _by_country(target, model, ["Smallest Customer Peak Doubled", "Revenue Total"])
+    want_peak = {
+        "DE": (Decimal(2), Decimal(1126)),
+        "FR": (Decimal(10), Decimal(1126)),
+        None: (Decimal(14), Decimal(1126)),
+    }
+    assert peak == want_peak, f"{target.name}: {peak}"
 
 
 def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) -> None:

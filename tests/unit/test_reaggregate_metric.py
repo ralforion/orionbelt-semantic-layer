@@ -540,6 +540,36 @@ class TestCompile:
         assert sql.index(wrapper_cte) < sql.index('"reagg_base" AS (')
         assert f'"reagg_base"."{other}" AS "{other}"' in sql
 
+    def test_untyped_placeholder_takes_the_source_column_type(self) -> None:
+        """A ``min`` over a ``max`` measure declares no type anywhere; an
+        untyped NULL is text on Postgres, which ``* 2`` does not bind to."""
+        yaml_text = MODEL_YAML.replace(
+            "metrics:\n",
+            "  Largest Order:\n"
+            "    columns:\n"
+            "      - dataObject: Orders\n"
+            "        column: Amount\n"
+            "    aggregation: max\n"
+            "metrics:\n"
+            "  Smallest Peak:\n"
+            "    type: reaggregate\n"
+            "    measure: Largest Order\n"
+            "    per: [Customer]\n"
+            "    aggregation: min\n"
+            "  Smallest Peak Doubled:\n"
+            "    expression: '{[Smallest Peak]} * 2'\n",
+        )
+        probe_model, result = _resolve(yaml_text)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Country"], measures=["Smallest Peak Doubled", "Total Revenue"]
+            )
+        )
+        sql = CompilationPipeline().compile(query, probe_model, "postgres").sql
+        assert "MAX(NULL)" not in sql
+        assert "MAX(CAST(NULL AS FLOAT))" in sql
+
     @pytest.mark.parametrize("other", ["Total Revenue", "Unfiltered Revenue"])
     def test_formula_over_a_wrapped_component_refused(self, other: str) -> None:
         """The formula's components are read before the other wrapper runs."""
