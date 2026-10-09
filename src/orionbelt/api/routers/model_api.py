@@ -306,13 +306,15 @@ def _explain_reaggregate(name: str, met: Metric, model: SemanticModel) -> Explai
     """The two stages: the measure at the query grain plus ``per``, then the outer aggregate."""
     per = ", ".join(met.per)
     aggregation = met.aggregation.value if met.aggregation else ""
+    having = " and ".join(h.text for h in met.having)
+    kept = f", keeping the groups where {having}" if having else ""
     lineage = [
         ExplainLineageItem(type="metric", name=name, detail="reaggregate metric"),
         ExplainLineageItem(
             type="expression",
             name=f"{aggregation}({met.measure} per {per})",
             detail=(
-                f"stage 1: {met.measure} grouped by the query's dimensions + {per}; "
+                f"stage 1: {met.measure} grouped by the query's dimensions + {per}{kept}; "
                 f"stage 2: {aggregation} of those values, grouped by the query's dimensions"
             ),
         ),
@@ -330,6 +332,10 @@ def _explain_reaggregate(name: str, met: Metric, model: SemanticModel) -> Explai
                 type="metric", name=met.measure, detail="reaggregate metric (stage 1)"
             )
         )
+    lineage.extend(
+        ExplainLineageItem(type="measure", name=h.field, detail=f"having (stage 1): {h.text}")
+        for h in met.having
+    )
     lineage.extend(
         ExplainLineageItem(type="dimension", name=entry, detail="per (stage 1 only)")
         for entry in met.per

@@ -10,7 +10,9 @@ with a time grain adds each engine's truncation, beside the query's own bucket
 of the same date. Beside each of the other wrappers - a total, a filterContext,
 a cumulative, period-over-period and window metric - the reaggregate pass wraps
 what they built, which each engine has to accept as one query. A reaggregate
-metric over another one nests the inner metric's stages in its first.
+metric over another one nests the inner metric's stages in its first. A
+metric's ``having`` is its first stage's HAVING, and a country it empties
+reads 0 for ``count`` through the outer COALESCE.
 
 The rows are built per engine rather than read from the corpus seed: the seed
 has no NULL group and no integers past a double's mantissa, and Dremio has no
@@ -237,6 +239,36 @@ metrics:
     type: reaggregate
     measure: Best Customer Revenue 4
     per: [Customer]
+    aggregation: max
+  Repeat Customers:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: count
+    having: [{{field: Orders Count, op: '>=', value: 2}}]
+  Repeat Customers Text:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: count
+    dataType: string
+    having: [{{field: Orders Count, op: '>=', value: 2}}]
+  Avg Repeat Customer Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: avg
+    having: [{{field: Orders Count, op: '>=', value: 2}}]
+  Avg Mid Customer Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: avg
+    having: [{{field: Revenue, op: between, value: [5, 50]}}]
+  Peak Repeat Day:
+    type: reaggregate
+    measure: Avg Repeat Customer Revenue
+    per: ['Order Date:day']
     aggregation: max
   Running Revenue:
     type: cumulative
@@ -662,6 +694,44 @@ def _assert_nested(target: VendorTarget, model: SemanticModel) -> None:
     assert deep == want_deep, f"{target.name}: {deep}"
 
 
+def _assert_having(target: VendorTarget, model: SemanticModel) -> None:
+    """A metric's ``having`` keeps the first-stage groups meeting it.
+
+    Orders per customer: c1 and c4 have two, the others one. FR keeps no
+    customer, so its count is 0 and its average NULL. Revenue between 5 and 50:
+    DE c1 30, c2 50; FR c3 5; NULL c4 10, c5 30. Per country and day, the only
+    customers with two orders that day are c1 (DE, Jan 5) and c4 (NULL, Feb 10).
+    """
+    measures = [
+        "Repeat Customers",
+        "Avg Repeat Customer Revenue",
+        "Avg Mid Customer Revenue",
+        "Peak Repeat Day",
+    ]
+    got = _by_country(target, model, measures)
+    want = {
+        "DE": (Decimal(1), Decimal(30), Decimal(40), Decimal(30)),
+        "FR": (Decimal(0), None, Decimal(5), None),
+        None: (Decimal(1), Decimal(10), Decimal(20), Decimal(10)),
+    }
+    assert got == want, f"{target.name}: {got}"
+
+    # Declared a string, the 0 for FR is one too.
+    name = "Repeat Customers Text"
+    texts = {
+        r["country"]: r[name.lower()]
+        for r in _run(
+            target, model, QueryObject(select=QuerySelect(dimensions=["Country"], measures=[name]))
+        )
+    }
+    assert texts == {"DE": "1", "FR": "0", None: "1"}, f"{target.name}: {texts}"
+
+    measures = ["Repeat Customers", "Avg Repeat Customer Revenue"]
+    rows = _run(target, model, QueryObject(select=QuerySelect(measures=measures)))
+    got_all = [tuple(_number(r[m.lower()]) for m in measures) for r in rows]
+    assert got_all == [(Decimal(2), Decimal(20))], f"{target.name}: {got_all}"
+
+
 def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) -> None:
     measures = ["Avg Units Sum", "Avg Units Min"]
     rows = _run(target, model, QueryObject(select=QuerySelect(measures=measures)))
@@ -681,6 +751,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_beside_other_wrappers(target, model)
     _assert_over_wrapped_measures(target, model)
     _assert_nested(target, model)
+    _assert_having(target, model)
     _assert_exact_integer_average(target, model)
 
 

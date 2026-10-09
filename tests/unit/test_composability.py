@@ -6,6 +6,7 @@ import pytest
 
 from orionbelt.compiler.composability import (
     ComposabilityResolver,
+    metric_legs,
     resolve_composables_for_anchors,
     resolve_composables_for_query,
 )
@@ -214,6 +215,57 @@ def test_metric_anchor_resolves_to_underlying_fact(sales_model: SemanticModel) -
     assert "Customer Country" in result.dimensions
 
 
+def test_measure_anchor_does_not_tie_another_facts_requirements(
+    multi_fact_model: SemanticModel,
+) -> None:
+    """A selected measure's fact is a leg of its own.
+
+    ``Refund List`` needs ``Customers`` joined for its sort key, reachable from
+    ``Returns``. With ``Sales Amount`` selected, asking one root to cover
+    Sales, Returns and Customers hid it, though it plans as a second leg.
+    """
+    from orionbelt.compiler.pipeline import CompilationPipeline
+
+    yaml_text = (
+        MULTI_FACT_YAML
+        + """\
+  Refund List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+    columns: [{dataObject: Returns, column: Return ID}]
+    withinGroup:
+      column: {dataObject: Customers, column: Country}
+      order: ASC
+"""
+    )
+    model = _load(yaml_text)
+    resolver = ComposabilityResolver(model)
+    for anchors, dims in ((["Sales Amount"], []), (["Sales Amount", "Sale Month"], ["Sale Month"])):
+        dim_objects: set[str] = set()
+        measure_objects: set[str] = set()
+        for anchor in anchors:
+            found_dims, found_measures = resolver.objects_from_anchor_name(anchor)
+            dim_objects |= found_dims
+            measure_objects |= found_measures
+        result = resolver.resolve(dim_objects, measure_objects)
+        assert "Refund List" in set(result.measures) | set(result.cfl_measures)
+        query = QueryObject(
+            **{"select": {"dimensions": dims, "measures": ["Sales Amount", "Refund List"]}}
+        )
+        CompilationPipeline().compile(query, model, "duckdb")
+
+
+def test_metric_legs_visit_a_shared_dependency_once(multi_fact_model: SemanticModel) -> None:
+    """Each metric reads the previous two, so paths to the measure double per
+    level; the walk stays linear and the measure is one leg."""
+    lines = ["metrics:", "  M0: {expression: '{[Sales Amount]}'}"]
+    lines.append("  M1: {expression: '{[M0]} + {[Sales Amount]}'}")
+    lines += [f"  M{i}: {{expression: '{{[M{i - 1}]}} + {{[M{i - 2}]}}'}}" for i in range(2, 30)]
+    model = _load(MULTI_FACT_YAML + "\n".join(lines) + "\n")
+    assert metric_legs(model, "M29") == [({"Sales"}, set())]
+
+
 def test_resolver_reuse_across_anchors(multi_fact_model: SemanticModel) -> None:
     resolver = ComposabilityResolver(multi_fact_model)
     dims, measures = resolver.objects_from_anchor_name("Return Amount")
@@ -387,6 +439,18 @@ measures:
 metrics:
   Stock per Sale:
     expression: '{[Total Stock On Hand]} / {[Sold Quantity]}'
+  Avg Region Sales, Stock Filtered Off Grain:
+    type: reaggregate
+    measure: Sold Quantity
+    per: [Region]
+    aggregation: avg
+    having: [{field: Stock Filtered Off Grain, op: '>', value: 0}]
+  Avg Region Sales, Stock Filtered In Grain:
+    type: reaggregate
+    measure: Sold Quantity
+    per: [Region]
+    aggregation: avg
+    having: [{field: Stock Filtered In Grain, op: '>', value: 0}]
 """
 
 
@@ -414,6 +478,21 @@ def test_acr_excludes_measures_the_dedup_pass_would_refuse() -> None:
     assert "Stock Filtered In Grain" in composable
     assert "Total Stock On Hand" in composable
     assert "Sold Quantity" in composable
+
+
+def test_acr_follows_a_reaggregate_metrics_having() -> None:
+    """A ``having`` measure is computed in the metric's first stage, so the
+    metric is refused wherever that measure is."""
+    model = _dedup_guard_model()
+    resolver = ComposabilityResolver(model)
+    for anchor in ("Category", None):
+        if anchor is None:
+            result = resolver.resolve(set(), set())
+        else:
+            result = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
+        advertised = set(result.metrics) | set(result.cfl_metrics)
+        assert "Avg Region Sales, Stock Filtered Off Grain" not in advertised
+        assert "Avg Region Sales, Stock Filtered In Grain" in advertised
 
 
 def test_everything_acr_lists_actually_compiles() -> None:

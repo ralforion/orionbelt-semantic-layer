@@ -641,6 +641,28 @@
       ],
       "additionalProperties": false
     },
+    "reaggregateHaving": {
+      "type": "object",
+      "description": "A condition on the first-stage groups of a reaggregate metric",
+      "properties": {
+        "field": {
+          "type": "string",
+          "description": "Measure name (declared or a synthesized count)"
+        },
+        "op": {
+          "type": "string",
+          "description": "Filter operator, as in a query filter (gt, gte, lt, lte, equals, between, etc.; not exists/nonexists)"
+        },
+        "value": {
+          "description": "Filter value (scalar, list, or null)"
+        }
+      },
+      "required": [
+        "field",
+        "op"
+      ],
+      "additionalProperties": false
+    },
     "filterContext": {
       "type": "object",
       "description": "Filter context override \u2014 controls which query WHERE filters apply to this measure",
@@ -1009,6 +1031,14 @@
           "$ref": "#/definitions/reaggregateAggType",
           "description": "Reaggregate metrics: the second-stage aggregation over the per-group values. avg is the unweighted mean of those values."
         },
+        "having": {
+          "type": "array",
+          "description": "Reaggregate metrics: conditions on the first-stage groups, each over a measure, applied like a query's HAVING at the query grain plus per. Only the groups meeting every condition are aggregated again.",
+          "items": {
+            "$ref": "#/definitions/reaggregateHaving"
+          },
+          "minItems": 1
+        },
         "description": {
           "type": "string",
           "description": "Business description of this metric"
@@ -1136,6 +1166,11 @@
                 {
                   "required": [
                     "aggregation"
+                  ]
+                },
+                {
+                  "required": [
+                    "having"
                   ]
                 }
               ]

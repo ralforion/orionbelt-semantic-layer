@@ -197,7 +197,7 @@ OBSL ships `static | scheduled | heartbeat | unknown` modes and exposes `GET /v1
 
 | OBSL | Cube | Notes |
 |---|---|---|
-| `Metric` `type: derived` — references measures **and other derived metrics, at any depth** | <pre><code>measure:<br> type: number<br> sql: "{revenue} / {orders}"</code></pre>, plus `multi_stage:` measures for staged aggregation (Tesseract) | Both first-class and both composable; Cube's `multi_stage` chains stages freely (`group_by`, `reduce_by`, `add_group_by`), where OBSL types the common two-stage shape as a `reaggregate` metric |
+| `Metric` `type: derived` — references measures **and other derived metrics, at any depth** | <pre><code>measure:<br> type: number<br> sql: "{revenue} / {orders}"</code></pre>, plus `multi_stage:` measures for staged aggregation (Tesseract) | Both first-class and both composable; Cube's `multi_stage` chains stages freely (`group_by`, `reduce_by`, `add_group_by`), where OBSL types the common nested shape as a `reaggregate` metric, which nests in another for more stages |
 | `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy`**) | <pre><code>measure:<br> type: sum<br> rolling_window:<br> trailing: 7 day<br> offset: end</code></pre> rolling only | Cube has rolling windows but no grain-to-date, no unbounded cumulative, and no `partitionBy` as declarative types |
 | `Metric` `type: period_over_period` (4 comparison modes) | Query-side: `compareDateRange` parameter, or <pre><code>time_shift:<br> interval: 1 year<br> type: prior</code></pre> | Cube does PoP at query time, not as a model-defined metric |
 | `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Via `type: number` + raw window-function SQL | OBSL ships these as declarative metric types; Cube reaches them via the same `type: number` escape hatch |
@@ -205,7 +205,7 @@ OBSL ships `static | scheduled | heartbeat | unknown` modes and exposes `GET /v1
 
 **Different philosophies**: OBSL bakes time-aware metrics into the model (write once, every query gets the comparison). Cube treats time comparisons as query-time concerns (more flexible, but the consumer has to know how to ask). Either fits depending on whether you're publishing a metrics catalog or empowering query authors.
 
-**Cube's multi-stage measures** (GA with Tesseract in v1.7) are the generic version of this axis: `multi_stage: true` with `group_by` / `reduce_by` / `add_group_by` directives expresses staged aggregations — ratios against a partition total, rankings, nested aggregates. OBSL covers those three with typed constructs: a `grain` / `total` override for the partition total, a `window` metric for rankings, and a [`reaggregate` metric](../guide/model-format.md#reaggregate-metrics) for a nested aggregate (`add_group_by` plus an outer aggregate: average revenue per customer, by country). It stops at two stages; Cube chains as many as the model needs. v1.7 added grain directives and filter directives on top. OBSL is cleaner and more portable where it has a first-class type; Cube is more flexible for shapes the type system didn't anticipate.
+**Cube's multi-stage measures** (GA with Tesseract in v1.7) are the generic version of this axis: `multi_stage: true` with `group_by` / `reduce_by` / `add_group_by` directives expresses staged aggregations — ratios against a partition total, rankings, nested aggregates. OBSL covers those three with typed constructs: a `grain` / `total` override for the partition total, a `window` metric for rankings, and a [`reaggregate` metric](../guide/model-format.md#reaggregate-metrics) for a nested aggregate (`add_group_by` plus an outer aggregate: average revenue per customer, by country). More stages nest by naming one reaggregate metric as another's `measure`, and a metric's `having` keeps only the first-stage groups that meet a condition (customers with more than five orders); Cube chains stages as a DAG of its own. v1.7 added grain directives and filter directives on top. OBSL is cleaner and more portable where it has a first-class type; Cube is more flexible for shapes the type system didn't anticipate.
 
 See [Trend Analysis](../guide/trend-analysis.md) for OBSL's full v2.6 surface (window functions, statistical aggregates, dialect coverage matrix).
 
@@ -409,7 +409,7 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 | Curated business-facing surface | Global namespace + `examples` | ✅ views with folders, view groups, hierarchies, AI context |
 | Dimension hierarchies / drill paths | ❌ | ✅ `hierarchies` on cubes, surfaced through views |
 | Custom granularities / fiscal calendars | ❌ (fixed `TimeGrain` set) | ✅ custom granularities + calendar cubes (4-5-4, fiscal) |
-| Multi-stage / staged calculations | Partial: two stages as a typed `reaggregate` metric; no generic stage chain | ✅ `multi_stage` measures (Tesseract) |
+| Multi-stage / staged calculations | Partial: a typed `reaggregate` metric, nestable for more stages and with a first-stage `having`; no generic stage DAG | ✅ `multi_stage` measures (Tesseract) |
 | First-class PoP metric type | ✅ (4 comparison modes) | ❌ (`time_shift` at query time) |
 | First-class cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy`) | Partial (`rolling_window` only) |
 | First-class window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ | Via `type: number` + raw SQL |
@@ -473,7 +473,7 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 8. **A curated view / perspective construct** — Cube's `views` are now the primary user-facing surface, carrying folders, view groups, hidden members, access policy, and AI context. OBSL exposes one global namespace, so consumers see every member unless the host filters them.
 9. **Dimension hierarchies and drill paths** — `hierarchies` on cubes, surfaced through views for BI drill-down.
 10. **Custom granularities and calendar cubes** — fiscal years, retail 4-5-4, weeks starting Sunday. OBSL's `TimeGrain` set is fixed.
-11. **Multi-stage calculations** — a generic staged-aggregation surface (`group_by` / `reduce_by` / `add_group_by`) alongside the existing typed metrics. The `reaggregate` metric covers two stages; three or more are not expressible.
+11. **Multi-stage calculations** — a generic staged-aggregation surface (`group_by` / `reduce_by` / `add_group_by`) alongside the existing typed metrics. The `reaggregate` metric covers nested aggregates at any depth (one nested in another) with a first-stage `having`; shapes outside that, such as stages over a dimension-driven population or a cumulative over a reaggregated value, are not expressible.
 12. **Joins beyond a role** — a role dimension (`via` + `pathName`) reaches only its own data object's columns; Cube's extended cube inherits the parent's joins, so the support employee's department is one more member.
 
 ### To match OBSL, Cube would need:

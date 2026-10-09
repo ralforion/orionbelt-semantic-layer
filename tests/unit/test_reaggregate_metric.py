@@ -229,6 +229,31 @@ class TestMetricValidation:
         with pytest.raises(ValidationError, match="only valid on reaggregate"):
             Metric(name="D", expression="{[Revenue]}", aggregation="avg")
 
+    def test_having_only_on_reaggregate(self) -> None:
+        with pytest.raises(ValidationError, match="only valid on reaggregate"):
+            Metric(
+                name="D",
+                expression="{[Revenue]}",
+                having=[{"field": "Revenue", "op": ">", "value": 1}],
+            )
+
+    @pytest.mark.parametrize(
+        ("op", "message"),
+        [("approx", "unknown operator 'approx'"), ("exists", "not allowed")],
+    )
+    def test_having_operator_checked(self, op: str, message: str) -> None:
+        with pytest.raises(ValidationError, match=message):
+            self._metric(having=[{"field": "Revenue", "op": op, "value": 1}])
+
+    def test_having_text(self) -> None:
+        met = self._metric(
+            having=[
+                {"field": "Orders Count", "op": ">", "value": 5},
+                {"field": "Revenue", "op": "is_not_null"},
+            ]
+        )
+        assert [h.text for h in met.having] == ["Orders Count > 5", "Revenue is_not_null"]
+
 
 class TestReferences:
     @pytest.mark.parametrize(
@@ -276,6 +301,26 @@ class TestReferences:
                 "defaultValue: 0",
                 "METRIC_PARSE_ERROR",
             ),
+            (
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+                "having: [{field: Avg Daily Revenue, op: '>', value: 1}]",
+                "REAGGREGATE_HAVING_MEASURE_ONLY",
+            ),
+            (
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+                "having: [{field: Probe, op: '>', value: 1}]",
+                "REAGGREGATE_HAVING_MEASURE_ONLY",
+            ),
+            (
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+                "having: [{field: Revenu, op: '>', value: 1}]",
+                "UNKNOWN_MEASURE",
+            ),
+            (
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+                "having: [{field: Revenue, op: '>', vale: 1}]",
+                "METRIC_PARSE_ERROR",
+            ),
         ],
     )
     def test_refused(self, body: str, code: str) -> None:
@@ -299,6 +344,25 @@ class TestReferences:
             "Reaggregate metrics reference each other in a cycle: Probe -> Other -> Probe",
         ]
 
+    @pytest.mark.parametrize("field", ["Revenue", "Orders Count"])
+    def test_having_on_a_measure(self, field: str) -> None:
+        body = (
+            "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+            f"having: [{{field: {field}, op: '>', value: 1}}]"
+        )
+        assert _codes(_with_metric(body)) == set()
+
+    def test_unknown_having_measure_suggests(self) -> None:
+        _model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+                "having: [{field: Revenu, op: '>', value: 1}]"
+            )
+        )
+        err = next(e for e in result.errors if e.code == "UNKNOWN_MEASURE")
+        assert err.path == "metrics.Probe.having"
+        assert "Revenue" in err.suggestions
+
     def test_unknown_dimension_suggests(self) -> None:
         _model, result = _resolve(
             _with_metric("type: reaggregate\nmeasure: Revenue\nper: [Custmer]\naggregation: avg")
@@ -308,7 +372,7 @@ class TestReferences:
 
 
 class TestStrayFields:
-    """``per`` / ``aggregation`` on another metric type is refused, not dropped."""
+    """``per`` / ``aggregation`` / ``having`` on another metric type is refused, not dropped."""
 
     @pytest.mark.parametrize(
         "body",
@@ -316,6 +380,7 @@ class TestStrayFields:
             "expression: '{[Revenue]}'\nper: [Customer]",
             "expression: '{[Revenue]}'\naggregation: avg",
             "type: cumulative\nmeasure: Revenue\ntimeDimension: Order Date\nper: [Customer]",
+            "expression: '{[Revenue]}'\nhaving: [{field: Revenue, op: '>', value: 1}]",
         ],
     )
     def test_refused(self, body: str) -> None:
@@ -719,6 +784,92 @@ class TestCompile:
         assert "HAVING" not in sql
         assert 'WHERE "Avg Revenue per Customer" > 10' in sql
 
+    @staticmethod
+    def _having_model(*metrics: tuple[str, str, str]) -> SemanticModel:
+        """The base model plus reaggregate metrics of Revenue per Customer, each
+        as (name, aggregation, having flow list)."""
+        yaml_text = MODEL_YAML + "".join(
+            f"  {name}:\n    type: reaggregate\n    measure: Revenue\n    per: [Customer]\n"
+            f"    aggregation: {agg}\n" + (f"    having: {having}\n" if having else "")
+            for name, agg, having in metrics
+        )
+        resolved, result = _resolve(yaml_text)
+        assert result.valid, result.errors
+        return resolved
+
+    def test_having_is_the_first_stage_having(self) -> None:
+        having_model = self._having_model(
+            ("Avg Repeat", "avg", "[{field: Orders Count, op: '>', value: 2}]")
+        )
+        sql = _compile(
+            having_model,
+            QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Avg Repeat"])),
+        ).sql
+        inner = sql.split('"reagg_1_inner" AS (')[1].split('"reagg_1" AS (')[0]
+        assert re.search(r"HAVING .*COUNT.* > 2", inner)
+        # The condition's measure is computed for the HAVING, not projected.
+        assert '"Orders Count"' not in inner
+        assert 'AVG("reagg_1_inner"."Revenue")' in sql
+
+    def test_metrics_share_a_scan_only_with_the_same_having(self) -> None:
+        repeat = "[{field: Orders Count, op: '>', value: 2}]"
+        having_model = self._having_model(
+            ("Avg Repeat", "avg", repeat),
+            ("Max Repeat", "max", repeat),
+            ("Avg Big", "avg", "[{field: Revenue, op: '>', value: 100}]"),
+        )
+        sql = _compile(
+            having_model,
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Country"],
+                    measures=["Avg Repeat", "Max Repeat", "Avg Big", "Avg Revenue per Customer"],
+                )
+            ),
+        ).sql
+        assert sql.count('_inner" AS (') == 3
+
+    def test_count_with_having_reads_zero_for_an_emptied_group(self) -> None:
+        having_model = self._having_model(
+            ("Repeat Customers", "count", "[{field: Orders Count, op: '>', value: 2}]"),
+            ("Avg Repeat", "avg", "[{field: Orders Count, op: '>', value: 2}]"),
+        )
+        sql = _compile(
+            having_model,
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Country"], measures=["Repeat Customers", "Avg Repeat"]
+                )
+            ),
+        ).sql
+        assert (
+            'COALESCE("reagg_1"."Repeat Customers", CAST(0 AS BIGINT)) AS "Repeat Customers"' in sql
+        )
+        assert '"reagg_1"."Avg Repeat" AS "Avg Repeat"' in sql
+
+    def test_count_fallback_takes_the_declared_type(self) -> None:
+        """A text count compared with an integer 0 is refused by PostgreSQL and DuckDB."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: count\n"
+                "dataType: string\nhaving: [{field: Orders Count, op: '>', value: 2}]"
+            )
+        )
+        assert result.valid, result.errors
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"])),
+        ).sql
+        assert 'COALESCE("reagg_1"."Probe", CAST(0 AS VARCHAR)) AS "Probe"' in sql
+
+    def test_count_without_having_is_read_as_is(self) -> None:
+        having_model = self._having_model(("Customers", "count", ""))
+        sql = _compile(
+            having_model,
+            QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Customers"])),
+        ).sql
+        assert "COALESCE" not in sql
+
     def test_derived_metric_rebuilt_over_components(self) -> None:
         probe_model, result = _resolve(
             _with_metric("expression: '{[Avg Revenue per Customer]} / {[Revenue]}'")
@@ -909,6 +1060,34 @@ class TestJsonSchema:
     def test_per_refused_on_derived(self) -> None:
         assert self._validate({"expression": "{[R]}", "per": ["C"]})
 
+    def test_having_valid(self) -> None:
+        metric = {
+            "type": "reaggregate",
+            "measure": "R",
+            "per": ["C"],
+            "aggregation": "avg",
+            "having": [{"field": "N", "op": ">", "value": 5}],
+        }
+        assert self._validate(metric) == []
+
+    @pytest.mark.parametrize(
+        "having",
+        [[], [{"field": "N"}], [{"field": "N", "op": ">", "vale": 5}]],
+        ids=["empty", "no op", "unknown key"],
+    )
+    def test_having_shape_refused(self, having: list[dict[str, Any]]) -> None:
+        metric = {
+            "type": "reaggregate",
+            "measure": "R",
+            "per": ["C"],
+            "aggregation": "avg",
+            "having": having,
+        }
+        assert self._validate(metric)
+
+    def test_having_refused_on_derived(self) -> None:
+        assert self._validate({"expression": "{[R]}", "having": [{"field": "R", "op": ">"}]})
+
 
 class TestGraph:
     def test_rdf_triples(self, model: SemanticModel) -> None:
@@ -934,6 +1113,38 @@ class TestGraph:
         )
         assert (probe, URIRef(obsl + "baseMetric"), inner) in g
         assert not set(g.objects(probe, URIRef(obsl + "baseMeasure")))
+
+    def test_having_triples(self) -> None:
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+                "having: [{field: Orders Count, op: '>', value: 5}, "
+                "{field: Revenue, op: '<', value: 100}]"
+            )
+        )
+        assert result.valid, result.errors
+        g = export_obsl(probe_model, "m")
+        probe = next(g.subjects(RDFS.label, Literal("Probe")))
+        having = URIRef("https://ralforion.com/ns/obsl#reaggregateHaving")
+        assert set(g.objects(probe, having)) == {
+            Literal("Orders Count > 5"),
+            Literal("Revenue < 100"),
+        }
+
+    def test_lineage_has_having_edges(self) -> None:
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+                "having: [{field: Orders Count, op: '>', value: 5}]"
+            )
+        )
+        assert result.valid, result.errors
+        lineage = LineageBuilder(probe_model).metric("Probe")
+        labels = {
+            (next(n.name for n in lineage.nodes if n.id == e.source), e.label)
+            for e in lineage.edges
+        }
+        assert ("Orders Count", "having") in labels
 
     def test_lineage_has_per_edges(self, model: SemanticModel) -> None:
         lineage = LineageBuilder(model).metric("Avg Daily Revenue")

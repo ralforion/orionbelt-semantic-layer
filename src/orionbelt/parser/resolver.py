@@ -1092,11 +1092,11 @@ class ReferenceResolver:
                 metric_type = raw_metric.get("type", "derived")
                 # The other branches pass only their own fields to the model, so
                 # these would be dropped silently rather than refused there.
-                if metric_type != MetricType.REAGGREGATE and (
-                    "per" in raw_metric or "aggregation" in raw_metric
+                if metric_type != MetricType.REAGGREGATE and any(
+                    key in raw_metric for key in ("per", "aggregation", "having")
                 ):
                     raise ValueError(
-                        "'per' and 'aggregation' are only valid on reaggregate metrics"
+                        "'per', 'aggregation' and 'having' are only valid on reaggregate metrics"
                     )
                 concept_links = _parse_concept_mappings(
                     raw_metric, f"metrics.{name}", prefixes, errors, source_map
@@ -1901,12 +1901,14 @@ class ReferenceResolver:
         errors: list[SemanticError],
         source_map: SourceMap | None,
     ) -> None:
-        """Check what a reaggregate metric's ``measure`` and ``per`` name.
+        """Check what a reaggregate metric's ``measure``, ``having`` and ``per`` name.
 
         The first stage is ``measure`` as a query of its own at a finer grain:
         a measure, or another reaggregate metric, whose two stages then run
         inside it. Any other metric is refused, and so is a chain of reaggregate
-        metrics that comes back to one it started from.
+        metrics that comes back to one it started from. A ``having`` condition
+        is that query's HAVING and names a measure: a metric there could be the
+        one it filters, or reach it again.
         """
         path = f"metrics.{name}"
 
@@ -1947,6 +1949,27 @@ class ReferenceResolver:
                     "measure",
                     f"Reaggregate metric '{name}' references unknown measure '{ref}'",
                     _suggest_similar(ref, [*measures, *synthesized_measures]),
+                )
+
+        having = raw_metric.get("having")
+        for item in having if isinstance(having, list) else []:
+            field = item.get("field") if isinstance(item, dict) else None
+            if not isinstance(field, str) or field in measures or field in synthesized_measures:
+                continue
+            if field in raw_metrics:
+                report(
+                    "REAGGREGATE_HAVING_MEASURE_ONLY",
+                    "having",
+                    f"Reaggregate metric '{name}' has a 'having' condition on metric "
+                    f"'{field}'; a condition on the first stage must name a measure.",
+                )
+            else:
+                report(
+                    "UNKNOWN_MEASURE",
+                    "having",
+                    f"Reaggregate metric '{name}' has a 'having' condition on unknown "
+                    f"measure '{field}'",
+                    _suggest_similar(field, [*measures, *synthesized_measures]),
                 )
 
         per = raw_metric.get("per")

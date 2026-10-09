@@ -9,18 +9,20 @@ The plan carries the measure's aggregate under the metric's name at the query
 grain, which is a placeholder and not the metric; every other wrapper carries
 it like any measure. This wrapper runs after all of them, moves the finished
 query into a ``reagg_base`` CTE without that column, and per distinct
-(measure, ``per``) pair adds:
+(measure, ``per``, ``having``) adds:
 
 - ``reagg_<n>_inner``: the measure planned *as a query in its own right* at the
   finer grain, so its base object, join path and fanout check are derived for
-  that grain (the same route ``filter_wrap`` takes for a filterContext scan);
+  that grain (the same route ``filter_wrap`` takes for a filterContext scan),
+  with the metric's ``having`` as that query's HAVING;
 - ``reagg_<n>``: the second-stage aggregate of that scan, grouped by the query
   dimensions.
 
 The outer query reads ``reagg_base`` and LEFT JOINs each ``reagg_<n>`` on the
 query dimensions, NULL-safely, since a NULL dimension value is a group of its
 own. Both stages see the query's WHERE, so every group of ``reagg_base`` has
-rows in stage 1 and the join finds it.
+rows in stage 1, unless ``having`` removed them all: the join then finds no
+row and the metric is NULL, or 0 for ``count``.
 """
 
 from __future__ import annotations
@@ -59,8 +61,14 @@ from orionbelt.compiler.type_resolver import (
     resolve_metric_data_type,
 )
 from orionbelt.dialect.base import Dialect
-from orionbelt.models.query import DimensionRef, QueryObject, QuerySelect
-from orionbelt.models.semantic import DataObject, Measure, ReaggregateAggType, SemanticModel
+from orionbelt.models.query import DimensionRef, QueryFilter, QueryObject, QuerySelect
+from orionbelt.models.semantic import (
+    DataObject,
+    Measure,
+    ReaggregateAggType,
+    ReaggregateHaving,
+    SemanticModel,
+)
 from orionbelt.models.types import OBMLType
 
 _BASE = "reagg_base"
@@ -80,6 +88,16 @@ _FUNCTIONS: dict[ReaggregateAggType, str] = {
 _STAGE_CTE_PREFIX = re.compile(r"^reagg_\d+_inner_\d+_")
 
 
+def _having(model: SemanticModel, name: str) -> list[ReaggregateHaving]:
+    """The reaggregate metric *name*'s conditions on its first stage."""
+    metric = model.metrics.get(name)
+    return metric.having if metric is not None else []
+
+
+def _having_key(having: list[ReaggregateHaving]) -> str:
+    return "\n".join(h.model_dump_json() for h in having)
+
+
 def _alias(expr: Expr) -> str | None:
     return expr.alias if isinstance(expr, AliasedExpr) else None
 
@@ -87,6 +105,7 @@ def _alias(expr: Expr) -> str | None:
 def _stage_one(
     measure: str,
     per: list[str],
+    having: list[ReaggregateHaving],
     resolved: ResolvedQuery,
     query: QueryObject,
     model: SemanticModel,
@@ -96,7 +115,8 @@ def _stage_one(
     """The measure at the query grain plus *per*, planned as a query of its own.
 
     Only the query's row filters carry over: its HAVING, ORDER BY and LIMIT
-    describe the final result, not this scan.
+    describe the final result, not this scan. The scan's HAVING is the
+    metric's own *having*.
 
     A ``per`` entry the query's grouping already covers is left out, and so is
     one naming the same bucket as an earlier entry.
@@ -115,6 +135,7 @@ def _stage_one(
             measures=[measure],
         ),
         where=list(query.where),
+        having=[QueryFilter(field=h.field, op=h.op, value=h.value) for h in having],
         use_path_names=list(query.use_path_names),
         allow_fan_out=query.allow_fan_out,
     )
@@ -428,12 +449,14 @@ def wrap_with_reaggregate(
     names = {m.name for m in reaggregates}
     dim_names = [d.name for d in resolved.dimensions]
 
-    # One pair of CTEs per (measure, per): two metrics that differ only in their
-    # second-stage function share the scan.
-    groups: dict[tuple[str, tuple[str, ...]], list[ResolvedMeasure]] = {}
+    # One pair of CTEs per (measure, per, having): two metrics that differ only
+    # in their second-stage function share the scan.
+    groups: dict[tuple[str, tuple[str, ...], str], list[ResolvedMeasure]] = {}
     for m in reaggregates:
         assert m.reaggregate_measure is not None
-        groups.setdefault((m.reaggregate_measure, tuple(m.reaggregate_per)), []).append(m)
+        having = _having(model, m.name)
+        key = (m.reaggregate_measure, tuple(m.reaggregate_per), _having_key(having))
+        groups.setdefault(key, []).append(m)
 
     ctes = list(ast.ctes)
     base_columns = [c for c in ast.columns if _alias(c) not in names | split.keys()]
@@ -459,12 +482,20 @@ def wrap_with_reaggregate(
         ctes.append(CTE(name=_COMPONENTS, query=replace(captured, ctes=[])))
         joined.append(_COMPONENTS)
 
+    counted_after_having = {
+        m.name
+        for m in reaggregates
+        if m.reaggregate_aggregation is ReaggregateAggType.COUNT and _having(model, m.name)
+    }
     source_of: dict[str, str] = {}
     stage_two_names: list[str] = []
-    for idx, ((measure, per), metrics) in enumerate(groups.items(), start=1):
+    for idx, ((measure, per, _), metrics) in enumerate(groups.items(), start=1):
         inner_name = f"reagg_{idx}_inner"
         outer_name = f"reagg_{idx}"
-        scan = _stage_one(measure, list(per), resolved, query, model, dialect, qualify_table)
+        having = _having(model, metrics[0].name)
+        scan = _stage_one(
+            measure, list(per), having, resolved, query, model, dialect, qualify_table
+        )
         ctes.append(CTE(name=inner_name, query=_own_cte_names(scan, f"{inner_name}_")))
         ctes.append(
             CTE(name=outer_name, query=_stage_two(inner_name, metrics, dim_names, model, dialect))
@@ -487,11 +518,26 @@ def wrap_with_reaggregate(
             )
         )
 
-    def read(alias: str) -> ColumnRef:
+    def stage_two_value(name: str) -> Expr:
+        value = ColumnRef(name=name, table=source_of[name])
+        if name in counted_after_having:
+            # A group whose stage-1 rows ``having`` all removed has no stage-2
+            # row; the join leaves NULL where the count is 0. The 0 takes the
+            # count's own cast, so a declared ``dataType`` holds on both sides.
+            zero: Expr = Literal.number(0)
+            target = resolve_metric_data_type(model.metrics[name], model.settings)
+            if target is not None:
+                zero = dialect.cast_to_obml_type(zero, target)
+            return FunctionCall(name="COALESCE", args=[value, zero])
+        return value
+
+    def read(alias: str) -> Expr:
         if alias in split:
             # Assembled in the outer projection, so it is read by its alias.
             return ColumnRef(name=alias)
-        return ColumnRef(name=alias, table=source_of.get(alias, anchor))
+        if alias in source_of:
+            return stage_two_value(alias)
+        return ColumnRef(name=alias, table=anchor)
 
     columns: list[Expr] = []
     for col in ast.columns:
@@ -504,7 +550,7 @@ def wrap_with_reaggregate(
                 lambda name: (
                     ColumnRef(name=component_alias[name], table=_COMPONENTS)
                     if name in component_alias
-                    else ColumnRef(name=name, table=source_of[name])
+                    else stage_two_value(name)
                 ),
                 model,
                 dialect,

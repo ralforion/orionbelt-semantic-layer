@@ -69,40 +69,55 @@ def measure_join_requirements(model: SemanticModel, name: str) -> set[str]:
     return model.measure_join_objects(name)
 
 
-def reachable_metrics(model: SemanticModel, name: str) -> list[Metric]:
-    """*name* and every metric its formula reaches, at any depth."""
-    found: list[Metric] = []
-    seen: set[str] = set()
-    pending = [name]
+def _per_objects(model: SemanticModel, met: Metric) -> set[str]:
+    """The objects a reaggregate metric's ``per`` dimensions are read from."""
+    objects: set[str] = set()
+    for entry in met.per:
+        dim_name = entry if entry in model.dimensions else entry.rpartition(":")[0]
+        dim = model.dimensions.get(dim_name)
+        if dim is not None and dim.view:
+            objects |= {dim.view} | model.dimension_join_objects(dim_name)
+    return objects
+
+
+def metric_legs(model: SemanticModel, name: str) -> list[tuple[set[str], set[str]]]:
+    """(source objects, join requirements) of each measure a metric reaches.
+
+    Each measure is planned on a leg of its own when the metric spans facts, so
+    each has to reach only its own requirements: its ``measure_join_requirements``
+    and the ``per`` objects of every reaggregate stage it is computed in - the
+    stage's measure and its ``having`` measures alike, whether the metric is
+    asked for directly or through a derived metric over it.
+    """
+    legs: dict[tuple[str, frozenset[str]], tuple[set[str], set[str]]] = {}
+    # A dependency shared by several formulas is walked once per set of
+    # enclosing ``per`` objects, not once per path to it; this also ends a cycle.
+    visited: set[tuple[str, frozenset[str]]] = set()
+    pending: list[tuple[str, frozenset[str]]] = [(name, frozenset())]
     while pending:
-        current = pending.pop()
-        met = model.metrics.get(current)
-        if met is None or current in seen:
+        ref, per_objects = pending.pop()
+        if (ref, per_objects) in visited:
             continue
-        seen.add(current)
-        found.append(met)
-        pending.extend(metric_measure_names(model, current))
-    return found
+        visited.add((ref, per_objects))
+        met = model.metrics.get(ref)
+        if met is None:
+            if ref in model.effective_measures:
+                legs[(ref, per_objects)] = (
+                    measure_source_objects(model, ref),
+                    measure_join_requirements(model, ref) | per_objects,
+                )
+            continue
+        if met.type == MetricType.REAGGREGATE:
+            per_objects |= _per_objects(model, met)
+        pending.extend((child, per_objects) for child in metric_measure_names(model, ref))
+    return list(legs.values())
 
 
 def metric_join_requirements(model: SemanticModel, name: str) -> set[str]:
-    """``measure_join_requirements`` across every measure a metric reaches.
-
-    A reaggregate metric's first stage also groups by its ``per`` dimensions, so
-    their objects have to be reachable from the measure's as well - whether the
-    metric is asked for directly or through a derived metric over it.
-    """
+    """Every object some leg of the metric needs joined (see :func:`metric_legs`)."""
     result: set[str] = set()
-    for component in metric_leaf_measures(model, name):
-        result |= measure_join_requirements(model, component)
-    for met in reachable_metrics(model, name):
-        if met.type != MetricType.REAGGREGATE:
-            continue
-        for entry in met.per:
-            dim_name = entry if entry in model.dimensions else entry.rpartition(":")[0]
-            dim = model.dimensions.get(dim_name)
-            if dim is not None and dim.view:
-                result |= {dim.view} | model.dimension_join_objects(dim_name)
+    for _, required in metric_legs(model, name):
+        result |= required
     return result
 
 
@@ -118,7 +133,11 @@ def measure_source_objects(model: SemanticModel, name: str) -> set[str]:
 
 
 def metric_measure_names(model: SemanticModel, name: str) -> set[str]:
-    """Measure names a metric depends on."""
+    """Measure names a metric depends on.
+
+    A reaggregate metric's ``having`` conditions count: their measures are
+    computed in its first stage like its own measure.
+    """
     met = model.metrics.get(name)
     if met is None:
         return set()
@@ -127,6 +146,7 @@ def metric_measure_names(model: SemanticModel, name: str) -> set[str]:
         names |= set(_METRIC_MEASURE_REF.findall(met.expression))
     if met.measure:
         names.add(met.measure)
+    names |= {condition.field for condition in met.having}
     return names
 
 
@@ -312,10 +332,7 @@ class ComposabilityResolver:
                 metrics=sorted(
                     name
                     for name in self.model.metrics
-                    if self._join_requirements_reachable(
-                        metric_join_requirements(self.model, name),
-                        metric_source_objects(self.model, name),
-                    )
+                    if self._metric_legs_reachable(name, set())
                     and not self._metric_blocked(name, set())
                 ),
             )
@@ -338,8 +355,10 @@ class ComposabilityResolver:
         cfl_measures: list[str] = []
         for name in self.model.effective_measures:
             sources = measure_source_objects(self.model, name)
+            # Planned with the query's dimensions; a fact of a measure already
+            # selected is a leg of its own and need not share a root with it.
             if not self._join_requirements_reachable(
-                measure_join_requirements(self.model, name), anchor | sources
+                measure_join_requirements(self.model, name), spine | sources
             ):
                 continue
             if self._measure_blocked(name, anchor):
@@ -356,9 +375,7 @@ class ComposabilityResolver:
         cfl_metrics: list[str] = []
         for name in self.model.metrics:
             sources = metric_source_objects(self.model, name)
-            if not self._join_requirements_reachable(
-                metric_join_requirements(self.model, name), anchor | sources
-            ):
+            if not self._metric_legs_reachable(name, spine):
                 continue
             if self._metric_blocked(name, anchor):
                 continue
@@ -395,6 +412,20 @@ class ComposabilityResolver:
         if not required:
             return True
         return self._has_common_root(context | required)
+
+    def _metric_legs_reachable(self, name: str, spine: set[str]) -> bool:
+        """``_join_requirements_reachable`` for each leg of a metric on its own.
+
+        Asked of the metric's sources together, a metric over two facts with a
+        requirement on either needed one root over both, though each fact is
+        planned as a leg of its own. Each leg is planned with the query's
+        dimensions (*spine*), not with the facts of measures already selected,
+        which are legs of their own.
+        """
+        return all(
+            self._join_requirements_reachable(required, spine | sources)
+            for sources, required in metric_legs(self.model, name)
+        )
 
     def _dedup_disposition(self, name: str, drivers: set[str]) -> str | None:
         """What ``compiler.grain_dedup`` would do with this measure at this anchor.

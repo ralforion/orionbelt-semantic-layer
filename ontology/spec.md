@@ -284,6 +284,9 @@ Additional required:
 - `obsl:per` (one or more dimension labels, optionally `name:grain`)
 - `obsl:aggregation` (second-stage function: sum, avg, min, max, count)
 
+Optional:
+- `obsl:reaggregateHaving` (multi-valued): a condition on the first-stage groups over a measure, as an expression string (e.g. `Order Count > 5`); only the groups meeting every condition are aggregated again
+
 ### 5.10 ExternalConceptMapping
 Represents a qualified link from a modeling element to a concept in an external ontology (a corporate glossary, FIBO, schema.org). Descriptive metadata only: it never affects SQL planning or execution.
 
@@ -525,6 +528,7 @@ Any of model, data object, dimension, measure, metric:
 ### 10.9a Reaggregate Metrics (type: reaggregate → rdf:type obsl:ReaggregateMetric)
 - `per` -> `obsl:per` (one triple per entry)
 - `aggregation` -> `obsl:aggregation`
+- `having` -> `obsl:reaggregateHaving` (one triple per condition, `field op value`)
 
 Fields intentionally excluded from Core mapping:
 - expression AST nodes

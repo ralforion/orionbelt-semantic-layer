@@ -388,20 +388,31 @@ metrics:
     measure: Orders Count   # synthesized counts work
     per: [Customer]
     aggregation: avg
+
+  Avg Revenue per Repeat Customer:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: avg
+    having:                 # optional: stage-1 groups to keep (all must hold)
+      - {field: Orders Count, op: ">", value: 5}
 ```
 
 Stage 1 computes the measure grouped by the query's dimensions plus `per`;
 stage 2 applies `aggregation` to those values, grouped by the query's
 dimensions. With `Country` selected: SUM(revenue) per Country, Customer, then
 AVG per Country, so each customer counts once (unweighted). Stage 1 sees the
-query's `where`, so only customers with rows count; `having` filters the final
-rows. Select it beside other measures (other facts too), in `having` and
+query's `where`, so only customers with rows count; a query's `having` filters
+the final rows. Select it beside other measures (other facts too), in `having` and
 `orderBy`, and inside derived metrics (`'{[Avg Revenue per Customer]} /
 {[Revenue]}'`).
 
 - `measure:` a measure; its `total`, `grain`, `filterContext` and dedup apply
   in stage 1, at the query's dimensions plus `per`. Or another reaggregate
   metric, which then is stage 1 with its own two stages (a cycle is refused)
+- `having:` optional conditions on stage-1 groups (`field`/`op`/`value`, as a
+  query filter); `field` is a measure computed in stage 1, not a metric
+  (`REAGGREGATE_HAVING_MEASURE_ONLY`). No group left: NULL, or 0 for `count`
 - `per:` model dimensions, optionally at a time grain (`'Order Date:day'`); by
   `Order Date:month` that averages daily totals within each month (only days
   with rows count)
