@@ -20,6 +20,7 @@ from orionbelt.compiler.expr_parser import (
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import DimensionRef
 from orionbelt.models.semantic import (
+    Measure,
     Metric,
     MetricType,
     SemanticModel,
@@ -93,6 +94,49 @@ def reaggregate_per_covered(
         if _nests_in(grain, ref.grain):
             return True
     return False
+
+
+def register_component(resolver: QueryResolver, ctx: _ResolutionContext, name: str) -> None:
+    """Resolve *name* as a component a metric reads, unless it already is one.
+
+    A plain entry a reaggregate metric left (:func:`_register_plain_component`)
+    is replaced: this metric reads the measure's value at the query grain, its
+    wrappers included.
+    """
+    if name in ctx.result.metric_components and name not in ctx.plain_components:
+        return
+    comp = resolver._resolve_measure(ctx, name)
+    if comp:
+        ctx.result.metric_components[name] = comp
+        ctx.plain_components.discard(name)
+
+
+def _register_plain_component(
+    resolver: QueryResolver, ctx: _ResolutionContext, name: str, measure: Measure
+) -> None:
+    """Register a reaggregate metric's measure as its bare aggregate.
+
+    The planners place the metric by its component: which fact it reads, so
+    which CFL leg carries it, and with that which groups the query has. The
+    value itself is discarded, and the measure's ``total``, ``grain``,
+    ``filterContext`` and deduplication belong to the metric's first stage,
+    which plans the measure as a query of its own. Registered with them, every
+    wrapper of this query would compute the measure too, at the wrong grain,
+    and refuse what the first stage answers (a ``FIXED`` grain the query's
+    dimensions do not cover, a total on a deduplicated measure).
+    """
+    from orionbelt.compiler.resolution import ResolvedMeasure
+
+    if name in ctx.result.metric_components:
+        return
+    ctx.result.metric_components[name] = ResolvedMeasure(
+        name=name,
+        aggregation=measure.aggregation,
+        expression=resolver._build_measure_expr(ctx, measure),
+        is_expression=measure.expression is not None,
+        default_value=measure.default_value,
+    )
+    ctx.plain_components.add(name)
 
 
 def resolve_metric(
@@ -188,10 +232,7 @@ def resolve_window_metric(
             )
             return None
         base_aggregation = base_measure.aggregation
-        if base_measure_name not in ctx.result.metric_components:
-            comp = resolver._resolve_measure(ctx, base_measure_name)
-            if comp:
-                ctx.result.metric_components[base_measure_name] = comp
+        register_component(resolver, ctx, base_measure_name)
 
     # timeDimension is required for LAG/LEAD, optional otherwise (RANK uses measure value)
     if metric.time_dimension is not None:
@@ -302,10 +343,7 @@ def resolve_derived_metric(
     # Extract and resolve each component measure
     component_names = re.findall(r"\{\[([^\]]+)\]\}", formula or "")
     for comp_name in component_names:
-        if comp_name not in ctx.result.metric_components:
-            comp = resolver._resolve_measure(ctx, comp_name)
-            if comp:
-                ctx.result.metric_components[comp_name] = comp
+        register_component(resolver, ctx, comp_name)
 
     # Parse the formula into an AST tree
     try:
@@ -413,10 +451,7 @@ def resolve_cumulative_metric(
         return None
 
     # Resolve the base measure as a component (reuse existing resolution)
-    if metric.measure not in ctx.result.metric_components:
-        comp = resolver._resolve_measure(ctx, metric.measure)
-        if comp:
-            ctx.result.metric_components[metric.measure] = comp
+    register_component(resolver, ctx, metric.measure)
 
     # The cumulative metric's expression is a placeholder ColumnRef to the base measure
     # The actual window function is built during the cumulative_wrap phase
@@ -446,12 +481,8 @@ def resolve_reaggregate_metric(
     replaces it with the second stage, computed over a scan of its own at the
     query grain plus the ``per`` dimensions.
 
-    The base measure is deliberately not a component of this query. Its
-    ``total``, ``grain``, ``filterContext`` and deduplication belong to that
-    scan, which plans the measure as a query of its own; registered here, every
-    wrapper of the outer query would compute it too, at the wrong grain, and
-    refuse what the scan answers (a ``FIXED`` grain the query's dimensions do
-    not cover, a total on a deduplicated measure).
+    The base measure is a component only as its bare aggregate; see
+    :func:`_register_plain_component`.
     """
     from orionbelt.compiler.resolution import ResolvedMeasure
 
@@ -512,11 +543,14 @@ def resolve_reaggregate_metric(
             )
         )
 
+    _register_plain_component(resolver, ctx, metric.measure, base_measure)
+
     return ResolvedMeasure(
         name=name,
         aggregation=metric.aggregation.value,
-        expression=resolver._build_measure_expr(ctx, base_measure),
+        expression=ColumnRef(name=metric.measure),
         is_expression=True,
+        component_measures=[metric.measure],
         is_reaggregate=True,
         reaggregate_measure=metric.measure,
         reaggregate_per=list(metric.per),
@@ -614,10 +648,7 @@ def resolve_pop_metric(
         return None
 
     for comp_name in component_names:
-        if comp_name not in ctx.result.metric_components:
-            comp = resolver._resolve_measure(ctx, comp_name)
-            if comp:
-                ctx.result.metric_components[comp_name] = comp
+        register_component(resolver, ctx, comp_name)
 
     try:
         tokens = tokenize_metric_formula(metric.expression)

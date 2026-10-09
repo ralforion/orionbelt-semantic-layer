@@ -72,6 +72,21 @@ _METRICS: dict[str, dict[str, Any]] = {
 _METRICS["Peak Share of Grand Total"] = {
     "expression": "{[max of Grand Total Sales per Sales Client Name]} / {[Total Sales]}"
 }
+# The measure itself, read by a formula: a component with its total.
+_METRICS["Grand Total Doubled"] = {"expression": "{[Grand Total Sales]} * 2"}
+# Reaggregates over other facts, each in a leg of its own.
+_METRICS["Avg Purchases per Supplier"] = {
+    "type": "reaggregate",
+    "measure": "Total Purchases",
+    "per": ["Purchase Supplier Name"],
+    "aggregation": "avg",
+}
+_METRICS["Peak Monthly Returns"] = {
+    "type": "reaggregate",
+    "measure": "Total Returns",
+    "per": ["Return Year Month"],
+    "aggregation": "max",
+}
 
 _GERMANY = [QueryFilter(field="Country Name", op="=", value="Germany")]
 _DIMENSIONS = [[], ["Country Name"], ["Sales Year"]]
@@ -131,7 +146,7 @@ def _stage_one_refused(name: str, dimensions: list[str]) -> bool:
 _CASES = [
     (name, dims, where)
     for name, metric in _METRICS.items()
-    if metric.get("type") == "reaggregate"
+    if metric.get("type") == "reaggregate" and metric["measure"] in _INNER
     for dims in _DIMENSIONS
     for where in ([], _GERMANY)
     if not _stage_one_refused(name, dims)
@@ -183,3 +198,43 @@ def test_stage_one_refusal_names_the_metric(model: SemanticModel) -> None:
     assert error.message.startswith(
         "In the first stage of reaggregating 'Sales by Country' per ['Sales Client Name']: "
     )
+
+
+def _same_as_separate(run: Callable, dimensions: list[str], measures: list[str]) -> None:
+    combined = {tuple(r[d] for d in dimensions): r for r in run(dimensions, measures)}
+    expected: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for measure in measures:
+        for row in run(dimensions, [measure]):
+            expected.setdefault(tuple(row[d] for d in dimensions), {}).update(row)
+    assert combined.keys() == expected.keys()
+    for key, row in expected.items():
+        # A group one fact lacks has no row in that fact's own query.
+        assert {m: combined[key][m] for m in measures} == {m: row.get(m) for m in measures}
+
+
+@pytest.mark.parametrize("first", [True, False], ids=["reaggregate first", "formula first"])
+def test_beside_a_formula_over_the_same_measure(run: Callable, first: bool) -> None:
+    """The formula reads the measure with its total; the reaggregate metric's
+    first stage reads it too. Neither takes the other's form of it."""
+    pair = ["avg of Grand Total Sales per Sales Client Name", "Grand Total Doubled"]
+    _same_as_separate(run, ["Country Name"], pair if first else pair[::-1])
+
+
+_MULTI_FACT = [
+    ["avg of Sales by Country per Country Name", "Avg Purchases per Supplier"],
+    ["Avg Purchases per Supplier", "Peak Monthly Returns"],
+    [
+        "Avg Purchases per Supplier",
+        "avg of Grand Total Sales per Sales Client Name",
+        "Total Returns",
+        "Total Sales",
+    ],
+]
+
+
+@pytest.mark.parametrize("measures", _MULTI_FACT, ids=" + ".join)
+@pytest.mark.parametrize("dimensions", [["Channel Name"], ["Year Month"], ["Currency"]], ids=str)
+def test_multi_fact(run: Callable, dimensions: list[str], measures: list[str]) -> None:
+    """Each reaggregate metric stays on its own fact's leg: a group only one
+    fact has is kept, and no leg reads a table it does not join."""
+    _same_as_separate(run, dimensions, measures)
