@@ -94,6 +94,7 @@ _METRICS: dict[str, dict[str, Any]] = {
 }
 
 _GERMANY = [QueryFilter(field="Country Name", op="=", value="Germany")]
+_NOWHERE = [QueryFilter(field="Country Name", op="=", value="Atlantis")]
 
 #: (case, dimensions, the other measures, where)
 _CASES: list[tuple[str, list[str], list[str], list[QueryFilter]]] = [
@@ -103,6 +104,12 @@ _CASES: list[tuple[str, list[str], list[str], list[QueryFilter]]] = [
     ("grain override and total", ["Country Name"], ["Sales by Country", "Sales Grand Total"], []),
     ("filterContext excluding the filter", ["Country Name"], ["All Country Sales"], _GERMANY),
     ("filterContext fixed", ["Country Name"], ["Unfiltered Sales"], []),
+    ("filterContext, no dimensions", [], ["All Country Sales"], _GERMANY),
+    ("filterContext fixed, no dimensions", [], ["Unfiltered Sales"], []),
+    ("filterContext, no dimensions, no rows", [], ["All Country Sales"], _NOWHERE),
+    ("total, no dimensions, no rows", [], ["Sales Grand Total"], _NOWHERE),
+    ("window rank, no dimensions", [], ["Sales Rank"], []),
+    ("cumulative, no dimensions", [], ["Cumulative Sales"], []),
     ("cumulative", ["Sales Month"], ["Cumulative Sales"], []),
     ("cumulative with where", ["Sales Month"], ["Cumulative Sales"], _GERMANY),
     ("year to date", ["Sales Month"], ["YTD Sales"], []),
@@ -159,7 +166,11 @@ def run(
 
 
 def _keyed(rows: list[dict[str, Any]], dimensions: list[str]) -> dict[tuple[Any, ...], dict]:
-    return {tuple(row[d] for d in dimensions): row for row in rows}
+    """Rows by their dimension values, which have to be unique: a key seen twice
+    is a duplicated row that a dict would otherwise silently fold."""
+    keyed = {tuple(row[d] for d in dimensions): row for row in rows}
+    assert len(keyed) == len(rows), f"{len(rows)} rows for {len(keyed)} keys"
+    return keyed
 
 
 @pytest.mark.parametrize("reaggregates_first", [False, True], ids=["after", "before"])

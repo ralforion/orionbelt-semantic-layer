@@ -434,6 +434,22 @@ def _assert_beside_other_wrappers(target: VendorTarget, model: SemanticModel) ->
     want = {"2026-01": (Decimal(40), Decimal(85)), "2026-02": (Decimal(1), Decimal(1041))}
     assert got == want, f"{target.name}: {got}"
 
+    # Without dimensions: one row, also when no row passes the WHERE. The
+    # filterContext takes its measure out of the base query, which then has
+    # only the placeholder left to aggregate.
+    measures = ["Avg Revenue per Customer", "Revenue All Countries"]
+    for country, want_row in (("DE", (Decimal(27), Decimal(1126))), ("XX", (None, Decimal(1126)))):
+        rows = _run(
+            target,
+            model,
+            QueryObject(
+                select=QuerySelect(measures=measures),
+                where=[QueryFilter(field="Country", op="=", value=country)],
+            ),
+        )
+        got_rows = [tuple(_number(r[m.lower()]) for m in measures) for r in rows]
+        assert got_rows == [want_row], f"{target.name} {country}: {got_rows}"
+
     # A formula over the reaggregate metric, beside a cumulative one. January's
     # average is 85 / 3, read at the model's decimal(18, 2): 28.33 / 85.
     rows = _run(

@@ -251,21 +251,26 @@ def _plan_value(resolved: ResolvedQuery, comp: ResolvedMeasure) -> Expr:
     return resolved.projected_expressions.get(comp.name, comp.expression)
 
 
-def _typed_null(m: ResolvedMeasure, model: SemanticModel, dialect: Dialect) -> Expr:
-    """A NULL of the type the metric's finished value has.
+def _placeholder_value(m: ResolvedMeasure, model: SemanticModel, dialect: Dialect) -> Expr:
+    """``MAX`` of a NULL of the type the metric's finished value has.
 
     The placeholder is discarded, but every wrapper in between projects it, and
     a formula over it (``{[Named Customers]} * 2``) has to bind: the inner
     measure's own aggregate can be a string, which a NULL of the metric's type
-    is not.
+    is not. It is an aggregate, as the column it stands for is: a query left
+    with nothing else to aggregate - a filterContext moves its measure into a
+    CTE of its own - stays one row without dimensions, also over no rows,
+    rather than one per fact row.
     """
     metric = model.metrics.get(m.name)
     inner = model.effective_measures.get(m.reaggregate_measure or "")
     target = (resolve_metric_data_type(metric, model.settings) if metric else None) or (
         resolve_measure_data_type(inner, model.settings) if inner else None
     )
-    null = Literal(value=None)
-    return dialect.cast_to_obml_type(null, target) if target is not None else null
+    null: Expr = Literal(value=None)
+    if target is not None:
+        null = dialect.cast_to_obml_type(null, target)
+    return FunctionCall(name="MAX", args=[null])
 
 
 def capture_reaggregate_components(
@@ -273,11 +278,12 @@ def capture_reaggregate_components(
 ) -> Select:
     """Prepare the plan for wrappers that run before the reaggregate pass.
 
-    Each reaggregate metric's placeholder becomes a NULL of the metric's type,
-    in the resolution and in the plan's columns. The planner's form was the
-    measure's name as a bare column, which only bound by accident, and every
-    wrapper that rebuilds a projection from the resolution (period-over-period
-    does) carried it into its own CTE. The reaggregate pass discards the value.
+    Each reaggregate metric's placeholder becomes an aggregate NULL of the
+    metric's type, in the resolution and in the plan's columns. The planner's
+    form was the measure's name as a bare column, which only bound by
+    accident, and every wrapper that rebuilds a projection from the resolution
+    (period-over-period does) carried it into its own CTE. The reaggregate pass
+    discards the value.
 
     The plain components of derived metrics over a reaggregate metric are kept
     in ``reaggregate_components``: each is the bare aggregate the planner
@@ -289,7 +295,7 @@ def capture_reaggregate_components(
     """
     for m in [*resolved.measures, *resolved.metric_components.values()]:
         if m.is_reaggregate:
-            m.expression = _typed_null(m, model, dialect)
+            m.expression = _placeholder_value(m, model, dialect)
 
     leaves, split = _split_metrics(resolved)
     components = _plain_components(leaves, split)
