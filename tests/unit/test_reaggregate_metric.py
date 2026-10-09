@@ -8,6 +8,7 @@ shape, the warnings and the refusals.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -556,7 +557,7 @@ class TestCompile:
         [
             ("Total Revenue", "OVER ()"),
             ("Region Revenue", 'OVER (PARTITION BY "Country")'),
-            ("Unfiltered Revenue", '"reagg_1_inner_fc_0" AS ('),
+            ("Unfiltered Revenue", '"reagg_1_inner_2_fc_0" AS ('),
         ],
     )
     def test_over_a_wrapped_measure(self, inner: str, wrapper: str) -> None:
@@ -587,8 +588,8 @@ class TestCompile:
         )
         sql = _compile(probe_model, query).sql
         assert sql.count('"base" AS (') == 1
-        assert '"reagg_1_inner_base" AS (' in sql
-        assert 'FROM "reagg_1_inner_base" AS "base"' in sql
+        assert '"reagg_1_inner_1_base" AS (' in sql
+        assert 'FROM "reagg_1_inner_1_base" AS "base"' in sql
 
     def test_over_a_reaggregate_metric_nests_its_stages(self) -> None:
         """The inner metric is the first stage, planned as a query of its own,
@@ -604,11 +605,30 @@ class TestCompile:
         sql = _compile(probe_model, query).sql
         positions = [
             sql.index(f'"{cte}" AS (')
-            for cte in ("reagg_1_inner_reagg_1_inner", "reagg_1_inner_reagg_1", "reagg_1")
+            for cte in ("reagg_1_inner_2_reagg_1_inner", "reagg_1_inner_3_reagg_1", "reagg_1")
         ]
         assert positions == sorted(positions)
         assert sql.count("AVG(") == 1
         assert sql.count("MAX(") == 1 + sql.count("MAX(CAST(NULL")
+
+    @pytest.mark.parametrize("dialect", ["postgres", "snowflake"])
+    def test_stage_names_stay_short_and_unique_at_any_depth(self, dialect: str) -> None:
+        """Each stage nests the next one's CTEs; a name that grew per stage
+        passed PostgreSQL's 63 bytes at four, truncated to a sibling's."""
+        chain = "".join(
+            f"  Stage {i}:\n    type: reaggregate\n"
+            f"    measure: {'Revenue' if i == 1 else f'Stage {i - 1}'}\n"
+            "    per: [Customer]\n    aggregation: max\n"
+            for i in range(1, 7)
+        )
+        probe_model, result = _resolve(MODEL_YAML + chain)
+        assert result.valid, result.errors
+        query = QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Stage 6"]))
+        sql = CompilationPipeline().compile(query, probe_model, dialect).sql
+        names = re.findall(r'"([^"]+)" AS \(', sql)
+        assert len(names) == 18
+        assert len(set(names)) == len(names)
+        assert max(len(name) for name in names) <= 32
 
     def test_untyped_placeholder_takes_the_source_column_type(self) -> None:
         """A ``min`` over a ``max`` measure declares no type anywhere; an

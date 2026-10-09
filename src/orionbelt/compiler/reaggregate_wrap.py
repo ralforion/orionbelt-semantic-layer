@@ -25,9 +25,11 @@ rows in stage 1 and the join finds it.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
+from itertools import count
 
 from orionbelt.ast.nodes import (
     CTE,
@@ -71,6 +73,11 @@ _FUNCTIONS: dict[ReaggregateAggType, str] = {
     ReaggregateAggType.MAX: "MAX",
     ReaggregateAggType.COUNT: "COUNT",
 }
+
+
+#: The prefix ``_own_cte_names`` gives a stage-1 CTE, which a further stage
+#: replaces rather than adds to.
+_STAGE_CTE_PREFIX = re.compile(r"^reagg_\d+_inner_\d+_")
 
 
 def _alias(expr: Expr) -> str | None:
@@ -212,14 +219,23 @@ def _own_cte_names(scan: Select, prefix: str) -> Select:
     inside the outer query. Snowflake resolves a nested ``FROM "base"`` to the
     outer query's CTE of that name, which has none of the first stage's
     columns. Unique names leave no reference to resolve the wrong way.
+
+    Each name is *prefix*, a number unique within the scan, and the CTE's own
+    name without the prefix an inner stage gave it: ``reagg_1_inner_2_base``.
+    Stacking the prefixes instead grew a name by one per nested stage, past
+    PostgreSQL's 63 bytes, which truncates two siblings to the same name.
     """
+    return _numbered_ctes(scan, prefix, count(1))
+
+
+def _numbered_ctes(scan: Select, prefix: str, numbers: Iterator[int]) -> Select:
     renamed: dict[str, str] = {}
     ctes: list[CTE] = []
     for cte in scan.ctes:
-        name = f"{prefix}{cte.name}"
+        name = f"{prefix}{next(numbers)}_{_STAGE_CTE_PREFIX.sub('', cte.name)}"
         own = cte.query
         if isinstance(own, Select):
-            own = _own_cte_names(own, f"{name}_")
+            own = _numbered_ctes(own, prefix, numbers)
         ctes.append(CTE(name=name, query=rename_cte_sources(own, renamed)))
         renamed[cte.name] = name
     renamed_scan = rename_cte_sources(replace(scan, ctes=ctes), renamed)

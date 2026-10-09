@@ -435,12 +435,20 @@ obsl:ReaggregateMetricShape a sh:NodeShape ;
             sh:maxCount 1 ;
             sh:name "base measure" ;
             sh:message "Reaggregate metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
+        ] ; sh:property [
+            sh:path obsl:baseMetric ;
+            sh:maxCount 0 ;
+            sh:message "Reaggregate metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
         ] ]
         [ sh:property [
             sh:path obsl:baseMetric ;
             sh:minCount 1 ;
             sh:maxCount 1 ;
             sh:name "base metric" ;
+            sh:message "Reaggregate metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
+        ] ; sh:property [
+            sh:path obsl:baseMeasure ;
+            sh:maxCount 0 ;
             sh:message "Reaggregate metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
         ] ]
     ) ;

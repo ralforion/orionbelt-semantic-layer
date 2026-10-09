@@ -218,6 +218,26 @@ metrics:
     measure: Avg Daily Best Customer
     per: [Country]
     aggregation: max
+  Best Customer Revenue 2:
+    type: reaggregate
+    measure: Best Customer Revenue
+    per: [Customer]
+    aggregation: max
+  Best Customer Revenue 3:
+    type: reaggregate
+    measure: Best Customer Revenue 2
+    per: [Customer]
+    aggregation: max
+  Best Customer Revenue 4:
+    type: reaggregate
+    measure: Best Customer Revenue 3
+    per: [Customer]
+    aggregation: max
+  Best Customer Revenue 5:
+    type: reaggregate
+    measure: Best Customer Revenue 4
+    per: [Customer]
+    aggregation: max
   Running Revenue:
     type: cumulative
     measure: Revenue
@@ -633,6 +653,13 @@ def _assert_nested(target: VendorTarget, model: SemanticModel) -> None:
 
     rows = _run(target, model, QueryObject(select=QuerySelect(measures=[name])))
     assert [_number(r[name.lower()]) for r in rows] == [Decimal("502.5")], f"{target.name}: {rows}"
+
+    # Five stages, each nesting the next one's CTEs: their names stay within
+    # PostgreSQL's 63 bytes and unique. Each level's best customer is the one
+    # below's, so every level answers the best customer per country.
+    deep = _by_country(target, model, ["Best Customer Revenue 5"])
+    want_deep = {"DE": (Decimal(50),), "FR": (Decimal(1000),), None: (Decimal(30),)}
+    assert deep == want_deep, f"{target.name}: {deep}"
 
 
 def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) -> None:
