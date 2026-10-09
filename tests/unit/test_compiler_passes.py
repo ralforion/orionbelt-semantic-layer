@@ -23,6 +23,7 @@ from orionbelt.compiler.passes import (
     PASS_HAVING_WINDOW,
     PASS_PERIOD_OVER_PERIOD,
     PASS_REAGGREGATE,
+    PASS_REAGGREGATE_COMPONENTS,
     PASS_TOTALS,
     PASS_WINDOW,
     build_default_passes,
@@ -79,13 +80,16 @@ def _resolved(**attrs: object) -> ResolvedQuery:
 def test_pass_order_is_declared_once() -> None:
     names = [p.name for p in build_default_passes()]
     assert names == [
+        # Takes what it needs from the plan before any wrapper rewrites it.
+        PASS_REAGGREGATE_COMPONENTS,
         PASS_GRAIN_DEDUP,
-        PASS_REAGGREGATE,
         PASS_FILTER_CONTEXT,
         PASS_PERIOD_OVER_PERIOD,
         PASS_TOTALS,
         PASS_CUMULATIVE,
         PASS_WINDOW,
+        # Wraps whatever the wrappers before it built.
+        PASS_REAGGREGATE,
         # Runs after every wrapper: the filtering query it adds needs all of
         # their aliases in scope at once.
         PASS_HAVING_WINDOW,

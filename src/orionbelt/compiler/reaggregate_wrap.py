@@ -5,10 +5,11 @@ A reaggregate metric is its measure computed at the query grain plus the
 (stage 2) - "average revenue per customer, by country" is ``SUM(revenue)`` per
 country and customer, then ``AVG`` of those per country.
 
-The planner has projected the measure's aggregate under the metric's name at
-the query grain, which is a placeholder and not the metric. This wrapper moves
-the planner's query into a ``reagg_base`` CTE without that column, and per
-distinct (measure, ``per``) pair adds:
+The plan carries the measure's aggregate under the metric's name at the query
+grain, which is a placeholder and not the metric; every other wrapper carries
+it like any measure. This wrapper runs after all of them, moves the finished
+query into a ``reagg_base`` CTE without that column, and per distinct
+(measure, ``per``) pair adds:
 
 - ``reagg_<n>_inner``: the measure planned *as a query in its own right* at the
   finer grain, so its base object, join path and fanout check are derived for
@@ -58,6 +59,7 @@ from orionbelt.models.semantic import DataObject, ReaggregateAggType, SemanticMo
 from orionbelt.models.types import OBMLType
 
 _BASE = "reagg_base"
+_COMPONENTS = "reagg_components"
 
 _FUNCTIONS: dict[ReaggregateAggType, str] = {
     ReaggregateAggType.SUM: "SUM",
@@ -188,6 +190,20 @@ def _stage_two(
     )
 
 
+def _hoist_ctes(ctes: list[CTE], captured: list[CTE]) -> None:
+    """Add the CTEs the captured plan reads that the final query lacks.
+
+    The planner's CTEs (a multi-fact plan's legs) usually survive every wrapper
+    unchanged, and are then shared rather than repeated.
+    """
+    present = {cte.name: cte for cte in ctes}
+    for cte in captured:
+        if cte.name not in present:
+            ctes.append(cte)
+        elif present[cte.name] != cte:
+            raise RuntimeError(f"CTE '{cte.name}' was rewritten after the components were taken")
+
+
 def _join_on(left: str, right: str, dim_names: list[str]) -> Expr:
     on: Expr | None = None
     for d in dim_names:
@@ -195,6 +211,96 @@ def _join_on(left: str, right: str, dim_names: list[str]) -> Expr:
         on = part if on is None else BinaryOp(left=on, op="AND", right=part)
     assert on is not None
     return on
+
+
+def _split_metrics(
+    resolved: ResolvedQuery,
+) -> tuple[dict[str, list[ResolvedMeasure]], dict[str, ResolvedMeasure]]:
+    """Each selected measure's leaf components, and the derived metrics over a
+    reaggregate metric - those this pass rebuilds from their components."""
+    leaves = {
+        m.name: metric_leaf_components(m, resolved.metric_components) for m in resolved.measures
+    }
+    split = {
+        m.name: m
+        for m in resolved.measures
+        if not m.is_reaggregate and any(c.is_reaggregate for c in leaves[m.name])
+    }
+    return leaves, split
+
+
+def _plain_components(
+    leaves: dict[str, list[ResolvedMeasure]], split: dict[str, ResolvedMeasure]
+) -> dict[str, tuple[str, ResolvedMeasure]]:
+    """The rebuilt metrics' other components, each under a private alias."""
+    components: dict[str, tuple[str, ResolvedMeasure]] = {}
+    for metric_name in split:
+        for comp in leaves[metric_name]:
+            if not comp.is_reaggregate and comp.name not in components:
+                components[comp.name] = (f"_reagg_component_{len(components) + 1}", comp)
+    return components
+
+
+def _bare_aggregate(resolved: ResolvedQuery, comp: ResolvedMeasure) -> Expr:
+    """The aggregate the plan computes for *comp*: a reaggregate metric's is its
+    measure's, which is all a plan at the query grain has of it."""
+    if comp.is_reaggregate:
+        assert comp.reaggregate_measure is not None
+        comp = resolved.metric_components[comp.reaggregate_measure]
+    return resolved.projected_expressions.get(comp.name, comp.expression)
+
+
+def capture_reaggregate_components(
+    ast: Select, resolved: ResolvedQuery, model: SemanticModel, dialect: Dialect
+) -> Select:
+    """Keep the plain components of derived metrics over a reaggregate metric.
+
+    Each is the bare aggregate the planner inlines into the formula, taken here
+    from the plan it was planned in: the reaggregate pass runs after every other
+    wrapper, whose FROM no longer reaches the fact tables. Each gets a column of
+    its own, never the selected measure's, which is cast to the measure's type,
+    so reading it would make the metric depend on what else is selected.
+
+    The columns the reaggregate pass replaces - each reaggregate metric's and
+    each such derived metric's - have to stay valid SQL for the wrappers in
+    between, which carry them like any measure. The planner's form is not
+    always: it leaves a reaggregate component in a formula as a bare name, and
+    a multi-fact plan reads the metric from a union column that does not exist.
+    Each is projected as its measure's bare aggregate, a value the reaggregate
+    pass then discards.
+    """
+    leaves, split = _split_metrics(resolved)
+    components = _plain_components(leaves, split)
+    if components:
+        dim_names = {d.name for d in resolved.dimensions}
+        columns: list[Expr] = [c for c in ast.columns if _alias(c) in dim_names]
+        columns += [
+            AliasedExpr(expr=_bare_aggregate(resolved, comp), alias=alias)
+            for alias, comp in components.values()
+        ]
+        resolved.reaggregate_components = replace(
+            ast, columns=columns, having=None, order_by=[], limit=None, offset=None
+        )
+
+    reaggregates = {m.name: m for m in resolved.measures if m.is_reaggregate}
+
+    def placeholder(col: Expr) -> Expr:
+        alias = _alias(col)
+        if alias in reaggregates:
+            return AliasedExpr(expr=_bare_aggregate(resolved, reaggregates[alias]), alias=alias)
+        if alias not in split:
+            return col
+        by_name = {c.name: c for c in leaves[alias]}
+        expr = metric_over_components(
+            split[alias],
+            resolved.metric_components,
+            lambda name: _bare_aggregate(resolved, by_name[name]),
+            model,
+            dialect,
+        )
+        return AliasedExpr(expr=expr, alias=alias)
+
+    return replace(ast, columns=[placeholder(c) for c in ast.columns])
 
 
 def wrap_with_reaggregate(
@@ -207,21 +313,17 @@ def wrap_with_reaggregate(
 ) -> Select:
     """Replace each reaggregate placeholder with its two-stage value.
 
+    Runs after every other wrapper, so *ast* is the finished query with a
+    placeholder column per reaggregate metric, which the wrappers carried like
+    any measure. That query becomes ``reagg_base`` without those columns.
+
     A derived metric over a reaggregate metric is rebuilt here too. The planner
     inlined the placeholder into the metric's one column, so the column is
-    dropped from ``reagg_base``, the metric's other components are projected
-    there in their own right, and the formula is re-expanded in the outer query
-    over each component's column - the route ``filter_wrap`` takes for a metric
-    over a filter-contexted measure.
+    dropped from ``reagg_base`` and the formula is re-expanded in the outer
+    query over each component: a reaggregate one from its stage-2 CTE, a plain
+    one from ``reagg_components`` (see :func:`capture_reaggregate_components`).
     """
-    leaves = {
-        m.name: metric_leaf_components(m, resolved.metric_components) for m in resolved.measures
-    }
-    split = {
-        m.name: m
-        for m in resolved.measures
-        if not m.is_reaggregate and any(c.is_reaggregate for c in leaves[m.name])
-    }
+    leaves, split = _split_metrics(resolved)
     reaggregates = [m for m in resolved.measures if m.is_reaggregate]
     for metric_name in split:
         for comp in leaves[metric_name]:
@@ -241,24 +343,6 @@ def wrap_with_reaggregate(
 
     ctes = list(ast.ctes)
     base_columns = [c for c in ast.columns if _alias(c) not in names | split.keys()]
-    # A rebuilt metric's plain components, which its dropped column carried. Each
-    # gets a column of its own, never the selected measure's: the planner inlines
-    # a component's bare aggregate into a formula, and the selected column is
-    # cast to the measure's type, so reading it would make the metric's value
-    # depend on whether the measure is selected too.
-    component_alias: dict[str, str] = {}
-    for metric_name in split:
-        for comp in leaves[metric_name]:
-            if comp.is_reaggregate or comp.name in component_alias:
-                continue
-            private = f"_reagg_component_{len(component_alias) + 1}"
-            component_alias[comp.name] = private
-            base_columns.append(
-                AliasedExpr(
-                    expr=resolved.projected_expressions.get(comp.name, comp.expression),
-                    alias=private,
-                )
-            )
     # With no dimensions and nothing else selected the base projects nothing;
     # each stage-2 CTE is then the one row the query returns.
     keep_base = bool(base_columns)
@@ -266,17 +350,20 @@ def wrap_with_reaggregate(
         ctes.append(
             CTE(
                 name=_BASE,
-                query=Select(
-                    columns=base_columns,
-                    from_=ast.from_,
-                    joins=ast.joins,
-                    where=ast.where,
-                    group_by=ast.group_by,
-                    having=ast.having,
-                    grouping=ast.grouping,
+                query=replace(
+                    ast, columns=base_columns, order_by=[], limit=None, offset=None, ctes=[]
                 ),
             )
         )
+
+    component_alias = {name: alias for name, (alias, _) in _plain_components(leaves, split).items()}
+    joined: list[str] = []
+    if component_alias:
+        captured = resolved.reaggregate_components
+        assert captured is not None, "the components pass runs before this one"
+        _hoist_ctes(ctes, captured.ctes)
+        ctes.append(CTE(name=_COMPONENTS, query=replace(captured, ctes=[])))
+        joined.append(_COMPONENTS)
 
     source_of: dict[str, str] = {}
     stage_two_names: list[str] = []
@@ -300,7 +387,7 @@ def wrap_with_reaggregate(
 
     anchor = _BASE if keep_base else stage_two_names[0]
     joins: list[Join | Unnest] = []
-    for name in stage_two_names:
+    for name in [*stage_two_names, *joined]:
         if name == anchor:
             continue
         joins.append(
@@ -326,8 +413,10 @@ def wrap_with_reaggregate(
             value: Expr = metric_over_components(
                 split[alias],
                 resolved.metric_components,
-                lambda name: ColumnRef(
-                    name=component_alias.get(name, name), table=source_of.get(name, anchor)
+                lambda name: (
+                    ColumnRef(name=component_alias[name], table=_COMPONENTS)
+                    if name in component_alias
+                    else ColumnRef(name=name, table=source_of[name])
                 ),
                 model,
                 dialect,

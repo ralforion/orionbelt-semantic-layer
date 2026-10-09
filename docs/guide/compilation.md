@@ -37,6 +37,12 @@ QueryObject + SemanticModel
          |
          v
 +-----------------+
+|  Phase 2.8:     |
+|  Reaggregate    |  -> two-stage CTEs joined back on the dimensions
++--------+--------+
+         |
+         v
++-----------------+
 |  Phase 3:       |
 |  Code Generation|  -> SQL string
 |  (Dialect)      |
@@ -518,7 +524,22 @@ of here, so the generated SQL is identical either way, unlike `allowFanOut` on a
 measure in the [grain deduplication](#phase-22-grain-deduplication-wrap) pass,
 which skips a real transformation.
 
-## Phase 2.25: Reaggregate Wrap
+## Phase 2.4: Period-over-Period Wrap
+
+**Module:** `orionbelt.compiler.pop_wrap`
+
+When a query includes period-over-period metrics (`type: period_over_period`), the PoP wrapper restructures the planner output into a 4-CTE date spine architecture:
+
+1. **`date_range`** -- Discovers `MIN`/`MAX` date from fact tables with ALL query `WHERE` filters pushed down (time and dimension filters alike). For multi-fact (CFL) queries, each fact table leg is scanned independently via `UNION ALL`.
+2. **`date_spine`** -- Generates a date series from `min_date` to `max_date` at the configured grain. Each row includes a `spine_date_prev` column pointing to the comparison period. The generation technique is dialect-specific (e.g. `generate_series` in Postgres, `TABLE(GENERATOR(...))` in Snowflake).
+3. **`pop_base`** -- Aggregates measures using the spine as `FROM`, with fact and dimension tables LEFT JOINed via the truncated date column. Non-time dimensions are included in the `GROUP BY`.
+4. **`pop_compare`** -- Self-joins `pop_base` onto itself via `spine_date_prev`, matching on all non-time dimensions, and computes the comparison expression (percent change, ratio, difference, or previous value).
+
+The outer `SELECT` projects all dimensions, non-PoP measures, and PoP metric columns from `pop_compare`.
+
+PoP wrapping runs before total and cumulative wraps so those layers can operate on the already-aggregated comparison output. For details, see the [Period-over-Period Metrics](period-over-period.md) guide.
+
+## Phase 2.8: Reaggregate Wrap
 
 **Module:** `orionbelt.compiler.reaggregate_wrap`
 
@@ -527,7 +548,9 @@ A [reaggregate metric](model-format.md#reaggregate-metrics) is computed in two s
 1. `reagg_<n>_inner` — the inner measure, planned by the ordinary star or CFL planner at the query's dimensions plus the metric's `per` dimensions, under the query's `WHERE`. Metrics that share a measure and `per` list share this scan.
 2. `reagg_<n>` — the metric's `aggregation` over those values, grouped by the query's dimensions.
 
-The planner's own query becomes `reagg_base`, and the outer query joins each `reagg_<n>` to it with a NULL-safe match on every dimension (a `CROSS JOIN` when there are none), so a NULL dimension value finds its row. A derived metric over a reaggregate metric is rebuilt in the outer query from private component columns. `HAVING` on a reaggregate value runs in the `having_over_window` pass, after every wrapper.
+The pass runs after every other wrapper. Until then the metric's column holds its measure's plain aggregate, which the filterContext, period-over-period, totals, cumulative and window wrappers carry like any measure. The finished query then becomes `reagg_base` without that column, and the outer query joins each `reagg_<n>` to it with a NULL-safe match on every dimension (a `CROSS JOIN` when there are none), so a NULL dimension value finds its row. Running first instead would leave those wrappers a FROM of CTEs, which the ones that re-derive aggregates from the fact tables cannot read.
+
+A derived metric over a reaggregate metric is rebuilt in the outer query. Its other components are read from `reagg_components`, a CTE an earlier pass (`reaggregate_components`, before grain dedup) takes from the plan while it still reaches the fact tables. A formula whose other component is itself computed by a wrapper (a total, grain override, filterContext, cumulative, period-over-period or window metric, or a deduplicated measure) would read it before that wrapper runs, so it is refused with `REAGGREGATE_COMBINATION_NOT_SUPPORTED`; selecting the metrics side by side compiles. `HAVING` on a reaggregate value runs in the `having_over_window` pass, after every wrapper.
 
 ```sql
 WITH reagg_base AS (SELECT country, SUM(amount) AS "Revenue" FROM orders GROUP BY country),
@@ -547,21 +570,6 @@ LEFT JOIN reagg_1
 ```
 
 ClickHouse spells the NULL-safe match `isNotDistinctFrom(a, b)`: from the second `LEFT JOIN` of a chain it finds no join key in the `OR` form when the column is Nullable.
-
-## Phase 2.4: Period-over-Period Wrap
-
-**Module:** `orionbelt.compiler.pop_wrap`
-
-When a query includes period-over-period metrics (`type: period_over_period`), the PoP wrapper restructures the planner output into a 4-CTE date spine architecture:
-
-1. **`date_range`** -- Discovers `MIN`/`MAX` date from fact tables with ALL query `WHERE` filters pushed down (time and dimension filters alike). For multi-fact (CFL) queries, each fact table leg is scanned independently via `UNION ALL`.
-2. **`date_spine`** -- Generates a date series from `min_date` to `max_date` at the configured grain. Each row includes a `spine_date_prev` column pointing to the comparison period. The generation technique is dialect-specific (e.g. `generate_series` in Postgres, `TABLE(GENERATOR(...))` in Snowflake).
-3. **`pop_base`** -- Aggregates measures using the spine as `FROM`, with fact and dimension tables LEFT JOINed via the truncated date column. Non-time dimensions are included in the `GROUP BY`.
-4. **`pop_compare`** -- Self-joins `pop_base` onto itself via `spine_date_prev`, matching on all non-time dimensions, and computes the comparison expression (percent change, ratio, difference, or previous value).
-
-The outer `SELECT` projects all dimensions, non-PoP measures, and PoP metric columns from `pop_compare`.
-
-PoP wrapping runs before total and cumulative wraps so those layers can operate on the already-aggregated comparison output. For details, see the [Period-over-Period Metrics](period-over-period.md) guide.
 
 ## Phase 3: Code Generation
 
@@ -678,6 +686,9 @@ class CompilationPipeline:
 
         # Phase 2.6: Cumulative wrap (running/rolling/grain-to-date metrics)
         wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved)
+
+        # Phase 2.8: Reaggregate wrap (two-stage metrics), after every wrapper
+        wrapped_ast = wrap_with_reaggregate(wrapped_ast, resolved, model, dialect, ...)
 
         # Phase 3: Code Generation
         dialect = DialectRegistry.get(dialect_name)
