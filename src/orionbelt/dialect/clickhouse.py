@@ -12,6 +12,7 @@ from orionbelt.ast.nodes import (
     ColumnRef,
     Expr,
     FunctionCall,
+    IsNull,
     Literal,
     OrderByItem,
     RawSQL,
@@ -241,6 +242,31 @@ class ClickHouseDialect(Dialect):
         """
         prefix = "LEFT ARRAY JOIN" if node.outer else "ARRAY JOIN"
         return f"{prefix} {self.unnest_path(node)} AS {self.quote_identifier(node.alias)}"
+
+    def join_condition(self, on: Expr) -> Expr:
+        """Each NULL-safe match in an ``AND`` chain as ``isNotDistinctFrom``.
+
+        The wrappers that join a CTE back to the query grain spell a NULL-safe
+        match ``a = b OR (a IS NULL AND b IS NULL)``, which every engine reads.
+        ClickHouse reads it on the first join, but from the second ``LEFT JOIN``
+        of a chain it answers "Cannot determine join keys in JOIN ON expression
+        and(isNull(..), isNull(..))" (measured on 26.7). ``isNotDistinctFrom``
+        is the same match, and a join key on every join of the chain.
+        """
+        match on:
+            case BinaryOp(left=left, op="AND", right=right):
+                return BinaryOp(self.join_condition(left), "AND", self.join_condition(right))
+            case BinaryOp(
+                left=BinaryOp(left=a, op="=", right=b),
+                op="OR",
+                right=BinaryOp(
+                    left=IsNull(expr=a_null, negated=False),
+                    op="AND",
+                    right=IsNull(expr=b_null, negated=False),
+                ),
+            ) if a == a_null and b == b_null:
+                return FunctionCall(name="isNotDistinctFrom", args=[a, b])
+        return on
 
     def exact_integer_sum(self, arg: Expr) -> Expr | None:
         """``SUM`` over Int64 accumulates in Int64 here, and wraps.
