@@ -69,6 +69,28 @@ def measure_join_requirements(model: SemanticModel, name: str) -> set[str]:
     return model.measure_join_objects(name)
 
 
+def dimension_requirements(model: SemanticModel, name: str) -> set[str]:
+    """Objects a dimension needs joined besides the one it belongs to.
+
+    The objects its computed column reads (:meth:`SemanticModel.dimension_join_objects`),
+    and its ``via`` object: the planner requires that one in any query naming
+    the dimension, so a fact that cannot reach it cannot be grouped by it. A
+    role (``via`` with a ``pathName``) needs no entry: discovery plans over
+    :func:`expand_role_objects`, where its object is a leaf only ``via`` joins.
+    """
+    required = model.dimension_join_objects(name)
+    waypoint = dimension_waypoint(model, name)
+    return required | {waypoint} if waypoint else required
+
+
+def dimension_waypoint(model: SemanticModel, name: str) -> str | None:
+    """A dimension's ``via`` object, unless it is a role (see :func:`dimension_requirements`)."""
+    dim = model.dimensions.get(name)
+    if dim is None or not dim.via or dim.path_name is not None:
+        return None
+    return dim.via
+
+
 def _per_objects(model: SemanticModel, met: Metric) -> set[str]:
     """The objects a reaggregate metric's ``per`` dimensions are read from."""
     objects: set[str] = set()
@@ -76,12 +98,68 @@ def _per_objects(model: SemanticModel, met: Metric) -> set[str]:
         dim_name = entry if entry in model.dimensions else entry.rpartition(":")[0]
         dim = model.dimensions.get(dim_name)
         if dim is not None and dim.view:
-            objects |= {dim.view} | model.dimension_join_objects(dim_name)
+            objects |= {dim.view} | dimension_requirements(model, dim_name)
     return objects
 
 
-def metric_legs(model: SemanticModel, name: str) -> list[tuple[set[str], set[str]]]:
-    """(source objects, join requirements) of each measure a metric reaches.
+@dataclass(frozen=True)
+class MetricLeg:
+    """A measure a metric reaches, with what planning it needs (see :func:`metric_legs`)."""
+
+    sources: frozenset[str]
+    required: frozenset[str]
+    #: The facts of the innermost query of its own it is computed in (a
+    #: reaggregate first stage, or a cumulative, window or period-over-period
+    #: wrapper's); ``None`` outside any.
+    stage_facts: frozenset[str] | None = None
+
+
+#: Metric types whose wrapper plans their measure again, from the fact tables
+#: and at the query's dimensions, as a query of its own.
+_OWN_STAGE = frozenset(
+    {
+        MetricType.REAGGREGATE,
+        MetricType.CUMULATIVE,
+        MetricType.WINDOW,
+        MetricType.PERIOD_OVER_PERIOD,
+    }
+)
+
+
+def metric_plan_sources(model: SemanticModel, name: str) -> set[str]:
+    """The facts the query's own plan reads for a metric.
+
+    Like :func:`metric_source_objects`, except that a reaggregate metric
+    contributes only its bottom measure's: the plan carries it on that
+    measure's leg, and its ``having`` measures are read in its first stage.
+    """
+    sources: set[str] = set()
+    seen: set[str] = set()
+    pending = [name]
+    while pending:
+        ref = pending.pop()
+        if ref in seen:
+            continue
+        seen.add(ref)
+        met = model.metrics.get(ref)
+        if met is None:
+            sources |= measure_source_objects(model, ref)
+        elif met.type == MetricType.REAGGREGATE:
+            bottom = model.reaggregated_measure(ref)
+            if bottom is not None:
+                sources |= measure_source_objects(model, bottom[0])
+        else:
+            pending.extend(metric_measure_names(model, ref))
+    return sources
+
+
+#: A metric reached in :func:`metric_legs`: its name, the enclosing ``per``
+#: objects, and the facts of the innermost query of its own it is in.
+_LegState = tuple[str, frozenset[str], frozenset[str] | None]
+
+
+def metric_legs(model: SemanticModel, name: str) -> list[MetricLeg]:
+    """Each measure a metric reaches, with its sources and join requirements.
 
     Each measure is planned on a leg of its own when the metric spans facts, so
     each has to reach only its own requirements: its ``measure_join_requirements``
@@ -89,35 +167,40 @@ def metric_legs(model: SemanticModel, name: str) -> list[tuple[set[str], set[str
     stage's measure and its ``having`` measures alike, whether the metric is
     asked for directly or through a derived metric over it.
     """
-    legs: dict[tuple[str, frozenset[str]], tuple[set[str], set[str]]] = {}
-    # A dependency shared by several formulas is walked once per set of
-    # enclosing ``per`` objects, not once per path to it; this also ends a cycle.
-    visited: set[tuple[str, frozenset[str]]] = set()
-    pending: list[tuple[str, frozenset[str]]] = [(name, frozenset())]
+    legs: dict[MetricLeg, None] = {}
+    # A dependency shared by several formulas is walked once per enclosing
+    # state, not once per path to it; this also ends a cycle.
+    visited: set[_LegState] = set()
+    pending: list[_LegState] = [(name, frozenset(), None)]
     while pending:
-        ref, per_objects = pending.pop()
-        if (ref, per_objects) in visited:
+        state = pending.pop()
+        if state in visited:
             continue
-        visited.add((ref, per_objects))
+        visited.add(state)
+        ref, per_objects, stage = state
         met = model.metrics.get(ref)
         if met is None:
             if ref in model.effective_measures:
-                legs[(ref, per_objects)] = (
-                    measure_source_objects(model, ref),
-                    measure_join_requirements(model, ref) | per_objects,
+                leg = MetricLeg(
+                    frozenset(measure_source_objects(model, ref)),
+                    frozenset(measure_join_requirements(model, ref) | per_objects),
+                    stage,
                 )
+                legs[leg] = None
             continue
         if met.type == MetricType.REAGGREGATE:
             per_objects |= _per_objects(model, met)
-        pending.extend((child, per_objects) for child in metric_measure_names(model, ref))
-    return list(legs.values())
+        if met.type in _OWN_STAGE:
+            stage = frozenset(metric_source_objects(model, ref))
+        pending.extend((child, per_objects, stage) for child in metric_measure_names(model, ref))
+    return list(legs)
 
 
 def metric_join_requirements(model: SemanticModel, name: str) -> set[str]:
     """Every object some leg of the metric needs joined (see :func:`metric_legs`)."""
     result: set[str] = set()
-    for _, required in metric_legs(model, name):
-        result |= required
+    for leg in metric_legs(model, name):
+        result |= leg.required
     return result
 
 
@@ -246,6 +329,22 @@ class ComposabilityResolver:
 
     # -- anchor resolution ---------------------------------------------------
 
+    def waypoints(self, dimension_names: list[str], others: set[str] | None = None) -> set[str]:
+        """The ``via`` objects of *dimension_names* that only route them.
+
+        A star plan needs each one joined; a CFL leg that cannot reach one
+        projects NULL for its dimension instead. One that a dimension belongs to
+        or reads, or that another anchor names (*others*), is a requirement in
+        its own right and is left out.
+        """
+        vias = {w for n in dimension_names if (w := dimension_waypoint(self.model, n))}
+        own = set(others or set())
+        for name in dimension_names:
+            dim = self.model.dimensions.get(name)
+            if dim is not None and dim.view:
+                own |= {dim.view} | self.model.dimension_join_objects(name)
+        return vias - own
+
     def objects_from_query(self, query: QueryObject) -> tuple[set[str], set[str]]:
         """Split a query's selection into (dimension objects, measure objects)."""
         dim_objects: set[str] = set()
@@ -255,7 +354,7 @@ class ComposabilityResolver:
                 obj = _dimension_object(self.model, dim_name)
                 if obj:
                     dim_objects.add(obj)
-                    dim_objects |= self.model.dimension_join_objects(dim_name)
+                    dim_objects |= dimension_requirements(self.model, dim_name)
 
         measure_objects: set[str] = set()
         for ref in query.select.measures:
@@ -284,7 +383,7 @@ class ComposabilityResolver:
             # forgets them offers pairings the planner refuses. The two entry
             # points answering differently is itself the bug — one is GET
             # /composables?anchor=, the other POST with a query.
-            return {obj} | self.model.dimension_join_objects(name), set()
+            return {obj} | dimension_requirements(self.model, name), set()
         if anchor_type in (None, "measure") and name in self.model.effective_measures:
             return set(), measure_source_objects(self.model, name)
         if anchor_type in (None, "metric") and name in self.model.metrics:
@@ -299,11 +398,15 @@ class ComposabilityResolver:
         self,
         dim_objects: set[str],
         measure_objects: set[str],
+        waypoints: set[str] | None = None,
     ) -> ComposablesResult:
         """Resolve composable artefacts for the given anchor objects.
 
         *dim_objects* are the grouping (grain) objects; *measure_objects* are the
         facts of measures already selected (each acts as a CFL leg).
+        *waypoints* are those of *dim_objects* that only route a ``via``
+        dimension (:meth:`waypoints`): required of a single-fact plan, not of a
+        CFL leg. Left out, every one of *dim_objects* is required of every leg.
         """
         anchor = dim_objects | measure_objects
         anchor_objects = sorted({self._role_targets.get(obj, obj) for obj in anchor})
@@ -318,7 +421,7 @@ class ComposabilityResolver:
                 dimensions=sorted(
                     name
                     for name, dim in self.model.dimensions.items()
-                    if self._has_common_root({dim.view} | self.model.dimension_join_objects(name))
+                    if self._has_common_root({dim.view} | dimension_requirements(self.model, name))
                 ),
                 measures=sorted(
                     name
@@ -339,6 +442,10 @@ class ComposabilityResolver:
 
         spine = dim_objects  # grouping dimensions shared across all legs
         leg_facts = measure_objects  # facts of measures already in the query
+        waypoints = (waypoints or set()) & spine
+        # What a CFL leg has to reach: a waypoint it cannot reach leaves its
+        # dimension NULL on that leg.
+        leg_spine = spine - waypoints
 
         # Dimensions: a new dimension object must be groupable at the current
         # grain. With measures present it must be reachable from every existing
@@ -347,7 +454,11 @@ class ComposabilityResolver:
             name
             for name, dim in self.model.dimensions.items()
             if self._dimension_composable(
-                dim.view, spine, leg_facts, self.model.dimension_join_objects(name)
+                dim.view,
+                spine,
+                leg_facts,
+                self.model.dimension_join_objects(name),
+                dimension_waypoint(self.model, name),
             )
         ]
 
@@ -358,13 +469,14 @@ class ComposabilityResolver:
             # Planned with the query's dimensions; a fact of a measure already
             # selected is a leg of its own and need not share a root with it.
             if not self._join_requirements_reachable(
-                measure_join_requirements(self.model, name), spine | sources
+                measure_join_requirements(self.model, name), leg_spine | sources
             ):
                 continue
-            if self._measure_blocked(name, anchor):
+            padded = self._padded_waypoints(sources, leg_facts, waypoints)
+            if self._measure_blocked(name, anchor - padded):
                 continue
             status = self._measure_status(
-                sources, anchor, spine, measure_join_requirements(self.model, name)
+                sources, anchor, spine, measure_join_requirements(self.model, name), padded
             )
             if status == "direct":
                 measures.append(name)
@@ -374,13 +486,16 @@ class ComposabilityResolver:
         metrics: list[str] = []
         cfl_metrics: list[str] = []
         for name in self.model.metrics:
-            sources = metric_source_objects(self.model, name)
-            if not self._metric_legs_reachable(name, spine):
+            if not self._metric_legs_reachable(name, leg_spine, waypoints):
                 continue
-            if self._metric_blocked(name, anchor):
+            # Classified by what this query's plan reads for it; a stage of its
+            # own (a reaggregate's first) was checked leg by leg above.
+            plan_sources = metric_plan_sources(self.model, name)
+            padded = self._padded_waypoints(plan_sources, leg_facts, waypoints)
+            if self._metric_blocked(name, anchor - padded):
                 continue
             status = self._measure_status(
-                sources, anchor, spine, metric_join_requirements(self.model, name)
+                plan_sources, anchor, spine, metric_join_requirements(self.model, name), padded
             )
             if status == "direct":
                 metrics.append(name)
@@ -413,19 +528,42 @@ class ComposabilityResolver:
             return True
         return self._has_common_root(context | required)
 
-    def _metric_legs_reachable(self, name: str, spine: set[str]) -> bool:
+    @staticmethod
+    def _padded_waypoints(
+        plan_sources: set[str], leg_facts: set[str], waypoints: set[str]
+    ) -> set[str]:
+        """The waypoints a candidate's query may leave unreached.
+
+        Over more than one fact (*plan_sources*, the facts the query's own plan
+        reads for the candidate, and *leg_facts*) the query is planned as CFL
+        legs, and a leg that cannot reach a waypoint projects NULL for its
+        dimension and does not join it. A single-fact query is a star, which
+        joins every one.
+        """
+        return waypoints if len(plan_sources | leg_facts) > 1 else set()
+
+    def _metric_legs_reachable(
+        self, name: str, spine: set[str], waypoints: set[str] | None = None
+    ) -> bool:
         """``_join_requirements_reachable`` for each leg of a metric on its own.
 
         Asked of the metric's sources together, a metric over two facts with a
         requirement on either needed one root over both, though each fact is
         planned as a leg of its own. Each leg is planned with the query's
-        dimensions (*spine*), not with the facts of measures already selected,
-        which are legs of their own.
+        dimensions (*spine*, *waypoints* left out), not with the facts of
+        measures already selected, which are legs of their own.
+
+        A reaggregate first stage or a wrapper's query over a single fact is a
+        star query of its own, whatever else the outer query reads, so its legs
+        need the waypoints too.
         """
-        return all(
-            self._join_requirements_reachable(required, spine | sources)
-            for sources, required in metric_legs(self.model, name)
-        )
+        for leg in metric_legs(self.model, name):
+            if waypoints and leg.stage_facts is not None and len(leg.stage_facts) <= 1:
+                if not self._has_common_root(spine | waypoints | leg.sources | leg.required):
+                    return False
+            elif not self._join_requirements_reachable(set(leg.required), spine | leg.sources):
+                return False
+        return True
 
     def _dedup_disposition(self, name: str, drivers: set[str]) -> str | None:
         """What ``compiler.grain_dedup`` would do with this measure at this anchor.
@@ -553,7 +691,9 @@ class ComposabilityResolver:
         Walks the same way the compiler expands: a derived reference is inlined,
         so its leaves are reached directly; a cumulative / window /
         period-over-period reference is not, so everything under it is served by
-        that metric's wrapper instead.
+        that metric's wrapper instead. A reaggregate reference is walked through
+        too: its measure is planned as a query of its own, which deduplicates it
+        there, so no wrapper of this query has to read a deduplicated value.
         """
         behind: set[str] = set()
         seen: set[str] = set()
@@ -567,19 +707,28 @@ class ComposabilityResolver:
                 referenced = self.model.metrics.get(ref)
                 if referenced is None:
                     continue
-                if referenced.type == MetricType.DERIVED:
+                if referenced.type in (MetricType.DERIVED, MetricType.REAGGREGATE):
                     pending.append(ref)
                 else:
                     behind |= metric_leaf_measures(self.model, ref)
         return behind
 
     def _dimension_composable(
-        self, obj: str, spine: set[str], leg_facts: set[str], reads: set[str] | None = None
+        self,
+        obj: str,
+        spine: set[str],
+        leg_facts: set[str],
+        reads: set[str] | None = None,
+        waypoint: str | None = None,
     ) -> bool:
         # A computed column reads other data objects, and the planner joins
         # them wherever the dimension is projected — so they are as much a
-        # requirement as the dimension's own object.
+        # requirement as the dimension's own object. So is a ``via`` object,
+        # except on a CFL leg (independent leg facts), which projects NULL for
+        # the dimension when it cannot reach it.
         needed = {obj} | (reads or set())
+        if waypoint and len(leg_facts) <= 1:
+            needed.add(waypoint)
         if leg_facts:
             # Must be groupable across every existing measure leg.
             return all(self._reaches_all(fact, needed) for fact in leg_facts)
@@ -592,6 +741,7 @@ class ComposabilityResolver:
         anchor: set[str],
         spine: set[str],
         requirements: set[str] | None = None,
+        padded: set[str] | None = None,
     ) -> str | None:
         """Classify a measure/metric as 'direct', 'cfl', or None (incompatible).
 
@@ -599,6 +749,9 @@ class ComposabilityResolver:
         value from - a ``withinGroup`` sort key, a measure ``filter``. They bear
         on whether a leg can carry it exactly as its value columns do, since the
         leg has to join them all the same.
+
+        *padded* are the waypoints a CFL leg need not reach
+        (:meth:`_padded_waypoints`).
         """
         if not source_objects:
             # No resolvable source (e.g. COUNT(*)-style): always combinable.
@@ -619,6 +772,7 @@ class ComposabilityResolver:
         # CFL: each source fact independently reaches the current grain, so it
         # can join as a separate UNION ALL leg. With no grain yet, independent
         # facts still combine as grand-total legs.
+        spine = spine - (padded or set())
         if not spine or all(self._reaches_all(fact, spine) for fact in source_objects):
             return "cfl"
         return None
@@ -628,7 +782,12 @@ def resolve_composables_for_query(model: SemanticModel, query: QueryObject) -> C
     """Convenience: resolve composables for a whole in-progress query."""
     resolver = ComposabilityResolver(model, query.use_path_names or None)
     dim_objects, measure_objects = resolver.objects_from_query(query)
-    return resolver.resolve(dim_objects, measure_objects)
+    names = [
+        name
+        for entry in query.select.dimensions
+        for name in (entry.coalesce if isinstance(entry, CoalesceDimension) else [entry])
+    ]
+    return resolver.resolve(dim_objects, measure_objects, resolver.waypoints(names))
 
 
 def resolve_composables_for_anchors(
@@ -642,4 +801,13 @@ def resolve_composables_for_anchors(
         dims, measures = resolver.objects_from_anchor_name(name, anchor_type)
         dim_objects |= dims
         measure_objects |= measures
-    return resolver.resolve(dim_objects, measure_objects)
+    dimension_names: list[str] = []
+    others: set[str] = set()
+    for name in anchors:
+        if anchor_type in (None, "dimension") and name in model.dimensions:
+            dimension_names.append(name)
+        else:
+            others |= resolver.objects_from_anchor_name(name, anchor_type)[0]
+    return resolver.resolve(
+        dim_objects, measure_objects, resolver.waypoints(dimension_names, others)
+    )
