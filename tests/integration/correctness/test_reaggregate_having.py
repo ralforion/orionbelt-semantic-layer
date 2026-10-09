@@ -18,6 +18,7 @@ import pytest
 
 duckdb = pytest.importorskip("duckdb", reason="duckdb required for correctness tests")
 
+from orionbelt.compiler.composability import resolve_composables_for_anchors  # noqa: E402
 from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
 from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect  # noqa: E402
 from orionbelt.models.semantic import SemanticModel  # noqa: E402
@@ -198,3 +199,15 @@ def test_count_is_zero_where_no_group_is_left(run: Callable) -> None:
     name = "avg client sales, big"
     averages = {r["Country Name"]: r[name] for r in run(["Country Name"], [name])}
     assert {c for c, v in rows.items() if v == 0} == {c for c, v in averages.items() if v is None}
+
+
+@pytest.mark.parametrize("anchors", [[], ["Year Month"]], ids=["no anchor", "Year Month"])
+def test_composability_offers_a_condition_on_another_fact(
+    model: SemanticModel, run: Callable, anchors: list[str]
+) -> None:
+    """Each fact is a leg of its own and reaches ``Year Month`` by itself; no
+    root has to reach both."""
+    name = "avg month sales, big purchases"
+    result = resolve_composables_for_anchors(model, anchors)
+    assert name in set(result.metrics) | set(result.cfl_metrics)
+    assert len(run(anchors, [name])) >= 1
