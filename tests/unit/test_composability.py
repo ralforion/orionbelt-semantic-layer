@@ -387,6 +387,18 @@ measures:
 metrics:
   Stock per Sale:
     expression: '{[Total Stock On Hand]} / {[Sold Quantity]}'
+  Avg Region Sales, Stock Filtered Off Grain:
+    type: reaggregate
+    measure: Sold Quantity
+    per: [Region]
+    aggregation: avg
+    having: [{field: Stock Filtered Off Grain, op: '>', value: 0}]
+  Avg Region Sales, Stock Filtered In Grain:
+    type: reaggregate
+    measure: Sold Quantity
+    per: [Region]
+    aggregation: avg
+    having: [{field: Stock Filtered In Grain, op: '>', value: 0}]
 """
 
 
@@ -414,6 +426,21 @@ def test_acr_excludes_measures_the_dedup_pass_would_refuse() -> None:
     assert "Stock Filtered In Grain" in composable
     assert "Total Stock On Hand" in composable
     assert "Sold Quantity" in composable
+
+
+def test_acr_follows_a_reaggregate_metrics_having() -> None:
+    """A ``having`` measure is computed in the metric's first stage, so the
+    metric is refused wherever that measure is."""
+    model = _dedup_guard_model()
+    resolver = ComposabilityResolver(model)
+    for anchor in ("Category", None):
+        if anchor is None:
+            result = resolver.resolve(set(), set())
+        else:
+            result = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
+        advertised = set(result.metrics) | set(result.cfl_metrics)
+        assert "Avg Region Sales, Stock Filtered Off Grain" not in advertised
+        assert "Avg Region Sales, Stock Filtered In Grain" in advertised
 
 
 def test_everything_acr_lists_actually_compiles() -> None:

@@ -522,8 +522,13 @@ def wrap_with_reaggregate(
         value = ColumnRef(name=name, table=source_of[name])
         if name in counted_after_having:
             # A group whose stage-1 rows ``having`` all removed has no stage-2
-            # row; the join leaves NULL where the count is 0.
-            return FunctionCall(name="COALESCE", args=[value, Literal.number(0)])
+            # row; the join leaves NULL where the count is 0. The 0 takes the
+            # count's own cast, so a declared ``dataType`` holds on both sides.
+            zero: Expr = Literal.number(0)
+            target = resolve_metric_data_type(model.metrics[name], model.settings)
+            if target is not None:
+                zero = dialect.cast_to_obml_type(zero, target)
+            return FunctionCall(name="COALESCE", args=[value, zero])
         return value
 
     def read(alias: str) -> Expr:

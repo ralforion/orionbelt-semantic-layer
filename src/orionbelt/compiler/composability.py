@@ -118,7 +118,11 @@ def measure_source_objects(model: SemanticModel, name: str) -> set[str]:
 
 
 def metric_measure_names(model: SemanticModel, name: str) -> set[str]:
-    """Measure names a metric depends on."""
+    """Measure names a metric depends on.
+
+    A reaggregate metric's ``having`` conditions count: their measures are
+    computed in its first stage like its own measure.
+    """
     met = model.metrics.get(name)
     if met is None:
         return set()
@@ -127,6 +131,7 @@ def metric_measure_names(model: SemanticModel, name: str) -> set[str]:
         names |= set(_METRIC_MEASURE_REF.findall(met.expression))
     if met.measure:
         names.add(met.measure)
+    names |= {condition.field for condition in met.having}
     return names
 
 

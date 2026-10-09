@@ -842,8 +842,25 @@ class TestCompile:
                 )
             ),
         ).sql
-        assert 'COALESCE("reagg_1"."Repeat Customers", 0) AS "Repeat Customers"' in sql
+        assert (
+            'COALESCE("reagg_1"."Repeat Customers", CAST(0 AS BIGINT)) AS "Repeat Customers"' in sql
+        )
         assert '"reagg_1"."Avg Repeat" AS "Avg Repeat"' in sql
+
+    def test_count_fallback_takes_the_declared_type(self) -> None:
+        """A text count compared with an integer 0 is refused by PostgreSQL and DuckDB."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: count\n"
+                "dataType: string\nhaving: [{field: Orders Count, op: '>', value: 2}]"
+            )
+        )
+        assert result.valid, result.errors
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"])),
+        ).sql
+        assert 'COALESCE("reagg_1"."Probe", CAST(0 AS VARCHAR)) AS "Probe"' in sql
 
     def test_count_without_having_is_read_as_is(self) -> None:
         having_model = self._having_model(("Customers", "count", ""))

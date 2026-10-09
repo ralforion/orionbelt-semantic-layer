@@ -246,6 +246,13 @@ metrics:
     per: [Customer]
     aggregation: count
     having: [{{field: Orders Count, op: '>=', value: 2}}]
+  Repeat Customers Text:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: count
+    dataType: string
+    having: [{{field: Orders Count, op: '>=', value: 2}}]
   Avg Repeat Customer Revenue:
     type: reaggregate
     measure: Revenue
@@ -708,6 +715,16 @@ def _assert_having(target: VendorTarget, model: SemanticModel) -> None:
         None: (Decimal(1), Decimal(10), Decimal(20), Decimal(10)),
     }
     assert got == want, f"{target.name}: {got}"
+
+    # Declared a string, the 0 for FR is one too.
+    name = "Repeat Customers Text"
+    texts = {
+        r["country"]: r[name.lower()]
+        for r in _run(
+            target, model, QueryObject(select=QuerySelect(dimensions=["Country"], measures=[name]))
+        )
+    }
+    assert texts == {"DE": "1", "FR": "0", None: "1"}, f"{target.name}: {texts}"
 
     measures = ["Repeat Customers", "Avg Repeat Customer Revenue"]
     rows = _run(target, model, QueryObject(select=QuerySelect(measures=measures)))
