@@ -38,7 +38,13 @@ from orionbelt.api.schemas import (
 )
 from orionbelt.models.concept_links import ConceptIriError
 from orionbelt.models.expressions import find_qualified_refs
-from orionbelt.models.semantic import ExternalConceptMapping, ExternalConceptRelation, SemanticModel
+from orionbelt.models.semantic import (
+    ExternalConceptMapping,
+    ExternalConceptRelation,
+    Metric,
+    MetricType,
+    SemanticModel,
+)
 from orionbelt.service.concept_index import MAPPABLE_TYPES, ConceptLink, ConceptMappingIndex
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.session_manager import (
@@ -270,6 +276,8 @@ def _build_explain(name: str, model: SemanticModel) -> ExplainResponse:
     # Check metrics
     if name in model.metrics:
         met = model.metrics[name]
+        if met.type is MetricType.REAGGREGATE:
+            return _explain_reaggregate(name, met, model)
         lineage = [
             ExplainLineageItem(type="metric", name=name, detail="composite metric"),
             ExplainLineageItem(
@@ -292,6 +300,35 @@ def _build_explain(name: str, model: SemanticModel) -> ExplainResponse:
         return ExplainResponse(name=name, type="metric", lineage=lineage)
 
     raise HTTPException(status_code=404, detail=f"'{name}' not found in model")
+
+
+def _explain_reaggregate(name: str, met: Metric, model: SemanticModel) -> ExplainResponse:
+    """The two stages: the measure at the query grain plus ``per``, then the outer aggregate."""
+    per = ", ".join(met.per)
+    aggregation = met.aggregation.value if met.aggregation else ""
+    lineage = [
+        ExplainLineageItem(type="metric", name=name, detail="reaggregate metric"),
+        ExplainLineageItem(
+            type="expression",
+            name=f"{aggregation}({met.measure} per {per})",
+            detail=(
+                f"stage 1: {met.measure} grouped by the query's dimensions + {per}; "
+                f"stage 2: {aggregation} of those values, grouped by the query's dimensions"
+            ),
+        ),
+    ]
+    inner = model.effective_measures.get(met.measure or "")
+    if inner is not None:
+        lineage.append(
+            ExplainLineageItem(
+                type="measure", name=met.measure or "", detail=f"aggregation={inner.aggregation}"
+            )
+        )
+    lineage.extend(
+        ExplainLineageItem(type="dimension", name=entry, detail="per (stage 1 only)")
+        for entry in met.per
+    )
+    return ExplainResponse(name=name, type="metric", lineage=lineage)
 
 
 def _search_model(model: SemanticModel, query: str, types: list[str]) -> list[SearchResultItem]:

@@ -278,13 +278,15 @@ compile time — express via a derived metric (e.g.
 
 ## Metric Types
 
-OBML supports four metric types — pick by setting `type:`:
+OBML supports five metric types — pick by setting `type:`:
 
 - `derived` (default) — expression composing existing measures
 - `cumulative` — windowed aggregation (running, rolling, grain-to-date)
 - `period_over_period` — current vs. prior-period comparison
 - `window` — single-row window functions (rank, lag, lead, ntile,
   first_value, last_value)
+- `reaggregate` — a measure aggregated at a finer grain, then aggregated
+  again (average revenue per customer, by country)
 
 ### Cumulative — partitioning by dimension (v2.6+)
 
@@ -370,6 +372,42 @@ metrics:
 
 Window metrics compose freely with derived metrics — e.g.
 `'{[Revenue]} - {[Revenue Prior Month]}'`.
+
+### Reaggregate — two-stage aggregation (v2.35+)
+
+```yaml
+metrics:
+  Avg Revenue per Customer:
+    type: reaggregate
+    measure: Revenue        # stage 1: a measure (not a metric), unchanged
+    per: [Customer]         # dimensions added to the query grain for stage 1
+    aggregation: avg        # stage 2: sum | avg | min | max | count
+
+  Avg Orders per Customer:
+    type: reaggregate
+    measure: Orders Count   # synthesized counts work
+    per: [Customer]
+    aggregation: avg
+```
+
+Stage 1 computes the measure grouped by the query's dimensions plus `per`;
+stage 2 applies `aggregation` to those values, grouped by the query's
+dimensions. With `Country` selected: SUM(revenue) per Country, Customer, then
+AVG per Country, so each customer counts once (unweighted). Stage 1 sees the
+query's `where`, so only customers with rows count; `having` filters the final
+rows. Select it beside other measures (other facts too), in `having` and
+`orderBy`, and inside derived metrics (`'{[Avg Revenue per Customer]} /
+{[Revenue]}'`).
+
+- `measure:` a measure without `grain`, `total` or `filterContext`
+- `per:` model dimensions; for a time bucket name a dimension whose
+  `timeGrain` is that bucket (a `'Dim:grain'` entry is refused at compile time)
+- `aggregation:` required; `avg` is exact over integers, `count` is bigint,
+  `sum`/`min`/`max` keep the measure's type
+- Every `per` dimension already in the query: `REAGGREGATE_NO_OP` warning
+- Not yet in one query with `grouping: rollup/cube`, or with filterContext,
+  period-over-period, cumulative, window or total/grain measures
+  (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`)
 
 ## 5. synonyms — alternative names (optional, LLM hints)
 

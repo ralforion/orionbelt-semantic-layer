@@ -862,7 +862,7 @@ time. Order by the aggregated column, or drop `distinct: true` if the ordering m
 
 ## Metrics
 
-Metrics come in four types: **derived** (composite expression), **cumulative** (window function over a measure), **period-over-period** (time comparison), and **window** (rank / lag / lead / ntile / first/last value — single-row window functions).
+Metrics come in five types: **derived** (composite expression), **cumulative** (window function over a measure), **period-over-period** (time comparison), **window** (rank / lag / lead / ntile / first/last value — single-row window functions), and **reaggregate** (a measure aggregated at a finer grain, then aggregated again).
 
 ### Derived Metrics
 
@@ -1019,18 +1019,74 @@ metrics:
 
 Window metrics compose freely with derived metrics — `expression: '{[Revenue]} - {[Revenue Prior Month]}'` yields a MoM delta without writing any SQL. See [Trend Analysis](trend-analysis.md#2-window-metrics-rank-lag-lead-ntile-firstlast-value) for the full feature surface, validation rules, and dialect coverage.
 
+### Reaggregate Metrics
+
+A **reaggregate metric** answers questions such as "average revenue per customer, by country": a measure is aggregated at a finer grain than the query asks for, and those values are aggregated again to the query's grain.
+
+```yaml
+metrics:
+  Avg Revenue per Customer:
+    type: reaggregate
+    measure: Revenue          # stage 1: an existing measure, unchanged
+    per: [Customer]           # dimensions added to the query's grain for stage 1
+    aggregation: avg          # stage 2: sum | avg | min | max | count
+
+  Avg Orders per Customer:
+    type: reaggregate
+    measure: Orders Count     # a synthesized count works as-is
+    per: [Customer]
+    aggregation: avg
+
+  Best Customer Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: max
+
+  Active Customers:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: count
+```
+
+With `Country` in the query, `Avg Revenue per Customer` is computed in two stages:
+
+| Stage | Computes | Grouped by |
+|-------|----------|------------|
+| 1 | `Revenue`, exactly as the measure is defined (its filters, anchor and type apply) | the query's dimensions plus `per`: `Country, Customer` |
+| 2 | `avg` over the stage-1 values | the query's dimensions: `Country` |
+
+Each customer counts once in the average, however many orders they placed, so it differs from a row-weighted average. The stages compile into CTEs that join back to the query's rows on its dimensions, NULL values included. Without dimensions, stage 2 is one row.
+
+!!! note "Which groups are counted"
+    Stage 1 groups the rows that reach the measure after the query's `where`, so a customer without orders in the filtered range is not part of the average, and `count` counts customers with a non-NULL stage-1 value. `having` on the metric filters the final rows, like any metric.
+
+!!! tip "Composes like a measure"
+    A reaggregate metric can be selected beside other measures (also from other facts), used in `having` and `orderBy`, and referenced from a derived metric: `expression: '{[Avg Revenue per Customer]} / {[Revenue]}'`.
+
+Rules:
+
+- `measure` must name a measure, not a metric (`REAGGREGATE_MEASURE_ONLY`). A measure with `grain` or `total` (`REAGGREGATE_INNER_GRAIN`) or with `filterContext` (`REAGGREGATE_INNER_FILTER_CONTEXT`) is refused at model load.
+- `per` lists model dimensions (`REAGGREGATE_UNKNOWN_DIMENSION`). For a time bucket, name a dimension whose `timeGrain` is that bucket (`per: [Order Day]`); a `per` entry with its own grain (`'Order Date:day'`) is accepted by the model but refused at compile time (`REAGGREGATE_PER_GRAIN_NOT_SUPPORTED`), as is a query that selects a `per` dimension at another grain.
+- If every `per` dimension is already in the query, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
+- Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type. A declared `dataType` wins.
+- Not available yet in the same query: `grouping: rollup` / `cube` (`REAGGREGATE_WITH_ROLLUP`), and a filterContext measure, a period-over-period, cumulative or window metric, or a measure with `total` / `grain` (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`). Query those separately.
+
 ### Metric Properties
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `type` | `"derived"` \| `"cumulative"` \| `"period_over_period"` \| `"window"` | `"derived"` | Metric category |
+| `type` | `"derived"` \| `"cumulative"` \| `"period_over_period"` \| `"window"` \| `"reaggregate"` | `"derived"` | Metric category |
 | `expression` | string | — | Expression with `{[Measure Name]}` placeholders (required for derived and period_over_period) |
-| `measure` | string | — | Name of base measure (required for cumulative and window) |
+| `measure` | string | — | Name of base measure (required for cumulative, window and reaggregate) |
 | `timeDimension` | string | — | Dimension used for ordering (required for cumulative and for lag/lead window metrics) |
 | `cumulativeType` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` | `"sum"` | Window aggregation function |
 | `window` | integer | — | Rolling window size in periods of the time dimension's grain, counted on the calendar (mutually exclusive with `grainToDate`) |
 | `grainToDate` | `"year"` \| `"quarter"` \| `"month"` \| `"week"` | — | Reset boundary (mutually exclusive with `window`) |
 | `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics. Each entry must be a model dimension in the query's SELECT. Cumulative metrics are also partitioned by the query's other dimensions. |
+| `per` | list | — | Dimensions added to the query's grain for the first stage (required for reaggregate) |
+| `aggregation` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` | — | Second-stage aggregation (required for reaggregate) |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
 | `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics) |
 | `offset` | integer | — | Row offset for `lag` / `lead` (>= 1) |
@@ -1048,7 +1104,7 @@ Window metrics compose freely with derived metrics — `expression: '{[Revenue]}
 
 | Placeholder | Resolves to |
 |-------------|-------------|
-| `{[Measure Name]}` | Named reference to any defined measure, or to another derived or window metric (derived metrics only) |
+| `{[Measure Name]}` | Named reference to any defined measure, or to another derived, window or reaggregate metric (derived metrics only) |
 
 A metric expression may reference another **derived** metric, at any depth, so a
 KPI can be named once and reused:

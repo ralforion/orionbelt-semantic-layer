@@ -1,10 +1,10 @@
 ---
-description: "How a semantic query becomes SQL: resolution, planning, optional wrapping for period-over-period, totals and cumulative metrics, then dialect-specific code generation."
+description: "How a semantic query becomes SQL: resolution, planning, optional wrapping for reaggregate, period-over-period, totals and cumulative metrics, then dialect-specific code generation."
 ---
 
 # Compilation Pipeline
 
-OrionBelt compiles semantic queries into SQL through a multi-phase pipeline: **Resolution**, **Planning**, optional **wrapping** (PoP, totals, cumulative), and **Code Generation**. Each phase transforms the query into a progressively more concrete representation.
+OrionBelt compiles semantic queries into SQL through a multi-phase pipeline: **Resolution**, **Planning**, optional **wrapping** (reaggregate, PoP, totals, cumulative), and **Code Generation**. Each phase transforms the query into a progressively more concrete representation.
 
 ```
 QueryObject + SemanticModel
@@ -517,6 +517,36 @@ The query-level flag only suppresses the warning. There is no rewrite to opt out
 of here, so the generated SQL is identical either way, unlike `allowFanOut` on a
 measure in the [grain deduplication](#phase-22-grain-deduplication-wrap) pass,
 which skips a real transformation.
+
+## Phase 2.25: Reaggregate Wrap
+
+**Module:** `orionbelt.compiler.reaggregate_wrap`
+
+A [reaggregate metric](model-format.md#reaggregate-metrics) is computed in two stages, each its own CTE:
+
+1. `reagg_<n>_inner` — the inner measure, planned by the ordinary star or CFL planner at the query's dimensions plus the metric's `per` dimensions, under the query's `WHERE`. Metrics that share a measure and `per` list share this scan.
+2. `reagg_<n>` — the metric's `aggregation` over those values, grouped by the query's dimensions.
+
+The planner's own query becomes `reagg_base`, and the outer query joins each `reagg_<n>` to it with a NULL-safe match on every dimension (a `CROSS JOIN` when there are none), so a NULL dimension value finds its row. A derived metric over a reaggregate metric is rebuilt in the outer query from private component columns. `HAVING` on a reaggregate value runs in the `having_over_window` pass, after every wrapper.
+
+```sql
+WITH reagg_base AS (SELECT country, SUM(amount) AS "Revenue" FROM orders GROUP BY country),
+reagg_1_inner AS (
+  SELECT country, customer_id, SUM(amount) AS "Revenue"
+  FROM orders GROUP BY country, customer_id
+),
+reagg_1 AS (
+  SELECT country, AVG("Revenue") AS "Avg Revenue per Customer"
+  FROM reagg_1_inner GROUP BY country
+)
+SELECT reagg_base.country, reagg_base."Revenue", reagg_1."Avg Revenue per Customer"
+FROM reagg_base
+LEFT JOIN reagg_1
+  ON reagg_base.country = reagg_1.country
+  OR (reagg_base.country IS NULL AND reagg_1.country IS NULL)
+```
+
+ClickHouse spells the NULL-safe match `isNotDistinctFrom(a, b)`: from the second `LEFT JOIN` of a chain it finds no join key in the `OR` form when the column is Nullable.
 
 ## Phase 2.4: Period-over-Period Wrap
 

@@ -250,6 +250,28 @@ class TestExplain:
         assert data["type"] == "metric"
         assert any(item["type"] == "measure" for item in data["lineage"])
 
+    async def test_explain_reaggregate_metric(self, client: AsyncClient) -> None:
+        """Both stages are named, with the inner measure and the per dimension."""
+        model_yaml = SAMPLE_MODEL_YAML.replace(
+            "dimensions:\n",
+            "dimensions:\n  Order Customer:\n    dataObject: Orders\n"
+            "    column: Order Customer ID\n    resultType: string\n",
+            1,
+        ) + (
+            "  Avg Revenue per Customer:\n    type: reaggregate\n    measure: Total Revenue\n"
+            "    per: [Order Customer]\n    aggregation: avg\n"
+        )
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        resp = await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": model_yaml})
+        mid = resp.json()["model_id"]
+        resp = await client.get(f"/v1/sessions/{sid}/models/{mid}/explain/Avg Revenue per Customer")
+        assert resp.status_code == 200
+        lineage = [(i["type"], i["name"], i["detail"]) for i in resp.json()["lineage"]]
+        assert lineage[0] == ("metric", "Avg Revenue per Customer", "reaggregate metric")
+        assert lineage[1][:2] == ("expression", "avg(Total Revenue per Order Customer)")
+        assert ("measure", "Total Revenue", "aggregation=sum") in lineage
+        assert ("dimension", "Order Customer", "per (stage 1 only)") in lineage
+
     async def test_explain_not_found(
         self, client: AsyncClient, session_with_model: tuple[str, str]
     ) -> None:

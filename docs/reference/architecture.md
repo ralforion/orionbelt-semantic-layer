@@ -60,12 +60,15 @@ transformations (the "passes"), defined in `compiler/passes.py`:
 
 | Order | Pass | Applies when |
 | --- | --- | --- |
-| 1 | `filter_context` | a measure declares a filter-context override |
-| 2 | `period_over_period` | a selected metric is period-over-period |
-| 3 | `totals` | a measure uses `total` / grain override |
-| 4 | `cumulative` | a selected metric is cumulative |
-| 5 | `window` | a selected metric is a window metric (rank/lag/lead/...) |
-| 6 | `having_projection_cleanup` | HAVING auto-included a measure not in `select` |
+| 1 | `grain_dedup` | a measure on the one side of a join would be counted once per many-side row |
+| 2 | `reaggregate` | a selected metric (or a component of one) is a reaggregate metric |
+| 3 | `filter_context` | a measure declares a filter-context override |
+| 4 | `period_over_period` | a selected metric is period-over-period |
+| 5 | `totals` | a measure uses `total` / grain override |
+| 6 | `cumulative` | a selected metric is cumulative |
+| 7 | `window` | a selected metric is a window metric (rank/lag/lead/...) |
+| 8 | `having_over_window` | a HAVING filter reads a value one of the passes above computes |
+| 9 | `having_projection_cleanup` | HAVING auto-included a measure not in `select` |
 
 Each pass is a frozen `CompilerPass` (a `name`, an `applies` predicate, a
 `run(ast, ctx)` callable, and `incompatible_with` metadata). The order is
