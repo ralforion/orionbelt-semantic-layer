@@ -47,7 +47,10 @@ from orionbelt.compiler.having_hoist import (
 )
 from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.pop_wrap import wrap_with_pop
-from orionbelt.compiler.reaggregate_wrap import wrap_with_reaggregate
+from orionbelt.compiler.reaggregate_wrap import (
+    capture_reaggregate_components,
+    wrap_with_reaggregate,
+)
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.compiler.total_wrap import is_avg_total, wrap_with_totals
 from orionbelt.compiler.window_wrap import (
@@ -64,6 +67,7 @@ from orionbelt.models.warnings import WarningCode, warning
 # Canonical pass names. Used as identifiers in ordering, compatibility
 # metadata, and tests — keep them stable.
 PASS_GRAIN_DEDUP = "grain_dedup"
+PASS_REAGGREGATE_COMPONENTS = "reaggregate_components"
 PASS_REAGGREGATE = "reaggregate"
 PASS_FILTER_CONTEXT = "filter_context"
 PASS_PERIOD_OVER_PERIOD = "period_over_period"
@@ -150,6 +154,15 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
     """
     return (
         CompilerPass(
+            name=PASS_REAGGREGATE_COMPONENTS,
+            applies=lambda r: r.has_reaggregate,
+            # Reads the plan before any wrapper rewrites its FROM - grain dedup
+            # included; the reaggregate pass itself runs after all of them.
+            run=lambda ast, ctx: capture_reaggregate_components(
+                ast, ctx.resolved, ctx.model, ctx.dialect
+            ),
+        ),
+        CompilerPass(
             name=PASS_GRAIN_DEDUP,
             applies=lambda r: bool(r.dedup_targets),
             run=lambda ast, ctx: wrap_with_grain_dedup(ast, ctx.resolved, ctx.model, ctx.dialect),
@@ -165,13 +178,6 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
                     PASS_CUMULATIVE,
                     PASS_WINDOW,
                 }
-            ),
-        ),
-        CompilerPass(
-            name=PASS_REAGGREGATE,
-            applies=lambda r: r.has_reaggregate,
-            run=lambda ast, ctx: wrap_with_reaggregate(
-                ast, ctx.resolved, ctx.model, ctx.dialect, ctx.qualify_table, ctx.query
             ),
         ),
         CompilerPass(
@@ -216,6 +222,19 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
             applies=window_pass_applies,
             run=lambda ast, ctx: wrap_with_window(
                 ast, ctx.resolved, model=ctx.model, dialect=ctx.dialect
+            ),
+        ),
+        CompilerPass(
+            name=PASS_REAGGREGATE,
+            applies=lambda r: r.has_reaggregate,
+            # Last of the wrappers: each one before it carries a reaggregate
+            # metric's placeholder like any measure column, and this pass then
+            # wraps whatever they built and joins the two stages back on the
+            # query's dimensions. Run first, it left them a FROM of CTEs, which
+            # the ones that re-project aggregates from the fact tables (period-
+            # over-period, cumulative, window) could not read.
+            run=lambda ast, ctx: wrap_with_reaggregate(
+                ast, ctx.resolved, ctx.model, ctx.dialect, ctx.qualify_table, ctx.query
             ),
         ),
         CompilerPass(
@@ -518,42 +537,57 @@ def evaluate_compatibility(
 
 
 def _refuse_reaggregate_combinations(resolved: ResolvedQuery) -> None:
-    """Refuse what ``reaggregate_wrap`` does not compose with yet.
+    """Refuse a derived metric over a reaggregate metric whose other components
+    a wrapper computes.
 
-    Each of these wrappers restructures the planner's projection, and the
-    reaggregate pass reads that projection by alias; the combinations are not
-    built, so they are refused rather than compiled into a query that reads the
-    wrong column.
+    Those components are read as the bare aggregates the plan inlines, taken
+    before any wrapper runs (``capture_reaggregate_components``). A total, a
+    grain override, a filterContext, a cumulative, period-over-period or window
+    metric, or a measure grain dedup moves into a CTE would be read as a plain
+    aggregate at the query grain - a number without an error - so the query is
+    refused. The same metrics selected side by side, not in one formula, compile.
     """
-    names = {m.name for m in resolved.measures if m.is_reaggregate} | {
-        c.name for c in resolved.metric_components.values() if c.is_reaggregate
-    }
-    features = [
-        label
-        for label, present in (
-            ("grain deduplication", bool(resolved.dedup_targets)),
-            ("a filterContext", resolved.has_filter_context),
-            ("a period-over-period metric", resolved.has_pop),
-            ("a total or grain override", resolved.has_totals),
-            ("a cumulative metric", resolved.has_cumulative),
-            ("a window metric", window_pass_applies(resolved)),
+    offending: dict[str, list[str]] = {}
+    for metric in resolved.measures:
+        leaves = metric_leaf_components(metric, resolved.metric_components)
+        if metric.is_reaggregate or not any(c.is_reaggregate for c in leaves):
+            continue
+        wrapped = sorted(
+            c.name
+            for c in leaves
+            if not c.is_reaggregate
+            and (
+                c.total
+                or c.grain_override is not None
+                or c.filter_context is not None
+                or c.is_cumulative
+                or c.is_pop
+                or c.is_window
+                or c.name in resolved.dedup_measures
+                or c.name in resolved.dedup_components
+            )
         )
-        if present
-    ]
-    if not features:
+        if wrapped:
+            offending[metric.name] = wrapped
+    if not offending:
         return
-    listed = ", ".join(f"'{name}'" for name in sorted(names))
+    listed = "; ".join(
+        f"'{name}' over {', '.join(map(repr, comps))}" for name, comps in offending.items()
+    )
     raise ResolutionError(
         [
             SemanticError(
                 code="REAGGREGATE_COMBINATION_NOT_SUPPORTED",
                 message=(
-                    f"Reaggregate metric(s) {listed} cannot be combined with "
-                    f"{', '.join(features)} in one query yet."
+                    f"Derived metric(s) {listed} combine a reaggregate metric with a "
+                    f"component computed by a wrapper of its own (a total, grain override, "
+                    f"filterContext, cumulative, period-over-period or window metric, or a "
+                    f"deduplicated measure). The formula reads its components at the "
+                    f"query grain before that wrapper runs."
                 ),
                 path="select.measures",
-                hint="Query the reaggregate metric on its own, or with plain measures.",
-                context={"metrics": sorted(names), "features": features},
+                hint="Select the metrics side by side rather than in one formula.",
+                context={"metrics": offending},
             )
         ]
     )

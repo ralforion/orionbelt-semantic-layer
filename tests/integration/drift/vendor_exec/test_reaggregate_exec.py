@@ -7,7 +7,9 @@ dimension, the cast of the second-stage result, the HAVING wrapper, and the
 exact integer AVG, which takes a different route on almost every engine. So
 the same answers, worked out by hand, are asserted on all of them. A ``per``
 with a time grain adds each engine's truncation, beside the query's own bucket
-of the same date.
+of the same date. Beside each of the other wrappers - a total, a filterContext,
+a cumulative, period-over-period and window metric - the reaggregate pass wraps
+what they built, which each engine has to accept as one query.
 
 The rows are built per engine rather than read from the corpus seed: the seed
 has no NULL group and no integers past a double's mantissa, and Dremio has no
@@ -102,11 +104,26 @@ dimensions:
   Customer: {{dataObject: Orders, column: Customer, resultType: string}}
   Country: {{dataObject: Orders, column: Country, resultType: string}}
   Order Date: {{dataObject: Orders, column: Order Date, resultType: date}}
+  Order Month: {{dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}}
   Shipment Customer: {{dataObject: Shipments, column: Customer, resultType: string}}
 measures:
   Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
+  Last Customer:
+    columns: [{{dataObject: Orders, column: Customer}}]
+    aggregation: max
+  Largest Order:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: max
+  Revenue Total:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    total: true
+  Revenue All Countries:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filterContext: {{mode: RELATIVE, exclude: [Country]}}
   Units Sum:
     columns: [{{dataObject: Shipments, column: Units}}]
     resultType: int
@@ -153,6 +170,38 @@ metrics:
     measure: Revenue
     per: ['Order Date:month', 'Order Date:day']
     aggregation: avg
+  Named Customers:
+    type: reaggregate
+    measure: Last Customer
+    per: [Customer]
+    aggregation: count
+  Named Customers Doubled:
+    expression: '{{[Named Customers]}} * 2'
+  Smallest Customer Peak:
+    type: reaggregate
+    measure: Largest Order
+    per: [Customer]
+    aggregation: min
+  Smallest Customer Peak Doubled:
+    expression: '{{[Smallest Customer Peak]}} * 2'
+  Running Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Month
+  Revenue MoM:
+    type: period_over_period
+    expression: '{{[Revenue]}}'
+    periodOverPeriod:
+      timeDimension: Order Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+  Revenue Rank:
+    type: window
+    measure: Revenue
+    windowFunction: rank
+    orderDirection: desc
   Avg Units Sum:
     type: reaggregate
     measure: Units Sum
@@ -354,6 +403,134 @@ def _assert_two_per_buckets_of_one_date(target: VendorTarget, model: SemanticMod
     assert got_total == [Decimal("225.2")], f"{target.name}: {got_total}"
 
 
+def _assert_beside_other_wrappers(target: VendorTarget, model: SemanticModel) -> None:
+    """Each wrapper's own answer, unchanged by the reaggregate pass after it.
+
+    Revenue by month: Jan 85, Feb 1041. Per customer by month: Jan c1 30, c2 50,
+    c3 5; Feb c7 1, c6 1000, c4 10, c5 30.
+    """
+    measures = ["Avg Daily Revenue", "Running Revenue", "Revenue MoM", "Revenue Rank"]
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Order Month"], measures=measures)),
+    )
+    got = {str(r["order month"])[:7]: tuple(_number(r[m.lower()]) for m in measures) for r in rows}
+    want = {
+        "2026-01": (Decimal("42.5"), Decimal(85), None, Decimal(2)),
+        "2026-02": (Decimal(347), Decimal(1126), Decimal(956), Decimal(1)),
+    }
+    assert got == want, f"{target.name}: {got}"
+
+    total = _by_country(target, model, ["Avg Revenue per Customer", "Revenue Total"])
+    want_total = {
+        "DE": (Decimal(27), Decimal(1126)),
+        "FR": (Decimal("502.5"), Decimal(1126)),
+        None: (Decimal(20), Decimal(1126)),
+    }
+    assert total == want_total, f"{target.name}: {total}"
+
+    # The WHERE reaches the reaggregate metric and not the filterContext one.
+    measures = ["Avg Revenue per Customer", "Revenue All Countries"]
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Order Month"], measures=measures),
+            where=[QueryFilter(field="Country", op="=", value="DE")],
+        ),
+    )
+    got = {str(r["order month"])[:7]: tuple(_number(r[m.lower()]) for m in measures) for r in rows}
+    want = {"2026-01": (Decimal(40), Decimal(85)), "2026-02": (Decimal(1), Decimal(1041))}
+    assert got == want, f"{target.name}: {got}"
+
+    # Without dimensions: one row, also when no row passes the WHERE. The
+    # filterContext takes its measure out of the base query, which then has
+    # only the placeholder left to aggregate.
+    measures = ["Avg Revenue per Customer", "Revenue All Countries"]
+    for country, want_row in (("DE", (Decimal(27), Decimal(1126))), ("XX", (None, Decimal(1126)))):
+        rows = _run(
+            target,
+            model,
+            QueryObject(
+                select=QuerySelect(measures=measures),
+                where=[QueryFilter(field="Country", op="=", value=country)],
+            ),
+        )
+        got_rows = [tuple(_number(r[m.lower()]) for m in measures) for r in rows]
+        assert got_rows == [want_row], f"{target.name} {country}: {got_rows}"
+
+    # A formula over the reaggregate metric, beside a cumulative one. January's
+    # average is 85 / 3, read at the model's decimal(18, 2): 28.33 / 85.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Month"], measures=["Avg Revenue Share", "Running Revenue"]
+            )
+        ),
+    )
+    got_share = {
+        str(r["order month"])[:7]: (
+            round(_number(r["avg revenue share"]) or Decimal(0), 6),
+            _number(r["running revenue"]),
+        )
+        for r in rows
+    }
+    want_share = {
+        "2026-01": (Decimal("0.333294"), Decimal(85)),
+        "2026-02": (Decimal("0.25"), Decimal(1126)),
+    }
+    assert got_share == want_share, f"{target.name}: {got_share}"
+
+    # The same formula selected before a period-over-period metric, which
+    # rebuilds its projection in the order the measures were asked for.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Month"], measures=["Avg Revenue Share", "Revenue MoM"]
+            )
+        ),
+    )
+    got_pop = {
+        str(r["order month"])[:7]: (
+            round(_number(r["avg revenue share"]) or Decimal(0), 6),
+            _number(r["revenue mom"]),
+        )
+        for r in rows
+    }
+    want_pop = {
+        "2026-01": (Decimal("0.333294"), None),
+        "2026-02": (Decimal("0.25"), Decimal(956)),
+    }
+    assert got_pop == want_pop, f"{target.name}: {got_pop}"
+
+    # A count over a string measure, inside a formula, beside a total: the
+    # placeholder the wrappers carry has the count's type, not the string's.
+    named = _by_country(target, model, ["Named Customers Doubled", "Revenue Total"])
+    want_named = {
+        "DE": (Decimal(6), Decimal(1126)),
+        "FR": (Decimal(4), Decimal(1126)),
+        None: (Decimal(4), Decimal(1126)),
+    }
+    assert named == want_named, f"{target.name}: {named}"
+
+    # A minimum over a ``max`` measure declares no type anywhere: the
+    # placeholder takes the source column's, not an untyped NULL that
+    # Postgres resolves as text. Peaks per customer: DE 20, 50, 1; FR 5,
+    # 1000; NULL 7, 30.
+    peak = _by_country(target, model, ["Smallest Customer Peak Doubled", "Revenue Total"])
+    want_peak = {
+        "DE": (Decimal(2), Decimal(1126)),
+        "FR": (Decimal(10), Decimal(1126)),
+        None: (Decimal(14), Decimal(1126)),
+    }
+    assert peak == want_peak, f"{target.name}: {peak}"
+
+
 def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) -> None:
     measures = ["Avg Units Sum", "Avg Units Min"]
     rows = _run(target, model, QueryObject(select=QuerySelect(measures=measures)))
@@ -370,6 +547,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_derived(target, model)
     _assert_time_grained_per(target, model)
     _assert_two_per_buckets_of_one_date(target, model)
+    _assert_beside_other_wrappers(target, model)
     _assert_exact_integer_average(target, model)
 
 

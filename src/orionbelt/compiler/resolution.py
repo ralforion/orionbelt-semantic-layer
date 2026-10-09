@@ -17,6 +17,7 @@ from orionbelt.ast.nodes import (
     Literal,
     NestedField,
     OrderByItem,
+    Select,
 )
 from orionbelt.compiler import (
     filter_resolution,
@@ -724,6 +725,15 @@ class ResolvedQuery:
     takes the time filters out of every ``WHERE`` it can see, and a CTE held as
     text has none it can see. Without its copy, a cumulative metric beside a
     period-over-period one read only the periods shown."""
+
+    reaggregate_components: Select | None = None
+    """The plain components of derived metrics over a reaggregate metric, at the
+    query grain, taken from the plan before any other wrapper rewrites it.
+
+    Set by the reaggregate components pass, read by the reaggregate pass, which
+    runs after every other wrapper: by then the plan's FROM may be a CTE of
+    theirs, where a component's aggregate over the fact tables binds to
+    nothing."""
 
     anchored_measures: dict[str, str] = field(default_factory=dict)
     """Measures whose expression is evaluated at a declared object's grain,

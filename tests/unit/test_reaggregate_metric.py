@@ -521,12 +521,64 @@ class TestCompile:
         assert "REAGGREGATE_NO_OP" not in {w.code for w in result_.warnings}
         assert 'AS "Order Date:month"' in result_.sql
 
-    @pytest.mark.parametrize("other", ["Total Revenue", "Unfiltered Revenue"])
-    def test_combination_refused(self, model: SemanticModel, other: str) -> None:
-        query = QueryObject(
-            select=QuerySelect(dimensions=["Country"], measures=["Avg Revenue per Customer", other])
+    @pytest.mark.parametrize(
+        ("other", "wrapper_cte"),
+        [("Total Revenue", '"base" AS ('), ("Unfiltered Revenue", '"main" AS (')],
+    )
+    def test_beside_a_wrapped_measure(
+        self, model: SemanticModel, other: str, wrapper_cte: str
+    ) -> None:
+        """The other wrapper runs first; the reaggregate pass wraps what it built."""
+        sql = _compile(
+            model,
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Country"], measures=["Avg Revenue per Customer", other]
+                )
+            ),
+        ).sql
+        assert sql.index(wrapper_cte) < sql.index('"reagg_base" AS (')
+        assert f'"reagg_base"."{other}" AS "{other}"' in sql
+
+    def test_untyped_placeholder_takes_the_source_column_type(self) -> None:
+        """A ``min`` over a ``max`` measure declares no type anywhere; an
+        untyped NULL is text on Postgres, which ``* 2`` does not bind to."""
+        yaml_text = MODEL_YAML.replace(
+            "metrics:\n",
+            "  Largest Order:\n"
+            "    columns:\n"
+            "      - dataObject: Orders\n"
+            "        column: Amount\n"
+            "    aggregation: max\n"
+            "metrics:\n"
+            "  Smallest Peak:\n"
+            "    type: reaggregate\n"
+            "    measure: Largest Order\n"
+            "    per: [Customer]\n"
+            "    aggregation: min\n"
+            "  Smallest Peak Doubled:\n"
+            "    expression: '{[Smallest Peak]} * 2'\n",
         )
-        assert "REAGGREGATE_COMBINATION_NOT_SUPPORTED" in _refusal(model, query)
+        probe_model, result = _resolve(yaml_text)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Country"], measures=["Smallest Peak Doubled", "Total Revenue"]
+            )
+        )
+        sql = CompilationPipeline().compile(query, probe_model, "postgres").sql
+        assert "MAX(NULL)" not in sql
+        assert "MAX(CAST(NULL AS FLOAT))" in sql
+
+    @pytest.mark.parametrize("other", ["Total Revenue", "Unfiltered Revenue"])
+    def test_formula_over_a_wrapped_component_refused(self, other: str) -> None:
+        """The formula's components are read before the other wrapper runs."""
+        probe_model, result = _resolve(
+            _with_metric(f"expression: '{{[Avg Revenue per Customer]}} / {{[{other}]}}'")
+        )
+        assert result.valid, result.errors
+        query = QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"]))
+        assert "REAGGREGATE_COMBINATION_NOT_SUPPORTED" in _refusal(probe_model, query)
 
     def test_having_on_the_metric_filters_after_the_second_stage(
         self, model: SemanticModel
@@ -551,10 +603,11 @@ class TestCompile:
             probe_model,
             QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"])),
         ).sql
-        # The component is read from a column of its own, never a selected one.
+        # The component is read from a column of its own, never a selected one,
+        # taken from the plan before any wrapper ran.
         assert (
-            '"reagg_1"."Avg Revenue per Customer" / NULLIF("reagg_base"."_reagg_component_1", 0)'
-            in sql
+            '"reagg_1"."Avg Revenue per Customer" / NULLIF("reagg_components".'
+            '"_reagg_component_1", 0)' in sql
         )
 
 

@@ -407,9 +407,11 @@ rows. Select it beside other measures (other facts too), in `having` and
   `sum`/`min`/`max` keep the measure's type
 - Every `per` dimension already in the query (at its grain or finer):
   `REAGGREGATE_NO_OP` warning
-- Not yet in one query with `grouping: rollup/cube`, or with filterContext,
-  period-over-period, cumulative, window or total/grain measures
-  (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`)
+- Selects beside any measure or metric, including total/grain, filterContext,
+  cumulative, period-over-period and window ones
+- Refused: `grouping: rollup/cube`, and a derived formula combining it with a
+  total/grain, filterContext, cumulative, PoP or window component
+  (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`; select them side by side)
 
 ## 5. synonyms — alternative names (optional, LLM hints)
 

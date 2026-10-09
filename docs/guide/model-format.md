@@ -1076,7 +1076,7 @@ By `Order Date:month`, stage 1 groups by month and day and stage 2 averages the 
     Stage 1 groups the rows that reach the measure after the query's `where`, so a customer without orders in the filtered range is not part of the average, and `count` counts customers with a non-NULL stage-1 value. `having` on the metric filters the final rows, like any metric.
 
 !!! tip "Composes like a measure"
-    A reaggregate metric can be selected beside other measures (also from other facts), used in `having` and `orderBy`, and referenced from a derived metric: `expression: '{[Avg Revenue per Customer]} / {[Revenue]}'`.
+    A reaggregate metric can be selected beside any other measure or metric (other facts, totals and grain overrides, filterContext, cumulative, period-over-period and window metrics), used in `having` and `orderBy`, and referenced from a derived metric: `expression: '{[Avg Revenue per Customer]} / {[Revenue]}'`.
 
 Rules:
 
@@ -1084,7 +1084,7 @@ Rules:
 - `per` lists model dimensions (`REAGGREGATE_UNKNOWN_DIMENSION`), each optionally at a time grain (`'Order Date:day'`); a bare name groups by the dimension's declared `timeGrain`. The grain needs a date-bearing column and a `resultType` that can hold the bucket, as in a query.
 - If every `per` dimension is already in the query, at its grain or a finer one, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
 - Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type. A declared `dataType` wins.
-- Not available yet in the same query: `grouping: rollup` / `cube` (`REAGGREGATE_WITH_ROLLUP`), and a filterContext measure, a period-over-period, cumulative or window metric, or a measure with `total` / `grain` (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`). Query those separately.
+- Not available: `grouping: rollup` / `cube` (`REAGGREGATE_WITH_ROLLUP`), since each subtotal row needs a first stage of its own. A derived metric that combines a reaggregate metric with a total, grain override, filterContext, cumulative, period-over-period or window component in one formula (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`); select those metrics side by side instead.
 
 ### Metric Properties
 
