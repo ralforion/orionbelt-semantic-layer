@@ -817,6 +817,22 @@ metrics:
     per: [Customer]
     aggregation: avg
     having: [{field: Spend, op: '>', value: 0}]
+  Avg Purchase Channel Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Purchase Channel]
+    aggregation: avg
+  Avg Purchase Channel Revenue, No Spend:
+    type: reaggregate
+    measure: Revenue
+    per: [Purchase Channel]
+    aggregation: avg
+    having: [{field: Spend, op: is_null}]
+  Revenue Rank:
+    type: window
+    windowFunction: rank
+    measure: Revenue
+    orderDirection: desc
 """
 
 
@@ -861,6 +877,26 @@ def test_a_reaggregate_first_stage_over_one_fact_needs_the_via_object() -> None:
     model = _load(VIA_YAML)
     assert "Avg Customer Revenue" not in _offered(model, ["Spend", "Purchase Channel"])
     assert not _compiles(model, ["Purchase Channel"], ["Spend", "Avg Customer Revenue"])
+
+
+def test_a_per_dimension_through_via_follows_its_stage() -> None:
+    """A ``per`` dimension's ``via`` object is a waypoint of the first stage:
+    required when the stage reads Sales alone, padded when a ``having`` on
+    Purchases makes it span both facts."""
+    model = _load(VIA_YAML)
+    offered = _offered(model, [])
+    assert "Avg Purchase Channel Revenue" not in offered
+    assert not _compiles(model, [], ["Avg Purchase Channel Revenue"])
+    assert "Avg Purchase Channel Revenue, No Spend" in offered
+    assert _compiles(model, [], ["Avg Purchase Channel Revenue, No Spend"])
+
+
+def test_a_window_metric_wraps_the_cfl_result() -> None:
+    """The rank is taken over the query's own result, so beside another fact
+    its measure is a CFL leg like any other, not a query of its own."""
+    model = _load(VIA_YAML)
+    assert "Revenue Rank" in _offered(model, ["Spend", "Purchase Channel"])
+    assert _compiles(model, ["Purchase Channel"], ["Spend", "Revenue Rank"])
 
 
 @pytest.mark.parametrize(

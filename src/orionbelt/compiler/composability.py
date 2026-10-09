@@ -92,14 +92,30 @@ def dimension_waypoint(model: SemanticModel, name: str) -> str | None:
 
 
 def _per_objects(model: SemanticModel, met: Metric) -> set[str]:
-    """The objects a reaggregate metric's ``per`` dimensions are read from."""
+    """The objects a reaggregate metric's ``per`` dimensions are read from.
+
+    Their ``via`` objects are left to :func:`_per_waypoints`.
+    """
     objects: set[str] = set()
-    for entry in met.per:
-        dim_name = entry if entry in model.dimensions else entry.rpartition(":")[0]
-        dim = model.dimensions.get(dim_name)
-        if dim is not None and dim.view:
-            objects |= {dim.view} | dimension_requirements(model, dim_name)
+    for dim_name in _per_dimensions(model, met):
+        dim = model.dimensions[dim_name]
+        if dim.view:
+            objects |= {dim.view} | model.dimension_join_objects(dim_name)
     return objects
+
+
+def _per_waypoints(model: SemanticModel, met: Metric) -> set[str]:
+    """The ``via`` objects of a reaggregate metric's ``per`` dimensions.
+
+    Waypoints of its first stage, as a query dimension's are of the query: that
+    stage needs them joined over a single fact, and pads them over several.
+    """
+    return {w for n in _per_dimensions(model, met) if (w := dimension_waypoint(model, n))}
+
+
+def _per_dimensions(model: SemanticModel, met: Metric) -> list[str]:
+    names = [entry if entry in model.dimensions else entry.rpartition(":")[0] for entry in met.per]
+    return [name for name in names if name in model.dimensions]
 
 
 @dataclass(frozen=True)
@@ -108,22 +124,12 @@ class MetricLeg:
 
     sources: frozenset[str]
     required: frozenset[str]
-    #: The facts of the innermost query of its own it is computed in (a
-    #: reaggregate first stage, or a cumulative, window or period-over-period
-    #: wrapper's); ``None`` outside any.
+    #: The facts of the innermost reaggregate first stage it is computed in, a
+    #: query of its own; ``None`` outside any.
     stage_facts: frozenset[str] | None = None
-
-
-#: Metric types whose wrapper plans their measure again, from the fact tables
-#: and at the query's dimensions, as a query of its own.
-_OWN_STAGE = frozenset(
-    {
-        MetricType.REAGGREGATE,
-        MetricType.CUMULATIVE,
-        MetricType.WINDOW,
-        MetricType.PERIOD_OVER_PERIOD,
-    }
-)
+    #: The ``via`` objects of the ``per`` dimensions of the stages it is in:
+    #: required over a single fact, padded over several (see :func:`_per_waypoints`).
+    waypoints: frozenset[str] = frozenset()
 
 
 def metric_plan_sources(model: SemanticModel, name: str) -> set[str]:
@@ -154,8 +160,8 @@ def metric_plan_sources(model: SemanticModel, name: str) -> set[str]:
 
 
 #: A metric reached in :func:`metric_legs`: its name, the enclosing ``per``
-#: objects, and the facts of the innermost query of its own it is in.
-_LegState = tuple[str, frozenset[str], frozenset[str] | None]
+#: objects and waypoints, and the facts of its innermost reaggregate stage.
+_LegState = tuple[str, frozenset[str], frozenset[str], frozenset[str] | None]
 
 
 def metric_legs(model: SemanticModel, name: str) -> list[MetricLeg]:
@@ -171,13 +177,13 @@ def metric_legs(model: SemanticModel, name: str) -> list[MetricLeg]:
     # A dependency shared by several formulas is walked once per enclosing
     # state, not once per path to it; this also ends a cycle.
     visited: set[_LegState] = set()
-    pending: list[_LegState] = [(name, frozenset(), None)]
+    pending: list[_LegState] = [(name, frozenset(), frozenset(), None)]
     while pending:
         state = pending.pop()
         if state in visited:
             continue
         visited.add(state)
-        ref, per_objects, stage = state
+        ref, per_objects, per_waypoints, stage = state
         met = model.metrics.get(ref)
         if met is None:
             if ref in model.effective_measures:
@@ -185,14 +191,21 @@ def metric_legs(model: SemanticModel, name: str) -> list[MetricLeg]:
                     frozenset(measure_source_objects(model, ref)),
                     frozenset(measure_join_requirements(model, ref) | per_objects),
                     stage,
+                    per_waypoints - per_objects,
                 )
                 legs[leg] = None
             continue
         if met.type == MetricType.REAGGREGATE:
+            # Its first stage is a query of its own over these measures. A
+            # cumulative, window or period-over-period wrapper is not one here:
+            # the window wraps the query's result, and the others either do so
+            # too or are refused beside another fact anyway.
             per_objects |= _per_objects(model, met)
-        if met.type in _OWN_STAGE:
+            per_waypoints |= _per_waypoints(model, met)
             stage = frozenset(metric_source_objects(model, ref))
-        pending.extend((child, per_objects, stage) for child in metric_measure_names(model, ref))
+        pending.extend(
+            (child, per_objects, per_waypoints, stage) for child in metric_measure_names(model, ref)
+        )
     return list(legs)
 
 
@@ -553,13 +566,16 @@ class ComposabilityResolver:
         dimensions (*spine*, *waypoints* left out), not with the facts of
         measures already selected, which are legs of their own.
 
-        A reaggregate first stage or a wrapper's query over a single fact is a
-        star query of its own, whatever else the outer query reads, so its legs
-        need the waypoints too.
+        A reaggregate first stage over a single fact is a star query of its own,
+        whatever else the outer query reads, so its legs need the waypoints too,
+        the query's and those of its ``per`` dimensions. Over several facts the
+        stage is CFL, which pads both.
         """
         for leg in metric_legs(self.model, name):
-            if waypoints and leg.stage_facts is not None and len(leg.stage_facts) <= 1:
-                if not self._has_common_root(spine | waypoints | leg.sources | leg.required):
+            stage_waypoints = (waypoints or set()) | leg.waypoints
+            if stage_waypoints and leg.stage_facts is not None and len(leg.stage_facts) <= 1:
+                needed = spine | stage_waypoints | leg.sources | leg.required
+                if not self._has_common_root(needed):
                     return False
             elif not self._join_requirements_reachable(set(leg.required), spine | leg.sources):
                 return False

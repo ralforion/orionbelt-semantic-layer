@@ -56,9 +56,9 @@ A dimension with `via` but no `pathName` (`Purchase Channel` read through `Purch
 object too: a single-fact query has to join it, so a fact that cannot reach it is not offered beside
 that dimension, even when it reaches the dimension's own data object. Across independent facts the
 query is a union, and a leg that cannot reach the `via` object projects NULL for the dimension, so
-those pairings are offered as CFL. A reaggregate metric's first stage, and the query a cumulative,
-window or period-over-period metric plans for its measure, are queries of their own: over a single
-fact they need the `via` object whatever else the outer query reads.
+those pairings are offered as CFL. A reaggregate metric's first stage is a query of its own: over a
+single fact it needs the `via` object whatever else the outer query reads, and so does a `per`
+dimension read through `via`; over several facts (a `having` on another fact) the stage pads both.
 
 ## The `composables` endpoint
 
