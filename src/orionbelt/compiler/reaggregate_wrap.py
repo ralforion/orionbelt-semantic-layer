@@ -39,6 +39,7 @@ from orionbelt.ast.nodes import (
     FunctionCall,
     Join,
     JoinType,
+    Literal,
     OrderByItem,
     Select,
     Unnest,
@@ -51,6 +52,7 @@ from orionbelt.compiler.time_lookback import null_safe_eq
 from orionbelt.compiler.type_resolver import (
     exact_reaggregate_avg,
     measure_yields_integers,
+    resolve_measure_data_type,
     resolve_metric_data_type,
 )
 from orionbelt.dialect.base import Dialect
@@ -241,41 +243,61 @@ def _plain_components(
     return components
 
 
-def _bare_aggregate(resolved: ResolvedQuery, comp: ResolvedMeasure) -> Expr:
-    """The aggregate the plan computes for *comp*: a reaggregate metric's is its
-    measure's, which is all a plan at the query grain has of it."""
+def _plan_value(resolved: ResolvedQuery, comp: ResolvedMeasure) -> Expr:
+    """What the plan computes for *comp* at the query grain: a plain
+    component's bare aggregate, a reaggregate metric's placeholder."""
     if comp.is_reaggregate:
-        assert comp.reaggregate_measure is not None
-        comp = resolved.metric_components[comp.reaggregate_measure]
+        return comp.expression
     return resolved.projected_expressions.get(comp.name, comp.expression)
+
+
+def _typed_null(m: ResolvedMeasure, model: SemanticModel, dialect: Dialect) -> Expr:
+    """A NULL of the type the metric's finished value has.
+
+    The placeholder is discarded, but every wrapper in between projects it, and
+    a formula over it (``{[Named Customers]} * 2``) has to bind: the inner
+    measure's own aggregate can be a string, which a NULL of the metric's type
+    is not.
+    """
+    metric = model.metrics.get(m.name)
+    inner = model.effective_measures.get(m.reaggregate_measure or "")
+    target = (resolve_metric_data_type(metric, model.settings) if metric else None) or (
+        resolve_measure_data_type(inner, model.settings) if inner else None
+    )
+    null = Literal(value=None)
+    return dialect.cast_to_obml_type(null, target) if target is not None else null
 
 
 def capture_reaggregate_components(
     ast: Select, resolved: ResolvedQuery, model: SemanticModel, dialect: Dialect
 ) -> Select:
-    """Keep the plain components of derived metrics over a reaggregate metric.
+    """Prepare the plan for wrappers that run before the reaggregate pass.
 
-    Each is the bare aggregate the planner inlines into the formula, taken here
-    from the plan it was planned in: the reaggregate pass runs after every other
-    wrapper, whose FROM no longer reaches the fact tables. Each gets a column of
-    its own, never the selected measure's, which is cast to the measure's type,
-    so reading it would make the metric depend on what else is selected.
+    Each reaggregate metric's placeholder becomes a NULL of the metric's type,
+    in the resolution and in the plan's columns. The planner's form was the
+    measure's name as a bare column, which only bound by accident, and every
+    wrapper that rebuilds a projection from the resolution (period-over-period
+    does) carried it into its own CTE. The reaggregate pass discards the value.
 
-    The columns the reaggregate pass replaces - each reaggregate metric's and
-    each such derived metric's - have to stay valid SQL for the wrappers in
-    between, which carry them like any measure. The planner's form is not
-    always: it leaves a reaggregate component in a formula as a bare name, and
-    a multi-fact plan reads the metric from a union column that does not exist.
-    Each is projected as its measure's bare aggregate, a value the reaggregate
-    pass then discards.
+    The plain components of derived metrics over a reaggregate metric are kept
+    in ``reaggregate_components``: each is the bare aggregate the planner
+    inlines into the formula, taken here from the plan it was planned in,
+    because the reaggregate pass runs after every other wrapper, whose FROM no
+    longer reaches the fact tables. Each gets a column of its own, never the
+    selected measure's, which is cast to the measure's type, so reading it
+    would make the metric depend on what else is selected.
     """
+    for m in [*resolved.measures, *resolved.metric_components.values()]:
+        if m.is_reaggregate:
+            m.expression = _typed_null(m, model, dialect)
+
     leaves, split = _split_metrics(resolved)
     components = _plain_components(leaves, split)
     if components:
         dim_names = {d.name for d in resolved.dimensions}
         columns: list[Expr] = [c for c in ast.columns if _alias(c) in dim_names]
         columns += [
-            AliasedExpr(expr=_bare_aggregate(resolved, comp), alias=alias)
+            AliasedExpr(expr=_plan_value(resolved, comp), alias=alias)
             for alias, comp in components.values()
         ]
         resolved.reaggregate_components = replace(
@@ -287,14 +309,14 @@ def capture_reaggregate_components(
     def placeholder(col: Expr) -> Expr:
         alias = _alias(col)
         if alias in reaggregates:
-            return AliasedExpr(expr=_bare_aggregate(resolved, reaggregates[alias]), alias=alias)
+            return AliasedExpr(expr=reaggregates[alias].expression, alias=alias)
         if alias not in split:
             return col
         by_name = {c.name: c for c in leaves[alias]}
         expr = metric_over_components(
             split[alias],
             resolved.metric_components,
-            lambda name: _bare_aggregate(resolved, by_name[name]),
+            lambda name: _plan_value(resolved, by_name[name]),
             model,
             dialect,
         )

@@ -30,6 +30,12 @@ _SALES_AMOUNT = [{"dataObject": "Sales", "column": "Sales Amount"}]
 
 _MEASURES: dict[str, dict[str, Any]] = {
     "Sales Grand Total": {"aggregation": "sum", "columns": _SALES_AMOUNT, "total": True},
+    # A string-valued measure: a reaggregate ``count`` over it is a number, its
+    # inner aggregate is not.
+    "Last Client ID": {
+        "aggregation": "max",
+        "columns": [{"dataObject": "Sales", "column": "Sales Client"}],
+    },
     "All Country Sales": {
         "aggregation": "sum",
         "columns": _SALES_AMOUNT,
@@ -51,6 +57,24 @@ _METRICS: dict[str, dict[str, Any]] = {
         "aggregation": "avg",
     },
     "Avg Client Share": {"expression": "{[Avg Sales per Client]} / {[Total Sales]}"},
+    "Named Clients": {
+        "type": "reaggregate",
+        "measure": "Last Client ID",
+        "per": ["Sales Client Name"],
+        "aggregation": "count",
+    },
+    "Named Clients Doubled": {"expression": "{[Named Clients]} * 2"},
+    "Orders MoM Change": {
+        "type": "period_over_period",
+        "expression": "{[Sales Count]}",
+        "periodOverPeriod": {
+            "timeDimension": "Sales Month",
+            "grain": "month",
+            "offset": -1,
+            "offsetGrain": "month",
+            "comparison": "difference",
+        },
+    },
     "Sales Rank": {
         "type": "window",
         "measure": "Total Sales",
@@ -92,18 +116,21 @@ _CASES: list[tuple[str, list[str], list[str], list[QueryFilter]]] = [
         ["Sales MoM Change", "Prev Month Sales"],
         [],
     ),
+    ("period over period on another measure", ["Sales Month"], ["Orders MoM Change"], []),
     ("window rank", ["Country Name"], ["Sales Rank"], []),
     ("window lag", ["Sales Month"], ["Prev Month Sales"], []),
     ("grain dedup", ["Product Category"], ["Grand Total Units In Stock"], []),
 ]
 
-#: The reaggregate side: by customer, by a time bucket, and inside a formula
-#: (alone, and beside the metric it is built on).
+#: The reaggregate side: by customer, by a time bucket, inside a formula (alone,
+#: and beside the metric it is built on), and a count over a string measure
+#: inside a formula.
 _REAGGREGATES = [
     ["Avg Sales per Client"],
     ["Avg Daily Sales"],
     ["Avg Client Share"],
     ["Avg Sales per Client", "Avg Client Share"],
+    ["Named Clients Doubled"],
 ]
 
 
@@ -135,6 +162,7 @@ def _keyed(rows: list[dict[str, Any]], dimensions: list[str]) -> dict[tuple[Any,
     return {tuple(row[d] for d in dimensions): row for row in rows}
 
 
+@pytest.mark.parametrize("reaggregates_first", [False, True], ids=["after", "before"])
 @pytest.mark.parametrize("reaggregates", _REAGGREGATES, ids=" + ".join)
 @pytest.mark.parametrize(
     ("dimensions", "others", "where"),
@@ -144,11 +172,15 @@ def _keyed(rows: list[dict[str, Any]], dimensions: list[str]) -> dict[tuple[Any,
 def test_same_as_separate_queries(
     run: Callable,
     reaggregates: list[str],
+    reaggregates_first: bool,
     dimensions: list[str],
     others: list[str],
     where: list[QueryFilter],
 ) -> None:
-    combined = _keyed(run(dimensions, [*others, *reaggregates], where=where), dimensions)
+    """Also in both selection orders: a wrapper that rebuilds its projection
+    from the resolution lists the measures in the order they were asked for."""
+    selected = [*reaggregates, *others] if reaggregates_first else [*others, *reaggregates]
+    combined = _keyed(run(dimensions, selected, where=where), dimensions)
     expected = _keyed(run(dimensions, others, where=where), dimensions)
     for key, row in _keyed(run(dimensions, reaggregates, where=where), dimensions).items():
         expected.setdefault(key, {}).update(row)

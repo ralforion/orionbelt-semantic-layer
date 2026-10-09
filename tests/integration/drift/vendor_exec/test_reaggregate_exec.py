@@ -110,6 +110,9 @@ measures:
   Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
+  Last Customer:
+    columns: [{{dataObject: Orders, column: Customer}}]
+    aggregation: max
   Revenue Total:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -164,6 +167,13 @@ metrics:
     measure: Revenue
     per: ['Order Date:month', 'Order Date:day']
     aggregation: avg
+  Named Customers:
+    type: reaggregate
+    measure: Last Customer
+    per: [Customer]
+    aggregation: count
+  Named Customers Doubled:
+    expression: '{{[Named Customers]}} * 2'
   Running Revenue:
     type: cumulative
     measure: Revenue
@@ -447,6 +457,40 @@ def _assert_beside_other_wrappers(target: VendorTarget, model: SemanticModel) ->
         "2026-02": (Decimal("0.25"), Decimal(1126)),
     }
     assert got_share == want_share, f"{target.name}: {got_share}"
+
+    # The same formula selected before a period-over-period metric, which
+    # rebuilds its projection in the order the measures were asked for.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Month"], measures=["Avg Revenue Share", "Revenue MoM"]
+            )
+        ),
+    )
+    got_pop = {
+        str(r["order month"])[:7]: (
+            round(_number(r["avg revenue share"]) or Decimal(0), 6),
+            _number(r["revenue mom"]),
+        )
+        for r in rows
+    }
+    want_pop = {
+        "2026-01": (Decimal("0.333294"), None),
+        "2026-02": (Decimal("0.25"), Decimal(956)),
+    }
+    assert got_pop == want_pop, f"{target.name}: {got_pop}"
+
+    # A count over a string measure, inside a formula, beside a total: the
+    # placeholder the wrappers carry has the count's type, not the string's.
+    named = _by_country(target, model, ["Named Customers Doubled", "Revenue Total"])
+    want_named = {
+        "DE": (Decimal(6), Decimal(1126)),
+        "FR": (Decimal(4), Decimal(1126)),
+        None: (Decimal(4), Decimal(1126)),
+    }
+    assert named == want_named, f"{target.name}: {named}"
 
 
 def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) -> None:
