@@ -9,7 +9,8 @@ the same answers, worked out by hand, are asserted on all of them. A ``per``
 with a time grain adds each engine's truncation, beside the query's own bucket
 of the same date. Beside each of the other wrappers - a total, a filterContext,
 a cumulative, period-over-period and window metric - the reaggregate pass wraps
-what they built, which each engine has to accept as one query.
+what they built, which each engine has to accept as one query. A reaggregate
+metric over another one nests the inner metric's stages in its first.
 
 The rows are built per engine rather than read from the corpus seed: the seed
 has no NULL group and no integers past a double's mantissa, and Dremio has no
@@ -204,6 +205,38 @@ metrics:
     type: reaggregate
     measure: Revenue All Countries
     per: ['Order Date:day']
+    aggregation: max
+  Avg Daily Best Customer:
+    type: reaggregate
+    measure: Best Customer Revenue
+    per: ['Order Date:day']
+    aggregation: avg
+  Avg Daily Best Customer Doubled:
+    expression: '{{[Avg Daily Best Customer]}} * 2'
+  Peak Country Daily Best Customer:
+    type: reaggregate
+    measure: Avg Daily Best Customer
+    per: [Country]
+    aggregation: max
+  Best Customer Revenue 2:
+    type: reaggregate
+    measure: Best Customer Revenue
+    per: [Customer]
+    aggregation: max
+  Best Customer Revenue 3:
+    type: reaggregate
+    measure: Best Customer Revenue 2
+    per: [Customer]
+    aggregation: max
+  Best Customer Revenue 4:
+    type: reaggregate
+    measure: Best Customer Revenue 3
+    per: [Customer]
+    aggregation: max
+  Best Customer Revenue 5:
+    type: reaggregate
+    measure: Best Customer Revenue 4
+    per: [Customer]
     aggregation: max
   Running Revenue:
     type: cumulative
@@ -593,6 +626,42 @@ def _assert_over_wrapped_measures(target: VendorTarget, model: SemanticModel) ->
     assert shared == want_shared, f"{target.name}: {shared}"
 
 
+def _assert_nested(target: VendorTarget, model: SemanticModel) -> None:
+    """A reaggregate metric over another one: three stages, each nested in the
+    next one's first.
+
+    Best customer per country and day: DE Jan 5 = 30, Jan 20 = 50, Feb 3 = 1;
+    FR Jan 20 = 5, Feb 3 = 1000; NULL Feb 10 = 10, Feb 28 = 30.
+    """
+    measures = ["Avg Daily Best Customer", "Avg Daily Best Customer Doubled", "Revenue"]
+    got = _by_country(target, model, measures)
+    want = {
+        "DE": (Decimal(27), Decimal(54), Decimal(81)),
+        "FR": (Decimal("502.5"), Decimal(1005), Decimal(1005)),
+        None: (Decimal(20), Decimal(40), Decimal(40)),
+    }
+    assert got == want, f"{target.name}: {got}"
+
+    # Per month, each country's average best customer, then the largest:
+    # Jan DE 40, FR 5; Feb DE 1, FR 1000, NULL 20.
+    name = "Peak Country Daily Best Customer"
+    rows = _run(
+        target, model, QueryObject(select=QuerySelect(dimensions=["Order Month"], measures=[name]))
+    )
+    peaks = {str(r["order month"])[:7]: _number(r[name.lower()]) for r in rows}
+    assert peaks == {"2026-01": Decimal(40), "2026-02": Decimal(1000)}, f"{target.name}: {peaks}"
+
+    rows = _run(target, model, QueryObject(select=QuerySelect(measures=[name])))
+    assert [_number(r[name.lower()]) for r in rows] == [Decimal("502.5")], f"{target.name}: {rows}"
+
+    # Five stages, each nesting the next one's CTEs: their names stay within
+    # PostgreSQL's 63 bytes and unique. Each level's best customer is the one
+    # below's, so every level answers the best customer per country.
+    deep = _by_country(target, model, ["Best Customer Revenue 5"])
+    want_deep = {"DE": (Decimal(50),), "FR": (Decimal(1000),), None: (Decimal(30),)}
+    assert deep == want_deep, f"{target.name}: {deep}"
+
+
 def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) -> None:
     measures = ["Avg Units Sum", "Avg Units Min"]
     rows = _run(target, model, QueryObject(select=QuerySelect(measures=measures)))
@@ -611,6 +680,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_two_per_buckets_of_one_date(target, model)
     _assert_beside_other_wrappers(target, model)
     _assert_over_wrapped_measures(target, model)
+    _assert_nested(target, model)
     _assert_exact_integer_average(target, model)
 
 

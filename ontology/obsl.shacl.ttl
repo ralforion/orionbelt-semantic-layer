@@ -363,6 +363,11 @@ obsl:MetricShape a sh:NodeShape ;
             sh:minCount 1 ;
             sh:name "base measure"
         ] ]
+        [ sh:property [
+            sh:path obsl:baseMetric ;
+            sh:minCount 1 ;
+            sh:name "base metric"
+        ] ]
     ) .
 
 # -----------------------------------------------------------------------------
@@ -422,13 +427,36 @@ obsl:CumulativeMetricShape a sh:NodeShape ;
 obsl:ReaggregateMetricShape a sh:NodeShape ;
     sh:targetClass obsl:ReaggregateMetric ;
     rdfs:label "OBSL Reaggregate Metric Shape" ;
-    rdfs:comment "Validates two-stage metrics: one base measure, at least one per dimension, one second-stage aggregation." ;
+    rdfs:comment "Validates two-stage metrics: one base measure or base reaggregate metric, at least one per dimension, one second-stage aggregation." ;
+    sh:xone (
+        [ sh:property [
+            sh:path obsl:baseMeasure ;
+            sh:minCount 1 ;
+            sh:maxCount 1 ;
+            sh:name "base measure" ;
+            sh:message "Reaggregate metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
+        ] ; sh:property [
+            sh:path obsl:baseMetric ;
+            sh:maxCount 0 ;
+            sh:message "Reaggregate metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
+        ] ]
+        [ sh:property [
+            sh:path obsl:baseMetric ;
+            sh:minCount 1 ;
+            sh:maxCount 1 ;
+            sh:name "base metric" ;
+            sh:message "Reaggregate metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
+        ] ; sh:property [
+            sh:path obsl:baseMeasure ;
+            sh:maxCount 0 ;
+            sh:message "Reaggregate metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
+        ] ]
+    ) ;
     sh:property [
-        sh:path obsl:baseMeasure ;
-        sh:minCount 1 ;
-        sh:maxCount 1 ;
-        sh:name "base measure" ;
-        sh:message "Reaggregate metrics must reference exactly one obsl:baseMeasure."
+        sh:path obsl:baseMetric ;
+        sh:class obsl:ReaggregateMetric ;
+        sh:name "base metric" ;
+        sh:message "obsl:baseMetric must name a reaggregate metric."
     ] ;
     sh:property [
         sh:path obsl:per ;

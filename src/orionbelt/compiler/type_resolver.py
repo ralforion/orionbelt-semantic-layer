@@ -311,6 +311,35 @@ def measure_yields_integers(
     return True
 
 
+def reaggregated_data_type(model: SemanticModel, name: str) -> OBMLType | None:
+    """The resolved type of the values a reaggregate metric's second stage reads.
+
+    Those are *name*'s: a measure, or a reaggregate metric nested under it,
+    whose ``sum``, ``min`` and ``max`` carry its own measure's type down the
+    chain.
+    """
+    metric = model.metrics.get(name)
+    if metric is None:
+        measure = model.effective_measures.get(name)
+        return resolve_measure_data_type(measure, model.settings) if measure else None
+    declared = resolve_metric_data_type(metric, model.settings)
+    if declared is None and metric.measure:
+        return reaggregated_data_type(model, metric.measure)
+    return declared
+
+
+def reaggregated_values_are_integers(model: SemanticModel, name: str) -> bool:
+    """Whether every value of measure or reaggregate metric *name* is an integer."""
+    metric = model.metrics.get(name)
+    if metric is None:
+        measure = model.effective_measures.get(name)
+        return measure is not None and measure_yields_integers(measure, model.settings, model)
+    declared = resolve_metric_data_type(metric, model.settings)
+    if declared is not None:
+        return isinstance(declared, SimpleType) and declared.name in _INTEGER_NAMES
+    return metric.measure is not None and reaggregated_values_are_integers(model, metric.measure)
+
+
 def apply_exact_integer_sum(
     expr: Expr,
     measure: Measure,

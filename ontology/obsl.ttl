@@ -83,7 +83,7 @@ obsl:WindowMetric a owl:Class ;
 obsl:ReaggregateMetric a owl:Class ;
     rdfs:subClassOf obsl:Metric ;
     rdfs:label "Reaggregate Metric" ;
-    rdfs:comment "A two-stage metric: its base measure is aggregated at the query grain plus the obsl:per dimensions, then those values are aggregated again (obsl:aggregation) to the query grain.  An avg is the unweighted mean of the per-group values." .
+    rdfs:comment "A two-stage metric: its base measure (or obsl:baseMetric) is aggregated at the query grain plus the obsl:per dimensions, then those values are aggregated again (obsl:aggregation) to the query grain.  An avg is the unweighted mean of the per-group values." .
 
 obsl:CustomExtension a owl:Class ;
     rdfs:label "Custom Extension" ;
@@ -233,6 +233,12 @@ obsl:baseMeasure a owl:ObjectProperty ;
     rdfs:comment "Measure that a cumulative metric is computed from (used when metricType is cumulative)." ;
     rdfs:domain obsl:Metric ;
     rdfs:range obsl:Measure .
+
+obsl:baseMetric a owl:ObjectProperty ;
+    rdfs:label "base metric" ;
+    rdfs:comment "Reaggregate metric that another reaggregate metric is computed from: its first stage is this metric at the query grain plus the outer metric's obsl:per dimensions.  Used in place of obsl:baseMeasure." ;
+    rdfs:domain obsl:ReaggregateMetric ;
+    rdfs:range obsl:ReaggregateMetric .
 
 obsl:referencesMeasure a owl:ObjectProperty ;
     rdfs:label "references measure" ;

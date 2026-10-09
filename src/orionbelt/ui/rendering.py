@@ -340,6 +340,8 @@ def _generate_ontology_graph_html(
         link(met, meas, "referencesMeasure", "#CE93D8")
     for met, meas in g.subject_objects(OBSL.baseMeasure):
         link(met, meas, "baseMeasure", "#CE93D8")
+    for met, inner in g.subject_objects(OBSL.baseMetric):
+        link(met, inner, "baseMetric", "#CE93D8")
 
     # Joins: obsl:Join individuals become data-object → data-object edges.
     if show_joins:

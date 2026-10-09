@@ -446,6 +446,9 @@ def resolve_reaggregate_metric(
     replaces it with the second stage, computed over a scan of its own at the
     query grain plus the ``per`` dimensions.
 
+    ``measure`` may itself be a reaggregate metric: the scan plans it as a
+    query of its own too, two stages inside the first.
+
     The base measure is deliberately not a component of this query, and the
     placeholder reads none of its columns. Its ``total``, ``grain``,
     ``filterContext`` and deduplication belong to that scan, which plans the
@@ -469,8 +472,7 @@ def resolve_reaggregate_metric(
             )
         )
         return None
-    base_measure = ctx.model.effective_measures.get(metric.measure)
-    if base_measure is None:
+    if ctx.model.reaggregated_measure(metric.measure) is None:
         ctx.errors.append(
             SemanticError(
                 code="UNKNOWN_MEASURE",

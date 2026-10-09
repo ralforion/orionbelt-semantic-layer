@@ -767,7 +767,10 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
                     ref_uri = _measure_uri(model_id, ref_name)
                     g.add((met_uri, OBSL.referencesMeasure, ref_uri))
 
-        if met.measure:
+        if met.measure in model.metrics:
+            # A reaggregate metric over another one.
+            g.add((met_uri, OBSL.baseMetric, _metric_uri(model_id, met.measure)))
+        elif met.measure:
             base_uri = _measure_uri(model_id, met.measure)
             g.add((met_uri, OBSL.baseMeasure, base_uri))
 

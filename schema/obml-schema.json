@@ -938,7 +938,7 @@
         },
         "measure": {
           "type": "string",
-          "description": "Name of base measure (required for cumulative and reaggregate metrics; a reaggregate metric's measure must not have a grain, total or filterContext override)"
+          "description": "Name of base measure (required for cumulative and reaggregate metrics). A reaggregate metric may also name another reaggregate metric, whose two stages then run as its first."
         },
         "timeDimension": {
           "type": "string",

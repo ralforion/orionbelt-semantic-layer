@@ -400,7 +400,8 @@ rows. Select it beside other measures (other facts too), in `having` and
 {[Revenue]}'`).
 
 - `measure:` a measure; its `total`, `grain`, `filterContext` and dedup apply
-  in stage 1, at the query's dimensions plus `per`
+  in stage 1, at the query's dimensions plus `per`. Or another reaggregate
+  metric, which then is stage 1 with its own two stages (a cycle is refused)
 - `per:` model dimensions, optionally at a time grain (`'Order Date:day'`); by
   `Order Date:month` that averages daily totals within each month (only days
   with rows count)

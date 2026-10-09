@@ -25,9 +25,11 @@ rows in stage 1 and the join finds it.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
+from itertools import count
 
 from orionbelt.ast.nodes import (
     CTE,
@@ -52,8 +54,8 @@ from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, Reso
 from orionbelt.compiler.time_lookback import null_safe_eq, rename_cte_sources
 from orionbelt.compiler.type_resolver import (
     exact_reaggregate_avg,
-    measure_yields_integers,
-    resolve_measure_data_type,
+    reaggregated_data_type,
+    reaggregated_values_are_integers,
     resolve_metric_data_type,
 )
 from orionbelt.dialect.base import Dialect
@@ -71,6 +73,11 @@ _FUNCTIONS: dict[ReaggregateAggType, str] = {
     ReaggregateAggType.MAX: "MAX",
     ReaggregateAggType.COUNT: "COUNT",
 }
+
+
+#: The prefix ``_own_cte_names`` gives a stage-1 CTE, which a further stage
+#: replaces rather than adds to.
+_STAGE_CTE_PREFIX = re.compile(r"^reagg_\d+_inner_\d+_")
 
 
 def _alias(expr: Expr) -> str | None:
@@ -187,10 +194,7 @@ def _stage_two(
         exact: tuple[Expr, OBMLType] | None = None
         target: OBMLType | None
         if metric is not None and m.reaggregate_aggregation is ReaggregateAggType.AVG:
-            base = model.effective_measures.get(m.reaggregate_measure)
-            integer_values = base is not None and measure_yields_integers(
-                base, model.settings, model
-            )
+            integer_values = reaggregated_values_are_integers(model, m.reaggregate_measure)
             exact = exact_reaggregate_avg(metric, integer_values, model.settings, dialect, arg)
         if exact is not None:
             expr, target = exact
@@ -215,14 +219,23 @@ def _own_cte_names(scan: Select, prefix: str) -> Select:
     inside the outer query. Snowflake resolves a nested ``FROM "base"`` to the
     outer query's CTE of that name, which has none of the first stage's
     columns. Unique names leave no reference to resolve the wrong way.
+
+    Each name is *prefix*, a number unique within the scan, and the CTE's own
+    name without the prefix an inner stage gave it: ``reagg_1_inner_2_base``.
+    Stacking the prefixes instead grew a name by one per nested stage, past
+    PostgreSQL's 63 bytes, which truncates two siblings to the same name.
     """
+    return _numbered_ctes(scan, prefix, count(1))
+
+
+def _numbered_ctes(scan: Select, prefix: str, numbers: Iterator[int]) -> Select:
     renamed: dict[str, str] = {}
     ctes: list[CTE] = []
     for cte in scan.ctes:
-        name = f"{prefix}{cte.name}"
+        name = f"{prefix}{next(numbers)}_{_STAGE_CTE_PREFIX.sub('', cte.name)}"
         own = cte.query
         if isinstance(own, Select):
-            own = _own_cte_names(own, f"{name}_")
+            own = _numbered_ctes(own, prefix, numbers)
         ctes.append(CTE(name=name, query=rename_cte_sources(own, renamed)))
         renamed[cte.name] = name
     renamed_scan = rename_cte_sources(replace(scan, ctes=ctes), renamed)
@@ -305,16 +318,13 @@ def _placeholder_value(m: ResolvedMeasure, model: SemanticModel, dialect: Dialec
     bind to. It takes the inner measure's source column type, as CFL's NULL
     pads do.
     """
-    metric = model.metrics.get(m.name)
-    inner = model.effective_measures.get(m.reaggregate_measure or "")
-    target = (resolve_metric_data_type(metric, model.settings) if metric else None) or (
-        resolve_measure_data_type(inner, model.settings) if inner else None
-    )
+    target = reaggregated_data_type(model, m.name)
+    base = model.reaggregated_measure(m.reaggregate_measure or "")
     null: Expr = Literal(value=None)
     if target is not None:
         null = dialect.cast_to_obml_type(null, target)
-    elif inner is not None:
-        null = Cast(expr=null, type_name=_source_type(inner, model))
+    elif base is not None:
+        null = Cast(expr=null, type_name=_source_type(base[1], model))
     return FunctionCall(name="MAX", args=[null])
 
 
