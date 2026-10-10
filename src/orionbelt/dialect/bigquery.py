@@ -341,11 +341,15 @@ class BigQueryDialect(Dialect):
         - dividing by ``NUMERIC '2'`` keeps an INT64 difference exact as
           NUMERIC, where ``/ 2`` makes it FLOAT64 and loses digits past 2^53;
           NUMERIC and BIGNUMERIC keep their type, FLOAT64 stays FLOAT64;
-        - two values of the same sign are ``lower + (upper - lower) / 2``,
-          whose difference fits, and which rounds once: halving each value
-          first turns a NUMERIC 0.000000001 into twice the median;
         - two of opposite signs are ``(lower + upper) / 2``, whose sum fits,
-          where the difference of -6e28 and 6e28 overflows NUMERIC.
+          where the difference of -6e28 and 6e28 overflows NUMERIC;
+        - two of the same sign step half their difference, which fits, from
+          the value nearer zero towards the other: ``lower + (upper - lower)
+          / 2`` when both are positive, ``upper - (upper - lower) / 2`` when
+          both are negative. The half rounds away from zero, as the mean does,
+          so the result is the mean rounded once (-2e-9 for -2e-9 and -1e-9,
+          where stepping up from ``lower`` gives -1e-9); halving each value
+          first would turn a NUMERIC 0.000000001 into twice the median.
 
         The whole expression is parenthesized: it is a sum, and a derived
         metric's ``* 2`` or ``100 -`` must apply to all of it.
@@ -356,9 +360,11 @@ class BigQueryDialect(Dialect):
         lower = f"{values}[SAFE_OFFSET(DIV(COUNT({col_sql}) - 1, 2))]"
         upper = f"{values}[SAFE_OFFSET(DIV(COUNT({col_sql}), 2))]"
         two = "NUMERIC '2'"
+        half = f"({upper} - {lower}) / {two}"
         return (
-            f"IF({lower} < 0 AND {upper} >= 0, ({lower} + {upper}) / {two}, "
-            f"{lower} + ({upper} - {lower}) / {two})"
+            f"CASE WHEN {upper} < 0 THEN {upper} - {half} "
+            f"WHEN {lower} < 0 THEN ({lower} + {upper}) / {two} "
+            f"ELSE {lower} + {half} END"
         )
 
     def _compile_mode(self, args: list[Expr]) -> str:

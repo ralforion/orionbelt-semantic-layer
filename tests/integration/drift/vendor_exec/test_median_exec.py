@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import statistics
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 import pytest
@@ -40,6 +40,10 @@ from .conftest import VendorTarget
 pytestmark = pytest.mark.docker
 
 TABLE = "median_values"
+
+#: Engines whose median of a DECIMAL(38, 9) is rounded to its scale; the others'
+#: is a double, or wider.
+FIXED_SCALE_MEDIAN = {"bigquery"}
 
 #: Engines whose median of an integer is not a double. Snowflake's MEDIAN and
 #: PERCENTILE_CONT return a NUMBER but compute in double (probed: 9007199254740992
@@ -111,6 +115,12 @@ ROWS: list[tuple[str, int | None, str | None, str | None, str | None, str | None
     # Opposite signs whose difference, 1.2e29, overflows NUMERIC(38, 9).
     ("O", None, None, None, None, "-60000000000000000000000000000"),
     ("O", None, None, None, None, "60000000000000000000000000000"),
+    # Two negatives, and two positives, half a unit of the last digit apart:
+    # rounded once, away from zero like the mean, at a fixed scale.
+    ("Q", None, None, None, None, "-0.000000002"),
+    ("Q", None, None, None, None, "-0.000000001"),
+    ("R", None, None, None, None, "0.000000001"),
+    ("R", None, None, None, None, "0.000000002"),
 ]
 
 MODEL_YAML = """
@@ -263,11 +273,30 @@ def _assert_all(target: VendorTarget) -> None:
 
     # Exact on every engine, as a NUMERIC on BigQuery whichever the input type.
     edges = ["Filtered Integer Median", "Wide Median"]
-    rows = _run(target, model, [], edges)
-    got_edges = [tuple(_number(r[m.lower()]) for m in edges) for r in rows]
-    assert _close(got_edges[0], (_median(1, "P"), Decimal(0))), f"{target.name}: {got_edges}"
+    wide = {g: _median(5, g) for g in "OQR"}
+    if target.dialect in FIXED_SCALE_MEDIAN:
+        scale = Decimal("0.000000001")
+        wide = {g: v.quantize(scale, ROUND_HALF_UP) for g, v in wide.items() if v is not None}
+    assert wide["Q"] in (Decimal("-0.0000000015"), Decimal("-0.000000002")), wide
+    edge_groups = ["P", "O", "Q", "R"]
+    if target.dialect == "snowflake":
+        # Snowflake's MEDIAN of a NUMBER(38, 9) is a NUMBER(38, 12), which has
+        # no room for 6e28 (probed: PERCENTILE_CONT alike, grouped or of one
+        # value). It refuses rather than answering wrong.
+        edge_groups.remove("O")
+        del wide["O"]
+        with pytest.raises(Exception, match="out of representable range"):
+            _run(target, model, ["Group"], edges, [QueryFilter(field="Group", op="=", value="O")])
+    groups_filter = [QueryFilter(field="Group", op="in", value=edge_groups)]
+    rows = _run(target, model, ["Group"], edges, groups_filter)
+    got_edges = {r["group"]: tuple(_number(r[m.lower()]) for m in edges) for r in rows}
+    want_edges = {"P": (_median(1, "P"), None), **{g: (None, v) for g, v in wide.items()}}
+    diff_edges = {
+        g: (got_edges.get(g), w) for g, w in want_edges.items() if not _close(got_edges[g], w)
+    }
+    assert not diff_edges, f"{target.name}: {diff_edges}"
     if target.dialect in EXACT_INTEGER_MEDIAN:
-        assert got_edges[0][0] == Decimal(9007199254740993), f"{target.name}: {got_edges}"
+        assert got_edges["P"][0] == Decimal(9007199254740993), f"{target.name}: {got_edges}"
 
     measures = ["Integer Median", "Decimal Median", "Double Median"]
     for extra in ([], ["Integer Total"]):

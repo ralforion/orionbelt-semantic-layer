@@ -576,8 +576,8 @@ class TestBigQueryDialect:
         assert "APPROX_QUANTILES" not in sql
         # One midpoint for every type: sign-aware, divided by a NUMERIC so an
         # INT64 stays exact, and a whole operand of a surrounding formula.
-        assert sql.startswith("IF(") and sql.endswith(")")
-        assert sql.count("/ NUMERIC '2'") == 2
+        assert sql.startswith("CASE WHEN") and sql.endswith(" END")
+        assert sql.count("/ NUMERIC '2'") == 3
         assert "/ 2" not in sql
 
     def test_mode(self, dialect: BigQueryDialect) -> None:
