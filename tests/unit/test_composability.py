@@ -6,6 +6,7 @@ import pytest
 
 from orionbelt.compiler.composability import (
     ComposabilityResolver,
+    MetricLeg,
     metric_legs,
     resolve_composables_for_anchors,
     resolve_composables_for_query,
@@ -263,7 +264,7 @@ def test_metric_legs_visit_a_shared_dependency_once(multi_fact_model: SemanticMo
     lines.append("  M1: {expression: '{[M0]} + {[Sales Amount]}'}")
     lines += [f"  M{i}: {{expression: '{{[M{i - 1}]}} + {{[M{i - 2}]}}'}}" for i in range(2, 30)]
     model = _load(MULTI_FACT_YAML + "\n".join(lines) + "\n")
-    assert metric_legs(model, "M29") == [({"Sales"}, set())]
+    assert metric_legs(model, "M29") == [MetricLeg(frozenset({"Sales"}), frozenset())]
 
 
 def test_resolver_reuse_across_anchors(multi_fact_model: SemanticModel) -> None:
@@ -451,6 +452,16 @@ metrics:
     per: [Region]
     aggregation: avg
     having: [{field: Stock Filtered In Grain, op: '>', value: 0}]
+  Category Stock:
+    type: reaggregate
+    measure: Total Stock On Hand
+    per: [Category]
+    aggregation: sum
+  Peak Category Stock:
+    type: reaggregate
+    measure: Category Stock
+    per: [Category]
+    aggregation: max
 """
 
 
@@ -493,6 +504,22 @@ def test_acr_follows_a_reaggregate_metrics_having() -> None:
         advertised = set(result.metrics) | set(result.cfl_metrics)
         assert "Avg Region Sales, Stock Filtered Off Grain" not in advertised
         assert "Avg Region Sales, Stock Filtered In Grain" in advertised
+
+
+def test_acr_offers_a_reaggregate_over_a_reaggregate_of_a_deduplicated_measure() -> None:
+    """The inner metric's measure is deduplicated in its own first stage, as a
+    query of its own, so no wrapper of the outer query reads a deduplicated
+    value. Treated as one, the nested metric was hidden though it compiles."""
+    from orionbelt.compiler.pipeline import CompilationPipeline
+
+    model = _dedup_guard_model()
+    resolver = ComposabilityResolver(model)
+    result = resolver.resolve(*resolver.objects_from_anchor_name("Region"))
+    assert "Peak Category Stock" in set(result.metrics) | set(result.cfl_metrics)
+    query = QueryObject(
+        **{"select": {"dimensions": ["Region"], "measures": ["Peak Category Stock"]}}
+    )
+    CompilationPipeline().compile(query, model, "duckdb")
 
 
 def test_everything_acr_lists_actually_compiles() -> None:
@@ -713,3 +740,221 @@ def test_what_a_named_anchor_offers_actually_compiles(reachable_model: bool) -> 
             assert _compiles(model, [dimension], [measure]), f"{dimension} + {measure}"
             checked += 1
     assert checked, "nothing offered — the test would prove nothing"
+
+
+# --- role-playing dimensions read through ``via`` ---------------------------
+
+VIA_YAML = """\
+version: 1.0
+
+dataObjects:
+  Channels:
+    code: channels
+    schema: main
+    columns:
+      Channel ID: {code: id, abstractType: string, primaryKey: true}
+      Channel Name: {code: name, abstractType: string}
+  Customers:
+    code: customers
+    schema: main
+    columns:
+      Customer ID: {code: id, abstractType: string, primaryKey: true}
+      Customer Name: {code: name, abstractType: string}
+  Sales:
+    code: sales
+    schema: main
+    columns:
+      Sale ID: {code: id, abstractType: string, primaryKey: true}
+      Sale Channel ID: {code: channel_id, abstractType: string}
+      Sale Customer ID: {code: customer_id, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Sale Channel ID]
+        columnsTo: [Channel ID]
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Sale Customer ID]
+        columnsTo: [Customer ID]
+  Purchases:
+    code: purchases
+    schema: main
+    columns:
+      Purchase ID: {code: id, abstractType: string, primaryKey: true}
+      Purchase Channel ID: {code: channel_id, abstractType: string}
+      Cost: {code: cost, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Purchase Channel ID]
+        columnsTo: [Channel ID]
+
+dimensions:
+  Sales Channel: {dataObject: Channels, column: Channel Name, resultType: string, via: Sales}
+  Purchase Channel: {dataObject: Channels, column: Channel Name, resultType: string, via: Purchases}
+  Customer: {dataObject: Customers, column: Customer Name, resultType: string}
+
+measures:
+  Revenue:
+    columns: [{dataObject: Sales, column: Amount}]
+    aggregation: sum
+  Spend:
+    columns: [{dataObject: Purchases, column: Cost}]
+    aggregation: sum
+
+metrics:
+  Margin:
+    expression: '{[Revenue]} - {[Spend]}'
+  Avg Customer Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: avg
+  Avg Customer Revenue, Big Spend:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: avg
+    having: [{field: Spend, op: '>', value: 0}]
+  Avg Purchase Channel Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Purchase Channel]
+    aggregation: avg
+  Avg Purchase Channel Revenue, No Spend:
+    type: reaggregate
+    measure: Revenue
+    per: [Purchase Channel]
+    aggregation: avg
+    having: [{field: Spend, op: is_null}]
+  Sales Channel Revenue, No Spend:
+    type: reaggregate
+    measure: Revenue
+    per: [Sales Channel]
+    aggregation: sum
+    having: [{field: Spend, op: is_null}]
+  Peak Purchase Channel Revenue, No Spend:
+    type: reaggregate
+    measure: Sales Channel Revenue, No Spend
+    per: [Purchase Channel]
+    aggregation: max
+  Revenue Rank:
+    type: window
+    windowFunction: rank
+    measure: Revenue
+    orderDirection: desc
+"""
+
+
+def _offered(model: SemanticModel, anchors: list[str]) -> set[str]:
+    result = resolve_composables_for_anchors(model, anchors)
+    return (
+        set(result.measures)
+        | set(result.cfl_measures)
+        | set(result.metrics)
+        | set(result.cfl_metrics)
+    )
+
+
+def test_a_via_dimension_is_offered_with_its_own_facts_only() -> None:
+    """``Purchase Channel`` is read through Purchases: a query of Sales alone
+    cannot join it, though Sales reaches Channels directly."""
+    model = _load(VIA_YAML)
+    offered = _offered(model, ["Purchase Channel"])
+    assert "Spend" in offered
+    assert "Revenue" not in offered
+    assert not _compiles(model, ["Purchase Channel"], ["Revenue"])
+    assert "Purchase Channel" not in resolve_composables_for_anchors(model, ["Revenue"]).dimensions
+
+
+def test_a_via_dimension_beside_another_fact_plans_as_cfl() -> None:
+    """Across independent facts the leg that cannot reach the ``via`` object
+    projects NULL for the dimension, so it is offered there."""
+    model = _load(VIA_YAML)
+    result = resolve_composables_for_anchors(model, ["Spend", "Purchase Channel"])
+    assert "Revenue" in result.cfl_measures
+    assert _compiles(model, ["Purchase Channel"], ["Spend", "Revenue"])
+    assert "Margin" in _offered(model, ["Purchase Channel"])
+    assert (
+        "Purchase Channel"
+        in resolve_composables_for_anchors(model, ["Revenue", "Spend"]).dimensions
+    )
+
+
+def test_a_reaggregate_first_stage_over_one_fact_needs_the_via_object() -> None:
+    """Its first stage is a query of its own over Sales alone, whatever else
+    the outer query reads."""
+    model = _load(VIA_YAML)
+    assert "Avg Customer Revenue" not in _offered(model, ["Spend", "Purchase Channel"])
+    assert not _compiles(model, ["Purchase Channel"], ["Spend", "Avg Customer Revenue"])
+
+
+def test_a_per_dimension_through_via_follows_its_stage() -> None:
+    """A ``per`` dimension's ``via`` object is a waypoint of the first stage:
+    required when the stage reads Sales alone, padded when a ``having`` on
+    Purchases makes it span both facts."""
+    model = _load(VIA_YAML)
+    offered = _offered(model, [])
+    assert "Avg Purchase Channel Revenue" not in offered
+    assert not _compiles(model, [], ["Avg Purchase Channel Revenue"])
+    assert "Avg Purchase Channel Revenue, No Spend" in offered
+    assert _compiles(model, [], ["Avg Purchase Channel Revenue, No Spend"])
+
+
+def test_each_nested_stage_keeps_its_own_facts() -> None:
+    """The inner stage reads Sales and Purchases and pads its waypoints; the
+    outer stage reads the inner metric, planned over Sales alone, so its
+    ``Purchase Channel`` needs Purchases joined, which Sales cannot reach."""
+    model = _load(VIA_YAML)
+    assert "Sales Channel Revenue, No Spend" in _offered(model, [])
+    assert _compiles(model, [], ["Sales Channel Revenue, No Spend"])
+    assert "Peak Purchase Channel Revenue, No Spend" not in _offered(model, [])
+    assert not _compiles(model, [], ["Peak Purchase Channel Revenue, No Spend"])
+
+
+def test_a_window_metric_wraps_the_cfl_result() -> None:
+    """The rank is taken over the query's own result, so beside another fact
+    its measure is a CFL leg like any other, not a query of its own."""
+    model = _load(VIA_YAML)
+    assert "Revenue Rank" in _offered(model, ["Spend", "Purchase Channel"])
+    assert _compiles(model, ["Purchase Channel"], ["Spend", "Revenue Rank"])
+
+
+@pytest.mark.parametrize(
+    "anchors",
+    [
+        [],
+        ["Sales Channel"],
+        ["Purchase Channel"],
+        ["Customer"],
+        ["Revenue"],
+        ["Spend"],
+        ["Spend", "Purchase Channel"],
+        ["Revenue", "Sales Channel"],
+        ["Revenue", "Spend"],
+        ["Revenue", "Spend", "Purchase Channel"],
+    ],
+    ids=" + ".join,
+)
+def test_everything_offered_beside_a_via_dimension_compiles(anchors: list[str]) -> None:
+    """Every measure, metric and dimension offered beside each anchor compiles."""
+    model = _load(VIA_YAML)
+    dims = [a for a in anchors if a in model.dimensions]
+    measures = [a for a in anchors if a not in model.dimensions]
+    assert _compiles(model, dims, measures)
+    result = resolve_composables_for_anchors(model, anchors)
+    for name in _offered(model, anchors) - set(measures):
+        assert _compiles(model, dims, [*measures, name]), name
+    for name in set(result.dimensions) - set(dims):
+        assert _compiles(model, [*dims, name], measures), name
+
+
+def test_query_anchor_agrees_with_named_anchors_on_via() -> None:
+    from orionbelt.models.query import QuerySelect
+
+    model = _load(VIA_YAML)
+    query = QueryObject(select=QuerySelect(dimensions=["Purchase Channel"], measures=["Spend"]))
+    assert resolve_composables_for_query(model, query) == resolve_composables_for_anchors(
+        model, ["Purchase Channel", "Spend"]
+    )

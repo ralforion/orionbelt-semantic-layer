@@ -52,6 +52,14 @@ resolved the way the compiler plans them: each role is its own leaf object joine
 role behind a secondary-only join is composable with that fact's measures, and several roles of one
 data object can be anchored together. `anchorObjects` names the role's data object, not its alias.
 
+A dimension with `via` but no `pathName` (`Purchase Channel` read through `Purchases`) needs its `via`
+object too: a single-fact query has to join it, so a fact that cannot reach it is not offered beside
+that dimension, even when it reaches the dimension's own data object. Across independent facts the
+query is a union, and a leg that cannot reach the `via` object projects NULL for the dimension, so
+those pairings are offered as CFL. A reaggregate metric's first stage is a query of its own: over a
+single fact it needs the `via` object whatever else the outer query reads, and so does a `per`
+dimension read through `via`; over several facts (a `having` on another fact) the stage pads both.
+
 ## The `composables` endpoint
 
 Two ways to supply the anchor; both return the same response shape.
