@@ -573,6 +573,8 @@ class SemanticValidator:
             "median",
             "percentile_cont",
             "percentile_disc",
+            "first",
+            "last",
             "mode",
         }
     )

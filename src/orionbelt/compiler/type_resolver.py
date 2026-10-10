@@ -49,6 +49,8 @@ _PASSTHROUGH_AGGREGATIONS = frozenset(
         "MEDIAN",
         "PERCENTILE_CONT",
         "PERCENTILE_DISC",
+        "FIRST",
+        "LAST",
         "MODE",
         "LISTAGG",
     }
@@ -295,7 +297,9 @@ _INTERPOLATING_REAGGREGATIONS = frozenset(
 #: Aggregates that answer one of their input values, so an integer column gives
 #: an integer. ``MEDIAN`` and ``PERCENTILE_CONT`` are absent: they interpolate
 #: between two values.
-_VALUE_PRESERVING_AGGREGATIONS = frozenset({"MIN", "MAX", "ANY_VALUE", "MODE", "PERCENTILE_DISC"})
+_VALUE_PRESERVING_AGGREGATIONS = frozenset(
+    {"MIN", "MAX", "ANY_VALUE", "MODE", "PERCENTILE_DISC", "FIRST", "LAST"}
+)
 
 
 def measure_yields_integers(
@@ -531,7 +535,7 @@ def _widen_to_integer_range(default: DecimalType) -> DecimalType:
 #: answers Float64 even over a Decimal column, which is the case an engine's
 #: exactness rewrite exists for. So are the statistical ones, which are floating
 #: by definition, and ``MEDIAN``, which interpolates.
-_TYPE_PRESERVING_AGGREGATIONS = frozenset({"SUM", "MIN", "MAX", "ANY_VALUE"})
+_TYPE_PRESERVING_AGGREGATIONS = frozenset({"SUM", "MIN", "MAX", "ANY_VALUE", "FIRST", "LAST"})
 
 
 def measure_source_is_exact(measure: Measure, model: SemanticModel | None) -> bool:

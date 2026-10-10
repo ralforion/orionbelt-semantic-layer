@@ -724,6 +724,8 @@
             "median",
             "percentile_cont",
             "percentile_disc",
+            "first",
+            "last",
             "mode",
             "listagg",
             "stddev",
@@ -737,7 +739,7 @@
             "regr_intercept",
             "measure"
           ],
-          "description": "Aggregation function. Core: sum, count, count_distinct, avg, min, max, any_value, median, percentile_cont, percentile_disc (with 'percentile'), mode, listagg. Statistical (v2.6+): stddev, stddev_pop, variance, var_pop (single-column), corr, covar_pop, covar_samp, regr_slope, regr_intercept (two-column). Vendor delegation (v2.7.7+): measure (Databricks Metric Views only; emits MEASURE(\"<label>\") and forbids columns/expression/filters/total). Dialect support varies: MySQL lacks correlation/covariance/regression; BigQuery and ClickHouse lack regr_slope/regr_intercept; only Databricks accepts 'measure'."
+          "description": "Aggregation function. Core: sum, count, count_distinct, avg, min, max, any_value, median, percentile_cont, percentile_disc (with 'percentile'), first, last (the value at the least / greatest 'withinGroup' key; not on MySQL), mode, listagg. Statistical (v2.6+): stddev, stddev_pop, variance, var_pop (single-column), corr, covar_pop, covar_samp, regr_slope, regr_intercept (two-column). Vendor delegation (v2.7.7+): measure (Databricks Metric Views only; emits MEASURE(\"<label>\") and forbids columns/expression/filters/total). Dialect support varies: MySQL lacks correlation/covariance/regression; BigQuery and ClickHouse lack regr_slope/regr_intercept; only Databricks accepts 'measure'."
         },
         "distinct": {
           "type": "boolean",
@@ -749,7 +751,7 @@
         },
         "withinGroup": {
           "type": "object",
-          "description": "WITHIN GROUP clause to specify column for ordering in LISTAGG",
+          "description": "WITHIN GROUP clause: the ordering of a LISTAGG, or the key a first / last aggregation takes its value at (first at the least key, last at the greatest; a tie goes to the least / greatest value, and 'order' is refused there)",
           "properties": {
             "column": {
               "$ref": "#/definitions/queryColumn"
@@ -886,6 +888,26 @@
                 "percentile"
               ]
             }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "aggregation": {
+                "enum": [
+                  "first",
+                  "last"
+                ]
+              }
+            },
+            "required": [
+              "aggregation"
+            ]
+          },
+          "then": {
+            "required": [
+              "withinGroup"
+            ]
           }
         }
       ],

@@ -635,6 +635,8 @@ class TestMySQLDialect:
         assert dialect.capabilities.supports_union_all_by_name is False
         assert dialect.capabilities.unsupported_aggregations == [
             "mode",
+            "first",
+            "last",
             "corr",
             "covar_pop",
             "covar_samp",

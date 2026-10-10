@@ -14,7 +14,7 @@
 enums:
   AggregationType:
     python: orionbelt.models.semantic.AggregationType
-    values: ['sum', 'count', 'count_distinct', 'avg', 'min', 'max', 'any_value', 'median', 'percentile_cont', 'percentile_disc', 'mode', 'listagg', 'stddev', 'stddev_pop', 'variance', 'var_pop', 'corr', 'covar_pop', 'covar_samp', 'regr_slope', 'regr_intercept', 'measure']
+    values: ['sum', 'count', 'count_distinct', 'avg', 'min', 'max', 'any_value', 'median', 'percentile_cont', 'percentile_disc', 'first', 'last', 'mode', 'listagg', 'stddev', 'stddev_pop', 'variance', 'var_pop', 'corr', 'covar_pop', 'covar_samp', 'regr_slope', 'regr_intercept', 'measure']
   Cardinality:
     python: orionbelt.models.semantic.Cardinality
     values: ['many-to-one', 'one-to-one', 'many-to-many']

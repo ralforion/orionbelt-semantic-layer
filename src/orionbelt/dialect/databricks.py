@@ -291,6 +291,16 @@ class DatabricksDialect(Dialect):
             inner = f"SORT_ARRAY({inner}, false)" if ob_expr.desc else f"SORT_ARRAY({inner})"
         return f"ARRAY_JOIN({inner}, '{escaped_sep}')"
 
+    def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:
+        """Databricks: ``max_by`` / ``min_by`` by the (key, value) struct, which
+        breaks a tie on the key by the value. ``first`` / ``last`` take the
+        first row met. A row without both is skipped."""
+        v = self.compile_expr(value)
+        k = self.compile_expr(key)
+        function = "max_by" if last else "min_by"
+        pair = f"CASE WHEN {k} IS NOT NULL AND {v} IS NOT NULL THEN struct({k}, {v}) END"
+        return f"{function}({v}, {pair})"
+
     def _compile_percentile(self, name: str, args: list[Expr], fraction: Decimal) -> str:
         """The continuous percentile as the ordered-set aggregate; the discrete
         one read from the sorted values.

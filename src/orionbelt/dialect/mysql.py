@@ -218,6 +218,10 @@ class MySQLDialect(Dialect):
             supports_union_all_by_name=False,
             unsupported_aggregations=[
                 "mode",
+                # The value at the greatest key: MySQL has no ordered aggregate
+                # but GROUP_CONCAT, whose string loses the column's type.
+                "first",
+                "last",
                 # MySQL has no first-class correlation, covariance, or regression
                 # aggregates. Variance / standard deviation are supported natively.
                 "corr",
