@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, RawSQL
 from orionbelt.dialect.base import (
     AmbiguousTableReferenceError,
@@ -365,6 +367,41 @@ class BigQueryDialect(Dialect):
             f"CASE WHEN {upper} < 0 THEN {upper} - {half} "
             f"WHEN {lower} < 0 THEN ({lower} + {upper}) / {two} "
             f"ELSE {lower} + {half} END"
+        )
+
+    def _compile_percentile(self, name: str, args: list[Expr], fraction: Decimal) -> str:
+        """BigQuery: the percentile read from the sorted values, as the median is.
+
+        ``PERCENTILE_CONT`` and ``PERCENTILE_DISC`` are window functions only.
+        Positions are worked out in integers from the fraction ``p / d``.
+
+        - Discrete: the ``ceil(p * n / d)``-th value, in the column's own type.
+        - Continuous: the values at offsets ``floor(h)`` and ``ceil(h)`` of
+          ``h = p * (n - 1) / d``, ``lower`` and ``upper``, and the weight
+          ``w``, the remainder of ``h`` as a BIGNUMERIC, exact. At a whole
+          position it is ``lower`` itself. Otherwise, with two values of the
+          same sign, ``lower + (upper - lower) * w``, whose difference fits;
+          of opposite signs, ``lower * (1 - w) + upper * w``, whose terms
+          shrink. Over INT64 and NUMERIC values that is exact, as a
+          BIGNUMERIC; over FLOAT64 it is a FLOAT64.
+        """
+        col_sql = self.compile_expr(args[0])
+        numerator, denominator = self.percentile_ratio(fraction)
+        values = f"ARRAY_AGG({col_sql} IGNORE NULLS ORDER BY {col_sql})"
+        count = f"COUNT({col_sql})"
+        if name == "PERCENTILE_DISC":
+            position = f"DIV({numerator} * {count} + {denominator - 1}, {denominator})"
+            return f"{values}[SAFE_OFFSET({position} - 1)]"
+        scaled = f"{numerator} * ({count} - 1)"
+        lower = f"{values}[SAFE_OFFSET(DIV({scaled}, {denominator}))]"
+        upper = f"{values}[SAFE_OFFSET(DIV({scaled} + {denominator - 1}, {denominator}))]"
+        remainder = f"MOD({scaled}, {denominator})"
+        weight = f"(CAST({remainder} AS BIGNUMERIC) / {denominator})"
+        return (
+            f"CASE WHEN {remainder} = 0 THEN {lower} "
+            f"WHEN {lower} < 0 AND {upper} >= 0 "
+            f"THEN {lower} * (1 - {weight}) + {upper} * {weight} "
+            f"ELSE {lower} + ({upper} - {lower}) * {weight} END"
         )
 
     def _compile_mode(self, args: list[Expr]) -> str:

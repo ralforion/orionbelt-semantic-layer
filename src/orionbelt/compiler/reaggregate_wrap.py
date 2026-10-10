@@ -31,6 +31,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import replace
+from decimal import Decimal
 from itertools import count
 
 from orionbelt.ast.nodes import (
@@ -81,6 +82,8 @@ _FUNCTIONS: dict[ReaggregateAggType, str] = {
     ReaggregateAggType.MAX: "MAX",
     ReaggregateAggType.COUNT: "COUNT",
     ReaggregateAggType.MEDIAN: "MEDIAN",
+    ReaggregateAggType.PERCENTILE_CONT: "PERCENTILE_CONT",
+    ReaggregateAggType.PERCENTILE_DISC: "PERCENTILE_DISC",
 }
 
 
@@ -221,7 +224,12 @@ def _stage_two(
         if exact is not None:
             expr, target = exact
         else:
-            expr = FunctionCall(name=_FUNCTIONS[m.reaggregate_aggregation], args=[arg])
+            fraction = None
+            if metric is not None and metric.percentile is not None:
+                fraction = Decimal(str(metric.percentile))
+            expr = FunctionCall(
+                name=_FUNCTIONS[m.reaggregate_aggregation], args=[arg], fraction=fraction
+            )
             target = resolve_metric_data_type(metric, model.settings) if metric else None
         if target is not None:
             expr = dialect.cast_to_obml_type(expr, target)

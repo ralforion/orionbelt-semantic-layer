@@ -1001,6 +1001,7 @@ class ReferenceResolver:
                     format=raw_meas.get("format"),
                     allow_fan_out=raw_meas.get("allowFanOut", False),
                     delimiter=raw_meas.get("delimiter"),
+                    percentile=raw_meas.get("percentile"),
                     within_group=raw_meas.get("withinGroup"),
                     owner=raw_meas.get("owner"),
                     synonyms=raw_meas.get("synonyms", []),
@@ -1095,10 +1096,11 @@ class ReferenceResolver:
                 # The other branches pass only their own fields to the model, so
                 # these would be dropped silently rather than refused there.
                 if metric_type != MetricType.REAGGREGATE and any(
-                    key in raw_metric for key in ("per", "aggregation", "having")
+                    key in raw_metric for key in ("per", "aggregation", "having", "percentile")
                 ):
                     raise ValueError(
-                        "'per', 'aggregation' and 'having' are only valid on reaggregate metrics"
+                        "'per', 'aggregation', 'having' and 'percentile' are only valid on "
+                        "reaggregate metrics"
                     )
                 concept_links = _parse_concept_mappings(
                     raw_metric, f"metrics.{name}", prefixes, errors, source_map
@@ -2186,9 +2188,16 @@ def _reaggregate_cycle(name: str, raw_metrics: dict[str, Any]) -> list[str]:
 
 
 #: Reaggregate aggregations whose value is one of their inner values (or, for
-#: a median, the mean of two): an average when those are averages.
+#: a median or continuous percentile, between two): an average when those are
+#: averages.
 _PICKS_AN_INNER_VALUE = frozenset(
-    {ReaggregateAggType.MIN, ReaggregateAggType.MAX, ReaggregateAggType.MEDIAN}
+    {
+        ReaggregateAggType.MIN,
+        ReaggregateAggType.MAX,
+        ReaggregateAggType.MEDIAN,
+        ReaggregateAggType.PERCENTILE_CONT,
+        ReaggregateAggType.PERCENTILE_DISC,
+    }
 )
 
 
@@ -2196,9 +2205,9 @@ def _average_path(ref: str, measures: dict[str, Measure], raw_metrics: dict[str,
     """The chain from *ref* down to an average its value is, if it is one.
 
     A measure aggregated with ``avg`` and a reaggregate metric with ``avg`` are
-    averages; a reaggregate ``min`` or ``max`` picks one of its inner values,
-    and a ``median`` one or the mean of two, so each is an average when those
-    are. A ``sum`` or ``count`` is not.
+    averages; a reaggregate ``min``, ``max`` or ``percentile_disc`` picks one
+    of its inner values, and a ``median`` or ``percentile_cont`` one or a point
+    between two, so each is an average when those are. A ``sum`` or ``count`` is not.
     """
     path: list[str] = []
     current: object = ref

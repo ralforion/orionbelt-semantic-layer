@@ -234,7 +234,19 @@ categorical, additive, non-additive
 ## Aggregation Values
 
 Core: sum, count, count_distinct, avg, min, max,
-any_value, median, mode, listagg
+any_value, median, percentile_cont, percentile_disc, mode, listagg
+
+Percentiles take `percentile:` (0 < p < 1, at most 9 decimal places; 0.9 for
+the 90th) and one column or an expression. `percentile_cont` interpolates
+between the values around position p * (n - 1); `percentile_disc` is the first
+value whose cumulative share reaches p, a value from the data:
+
+```yaml
+  P90 Order Value:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: percentile_cont
+    percentile: 0.9
+```
 
 Statistical (v2.6+): stddev, stddev_pop, variance, var_pop,
 corr, covar_pop, covar_samp, regr_slope, regr_intercept
@@ -381,7 +393,8 @@ metrics:
     type: reaggregate
     measure: Revenue        # stage 1: a measure (not a metric), unchanged
     per: [Customer]         # dimensions added to the query grain for stage 1
-    aggregation: avg        # stage 2: sum | avg | min | max | count | median
+    aggregation: avg        # stage 2: sum | avg | min | max | count | median |
+                            #   percentile_cont | percentile_disc (+ percentile:)
 
   Avg Orders per Customer:
     type: reaggregate
@@ -417,11 +430,12 @@ the final rows. Select it beside other measures (other facts too), in `having` a
   `Order Date:month` that averages daily totals within each month (only days
   with rows count)
 - `aggregation:` required; `avg` is exact over integers, `count` is bigint,
-  `sum`/`min`/`max` keep the measure's type, `median` is the exact,
-  continuous median, typed as a `median` measure is
+  `sum`/`min`/`max` keep the measure's type, `median`, `percentile_cont`
+  and `percentile_disc` are typed as those measure aggregations are; the
+  percentiles take `percentile:`
 - `avg` over an average is refused (`REAGGREGATE_AVG_OF_AVG`): an `avg`
-  measure, an `avg` reaggregate metric, or a `min`/`max`/`median` one over
-  either
+  measure, an `avg` reaggregate metric, or a `min`/`max`/`median`/percentile
+  one over either
 - Every `per` dimension already in the query (at its grain or finer):
   `REAGGREGATE_NO_OP` warning
 - Selects beside any measure or metric, including total/grain, filterContext,

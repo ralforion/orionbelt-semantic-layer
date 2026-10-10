@@ -1710,8 +1710,9 @@ and subtract from it. Signatures, arity and pinned semantics for the functions a
       },
       "supported_aggregations": [
         "any_value", "avg", "corr", "count", "count_distinct", "covar_pop",
-        "covar_samp", "listagg", "max", "median", "min", "mode", "stddev",
-        "stddev_pop", "sum", "var_pop", "variance"
+        "covar_samp", "listagg", "max", "median", "min", "mode",
+        "percentile_cont", "percentile_disc", "stddev", "stddev_pop", "sum",
+        "var_pop", "variance"
       ],
       "supported_functions": [
         "abs", "ceil", "coalesce", "concat", "div", "ends_with", "exp", "floor",

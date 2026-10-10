@@ -723,6 +723,9 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
                     expr = f"{incl.field} {incl.op}"
                 g.add((meas_uri, OBSL.filterContextInclude, Literal(expr)))
 
+        if meas.percentile is not None:
+            g.add((meas_uri, OBSL.percentile, Literal(Decimal(str(meas.percentile)))))
+
         # LISTAGG-style extras
         if meas.delimiter is not None:
             g.add((meas_uri, OBSL.delimiter, Literal(meas.delimiter)))
@@ -821,6 +824,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
                 g.add((met_uri, OBSL.per, Literal(per_dim)))
             for condition in met.having:
                 g.add((met_uri, OBSL.reaggregateHaving, Literal(condition.text)))
+            if met.percentile is not None:
+                g.add((met_uri, OBSL.percentile, Literal(Decimal(str(met.percentile)))))
 
         if met.description:
             g.add((met_uri, RDFS.comment, Literal(met.description)))

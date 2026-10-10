@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from decimal import Decimal
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, Select, Unnest
 from orionbelt.dialect.base import (
@@ -657,6 +658,34 @@ class MySQLDialect(Dialect):
             f"({at(f'FLOOR((COUNT({col_sql}) + 1) / 2)')} / 2"
             f" + {at(f'CEIL((COUNT({col_sql}) + 1) / 2)')} / 2)"
         )
+
+    def _compile_percentile(self, name: str, args: list[Expr], fraction: Decimal) -> str:
+        """MySQL: the percentile read from the sorted values, as the median is.
+
+        Positions are worked out in integers from the fraction ``p / d``: the
+        discrete one is the ``ceil(p * n / d)``-th value; the continuous one
+        weighs the values around ``h = p * (n - 1) / d`` by its remainder,
+        ``lower * (1 - w) + upper * w``, whose terms shrink rather than
+        overflow. Both are DOUBLEs, read back from the concatenated string.
+        """
+        col_sql = self.compile_expr(args[0])
+        numerator, denominator = self.percentile_ratio(fraction)
+        values = f"GROUP_CONCAT({col_sql} ORDER BY {col_sql} SEPARATOR ',')"
+        count = f"COUNT({col_sql})"
+
+        def at(position: str) -> str:
+            value = f"SUBSTRING_INDEX(SUBSTRING_INDEX({values}, ',', {position}), ',', -1)"
+            return f"CAST({value} AS DOUBLE)"
+
+        if name == "PERCENTILE_DISC":
+            return at(f"({numerator} * {count} + {denominator - 1}) DIV {denominator}")
+        scaled = f"{numerator} * ({count} - 1)"
+        lower = at(f"{scaled} DIV {denominator} + 1")
+        upper = at(f"({scaled} + {denominator - 1}) DIV {denominator} + 1")
+        # As a DOUBLE: an integer quotient is a DECIMAL of four places by
+        # default (``div_precision_increment``), which cuts 0.00001.
+        weight = f"CAST({scaled} MOD {denominator} AS DOUBLE) / {denominator}"
+        return f"({lower} * (1 - {weight}) + {upper} * {weight})"
 
     #: How deep :meth:`compile_select` is in the statement; 0 outside it.
     _select_depth = 0

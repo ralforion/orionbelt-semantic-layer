@@ -33,6 +33,8 @@ class SnowflakeDialect(Dialect):
         "boolean": "BOOLEAN",
     }
 
+    _percentile_cont_over_doubles = True
+
     def render_obml_type(self, obml_type: OBMLType) -> str:
         if isinstance(obml_type, DecimalType):
             p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)

@@ -44,7 +44,9 @@ from orionbelt.compiler.outer_order_by import remap_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.models.semantic import SemanticModel
 
-_UNSUPPORTED_TOTAL_AGGS = frozenset({"MEDIAN", "MODE", "LISTAGG", "ANY_VALUE"})
+_UNSUPPORTED_TOTAL_AGGS = frozenset(
+    {"MEDIAN", "PERCENTILE_CONT", "PERCENTILE_DISC", "MODE", "LISTAGG", "ANY_VALUE"}
+)
 
 
 def _reagg_func(aggregation: str) -> str:

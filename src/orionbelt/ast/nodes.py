@@ -94,6 +94,10 @@ class FunctionCall:
     distinct: bool = False
     order_by: list[OrderByItem] = field(default_factory=list)
     separator: str | None = None
+    # The fraction of PERCENTILE_CONT / PERCENTILE_DISC. A field of its own, as
+    # the separator is, rather than an argument: measure filters wrap every
+    # argument, and the multi-fact plan reads a second one as a second column.
+    fraction: Decimal | None = None
 
 
 @dataclass(frozen=True)

@@ -107,7 +107,7 @@ Caller-level authentication is a separate axis and does exist: `AUTH_MODE=api_ke
 | Family | OBSL | AtScale |
 |---|---|---|
 | Standard | `sum`, `count`, `count_distinct`, `avg`, `min`, `max` | `sum`, `count`, `distinct count`, `avg`, `min`, `max` |
-| Shape | `any_value`, `median`, `mode`, `listagg` | Semi-additive measures (last non-empty, first non-empty) — OLAP-native |
+| Shape | `any_value`, `median`, `percentile_cont`, `percentile_disc`, `mode`, `listagg` | Semi-additive measures (last non-empty, first non-empty) — OLAP-native |
 | Statistical | `stddev`, `stddev_pop`, `variance`, `var_pop` | Via MDX calculated members (`Stdev`, `Var`) — not first-class measure types |
 | Association / regression | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via MDX calculated members — not first-class measure types |
 | Grand totals | `total: bool` on the measure | Native to OLAP — every grain rolls up by construction |

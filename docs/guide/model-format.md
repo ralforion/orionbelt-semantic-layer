@@ -671,6 +671,7 @@ measures:
 | `grain` | object | No | [Grain override](grain-filter-context.md#grain-override) -- controls aggregation grain independently from query dimensions |
 | `filterContext` | object | No | [Filter context override](grain-filter-context.md#filter-context) -- controls which query WHERE filters apply |
 | `delimiter` | string | No | Separator for `listagg` aggregation (default: `","`) |
+| `percentile` | number | With `percentile_cont` / `percentile_disc` | The percentile's fraction, between 0 and 1 exclusive with at most 9 decimal places (`0.9` for the 90th percentile). Required by the two percentile aggregations, refused with any other |
 | `withinGroup` | object | No | Ordering clause for `listagg` — specifies `column` and `order` (`ASC`/`DESC`). The `column` must resolve to a real data object column (`UNKNOWN_DATA_OBJECT` / `UNKNOWN_COLUMN`). With `distinct: true` it must additionally be the one being aggregated (error code `WITHIN_GROUP_NOT_IN_DISTINCT_ARGS`). |
 | `dataType` | string | No | OBML data type (e.g. `decimal(18, 4)`, `bigint`). Overrides automatic type inference for CAST wrapping. |
 | `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
@@ -694,8 +695,35 @@ measures:
 | `max` | `MAX(expr)` | Latest date |
 | `any_value` | `ANY_VALUE(expr)` | Any single value from the group (`any()` in ClickHouse) |
 | `median` | `MEDIAN(expr)` | Exact, continuous median: the mean of the two middle values of an even count, on every dialect ([per-dialect SQL](dialects.md#median)) |
+| `percentile_cont` | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY expr)` | Exact, continuous percentile at `percentile: p`, interpolated between the two values around position `p * (n - 1)` (90th percentile order value); see [Percentiles](#percentiles) |
+| `percentile_disc` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY expr)` | Exact, discrete percentile: the first value whose cumulative share of the group reaches `p`, a value from the data; see [Percentiles](#percentiles) |
 | `mode` | `MODE(expr)` | Most frequent value (`MODE() WITHIN GROUP (ORDER BY ...)` in Postgres, `topK(1)(col)[1]` in ClickHouse; not supported in Dremio) |
 | `listagg` | `LISTAGG(expr, sep)` | Concatenated values (dialect-specific: `STRING_AGG` in Postgres, `ARRAY_JOIN(COLLECT_LIST(...))` in Databricks, `arrayStringConcat(groupArray(...))` in ClickHouse) |
+
+#### Percentiles
+
+`percentile_cont` and `percentile_disc` take the fraction in `percentile` and one column (or an `expression`):
+
+```yaml
+measures:
+  P90 Order Value:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: percentile_cont    # 9.1 for the values 1 to 10
+    percentile: 0.9
+  P90 Order Value (Observed):
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: percentile_disc    # 9 for the values 1 to 10
+    percentile: 0.9
+```
+
+| | `percentile_cont` | `percentile_disc` |
+|---|---|---|
+| Value | interpolated between the two values around position `p * (n - 1)` | the first value whose cumulative share of the group reaches `p` |
+| At 0.3 of 1 to 10 | 3.7 | 3 |
+| At 0.5 | the `median` | the lower middle value of an even count |
+| Result type | as `median`: a floating-point number on most engines | a value of the column (a DOUBLE on MySQL and Dremio) |
+
+`percentile` is required by the two percentile aggregations and refused with any other; `distinct` is refused with them. Like `median`, a percentile cannot be a `total` (each window would need its own ordering). Both answer the same on every dialect; see [per-dialect SQL](dialects.md#percentile_cont-and-percentile_disc).
 
 #### Statistical aggregates
 
@@ -1029,7 +1057,7 @@ metrics:
     type: reaggregate
     measure: Revenue          # stage 1: an existing measure, unchanged
     per: [Customer]           # dimensions added to the query's grain for stage 1
-    aggregation: avg          # stage 2: sum | avg | min | max | count | median
+    aggregation: avg          # stage 2: sum | avg | min | max | count | median | percentile_cont | percentile_disc
 
   Avg Orders per Customer:
     type: reaggregate
@@ -1114,8 +1142,8 @@ Rules:
 - `having` is a list of conditions, all of which a stage-1 group has to meet. Each takes a query filter's `field`, `op` and `value` (any operator but `exists` / `nonexists`), and `field` names a measure, a synthesized count included: a metric is refused (`REAGGREGATE_HAVING_MEASURE_ONLY`), an unknown name is `UNKNOWN_MEASURE`. Metrics that differ only in their `aggregation` share stage 1 when their `having` is the same too.
 - `per` lists model dimensions (`REAGGREGATE_UNKNOWN_DIMENSION`), each optionally at a time grain (`'Order Date:day'`); a bare name groups by the dimension's declared `timeGrain`. The grain needs a date-bearing column and a `resultType` that can hold the bucket, as in a query.
 - If every `per` dimension is already in the query, at its grain or a finer one, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
-- An average of averages is refused (`REAGGREGATE_AVG_OF_AVG`): `aggregation: avg` over a measure with `aggregation: avg`, over a reaggregate metric with `aggregation: avg`, or over a `min`, `max` or `median` reaggregate metric of either, which picks one of those averages (or, for an even count, the mean of two). Each group would count alike however many rows its average covers. A `sum` or `count` over averages is no longer an average, so `avg` over it is allowed, as are `sum`, `min`, `max`, `count` and `median` over an average. To average over the finer groups instead, name both dimensions in one `per`.
-- Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type; `median` is the exact, continuous median of the stage-1 values (the mean of the two middle ones for an even count), typed as a `median` measure is on each dialect (see [Dialects](dialects.md#median)). A declared `dataType` wins.
+- An average of averages is refused (`REAGGREGATE_AVG_OF_AVG`): `aggregation: avg` over a measure with `aggregation: avg`, over a reaggregate metric with `aggregation: avg`, or over a `min`, `max`, `median`, `percentile_cont` or `percentile_disc` reaggregate metric of either, which picks one of those averages (or a point between two). Each group would count alike however many rows its average covers. A `sum` or `count` over averages is no longer an average, so `avg` over it is allowed, as are `sum`, `min`, `max`, `count`, `median` and the percentiles over an average. To average over the finer groups instead, name both dimensions in one `per`.
+- Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type; `median` is the exact, continuous median of the stage-1 values (the mean of the two middle ones for an even count), typed as a `median` measure is on each dialect (see [Dialects](dialects.md#median)); `percentile_cont` and `percentile_disc` take `percentile:` as the measure aggregations do and are typed as they are. A declared `dataType` wins.
 - Not available: `grouping: rollup` / `cube` (`REAGGREGATE_WITH_ROLLUP`), since each subtotal row needs a first stage of its own. A derived metric that combines a reaggregate metric with a total, grain override, filterContext, cumulative, period-over-period or window component in one formula (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`); select those metrics side by side instead.
 
 ### Metric Properties
@@ -1131,7 +1159,8 @@ Rules:
 | `grainToDate` | `"year"` \| `"quarter"` \| `"month"` \| `"week"` | — | Reset boundary (mutually exclusive with `window`) |
 | `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics. Each entry must be a model dimension in the query's SELECT. Cumulative metrics are also partitioned by the query's other dimensions. |
 | `per` | list | — | Dimensions added to the query's grain for the first stage (required for reaggregate) |
-| `aggregation` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` \| `"median"` | — | Second-stage aggregation (required for reaggregate) |
+| `aggregation` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` \| `"median"` \| `"percentile_cont"` \| `"percentile_disc"` | — | Second-stage aggregation (required for reaggregate) |
+| `percentile` | number | — | Fraction of a `percentile_cont` / `percentile_disc` second stage, between 0 and 1 exclusive (reaggregate only) |
 | `having` | list | — | Conditions (`field`, `op`, `value`) over measures that each stage-1 group has to meet (reaggregate only) |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
 | `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics) |

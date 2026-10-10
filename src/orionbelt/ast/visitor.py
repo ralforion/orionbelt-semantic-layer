@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from orionbelt.ast.nodes import (
@@ -98,7 +99,7 @@ class ASTVisitor:
 
     def visit_functioncall(self, node: FunctionCall) -> Any:
         args = [self.visit(a) for a in node.args]
-        return FunctionCall(name=node.name, args=args, distinct=node.distinct)
+        return replace(node, args=args)
 
     def visit_intimezone(self, node: InTimeZone) -> Any:
         return InTimeZone(expr=self.visit(node.expr), zone=node.zone, from_zone=node.from_zone)

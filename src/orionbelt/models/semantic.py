@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -40,6 +41,8 @@ class AggregationType(StrEnum):
     MAX = "max"
     ANY_VALUE = "any_value"
     MEDIAN = "median"
+    PERCENTILE_CONT = "percentile_cont"
+    PERCENTILE_DISC = "percentile_disc"
     MODE = "mode"
     LISTAGG = "listagg"
     # Statistical aggregates (v2.6+) — spread, association, regression
@@ -83,6 +86,36 @@ SINGLE_COLUMN_STATISTICAL_AGGREGATIONS: frozenset[str] = frozenset(
         AggregationType.VAR_POP.value,
     }
 )
+
+
+#: Aggregations that take a ``percentile`` fraction.
+PERCENTILE_AGGREGATIONS: frozenset[str] = frozenset(
+    {AggregationType.PERCENTILE_CONT.value, AggregationType.PERCENTILE_DISC.value}
+)
+
+#: The most decimal places a ``percentile`` may have. Positions in the sorted
+#: values are worked out in 64-bit integers from the fraction as a ratio of
+#: ``10 ** places``, which this keeps far from overflowing.
+PERCENTILE_MAX_PLACES = 9
+
+
+def check_percentile(aggregation: str, percentile: float | None) -> None:
+    """Refuse a ``percentile`` that is missing, stray, or not a usable fraction."""
+    if aggregation not in PERCENTILE_AGGREGATIONS:
+        if percentile is not None:
+            raise ValueError(
+                "'percentile' is only valid with aggregation 'percentile_cont' or 'percentile_disc'"
+            )
+        return
+    if percentile is None:
+        raise ValueError(f"Aggregation '{aggregation}' requires 'percentile' (e.g. 0.9)")
+    if isinstance(percentile, bool) or not 0 < percentile < 1:
+        raise ValueError(f"'percentile' must be between 0 and 1 (exclusive), got {percentile}")
+    exponent = Decimal(str(percentile)).as_tuple().exponent
+    if isinstance(exponent, int) and -exponent > PERCENTILE_MAX_PLACES:
+        raise ValueError(
+            f"'percentile' takes at most {PERCENTILE_MAX_PLACES} decimal places, got {percentile}"
+        )
 
 
 class JoinType(StrEnum):
@@ -238,8 +271,10 @@ class ReaggregateAggType(StrEnum):
     """Second-stage aggregation of a ``reaggregate`` metric.
 
     Applied to the measure's per-group values, so ``avg`` is the unweighted
-    mean of those values, not the row-weighted mean of the measure, and
-    ``median`` is the exact, continuous median of them.
+    mean of those values, not the row-weighted mean of the measure,
+    ``median`` is the exact, continuous median of them, and
+    ``percentile_cont`` / ``percentile_disc`` their percentile at
+    ``percentile``.
     """
 
     SUM = "sum"
@@ -248,6 +283,8 @@ class ReaggregateAggType(StrEnum):
     MAX = "max"
     COUNT = "count"
     MEDIAN = "median"
+    PERCENTILE_CONT = "percentile_cont"
+    PERCENTILE_DISC = "percentile_disc"
 
 
 class GrainToDate(StrEnum):
@@ -970,6 +1007,9 @@ class Measure(BaseModel):
     allow_fan_out: bool = Field(False, alias="allowFanOut")
     delimiter: str | None = None
     within_group: WithinGroup | None = Field(None, alias="withinGroup")
+    percentile: float | None = None
+    """The fraction of ``percentile_cont`` / ``percentile_disc``, between 0 and
+    1 (0.9 for the 90th percentile)."""
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
@@ -1128,6 +1168,20 @@ class Measure(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_percentile(self) -> Measure:
+        """A percentile orders one value per row, at a fraction it requires."""
+        agg = self.aggregation.lower()
+        check_percentile(agg, self.percentile)
+        if agg in PERCENTILE_AGGREGATIONS:
+            if self.expression is None and len(self.columns) != 1:
+                raise ValueError(
+                    f"Aggregation '{agg}' requires exactly 1 column, got {len(self.columns)}"
+                )
+            if self.distinct:
+                raise ValueError(f"Aggregation '{agg}' does not take 'distinct'")
+        return self
+
 
 class ReaggregateHaving(BaseModel):
     """A condition on the first stage of a ``reaggregate`` metric.
@@ -1171,6 +1225,7 @@ _REAGGREGATE_FIELDS = frozenset(
         "per",
         "aggregation",
         "having",
+        "percentile",
         "data_type",
         "description",
         "format",
@@ -1223,6 +1278,8 @@ class Metric(BaseModel):
     # Conditions on the first-stage groups; only those meeting all of them are
     # aggregated again.
     having: list[ReaggregateHaving] = Field(default_factory=list)
+    # The fraction of a ``percentile_cont`` / ``percentile_disc`` second stage.
+    percentile: float | None = None
     # Common
     data_type: str | None = Field(None, alias="dataType")
     description: str | None = None
@@ -1248,9 +1305,10 @@ class Metric(BaseModel):
         if self.type == MetricType.REAGGREGATE:
             self._validate_reaggregate()
             return self
-        if self.per or self.aggregation is not None or self.having:
+        if self.per or self.aggregation is not None or self.having or self.percentile is not None:
             raise ValueError(
-                "'per', 'aggregation' and 'having' are only valid on reaggregate metrics"
+                "'per', 'aggregation', 'having' and 'percentile' are only valid on "
+                "reaggregate metrics"
             )
         if self.type == MetricType.DERIVED:
             if not self.expression:
@@ -1329,6 +1387,7 @@ class Metric(BaseModel):
             raise ValueError("Reaggregate metric 'per' entries must be unique")
         if self.aggregation is None:
             raise ValueError("Reaggregate metrics require 'aggregation'")
+        check_percentile(self.aggregation.value, self.percentile)
         # Checked against what was supplied, not against values: a default such
         # as cumulativeType 'sum' is fine, an explicit one is a setting that
         # would have no effect.

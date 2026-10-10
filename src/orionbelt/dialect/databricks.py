@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, Unnest
 from orionbelt.dialect.base import (
     CrossColumnOrderNotSupportedError,
@@ -288,6 +290,24 @@ class DatabricksDialect(Dialect):
                 raise CrossColumnOrderNotSupportedError("databricks", col_sql, ob_sql)
             inner = f"SORT_ARRAY({inner}, false)" if ob_expr.desc else f"SORT_ARRAY({inner})"
         return f"ARRAY_JOIN({inner}, '{escaped_sep}')"
+
+    def _compile_percentile(self, name: str, args: list[Expr], fraction: Decimal) -> str:
+        """The continuous percentile as the ordered-set aggregate; the discrete
+        one read from the sorted values.
+
+        ``PERCENTILE_DISC`` returns a DOUBLE whatever it orders: the value of
+        a BIGINT 9007199254740993 comes back as 9007199254740992. The
+        ``ceil(p * n / d)``-th of the sorted values (``collect_list`` skips
+        NULLs) is that value in its own type; ``get`` is NULL past the end,
+        as over no values, where ``element_at`` refuses position 0.
+        """
+        if name == "PERCENTILE_CONT":
+            return super()._compile_percentile(name, args, fraction)
+        col_sql = self.compile_expr(args[0])
+        numerator, denominator = self.percentile_ratio(fraction)
+        ceiling = f"({numerator} * count({col_sql}) + {denominator - 1}) DIV {denominator}"
+        position = f"CAST({ceiling} AS INT)"
+        return f"get(array_sort(collect_list({col_sql})), {position} - 1)"
 
     def current_date_sql(self) -> str:
         return "current_date()"

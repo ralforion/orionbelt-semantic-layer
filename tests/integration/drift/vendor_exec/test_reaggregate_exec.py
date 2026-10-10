@@ -12,8 +12,8 @@ a cumulative, period-over-period and window metric - the reaggregate pass wraps
 what they built, which each engine has to accept as one query. A reaggregate
 metric over another one nests the inner metric's stages in its first. A
 metric's ``having`` is its first stage's HAVING, and a country it empties
-reads 0 for ``count`` through the outer COALESCE. A ``median`` second stage is
-each engine's exact median rendering over the first stage's values.
+reads 0 for ``count`` through the outer COALESCE. A ``median`` or percentile
+second stage is each engine's exact rendering over the first stage's values.
 
 The rows are built per engine rather than read from the corpus seed: the seed
 has no NULL group and no integers past a double's mantissa, and Dremio has no
@@ -166,6 +166,18 @@ metrics:
     measure: Avg Revenue per Customer
     per: [Order Month]
     aggregation: median
+  Lower Quartile Customer Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: percentile_cont
+    percentile: 0.25
+  Lower Quartile Customer Observed:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: percentile_disc
+    percentile: 0.25
   Median Orders per Customer:
     type: reaggregate
     measure: Orders Count
@@ -410,17 +422,31 @@ def _assert_grouped(target: VendorTarget, model: SemanticModel) -> None:
         "Avg Orders per Customer",
         "Median Customer Revenue",
         "Median Month Avg Customer",
+        "Lower Quartile Customer Revenue",
+        "Lower Quartile Customer Observed",
     ]
     got = _by_country(target, model, measures)
     # Decimal equality ignores trailing zeros, so 27 and 27.00 agree; 1.33 is
     # only reached if the second stage is cast to the model's decimal type.
     # The medians: of the customers (DE 1, 30, 50; FR 5, 1000; NULL 10, 30),
     # and of the months' average customer (DE Jan 40, Feb 1; FR Jan 5, Feb
-    # 1000; NULL Feb 20 alone).
+    # 1000; NULL Feb 20 alone). The lower quartile of the customers: at
+    # position 0.25 * (n - 1) (DE 15.5, FR 253.75, NULL 15), and the first
+    # customer whose cumulative share reaches 0.25 (DE 1, FR 5, NULL 10).
     want = {
-        "DE": (81, 27, 50, 3, Decimal("1.33"), 30, Decimal("20.5")),
-        "FR": (1005, Decimal("502.5"), 1000, 2, 1, Decimal("502.5"), Decimal("502.5")),
-        None: (40, 20, 30, 2, Decimal("1.5"), 20, 20),
+        "DE": (81, 27, 50, 3, Decimal("1.33"), 30, Decimal("20.5"), Decimal("15.5"), 1),
+        "FR": (
+            1005,
+            Decimal("502.5"),
+            1000,
+            2,
+            1,
+            Decimal("502.5"),
+            Decimal("502.5"),
+            Decimal("253.75"),
+            5,
+        ),
+        None: (40, 20, 30, 2, Decimal("1.5"), 20, 20, 15, 10),
     }
     assert got == {k: tuple(Decimal(v) for v in vs) for k, vs in want.items()}, (
         f"{target.name}: {got}"

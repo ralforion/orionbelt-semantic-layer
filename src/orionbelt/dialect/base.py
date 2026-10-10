@@ -50,6 +50,9 @@ from orionbelt.models.functions import (
 from orionbelt.models.semantic import TimeGrain, WeekStart
 from orionbelt.models.types import DecimalType, OBMLType, SimpleType, parse_data_type
 
+#: The ordered-set percentile aggregates, rendered by :meth:`Dialect._compile_percentile`.
+_PERCENTILES = frozenset({"PERCENTILE_CONT", "PERCENTILE_DISC"})
+
 
 def _unit_of(arg: Expr) -> str:
     """The canonical time unit a literal argument names.
@@ -1575,6 +1578,42 @@ class Dialect(ABC):
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         return f"MEDIAN({col_sql})"
 
+    @staticmethod
+    def percentile_ratio(fraction: Decimal) -> tuple[int, int]:
+        """A percentile's *fraction* as an integer ratio ``(numerator, 10 **
+        places)``: 0.9 is ``(9, 10)``.
+
+        The renderings that find a position themselves (``0.3`` of 10 values
+        is the 3rd) compute it in integers: as a double, ``0.3 * 10`` is
+        3.0000000000000004, whose ceiling is the 4th.
+        """
+        exponent = fraction.as_tuple().exponent
+        places = -exponent if isinstance(exponent, int) and exponent < 0 else 0
+        denominator = 10**places
+        return int(fraction * denominator), denominator
+
+    #: Whether ``PERCENTILE_CONT`` orders the values as doubles. Its own result
+    #: type cuts digits otherwise: DuckDB keeps a DECIMAL's scale, Dremio loses
+    #: small DECIMAL values (as their medians do), and Snowflake truncates to
+    #: three places (3.799 for 3.8, 1.000 for 1.00009 over integers).
+    _percentile_cont_over_doubles = False
+
+    def _compile_percentile(self, name: str, args: list[Expr], fraction: Decimal) -> str:
+        """Compile PERCENTILE_CONT / PERCENTILE_DISC as the ordered-set aggregate.
+
+        ``PERCENTILE_CONT(f)`` interpolates between the two values around the
+        position ``f * (n - 1)``; ``PERCENTILE_DISC(f)`` is the first value
+        whose cumulative share of the group reaches ``f``. Postgres, DuckDB,
+        Snowflake, Databricks and Dremio agree on both (probed at 0.1, 0.25,
+        0.3, 0.5, 0.75 and 0.9 of 1..10); the others override it.
+        """
+        value = args[0]
+        if name == "PERCENTILE_CONT" and self._percentile_cont_over_doubles:
+            value = Cast(expr=value, type_name="DOUBLE")
+        col_sql = self.compile_expr(value)
+        literal = self.compile_expr(Literal(value=fraction))
+        return f"{name}({literal}) WITHIN GROUP (ORDER BY {col_sql})"
+
     def _compile_mode(self, args: list[Expr]) -> str:
         """Compile MODE — default uses MODE(col).
 
@@ -1992,6 +2031,7 @@ class Dialect(ABC):
                 distinct=distinct,
                 order_by=order_by,
                 separator=separator,
+                fraction=fraction,
             ):
                 # Reject aggregations explicitly listed as unsupported by the dialect.
                 # Per-function overrides (_compile_mode etc.) still apply for cases
@@ -2007,6 +2047,10 @@ class Dialect(ABC):
                 # MEDIAN: dialect-specific rendering
                 if fname.upper() == "MEDIAN":
                     return self._compile_median(args)
+                if fname.upper() in _PERCENTILES:
+                    if fraction is None:
+                        raise ValueError(f"{fname} needs a fraction")
+                    return self._compile_percentile(fname.upper(), args, fraction)
                 # Multi-field COUNT: concatenate fields for portability
                 # (Snowflake overrides to use native multi-arg syntax)
                 if fname.upper() == "COUNT" and len(args) > 1:
