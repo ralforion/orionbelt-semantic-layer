@@ -241,9 +241,14 @@ class PostgresDialect(Dialect):
         return self._render_null_guard(self._render_named_function(name, args), args)
 
     def _compile_median(self, args: list[Expr]) -> str:
-        """PostgreSQL: PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY col)."""
+        """PostgreSQL: PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY col).
+
+        The continuous median, the mean of the two middle values of an even
+        count, as every engine answers it. ``PERCENTILE_DISC`` returns the lower
+        of the two (2 for 1, 2, 10, 20, where the others answer 6).
+        """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
-        return f"PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY {col_sql})"
+        return f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {col_sql})"
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """PostgreSQL: MODE() WITHIN GROUP (ORDER BY col)."""

@@ -693,7 +693,7 @@ measures:
 | `min` | `MIN(expr)` | Earliest date |
 | `max` | `MAX(expr)` | Latest date |
 | `any_value` | `ANY_VALUE(expr)` | Any single value from the group (`any()` in ClickHouse) |
-| `median` | `MEDIAN(expr)` | Median value (`PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ...)` in Postgres) |
+| `median` | `MEDIAN(expr)` | Exact, continuous median: the mean of the two middle values of an even count, on every dialect ([per-dialect SQL](dialects.md#median)) |
 | `mode` | `MODE(expr)` | Most frequent value (`MODE() WITHIN GROUP (ORDER BY ...)` in Postgres, `topK(1)(col)[1]` in ClickHouse; not supported in Dremio) |
 | `listagg` | `LISTAGG(expr, sep)` | Concatenated values (dialect-specific: `STRING_AGG` in Postgres, `ARRAY_JOIN(COLLECT_LIST(...))` in Databricks, `arrayStringConcat(groupArray(...))` in ClickHouse) |
 

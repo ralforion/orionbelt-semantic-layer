@@ -1568,9 +1568,9 @@ class Dialect(ABC):
             raise UnsupportedAggregationError(self.name, name.lower())
 
     def _compile_median(self, args: list[Expr]) -> str:
-        """Compile MEDIAN — default uses MEDIAN(col).
+        """Compile MEDIAN — default uses MEDIAN(col), the exact continuous median.
 
-        Works for Snowflake, ClickHouse, Databricks, and Dremio. Postgres overrides.
+        Snowflake and Databricks; every other dialect overrides it.
         """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         return f"MEDIAN({col_sql})"
@@ -1779,24 +1779,28 @@ class Dialect(ABC):
         """Render a complete SQL AST to a dialect-specific string."""
         return self.compile_select(ast)
 
+    def _compile_with(self, node: Select) -> str:
+        """The ``WITH`` clause of *node*, or ``""`` when it has no CTEs."""
+        cte_parts = []
+        for cte in node.ctes:
+            if isinstance(cte.query, RawSQL):
+                cte_sql = cte.query.sql
+            elif isinstance(cte.query, UnionAll):
+                cte_sql = self.compile_union_all(cte.query)
+            elif isinstance(cte.query, Except):
+                cte_sql = self.compile_except(cte.query)
+            else:
+                cte_sql = self.compile_select(cte.query)
+            cte_parts.append(f"{self.quote_identifier(cte.name)} AS (\n{cte_sql}\n)")
+        return "WITH " + ",\n".join(cte_parts) if cte_parts else ""
+
     def compile_select(self, node: Select) -> str:
         """Compile a SELECT statement."""
         parts: list[str] = []
 
         # CTEs
         if node.ctes:
-            cte_parts = []
-            for cte in node.ctes:
-                if isinstance(cte.query, RawSQL):
-                    cte_sql = cte.query.sql
-                elif isinstance(cte.query, UnionAll):
-                    cte_sql = self.compile_union_all(cte.query)
-                elif isinstance(cte.query, Except):
-                    cte_sql = self.compile_except(cte.query)
-                else:
-                    cte_sql = self.compile_select(cte.query)
-                cte_parts.append(f"{self.quote_identifier(cte.name)} AS (\n{cte_sql}\n)")
-            parts.append("WITH " + ",\n".join(cte_parts))
+            parts.append(self._compile_with(node))
 
         # SELECT
         keyword = "SELECT DISTINCT" if node.distinct else "SELECT"

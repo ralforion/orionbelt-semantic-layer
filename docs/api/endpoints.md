@@ -1733,7 +1733,7 @@ and subtract from it. Signatures, arity and pinned semantics for the functions a
 ```
 
 An aggregation absent from `supported_aggregations` is refused at compile time with a 422 rather
-than emitted and failed at the warehouse: MySQL has no `median`, `mode`, `corr`, `covar_pop`,
+than emitted and failed at the warehouse: MySQL has no `mode`, `corr`, `covar_pop`,
 `covar_samp`, `regr_slope` or `regr_intercept`, and `measure` is Databricks-only. Every dialect
 renders the whole function catalog today, since an entry is admitted only once all eight can
 answer it.

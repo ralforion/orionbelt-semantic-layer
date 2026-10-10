@@ -241,6 +241,16 @@ class DremioDialect(Dialect):
         """
         return self._render_null_guard(self._render_named_function(name, args), args)
 
+    def _compile_median(self, args: list[Expr]) -> str:
+        """Dremio: MEDIAN over the values as doubles.
+
+        ``MEDIAN`` of a DECIMAL loses small values: the median of
+        0.000000001 in a DECIMAL(20, 9) came back as 0.0. As a double it is
+        the continuous median every engine answers.
+        """
+        col_sql = self.compile_expr(args[0]) if args else "NULL"
+        return f"MEDIAN(CAST({col_sql} AS DOUBLE))"
+
     def _compile_mode(self, args: list[Expr]) -> str:
         """Dremio does not support MODE aggregation."""
         raise UnsupportedAggregationError("dremio", "mode")

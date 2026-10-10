@@ -303,16 +303,26 @@ Most aggregations (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`) compile identically acro
 
 ### MEDIAN
 
+`median` is the exact, continuous median on every dialect: the middle value of an odd count, and the mean of the two middle values of an even one (6 for 1, 2, 10, 20). NULLs are ignored, and a group of NULLs is NULL.
+
 | Dialect | SQL |
 |---------|-----|
-| BigQuery | `APPROX_QUANTILES(col, 2)[OFFSET(1)]` |
-| ClickHouse | `MEDIAN(col)` |
+| BigQuery | the middle values `lower` and `upper` of `ARRAY_AGG(col IGNORE NULLS ORDER BY col)`, at `SAFE_OFFSET(DIV(COUNT(col) - 1, 2))` and `SAFE_OFFSET(DIV(COUNT(col), 2))`: `(lower + upper) / NUMERIC '2'` when their signs differ, `lower + (upper - lower) / NUMERIC '2'` when both are positive, `upper - (upper - lower) / NUMERIC '2'` when both are negative |
+| ClickHouse | `if(count(col) = 0, NULL, quantileExactInclusive(0.5)(toFloat64(col)))` |
 | Databricks | `MEDIAN(col)` |
-| Dremio | `MEDIAN(col)` |
-| DuckDB | `MEDIAN(col)` |
-| MySQL | `MAX(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY col))` |
-| Postgres | `PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY col)` |
+| Dremio | `MEDIAN(CAST(col AS DOUBLE))` |
+| DuckDB | `MEDIAN(CAST(col AS DOUBLE))` |
+| MySQL | the middle one or two values of `GROUP_CONCAT(col ORDER BY col SEPARATOR ',')`, picked with `SUBSTRING_INDEX`, read back as `DOUBLE`, each halved, then added |
+| Postgres | `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY col)` |
 | Snowflake | `MEDIAN(col)` |
+
+Each engine's own shortcut answers something else, measured on all eight: BigQuery's `APPROX_QUANTILES` is approximate, Postgres' `PERCENTILE_DISC` takes the lower middle value, ClickHouse's `median` samples (and has no upper-case `MEDIAN`), DuckDB's `MEDIAN` of a DECIMAL rounds to the column's scale, and Dremio's loses small DECIMAL values (0.0 for 0.000000001). The result is a floating-point number on Postgres, DuckDB, ClickHouse, MySQL and Dremio, and computed as one on Snowflake and Databricks (Snowflake's `MEDIAN` returns a NUMBER, but 9007199254740992 for a single 9007199254740993, as `PERCENTILE_CONT` does). On BigQuery it is exact NUMERIC for an INT64 or NUMERIC column (rounded once to its scale), BIGNUMERIC for a BIGNUMERIC one and FLOAT64 for a FLOAT64 one, the same for a filtered or multi-fact measure. The midpoint adds two values only of opposite signs and subtracts them only of the same sign, so it never overflows the column's type, and it rounds once, away from zero, like the mean.
+
+!!! warning "Dremio: a median over no rows returns no row"
+    An ungrouped query whose `median` reads no rows (a filter removed them all) returns no row on Dremio, with every other column of it, where the other engines return one row of NULLs. This is the engine's behavior for `MEDIAN` and `PERCENTILE_CONT` alike. Grouped queries are unaffected: a group with no rows has no row anywhere.
+
+!!! warning "Snowflake: a median of a wide NUMBER can be out of range"
+    Snowflake's `MEDIAN` of a `NUMBER(p, s)` is a `NUMBER(38, s + 3)`, so a value with more integer digits than `35 - s` (26 for a `NUMBER(38, 9)`) fails with "Number out of representable range" rather than returning a median. `PERCENTILE_CONT` behaves the same.
 
 ### MODE
 
@@ -344,7 +354,7 @@ Most aggregations (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`) compile identically acro
     ClickHouse and Databricks only support self-ordering (sorting by the aggregated column). Ordering by a different column raises an error at compile time.
 
 !!! warning "MySQL GROUP_CONCAT limitations"
-    MySQL's `GROUP_CONCAT` has a default length limit of 1024 bytes (`group_concat_max_len`). For large aggregations, users may need to increase this: `SET SESSION group_concat_max_len = 1000000`. Additionally, MySQL silently ignores `ORDER BY` when `DISTINCT` is also present in `GROUP_CONCAT`.
+    MySQL's `GROUP_CONCAT` silently cuts its result at `group_concat_max_len`, 1024 bytes by default. A statement that uses it (a `listagg` or a `median`) carries `/*+ SET_VAR(group_concat_max_len = 4294967295) */` on its outermost `SELECT`, which lifts the limit for that statement only; the hint has no effect anywhere else in the statement. Additionally, MySQL silently ignores `ORDER BY` when `DISTINCT` is also present in `GROUP_CONCAT`.
 
 !!! warning "Total not supported"
     `MEDIAN`, `MODE`, `LISTAGG`, and `ANY_VALUE` do not support `total: true` because they cannot be meaningfully re-aggregated via window functions.
@@ -468,4 +478,4 @@ curl http://127.0.0.1:8000/v1/dialects
 [portable function catalog](functions.md) it can render.
 Both are stated positively, so answering "may I use `median` on this warehouse?" needs no second
 call. Anything absent is refused at compile time with a 422 rather than emitted and failed at the
-database — MySQL, for instance, lists neither `median` nor `mode`.
+database — MySQL, for instance, does not list `mode`.

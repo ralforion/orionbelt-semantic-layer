@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, Unnest
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, Select, Unnest
 from orionbelt.dialect.base import (
     PORTABLE_DECIMAL_PRECISION,
     Dialect,
@@ -15,6 +16,10 @@ from orionbelt.dialect.base import (
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
+
+#: Lifts ``GROUP_CONCAT``'s 1024-byte cut for one statement (see
+#: ``MySQLDialect.compile_select``); 4294967295 is the variable's maximum.
+_LIFT_GROUP_CONCAT_LIMIT = "/*+ SET_VAR(group_concat_max_len = 4294967295) */"
 
 
 def _json_source_and_row_path(dialect: MySQLDialect, node: Unnest) -> tuple[str, str]:
@@ -212,7 +217,6 @@ class MySQLDialect(Dialect):
             supports_union_all_by_name=False,
             unsupported_aggregations=[
                 "mode",
-                "median",
                 # MySQL has no first-class correlation, covariance, or regression
                 # aggregates. Variance / standard deviation are supported natively.
                 "corr",
@@ -628,8 +632,57 @@ class MySQLDialect(Dialect):
         return self._render_div_operator(args, "DIV")
 
     def _compile_median(self, args: list[Expr]) -> str:
-        """MySQL does not support MEDIAN aggregation."""
-        raise UnsupportedAggregationError("mysql", "median")
+        """MySQL: the mean of the middle one or two values of the sorted group.
+
+        MySQL has no median, ordered-set aggregate or array. ``GROUP_CONCAT``
+        sorts the group's values into one string, and ``SUBSTRING_INDEX``
+        picks the value at each middle position, read back as a DOUBLE: a
+        fixed DECIMAL clipped the range a DOUBLE column holds (1e40 came back
+        as about 1e35, 1e-40 as 0). An empty or all-NULL group concatenates
+        to NULL. The string is cut at ``group_concat_max_len`` (1024 bytes by
+        default), which :meth:`compile_select` lifts for the statement.
+        """
+        col_sql = self.compile_expr(args[0]) if args else "NULL"
+        values = f"GROUP_CONCAT({col_sql} ORDER BY {col_sql} SEPARATOR ',')"
+
+        def at(position: str) -> str:
+            value = f"SUBSTRING_INDEX(SUBSTRING_INDEX({values}, ',', {position}), ',', -1)"
+            return f"CAST({value} AS DOUBLE)"
+
+        # Halved before adding, so two values near a DOUBLE's limit do not
+        # overflow their sum; exact for a double, whose halving only moves the
+        # exponent. Parenthesized as a whole: a derived metric's ``* 2`` or
+        # ``100 -`` must apply to the sum, not to its second half.
+        return (
+            f"({at(f'FLOOR((COUNT({col_sql}) + 1) / 2)')} / 2"
+            f" + {at(f'CEIL((COUNT({col_sql}) + 1) / 2)')} / 2)"
+        )
+
+    #: How deep :meth:`compile_select` is in the statement; 0 outside it.
+    _select_depth = 0
+
+    def compile_select(self, node: Select) -> str:
+        """The base SELECT, with ``group_concat_max_len`` lifted when it concatenates.
+
+        ``GROUP_CONCAT`` (a median, a ``listagg``) silently cuts its result at
+        1024 bytes by default: a median then reads the wrong position, a list
+        loses its tail. ``SET_VAR`` lifts the limit for one statement, and only
+        from the statement's outermost query block - probed: a hint in another
+        CTE does not apply. So the statement's own SELECT, after its WITH,
+        carries it.
+        """
+        if self._select_depth:
+            return super().compile_select(node)
+        self._select_depth += 1
+        try:
+            with_sql = self._compile_with(node)
+            body = super().compile_select(replace(node, ctes=[]))
+        finally:
+            self._select_depth -= 1
+        if "GROUP_CONCAT(" in with_sql or "GROUP_CONCAT(" in body:
+            keyword = "SELECT DISTINCT" if node.distinct else "SELECT"
+            body = f"{keyword} {_LIFT_GROUP_CONCAT_LIMIT}{body[len(keyword) :]}"
+        return f"{with_sql}\n{body}" if with_sql else body
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """MySQL does not support MODE aggregation at the dialect level."""

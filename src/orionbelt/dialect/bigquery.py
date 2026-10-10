@@ -326,10 +326,46 @@ class BigQueryDialect(Dialect):
         )
 
     def _compile_median(self, args: list[Expr]) -> str:
-        """BigQuery: PERCENTILE_DISC(col, 0.5) OVER()  — but as an aggregate
-        we use APPROX_QUANTILES(col, 2)[OFFSET(1)]."""
-        col_sql = self.compile_expr(args[0]) if args else "NULL"
-        return f"APPROX_QUANTILES({col_sql}, 2)[OFFSET(1)]"
+        """BigQuery: the mean of the middle one or two values of the sorted group.
+
+        BigQuery's exact ``PERCENTILE_CONT`` is a window function only, and
+        ``APPROX_QUANTILES`` is approximate (and the lower middle value: 2 for
+        1, 2, 10, 20). The sorted ``ARRAY_AGG`` indexed at both middle offsets
+        is an ordinary aggregate expression with the exact continuous median;
+        an empty or all-NULL group indexes no array and is NULL.
+
+        The midpoint of the two is exact and cannot overflow, whatever the type,
+        so it needs no knowledge of the column (a filtered measure's ``CASE`` or
+        a multi-fact leg's column carries none):
+
+        - dividing by ``NUMERIC '2'`` keeps an INT64 difference exact as
+          NUMERIC, where ``/ 2`` makes it FLOAT64 and loses digits past 2^53;
+          NUMERIC and BIGNUMERIC keep their type, FLOAT64 stays FLOAT64;
+        - two of opposite signs are ``(lower + upper) / 2``, whose sum fits,
+          where the difference of -6e28 and 6e28 overflows NUMERIC;
+        - two of the same sign step half their difference, which fits, from
+          the value nearer zero towards the other: ``lower + (upper - lower)
+          / 2`` when both are positive, ``upper - (upper - lower) / 2`` when
+          both are negative. The half rounds away from zero, as the mean does,
+          so the result is the mean rounded once (-2e-9 for -2e-9 and -1e-9,
+          where stepping up from ``lower`` gives -1e-9); halving each value
+          first would turn a NUMERIC 0.000000001 into twice the median.
+
+        The whole expression is parenthesized: it is a sum, and a derived
+        metric's ``* 2`` or ``100 -`` must apply to all of it.
+        """
+        col = args[0] if args else None
+        col_sql = self.compile_expr(col) if col is not None else "NULL"
+        values = f"ARRAY_AGG({col_sql} IGNORE NULLS ORDER BY {col_sql})"
+        lower = f"{values}[SAFE_OFFSET(DIV(COUNT({col_sql}) - 1, 2))]"
+        upper = f"{values}[SAFE_OFFSET(DIV(COUNT({col_sql}), 2))]"
+        two = "NUMERIC '2'"
+        half = f"({upper} - {lower}) / {two}"
+        return (
+            f"CASE WHEN {upper} < 0 THEN {upper} - {half} "
+            f"WHEN {lower} < 0 THEN ({lower} + {upper}) / {two} "
+            f"ELSE {lower} + {half} END"
+        )
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """BigQuery: APPROX_TOP_COUNT(col, 1)[OFFSET(0)].value."""

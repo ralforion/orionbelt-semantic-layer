@@ -6,12 +6,14 @@ import pytest
 
 from orionbelt.ast.builder import QueryBuilder, col, eq, lit
 from orionbelt.ast.nodes import (
+    CTE,
     AliasedExpr,
     BinaryOp,
     CaseExpr,
     Cast,
     ColumnRef,
     Expr,
+    From,
     FunctionCall,
     InList,
     IsNull,
@@ -570,7 +572,13 @@ class TestBigQueryDialect:
     def test_median(self, dialect: BigQueryDialect) -> None:
         expr = FunctionCall(name="MEDIAN", args=[ColumnRef(name="price")])
         sql = dialect.compile_expr(expr)
-        assert "APPROX_QUANTILES" in sql
+        assert "ARRAY_AGG(`price` IGNORE NULLS ORDER BY `price`)" in sql
+        assert "APPROX_QUANTILES" not in sql
+        # One midpoint for every type: sign-aware, divided by a NUMERIC so an
+        # INT64 stays exact, and a whole operand of a surrounding formula.
+        assert sql.startswith("CASE WHEN") and sql.endswith(" END")
+        assert sql.count("/ NUMERIC '2'") == 3
+        assert "/ 2" not in sql
 
     def test_mode(self, dialect: BigQueryDialect) -> None:
         expr = FunctionCall(name="MODE", args=[ColumnRef(name="status")])
@@ -627,7 +635,6 @@ class TestMySQLDialect:
         assert dialect.capabilities.supports_union_all_by_name is False
         assert dialect.capabilities.unsupported_aggregations == [
             "mode",
-            "median",
             "corr",
             "covar_pop",
             "covar_samp",
@@ -794,12 +801,12 @@ class TestMySQLDialect:
         assert "ORDER BY" in sql
         assert "SEPARATOR '; '" in sql
 
-    def test_compile_median_raises(self, dialect: MySQLDialect) -> None:
-        from orionbelt.dialect.base import UnsupportedAggregationError
-
+    def test_compile_median(self, dialect: MySQLDialect) -> None:
         expr = FunctionCall(name="MEDIAN", args=[ColumnRef(name="price")])
-        with pytest.raises(UnsupportedAggregationError, match="mysql.*MEDIAN"):
-            dialect.compile_expr(expr)
+        sql = dialect.compile_expr(expr)
+        assert "GROUP_CONCAT(`price` ORDER BY `price` SEPARATOR ',')" in sql
+        assert "FLOOR((COUNT(`price`) + 1) / 2)" in sql
+        assert "CEIL((COUNT(`price`) + 1) / 2)" in sql
 
     def test_compile_mode_raises(self, dialect: MySQLDialect) -> None:
         from orionbelt.dialect.base import UnsupportedAggregationError
@@ -1263,12 +1270,13 @@ class TestMedianRendering:
     @pytest.mark.parametrize(
         ("dialect_name", "expected"),
         [
-            ("bigquery", "APPROX_QUANTILES("),
-            ("clickhouse", "MEDIAN("),
+            ("bigquery", "IGNORE NULLS ORDER BY"),
+            ("clickhouse", "quantileExactInclusive(0.5)(toFloat64("),
             ("databricks", "MEDIAN("),
-            ("dremio", "MEDIAN("),
-            ("duckdb", "MEDIAN("),
-            ("postgres", "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY"),
+            ("dremio", "MEDIAN(CAST("),
+            ("duckdb", "MEDIAN(CAST("),
+            ("mysql", "GROUP_CONCAT("),
+            ("postgres", "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY"),
             ("snowflake", "MEDIAN("),
         ],
     )
@@ -1278,13 +1286,39 @@ class TestMedianRendering:
         sql = dialect.compile_expr(expr)
         assert expected in sql
 
-    def test_median_mysql_unsupported(self) -> None:
-        from orionbelt.dialect.base import UnsupportedAggregationError
+    @staticmethod
+    def _mysql_statement(*, cte: bool, column: Expr) -> str:
+        inner = Select(
+            columns=[AliasedExpr(expr=column, alias="m")], from_=From(source="t", alias="t")
+        )
+        if not cte:
+            return DialectRegistry.get("mysql").compile_select(inner)
+        outer = Select(
+            columns=[AliasedExpr(expr=ColumnRef(name="m", table="c"), alias="m")],
+            from_=From(source="c", alias="c"),
+            ctes=[CTE(name="c", query=inner)],
+        )
+        return DialectRegistry.get("mysql").compile_select(outer)
 
-        dialect = DialectRegistry.get("mysql")
-        expr = FunctionCall(name="MEDIAN", args=[ColumnRef(name="price")])
-        with pytest.raises(UnsupportedAggregationError, match="mysql.*MEDIAN"):
-            dialect.compile_expr(expr)
+    @pytest.mark.parametrize("cte", [False, True], ids=["flat", "in a CTE"])
+    @pytest.mark.parametrize("name", ["MEDIAN", "LISTAGG"])
+    def test_mysql_lifts_the_group_concat_limit_on_the_statement(
+        self, cte: bool, name: str
+    ) -> None:
+        """GROUP_CONCAT cuts at 1024 bytes; SET_VAR lifts it, but only from the
+        statement's own SELECT (probed: a hint in another CTE is ignored)."""
+        sql = self._mysql_statement(
+            cte=cte, column=FunctionCall(name=name, args=[ColumnRef(name="price")])
+        )
+        assert sql.count("SET_VAR(group_concat_max_len = 4294967295)") == 1
+        main = sql.split("\n)\n", 1)[1] if cte else sql
+        assert main.startswith("SELECT /*+ SET_VAR(group_concat_max_len = 4294967295) */ ")
+
+    def test_mysql_statement_without_group_concat_has_no_hint(self) -> None:
+        sql = self._mysql_statement(
+            cte=True, column=FunctionCall(name="SUM", args=[ColumnRef(name="price")])
+        )
+        assert "SET_VAR" not in sql
 
 
 class TestTableRefWithoutDatabase:
