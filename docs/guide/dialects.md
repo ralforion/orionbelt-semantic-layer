@@ -330,12 +330,12 @@ Each engine's own shortcut answers something else, measured on all eight: BigQue
 
 | Dialect | `percentile_cont` | `percentile_disc` |
 |---------|-----|-----|
-| BigQuery | `lower` and `upper` of `ARRAY_AGG(col IGNORE NULLS ORDER BY col)` around the position, weighted by its remainder `w` as a BIGNUMERIC: `lower` at a whole position, `lower + (upper - lower) * w` of the same sign, `lower * (1 - w) + upper * w` of opposite signs | the `ceil(p * n)`-th value of the sorted array |
+| BigQuery | `lower` and `upper` of `ARRAY_AGG(col IGNORE NULLS ORDER BY col)` around the position, weighted by its remainder `w` as a BIGNUMERIC: `lower` at a whole position, else `lower + (upper - lower) * w` for a positive result and `upper - (upper - lower) * (1 - w)` for a negative one, so the one rounding goes away from zero as a mean's does; `lower * (1 - w) + upper * w` for opposite signs past ±4e18 | the `ceil(p * n)`-th value of the sorted array |
 | ClickHouse | `if(count(col) = 0, NULL, quantileExactInclusive(p)(toFloat64(col)))` | `if(count(col) = 0, NULL, arraySort(groupArray(col))[ceil(p * n)])` |
 | Databricks | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)` | `get(array_sort(collect_list(col)), ceil(p * n) - 1)` |
 | Dremio | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY CAST(col AS DOUBLE))` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` |
 | DuckDB | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY CAST(col AS DOUBLE))` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` |
-| MySQL | the values around the position in `GROUP_CONCAT(col ORDER BY col SEPARATOR ',')`, read back as `DOUBLE`: `lower * (1 - w) + upper * w` | the `ceil(p * n)`-th value, read back as `DOUBLE` |
+| MySQL | the values around the position in `GROUP_CONCAT(col ORDER BY col SEPARATOR ',')`, read back as `DOUBLE`: `lower * (1 - w) + upper * w`, the weight divided before it multiplies (1e307 and 2e307 would overflow otherwise) | the `ceil(p * n)`-th value, read back as `DOUBLE` |
 | Postgres | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` |
 | Snowflake | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` |
 

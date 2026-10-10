@@ -684,7 +684,7 @@ class MySQLDialect(Dialect):
         upper = at(f"({scaled} + {denominator - 1}) DIV {denominator} + 1")
         # As a DOUBLE: an integer quotient is a DECIMAL of four places by
         # default (``div_precision_increment``), which cuts 0.00001.
-        weight = f"CAST({scaled} MOD {denominator} AS DOUBLE) / {denominator}"
+        weight = f"(CAST({scaled} MOD {denominator} AS DOUBLE) / {denominator})"
         return f"({lower} * (1 - {weight}) + {upper} * {weight})"
 
     #: How deep :meth:`compile_select` is in the statement; 0 outside it.

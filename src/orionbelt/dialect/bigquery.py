@@ -14,6 +14,10 @@ from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
 
+#: Past this, two values of opposite signs have an INT64 difference that
+#: overflows (a percentile's interpolation avoids computing it there).
+_WIDE = -4_000_000_000_000_000_000
+
 # BigQuery NUMERIC is (38, 9); anything wider needs BIGNUMERIC.
 _NUMERIC_MAX_SCALE = 9
 # NUMERIC is (38, 9), so 29 integer digits - BigQuery states the rule as
@@ -378,12 +382,20 @@ class BigQueryDialect(Dialect):
         - Discrete: the ``ceil(p * n / d)``-th value, in the column's own type.
         - Continuous: the values at offsets ``floor(h)`` and ``ceil(h)`` of
           ``h = p * (n - 1) / d``, ``lower`` and ``upper``, and the weight
-          ``w``, the remainder of ``h`` as a BIGNUMERIC, exact. At a whole
-          position it is ``lower`` itself. Otherwise, with two values of the
-          same sign, ``lower + (upper - lower) * w``, whose difference fits;
-          of opposite signs, ``lower * (1 - w) + upper * w``, whose terms
-          shrink. Over INT64 and NUMERIC values that is exact, as a
-          BIGNUMERIC; over FLOAT64 it is a FLOAT64.
+          ``w = r / d``, the remainder of ``h`` as a BIGNUMERIC, exact. At a
+          whole position it is ``lower`` itself. Otherwise it is one step of
+          ``(upper - lower) * w`` up from ``lower`` when the result is
+          positive, or of ``(upper - lower) * (1 - w)`` down from ``upper``
+          when it is negative. The step is the only rounding: a positive
+          product rounds away from zero, so the result rounds away from zero
+          as a mean does (-2e-38 for -1.5e-38 in a BIGNUMERIC; stepping up
+          from a negative ``lower`` gave -1e-38). Which way is decided
+          exactly, by the sign of ``lower * (d - r) + upper * r``. Two values
+          of the same sign have a difference that fits; of opposite signs
+          past +/-4e18 an INT64 difference overflows, so there it is
+          ``lower * (1 - w) + upper * w``, whose terms shrink and which is
+          exact over INT64 and NUMERIC values. Over INT64 and NUMERIC values
+          the result is exact, as a BIGNUMERIC; over FLOAT64 a FLOAT64.
         """
         col_sql = self.compile_expr(args[0])
         numerator, denominator = self.percentile_ratio(fraction)
@@ -397,11 +409,21 @@ class BigQueryDialect(Dialect):
         upper = f"{values}[SAFE_OFFSET(DIV({scaled} + {denominator - 1}, {denominator}))]"
         remainder = f"MOD({scaled}, {denominator})"
         weight = f"(CAST({remainder} AS BIGNUMERIC) / {denominator})"
+        up = f"{lower} + ({upper} - {lower}) * {weight}"
+        down = f"{upper} - ({upper} - {lower}) * (1 - {weight})"
+        # The sign of the result times d, exact: integer weights, no rounding.
+        signed = (
+            f"{lower} * CAST({denominator} - {remainder} AS BIGNUMERIC)"
+            f" + {upper} * CAST({remainder} AS BIGNUMERIC)"
+        )
         return (
             f"CASE WHEN {remainder} = 0 THEN {lower} "
-            f"WHEN {lower} < 0 AND {upper} >= 0 "
+            f"WHEN {lower} >= 0 THEN {up} "
+            f"WHEN {upper} < 0 THEN {down} "
+            f"WHEN {lower} < {_WIDE} OR {upper} > {-_WIDE} "
             f"THEN {lower} * (1 - {weight}) + {upper} * {weight} "
-            f"ELSE {lower} + ({upper} - {lower}) * {weight} END"
+            f"WHEN {signed} < 0 THEN {down} "
+            f"ELSE {up} END"
         )
 
     def _compile_mode(self, args: list[Expr]) -> str:

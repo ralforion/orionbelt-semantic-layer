@@ -215,7 +215,7 @@ class TestDialects:
             ),
             (
                 "mysql",
-                "CAST(3 * (COUNT(`x`) - 1) MOD 10 AS DOUBLE) / 10",
+                "* (CAST(3 * (COUNT(`x`) - 1) MOD 10 AS DOUBLE) / 10))",
                 "(3 * COUNT(`x`) + 9) DIV 10",
             ),
         ],
@@ -239,10 +239,16 @@ class TestDialects:
         sql = DialectRegistry.get(dialect).compile_expr(_call("PERCENTILE_CONT"))
         assert sql.startswith(("if(", "(")) and sql.endswith(")")
 
-    def test_bigquery_cases_weights_by_sign(self) -> None:
+    def test_bigquery_steps_from_the_end_the_sign_rounds_away_from(self) -> None:
+        """Up from ``lower`` when the result is positive, down from ``upper`` when
+        negative, decided by an exact integer-weighted sign; past +/-4e18 the
+        two shrinking products, where an INT64 difference overflows."""
         sql = DialectRegistry.get("bigquery").compile_expr(_call("PERCENTILE_CONT"))
         assert sql.startswith("CASE WHEN MOD(") and sql.endswith(" END")
-        assert "< 0 AND" in sql
+        assert sql.count(" WHEN ") == 5
+        assert "* (1 - (CAST(MOD(" in sql
+        assert "* CAST(10 - MOD(3 * (COUNT(`x`) - 1), 10) AS BIGNUMERIC)" in sql
+        assert "< -4000000000000000000 OR" in sql and "> 4000000000000000000 THEN" in sql
 
 
 class TestSchema:

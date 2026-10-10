@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from orionbelt.ast.nodes import ColumnRef, FunctionCall
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect
@@ -42,16 +43,21 @@ SCHEMAS = {
     "dremio": "$scratch",
 }
 
-#: (string, bigint, decimal(20, 9)) as each engine spells them in a CAST.
-TYPES: dict[str, tuple[str, str, str]] = {
-    "duckdb": ("VARCHAR", "BIGINT", "DECIMAL(20, 9)"),
-    "postgres": ("TEXT", "BIGINT", "NUMERIC(20, 9)"),
-    "mysql": ("CHAR(8)", "SIGNED", "DECIMAL(20, 9)"),
-    "clickhouse": ("Nullable(String)", "Nullable(Int64)", "Nullable(Decimal(20, 9))"),
-    "snowflake": ("VARCHAR", "BIGINT", "NUMBER(20, 9)"),
-    "bigquery": ("STRING", "INT64", "NUMERIC"),
-    "databricks": ("STRING", "BIGINT", "DECIMAL(20, 9)"),
-    "dremio": ("VARCHAR", "BIGINT", "DECIMAL(20, 9)"),
+#: (string, bigint, decimal(20, 9), double) as each engine spells them in a CAST.
+TYPES: dict[str, tuple[str, str, str, str]] = {
+    "duckdb": ("VARCHAR", "BIGINT", "DECIMAL(20, 9)", "DOUBLE"),
+    "postgres": ("TEXT", "BIGINT", "NUMERIC(20, 9)", "DOUBLE PRECISION"),
+    "mysql": ("CHAR(8)", "SIGNED", "DECIMAL(20, 9)", "DOUBLE"),
+    "clickhouse": (
+        "Nullable(String)",
+        "Nullable(Int64)",
+        "Nullable(Decimal(20, 9))",
+        "Nullable(Float64)",
+    ),
+    "snowflake": ("VARCHAR", "BIGINT", "NUMBER(20, 9)", "DOUBLE"),
+    "bigquery": ("STRING", "INT64", "NUMERIC", "FLOAT64"),
+    "databricks": ("STRING", "BIGINT", "DECIMAL(20, 9)", "DOUBLE"),
+    "dremio": ("VARCHAR", "BIGINT", "DECIMAL(20, 9)", "DOUBLE"),
 }
 
 #: Engines whose continuous percentile of an integer is not a double.
@@ -60,23 +66,27 @@ EXACT_CONT = {"bigquery"}
 #: reads it back from a string as a DOUBLE, and Dremio's PERCENTILE_DISC is one.
 EXACT_DISC = {"bigquery", "clickhouse", "databricks", "duckdb", "postgres", "snowflake"}
 
-#: (group, integer, decimal)
-ROWS: list[tuple[str, int | None, str | None]] = [
-    *(("T", n, None) for n in range(1, 11)),
-    ("N", None, None),
-    ("N", 4, None),
-    ("N", None, None),
-    ("N", 2, None),
-    ("E", None, None),
+#: (group, integer, decimal, double)
+ROWS: list[tuple[str, int | None, str | None, str | None]] = [
+    *(("T", n, None, None) for n in range(1, 11)),
+    ("N", None, None, None),
+    ("N", 4, None, None),
+    ("N", None, None, None),
+    ("N", 2, None, None),
+    ("E", None, None, None),
     # Past a double's 2^53: 9007199254740992 as one.
-    ("B", 9007199254740993, None),
+    ("B", 9007199254740993, None, None),
     # Opposite signs whose difference overflows INT64.
-    ("X", -9223372036854775807, None),
-    ("X", 9223372036854775807, None),
+    ("X", -9223372036854775807, None, None),
+    ("X", 9223372036854775807, None, None),
     # Decimals at their last digit: 0.3 of them is 0.0000000016, between two.
-    ("D", None, "0.000000001"),
-    ("D", None, "0.000000002"),
-    ("D", None, "0.000000003"),
+    ("D", None, "0.000000001", None),
+    ("D", None, "0.000000002", None),
+    ("D", None, "0.000000003", None),
+    # Near a double's limit: the weight multiplied in before the division
+    # overflowed MySQL's DOUBLE, though 0.9 of the way between them fits.
+    ("W", None, None, "1e307"),
+    ("W", None, None, "2e307"),
 ]
 
 #: (measure, column index in ROWS, aggregation, fraction)
@@ -89,6 +99,7 @@ MEASURES: list[tuple[str, int, str, str]] = [
     ("Int Tiny Disc", 1, "percentile_disc", "0.00001"),
     ("Dec P30 Cont", 2, "percentile_cont", "0.3"),
     ("Dec P30 Disc", 2, "percentile_disc", "0.3"),
+    ("Dbl P90 Cont", 3, "percentile_cont", "0.9"),
 ]
 
 MODEL_YAML = """
@@ -102,6 +113,7 @@ dataObjects:
       Group: {{code: grp, abstractType: string}}
       Integer: {{code: int_val, abstractType: int}}
       Decimal: {{code: dec_val, abstractType: float}}
+      Double: {{code: dbl_val, abstractType: float}}
 dimensions:
   Group: {{dataObject: Values, column: Group, resultType: string}}
 measures:
@@ -123,7 +135,7 @@ metrics:
 
 
 def _measures_yaml() -> str:
-    column = {1: "Integer", 2: "Decimal"}
+    column = {1: "Integer", 2: "Decimal", 3: "Double"}
     return "\n".join(
         f"  {name}:\n"
         f"    columns: [{{dataObject: Values, column: {column[index]}}}]\n"
@@ -144,7 +156,8 @@ def _prepare(target: VendorTarget) -> SemanticModel:
     ref = dialect.quote_identifier(TABLE)
     if schema:
         ref = f"{dialect.quote_identifier(schema)}.{ref}"
-    columns = list(zip(("grp", "int_val", "dec_val"), TYPES[target.dialect], strict=True))
+    names = ("grp", "int_val", "dec_val", "dbl_val")
+    columns = list(zip(names, TYPES[target.dialect], strict=True))
     legs = " UNION ALL ".join(
         "SELECT "
         + ", ".join(
@@ -216,6 +229,7 @@ def _assert_all(target: VendorTarget) -> None:
     assert _want("T", 1, "percentile_disc", "0.3") == 3
     assert _want("T", 1, "percentile_cont", "0.3") == Decimal("3.7")
     assert _want("D", 2, "percentile_cont", "0.3") == Decimal("0.0000000016")
+    assert _want("W", 3, "percentile_cont", "0.9") == Decimal("1.9e307")
 
     names = [name for name, *_ in MEASURES]
     rows = _run(target, model, ["Group"], names)
@@ -259,6 +273,32 @@ def _assert_all(target: VendorTarget) -> None:
     rows = _run(target, model, [], ["Int P30 Cont"], nothing)
     want_none = [] if target.dialect == "dremio" else [None]
     assert [r["int p30 cont"] for r in rows] == want_none, f"{target.name}: {rows}"
+
+
+#: Two BIGNUMERIC values at the last of their 38 places, and the exact
+#: percentile between them rounded once, half away from zero, as an engine's
+#: mean is: -2e-38 for -1.5e-38. One step from the wrong end, or two products
+#: added, round the other way.
+_BIGNUMERIC_CASES = [
+    ("-2e-38", "-1e-38", "0.5", "-2e-38"),
+    ("-1e-38", "2e-38", "0.5", "1e-38"),
+    ("-3e-38", "2e-38", "0.3", "-2e-38"),
+    ("-3e-38", "2e-38", "0.7", "1e-38"),
+    ("-7e-38", "3e-38", "0.25", "-5e-38"),
+    ("1e-38", "2e-38", "0.5", "2e-38"),
+]
+
+
+def test_bigquery_bignumeric_rounds_once(vendor_bigquery: VendorTarget) -> None:
+    dialect = DialectRegistry.get("bigquery")
+    for lower, upper, fraction, want in _BIGNUMERIC_CASES:
+        call = FunctionCall(
+            name="PERCENTILE_CONT", args=[ColumnRef(name="x")], fraction=Decimal(fraction)
+        )
+        values = f"UNNEST([BIGNUMERIC '{lower}', BIGNUMERIC '{upper}']) AS x"
+        rows = vendor_bigquery.execute(f"SELECT {dialect.compile_expr(call)} AS v FROM {values}")
+        got = Decimal(str(rows[0]["v"]))
+        assert got == Decimal(want), (lower, upper, fraction, got)
 
 
 def test_duckdb_percentile(vendor_duckdb: VendorTarget) -> None:
