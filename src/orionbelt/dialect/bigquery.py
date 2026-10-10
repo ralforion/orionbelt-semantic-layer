@@ -14,10 +14,6 @@ from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
 
-#: Past this, two values of opposite signs have an INT64 difference that
-#: overflows (a percentile's interpolation avoids computing it there).
-_WIDE = -4_000_000_000_000_000_000
-
 # BigQuery NUMERIC is (38, 9); anything wider needs BIGNUMERIC.
 _NUMERIC_MAX_SCALE = 9
 # NUMERIC is (38, 9), so 29 integer digits - BigQuery states the rule as
@@ -390,12 +386,17 @@ class BigQueryDialect(Dialect):
           product rounds away from zero, so the result rounds away from zero
           as a mean does (-2e-38 for -1.5e-38 in a BIGNUMERIC; stepping up
           from a negative ``lower`` gave -1e-38). Which way is decided
-          exactly, by the sign of ``lower * (d - r) + upper * r``. Two values
-          of the same sign have a difference that fits; of opposite signs
-          past +/-4e18 an INT64 difference overflows, so there it is
-          ``lower * (1 - w) + upper * w``, whose terms shrink and which is
-          exact over INT64 and NUMERIC values. Over INT64 and NUMERIC values
-          the result is exact, as a BIGNUMERIC; over FLOAT64 a FLOAT64.
+          exactly, by the sign of ``lower * (d - r) + upper * r``. The
+          difference is taken after ``* BIGNUMERIC '1'``, which widens INT64
+          and NUMERIC values (their difference overflows INT64 for opposite
+          signs) and leaves FLOAT64 ones as they are, where a CAST would
+          refuse 1e40. ``SAFE_`` arithmetic is NULL where even that
+          overflows: the sign then comes from the rounded form below, and
+          only a difference past the type's range - FLOAT64 near 1.7e308,
+          BIGNUMERIC of opposite signs past about 2.9e38 - leaves
+          ``lower * (1 - w) + upper * w``, whose terms shrink. Over INT64 and
+          NUMERIC values the result is exact, as a BIGNUMERIC; over FLOAT64 a
+          FLOAT64.
         """
         col_sql = self.compile_expr(args[0])
         numerator, denominator = self.percentile_ratio(fraction)
@@ -409,21 +410,19 @@ class BigQueryDialect(Dialect):
         upper = f"{values}[SAFE_OFFSET(DIV({scaled} + {denominator - 1}, {denominator}))]"
         remainder = f"MOD({scaled}, {denominator})"
         weight = f"(CAST({remainder} AS BIGNUMERIC) / {denominator})"
-        up = f"{lower} + ({upper} - {lower}) * {weight}"
-        down = f"{upper} - ({upper} - {lower}) * (1 - {weight})"
+        difference = f"SAFE_SUBTRACT({upper} * BIGNUMERIC '1', {lower})"
+        shrinking = f"{lower} * (1 - {weight}) + {upper} * {weight}"
         # The sign of the result times d, exact: integer weights, no rounding.
         signed = (
-            f"{lower} * CAST({denominator} - {remainder} AS BIGNUMERIC)"
-            f" + {upper} * CAST({remainder} AS BIGNUMERIC)"
+            f"SAFE_ADD(SAFE_MULTIPLY({lower}, CAST({denominator} - {remainder} AS BIGNUMERIC)),"
+            f" SAFE_MULTIPLY({upper}, CAST({remainder} AS BIGNUMERIC)))"
         )
         return (
             f"CASE WHEN {remainder} = 0 THEN {lower} "
-            f"WHEN {lower} >= 0 THEN {up} "
-            f"WHEN {upper} < 0 THEN {down} "
-            f"WHEN {lower} < {_WIDE} OR {upper} > {-_WIDE} "
-            f"THEN {lower} * (1 - {weight}) + {upper} * {weight} "
-            f"WHEN {signed} < 0 THEN {down} "
-            f"ELSE {up} END"
+            f"WHEN {difference} IS NULL THEN {shrinking} "
+            f"WHEN COALESCE({signed} < 0, {shrinking} < 0) "
+            f"THEN {upper} - {difference} * (1 - {weight}) "
+            f"ELSE {lower} + {difference} * {weight} END"
         )
 
     def _compile_mode(self, args: list[Expr]) -> str:

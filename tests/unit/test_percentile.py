@@ -241,14 +241,15 @@ class TestDialects:
 
     def test_bigquery_steps_from_the_end_the_sign_rounds_away_from(self) -> None:
         """Up from ``lower`` when the result is positive, down from ``upper`` when
-        negative, decided by an exact integer-weighted sign; past +/-4e18 the
-        two shrinking products, where an INT64 difference overflows."""
+        negative, decided by an exact integer-weighted sign, over a difference
+        widened to BIGNUMERIC; the two shrinking products only where even that
+        overflows."""
         sql = DialectRegistry.get("bigquery").compile_expr(_call("PERCENTILE_CONT"))
         assert sql.startswith("CASE WHEN MOD(") and sql.endswith(" END")
-        assert sql.count(" WHEN ") == 5
-        assert "* (1 - (CAST(MOD(" in sql
-        assert "* CAST(10 - MOD(3 * (COUNT(`x`) - 1), 10) AS BIGNUMERIC)" in sql
-        assert "< -4000000000000000000 OR" in sql and "> 4000000000000000000 THEN" in sql
+        assert sql.count(" WHEN ") == 3
+        assert "SAFE_SUBTRACT(" in sql and " * BIGNUMERIC '1', " in sql
+        assert "SAFE_MULTIPLY(" in sql and "SAFE_ADD(" in sql
+        assert "CAST(10 - MOD(3 * (COUNT(`x`) - 1), 10) AS BIGNUMERIC)" in sql
 
 
 class TestSchema:
