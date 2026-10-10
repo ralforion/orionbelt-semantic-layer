@@ -574,6 +574,11 @@ class TestBigQueryDialect:
         sql = dialect.compile_expr(expr)
         assert "ARRAY_AGG(`price` IGNORE NULLS ORDER BY `price`)" in sql
         assert "APPROX_QUANTILES" not in sql
+        # One midpoint for every type: sign-aware, divided by a NUMERIC so an
+        # INT64 stays exact, and a whole operand of a surrounding formula.
+        assert sql.startswith("IF(") and sql.endswith(")")
+        assert sql.count("/ NUMERIC '2'") == 2
+        assert "/ 2" not in sql
 
     def test_mode(self, dialect: BigQueryDialect) -> None:
         expr = FunctionCall(name="MODE", args=[ColumnRef(name="status")])

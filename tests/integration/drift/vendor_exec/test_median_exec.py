@@ -11,9 +11,11 @@ all of them, for integers and decimals, an even and an odd group, a group of
 NULLs, and a group large enough that MySQL's ``GROUP_CONCAT`` would be cut at
 its default 1024 bytes without the statement hint the dialect adds. The
 ``listagg`` over that group is the same cut, fixed by the same hint. At the
-edges: an integer whose double would overflow INT64 (BigQuery), doubles past a
-fixed decimal's range (MySQL), and no rows at all over a non-nullable column
-(``NaN`` on ClickHouse).
+edges: an integer whose double would overflow INT64 (BigQuery), one past a
+double's precision under a measure filter (whose ``CASE`` carries no column
+type), decimals of opposite signs whose difference overflows NUMERIC
+(BigQuery), doubles past a fixed decimal's range (MySQL), and no rows at all
+over a non-nullable column (``NaN`` on ClickHouse).
 """
 
 from __future__ import annotations
@@ -39,6 +41,12 @@ pytestmark = pytest.mark.docker
 
 TABLE = "median_values"
 
+#: Engines whose median of an integer is not a double. Snowflake's MEDIAN and
+#: PERCENTILE_CONT return a NUMBER but compute in double (probed: 9007199254740992
+#: for 9007199254740993, of a BIGINT and of a DECIMAL(38, 0) alike), as
+#: Databricks' do; the others' median is a double by design.
+EXACT_INTEGER_MEDIAN = {"bigquery"}
+
 SCHEMAS = {
     "bigquery": SEED_SCHEMA,
     "snowflake": SEED_SCHEMA,
@@ -46,49 +54,63 @@ SCHEMAS = {
     "dremio": "$scratch",
 }
 
-#: (string, bigint, decimal(20, 9), double, bigint never NULL) as each engine
-#: spells them in a CAST. The last is non-nullable on ClickHouse, the one
+#: (string, bigint, decimal(20, 9), double, bigint never NULL, decimal(38, 9))
+#: as each engine spells them in a CAST. The last is non-nullable on ClickHouse, the one
 #: engine whose column types say so.
-TYPES: dict[str, tuple[str, str, str, str, str]] = {
-    "duckdb": ("VARCHAR", "BIGINT", "DECIMAL(20, 9)", "DOUBLE", "BIGINT"),
-    "postgres": ("TEXT", "BIGINT", "NUMERIC(20, 9)", "DOUBLE PRECISION", "BIGINT"),
-    "mysql": ("CHAR(8)", "SIGNED", "DECIMAL(20, 9)", "DOUBLE", "SIGNED"),
+TYPES: dict[str, tuple[str, str, str, str, str, str]] = {
+    "duckdb": ("VARCHAR", "BIGINT", "DECIMAL(20, 9)", "DOUBLE", "BIGINT", "DECIMAL(38, 9)"),
+    "postgres": (
+        "TEXT",
+        "BIGINT",
+        "NUMERIC(20, 9)",
+        "DOUBLE PRECISION",
+        "BIGINT",
+        "NUMERIC(38, 9)",
+    ),
+    "mysql": ("CHAR(8)", "SIGNED", "DECIMAL(20, 9)", "DOUBLE", "SIGNED", "DECIMAL(38, 9)"),
     "clickhouse": (
         "Nullable(String)",
         "Nullable(Int64)",
         "Nullable(Decimal(20, 9))",
         "Nullable(Float64)",
         "Int64",
+        "Nullable(Decimal(38, 9))",
     ),
-    "snowflake": ("VARCHAR", "BIGINT", "NUMBER(20, 9)", "DOUBLE", "BIGINT"),
-    "bigquery": ("STRING", "INT64", "NUMERIC", "FLOAT64", "INT64"),
-    "databricks": ("STRING", "BIGINT", "DECIMAL(20, 9)", "DOUBLE", "BIGINT"),
-    "dremio": ("VARCHAR", "BIGINT", "DECIMAL(20, 9)", "DOUBLE", "BIGINT"),
+    "snowflake": ("VARCHAR", "BIGINT", "NUMBER(20, 9)", "DOUBLE", "BIGINT", "NUMBER(38, 9)"),
+    "bigquery": ("STRING", "INT64", "NUMERIC", "FLOAT64", "INT64", "NUMERIC"),
+    "databricks": ("STRING", "BIGINT", "DECIMAL(20, 9)", "DOUBLE", "BIGINT", "DECIMAL(38, 9)"),
+    "dremio": ("VARCHAR", "BIGINT", "DECIMAL(20, 9)", "DOUBLE", "BIGINT", "DECIMAL(38, 9)"),
 }
 
-#: (group, integer, decimal, label, double). Every row also has a sequence
-#: number, the never-NULL column.
-ROWS: list[tuple[str, int | None, str | None, str | None, str | None]] = [
-    ("A", 1, "1.25", None, None),
-    ("A", 2, "2.75", None, None),
-    ("A", 10, "10.10", None, None),
-    ("A", 20, "20.20", None, None),
-    ("A", None, None, None, None),
-    ("B", 1, "1.00", None, None),
-    ("B", 2, "2.00", None, None),
-    ("B", 10, "3.50", None, None),
-    ("C", None, None, None, None),
-    *(("L", n, None, f"lbl{n:05d}", None) for n in range(1, 201)),
+#: (group, integer, decimal, label, double, wide decimal). Every row also has a
+#: sequence number, the never-NULL column.
+ROWS: list[tuple[str, int | None, str | None, str | None, str | None, str | None]] = [
+    ("A", 1, "1.25", None, None, None),
+    ("A", 2, "2.75", None, None, None),
+    ("A", 10, "10.10", None, None, None),
+    ("A", 20, "20.20", None, None, None),
+    ("A", None, None, None, None, None),
+    ("B", 1, "1.00", None, None, None),
+    ("B", 2, "2.00", None, None, None),
+    ("B", 10, "3.50", None, None, None),
+    ("C", None, None, None, None, None),
+    *(("L", n, None, f"lbl{n:05d}", None, None) for n in range(1, 201)),
     # Added to itself, this overflows INT64.
-    ("H", 5000000000000000000, None, None, None),
+    ("H", 5000000000000000000, None, None, None, None),
     # Outside DECIMAL(65, 30), both ways.
-    ("F", None, None, None, "1e40"),
-    ("G", None, None, None, "1e-40"),
+    ("F", None, None, None, "1e40", None),
+    ("G", None, None, None, "1e-40", None),
     # A decimal at its last digit: halving it rounds, so the median of one
     # value must not be the sum of two halves, nor of two the mean of halves.
-    ("N", None, "0.000000001", None, None),
-    ("M", None, "0.000000001", None, None),
-    ("M", None, "0.000000003", None, None),
+    ("N", None, "0.000000001", None, None, None),
+    ("M", None, "0.000000001", None, None, None),
+    ("M", None, "0.000000003", None, None, None),
+    # Past a double's 2^53, under a measure filter: the filter's CASE has no
+    # column type to tell an integer by.
+    ("P", 9007199254740993, None, None, None, None),
+    # Opposite signs whose difference, 1.2e29, overflows NUMERIC(38, 9).
+    ("O", None, None, None, None, "-60000000000000000000000000000"),
+    ("O", None, None, None, None, "60000000000000000000000000000"),
 ]
 
 MODEL_YAML = """
@@ -105,6 +127,7 @@ dataObjects:
       Label: {{code: label, abstractType: string}}
       Double: {{code: dbl_val, abstractType: float}}
       Sequence: {{code: seq, abstractType: int}}
+      Wide: {{code: wide_val, abstractType: float}}
 dimensions:
   Group: {{dataObject: Values, column: Group, resultType: string}}
 measures:
@@ -117,6 +140,16 @@ measures:
   Double Median:
     columns: [{{dataObject: Values, column: Double}}]
     aggregation: median
+  Wide Median:
+    columns: [{{dataObject: Values, column: Wide}}]
+    aggregation: median
+  Filtered Integer Median:
+    columns: [{{dataObject: Values, column: Integer}}]
+    aggregation: median
+    filters:
+      - column: {{dataObject: Values, column: Group}}
+        operator: equals
+        values: [{{dataType: string, valueString: P}}]
   Sequence Median:
     columns: [{{dataObject: Values, column: Sequence}}]
     aggregation: median
@@ -143,7 +176,7 @@ def _literal(value: str | int | None, type_name: str) -> str:
 
 def _prepare(target: VendorTarget) -> SemanticModel:
     dialect = DialectRegistry.get(target.dialect)
-    text, integer, decimal, double, never_null = TYPES[target.dialect]
+    text, integer, decimal, double, never_null, wide = TYPES[target.dialect]
     schema = SCHEMAS.get(target.dialect)
     ref = dialect.quote_identifier(TABLE)
     if schema:
@@ -155,12 +188,13 @@ def _prepare(target: VendorTarget) -> SemanticModel:
         ("label", text),
         ("dbl_val", double),
         ("seq", never_null),
+        ("wide_val", wide),
     )
     legs = " UNION ALL ".join(
         "SELECT "
         + ", ".join(
             f"{_literal(value, type_name)} AS {dialect.quote_identifier(name)}"
-            for value, (name, type_name) in zip((*row, seq), columns, strict=True)
+            for value, (name, type_name) in zip((*row[:5], seq, row[5]), columns, strict=True)
         )
         for seq, row in enumerate(ROWS, start=1)
     )
@@ -225,6 +259,15 @@ def _assert_all(target: VendorTarget) -> None:
     assert want["H"][0] == Decimal(5000000000000000000)
     assert (want["F"][2], want["G"][2]) == (Decimal("1e40"), Decimal("1e-40"))
     assert (want["N"][1], want["M"][1]) == (Decimal("0.000000001"), Decimal("0.000000002"))
+    assert (_median(1, "P"), _median(5, "O")) == (Decimal(9007199254740993), Decimal(0))
+
+    # Exact on every engine, as a NUMERIC on BigQuery whichever the input type.
+    edges = ["Filtered Integer Median", "Wide Median"]
+    rows = _run(target, model, [], edges)
+    got_edges = [tuple(_number(r[m.lower()]) for m in edges) for r in rows]
+    assert _close(got_edges[0], (_median(1, "P"), Decimal(0))), f"{target.name}: {got_edges}"
+    if target.dialect in EXACT_INTEGER_MEDIAN:
+        assert got_edges[0][0] == Decimal(9007199254740993), f"{target.name}: {got_edges}"
 
     measures = ["Integer Median", "Decimal Median", "Double Median"]
     for extra in ([], ["Integer Total"]):

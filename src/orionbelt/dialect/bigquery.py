@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import (
-    Cast,
-    ColumnRef,
-    Expr,
-    FunctionCall,
-    Literal,
-    OrderByItem,
-    RawSQL,
-)
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, RawSQL
 from orionbelt.dialect.base import (
     AmbiguousTableReferenceError,
     Dialect,
     DialectCapabilities,
 )
 from orionbelt.dialect.registry import DialectRegistry
-from orionbelt.models.semantic import DataType, TimeGrain
+from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
 
 # BigQuery NUMERIC is (38, 9); anything wider needs BIGNUMERIC.
@@ -342,14 +334,18 @@ class BigQueryDialect(Dialect):
         is an ordinary aggregate expression with the exact continuous median;
         an empty or all-NULL group indexes no array and is NULL.
 
-        The midpoint of the two depends on the type, which BigQuery keeps:
+        The midpoint of the two is exact and cannot overflow, whatever the type,
+        so it needs no knowledge of the column (a filtered measure's ``CASE`` or
+        a multi-fact leg's column carries none):
 
-        - an integer column is widened to BIGNUMERIC before adding, since the
-          INT64 sum overflows (5000000000000000000 + itself) and halving each
-          first loses digits as FLOAT64 past 2^53; the result is exact;
-        - anything else is ``lower + (upper - lower) / 2``, rounded once.
-          Halving each value first rounds twice: a NUMERIC 0.000000001 halves
-          back to itself, and the two halves add up to twice the median.
+        - dividing by ``NUMERIC '2'`` keeps an INT64 difference exact as
+          NUMERIC, where ``/ 2`` makes it FLOAT64 and loses digits past 2^53;
+          NUMERIC and BIGNUMERIC keep their type, FLOAT64 stays FLOAT64;
+        - two values of the same sign are ``lower + (upper - lower) / 2``,
+          whose difference fits, and which rounds once: halving each value
+          first turns a NUMERIC 0.000000001 into twice the median;
+        - two of opposite signs are ``(lower + upper) / 2``, whose sum fits,
+          where the difference of -6e28 and 6e28 overflows NUMERIC.
 
         The whole expression is parenthesized: it is a sum, and a derived
         metric's ``* 2`` or ``100 -`` must apply to all of it.
@@ -359,9 +355,11 @@ class BigQueryDialect(Dialect):
         values = f"ARRAY_AGG({col_sql} IGNORE NULLS ORDER BY {col_sql})"
         lower = f"{values}[SAFE_OFFSET(DIV(COUNT({col_sql}) - 1, 2))]"
         upper = f"{values}[SAFE_OFFSET(DIV(COUNT({col_sql}), 2))]"
-        if isinstance(col, ColumnRef) and col.abstract_type == DataType.INT:
-            return f"((CAST({lower} AS BIGNUMERIC) + {upper}) / 2)"
-        return f"({lower} + ({upper} - {lower}) / 2)"
+        two = "NUMERIC '2'"
+        return (
+            f"IF({lower} < 0 AND {upper} >= 0, ({lower} + {upper}) / {two}, "
+            f"{lower} + ({upper} - {lower}) / {two})"
+        )
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """BigQuery: APPROX_TOP_COUNT(col, 1)[OFFSET(0)].value."""
