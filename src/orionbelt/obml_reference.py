@@ -418,6 +418,8 @@ the final rows. Select it beside other measures (other facts too), in `having` a
   with rows count)
 - `aggregation:` required; `avg` is exact over integers, `count` is bigint,
   `sum`/`min`/`max` keep the measure's type
+- `avg` over an average is refused (`REAGGREGATE_AVG_OF_AVG`): an `avg`
+  measure, an `avg` reaggregate metric, or a `min`/`max` one over either
 - Every `per` dimension already in the query (at its grain or finer):
   `REAGGREGATE_NO_OP` warning
 - Selects beside any measure or metric, including total/grain, filterContext,

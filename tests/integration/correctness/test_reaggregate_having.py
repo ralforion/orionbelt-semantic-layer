@@ -74,11 +74,11 @@ _METRICS["max month of avg client sales, repeat"] = {
     "per": ["Sales Date:month"],
     "aggregation": "max",
 }
-_METRICS["avg month of avg client sales, busy months"] = {
+_METRICS["min month of avg client sales, busy months"] = {
     "type": "reaggregate",
     "measure": "avg client sales, repeat",
     "per": ["Sales Date:month"],
-    "aggregation": "avg",
+    "aggregation": "min",
     "having": [{"field": "Sales Count", "op": ">=", "value": 25}],
 }
 

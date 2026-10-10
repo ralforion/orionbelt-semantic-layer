@@ -29,6 +29,7 @@ from orionbelt.models.rules import (
     transitive_fields,
 )
 from orionbelt.models.semantic import (
+    AggregationType,
     CustomExtension,
     DataColumnRef,
     DataObject,
@@ -52,6 +53,7 @@ from orionbelt.models.semantic import (
     NestedSource,
     OntologyConfig,
     PeriodOverPeriod,
+    ReaggregateAggType,
     RefreshPolicy,
     Rule,
     RuleCondition,
@@ -1950,6 +1952,24 @@ class ReferenceResolver:
                     f"Reaggregate metric '{name}' references unknown measure '{ref}'",
                     _suggest_similar(ref, [*measures, *synthesized_measures]),
                 )
+            if raw_metric.get("aggregation") == ReaggregateAggType.AVG and (
+                averages := _average_path(ref, measures, raw_metrics)
+            ):
+                source = (
+                    "which is itself an average"
+                    if len(averages) == 1
+                    else f"which takes its value from the average '{averages[-1]}' ("
+                    + " -> ".join(averages)
+                    + ")"
+                )
+                report(
+                    "REAGGREGATE_AVG_OF_AVG",
+                    "aggregation",
+                    f"Reaggregate metric '{name}' averages '{ref}', {source}. An average "
+                    f"of averages weighs every group alike, however many rows it averages; "
+                    f"use another aggregation, or average the underlying measure per the "
+                    f"combined 'per' dimensions.",
+                )
 
         having = raw_metric.get("having")
         for item in having if isinstance(having, list) else []:
@@ -2163,6 +2183,32 @@ def _reaggregate_cycle(name: str, raw_metrics: dict[str, Any]) -> list[str]:
         chain.append(ref)
         ref = raw_metrics[ref].get("measure")
     return [*chain, name] if ref == name else []
+
+
+def _average_path(ref: str, measures: dict[str, Measure], raw_metrics: dict[str, Any]) -> list[str]:
+    """The chain from *ref* down to an average its value is, if it is one.
+
+    A measure aggregated with ``avg`` and a reaggregate metric with ``avg`` are
+    averages; a reaggregate ``min`` or ``max`` picks one of its inner values,
+    so it is an average when those are. A ``sum`` or ``count`` is not.
+    """
+    path: list[str] = []
+    current: object = ref
+    while isinstance(current, str) and current not in path:
+        path.append(current)
+        if current in measures:
+            return path if measures[current].aggregation == AggregationType.AVG else []
+        raw = raw_metrics.get(current)
+        if not _is_reaggregate(raw):
+            return []
+        assert isinstance(raw, dict)
+        aggregation = raw.get("aggregation")
+        if aggregation == ReaggregateAggType.AVG:
+            return path
+        if aggregation not in (ReaggregateAggType.MIN, ReaggregateAggType.MAX):
+            return []
+        current = raw.get("measure")
+    return []
 
 
 def _suggest_similar(name: str, candidates: list[str], max_suggestions: int = 3) -> list[str]:

@@ -62,14 +62,16 @@ _METRICS: dict[str, dict[str, Any]] = {
         for inner in _INNER
         for agg in _AGGREGATIONS
         for per in _PERS
+        # An average of averages is refused (REAGGREGATE_AVG_OF_AVG).
+        if not (agg == "avg" and _INNER[inner]["aggregation"] == "avg")
     },
 }
-# Three stages: each country's best month for the average client, averaged.
-_METRICS["Avg Country Peak Month Client"] = {
+# Three stages: each country's best month for the average client, the lowest.
+_METRICS["Lowest Country Peak Month Client"] = {
     "type": "reaggregate",
     "measure": "max of Avg Client Sales per Sales Date:month",
     "per": ["Country Name"],
-    "aggregation": "avg",
+    "aggregation": "min",
 }
 _METRICS["Peak Month Client Doubled"] = {
     "expression": "{[max of Avg Client Sales per Sales Date:month]} * 2"
