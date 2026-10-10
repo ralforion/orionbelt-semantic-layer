@@ -227,6 +227,17 @@ class DuckDBDialect(Dialect):
 
     _percentile_cont_over_doubles = True
 
+    def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:
+        """DuckDB: ``arg_max`` / ``arg_min`` by the (key, value) pair, which
+        breaks a tie on the key by the value, over the rows with both."""
+        v = self.compile_expr(value)
+        k = self.compile_expr(key)
+        function = "arg_max" if last else "arg_min"
+        return (
+            f"{function}({v}, struct_pack(k := {k}, v := {v}))"
+            f" FILTER (WHERE {v} IS NOT NULL AND {k} IS NOT NULL)"
+        )
+
     def _compile_mode(self, args: list[Expr]) -> str:
         """DuckDB: MODE(col) — native support."""
         col_sql = self.compile_expr(args[0]) if args else "NULL"

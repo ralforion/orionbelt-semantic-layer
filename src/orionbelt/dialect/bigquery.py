@@ -369,6 +369,20 @@ class BigQueryDialect(Dialect):
             f"ELSE {lower} + {half} END"
         )
 
+    def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:
+        """BigQuery: the first of the values ordered by key and value.
+
+        ``FIRST_VALUE`` / ``LAST_VALUE`` are window functions only. A row
+        without a key carries a NULL value, which ``IGNORE NULLS`` drops.
+        """
+        v = self.compile_expr(value)
+        k = self.compile_expr(key)
+        direction = "DESC" if last else "ASC"
+        return (
+            f"ARRAY_AGG(IF({k} IS NULL, NULL, {v}) IGNORE NULLS"
+            f" ORDER BY {k} {direction}, {v} {direction} LIMIT 1)[SAFE_OFFSET(0)]"
+        )
+
     def _compile_percentile(self, name: str, args: list[Expr], fraction: Decimal) -> str:
         """BigQuery: the percentile read from the sorted values, as the median is.
 

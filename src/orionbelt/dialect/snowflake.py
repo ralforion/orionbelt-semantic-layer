@@ -35,6 +35,17 @@ class SnowflakeDialect(Dialect):
 
     _percentile_cont_over_doubles = True
 
+    def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:
+        """Snowflake: ``MAX_BY`` / ``MIN_BY`` by the (key, value) array, which
+        breaks a tie on the key by the value. Arrays order as their elements do
+        (probed against the plain key over numbers, dates, timestamps with and
+        without a zone, strings and booleans). A row without both is skipped."""
+        v = self.compile_expr(value)
+        k = self.compile_expr(key)
+        function = "MAX_BY" if last else "MIN_BY"
+        pair = f"IFF({k} IS NULL OR {v} IS NULL, NULL, ARRAY_CONSTRUCT({k}, {v}))"
+        return f"{function}({v}, {pair})"
+
     def render_obml_type(self, obml_type: OBMLType) -> str:
         if isinstance(obml_type, DecimalType):
             p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)

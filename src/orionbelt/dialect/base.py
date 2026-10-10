@@ -53,6 +53,10 @@ from orionbelt.models.types import DecimalType, OBMLType, SimpleType, parse_data
 #: The ordered-set percentile aggregates, rendered by :meth:`Dialect._compile_percentile`.
 _PERCENTILES = frozenset({"PERCENTILE_CONT", "PERCENTILE_DISC"})
 
+#: The aggregates of the value at the least / greatest key, rendered by
+#: :meth:`Dialect._compile_ordered_value`.
+_ORDERED_VALUES = frozenset({"FIRST", "LAST"})
+
 
 def _unit_of(arg: Expr) -> str:
     """The canonical time unit a literal argument names.
@@ -1614,6 +1618,27 @@ class Dialect(ABC):
         literal = self.compile_expr(Literal(value=fraction))
         return f"{name}({literal}) WITHIN GROUP (ORDER BY {col_sql})"
 
+    def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:
+        """Compile LAST / FIRST: the value at the greatest / least key.
+
+        Rows whose value or key is NULL are skipped, and a tie on the key goes
+        to the greatest (LAST) or least (FIRST) value, so every engine answers
+        the same. The vendors' own ``first`` / ``last`` (DuckDB, Databricks,
+        ClickHouse's ``any``) take the first row met, not an ordered one, and
+        their ordered ``MAX_BY`` / ``arg_max`` break ties arbitrarily (Snowflake
+        answered 5 of the tied 5 and 7), so each override orders by the pair.
+
+        The default is Postgres': the first of the values ordered by key and
+        value, which keeps the column's type.
+        """
+        v = self.compile_expr(value)
+        k = self.compile_expr(key)
+        direction = "DESC" if last else "ASC"
+        return (
+            f"(ARRAY_AGG({v} ORDER BY {k} {direction}, {v} {direction})"
+            f" FILTER (WHERE {v} IS NOT NULL AND {k} IS NOT NULL))[1]"
+        )
+
     def _compile_mode(self, args: list[Expr]) -> str:
         """Compile MODE — default uses MODE(col).
 
@@ -2047,6 +2072,12 @@ class Dialect(ABC):
                 # MEDIAN: dialect-specific rendering
                 if fname.upper() == "MEDIAN":
                     return self._compile_median(args)
+                if fname.upper() in _ORDERED_VALUES:
+                    if not order_by or not args:
+                        raise ValueError(f"{fname} needs a value and a key to order by")
+                    return self._compile_ordered_value(
+                        fname.upper() == "LAST", args[0], order_by[0].expr
+                    )
                 if fname.upper() in _PERCENTILES:
                     if fraction is None:
                         raise ValueError(f"{fname} needs a fraction")

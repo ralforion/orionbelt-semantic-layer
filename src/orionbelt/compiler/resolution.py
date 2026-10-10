@@ -82,6 +82,10 @@ if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
 
 
+#: The aggregates that take the value at the least / greatest ordering key.
+_ORDERED_VALUE_CALLS = frozenset({"FIRST", "LAST"})
+
+
 def _with_percentile(measure: Measure, func: FunctionCall) -> FunctionCall:
     """*func* carrying a percentile measure's fraction."""
     if measure.percentile is None:
@@ -1594,23 +1598,11 @@ class QueryResolver:
             agg = "COUNT"
             distinct = True
 
-        # LISTAGG: attach separator and optional ordering
+        # LISTAGG: attach separator and optional ordering; FIRST / LAST: the key
         separator: str | None = None
-        order_by: list[OrderByItem] = []
         if agg == "LISTAGG":
             separator = measure.delimiter if measure.delimiter is not None else ","
-            if measure.within_group:
-                wg = measure.within_group
-                wg_obj_name = wg.column.view or ""
-                wg_col_name = wg.column.column or ""
-                wg_obj = ctx.model.data_objects.get(wg_obj_name)
-                if wg_obj and wg_col_name in wg_obj.columns:
-                    wg_expr: Expr = make_column_expr(ctx.model, wg_obj_name, wg_col_name)
-                else:
-                    wg_expr = ColumnRef(name=wg_col_name, table=wg_obj_name)
-                order_by = [
-                    OrderByItem(expr=wg_expr, desc=wg.order.upper() == "DESC"),
-                ]
+        order_by = self._within_group_order(ctx, measure, agg)
 
         result = FunctionCall(
             name=agg,
@@ -1649,10 +1641,35 @@ class QueryResolver:
             name=agg,
             args=[inner],
             distinct=distinct,
+            order_by=(
+                self._within_group_order(ctx, measure, agg) if agg in _ORDERED_VALUE_CALLS else []
+            ),
         )
         return self._apply_measure_default(
             measure, _with_percentile(measure, self._apply_measure_filters(ctx, measure, result))
         )
+
+    @staticmethod
+    def _within_group_order(
+        ctx: _ResolutionContext, measure: Measure, agg: str
+    ) -> list[OrderByItem]:
+        """The ``withinGroup`` ordering of a LISTAGG, or the key of a FIRST / LAST.
+
+        LISTAGG orders as declared; LAST is the value at the greatest key, so it
+        orders descending, FIRST ascending.
+        """
+        wg = measure.within_group
+        if wg is None or (agg != "LISTAGG" and agg not in _ORDERED_VALUE_CALLS):
+            return []
+        wg_obj_name = wg.column.view or ""
+        wg_col_name = wg.column.column or ""
+        wg_obj = ctx.model.data_objects.get(wg_obj_name)
+        if wg_obj and wg_col_name in wg_obj.columns:
+            wg_expr: Expr = make_column_expr(ctx.model, wg_obj_name, wg_col_name)
+        else:
+            wg_expr = ColumnRef(name=wg_col_name, table=wg_obj_name)
+        desc = agg == "LAST" if agg in _ORDERED_VALUE_CALLS else wg.order.upper() == "DESC"
+        return [OrderByItem(expr=wg_expr, desc=desc)]
 
     @staticmethod
     def _apply_measure_default(measure: Measure, expr: Expr) -> Expr:

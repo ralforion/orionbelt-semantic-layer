@@ -272,7 +272,7 @@ obsl:MeasureShape a sh:NodeShape ;
         sh:minCount 1 ;
         sh:maxCount 1 ;
         sh:name "aggregation" ;
-        sh:message "Every measure must have exactly one obsl:aggregation (sum, count, count_distinct, avg, min, max, any_value, median, percentile_cont, percentile_disc, mode, listagg, stddev, stddev_pop, variance, var_pop, corr, covar_pop, covar_samp, regr_slope, regr_intercept, measure)."
+        sh:message "Every measure must have exactly one obsl:aggregation (sum, count, count_distinct, avg, min, max, any_value, median, percentile_cont, percentile_disc, first, last, mode, listagg, stddev, stddev_pop, variance, var_pop, corr, covar_pop, covar_samp, regr_slope, regr_intercept, measure)."
     ] ;
     sh:property [
         sh:path obsl:percentile ;

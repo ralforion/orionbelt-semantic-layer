@@ -672,7 +672,7 @@ measures:
 | `filterContext` | object | No | [Filter context override](grain-filter-context.md#filter-context) -- controls which query WHERE filters apply |
 | `delimiter` | string | No | Separator for `listagg` aggregation (default: `","`) |
 | `percentile` | number | With `percentile_cont` / `percentile_disc` | The percentile's fraction, between 0 and 1 exclusive with at most 9 decimal places (`0.9` for the 90th percentile). Required by the two percentile aggregations, refused with any other |
-| `withinGroup` | object | No | Ordering clause for `listagg` — specifies `column` and `order` (`ASC`/`DESC`). The `column` must resolve to a real data object column (`UNKNOWN_DATA_OBJECT` / `UNKNOWN_COLUMN`). With `distinct: true` it must additionally be the one being aggregated (error code `WITHIN_GROUP_NOT_IN_DISTINCT_ARGS`). |
+| `withinGroup` | object | With `first` / `last` | The key of `first` / `last` (its `column`; no `order`), or the ordering clause for `listagg` — specifies `column` and `order` (`ASC`/`DESC`). The `column` must resolve to a real data object column (`UNKNOWN_DATA_OBJECT` / `UNKNOWN_COLUMN`). With `distinct: true` it must additionally be the one being aggregated (error code `WITHIN_GROUP_NOT_IN_DISTINCT_ARGS`). |
 | `dataType` | string | No | OBML data type (e.g. `decimal(18, 4)`, `bigint`). Overrides automatic type inference for CAST wrapping. |
 | `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `description` | string | No | Business description |
@@ -697,6 +697,8 @@ measures:
 | `median` | `MEDIAN(expr)` | Exact, continuous median: the mean of the two middle values of an even count, on every dialect ([per-dialect SQL](dialects.md#median)) |
 | `percentile_cont` | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY expr)` | Exact, continuous percentile at `percentile: p`, interpolated between the two values around position `p * (n - 1)` (90th percentile order value); see [Percentiles](#percentiles) |
 | `percentile_disc` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY expr)` | Exact, discrete percentile: the first value whose cumulative share of the group reaches `p`, a value from the data; see [Percentiles](#percentiles) |
+| `first` | the value at the least `withinGroup` key | Opening price, first status of each group; see [First and last](#first-and-last) |
+| `last` | the value at the greatest `withinGroup` key | Closing price, latest status of each group; see [First and last](#first-and-last) |
 | `mode` | `MODE(expr)` | Most frequent value (`MODE() WITHIN GROUP (ORDER BY ...)` in Postgres, `topK(1)(col)[1]` in ClickHouse; not supported in Dremio) |
 | `listagg` | `LISTAGG(expr, sep)` | Concatenated values (dialect-specific: `STRING_AGG` in Postgres, `ARRAY_JOIN(COLLECT_LIST(...))` in Databricks, `arrayStringConcat(groupArray(...))` in ClickHouse) |
 
@@ -724,6 +726,29 @@ measures:
 | Result type | as `median`: a floating-point number on most engines | a value of the column (a DOUBLE on MySQL and Dremio) |
 
 `percentile` is required by the two percentile aggregations and refused with any other; `distinct` is refused with them. Like `median`, a percentile cannot be a `total` (each window would need its own ordering). Both answer the same on every dialect; see [per-dialect SQL](dialects.md#percentile_cont-and-percentile_disc).
+
+#### First and last
+
+`first` and `last` take the value of one row per group: the row with the least (`first`) or greatest (`last`) key, named in `withinGroup`:
+
+```yaml
+measures:
+  Closing Price:
+    columns: [{dataObject: Trades, column: Price}]
+    aggregation: last
+    withinGroup:
+      column: {dataObject: Trades, column: Traded At}
+```
+
+By ticker and month this is each ticker's last price of the month. The value keeps the column's type, a string or a date as well as a number.
+
+- Rows whose value or key is NULL are skipped (the last value there is, not the value of the last row); a group without such a row is NULL.
+- A tie on the key goes to the greatest value for `last` and the least for `first`, so every dialect answers the same.
+- `withinGroup` is required and takes no `order`: `last` is always the greatest key. One column (or an `expression`), no `distinct`, no `total`.
+- Repeated rows leave the answer as it is, so a fanned-out join does not change it, as for `min` and `max`.
+- Not available on MySQL (`UNSUPPORTED_AGGREGATION_FOR_DIALECT`): its only ordered aggregate, `GROUP_CONCAT`, returns a string whatever the column's type.
+
+This is one row's value per group, not a semi-additive sum (the total across accounts of each one's last balance), and not the `first_value` / `last_value` [window metric](#window-metrics), which reads the rows of the query's result. See [per-dialect SQL](dialects.md#first-and-last).
 
 #### Statistical aggregates
 

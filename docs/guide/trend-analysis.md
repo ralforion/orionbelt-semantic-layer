@@ -265,5 +265,5 @@ One model, four trend primitives, every dialect — no SQL hand-written.
 - **Forecasting / extrapolation** (linear regression beyond the
   `regr_*` aggregates, ARIMA, exponential smoothing) — belongs in the
   BI tool or downstream analytics layer.
-- **Semi-additive measures** (period-end balances, period-average) —
+- **Semi-additive measures** (the total of period-end balances across accounts, period-average). One row's value at the period's end is the [`last` aggregation](model-format.md#first-and-last); the sum across members of each one's last value is not —
   separate primitive; planned independently.
