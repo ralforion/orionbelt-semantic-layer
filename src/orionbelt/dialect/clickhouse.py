@@ -878,10 +878,12 @@ class ClickHouseDialect(Dialect):
         the two middle values, but refuses a Decimal; and halving a Decimal
         keeps its scale (6.42 for 6.425). As a double it is the continuous
         median every engine answers, the type Postgres' ``PERCENTILE_CONT``
-        returns.
+        returns. Over no values it is ``NaN`` for a non-nullable column, so
+        an empty group is NULL explicitly.
         """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
-        return f"quantileExactInclusive(0.5)(toFloat64({col_sql}))"
+        median = f"quantileExactInclusive(0.5)(toFloat64({col_sql}))"
+        return f"if(count({col_sql}) = 0, NULL, {median})"
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """ClickHouse: topK(1)(col)[1] — returns the most frequent value."""

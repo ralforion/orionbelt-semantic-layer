@@ -636,9 +636,10 @@ class MySQLDialect(Dialect):
 
         MySQL has no median, ordered-set aggregate or array. ``GROUP_CONCAT``
         sorts the group's values into one string, and ``SUBSTRING_INDEX``
-        picks the value at each middle position, cast back to a decimal wide
-        enough for any of them. An empty or all-NULL group concatenates to
-        NULL. The string is cut at ``group_concat_max_len`` (1024 bytes by
+        picks the value at each middle position, read back as a DOUBLE: a
+        fixed DECIMAL clipped the range a DOUBLE column holds (1e40 came back
+        as about 1e35, 1e-40 as 0). An empty or all-NULL group concatenates
+        to NULL. The string is cut at ``group_concat_max_len`` (1024 bytes by
         default), which :meth:`compile_select` lifts for the statement.
         """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
@@ -646,11 +647,13 @@ class MySQLDialect(Dialect):
 
         def at(position: str) -> str:
             value = f"SUBSTRING_INDEX(SUBSTRING_INDEX({values}, ',', {position}), ',', -1)"
-            return f"CAST({value} AS DECIMAL(65, 30))"
+            return f"CAST({value} AS DOUBLE)"
 
+        # Halved before adding, so two values near a DOUBLE's limit do not
+        # overflow their sum.
         return (
-            f"({at(f'FLOOR((COUNT({col_sql}) + 1) / 2)')}"
-            f" + {at(f'CEIL((COUNT({col_sql}) + 1) / 2)')}) / 2"
+            f"{at(f'FLOOR((COUNT({col_sql}) + 1) / 2)')} / 2"
+            f" + {at(f'CEIL((COUNT({col_sql}) + 1) / 2)')} / 2"
         )
 
     #: How deep :meth:`compile_select` is in the statement; 0 outside it.

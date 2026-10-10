@@ -333,12 +333,16 @@ class BigQueryDialect(Dialect):
         1, 2, 10, 20). The sorted ``ARRAY_AGG`` indexed at both middle offsets
         is an ordinary aggregate expression with the exact continuous median;
         an empty or all-NULL group indexes no array and is NULL.
+
+        Each half is taken before adding: the sum of two INT64 values stays
+        INT64 and overflows (5000000000000000000 + itself), where ``/`` already
+        yields a FLOAT64 for them and keeps a NUMERIC exact.
         """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         values = f"ARRAY_AGG({col_sql} IGNORE NULLS ORDER BY {col_sql})"
         return (
-            f"({values}[SAFE_OFFSET(DIV(COUNT({col_sql}) - 1, 2))]"
-            f" + {values}[SAFE_OFFSET(DIV(COUNT({col_sql}), 2))]) / 2"
+            f"{values}[SAFE_OFFSET(DIV(COUNT({col_sql}) - 1, 2))] / 2"
+            f" + {values}[SAFE_OFFSET(DIV(COUNT({col_sql}), 2))] / 2"
         )
 
     def _compile_mode(self, args: list[Expr]) -> str:

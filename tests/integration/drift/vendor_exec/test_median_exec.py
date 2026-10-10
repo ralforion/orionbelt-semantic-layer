@@ -10,7 +10,10 @@ has no upper-case ``MEDIAN``. So the same hand-computed answers are asserted on
 all of them, for integers and decimals, an even and an odd group, a group of
 NULLs, and a group large enough that MySQL's ``GROUP_CONCAT`` would be cut at
 its default 1024 bytes without the statement hint the dialect adds. The
-``listagg`` over that group is the same cut, fixed by the same hint.
+``listagg`` over that group is the same cut, fixed by the same hint. At the
+edges: an integer whose double would overflow INT64 (BigQuery), doubles past a
+fixed decimal's range (MySQL), and no rows at all over a non-nullable column
+(``NaN`` on ClickHouse).
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.dialect.registry import DialectRegistry
-from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
@@ -43,30 +46,44 @@ SCHEMAS = {
     "dremio": "$scratch",
 }
 
-#: (string, bigint, decimal(10, 2)) as each engine spells them in a CAST.
-TYPES: dict[str, tuple[str, str, str]] = {
-    "duckdb": ("VARCHAR", "BIGINT", "DECIMAL(10, 2)"),
-    "postgres": ("TEXT", "BIGINT", "NUMERIC(10, 2)"),
-    "mysql": ("CHAR(8)", "SIGNED", "DECIMAL(10, 2)"),
-    "clickhouse": ("Nullable(String)", "Nullable(Int64)", "Nullable(Decimal(10, 2))"),
-    "snowflake": ("VARCHAR", "BIGINT", "NUMBER(10, 2)"),
-    "bigquery": ("STRING", "INT64", "NUMERIC"),
-    "databricks": ("STRING", "BIGINT", "DECIMAL(10, 2)"),
-    "dremio": ("VARCHAR", "BIGINT", "DECIMAL(10, 2)"),
+#: (string, bigint, decimal(10, 2), double, bigint never NULL) as each engine
+#: spells them in a CAST. The last is non-nullable on ClickHouse, the one
+#: engine whose column types say so.
+TYPES: dict[str, tuple[str, str, str, str, str]] = {
+    "duckdb": ("VARCHAR", "BIGINT", "DECIMAL(10, 2)", "DOUBLE", "BIGINT"),
+    "postgres": ("TEXT", "BIGINT", "NUMERIC(10, 2)", "DOUBLE PRECISION", "BIGINT"),
+    "mysql": ("CHAR(8)", "SIGNED", "DECIMAL(10, 2)", "DOUBLE", "SIGNED"),
+    "clickhouse": (
+        "Nullable(String)",
+        "Nullable(Int64)",
+        "Nullable(Decimal(10, 2))",
+        "Nullable(Float64)",
+        "Int64",
+    ),
+    "snowflake": ("VARCHAR", "BIGINT", "NUMBER(10, 2)", "DOUBLE", "BIGINT"),
+    "bigquery": ("STRING", "INT64", "NUMERIC", "FLOAT64", "INT64"),
+    "databricks": ("STRING", "BIGINT", "DECIMAL(10, 2)", "DOUBLE", "BIGINT"),
+    "dremio": ("VARCHAR", "BIGINT", "DECIMAL(10, 2)", "DOUBLE", "BIGINT"),
 }
 
-#: (group, integer, decimal, label)
-ROWS: list[tuple[str, int | None, str | None, str | None]] = [
-    ("A", 1, "1.25", None),
-    ("A", 2, "2.75", None),
-    ("A", 10, "10.10", None),
-    ("A", 20, "20.20", None),
-    ("A", None, None, None),
-    ("B", 1, "1.00", None),
-    ("B", 2, "2.00", None),
-    ("B", 10, "3.50", None),
-    ("C", None, None, None),
-    *(("L", n, None, f"lbl{n:05d}") for n in range(1, 201)),
+#: (group, integer, decimal, label, double). Every row also has a sequence
+#: number, the never-NULL column.
+ROWS: list[tuple[str, int | None, str | None, str | None, str | None]] = [
+    ("A", 1, "1.25", None, None),
+    ("A", 2, "2.75", None, None),
+    ("A", 10, "10.10", None, None),
+    ("A", 20, "20.20", None, None),
+    ("A", None, None, None, None),
+    ("B", 1, "1.00", None, None),
+    ("B", 2, "2.00", None, None),
+    ("B", 10, "3.50", None, None),
+    ("C", None, None, None, None),
+    *(("L", n, None, f"lbl{n:05d}", None) for n in range(1, 201)),
+    # Added to itself, this overflows INT64.
+    ("H", 5000000000000000000, None, None, None),
+    # Outside DECIMAL(65, 30), both ways.
+    ("F", None, None, None, "1e40"),
+    ("G", None, None, None, "1e-40"),
 ]
 
 MODEL_YAML = """
@@ -81,6 +98,8 @@ dataObjects:
       Integer: {{code: int_val, abstractType: int}}
       Decimal: {{code: dec_val, abstractType: float}}
       Label: {{code: label, abstractType: string}}
+      Double: {{code: dbl_val, abstractType: float}}
+      Sequence: {{code: seq, abstractType: int}}
 dimensions:
   Group: {{dataObject: Values, column: Group, resultType: string}}
 measures:
@@ -90,8 +109,14 @@ measures:
   Decimal Median:
     columns: [{{dataObject: Values, column: Decimal}}]
     aggregation: median
+  Double Median:
+    columns: [{{dataObject: Values, column: Double}}]
+    aggregation: median
+  Sequence Median:
+    columns: [{{dataObject: Values, column: Sequence}}]
+    aggregation: median
   Integer Total:
-    columns: [{{dataObject: Values, column: Integer}}]
+    columns: [{{dataObject: Values, column: Sequence}}]
     aggregation: sum
     total: true
   Labels:
@@ -108,19 +133,26 @@ def _literal(value: str | int | None, type_name: str) -> str:
 
 def _prepare(target: VendorTarget) -> SemanticModel:
     dialect = DialectRegistry.get(target.dialect)
-    text, integer, decimal = TYPES[target.dialect]
+    text, integer, decimal, double, never_null = TYPES[target.dialect]
     schema = SCHEMAS.get(target.dialect)
     ref = dialect.quote_identifier(TABLE)
     if schema:
         ref = f"{dialect.quote_identifier(schema)}.{ref}"
-    columns = (("grp", text), ("int_val", integer), ("dec_val", decimal), ("label", text))
+    columns = (
+        ("grp", text),
+        ("int_val", integer),
+        ("dec_val", decimal),
+        ("label", text),
+        ("dbl_val", double),
+        ("seq", never_null),
+    )
     legs = " UNION ALL ".join(
         "SELECT "
         + ", ".join(
             f"{_literal(value, type_name)} AS {dialect.quote_identifier(name)}"
-            for value, (name, type_name) in zip(row, columns, strict=True)
+            for value, (name, type_name) in zip((*row, seq), columns, strict=True)
         )
-        for row in ROWS
+        for seq, row in enumerate(ROWS, start=1)
     )
     engine = " ENGINE = Memory" if target.dialect == "clickhouse" else ""
     for statement in (f"DROP TABLE IF EXISTS {ref}", f"CREATE TABLE {ref}{engine} AS {legs}"):
@@ -135,9 +167,15 @@ def _prepare(target: VendorTarget) -> SemanticModel:
 
 
 def _run(
-    target: VendorTarget, model: SemanticModel, dimensions: list[str], measures: list[str]
+    target: VendorTarget,
+    model: SemanticModel,
+    dimensions: list[str],
+    measures: list[str],
+    where: list[QueryFilter] | None = None,
 ) -> list[dict[str, Any]]:
-    query = QueryObject(select=QuerySelect(dimensions=dimensions, measures=measures))
+    query = QueryObject(
+        select=QuerySelect(dimensions=dimensions, measures=measures), where=where or []
+    )
     rows = target.execute(CompilationPipeline().compile(query, model, target.dialect).sql)
     return [{str(k).lower(): v for k, v in row.items()} for row in rows]
 
@@ -147,6 +185,7 @@ def _number(value: Any) -> Decimal | None:
 
 
 def _median(column: int, group: str | None = None) -> Decimal | None:
+    """The median of *column* of ``ROWS`` (in *group*), as Python works it out."""
     values = [
         Decimal(str(row[column]))
         for row in ROWS
@@ -157,22 +196,37 @@ def _median(column: int, group: str | None = None) -> Decimal | None:
 
 def _assert_all(target: VendorTarget) -> None:
     model = _prepare(target)
-    groups = ["A", "B", "C", "L"]
-    want = {g: (_median(1, g), _median(2, g)) for g in groups}
-    # Even, odd, all-NULL, and a group of 200 past GROUP_CONCAT's default cut.
-    assert want["A"] == (Decimal(6), Decimal("6.425"))
+    groups = sorted({row[0] for row in ROWS})
+    want = {g: (_median(1, g), _median(2, g), _median(4, g)) for g in groups}
+    # Even, odd, all-NULL, a group of 200 past GROUP_CONCAT's default cut, and
+    # the edges of INT64 and of a fixed decimal.
+    assert want["A"][:2] == (Decimal(6), Decimal("6.425"))
     assert want["L"][0] == Decimal("100.5")
+    assert want["H"][0] == Decimal(5000000000000000000)
+    assert (want["F"][2], want["G"][2]) == (Decimal("1e40"), Decimal("1e-40"))
 
-    measures = ["Integer Median", "Decimal Median"]
+    measures = ["Integer Median", "Decimal Median", "Double Median"]
     for extra in ([], ["Integer Total"]):
         # Beside a total, the medians are computed in a CTE the window reads.
         rows = _run(target, model, ["Group"], [*measures, *extra])
         got = {r["group"]: tuple(_number(r[m.lower()]) for m in measures) for r in rows}
         assert got == want, f"{target.name} {extra}: {got}"
 
-    rows = _run(target, model, [], measures)
-    got_all = [tuple(_number(r[m.lower()]) for m in measures) for r in rows]
+    exact = ["Integer Median", "Decimal Median"]
+    rows = _run(target, model, [], exact)
+    got_all = [tuple(_number(r[m.lower()]) for m in exact) for r in rows]
     assert got_all == [(_median(1), _median(2))], f"{target.name}: {got_all}"
+
+    # No rows at all: NULL, also over a column that cannot hold one.
+    every = [*measures, "Sequence Median"]
+    nothing = [QueryFilter(field="Group", op="=", value="none")]
+    rows = _run(target, model, [], every, nothing)
+    got_none = [tuple(r[m.lower()] for m in every) for r in rows]
+    # Dremio returns no row at all for an ungrouped query whose median reads no
+    # rows, whatever else it selects (probed: MEDIAN and PERCENTILE_CONT alike,
+    # beside a COUNT(*)), where every other engine returns one row of NULLs.
+    want_none = [] if target.dialect == "dremio" else [(None,) * len(every)]
+    assert got_none == want_none, f"{target.name}: {got_none}"
 
     labels = {r["group"]: r["labels"] for r in _run(target, model, ["Group"], ["Labels"])}
     assert len(labels["L"]) == 200 * 8 + 199, f"{target.name}: {len(labels['L'])}"
