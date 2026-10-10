@@ -137,7 +137,9 @@ def resolve_metric_data_type(
 
     # 2a. A reaggregate metric's second stage: an average is a new numeric value
     # and takes the default, as an ``avg`` measure does; a count is an integer;
-    # sum, min and max carry the base measure's units and inherit.
+    # sum, min and max carry the base measure's units and inherit, and a
+    # median passes through as a ``median`` measure does: a default decimal
+    # would round the midpoint of two values.
     if metric.type is MetricType.REAGGREGATE:
         if metric.aggregation is ReaggregateAggType.AVG:
             return _get_default(settings)
@@ -329,7 +331,12 @@ def reaggregated_data_type(model: SemanticModel, name: str) -> OBMLType | None:
 
 
 def reaggregated_values_are_integers(model: SemanticModel, name: str) -> bool:
-    """Whether every value of measure or reaggregate metric *name* is an integer."""
+    """Whether every value of measure or reaggregate metric *name* is an integer.
+
+    A ``sum``, ``min`` or ``max`` of integers is one; a ``median`` of them is
+    not, unless declared so: the midpoint of two integers is a half (1.5 for 1
+    and 2).
+    """
     metric = model.metrics.get(name)
     if metric is None:
         measure = model.effective_measures.get(name)
@@ -337,6 +344,8 @@ def reaggregated_values_are_integers(model: SemanticModel, name: str) -> bool:
     declared = resolve_metric_data_type(metric, model.settings)
     if declared is not None:
         return isinstance(declared, SimpleType) and declared.name in _INTEGER_NAMES
+    if metric.aggregation is ReaggregateAggType.MEDIAN:
+        return False
     return metric.measure is not None and reaggregated_values_are_integers(model, metric.measure)
 
 

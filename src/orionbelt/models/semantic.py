@@ -238,7 +238,8 @@ class ReaggregateAggType(StrEnum):
     """Second-stage aggregation of a ``reaggregate`` metric.
 
     Applied to the measure's per-group values, so ``avg`` is the unweighted
-    mean of those values, not the row-weighted mean of the measure.
+    mean of those values, not the row-weighted mean of the measure, and
+    ``median`` is the exact, continuous median of them.
     """
 
     SUM = "sum"
@@ -246,6 +247,7 @@ class ReaggregateAggType(StrEnum):
     MIN = "min"
     MAX = "max"
     COUNT = "count"
+    MEDIAN = "median"
 
 
 class GrainToDate(StrEnum):

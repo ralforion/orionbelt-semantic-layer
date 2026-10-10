@@ -10,6 +10,7 @@ those wrappers may touch it there.
 
 from __future__ import annotations
 
+import statistics
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
@@ -55,7 +56,7 @@ _INNER = [
     "Total Units In Stock",
     "Grand Total Units In Stock",
 ]
-_AGGREGATIONS = ["avg", "sum", "min", "max", "count"]
+_AGGREGATIONS = ["avg", "sum", "min", "max", "count", "median"]
 _PERS = [["Sales Client Name"], ["Sales Date:day"], ["Country Name"]]
 
 _METRICS: dict[str, dict[str, Any]] = {
@@ -134,6 +135,8 @@ def _aggregate(aggregation: str, values: list[Any]) -> Any:
         return None
     if aggregation == "avg":
         return Decimal(sum(present)) / len(present)
+    if aggregation == "median":
+        return statistics.median(Decimal(str(v)) for v in present)
     return {"sum": sum, "min": min, "max": max}[aggregation](present)
 
 
