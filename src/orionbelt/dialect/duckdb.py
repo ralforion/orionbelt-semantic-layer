@@ -215,9 +215,15 @@ class DuckDBDialect(Dialect):
         return self._render_null_guard(self._render_named_function(name, args), args)
 
     def _compile_median(self, args: list[Expr]) -> str:
-        """DuckDB: MEDIAN(col) — native support."""
+        """DuckDB: MEDIAN over the values as doubles.
+
+        ``MEDIAN`` of a DECIMAL keeps its scale, so the mean of 2.75 and 10.10
+        came back as 6.42 rather than 6.425. As a double it is the continuous
+        median every engine answers, the type Postgres' ``PERCENTILE_CONT``
+        returns.
+        """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
-        return f"MEDIAN({col_sql})"
+        return f"MEDIAN(CAST({col_sql} AS DOUBLE))"
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """DuckDB: MODE(col) — native support."""

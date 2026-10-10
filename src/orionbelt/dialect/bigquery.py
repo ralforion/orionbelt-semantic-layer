@@ -326,10 +326,20 @@ class BigQueryDialect(Dialect):
         )
 
     def _compile_median(self, args: list[Expr]) -> str:
-        """BigQuery: PERCENTILE_DISC(col, 0.5) OVER()  — but as an aggregate
-        we use APPROX_QUANTILES(col, 2)[OFFSET(1)]."""
+        """BigQuery: the mean of the middle one or two values of the sorted group.
+
+        BigQuery's exact ``PERCENTILE_CONT`` is a window function only, and
+        ``APPROX_QUANTILES`` is approximate (and the lower middle value: 2 for
+        1, 2, 10, 20). The sorted ``ARRAY_AGG`` indexed at both middle offsets
+        is an ordinary aggregate expression with the exact continuous median;
+        an empty or all-NULL group indexes no array and is NULL.
+        """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
-        return f"APPROX_QUANTILES({col_sql}, 2)[OFFSET(1)]"
+        values = f"ARRAY_AGG({col_sql} IGNORE NULLS ORDER BY {col_sql})"
+        return (
+            f"({values}[SAFE_OFFSET(DIV(COUNT({col_sql}) - 1, 2))]"
+            f" + {values}[SAFE_OFFSET(DIV(COUNT({col_sql}), 2))]) / 2"
+        )
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """BigQuery: APPROX_TOP_COUNT(col, 1)[OFFSET(0)].value."""
