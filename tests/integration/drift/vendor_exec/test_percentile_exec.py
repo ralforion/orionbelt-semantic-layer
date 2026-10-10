@@ -286,6 +286,26 @@ _BIGNUMERIC_CASES = [
     ("-3e-38", "2e-38", "0.7", "1e-38"),
     ("-7e-38", "3e-38", "0.25", "-5e-38"),
     ("1e-38", "2e-38", "0.5", "2e-38"),
+    # Where products overflow, they cancelled to 0 and chose the wrong end.
+    (
+        "-200000000000000000000000000000000000000.00000000000000000000000000000000000002",
+        "200000000000000000000000000000000000000.00000000000000000000000000000000000001",
+        "0.5",
+        "-1e-38",
+    ),
+    # Both ends of the range, where a difference or a FLOOR overflows.
+    (
+        "-578960446186580977117854925043439539266.34992332820282019728792003956564819967",
+        "578960446186580977117854925043439539266.34992332820282019728792003956564819967",
+        "0.5",
+        "0",
+    ),
+    (
+        "-578960446186580977117854925043439539266.34992332820282019728792003956564819967",
+        "-578960446186580977117854925043439539266.34992332820282019728792003956564819966",
+        "0.5",
+        "-578960446186580977117854925043439539266.34992332820282019728792003956564819967",
+    ),
     # Past an INT64 difference: one rounding still, not two products added.
     (
         "-10000000000000000000.00000000000000000000000000000000000001",
@@ -306,6 +326,26 @@ def test_bigquery_bignumeric_rounds_once(vendor_bigquery: VendorTarget) -> None:
         rows = vendor_bigquery.execute(f"SELECT {dialect.compile_expr(call)} AS v FROM {values}")
         got = Decimal(str(rows[0]["v"]))
         assert got == Decimal(want), (lower, upper, fraction, got)
+
+
+#: FLOAT64 at its limits: no difference past the range, no tiny fraction lost.
+_FLOAT64_CASES = [
+    ("-1.7e308", "1.7e308", "0.9", "1.36e308"),
+    ("1e307", "2e307", "0.9", "1.9e307"),
+    ("-2e-300", "-1e-300", "0.5", "-1.5e-300"),
+]
+
+
+def test_bigquery_float64_at_its_limits(vendor_bigquery: VendorTarget) -> None:
+    dialect = DialectRegistry.get("bigquery")
+    for lower, upper, fraction, want in _FLOAT64_CASES:
+        call = FunctionCall(
+            name="PERCENTILE_CONT", args=[ColumnRef(name="x")], fraction=Decimal(fraction)
+        )
+        values = f"UNNEST([CAST({lower} AS FLOAT64), CAST({upper} AS FLOAT64)]) AS x"
+        rows = vendor_bigquery.execute(f"SELECT {dialect.compile_expr(call)} AS v FROM {values}")
+        got = Decimal(str(rows[0]["v"]))
+        assert _close(got, Decimal(want)), (lower, upper, fraction, got)
 
 
 def test_duckdb_percentile(vendor_duckdb: VendorTarget) -> None:

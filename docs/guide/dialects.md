@@ -330,7 +330,7 @@ Each engine's own shortcut answers something else, measured on all eight: BigQue
 
 | Dialect | `percentile_cont` | `percentile_disc` |
 |---------|-----|-----|
-| BigQuery | `lower` and `upper` of `ARRAY_AGG(col IGNORE NULLS ORDER BY col)` around the position, weighted by its remainder `w` as a BIGNUMERIC: `lower` at a whole position, else `lower + (upper - lower) * w` for a positive result and `upper - (upper - lower) * (1 - w)` for a negative one, so the one rounding goes away from zero as a mean's does, over `upper - lower` widened to BIGNUMERIC; `lower * (1 - w) + upper * w` only where even that overflows (FLOAT64 near ±1.7e308, BIGNUMERIC of opposite signs past about ±2.9e38) | the `ceil(p * n)`-th value of the sorted array |
+| BigQuery | `lower` and `upper` of `ARRAY_AGG(col IGNORE NULLS ORDER BY col)` around the position: `lower` at a whole position, else a step up from `lower` when that is above zero and down from `upper` otherwise. Each value is split at `TRUNC` into a whole part, divided by `10^places` exactly, and a fraction, whose step is the one rounding, so a tie goes away from zero as a mean's does. No difference of the two values is taken, so nothing overflows at any magnitude | the `ceil(p * n)`-th value of the sorted array |
 | ClickHouse | `if(count(col) = 0, NULL, quantileExactInclusive(p)(toFloat64(col)))` | `if(count(col) = 0, NULL, arraySort(groupArray(col))[ceil(p * n)])` |
 | Databricks | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)` | `get(array_sort(collect_list(col)), ceil(p * n) - 1)` |
 | Dremio | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY CAST(col AS DOUBLE))` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` |

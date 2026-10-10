@@ -210,7 +210,7 @@ class TestDialects:
             ),
             (
                 "bigquery",
-                "(CAST(MOD(3 * (COUNT(`x`) - 1), 10) AS BIGNUMERIC) / 10)",
+                "* (10 - MOD(3 * (COUNT(`x`) - 1), 10)) / 10 END",
                 "[SAFE_OFFSET(DIV(3 * COUNT(`x`) + 9, 10) - 1)]",
             ),
             (
@@ -240,16 +240,15 @@ class TestDialects:
         assert sql.startswith(("if(", "(")) and sql.endswith(")")
 
     def test_bigquery_steps_from_the_end_the_sign_rounds_away_from(self) -> None:
-        """Up from ``lower`` when the result is positive, down from ``upper`` when
-        negative, decided by an exact integer-weighted sign, over a difference
-        widened to BIGNUMERIC; the two shrinking products only where even that
-        overflows."""
+        """Up from ``lower`` when that is above zero, else down from ``upper``;
+        whole parts towards zero, so nothing overflows, and one rounding."""
         sql = DialectRegistry.get("bigquery").compile_expr(_call("PERCENTILE_CONT"))
         assert sql.startswith("CASE WHEN MOD(") and sql.endswith(" END")
-        assert sql.count(" WHEN ") == 3
-        assert "SAFE_SUBTRACT(" in sql and " * BIGNUMERIC '1', " in sql
-        assert "SAFE_MULTIPLY(" in sql and "SAFE_ADD(" in sql
-        assert "CAST(10 - MOD(3 * (COUNT(`x`) - 1), 10) AS BIGNUMERIC)" in sql
+        assert " > 0 THEN " in sql and " ELSE " in sql
+        assert "TRUNC(" in sql and "FLOOR(" not in sql
+        assert " * BIGNUMERIC '1')" in sql
+        # No difference of the two values is taken.
+        assert "SAFE_SUBTRACT" not in sql and "SAFE_MULTIPLY" not in sql
 
 
 class TestSchema:

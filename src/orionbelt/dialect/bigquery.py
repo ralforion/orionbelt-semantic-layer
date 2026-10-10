@@ -377,24 +377,23 @@ class BigQueryDialect(Dialect):
 
         - Discrete: the ``ceil(p * n / d)``-th value, in the column's own type.
         - Continuous: the values at offsets ``floor(h)`` and ``ceil(h)`` of
-          ``h = p * (n - 1) / d``, ``lower`` and ``upper``, and the weight
-          ``w = r / d``, the remainder of ``h`` as a BIGNUMERIC, exact. At a
-          whole position it is ``lower`` itself. Otherwise it is one step of
-          ``(upper - lower) * w`` up from ``lower`` when the result is
-          positive, or of ``(upper - lower) * (1 - w)`` down from ``upper``
-          when it is negative. The step is the only rounding: a positive
-          product rounds away from zero, so the result rounds away from zero
-          as a mean does (-2e-38 for -1.5e-38 in a BIGNUMERIC; stepping up
-          from a negative ``lower`` gave -1e-38). Which way is decided
-          exactly, by the sign of ``lower * (d - r) + upper * r``. The
-          difference is taken after ``* BIGNUMERIC '1'``, which widens INT64
-          and NUMERIC values (their difference overflows INT64 for opposite
-          signs) and leaves FLOAT64 ones as they are, where a CAST would
-          refuse 1e40. ``SAFE_`` arithmetic is NULL where even that
-          overflows: the sign then comes from the rounded form below, and
-          only a difference past the type's range - FLOAT64 near 1.7e308,
-          BIGNUMERIC of opposite signs past about 2.9e38 - leaves
-          ``lower * (1 - w) + upper * w``, whose terms shrink. Over INT64 and
+          ``h = p * (n - 1) / d``, ``lower`` and ``upper``, and ``r``, the
+          remainder of ``p * (n - 1)``. At a whole position it is ``lower``
+          itself. Otherwise each value is split into its whole part towards
+          zero and the fraction left, ``upper`` borrowing one when the
+          fractions' difference would be negative, and the result is stepped
+          up from ``lower`` by the whole
+          parts' difference times ``r / d`` (each whole part divided by
+          ``10 ** places`` first: exact, and no larger than the value) plus
+          the fractions' difference times ``r / d``. That last product is the
+          one rounding, of a value that is not negative, so it rounds up: the
+          step up from ``lower`` rounds a tie towards +infinity, the matching
+          step down from ``upper`` towards -infinity. Up when that is above
+          zero, down otherwise, rounds every tie away from zero, as a mean
+          does (-2e-38 for -1.5e-38 in a BIGNUMERIC). No difference of the two
+          values is taken, so none overflows: the values are widened with
+          ``* BIGNUMERIC '1'``, which makes INT64 and NUMERIC a BIGNUMERIC and
+          leaves FLOAT64 one (a CAST would refuse 1e40). Over INT64 and
           NUMERIC values the result is exact, as a BIGNUMERIC; over FLOAT64 a
           FLOAT64.
         """
@@ -409,21 +408,34 @@ class BigQueryDialect(Dialect):
         lower = f"{values}[SAFE_OFFSET(DIV({scaled}, {denominator}))]"
         upper = f"{values}[SAFE_OFFSET(DIV({scaled} + {denominator - 1}, {denominator}))]"
         remainder = f"MOD({scaled}, {denominator})"
-        weight = f"(CAST({remainder} AS BIGNUMERIC) / {denominator})"
-        difference = f"SAFE_SUBTRACT({upper} * BIGNUMERIC '1', {lower})"
-        shrinking = f"{lower} * (1 - {weight}) + {upper} * {weight}"
-        # The sign of the result times d, exact: integer weights, no rounding.
-        signed = (
-            f"SAFE_ADD(SAFE_MULTIPLY({lower}, CAST({denominator} - {remainder} AS BIGNUMERIC)),"
-            f" SAFE_MULTIPLY({upper}, CAST({remainder} AS BIGNUMERIC)))"
+        # Widened without a CAST, which refuses a FLOAT64 1e40: INT64 and
+        # NUMERIC become BIGNUMERIC, FLOAT64 stays FLOAT64.
+        low = f"({lower} * BIGNUMERIC '1')"
+        high = f"({upper} * BIGNUMERIC '1')"
+        # Each value as its whole part towards zero and the fraction left, of
+        # the value's sign. TRUNC cannot overflow, as FLOOR does just above the
+        # least BIGNUMERIC, and keeps a tiny FLOAT64 fraction (1 - 2e-300 is
+        # 1.0). Of opposite signs the fractions' difference is not negative; of
+        # the same sign it is above -1, and when negative upper borrows one,
+        # from a whole part then at least lower's.
+        borrow = f"IF({high} - TRUNC({high}) < {low} - TRUNC({low}), 1, 0)"
+        parts = f"({high} - TRUNC({high}) + {borrow} - ({low} - TRUNC({low})))"
+        whole_high = f"((TRUNC({high}) - {borrow}) / {denominator})"
+        whole_low = f"(TRUNC({low}) / {denominator})"
+        complement = f"({denominator} - {remainder})"
+        # Whole parts over 10 ** places are exact, and no larger than the
+        # values; the fraction's step is the one rounding, of a value >= 0. Each
+        # end's own whole part is taken off it first, which moves towards zero,
+        # so no partial sum leaves the range between it and the result.
+        up = (
+            f"{low} - {whole_low} * {remainder} + {whole_high} * {remainder}"
+            f" + {parts} * {remainder} / {denominator}"
         )
-        return (
-            f"CASE WHEN {remainder} = 0 THEN {lower} "
-            f"WHEN {difference} IS NULL THEN {shrinking} "
-            f"WHEN COALESCE({signed} < 0, {shrinking} < 0) "
-            f"THEN {upper} - {difference} * (1 - {weight}) "
-            f"ELSE {lower} + {difference} * {weight} END"
+        down = (
+            f"{high} - {whole_high} * {complement} + {whole_low} * {complement}"
+            f" - {parts} * {complement} / {denominator}"
         )
+        return f"CASE WHEN {remainder} = 0 THEN {lower} WHEN {up} > 0 THEN {up} ELSE {down} END"
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """BigQuery: APPROX_TOP_COUNT(col, 1)[OFFSET(0)].value."""
