@@ -307,16 +307,16 @@ Most aggregations (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`) compile identically acro
 
 | Dialect | SQL |
 |---------|-----|
-| BigQuery | `ARRAY_AGG(col IGNORE NULLS ORDER BY col)[SAFE_OFFSET(DIV(COUNT(col) - 1, 2))] / 2 + ARRAY_AGG(...)[SAFE_OFFSET(DIV(COUNT(col), 2))] / 2` |
+| BigQuery | the middle values `lower` and `upper` of `ARRAY_AGG(col IGNORE NULLS ORDER BY col)`, at `SAFE_OFFSET(DIV(COUNT(col) - 1, 2))` and `SAFE_OFFSET(DIV(COUNT(col), 2))`: `((CAST(lower AS BIGNUMERIC) + upper) / 2)` for an integer column, `(lower + (upper - lower) / 2)` otherwise |
 | ClickHouse | `if(count(col) = 0, NULL, quantileExactInclusive(0.5)(toFloat64(col)))` |
 | Databricks | `MEDIAN(col)` |
-| Dremio | `MEDIAN(col)` |
+| Dremio | `MEDIAN(CAST(col AS DOUBLE))` |
 | DuckDB | `MEDIAN(CAST(col AS DOUBLE))` |
-| MySQL | the middle one or two values of `GROUP_CONCAT(col ORDER BY col SEPARATOR ',')`, picked with `SUBSTRING_INDEX`, read back as `DOUBLE` and averaged |
+| MySQL | the middle one or two values of `GROUP_CONCAT(col ORDER BY col SEPARATOR ',')`, picked with `SUBSTRING_INDEX`, read back as `DOUBLE`, each halved, then added |
 | Postgres | `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY col)` |
 | Snowflake | `MEDIAN(col)` |
 
-Each engine's own shortcut answers something else, measured on all eight: BigQuery's `APPROX_QUANTILES` is approximate, Postgres' `PERCENTILE_DISC` takes the lower middle value, ClickHouse's `median` samples (and has no upper-case `MEDIAN`), and DuckDB's `MEDIAN` of a DECIMAL rounds to the column's scale. The result is a floating-point number on Postgres, DuckDB, ClickHouse and MySQL, and on BigQuery for an INT64 column; the two middle values are halved before they are added, so a sum near the type's limit cannot overflow.
+Each engine's own shortcut answers something else, measured on all eight: BigQuery's `APPROX_QUANTILES` is approximate, Postgres' `PERCENTILE_DISC` takes the lower middle value, ClickHouse's `median` samples (and has no upper-case `MEDIAN`), DuckDB's `MEDIAN` of a DECIMAL rounds to the column's scale, and Dremio's loses small DECIMAL values (0.0 for 0.000000001). The result is a floating-point number on Postgres, DuckDB, ClickHouse, MySQL and Dremio. On BigQuery it keeps the column's type: an integer column's median is an exact BIGNUMERIC, a NUMERIC column's is rounded once to its scale. No midpoint is computed as a plain sum that could overflow the column's type.
 
 !!! warning "Dremio: a median over no rows returns no row"
     An ungrouped query whose `median` reads no rows (a filter removed them all) returns no row on Dremio, with every other column of it, where the other engines return one row of NULLs. This is the engine's behavior for `MEDIAN` and `PERCENTILE_CONT` alike. Grouped queries are unaffected: a group with no rows has no row anywhere.

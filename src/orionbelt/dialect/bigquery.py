@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, RawSQL
+from orionbelt.ast.nodes import (
+    Cast,
+    ColumnRef,
+    Expr,
+    FunctionCall,
+    Literal,
+    OrderByItem,
+    RawSQL,
+)
 from orionbelt.dialect.base import (
     AmbiguousTableReferenceError,
     Dialect,
     DialectCapabilities,
 )
 from orionbelt.dialect.registry import DialectRegistry
-from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.semantic import DataType, TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
 
 # BigQuery NUMERIC is (38, 9); anything wider needs BIGNUMERIC.
@@ -334,16 +342,26 @@ class BigQueryDialect(Dialect):
         is an ordinary aggregate expression with the exact continuous median;
         an empty or all-NULL group indexes no array and is NULL.
 
-        Each half is taken before adding: the sum of two INT64 values stays
-        INT64 and overflows (5000000000000000000 + itself), where ``/`` already
-        yields a FLOAT64 for them and keeps a NUMERIC exact.
+        The midpoint of the two depends on the type, which BigQuery keeps:
+
+        - an integer column is widened to BIGNUMERIC before adding, since the
+          INT64 sum overflows (5000000000000000000 + itself) and halving each
+          first loses digits as FLOAT64 past 2^53; the result is exact;
+        - anything else is ``lower + (upper - lower) / 2``, rounded once.
+          Halving each value first rounds twice: a NUMERIC 0.000000001 halves
+          back to itself, and the two halves add up to twice the median.
+
+        The whole expression is parenthesized: it is a sum, and a derived
+        metric's ``* 2`` or ``100 -`` must apply to all of it.
         """
-        col_sql = self.compile_expr(args[0]) if args else "NULL"
+        col = args[0] if args else None
+        col_sql = self.compile_expr(col) if col is not None else "NULL"
         values = f"ARRAY_AGG({col_sql} IGNORE NULLS ORDER BY {col_sql})"
-        return (
-            f"{values}[SAFE_OFFSET(DIV(COUNT({col_sql}) - 1, 2))] / 2"
-            f" + {values}[SAFE_OFFSET(DIV(COUNT({col_sql}), 2))] / 2"
-        )
+        lower = f"{values}[SAFE_OFFSET(DIV(COUNT({col_sql}) - 1, 2))]"
+        upper = f"{values}[SAFE_OFFSET(DIV(COUNT({col_sql}), 2))]"
+        if isinstance(col, ColumnRef) and col.abstract_type == DataType.INT:
+            return f"((CAST({lower} AS BIGNUMERIC) + {upper}) / 2)"
+        return f"({lower} + ({upper} - {lower}) / 2)"
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """BigQuery: APPROX_TOP_COUNT(col, 1)[OFFSET(0)].value."""

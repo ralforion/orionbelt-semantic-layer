@@ -46,24 +46,24 @@ SCHEMAS = {
     "dremio": "$scratch",
 }
 
-#: (string, bigint, decimal(10, 2), double, bigint never NULL) as each engine
+#: (string, bigint, decimal(20, 9), double, bigint never NULL) as each engine
 #: spells them in a CAST. The last is non-nullable on ClickHouse, the one
 #: engine whose column types say so.
 TYPES: dict[str, tuple[str, str, str, str, str]] = {
-    "duckdb": ("VARCHAR", "BIGINT", "DECIMAL(10, 2)", "DOUBLE", "BIGINT"),
-    "postgres": ("TEXT", "BIGINT", "NUMERIC(10, 2)", "DOUBLE PRECISION", "BIGINT"),
-    "mysql": ("CHAR(8)", "SIGNED", "DECIMAL(10, 2)", "DOUBLE", "SIGNED"),
+    "duckdb": ("VARCHAR", "BIGINT", "DECIMAL(20, 9)", "DOUBLE", "BIGINT"),
+    "postgres": ("TEXT", "BIGINT", "NUMERIC(20, 9)", "DOUBLE PRECISION", "BIGINT"),
+    "mysql": ("CHAR(8)", "SIGNED", "DECIMAL(20, 9)", "DOUBLE", "SIGNED"),
     "clickhouse": (
         "Nullable(String)",
         "Nullable(Int64)",
-        "Nullable(Decimal(10, 2))",
+        "Nullable(Decimal(20, 9))",
         "Nullable(Float64)",
         "Int64",
     ),
-    "snowflake": ("VARCHAR", "BIGINT", "NUMBER(10, 2)", "DOUBLE", "BIGINT"),
+    "snowflake": ("VARCHAR", "BIGINT", "NUMBER(20, 9)", "DOUBLE", "BIGINT"),
     "bigquery": ("STRING", "INT64", "NUMERIC", "FLOAT64", "INT64"),
-    "databricks": ("STRING", "BIGINT", "DECIMAL(10, 2)", "DOUBLE", "BIGINT"),
-    "dremio": ("VARCHAR", "BIGINT", "DECIMAL(10, 2)", "DOUBLE", "BIGINT"),
+    "databricks": ("STRING", "BIGINT", "DECIMAL(20, 9)", "DOUBLE", "BIGINT"),
+    "dremio": ("VARCHAR", "BIGINT", "DECIMAL(20, 9)", "DOUBLE", "BIGINT"),
 }
 
 #: (group, integer, decimal, label, double). Every row also has a sequence
@@ -84,6 +84,11 @@ ROWS: list[tuple[str, int | None, str | None, str | None, str | None]] = [
     # Outside DECIMAL(65, 30), both ways.
     ("F", None, None, None, "1e40"),
     ("G", None, None, None, "1e-40"),
+    # A decimal at its last digit: halving it rounds, so the median of one
+    # value must not be the sum of two halves, nor of two the mean of halves.
+    ("N", None, "0.000000001", None, None),
+    ("M", None, "0.000000001", None, None),
+    ("M", None, "0.000000003", None, None),
 ]
 
 MODEL_YAML = """
@@ -123,6 +128,11 @@ measures:
     columns: [{{dataObject: Values, column: Label}}]
     aggregation: listagg
     delimiter: ","
+metrics:
+  Median Doubled:
+    expression: '{{[Integer Median]}} * 2'
+  Hundred Minus Median:
+    expression: '100 - {{[Integer Median]}}'
 """
 
 
@@ -184,6 +194,16 @@ def _number(value: Any) -> Decimal | None:
     return None if value is None else Decimal(str(value))
 
 
+def _close(got: tuple[Decimal | None, ...], want: tuple[Decimal | None, ...]) -> bool:
+    """Equal, but for a double's last bits: several engines compute the median
+    as a double, where 0.000000001 / 2 + 0.000000003 / 2 is 1.9999999999999997e-9."""
+    return all(
+        (g is None and w is None)
+        or (g is not None and w is not None and abs(g - w) <= abs(w) * Decimal("1e-12"))
+        for g, w in zip(got, want, strict=True)
+    )
+
+
 def _median(column: int, group: str | None = None) -> Decimal | None:
     """The median of *column* of ``ROWS`` (in *group*), as Python works it out."""
     values = [
@@ -204,18 +224,30 @@ def _assert_all(target: VendorTarget) -> None:
     assert want["L"][0] == Decimal("100.5")
     assert want["H"][0] == Decimal(5000000000000000000)
     assert (want["F"][2], want["G"][2]) == (Decimal("1e40"), Decimal("1e-40"))
+    assert (want["N"][1], want["M"][1]) == (Decimal("0.000000001"), Decimal("0.000000002"))
 
     measures = ["Integer Median", "Decimal Median", "Double Median"]
     for extra in ([], ["Integer Total"]):
         # Beside a total, the medians are computed in a CTE the window reads.
         rows = _run(target, model, ["Group"], [*measures, *extra])
         got = {r["group"]: tuple(_number(r[m.lower()]) for m in measures) for r in rows}
-        assert got == want, f"{target.name} {extra}: {got}"
+        assert got.keys() == want.keys(), f"{target.name} {extra}: {got}"
+        diff = {g: (got[g], want[g]) for g in want if not _close(got[g], want[g])}
+        assert not diff, f"{target.name} {extra}: {diff}"
 
     exact = ["Integer Median", "Decimal Median"]
     rows = _run(target, model, [], exact)
     got_all = [tuple(_number(r[m.lower()]) for m in exact) for r in rows]
     assert got_all == [(_median(1), _median(2))], f"{target.name}: {got_all}"
+
+    # Inside a formula the median is one operand, not the last term of a sum.
+    derived = ["Median Doubled", "Hundred Minus Median"]
+    rows = _run(
+        target, model, ["Group"], derived, [QueryFilter(field="Group", op="in", value=["A", "B"])]
+    )
+    got_derived = {r["group"]: tuple(_number(r[m.lower()]) for m in derived) for r in rows}
+    assert got_derived["A"] == (Decimal(12), Decimal(94)), f"{target.name}: {got_derived}"
+    assert got_derived["B"] == (Decimal(4), Decimal(98)), f"{target.name}: {got_derived}"
 
     # No rows at all: NULL, also over a column that cannot hold one.
     every = [*measures, "Sequence Median"]

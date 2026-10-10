@@ -650,10 +650,12 @@ class MySQLDialect(Dialect):
             return f"CAST({value} AS DOUBLE)"
 
         # Halved before adding, so two values near a DOUBLE's limit do not
-        # overflow their sum.
+        # overflow their sum; exact for a double, whose halving only moves the
+        # exponent. Parenthesized as a whole: a derived metric's ``* 2`` or
+        # ``100 -`` must apply to the sum, not to its second half.
         return (
-            f"{at(f'FLOOR((COUNT({col_sql}) + 1) / 2)')} / 2"
-            f" + {at(f'CEIL((COUNT({col_sql}) + 1) / 2)')} / 2"
+            f"({at(f'FLOOR((COUNT({col_sql}) + 1) / 2)')} / 2"
+            f" + {at(f'CEIL((COUNT({col_sql}) + 1) / 2)')} / 2)"
         )
 
     #: How deep :meth:`compile_select` is in the statement; 0 outside it.

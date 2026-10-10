@@ -1268,7 +1268,7 @@ class TestMedianRendering:
             ("bigquery", "IGNORE NULLS ORDER BY"),
             ("clickhouse", "quantileExactInclusive(0.5)(toFloat64("),
             ("databricks", "MEDIAN("),
-            ("dremio", "MEDIAN("),
+            ("dremio", "MEDIAN(CAST("),
             ("duckdb", "MEDIAN(CAST("),
             ("mysql", "GROUP_CONCAT("),
             ("postgres", "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY"),

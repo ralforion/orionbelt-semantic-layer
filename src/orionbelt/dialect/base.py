@@ -1568,9 +1568,9 @@ class Dialect(ABC):
             raise UnsupportedAggregationError(self.name, name.lower())
 
     def _compile_median(self, args: list[Expr]) -> str:
-        """Compile MEDIAN — default uses MEDIAN(col).
+        """Compile MEDIAN — default uses MEDIAN(col), the exact continuous median.
 
-        Works for Snowflake, ClickHouse, Databricks, and Dremio. Postgres overrides.
+        Snowflake and Databricks; every other dialect overrides it.
         """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         return f"MEDIAN({col_sql})"
