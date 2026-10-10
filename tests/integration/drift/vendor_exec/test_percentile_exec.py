@@ -333,6 +333,11 @@ _FLOAT64_CASES = [
     ("-1.7e308", "1.7e308", "0.9", "1.36e308"),
     ("1e307", "2e307", "0.9", "1.9e307"),
     ("-2e-300", "-1e-300", "0.5", "-1.5e-300"),
+    # Recombined from rounded parts, the largest double ran past its range.
+    ("1.7976931348623157e308", "1.7976931348623157e308", "0.3", "1.7976931348623157e308"),
+    ("1.7976931348623155e308", "1.7976931348623157e308", "0.9", "1.7976931348623157e308"),
+    ("-1.7976931348623157e308", "-1.7976931348623155e308", "0.3", "-1.7976931348623157e308"),
+    ("-1.7976931348623157e308", "1.7976931348623157e308", "0.5", "0"),
 ]
 
 
@@ -345,7 +350,7 @@ def test_bigquery_float64_at_its_limits(vendor_bigquery: VendorTarget) -> None:
         values = f"UNNEST([CAST({lower} AS FLOAT64), CAST({upper} AS FLOAT64)]) AS x"
         rows = vendor_bigquery.execute(f"SELECT {dialect.compile_expr(call)} AS v FROM {values}")
         got = Decimal(str(rows[0]["v"]))
-        assert _close(got, Decimal(want)), (lower, upper, fraction, got)
+        assert _close(got, Decimal(want)) or got == Decimal(want), (lower, upper, fraction, got)
 
 
 def test_duckdb_percentile(vendor_duckdb: VendorTarget) -> None:

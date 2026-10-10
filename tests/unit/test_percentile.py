@@ -245,6 +245,9 @@ class TestDialects:
         sql = DialectRegistry.get("bigquery").compile_expr(_call("PERCENTILE_CONT"))
         assert sql.startswith("CASE WHEN MOD(") and sql.endswith(" END")
         assert " > 0 THEN " in sql and " ELSE " in sql
+        # Between two equal values, no arithmetic; of the same sign, the whole
+        # parts' difference first, so a FLOAT64 cannot round past its range.
+        assert " = 0 OR " in sql and " >= 0 OR " in sql and " <= 0 THEN IF(" in sql
         assert "TRUNC(" in sql and "FLOOR(" not in sql
         assert " * BIGNUMERIC '1')" in sql
         # No difference of the two values is taken.
