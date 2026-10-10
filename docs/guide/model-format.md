@@ -1029,7 +1029,7 @@ metrics:
     type: reaggregate
     measure: Revenue          # stage 1: an existing measure, unchanged
     per: [Customer]           # dimensions added to the query's grain for stage 1
-    aggregation: avg          # stage 2: sum | avg | min | max | count
+    aggregation: avg          # stage 2: sum | avg | min | max | count | median
 
   Avg Orders per Customer:
     type: reaggregate
@@ -1114,8 +1114,8 @@ Rules:
 - `having` is a list of conditions, all of which a stage-1 group has to meet. Each takes a query filter's `field`, `op` and `value` (any operator but `exists` / `nonexists`), and `field` names a measure, a synthesized count included: a metric is refused (`REAGGREGATE_HAVING_MEASURE_ONLY`), an unknown name is `UNKNOWN_MEASURE`. Metrics that differ only in their `aggregation` share stage 1 when their `having` is the same too.
 - `per` lists model dimensions (`REAGGREGATE_UNKNOWN_DIMENSION`), each optionally at a time grain (`'Order Date:day'`); a bare name groups by the dimension's declared `timeGrain`. The grain needs a date-bearing column and a `resultType` that can hold the bucket, as in a query.
 - If every `per` dimension is already in the query, at its grain or a finer one, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
-- An average of averages is refused (`REAGGREGATE_AVG_OF_AVG`): `aggregation: avg` over a measure with `aggregation: avg`, over a reaggregate metric with `aggregation: avg`, or over a `min` / `max` reaggregate metric of either, which picks one of those averages. Each group would count alike however many rows its average covers. A `sum` or `count` over averages is no longer an average, so `avg` over it is allowed, as are `sum`, `min`, `max` and `count` over an average. To average over the finer groups instead, name both dimensions in one `per`.
-- Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type. A declared `dataType` wins.
+- An average of averages is refused (`REAGGREGATE_AVG_OF_AVG`): `aggregation: avg` over a measure with `aggregation: avg`, over a reaggregate metric with `aggregation: avg`, or over a `min`, `max` or `median` reaggregate metric of either, which picks one of those averages (or, for an even count, the mean of two). Each group would count alike however many rows its average covers. A `sum` or `count` over averages is no longer an average, so `avg` over it is allowed, as are `sum`, `min`, `max`, `count` and `median` over an average. To average over the finer groups instead, name both dimensions in one `per`.
+- Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type; `median` is the exact, continuous median of the stage-1 values (the mean of the two middle ones for an even count), typed as a `median` measure is on each dialect (see [Dialects](dialects.md#median)). A declared `dataType` wins.
 - Not available: `grouping: rollup` / `cube` (`REAGGREGATE_WITH_ROLLUP`), since each subtotal row needs a first stage of its own. A derived metric that combines a reaggregate metric with a total, grain override, filterContext, cumulative, period-over-period or window component in one formula (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`); select those metrics side by side instead.
 
 ### Metric Properties
@@ -1131,7 +1131,7 @@ Rules:
 | `grainToDate` | `"year"` \| `"quarter"` \| `"month"` \| `"week"` | — | Reset boundary (mutually exclusive with `window`) |
 | `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics. Each entry must be a model dimension in the query's SELECT. Cumulative metrics are also partitioned by the query's other dimensions. |
 | `per` | list | — | Dimensions added to the query's grain for the first stage (required for reaggregate) |
-| `aggregation` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` | — | Second-stage aggregation (required for reaggregate) |
+| `aggregation` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` \| `"median"` | — | Second-stage aggregation (required for reaggregate) |
 | `having` | list | — | Conditions (`field`, `op`, `value`) over measures that each stage-1 group has to meet (reaggregate only) |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
 | `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics) |

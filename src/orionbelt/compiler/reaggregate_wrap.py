@@ -80,6 +80,7 @@ _FUNCTIONS: dict[ReaggregateAggType, str] = {
     ReaggregateAggType.MIN: "MIN",
     ReaggregateAggType.MAX: "MAX",
     ReaggregateAggType.COUNT: "COUNT",
+    ReaggregateAggType.MEDIAN: "MEDIAN",
 }
 
 

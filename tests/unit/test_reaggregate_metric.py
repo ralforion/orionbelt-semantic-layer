@@ -187,7 +187,7 @@ class TestMetricValidation:
             ({"per": []}, "at least one 'per'"),
             ({"per": ["Customer", "Customer"]}, "must be unique"),
             ({"aggregation": None}, "require 'aggregation'"),
-            ({"aggregation": "median"}, "aggregation"),
+            ({"aggregation": "mode"}, "aggregation"),
             ({"expression": "{[Revenue]}"}, "must not have expression"),
             ({"time_dimension": "Order Date", "window": 3}, "timeDimension, window"),
             ({"partition_by": ["Country"]}, "must not have partitionBy"),
@@ -374,11 +374,13 @@ class TestReferences:
             ("Avg Revenue per Customer", "which is itself an average"),
             ("Peak Avg", "average 'Avg Revenue per Customer' (Peak Avg -> Avg Revenue"),
             ("Peak Price", "average 'Avg Price' (Peak Price -> Avg Price)"),
+            ("Middle Avg", "average 'Avg Revenue per Customer' (Middle Avg -> Avg Revenue"),
         ],
     )
     def test_average_of_averages_refused(self, measure: str, chain: str) -> None:
-        """``avg`` over an average, directly or through a ``min`` / ``max`` stage,
-        which picks one of the averages below it."""
+        """``avg`` over an average, directly or through a ``min`` / ``max`` /
+        ``median`` stage, which picks one of the averages below it (or the mean
+        of two)."""
         yaml_text = _with_metric(
             f"type: reaggregate\nmeasure: {measure}\nper: [Country]\naggregation: avg"
         ).replace("measures:\n", "measures:\n" + self._AVERAGES, 1) + (
@@ -386,13 +388,15 @@ class TestReferences:
             "    per: [Order Date]\n    aggregation: max\n"
             "  Peak Price:\n    type: reaggregate\n    measure: Avg Price\n"
             "    per: [Customer]\n    aggregation: min\n"
+            "  Middle Avg:\n    type: reaggregate\n    measure: Avg Revenue per Customer\n"
+            "    per: [Order Date]\n    aggregation: median\n"
         )
         _model, result = _resolve(yaml_text)
         errors = [e for e in result.errors if e.code == "REAGGREGATE_AVG_OF_AVG"]
         assert [e.path for e in errors] == ["metrics.Probe.aggregation"]
         assert chain in errors[0].message
 
-    @pytest.mark.parametrize("aggregation", ["sum", "min", "max", "count"])
+    @pytest.mark.parametrize("aggregation", ["sum", "min", "max", "count", "median"])
     def test_other_aggregations_of_an_average_allowed(self, aggregation: str) -> None:
         body = (
             f"type: reaggregate\nmeasure: Avg Revenue per Customer\nper: [Country]\n"
@@ -909,6 +913,20 @@ class TestCompile:
             QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"])),
         ).sql
         assert 'COALESCE("reagg_1"."Probe", CAST(0 AS VARCHAR)) AS "Probe"' in sql
+
+    def test_median_is_the_dialect_median_uncast(self) -> None:
+        """As a ``median`` measure: a default decimal would round the midpoint."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: median"
+            )
+        )
+        assert result.valid, result.errors
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"])),
+        ).sql
+        assert 'MEDIAN(CAST("reagg_1_inner"."Revenue" AS DOUBLE)) AS "Probe"' in sql
 
     def test_count_without_having_is_read_as_is(self) -> None:
         having_model = self._having_model(("Customers", "count", ""))

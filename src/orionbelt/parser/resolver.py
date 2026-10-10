@@ -2185,12 +2185,20 @@ def _reaggregate_cycle(name: str, raw_metrics: dict[str, Any]) -> list[str]:
     return [*chain, name] if ref == name else []
 
 
+#: Reaggregate aggregations whose value is one of their inner values (or, for
+#: a median, the mean of two): an average when those are averages.
+_PICKS_AN_INNER_VALUE = frozenset(
+    {ReaggregateAggType.MIN, ReaggregateAggType.MAX, ReaggregateAggType.MEDIAN}
+)
+
+
 def _average_path(ref: str, measures: dict[str, Measure], raw_metrics: dict[str, Any]) -> list[str]:
     """The chain from *ref* down to an average its value is, if it is one.
 
     A measure aggregated with ``avg`` and a reaggregate metric with ``avg`` are
     averages; a reaggregate ``min`` or ``max`` picks one of its inner values,
-    so it is an average when those are. A ``sum`` or ``count`` is not.
+    and a ``median`` one or the mean of two, so each is an average when those
+    are. A ``sum`` or ``count`` is not.
     """
     path: list[str] = []
     current: object = ref
@@ -2205,7 +2213,7 @@ def _average_path(ref: str, measures: dict[str, Measure], raw_metrics: dict[str,
         aggregation = raw.get("aggregation")
         if aggregation == ReaggregateAggType.AVG:
             return path
-        if aggregation not in (ReaggregateAggType.MIN, ReaggregateAggType.MAX):
+        if aggregation not in _PICKS_AN_INNER_VALUE:
             return []
         current = raw.get("measure")
     return []

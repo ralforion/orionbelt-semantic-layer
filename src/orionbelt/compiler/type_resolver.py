@@ -137,7 +137,9 @@ def resolve_metric_data_type(
 
     # 2a. A reaggregate metric's second stage: an average is a new numeric value
     # and takes the default, as an ``avg`` measure does; a count is an integer;
-    # sum, min and max carry the base measure's units and inherit.
+    # sum, min and max carry the base measure's units and inherit, and a
+    # median passes through as a ``median`` measure does: a default decimal
+    # would round the midpoint of two values.
     if metric.type is MetricType.REAGGREGATE:
         if metric.aggregation is ReaggregateAggType.AVG:
             return _get_default(settings)

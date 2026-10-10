@@ -282,7 +282,7 @@ Represents a two-stage metric: the base measure is aggregated at the query grain
 Additional required:
 - exactly one of `obsl:baseMeasure` or `obsl:baseMetric` (another `obsl:ReaggregateMetric`, whose two stages then run as this metric's first)
 - `obsl:per` (one or more dimension labels, optionally `name:grain`)
-- `obsl:aggregation` (second-stage function: sum, avg, min, max, count)
+- `obsl:aggregation` (second-stage function: sum, avg, min, max, count, median)
 
 Optional:
 - `obsl:reaggregateHaving` (multi-valued): a condition on the first-stage groups over a measure, as an expression string (e.g. `Order Count > 5`); only the groups meeting every condition are aggregated again

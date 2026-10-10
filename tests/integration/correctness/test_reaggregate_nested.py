@@ -9,6 +9,7 @@ again in Python by the query's dimensions.
 
 from __future__ import annotations
 
+import statistics
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
@@ -25,7 +26,7 @@ from orionbelt.parser.resolver import ReferenceResolver  # noqa: E402
 
 from .conftest import COMMERCE_MODEL_YAML, _require_seed, _rows_as_dicts  # noqa: E402
 
-_AGGREGATIONS = ["avg", "sum", "min", "max", "count"]
+_AGGREGATIONS = ["avg", "sum", "min", "max", "count", "median"]
 
 #: Inner reaggregate metrics, each over a measure of the Sales fact.
 _INNER: dict[str, dict[str, Any]] = {
@@ -126,6 +127,8 @@ def _aggregate(aggregation: str, values: list[Any]) -> Any:
         return None
     if aggregation == "avg":
         return Decimal(sum(present)) / len(present)
+    if aggregation == "median":
+        return statistics.median(Decimal(str(v)) for v in present)
     return {"sum": sum, "min": min, "max": max}[aggregation](present)
 
 

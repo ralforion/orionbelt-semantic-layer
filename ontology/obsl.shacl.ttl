@@ -475,9 +475,9 @@ obsl:ReaggregateMetricShape a sh:NodeShape ;
         sh:path obsl:aggregation ;
         sh:minCount 1 ;
         sh:maxCount 1 ;
-        sh:in ( "sum" "avg" "min" "max" "count" ) ;
+        sh:in ( "sum" "avg" "min" "max" "count" "median" ) ;
         sh:name "aggregation" ;
-        sh:message "Reaggregate metrics must specify exactly one obsl:aggregation (sum, avg, min, max, count)."
+        sh:message "Reaggregate metrics must specify exactly one obsl:aggregation (sum, avg, min, max, count, median)."
     ] .
 
 # -----------------------------------------------------------------------------

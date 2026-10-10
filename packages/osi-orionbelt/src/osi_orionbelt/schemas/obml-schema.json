@@ -871,7 +871,8 @@
         "avg",
         "min",
         "max",
-        "count"
+        "count",
+        "median"
       ]
     },
     "grainToDate": {
@@ -1029,7 +1030,7 @@
         },
         "aggregation": {
           "$ref": "#/definitions/reaggregateAggType",
-          "description": "Reaggregate metrics: the second-stage aggregation over the per-group values. avg is the unweighted mean of those values."
+          "description": "Reaggregate metrics: the second-stage aggregation over the per-group values. avg is the unweighted mean of those values, median their exact, continuous median."
         },
         "having": {
           "type": "array",

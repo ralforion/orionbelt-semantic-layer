@@ -303,7 +303,7 @@ Most aggregations (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`) compile identically acro
 
 ### MEDIAN
 
-`median` is the exact, continuous median on every dialect: the middle value of an odd count, and the mean of the two middle values of an even one (6 for 1, 2, 10, 20). NULLs are ignored, and a group of NULLs is NULL.
+`median` is the exact, continuous median on every dialect: the middle value of an odd count, and the mean of the two middle values of an even one (6 for 1, 2, 10, 20). NULLs are ignored, and a group of NULLs is NULL. A [reaggregate metric](model-format.md#reaggregate-metrics) with `aggregation: median` renders its second stage the same way, over the stage-1 values.
 
 | Dialect | SQL |
 |---------|-----|

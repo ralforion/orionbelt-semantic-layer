@@ -381,7 +381,7 @@ metrics:
     type: reaggregate
     measure: Revenue        # stage 1: a measure (not a metric), unchanged
     per: [Customer]         # dimensions added to the query grain for stage 1
-    aggregation: avg        # stage 2: sum | avg | min | max | count
+    aggregation: avg        # stage 2: sum | avg | min | max | count | median
 
   Avg Orders per Customer:
     type: reaggregate
@@ -417,9 +417,11 @@ the final rows. Select it beside other measures (other facts too), in `having` a
   `Order Date:month` that averages daily totals within each month (only days
   with rows count)
 - `aggregation:` required; `avg` is exact over integers, `count` is bigint,
-  `sum`/`min`/`max` keep the measure's type
+  `sum`/`min`/`max` keep the measure's type, `median` is the exact,
+  continuous median, typed as a `median` measure is
 - `avg` over an average is refused (`REAGGREGATE_AVG_OF_AVG`): an `avg`
-  measure, an `avg` reaggregate metric, or a `min`/`max` one over either
+  measure, an `avg` reaggregate metric, or a `min`/`max`/`median` one over
+  either
 - Every `per` dimension already in the query (at its grain or finer):
   `REAGGREGATE_NO_OP` warning
 - Selects beside any measure or metric, including total/grain, filterContext,
