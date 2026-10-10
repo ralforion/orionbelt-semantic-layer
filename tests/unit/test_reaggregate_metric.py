@@ -363,6 +363,54 @@ class TestReferences:
         assert err.path == "metrics.Probe.having"
         assert "Revenue" in err.suggestions
 
+    _AVERAGES = (
+        "  Avg Price:\n    columns: [{dataObject: Orders, column: Amount}]\n    aggregation: avg\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("measure", "chain"),
+        [
+            ("Avg Price", "which is itself an average"),
+            ("Avg Revenue per Customer", "which is itself an average"),
+            ("Peak Avg", "average 'Avg Revenue per Customer' (Peak Avg -> Avg Revenue"),
+            ("Peak Price", "average 'Avg Price' (Peak Price -> Avg Price)"),
+        ],
+    )
+    def test_average_of_averages_refused(self, measure: str, chain: str) -> None:
+        """``avg`` over an average, directly or through a ``min`` / ``max`` stage,
+        which picks one of the averages below it."""
+        yaml_text = _with_metric(
+            f"type: reaggregate\nmeasure: {measure}\nper: [Country]\naggregation: avg"
+        ).replace("measures:\n", "measures:\n" + self._AVERAGES, 1) + (
+            "  Peak Avg:\n    type: reaggregate\n    measure: Avg Revenue per Customer\n"
+            "    per: [Order Date]\n    aggregation: max\n"
+            "  Peak Price:\n    type: reaggregate\n    measure: Avg Price\n"
+            "    per: [Customer]\n    aggregation: min\n"
+        )
+        _model, result = _resolve(yaml_text)
+        errors = [e for e in result.errors if e.code == "REAGGREGATE_AVG_OF_AVG"]
+        assert [e.path for e in errors] == ["metrics.Probe.aggregation"]
+        assert chain in errors[0].message
+
+    @pytest.mark.parametrize("aggregation", ["sum", "min", "max", "count"])
+    def test_other_aggregations_of_an_average_allowed(self, aggregation: str) -> None:
+        body = (
+            f"type: reaggregate\nmeasure: Avg Revenue per Customer\nper: [Country]\n"
+            f"aggregation: {aggregation}"
+        )
+        assert _codes(_with_metric(body)) == set()
+
+    @pytest.mark.parametrize("inner", ["sum", "count"])
+    def test_average_over_a_sum_or_count_of_averages_allowed(self, inner: str) -> None:
+        """A sum or count of averages is no longer an average."""
+        yaml_text = _with_metric(
+            "type: reaggregate\nmeasure: Inner\nper: [Country]\naggregation: avg"
+        ) + (
+            f"  Inner:\n    type: reaggregate\n    measure: Avg Revenue per Customer\n"
+            f"    per: [Order Date]\n    aggregation: {inner}\n"
+        )
+        assert _codes(yaml_text) == set()
+
     def test_unknown_dimension_suggests(self) -> None:
         _model, result = _resolve(
             _with_metric("type: reaggregate\nmeasure: Revenue\nper: [Custmer]\naggregation: avg")
