@@ -42,6 +42,13 @@ _INNER: dict[str, dict[str, Any]] = {
         "per": ["Sales Date:day"],
         "aggregation": "max",
     },
+    # A median of integers is not one: 1.5 for 1 and 2.
+    "Median Client Orders": {
+        "type": "reaggregate",
+        "measure": "Sales Count",
+        "per": ["Sales Client Name"],
+        "aggregation": "median",
+    },
     "Clients With Sales": {
         "type": "reaggregate",
         "measure": "Total Sales",

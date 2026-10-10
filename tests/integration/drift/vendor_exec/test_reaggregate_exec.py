@@ -166,6 +166,16 @@ metrics:
     measure: Avg Revenue per Customer
     per: [Order Month]
     aggregation: median
+  Median Orders per Customer:
+    type: reaggregate
+    measure: Orders Count
+    per: [Customer]
+    aggregation: median
+  Avg Country Median Orders:
+    type: reaggregate
+    measure: Median Orders per Customer
+    per: [Country]
+    aggregation: avg
   Avg Orders per Customer:
     type: reaggregate
     measure: Orders Count
@@ -432,6 +442,15 @@ def _assert_ungrouped(target: VendorTarget, model: SemanticModel) -> None:
     measures = ["avg revenue per customer", "customers", "median customer revenue"]
     got = [tuple(_number(r[m]) for m in measures) for r in rows]
     assert got == [(Decimal("160.86"), Decimal(7), Decimal(30))], f"{target.name}: {got}"
+
+    # A median of integers is not one: the NULL country's customers have 2 and
+    # 1 orders, a median of 1.5, beside DE's 1 and FR's 1. Averaged as if the
+    # medians were integers, that was 1.33 (DuckDB) or 1 (ClickHouse).
+    rows = _run(
+        target, model, QueryObject(select=QuerySelect(measures=["Avg Country Median Orders"]))
+    )
+    got_median = [_number(r["avg country median orders"]) for r in rows]
+    assert got_median == [Decimal("1.17")], f"{target.name}: {got_median}"
 
 
 def _assert_having_order_limit(target: VendorTarget, model: SemanticModel) -> None:

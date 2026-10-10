@@ -21,7 +21,10 @@ from rdflib.namespace import RDF, RDFS
 from orionbelt.compiler.composability import resolve_composables_for_anchors
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.compiler.resolution import ResolutionError
-from orionbelt.compiler.type_resolver import measure_yields_integers
+from orionbelt.compiler.type_resolver import (
+    measure_yields_integers,
+    reaggregated_values_are_integers,
+)
 from orionbelt.models.errors import ValidationResult
 from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import (
@@ -1097,6 +1100,28 @@ class TestMeasureYieldsIntegers:
     ) -> None:
         measure = Measure.model_validate({"name": "M", **fields})
         assert measure_yields_integers(measure, typed_model.settings, typed_model) is expected
+
+    @pytest.mark.parametrize(
+        ("aggregation", "data_type", "expected"),
+        [
+            ("max", "", True),
+            ("sum", "", True),
+            # The midpoint of two integers is a half: 1.5 for 1 and 2.
+            ("median", "", False),
+            ("median", "\ndataType: bigint", True),
+        ],
+    )
+    def test_reaggregate_of_integers(
+        self, aggregation: str, data_type: str, expected: bool
+    ) -> None:
+        probe_model, result = _resolve(
+            _with_metric(
+                f"type: reaggregate\nmeasure: Orders Count\nper: [Customer]\n"
+                f"aggregation: {aggregation}{data_type}"
+            )
+        )
+        assert result.valid, result.errors
+        assert reaggregated_values_are_integers(probe_model, "Probe") is expected
 
 
 class TestJsonSchema:
