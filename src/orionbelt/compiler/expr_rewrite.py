@@ -69,6 +69,7 @@ def map_nodes(expr: Expr, fn: Callable[[Expr], Expr | None]) -> Expr:
                     for o in expr.order_by
                 ],
                 separator=expr.separator,
+                fraction=expr.fraction,
             )
         case BinaryOp(left=left, op=op, right=right):
             return BinaryOp(

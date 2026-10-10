@@ -153,7 +153,7 @@ OBSL has no named-view-with-refinements concept. Queries are constructed fresh e
 | Family | OBSL | Malloy |
 |---|---|---|
 | Standard | `sum`, `count`, `count_distinct`, `avg`, `min`, `max` | `sum`, `count`, `count(distinct ...)`, `avg`, `min`, `max` |
-| Shape | `any_value`, `median`, `mode`, `listagg` | `string_agg`, `percent`, `avg_moving` (built-in helpers) |
+| Shape | `any_value`, `median`, `percentile_cont`, `percentile_disc`, `mode`, `listagg` | `string_agg`, `percent`, `avg_moving` (built-in helpers) |
 | Statistical | `stddev`, `stddev_pop`, `variance`, `var_pop` | `stddev` (basic) |
 | Association / regression | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via raw SQL in `sql:` literal — not first-class |
 | Grand totals | `total: bool` on the measure | Via query-level `nest:` patterns |

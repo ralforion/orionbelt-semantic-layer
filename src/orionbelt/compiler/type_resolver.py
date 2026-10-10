@@ -41,7 +41,18 @@ from orionbelt.models.types import (
 
 _NUMERIC_AGGREGATIONS = frozenset({"SUM", "AVG"})
 _COUNT_AGGREGATIONS = frozenset({"COUNT", "COUNT_DISTINCT"})
-_PASSTHROUGH_AGGREGATIONS = frozenset({"MIN", "MAX", "ANY_VALUE", "MEDIAN", "MODE", "LISTAGG"})
+_PASSTHROUGH_AGGREGATIONS = frozenset(
+    {
+        "MIN",
+        "MAX",
+        "ANY_VALUE",
+        "MEDIAN",
+        "PERCENTILE_CONT",
+        "PERCENTILE_DISC",
+        "MODE",
+        "LISTAGG",
+    }
+)
 
 # Digits in the largest 64-bit integer (9223372036854775807), and the widest
 # precision every supported dialect accepts.
@@ -138,8 +149,8 @@ def resolve_metric_data_type(
     # 2a. A reaggregate metric's second stage: an average is a new numeric value
     # and takes the default, as an ``avg`` measure does; a count is an integer;
     # sum, min and max carry the base measure's units and inherit, and a
-    # median passes through as a ``median`` measure does: a default decimal
-    # would round the midpoint of two values.
+    # median or percentile passes through as the measure aggregation does: a
+    # default decimal would round an interpolated value.
     if metric.type is MetricType.REAGGREGATE:
         if metric.aggregation is ReaggregateAggType.AVG:
             return _get_default(settings)
@@ -276,9 +287,15 @@ def exact_reaggregate_avg(
 
 _INTEGER_NAMES = frozenset({"bigint", "integer"})
 
+#: Second-stage aggregations that interpolate between the values they read.
+_INTERPOLATING_REAGGREGATIONS = frozenset(
+    {ReaggregateAggType.MEDIAN, ReaggregateAggType.PERCENTILE_CONT}
+)
+
 #: Aggregates that answer one of their input values, so an integer column gives
-#: an integer. ``MEDIAN`` is absent: it interpolates between two values.
-_VALUE_PRESERVING_AGGREGATIONS = frozenset({"MIN", "MAX", "ANY_VALUE", "MODE"})
+#: an integer. ``MEDIAN`` and ``PERCENTILE_CONT`` are absent: they interpolate
+#: between two values.
+_VALUE_PRESERVING_AGGREGATIONS = frozenset({"MIN", "MAX", "ANY_VALUE", "MODE", "PERCENTILE_DISC"})
 
 
 def measure_yields_integers(
@@ -333,9 +350,9 @@ def reaggregated_data_type(model: SemanticModel, name: str) -> OBMLType | None:
 def reaggregated_values_are_integers(model: SemanticModel, name: str) -> bool:
     """Whether every value of measure or reaggregate metric *name* is an integer.
 
-    A ``sum``, ``min`` or ``max`` of integers is one; a ``median`` of them is
-    not, unless declared so: the midpoint of two integers is a half (1.5 for 1
-    and 2).
+    A ``sum``, ``min``, ``max`` or ``percentile_disc`` of integers is one; a
+    ``median`` or ``percentile_cont`` of them is not, unless declared so: the
+    midpoint of two integers is a half (1.5 for 1 and 2).
     """
     metric = model.metrics.get(name)
     if metric is None:
@@ -344,7 +361,7 @@ def reaggregated_values_are_integers(model: SemanticModel, name: str) -> bool:
     declared = resolve_metric_data_type(metric, model.settings)
     if declared is not None:
         return isinstance(declared, SimpleType) and declared.name in _INTEGER_NAMES
-    if metric.aggregation is ReaggregateAggType.MEDIAN:
+    if metric.aggregation in _INTERPOLATING_REAGGREGATIONS:
         return False
     return metric.measure is not None and reaggregated_values_are_integers(model, metric.measure)
 

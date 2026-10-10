@@ -564,7 +564,17 @@ class SemanticValidator:
     #: nothing about the column, and so are the statistical aggregates, whose
     #: results are ratios rather than values.
     _SOURCE_SCALED_AGGREGATIONS = frozenset(
-        {"sum", "avg", "min", "max", "any_value", "median", "mode"}
+        {
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "any_value",
+            "median",
+            "percentile_cont",
+            "percentile_disc",
+            "mode",
+        }
     )
 
     def _check_narrowing_data_types(self, model: SemanticModel) -> list[SemanticError]:

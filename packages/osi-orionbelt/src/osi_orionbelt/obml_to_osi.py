@@ -776,6 +776,8 @@ class OBMLtoOSI:
             extras["obml_delimiter"] = measure["delimiter"]
         if measure.get("withinGroup"):
             extras["obml_within_group"] = measure["withinGroup"]
+        if measure.get("percentile") is not None:
+            extras["obml_percentile"] = measure["percentile"]
         if measure.get("dataType"):
             extras["obml_data_type"] = measure["dataType"]
         if measure.get("owner"):

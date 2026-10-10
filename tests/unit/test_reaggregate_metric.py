@@ -191,6 +191,9 @@ class TestMetricValidation:
             ({"per": ["Customer", "Customer"]}, "must be unique"),
             ({"aggregation": None}, "require 'aggregation'"),
             ({"aggregation": "mode"}, "aggregation"),
+            ({"aggregation": "percentile_cont"}, "requires 'percentile'"),
+            ({"percentile": 0.9}, "only valid with aggregation"),
+            ({"aggregation": "percentile_disc", "percentile": 1.0}, "between 0 and 1"),
             ({"expression": "{[Revenue]}"}, "must not have expression"),
             ({"time_dimension": "Order Date", "window": 3}, "timeDimension, window"),
             ({"partition_by": ["Country"]}, "must not have partitionBy"),
@@ -378,6 +381,8 @@ class TestReferences:
             ("Peak Avg", "average 'Avg Revenue per Customer' (Peak Avg -> Avg Revenue"),
             ("Peak Price", "average 'Avg Price' (Peak Price -> Avg Price)"),
             ("Middle Avg", "average 'Avg Revenue per Customer' (Middle Avg -> Avg Revenue"),
+            ("High Avg", "average 'Avg Revenue per Customer' (High Avg -> Avg Revenue"),
+            ("Upper Avg", "average 'Avg Revenue per Customer' (Upper Avg -> Avg Revenue"),
         ],
     )
     def test_average_of_averages_refused(self, measure: str, chain: str) -> None:
@@ -393,13 +398,28 @@ class TestReferences:
             "    per: [Customer]\n    aggregation: min\n"
             "  Middle Avg:\n    type: reaggregate\n    measure: Avg Revenue per Customer\n"
             "    per: [Order Date]\n    aggregation: median\n"
+            "  High Avg:\n    type: reaggregate\n    measure: Avg Revenue per Customer\n"
+            "    per: [Order Date]\n    aggregation: percentile_cont\n    percentile: 0.9\n"
+            "  Upper Avg:\n    type: reaggregate\n    measure: Avg Revenue per Customer\n"
+            "    per: [Order Date]\n    aggregation: percentile_disc\n    percentile: 0.9\n"
         )
         _model, result = _resolve(yaml_text)
         errors = [e for e in result.errors if e.code == "REAGGREGATE_AVG_OF_AVG"]
         assert [e.path for e in errors] == ["metrics.Probe.aggregation"]
         assert chain in errors[0].message
 
-    @pytest.mark.parametrize("aggregation", ["sum", "min", "max", "count", "median"])
+    @pytest.mark.parametrize(
+        "aggregation",
+        [
+            "sum",
+            "min",
+            "max",
+            "count",
+            "median",
+            "percentile_cont\npercentile: 0.9",
+            "percentile_disc\npercentile: 0.9",
+        ],
+    )
     def test_other_aggregations_of_an_average_allowed(self, aggregation: str) -> None:
         body = (
             f"type: reaggregate\nmeasure: Avg Revenue per Customer\nper: [Country]\n"
@@ -931,6 +951,25 @@ class TestCompile:
         ).sql
         assert 'MEDIAN(CAST("reagg_1_inner"."Revenue" AS DOUBLE)) AS "Probe"' in sql
 
+    @pytest.mark.parametrize("aggregation", ["percentile_cont", "percentile_disc"])
+    def test_percentile_takes_its_fraction(self, aggregation: str) -> None:
+        probe_model, result = _resolve(
+            _with_metric(
+                f"type: reaggregate\nmeasure: Revenue\nper: [Customer]\n"
+                f"aggregation: {aggregation}\npercentile: 0.25"
+            )
+        )
+        assert result.valid, result.errors
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Probe"])),
+        ).sql
+        name = aggregation.upper()
+        value = '"reagg_1_inner"."Revenue"'
+        if aggregation == "percentile_cont":
+            value = f"CAST({value} AS DOUBLE)"
+        assert f'{name}(0.25) WITHIN GROUP (ORDER BY {value}) AS "Probe"' in sql
+
     def test_count_without_having_is_read_as_is(self) -> None:
         having_model = self._having_model(("Customers", "count", ""))
         sql = _compile(
@@ -1109,6 +1148,9 @@ class TestMeasureYieldsIntegers:
             # The midpoint of two integers is a half: 1.5 for 1 and 2.
             ("median", "", False),
             ("median", "\ndataType: bigint", True),
+            ("percentile_cont\npercentile: 0.9", "", False),
+            # A value of the group, as min and max are.
+            ("percentile_disc\npercentile: 0.9", "", True),
         ],
     )
     def test_reaggregate_of_integers(
@@ -1178,6 +1220,13 @@ class TestJsonSchema:
 
     def test_having_refused_on_derived(self) -> None:
         assert self._validate({"expression": "{[R]}", "having": [{"field": "R", "op": ">"}]})
+
+    def test_percentile(self) -> None:
+        metric = {"type": "reaggregate", "measure": "R", "per": ["C"]}
+        assert self._validate({**metric, "aggregation": "percentile_cont", "percentile": 0.9}) == []
+        assert self._validate({**metric, "aggregation": "percentile_cont"})
+        assert self._validate({**metric, "aggregation": "avg", "percentile": 0.9})
+        assert self._validate({"expression": "{[R]}", "percentile": 0.9})
 
 
 class TestGraph:

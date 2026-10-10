@@ -21,6 +21,7 @@ caller can leave it out of the Ossie document instead of guessing.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from typing import Any
 
 _MEASURE_REF = re.compile(r"\{\[([^\]]+)\]\}")
@@ -255,6 +256,11 @@ class PortableRenderer:
             direction = "DESC" if str(wg.get("order", "ASC")).upper() == "DESC" else "ASC"
             within = f" WITHIN GROUP (ORDER BY {self._column_ref(wg['column'])} {direction})"
         sql = f"{func}({distinct}{', '.join(args)}){within}"
+        if agg in ("percentile_cont", "percentile_disc"):
+            # An ordered-set aggregate: the fraction is its argument, the
+            # value it reads the ordering.
+            fraction = format(Decimal(str(m["percentile"])), "f")
+            sql = f"{func}({fraction}) WITHIN GROUP (ORDER BY {args[0]})"
 
         if m.get("total"):
             if agg == "avg":

@@ -722,6 +722,8 @@
             "max",
             "any_value",
             "median",
+            "percentile_cont",
+            "percentile_disc",
             "mode",
             "listagg",
             "stddev",
@@ -735,7 +737,7 @@
             "regr_intercept",
             "measure"
           ],
-          "description": "Aggregation function. Core: sum, count, count_distinct, avg, min, max, any_value, median, mode, listagg. Statistical (v2.6+): stddev, stddev_pop, variance, var_pop (single-column), corr, covar_pop, covar_samp, regr_slope, regr_intercept (two-column). Vendor delegation (v2.7.7+): measure (Databricks Metric Views only; emits MEASURE(\"<label>\") and forbids columns/expression/filters/total). Dialect support varies: MySQL lacks correlation/covariance/regression; BigQuery and ClickHouse lack regr_slope/regr_intercept; only Databricks accepts 'measure'."
+          "description": "Aggregation function. Core: sum, count, count_distinct, avg, min, max, any_value, median, percentile_cont, percentile_disc (with 'percentile'), mode, listagg. Statistical (v2.6+): stddev, stddev_pop, variance, var_pop (single-column), corr, covar_pop, covar_samp, regr_slope, regr_intercept (two-column). Vendor delegation (v2.7.7+): measure (Databricks Metric Views only; emits MEASURE(\"<label>\") and forbids columns/expression/filters/total). Dialect support varies: MySQL lacks correlation/covariance/regression; BigQuery and ClickHouse lack regr_slope/regr_intercept; only Databricks accepts 'measure'."
         },
         "distinct": {
           "type": "boolean",
@@ -764,6 +766,12 @@
             "column"
           ],
           "additionalProperties": false
+        },
+        "percentile": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "The fraction of a percentile_cont or percentile_disc aggregation, between 0 and 1 exclusive, with at most 9 decimal places (0.9 for the 90th percentile). Required by those aggregations, refused with any other. percentile_cont interpolates between the two values around the position; percentile_disc is the first value whose cumulative share of the group reaches the fraction."
         },
         "allowFanOut": {
           "type": "boolean",
@@ -852,6 +860,35 @@
       "required": [
         "aggregation"
       ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "aggregation": {
+                "enum": [
+                  "percentile_cont",
+                  "percentile_disc"
+                ]
+              }
+            },
+            "required": [
+              "aggregation"
+            ]
+          },
+          "then": {
+            "required": [
+              "percentile"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "percentile"
+              ]
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "cumulativeAggType": {
@@ -872,7 +909,9 @@
         "min",
         "max",
         "count",
-        "median"
+        "median",
+        "percentile_cont",
+        "percentile_disc"
       ]
     },
     "grainToDate": {
@@ -1030,7 +1069,7 @@
         },
         "aggregation": {
           "$ref": "#/definitions/reaggregateAggType",
-          "description": "Reaggregate metrics: the second-stage aggregation over the per-group values. avg is the unweighted mean of those values, median their exact, continuous median."
+          "description": "Reaggregate metrics: the second-stage aggregation over the per-group values. avg is the unweighted mean of those values, median their exact, continuous median, percentile_cont and percentile_disc their percentile at 'percentile'."
         },
         "having": {
           "type": "array",
@@ -1039,6 +1078,12 @@
             "$ref": "#/definitions/reaggregateHaving"
           },
           "minItems": 1
+        },
+        "percentile": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Reaggregate metrics: the fraction of a percentile_cont or percentile_disc second stage, between 0 and 1 exclusive, with at most 9 decimal places. Required by those aggregations, refused with any other."
         },
         "description": {
           "type": "string",
@@ -1154,6 +1199,35 @@
               "measure",
               "per",
               "aggregation"
+            ],
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "aggregation": {
+                      "enum": [
+                        "percentile_cont",
+                        "percentile_disc"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "aggregation"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "percentile"
+                  ]
+                },
+                "else": {
+                  "not": {
+                    "required": [
+                      "percentile"
+                    ]
+                  }
+                }
+              }
             ]
           },
           "else": {
@@ -1172,6 +1246,11 @@
                 {
                   "required": [
                     "having"
+                  ]
+                },
+                {
+                  "required": [
+                    "percentile"
                   ]
                 }
               ]

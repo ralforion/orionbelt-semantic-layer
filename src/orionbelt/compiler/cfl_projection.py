@@ -407,6 +407,7 @@ def build_outer_aggregate(
         distinct=distinct,
         order_by=order_by,
         separator=source.separator if source is not None else None,
+        fraction=source.fraction if source is not None else None,
     )
 
 

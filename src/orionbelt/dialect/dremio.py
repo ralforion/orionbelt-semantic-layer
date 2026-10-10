@@ -251,6 +251,8 @@ class DremioDialect(Dialect):
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         return f"MEDIAN(CAST({col_sql} AS DOUBLE))"
 
+    _percentile_cont_over_doubles = True
+
     def _compile_mode(self, args: list[Expr]) -> str:
         """Dremio does not support MODE aggregation."""
         raise UnsupportedAggregationError("dremio", "mode")

@@ -14,7 +14,7 @@
 enums:
   AggregationType:
     python: orionbelt.models.semantic.AggregationType
-    values: ['sum', 'count', 'count_distinct', 'avg', 'min', 'max', 'any_value', 'median', 'mode', 'listagg', 'stddev', 'stddev_pop', 'variance', 'var_pop', 'corr', 'covar_pop', 'covar_samp', 'regr_slope', 'regr_intercept', 'measure']
+    values: ['sum', 'count', 'count_distinct', 'avg', 'min', 'max', 'any_value', 'median', 'percentile_cont', 'percentile_disc', 'mode', 'listagg', 'stddev', 'stddev_pop', 'variance', 'var_pop', 'corr', 'covar_pop', 'covar_samp', 'regr_slope', 'regr_intercept', 'measure']
   Cardinality:
     python: orionbelt.models.semantic.Cardinality
     values: ['many-to-one', 'one-to-one', 'many-to-many']
@@ -23,7 +23,7 @@ enums:
     values: ['sum', 'avg', 'min', 'max', 'count']
   ReaggregateAggType:
     python: orionbelt.models.semantic.ReaggregateAggType
-    values: ['sum', 'avg', 'min', 'max', 'count', 'median']
+    values: ['sum', 'avg', 'min', 'max', 'count', 'median', 'percentile_cont', 'percentile_disc']
   DataType:
     python: orionbelt.models.semantic.DataType
     values: ['string', 'json', 'int', 'float', 'date', 'time', 'time_tz', 'timestamp', 'timestamp_tz', 'boolean']
@@ -775,6 +775,12 @@ classes:
         json_schema: true
         ontology_property: null
         osi_roundtrip: true
+      percentile:
+        alias: percentile
+        type: "float | None"
+        json_schema: true
+        ontology_property: percentile
+        osi_roundtrip: true
       owner:
         alias: owner
         type: "str | None"
@@ -959,6 +965,12 @@ classes:
         type: "list[ReaggregateHaving]"
         json_schema: true
         ontology_property: reaggregateHaving
+        osi_roundtrip: true
+      percentile:
+        alias: percentile
+        type: "float | None"
+        json_schema: true
+        ontology_property: percentile
         osi_roundtrip: true
       data_type:
         alias: dataType

@@ -35,7 +35,7 @@ OBSL-Core is not intended to represent:
 - columns (with optional `numClass` and `primaryKey` flags)
 - joins (with optional secondary-path naming)
 - dimensions (with optional `via` for role-playing paths, and `pathName` to pin a dimension to one named join from `via`)
-- measures (with optional grain override, filter context, LISTAGG `delimiter` + `withinGroup` ordering)
+- measures (with optional grain override, filter context, LISTAGG `delimiter` + `withinGroup` ordering, `percentile` fraction)
 - metrics — five types: derived, cumulative, period-over-period, **window** (`rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value`), **reaggregate**
 - cumulative metric metadata (time dimension, window, grain-to-date, optional `partitionBy`)
 - period-over-period metric metadata (time dimension, offset, comparison)
@@ -282,7 +282,8 @@ Represents a two-stage metric: the base measure is aggregated at the query grain
 Additional required:
 - exactly one of `obsl:baseMeasure` or `obsl:baseMetric` (another `obsl:ReaggregateMetric`, whose two stages then run as this metric's first)
 - `obsl:per` (one or more dimension labels, optionally `name:grain`)
-- `obsl:aggregation` (second-stage function: sum, avg, min, max, count, median)
+- `obsl:aggregation` (second-stage function: sum, avg, min, max, count, median, percentile_cont, percentile_disc)
+- `obsl:percentile` (the fraction of a percentile_cont / percentile_disc stage)
 
 Optional:
 - `obsl:reaggregateHaving` (multi-valued): a condition on the first-stage groups over a measure, as an expression string (e.g. `Order Count > 5`); only the groups meeting every condition are aggregated again

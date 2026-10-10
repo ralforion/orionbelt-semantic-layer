@@ -9,6 +9,7 @@ again in Python by the query's dimensions.
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Callable
 from decimal import Decimal
@@ -26,7 +27,18 @@ from orionbelt.parser.resolver import ReferenceResolver  # noqa: E402
 
 from .conftest import COMMERCE_MODEL_YAML, _require_seed, _rows_as_dicts  # noqa: E402
 
-_AGGREGATIONS = ["avg", "sum", "min", "max", "count", "median"]
+_AGGREGATIONS = [
+    "avg",
+    "sum",
+    "min",
+    "max",
+    "count",
+    "median",
+    "percentile_cont",
+    "percentile_disc",
+]
+#: The percentiles' fraction, at which a double finds the wrong position.
+_FRACTION = "0.3"
 
 #: Inner reaggregate metrics, each over a measure of the Sales fact.
 _INNER: dict[str, dict[str, Any]] = {
@@ -66,6 +78,7 @@ _METRICS: dict[str, dict[str, Any]] = {
             "measure": inner,
             "per": per,
             "aggregation": agg,
+            **({"percentile": float(_FRACTION)} if agg.startswith("percentile") else {}),
         }
         for inner in _INNER
         for agg in _AGGREGATIONS
@@ -136,6 +149,14 @@ def _aggregate(aggregation: str, values: list[Any]) -> Any:
         return Decimal(sum(present)) / len(present)
     if aggregation == "median":
         return statistics.median(Decimal(str(v)) for v in present)
+    if aggregation.startswith("percentile"):
+        ordered = sorted(Decimal(str(v)) for v in present)
+        fraction = Decimal(_FRACTION)
+        if aggregation == "percentile_disc":
+            return ordered[max(math.ceil(fraction * len(ordered)), 1) - 1]
+        position = fraction * (len(ordered) - 1)
+        lower, upper = ordered[math.floor(position)], ordered[math.ceil(position)]
+        return lower + (position - math.floor(position)) * (upper - lower)
     return {"sum": sum, "min": min, "max": max}[aggregation](present)
 
 

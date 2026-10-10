@@ -130,12 +130,12 @@ LookML carries UI metadata: `drill_fields: [order_id, customer_name, ...]`, `val
 | Family | OBSL | LookML |
 |---|---|---|
 | Standard | `sum`, `count`, `count_distinct`, `avg`, `min`, `max` | `sum`, `count`, `count_distinct`, `average`, `min`, `max` |
-| Shape | `any_value`, `median`,<br>`mode`, `listagg` | `sum_distinct`, `average_distinct`,<br>`median`, `median_distinct`,<br>`percentile`, `percentile_distinct`,<br>`list`, `number`, `string`,<br>`date`, `yesno` |
+| Shape | `any_value`, `median`,<br>`percentile_cont`, `percentile_disc`,<br>`mode`, `listagg` | `sum_distinct`, `average_distinct`,<br>`median`, `median_distinct`,<br>`percentile`, `percentile_distinct`,<br>`list`, `number`, `string`,<br>`date`, `yesno` |
 | Statistical | `stddev`, `stddev_pop`, `variance`, `var_pop` | Via `type: number` + raw `sql: STDDEV(...)` — not first-class measure types |
 | Association / regression | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via `type: number` + raw SQL — not first-class measure types |
 | Grand totals | `total: bool` on the measure | Looker UI checkbox (`totals: yes`) — visualization-time, not the model |
 
-**The honest difference**: LookML wins decisively on aggregate-variant *shape* — `sum_distinct`, `percentile_*`, `median_distinct` are all first-class measure types Looker authors reach for daily. OBSL's `any_value` / `mode` / `listagg` cover a different slice. On the statistical side, OBSL ships 9 first-class declarative aggregations with arity validation and per-dialect gating; LookML reaches the same SQL through `type: number` + raw SQL — works, but not validated and not portable across dialects.
+**The honest difference**: LookML wins decisively on aggregate-variant *shape* — `sum_distinct`, `average_distinct`, `median_distinct` and `percentile_distinct` are all first-class measure types Looker authors reach for daily. Both have a first-class percentile (OBSL's `percentile_cont` and `percentile_disc`, exact on every dialect); OBSL's `any_value` / `mode` / `listagg` cover a different slice. On the statistical side, OBSL ships 9 first-class declarative aggregations with arity validation and per-dialect gating; LookML reaches the same SQL through `type: number` + raw SQL — works, but not validated and not portable across dialects.
 
 ### 4.2 Metric types
 
@@ -147,7 +147,7 @@ LookML carries UI metadata: `drill_fields: [order_id, customer_name, ...]`, `val
 | `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Looker table calculations (`rank()`, `offset()`, `pivot_offset()`) — UI-side, not LookML model | OBSL ships these as declarative metric types reusable across every consumer; Looker's equivalents live in the dashboard layer |
 | `Measure.filterContext` / `filteredMeasures` | <pre><code>measure: paid_revenue {<br> type: sum<br> filters: [is_paid: "yes"]<br>}</code></pre> | Comparable |
 
-Bottom line: LookML wins on aggregate-variant *shape* (`sum_distinct`, `percentile_*`, `median_distinct`) and on UI-side table-calc breadth; OBSL wins on **first-class statistical/regression aggregates** and on **time/window/PoP/cumulative as declarative metric types** that survive across every consumer (BI tool, agent, JSON API) without re-implementing the table calc. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface.
+Bottom line: LookML wins on aggregate-variant *shape* (`sum_distinct`, `median_distinct`, `percentile_distinct`) and on UI-side table-calc breadth; OBSL wins on **first-class statistical/regression aggregates** and on **time/window/PoP/cumulative as declarative metric types** that survive across every consumer (BI tool, agent, JSON API) without re-implementing the table calc. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface.
 
 ---
 
@@ -256,7 +256,8 @@ For embedded SaaS, multi-tenant analytics, or air-gapped/on-prem use cases, OBSL
 | First-class cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy`) | Partial (`running_total` only) |
 | First-class window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ | ❌ (table calculations only — dashboard-side) |
 | First-class statistical / regression aggregates as measure types | ✅ 9 declarative aggregations | Via `type: number` + raw SQL — not first-class measure types |
-| First-class `sum_distinct` / `percentile_*` / `median_distinct` measure types | ❌ | ✅ |
+| First-class percentile measure types | ✅ `percentile_cont` / `percentile_disc` | ✅ `percentile` |
+| First-class `sum_distinct` / `median_distinct` / `percentile_distinct` measure types | ❌ | ✅ |
 | RDF/SPARQL graph view | ✅ | ❌ |
 | Business rules compiled to findings | ✅ `rules:` compiled to the query that reports findings (members or violations), evaluated over REST and MCP | Partial: `test:` blocks with `explore_source` + `assert` evaluate a yesno expression on every row of an Explore query, so an assertion over an aggregate is possible; run by the CI Assert Validator, not served as a query surface |
 | Links into an external ontology | ✅ `externalConceptMappings` with SKOS relations + provenance, projected to RDF and discoverable over REST | Free-form `tags` strings on fields, "not used by the Looker model" but passed to integrations and the API |

@@ -165,6 +165,8 @@ _TYPE_PRESERVING_CALLS: frozenset[str] = frozenset(
         "MAX",
         "ANY_VALUE",
         "MEDIAN",
+        "PERCENTILE_CONT",
+        "PERCENTILE_DISC",
         "MODE",
         "LAG",
         "LEAD",
@@ -884,6 +886,28 @@ class ClickHouseDialect(Dialect):
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         median = f"quantileExactInclusive(0.5)(toFloat64({col_sql}))"
         return f"if(count({col_sql}) = 0, NULL, {median})"
+
+    def _compile_percentile(self, name: str, args: list[Expr], fraction: Decimal) -> str:
+        """ClickHouse: the continuous percentile as the median is, the discrete
+        one read from the sorted values.
+
+        ``quantileExactInclusive`` is ``PERCENTILE_CONT`` (probed at 0.1 to 0.9
+        of 1..10), over doubles for the reasons :meth:`_compile_median` gives.
+        No quantile function is ``PERCENTILE_DISC``: ``quantileExact`` and
+        ``quantileExactLow`` answer 2, 4 and 10 at 0.1, 0.3 and 0.9 of 1..10,
+        where the first value whose cumulative share reaches the fraction is
+        1, 3 and 9. That value is the ``ceil(f * n)``-th of the sorted values
+        (``groupArray`` skips NULLs), in the column's own type. Over no values
+        both are NULL explicitly.
+        """
+        col_sql = self.compile_expr(args[0])
+        empty = f"count({col_sql}) = 0"
+        if name == "PERCENTILE_CONT":
+            literal = self.compile_expr(Literal(value=fraction))
+            return f"if({empty}, NULL, quantileExactInclusive({literal})(toFloat64({col_sql})))"
+        numerator, denominator = self.percentile_ratio(fraction)
+        position = f"intDiv({numerator} * count({col_sql}) + {denominator - 1}, {denominator})"
+        return f"if({empty}, NULL, arraySort(groupArray({col_sql}))[{position}])"
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """ClickHouse: topK(1)(col)[1] — returns the most frequent value."""

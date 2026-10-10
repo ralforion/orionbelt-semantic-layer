@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, RawSQL
 from orionbelt.dialect.base import (
     AmbiguousTableReferenceError,
@@ -365,6 +367,82 @@ class BigQueryDialect(Dialect):
             f"CASE WHEN {upper} < 0 THEN {upper} - {half} "
             f"WHEN {lower} < 0 THEN ({lower} + {upper}) / {two} "
             f"ELSE {lower} + {half} END"
+        )
+
+    def _compile_percentile(self, name: str, args: list[Expr], fraction: Decimal) -> str:
+        """BigQuery: the percentile read from the sorted values, as the median is.
+
+        ``PERCENTILE_CONT`` and ``PERCENTILE_DISC`` are window functions only.
+        Positions are worked out in integers from the fraction ``p / d``.
+
+        - Discrete: the ``ceil(p * n / d)``-th value, in the column's own type.
+        - Continuous: the values at offsets ``floor(h)`` and ``ceil(h)`` of
+          ``h = p * (n - 1) / d``, ``lower`` and ``upper``, and ``r``, the
+          remainder of ``p * (n - 1)``. At a whole position, or between two
+          equal values, it is ``lower`` itself. Otherwise each value is split
+          into its whole part towards zero and the fraction left, ``upper``
+          borrowing one when the fractions' difference would be negative, and
+          the result is stepped up from ``lower`` by the whole parts'
+          difference times ``r / d`` (each divided by ``10 ** places``:
+          exact) plus the fractions' difference times ``r / d``. That last
+          product is the one rounding, of a value that is not negative, so it
+          rounds up: the step up from ``lower`` rounds a tie towards
+          +infinity, the matching step down from ``upper`` towards -infinity.
+          Up when that is above zero, down otherwise, rounds every tie away
+          from zero, as a mean
+          does (-2e-38 for -1.5e-38 in a BIGNUMERIC). No difference of the two
+          values is taken, so none overflows: the values are widened with
+          ``* BIGNUMERIC '1'``, which makes INT64 and NUMERIC a BIGNUMERIC and
+          leaves FLOAT64 one (a CAST would refuse 1e40). Over INT64 and
+          NUMERIC values the result is exact, as a BIGNUMERIC; over FLOAT64 a
+          FLOAT64.
+        """
+        col_sql = self.compile_expr(args[0])
+        numerator, denominator = self.percentile_ratio(fraction)
+        values = f"ARRAY_AGG({col_sql} IGNORE NULLS ORDER BY {col_sql})"
+        count = f"COUNT({col_sql})"
+        if name == "PERCENTILE_DISC":
+            position = f"DIV({numerator} * {count} + {denominator - 1}, {denominator})"
+            return f"{values}[SAFE_OFFSET({position} - 1)]"
+        scaled = f"{numerator} * ({count} - 1)"
+        lower = f"{values}[SAFE_OFFSET(DIV({scaled}, {denominator}))]"
+        upper = f"{values}[SAFE_OFFSET(DIV({scaled} + {denominator - 1}, {denominator}))]"
+        remainder = f"MOD({scaled}, {denominator})"
+        # Widened without a CAST, which refuses a FLOAT64 1e40: INT64 and
+        # NUMERIC become BIGNUMERIC, FLOAT64 stays FLOAT64.
+        low = f"({lower} * BIGNUMERIC '1')"
+        high = f"({upper} * BIGNUMERIC '1')"
+        # Each value as its whole part towards zero and the fraction left, of
+        # the value's sign. TRUNC cannot overflow, as FLOOR does just above the
+        # least BIGNUMERIC, and keeps a tiny FLOAT64 fraction (1 - 2e-300 is
+        # 1.0). Of opposite signs the fractions' difference is not negative; of
+        # the same sign it is above -1, and when negative upper borrows one,
+        # from a whole part then at least lower's.
+        borrow = f"IF({high} - TRUNC({high}) < {low} - TRUNC({low}), 1, 0)"
+        parts = f"({high} - TRUNC({high}) + {borrow} - ({low} - TRUNC({low})))"
+        whole_high = f"((TRUNC({high}) - {borrow}) / {denominator})"
+        whole_low = f"(TRUNC({low}) / {denominator})"
+        # Of the same sign the whole parts' difference fits, and is taken first:
+        # the step is then no larger than the gap, and a FLOAT64 near 1.8e308
+        # cannot round past its range (adding a term near 0.3 of it to one near
+        # 0.7 did). Of opposite signs each end's own whole part is taken off it
+        # first, which moves towards zero, so no partial sum leaves the range.
+        # Whole parts over 10 ** places are exact for INT64, NUMERIC and
+        # BIGNUMERIC; the fraction's step is the one rounding, of a value >= 0.
+        whole_gap = f"((TRUNC({high}) - {borrow} - TRUNC({low})) / {denominator})"
+        complement = f"({denominator} - {remainder})"
+        rise = f"{parts} * {remainder} / {denominator}"
+        fall = f"{parts} * {complement} / {denominator}"
+        up_same = f"{low} + {whole_gap} * {remainder} + {rise}"
+        down_same = f"{high} - {whole_gap} * {complement} - {fall}"
+        up_apart = f"{low} - {whole_low} * {remainder} + {whole_high} * {remainder} + {rise}"
+        down_apart = f"{high} - {whole_high} * {complement} + {whole_low} * {complement} - {fall}"
+        return (
+            f"CASE WHEN {remainder} = 0 OR {lower} = {upper} THEN {lower} "
+            f"WHEN {lower} >= 0 OR {upper} <= 0 THEN "
+            f"IF({up_same} > 0, {up_same}, {down_same}) "
+            f"WHEN {up_apart} > 0 THEN {up_apart} "
+            f"ELSE {down_apart} END"
         )
 
     def _compile_mode(self, args: list[Expr]) -> str:

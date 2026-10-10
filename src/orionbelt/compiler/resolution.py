@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
@@ -79,6 +80,13 @@ from orionbelt.models.warnings import WarningCode, warning
 
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
+
+
+def _with_percentile(measure: Measure, func: FunctionCall) -> FunctionCall:
+    """*func* carrying a percentile measure's fraction."""
+    if measure.percentile is None:
+        return func
+    return replace(func, fraction=Decimal(str(measure.percentile)))
 
 
 def parse_column_expression(
@@ -1612,7 +1620,7 @@ class QueryResolver:
             separator=separator,
         )
         return self._apply_measure_default(
-            measure, self._apply_measure_filters(ctx, measure, result)
+            measure, _with_percentile(measure, self._apply_measure_filters(ctx, measure, result))
         )
 
     def _expand_expression(self, ctx: _ResolutionContext, measure: Measure) -> Expr:
@@ -1643,7 +1651,7 @@ class QueryResolver:
             distinct=distinct,
         )
         return self._apply_measure_default(
-            measure, self._apply_measure_filters(ctx, measure, result)
+            measure, _with_percentile(measure, self._apply_measure_filters(ctx, measure, result))
         )
 
     @staticmethod
@@ -1673,13 +1681,7 @@ class QueryResolver:
         if condition is None:
             return func
         wrapped_args: list[Expr] = [CaseExpr(when_clauses=[(condition, arg)]) for arg in func.args]
-        return FunctionCall(
-            name=func.name,
-            args=wrapped_args,
-            distinct=func.distinct,
-            order_by=func.order_by,
-            separator=func.separator,
-        )
+        return replace(func, args=wrapped_args)
 
     def _resolve_metric(
         self, ctx: _ResolutionContext, name: str, metric: Metric

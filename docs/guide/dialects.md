@@ -324,6 +324,25 @@ Each engine's own shortcut answers something else, measured on all eight: BigQue
 !!! warning "Snowflake: a median of a wide NUMBER can be out of range"
     Snowflake's `MEDIAN` of a `NUMBER(p, s)` is a `NUMBER(38, s + 3)`, so a value with more integer digits than `35 - s` (26 for a `NUMBER(38, 9)`) fails with "Number out of representable range" rather than returning a median. `PERCENTILE_CONT` behaves the same.
 
+### PERCENTILE_CONT and PERCENTILE_DISC
+
+`percentile_cont` interpolates between the two values around position `p * (n - 1)`; `percentile_disc` is the first value whose cumulative share of the group reaches `p`. NULLs are ignored, and a group of NULLs is NULL. Measured at 0.00001, 0.1, 0.25, 0.3, 0.5, 0.75 and 0.9 of the values 1 to 10, every dialect gives the same answer. A [reaggregate metric](model-format.md#reaggregate-metrics) with either aggregation renders its second stage the same way.
+
+| Dialect | `percentile_cont` | `percentile_disc` |
+|---------|-----|-----|
+| BigQuery | `lower` and `upper` of `ARRAY_AGG(col IGNORE NULLS ORDER BY col)` around the position: `lower` at a whole position or between equal values, else a step up from `lower` when that is above zero and down from `upper` otherwise. Each value is split at `TRUNC` into a whole part, divided by `10^places` exactly, and a fraction, whose step is the one rounding, so a tie goes away from zero as a mean's does. Of the same sign the whole parts' difference is taken first; of opposite signs each end's own whole part comes off first, so no sum runs past the type's range at any magnitude, a FLOAT64 near 1.8e308 included | the `ceil(p * n)`-th value of the sorted array |
+| ClickHouse | `if(count(col) = 0, NULL, quantileExactInclusive(p)(toFloat64(col)))` | `if(count(col) = 0, NULL, arraySort(groupArray(col))[ceil(p * n)])` |
+| Databricks | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)` | `get(array_sort(collect_list(col)), ceil(p * n) - 1)` |
+| Dremio | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY CAST(col AS DOUBLE))` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` |
+| DuckDB | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY CAST(col AS DOUBLE))` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` |
+| MySQL | the values around the position in `GROUP_CONCAT(col ORDER BY col SEPARATOR ',')`, read back as `DOUBLE`: `lower * (1 - w) + upper * w`, the weight divided before it multiplies (1e307 and 2e307 would overflow otherwise) | the `ceil(p * n)`-th value, read back as `DOUBLE` |
+| Postgres | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` |
+| Snowflake | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` |
+
+The renderings that find the position themselves (BigQuery, ClickHouse's and Databricks' discrete one, MySQL) compute it in integers from the fraction as a ratio of a power of ten: as a double, `0.3 * 10` is 3.0000000000000004, whose ceiling would be the 4th value. That is why `percentile` takes at most 9 decimal places. ClickHouse's `quantileExact` and `quantileExactLow` are not `PERCENTILE_DISC` (2, 4 and 10 at 0.1, 0.3 and 0.9 of 1 to 10, where it is 1, 3 and 9), and Databricks' and Dremio's `PERCENTILE_DISC` return a DOUBLE, which rounds an integer past 2^53. Databricks reads the sorted array instead; Dremio indexes arrays only by a literal, so its discrete percentile stays a DOUBLE, as MySQL's is.
+
+The continuous percentile has the median's types: a floating-point number on Postgres, DuckDB, ClickHouse, MySQL and Dremio, computed as one on Snowflake and Databricks, and exact on BigQuery (BIGNUMERIC over INT64 and NUMERIC values). The discrete one is a value of the column on Postgres, DuckDB, Snowflake, Databricks, ClickHouse and BigQuery. Dremio's empty-group and Snowflake's wide-NUMBER behavior above apply to `PERCENTILE_CONT` as well.
+
 ### MODE
 
 | Dialect | SQL |

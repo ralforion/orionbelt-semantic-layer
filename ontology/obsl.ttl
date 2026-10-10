@@ -409,6 +409,13 @@ obsl:delimiter a owl:DatatypeProperty ;
     rdfs:domain obsl:Measure ;
     rdfs:range xsd:string .
 
+# Shared by a percentile measure and a percentile reaggregate metric, as
+# obsl:aggregation is, so it declares no domain.
+obsl:percentile a owl:DatatypeProperty ;
+    rdfs:label "percentile" ;
+    rdfs:comment "Fraction of a percentile_cont / percentile_disc aggregation, between 0 and 1 exclusive (0.9 for the 90th percentile), on a measure or on a reaggregate metric's second stage." ;
+    rdfs:range xsd:decimal .
+
 obsl:hasWithinGroup a owl:ObjectProperty ;
     rdfs:label "has within group" ;
     rdfs:comment "Links a LISTAGG-style ordered-set aggregate measure to its within-group ordering clause." ;
@@ -877,6 +884,7 @@ obsl:comparison a owl:FunctionalProperty .
 obsl:primaryKey a owl:FunctionalProperty .
 obsl:numClass a owl:FunctionalProperty .
 obsl:delimiter a owl:FunctionalProperty .
+obsl:percentile a owl:FunctionalProperty .
 obsl:withinGroupOrder a owl:FunctionalProperty .
 
 obsl:vendor a owl:FunctionalProperty .
