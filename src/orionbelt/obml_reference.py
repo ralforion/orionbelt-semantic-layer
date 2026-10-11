@@ -234,7 +234,7 @@ categorical, additive, non-additive
 ## Aggregation Values
 
 Core: sum, count, count_distinct, avg, min, max,
-any_value, median, percentile_cont, percentile_disc, mode, listagg
+any_value, median, percentile_cont, percentile_disc, first, last, mode, listagg
 
 Percentiles take `percentile:` (0 < p < 1, at most 9 decimal places; 0.9 for
 the 90th) and one column or an expression. `percentile_cont` interpolates
@@ -246,6 +246,18 @@ value whose cumulative share reaches p, a value from the data:
     columns: [{dataObject: Orders, column: Amount}]
     aggregation: percentile_cont
     percentile: 0.9
+```
+
+`first` / `last` take the value at the least / greatest key named in
+`withinGroup` (required, no `order`): rows without a value or key are
+skipped, a tie on the key goes to the least / greatest value. One row's
+value, not a semi-additive sum. Not on MySQL:
+
+```yaml
+  Closing Price:
+    columns: [{dataObject: Trades, column: Price}]
+    aggregation: last
+    withinGroup: {column: {dataObject: Trades, column: Traded At}}
 ```
 
 Statistical (v2.6+): stddev, stddev_pop, variance, var_pop,

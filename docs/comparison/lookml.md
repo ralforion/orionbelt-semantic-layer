@@ -130,7 +130,7 @@ LookML carries UI metadata: `drill_fields: [order_id, customer_name, ...]`, `val
 | Family | OBSL | LookML |
 |---|---|---|
 | Standard | `sum`, `count`, `count_distinct`, `avg`, `min`, `max` | `sum`, `count`, `count_distinct`, `average`, `min`, `max` |
-| Shape | `any_value`, `median`,<br>`percentile_cont`, `percentile_disc`,<br>`mode`, `listagg` | `sum_distinct`, `average_distinct`,<br>`median`, `median_distinct`,<br>`percentile`, `percentile_distinct`,<br>`list`, `number`, `string`,<br>`date`, `yesno` |
+| Shape | `any_value`, `median`,<br>`percentile_cont`, `percentile_disc`,<br>`first`, `last`, `mode`, `listagg` | `sum_distinct`, `average_distinct`,<br>`median`, `median_distinct`,<br>`percentile`, `percentile_distinct`,<br>`list`, `number`, `string`,<br>`date`, `yesno` |
 | Statistical | `stddev`, `stddev_pop`, `variance`, `var_pop` | Via `type: number` + raw `sql: STDDEV(...)` — not first-class measure types |
 | Association / regression | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via `type: number` + raw SQL — not first-class measure types |
 | Grand totals | `total: bool` on the measure | Looker UI checkbox (`totals: yes`) — visualization-time, not the model |

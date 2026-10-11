@@ -638,8 +638,12 @@ class CFLPlanner:
                     # Pad the sort-key column too, so every leg agrees on the
                     # union's column list.
                     if self._within_group_item(m) is not None:
+                        key_type = cfl_projection.resolve_sort_key_type(m, model, dialect)
+                        key_pad: Expr = (
+                            Cast(Literal.null(), type_name=key_type) if key_type else Literal.null()
+                        )
                         leg_builder.select(
-                            AliasedExpr(expr=Literal.null(), alias=aliases.within_group[m.name])
+                            AliasedExpr(expr=key_pad, alias=aliases.within_group[m.name])
                         )
 
             # Determine the common root for this leg:

@@ -35,7 +35,7 @@ OBSL-Core is not intended to represent:
 - columns (with optional `numClass` and `primaryKey` flags)
 - joins (with optional secondary-path naming)
 - dimensions (with optional `via` for role-playing paths, and `pathName` to pin a dimension to one named join from `via`)
-- measures (with optional grain override, filter context, LISTAGG `delimiter` + `withinGroup` ordering, `percentile` fraction)
+- measures (with optional grain override, filter context, LISTAGG `delimiter` + `withinGroup` ordering, which is also the key of `first` / `last`, `percentile` fraction)
 - metrics — five types: derived, cumulative, period-over-period, **window** (`rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value`), **reaggregate**
 - cumulative metric metadata (time dimension, window, grain-to-date, optional `partitionBy`)
 - period-over-period metric metadata (time dimension, offset, comparison)

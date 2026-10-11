@@ -101,7 +101,11 @@ if TYPE_CHECKING:
 # Aggregations whose result is unchanged when every input row is duplicated.
 # Everything else — SUM, COUNT, AVG, the distribution/regression family,
 # LISTAGG — reads row multiplicity and is wrong over replicated rows.
-MULTIPLICITY_SAFE_AGGREGATIONS = frozenset({"min", "max", "count_distinct", "any_value"})
+MULTIPLICITY_SAFE_AGGREGATIONS = frozenset(
+    # A repeated row repeats its (key, value) pair, which leaves the greatest
+    # and least pair where they were: first / last are as safe as min / max.
+    {"min", "max", "count_distinct", "any_value", "first", "last"}
+)
 
 # Vendor-delegated aggregation: the engine resolves it through its own metric
 # machinery, so we cannot reason about its multiplicity behaviour. Left alone.

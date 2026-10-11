@@ -299,7 +299,7 @@ obsl:resultType a owl:DatatypeProperty ;
 
 obsl:aggregation a owl:DatatypeProperty ;
     rdfs:label "aggregation" ;
-    rdfs:comment "Aggregation function applied to the measure. Core: sum, count, count_distinct, avg, min, max, any_value, median, mode, listagg. Statistical: stddev, stddev_pop, variance, var_pop, corr, covar_pop, covar_samp, regr_slope, regr_intercept. Vendor delegation: measure (Databricks Metric Views only; emits MEASURE(\"<label>\") and forbids columns/expression/filters/total)." ;
+    rdfs:comment "Aggregation function applied to the measure. Core: sum, count, count_distinct, avg, min, max, any_value, median, percentile_cont, percentile_disc, first, last, mode, listagg. Statistical: stddev, stddev_pop, variance, var_pop, corr, covar_pop, covar_samp, regr_slope, regr_intercept. Vendor delegation: measure (Databricks Metric Views only; emits MEASURE(\"<label>\") and forbids columns/expression/filters/total)." ;
     rdfs:range xsd:string .
 
 obsl:metricType a owl:DatatypeProperty ;
@@ -418,7 +418,7 @@ obsl:percentile a owl:DatatypeProperty ;
 
 obsl:hasWithinGroup a owl:ObjectProperty ;
     rdfs:label "has within group" ;
-    rdfs:comment "Links a LISTAGG-style ordered-set aggregate measure to its within-group ordering clause." ;
+    rdfs:comment "Links a LISTAGG-style ordered-set aggregate measure to its within-group ordering clause, or a first / last measure to the key it takes its value at." ;
     rdfs:domain obsl:Measure ;
     rdfs:range obsl:WithinGroup .
 

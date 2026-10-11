@@ -43,6 +43,8 @@ class AggregationType(StrEnum):
     MEDIAN = "median"
     PERCENTILE_CONT = "percentile_cont"
     PERCENTILE_DISC = "percentile_disc"
+    FIRST = "first"
+    LAST = "last"
     MODE = "mode"
     LISTAGG = "listagg"
     # Statistical aggregates (v2.6+) — spread, association, regression
@@ -116,6 +118,12 @@ def check_percentile(aggregation: str, percentile: float | None) -> None:
         raise ValueError(
             f"'percentile' takes at most {PERCENTILE_MAX_PLACES} decimal places, got {percentile}"
         )
+
+
+#: Aggregations that take the value at the least / greatest ``withinGroup`` key.
+ORDERED_VALUE_AGGREGATIONS: frozenset[str] = frozenset(
+    {AggregationType.FIRST.value, AggregationType.LAST.value}
+)
 
 
 class JoinType(StrEnum):
@@ -932,7 +940,8 @@ MeasureFilterItem = MeasureFilter | MeasureFilterGroup
 
 
 class WithinGroup(BaseModel):
-    """WITHIN GROUP ordering clause for LISTAGG measures."""
+    """WITHIN GROUP ordering clause: of a LISTAGG measure, and the key a
+    ``first`` / ``last`` measure takes its value at."""
 
     column: DataColumnRef
     order: str = "ASC"
@@ -1166,6 +1175,33 @@ class Measure(BaseModel):
             raise ValueError(
                 f"Aggregation '{agg}' requires exactly 1 column, got {len(self.columns)}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_ordered_value(self) -> Measure:
+        """``first`` / ``last`` read one value per row at a key they require.
+
+        The direction is the aggregation's own (``last`` is the greatest key),
+        so a ``withinGroup.order`` would contradict it or say nothing.
+        """
+        agg = self.aggregation.lower()
+        if agg not in ORDERED_VALUE_AGGREGATIONS:
+            return self
+        if self.within_group is None:
+            raise ValueError(
+                f"Aggregation '{agg}' requires 'withinGroup' with the column to order by"
+            )
+        if "order" in self.within_group.model_fields_set:
+            raise ValueError(
+                f"Aggregation '{agg}' takes no 'withinGroup.order': 'last' is the value at "
+                "the greatest key, 'first' at the least"
+            )
+        if self.expression is None and len(self.columns) != 1:
+            raise ValueError(
+                f"Aggregation '{agg}' requires exactly 1 column, got {len(self.columns)}"
+            )
+        if self.distinct:
+            raise ValueError(f"Aggregation '{agg}' does not take 'distinct'")
         return self
 
     @model_validator(mode="after")

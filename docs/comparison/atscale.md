@@ -107,7 +107,7 @@ Caller-level authentication is a separate axis and does exist: `AUTH_MODE=api_ke
 | Family | OBSL | AtScale |
 |---|---|---|
 | Standard | `sum`, `count`, `count_distinct`, `avg`, `min`, `max` | `sum`, `count`, `distinct count`, `avg`, `min`, `max` |
-| Shape | `any_value`, `median`, `percentile_cont`, `percentile_disc`, `mode`, `listagg` | Semi-additive measures (last non-empty, first non-empty) — OLAP-native |
+| Shape | `any_value`, `median`, `percentile_cont`, `percentile_disc`, `first`, `last`, `mode`, `listagg` | Semi-additive measures (last non-empty, first non-empty) — OLAP-native |
 | Statistical | `stddev`, `stddev_pop`, `variance`, `var_pop` | Via MDX calculated members (`Stdev`, `Var`) — not first-class measure types |
 | Association / regression | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via MDX calculated members — not first-class measure types |
 | Grand totals | `total: bool` on the measure | Native to OLAP — every grain rolls up by construction |
@@ -237,7 +237,7 @@ The free **Developer Community Edition** lowers AtScale's barrier for evaluation
 | First-class declarative cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy`) | Via MDX time intelligence |
 | First-class declarative window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ | Via MDX calculated members |
 | First-class statistical / regression aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) as measure types | ✅ 9 declarative aggregations | Via MDX calculated members — not first-class measure types |
-| Semi-additive measures (last/first non-empty) | ❌ | ✅ first-class OLAP |
+| Semi-additive measures (last/first non-empty) | Partial: `first` / `last` measures, the value at a group's least / greatest key; not the sum across members of each one's last value | ✅ first-class OLAP |
 | Apache Arrow Flight SQL | ✅ | ❌ |
 | DB-API 2.0 drivers | ✅ 8 drivers | ❌ |
 | RDF/SPARQL graph view | ✅ | ❌ |

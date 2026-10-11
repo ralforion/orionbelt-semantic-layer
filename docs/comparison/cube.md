@@ -186,7 +186,7 @@ OBSL ships `static | scheduled | heartbeat | unknown` modes and exposes `GET /v1
 | Family | OBSL | Cube |
 |---|---|---|
 | Standard | `sum`, `count`, `count_distinct`, `avg`, `min`, `max` | `sum`, `count`, `count_distinct`, `count_distinct_approx`, `avg`, `min`, `max` |
-| Shape | `any_value`, `median`,<br>`percentile_cont`, `percentile_disc`,<br>`mode`, `listagg` | `string`, `time`, `boolean`,<br>`number` (generic — wraps any<br>aggregate SQL expression) |
+| Shape | `any_value`, `median`,<br>`percentile_cont`, `percentile_disc`,<br>`first`, `last`, `mode`, `listagg` | `string`, `time`, `boolean`,<br>`number` (generic — wraps any<br>aggregate SQL expression) |
 | Statistical | `stddev`, `stddev_pop`, `variance`, `var_pop` | Via `type: number` + raw `sql: STDDEV(...)` — not a first-class measure type |
 | Association / regression | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via `type: number` + raw SQL — not a first-class measure type |
 | Grand totals | `total: bool` on the measure | n/a — done at query/visualization time |

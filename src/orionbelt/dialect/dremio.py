@@ -253,6 +253,18 @@ class DremioDialect(Dialect):
 
     _percentile_cont_over_doubles = True
 
+    def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:
+        """Dremio: the first of the values ordered by key and value, read at the
+        literal index 0 (the only index Dremio takes). ``ARRAY_AGG`` skips the
+        NULL a row without a key carries."""
+        v = self.compile_expr(value)
+        k = self.compile_expr(key)
+        direction = "DESC" if last else "ASC"
+        return (
+            f"ARRAY_AGG(CASE WHEN {k} IS NOT NULL THEN {v} END)"
+            f" WITHIN GROUP (ORDER BY {k} {direction}, {v} {direction})[0]"
+        )
+
     def _compile_mode(self, args: list[Expr]) -> str:
         """Dremio does not support MODE aggregation."""
         raise UnsupportedAggregationError("dremio", "mode")

@@ -167,6 +167,8 @@ _TYPE_PRESERVING_CALLS: frozenset[str] = frozenset(
         "MEDIAN",
         "PERCENTILE_CONT",
         "PERCENTILE_DISC",
+        "FIRST",
+        "LAST",
         "MODE",
         "LAG",
         "LEAD",
@@ -886,6 +888,17 @@ class ClickHouseDialect(Dialect):
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         median = f"quantileExactInclusive(0.5)(toFloat64({col_sql}))"
         return f"if(count({col_sql}) = 0, NULL, {median})"
+
+    def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:
+        """ClickHouse: ``argMaxIf`` / ``argMinIf`` by the (key, value) tuple,
+        which breaks a tie on the key by the value. ``any`` / ``anyLast`` take
+        rows in arrival order. Over no rows with both, ``argMax`` answers the
+        type's default, so an empty group is NULL explicitly."""
+        v = self.compile_expr(value)
+        k = self.compile_expr(key)
+        both = f"isNotNull({k}) AND isNotNull({v})"
+        function = "argMaxIf" if last else "argMinIf"
+        return f"if(countIf({both}) = 0, NULL, {function}({v}, ({k}, {v}), {both}))"
 
     def _compile_percentile(self, name: str, args: list[Expr], fraction: Decimal) -> str:
         """ClickHouse: the continuous percentile as the median is, the discrete

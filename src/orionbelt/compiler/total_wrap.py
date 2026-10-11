@@ -45,7 +45,16 @@ from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.models.semantic import SemanticModel
 
 _UNSUPPORTED_TOTAL_AGGS = frozenset(
-    {"MEDIAN", "PERCENTILE_CONT", "PERCENTILE_DISC", "MODE", "LISTAGG", "ANY_VALUE"}
+    {
+        "MEDIAN",
+        "PERCENTILE_CONT",
+        "PERCENTILE_DISC",
+        "FIRST",
+        "LAST",
+        "MODE",
+        "LISTAGG",
+        "ANY_VALUE",
+    }
 )
 
 

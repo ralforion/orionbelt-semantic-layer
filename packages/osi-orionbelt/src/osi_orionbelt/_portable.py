@@ -234,6 +234,12 @@ class PortableRenderer:
         agg = str(m.get("aggregation", "sum")).lower()
         if agg == "measure":
             raise NotPortableError(f"measure '{name}' is resolved by a Databricks Metric View")
+        if agg in ("first", "last"):
+            end = "greatest" if agg == "last" else "least"
+            raise NotPortableError(
+                f"measure '{name}' takes the value at the {end} key, which ANSI SQL has no "
+                "aggregate for (each engine spells it its own way)"
+            )
 
         if m.get("columns"):
             args = [self._column_ref(c) for c in m["columns"]]
