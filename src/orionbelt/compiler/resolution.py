@@ -588,6 +588,9 @@ class ResolvedMeasure:
     window_buckets: int | None = None
     window_order_direction: str = "desc"
     window_default_value: str | int | float | bool | None = None
+    # A window over a reaggregate metric: computed after the reaggregate pass,
+    # over its finished rows (``late_window``), not by the window pass.
+    window_over_reaggregate: bool = False
     # Reaggregate metric fields: the measure is computed at the query grain plus
     # ``reaggregate_per``, then aggregated again by ``reaggregate_aggregation``
     is_reaggregate: bool = False
@@ -770,6 +773,12 @@ class ResolvedQuery:
     from :attr:`required_objects` — none of them is in the outer FROM/JOIN
     chain — but the compiled SQL does read them, so the freshness cache has to
     key on them all the same."""
+
+    late_window_inputs: set[str] = field(default_factory=set)
+    """Measures and metrics included for a window over a reaggregate metric, or
+    a formula reading one, that the query does not select: the window's base,
+    the formula's other leaves. The late window pass reads their finished
+    columns and leaves them out of the projection."""
 
     having_only_measures: set[str] = field(default_factory=set)
     """Measures auto-included by HAVING (not in ``select.measures``).
@@ -977,6 +986,12 @@ class QueryResolver:
                 ctx.result.measure_source_objects.update(source_objs)
                 ctx.result.required_objects.update(source_objs)
                 ctx.result.required_objects.update(self._get_measure_join_objects(ctx, ref))
+
+            # 2.6. A window over a reaggregate metric, and a formula reading one,
+            # is computed after the reaggregate pass from finished columns; the
+            # ones not selected are included here and dropped from the output
+            # by that pass (``late_window``).
+            self._include_late_window_inputs(ctx)
 
         # 3. Determine base object (the one with most joins / most measures).
         # WHERE filters are resolved much later, so the objects they reference
@@ -1648,6 +1663,29 @@ class QueryResolver:
         return self._apply_measure_default(
             measure, _with_percentile(measure, self._apply_measure_filters(ctx, measure, result))
         )
+
+    def _include_late_window_inputs(self, ctx: _ResolutionContext) -> None:
+        from orionbelt.compiler.late_window import is_late, late_inputs
+
+        components = ctx.result.metric_components
+        existing = {m.name for m in ctx.result.measures}
+        for measure in list(ctx.result.measures):
+            if not is_late(measure, components):
+                continue
+            for name in late_inputs(measure, components):
+                if name in existing:
+                    continue
+                included = components.get(name) or self._resolve_measure(ctx, name)
+                if included is None:
+                    continue
+                ctx.result.measures.append(included)
+                ctx.result.late_window_inputs.add(name)
+                existing.add(name)
+                if name in ctx.model.effective_measures:
+                    source_objs = self._get_measure_source_objects(ctx, name)
+                    ctx.result.measure_source_objects.update(source_objs)
+                    ctx.result.required_objects.update(source_objs)
+                    ctx.result.required_objects.update(self._get_measure_join_objects(ctx, name))
 
     @staticmethod
     def _within_group_order(

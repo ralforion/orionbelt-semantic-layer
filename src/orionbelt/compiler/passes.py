@@ -45,6 +45,7 @@ from orionbelt.compiler.having_hoist import (
     hoisted_predicates,
     windowed_aliases,
 )
+from orionbelt.compiler.late_window import late_window_applies, wrap_with_late_window
 from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.pop_wrap import wrap_with_pop
 from orionbelt.compiler.reaggregate_wrap import (
@@ -69,6 +70,7 @@ from orionbelt.models.warnings import WarningCode, warning
 PASS_GRAIN_DEDUP = "grain_dedup"
 PASS_REAGGREGATE_COMPONENTS = "reaggregate_components"
 PASS_REAGGREGATE = "reaggregate"
+PASS_LATE_WINDOW = "late_window"
 PASS_FILTER_CONTEXT = "filter_context"
 PASS_PERIOD_OVER_PERIOD = "period_over_period"
 PASS_TOTALS = "totals"
@@ -236,6 +238,13 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
             run=lambda ast, ctx: wrap_with_reaggregate(
                 ast, ctx.resolved, ctx.model, ctx.dialect, ctx.qualify_table, ctx.query
             ),
+        ),
+        CompilerPass(
+            name=PASS_LATE_WINDOW,
+            # A window over a reaggregate metric, and a formula reading one,
+            # over the rows the reaggregate pass finished.
+            applies=late_window_applies,
+            run=lambda ast, ctx: wrap_with_late_window(ast, ctx.resolved, ctx.model, ctx.dialect),
         ),
         CompilerPass(
             name=PASS_HAVING_WINDOW,
@@ -562,7 +571,7 @@ def _refuse_reaggregate_combinations(resolved: ResolvedQuery) -> None:
                 or c.filter_context is not None
                 or c.is_cumulative
                 or c.is_pop
-                or c.is_window
+                or (c.is_window and not c.window_over_reaggregate)
                 or c.name in resolved.dedup_measures
                 or c.name in resolved.dedup_components
             )

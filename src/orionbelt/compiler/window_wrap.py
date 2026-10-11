@@ -226,7 +226,12 @@ def _ddm_window_components(
     """
     if measure.is_window or not measure.component_measures:
         return []
-    return [comp for comp in metric_leaf_components(measure, metric_components) if comp.is_window]
+    leaves = metric_leaf_components(measure, metric_components)
+    # A formula reading a window over a reaggregate metric is computed after
+    # the reaggregate pass, every window in it with it (``late_window``).
+    if any(comp.window_over_reaggregate for comp in leaves):
+        return []
+    return [comp for comp in leaves if comp.is_window]
 
 
 def _base_measure_column(
@@ -278,7 +283,7 @@ def window_pass_applies(resolved: ResolvedQuery) -> bool:
     is the single source of truth for the window pass's ``applies``
     predicate — the wrapper's own guard delegates to it.
     """
-    if any(m.is_window for m in resolved.measures):
+    if any(m.is_window and not m.window_over_reaggregate for m in resolved.measures):
         return True
     return any(_ddm_window_components(m, resolved.metric_components) for m in resolved.measures)
 
@@ -330,7 +335,11 @@ def wrap_with_window(
     Returns ``ast`` unchanged when no window metrics are present and no
     derived metric in the SELECT transitively references one.
     """
-    direct_window_measures: list[ResolvedMeasure] = [m for m in resolved.measures if m.is_window]
+    # A window over a reaggregate metric is computed after the reaggregate pass
+    # (``late_window``); here its column passes through like any measure's.
+    direct_window_measures: list[ResolvedMeasure] = [
+        m for m in resolved.measures if m.is_window and not m.window_over_reaggregate
+    ]
 
     # Find derived metrics that *transitively* reference a window metric.
     # Even if no window metric is directly in the SELECT, the wrap must
@@ -431,7 +440,7 @@ def wrap_with_window(
         outer_columns.append(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
 
     for m in resolved.measures:
-        if m.is_window:
+        if m.is_window and not m.window_over_reaggregate:
             window_expr: Expr = _build_window_call(m, model, dialect)
             window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
             outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))

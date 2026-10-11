@@ -173,8 +173,19 @@ def resolve_window_metric(
     base_measure_name = metric.measure
     base_aggregation = ""
 
+    # A reaggregate metric as the base: its value exists only once the
+    # reaggregate pass has run, so the window is computed after it.
+    base_metric = ctx.model.metrics.get(base_measure_name) if base_measure_name else None
+    over_reaggregate = base_metric is not None and base_metric.type is MetricType.REAGGREGATE
+    if over_reaggregate:
+        assert base_measure_name is not None and base_metric is not None
+        if base_measure_name not in ctx.result.metric_components:
+            comp = resolver._resolve_metric(ctx, base_measure_name, base_metric)
+            if comp is None:
+                return None
+            ctx.result.metric_components[base_measure_name] = comp
     # Validate referenced measure (if any) exists
-    if base_measure_name is not None:
+    elif base_measure_name is not None:
         base_measure = ctx.model.effective_measures.get(base_measure_name)
         if base_measure is None:
             ctx.errors.append(
@@ -288,6 +299,7 @@ def resolve_window_metric(
         window_buckets=metric.buckets,
         window_order_direction=metric.order_direction.lower(),
         window_default_value=metric.default_value,
+        window_over_reaggregate=over_reaggregate,
     )
 
 

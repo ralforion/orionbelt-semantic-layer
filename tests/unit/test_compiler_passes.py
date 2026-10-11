@@ -21,6 +21,7 @@ from orionbelt.compiler.passes import (
     PASS_GRAIN_DEDUP,
     PASS_HAVING_CLEANUP,
     PASS_HAVING_WINDOW,
+    PASS_LATE_WINDOW,
     PASS_PERIOD_OVER_PERIOD,
     PASS_REAGGREGATE,
     PASS_REAGGREGATE_COMPONENTS,
@@ -51,7 +52,15 @@ def _resolved(**attrs: object) -> ResolvedQuery:
     grouping = attrs.get("grouping")
     has_window = bool(attrs.get("has_window", False))
     measures = (
-        [SimpleNamespace(is_window=True, component_measures=[], filter_context=None)]
+        [
+            SimpleNamespace(
+                is_window=True,
+                window_over_reaggregate=False,
+                is_derived_metric=False,
+                component_measures=[],
+                filter_context=None,
+            )
+        ]
         if has_window
         else []
     )
@@ -90,6 +99,8 @@ def test_pass_order_is_declared_once() -> None:
         PASS_WINDOW,
         # Wraps whatever the wrappers before it built.
         PASS_REAGGREGATE,
+        # Windows over a reaggregate metric, over the rows it finished.
+        PASS_LATE_WINDOW,
         # Runs after every wrapper: the filtering query it adds needs all of
         # their aliases in scope at once.
         PASS_HAVING_WINDOW,

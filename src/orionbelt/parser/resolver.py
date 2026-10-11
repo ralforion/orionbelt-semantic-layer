@@ -1265,10 +1265,13 @@ class ReferenceResolver:
                 elif metric_type == MetricType.WINDOW:
                     # Window metric (rank/lag/lead/ntile/first_value/last_value)
                     ref_measure = raw_metric.get("measure")
+                    # A reaggregate metric is a base too: the window then runs
+                    # over its finished values (``compiler/late_window.py``).
                     if (
                         ref_measure
                         and ref_measure not in measures
                         and ref_measure not in synthesized_measure_names
+                        and not _is_reaggregate(raw_metrics.get(ref_measure))
                     ):
                         span = source_map.get(f"metrics.{name}.measure") if source_map else None
                         errors.append(

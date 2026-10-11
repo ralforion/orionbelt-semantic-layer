@@ -355,9 +355,17 @@ def _split_metrics(
     split = {
         m.name: m
         for m in resolved.measures
-        if not m.is_reaggregate and any(c.is_reaggregate for c in leaves[m.name])
+        if not m.is_reaggregate
+        and any(c.is_reaggregate for c in leaves[m.name])
+        and not _reads_a_late_window(m, leaves[m.name])
     }
     return leaves, split
+
+
+def _reads_a_late_window(m: ResolvedMeasure, leaves: list[ResolvedMeasure]) -> bool:
+    """A formula over a window over a reaggregate metric: computed after this
+    pass from finished columns (``late_window``), a placeholder until then."""
+    return not m.is_window and any(c.window_over_reaggregate for c in leaves)
 
 
 def _plain_components(
@@ -456,10 +464,17 @@ def capture_reaggregate_components(
 
     reaggregates = {m.name: m for m in resolved.measures if m.is_reaggregate}
 
+    late_formulas = {m.name for m in resolved.measures if _reads_a_late_window(m, leaves[m.name])}
+
     def placeholder(col: Expr) -> Expr:
         alias = _alias(col)
         if alias in reaggregates:
             return AliasedExpr(expr=reaggregates[alias].expression, alias=alias)
+        if alias in late_formulas:
+            # Its window reads a reaggregate metric's placeholder, which binds
+            # to nothing; the late window pass computes the formula.
+            null = Cast(expr=Literal(value=None), type_name="float")
+            return AliasedExpr(expr=FunctionCall(name="MAX", args=[null]), alias=alias)
         if alias not in split:
             return col
         by_name = {c.name: c for c in leaves[alias]}

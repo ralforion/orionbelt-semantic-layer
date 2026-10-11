@@ -179,6 +179,18 @@ metrics:
     per: [Customer]
     aggregation: percentile_disc
     percentile: 0.25
+  Prior Month Avg Customer:
+    type: window
+    measure: Avg Revenue per Customer
+    windowFunction: lag
+    timeDimension: Order Month
+    offset: 1
+  Avg Customer Rank:
+    type: window
+    measure: Avg Revenue per Customer
+    windowFunction: rank
+  Avg Customer Change:
+    expression: '{{[Avg Revenue per Customer]}} - {{[Prior Month Avg Customer]}}'
   First Month Revenue:
     type: reaggregate
     measure: Revenue
@@ -840,6 +852,30 @@ def _assert_first_last_month(target: VendorTarget, model: SemanticModel) -> None
     assert got_all == [(Decimal(85), Decimal(1041))], f"{target.name}: {got_all}"
 
 
+def _assert_windows_over_reaggregate(target: VendorTarget, model: SemanticModel) -> None:
+    """Window metrics over a reaggregate metric, over its finished values.
+
+    The average customer's revenue is 85 / 3 = 28.33 in January and
+    1041 / 4 = 260.25 in February; by country FR 502.5, DE 27, NULL 20.
+    """
+    measures = ["Prior Month Avg Customer", "Avg Customer Change"]
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Order Month"], measures=measures)),
+    )
+    got = {str(r["order month"])[:7]: tuple(_number(r[m.lower()]) for m in measures) for r in rows}
+    want = {"2026-01": (None, None), "2026-02": (Decimal("28.33"), Decimal("231.92"))}
+    assert got == want, f"{target.name}: {got}"
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Avg Customer Rank"])),
+    )
+    ranks = {r["country"]: _number(r["avg customer rank"]) for r in rows}
+    assert ranks == {"FR": 1, "DE": 2, None: 3}, f"{target.name}: {ranks}"
+
+
 def _assert_all(target: VendorTarget) -> None:
     model = _prepare(target)
     _assert_grouped(target, model)
@@ -854,6 +890,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_having(target, model)
     _assert_exact_integer_average(target, model)
     _assert_first_last_month(target, model)
+    _assert_windows_over_reaggregate(target, model)
 
 
 def test_duckdb_reaggregate(vendor_duckdb: VendorTarget) -> None:
