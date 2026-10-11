@@ -591,6 +591,8 @@ class ResolvedMeasure:
     # A window over a reaggregate metric: computed after the reaggregate pass,
     # over its finished rows (``late_window``), not by the window pass.
     window_over_reaggregate: bool = False
+    # Likewise a cumulative metric over a reaggregate metric.
+    cumulative_over_reaggregate: bool = False
     # A formula over such a window keeps its expression here while its
     # ``expression`` is a placeholder for every pass before the late window
     # pass: a wrapper that rebuilds a column from the resolution (period-over-
@@ -862,8 +864,9 @@ class ResolvedQuery:
 
     @property
     def has_cumulative(self) -> bool:
-        """Check if any selected metric is cumulative."""
-        return any(m.is_cumulative for m in self.measures)
+        """Check if any selected metric is cumulative, for the cumulative pass:
+        one over a reaggregate metric is the late window pass's."""
+        return any(m.is_cumulative and not m.cumulative_over_reaggregate for m in self.measures)
 
     @property
     def has_pop(self) -> bool:

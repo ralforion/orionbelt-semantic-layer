@@ -185,6 +185,11 @@ metrics:
     windowFunction: lag
     timeDimension: Order Month
     offset: 1
+  Running Avg Customer:
+    type: cumulative
+    measure: Avg Revenue per Customer
+    timeDimension: Order Month
+    cumulativeType: sum
   Avg Customer Rank:
     type: window
     measure: Avg Revenue per Customer
@@ -874,6 +879,23 @@ def _assert_windows_over_reaggregate(target: VendorTarget, model: SemanticModel)
     )
     ranks = {r["country"]: _number(r["avg customer rank"]) for r in rows}
     assert ranks == {"FR": 1, "DE": 2, None: 3}, f"{target.name}: {ranks}"
+
+    # A cumulative over it reads past a filter on its time dimension: February
+    # alone still adds January's 28.33.
+    for where, want in (
+        ([], {"2026-01": Decimal("28.33"), "2026-02": Decimal("288.58")}),
+        (
+            [QueryFilter(field="Order Month", op=">=", value="2026-02-01")],
+            {"2026-02": Decimal("288.58")},
+        ),
+    ):
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Order Month"], measures=["Running Avg Customer"]),
+            where=where,
+        )
+        rows = _run(target, model, query)
+        running = {str(r["order month"])[:7]: _number(r["running avg customer"]) for r in rows}
+        assert running == want, f"{target.name} {bool(where)}: {running}"
 
 
 def _assert_all(target: VendorTarget) -> None:

@@ -998,6 +998,19 @@ metrics:
 !!! tip "Time filters pick the periods shown"
  A filter on the time dimension, or on another dimension over the same date column (`Order Year` next to `Order Month`), selects which periods are *shown*; it does not cut what the metric reads. Filtered to March-April, `Revenue YTD` for March still includes January and February, and a running total still starts at the first period with data. The plain measures in the same query respect the filter as usual, also when its boundary falls inside a period. A filter group counts when every filter in it is on that column, such as a date range written as one `and` group. Every other filter (another dimension, a group mixing columns, a static model filter) still limits the history. Period-over-period metrics follow the same rule: the first period shown compares with the one before it.
 
+A cumulative metric's `measure` may also name a [reaggregate metric](#reaggregate-metrics): the running, grain-to-date or rolling window then runs over the reaggregate metric's finished values per period, after its two stages:
+
+```yaml
+metrics:
+  Running Avg Customer Revenue:
+    type: cumulative
+    measure: Avg Revenue per Customer
+    timeDimension: Order Month
+    cumulativeType: sum
+```
+
+It reads past a filter on its time dimension as every cumulative metric does: shown from March, the running value still adds January and February, read from the reaggregate metric planned again without that filter. Its time dimension has to be selected (`CUMULATIVE_TIME_DIMENSION_NOT_IN_SELECT`); evaluating it as of one period is not available.
+
 ### Period-over-Period Metrics
 
 A **period-over-period metric** compares a measure against a prior time period. The `expression` references the base measure, and the `periodOverPeriod` block configures how to shift time and compute the comparison.
@@ -1177,7 +1190,7 @@ metrics:
 By `Country`, this averages revenue per customer within each country and month, then takes each country's best month.
 
 !!! tip "Composes like a measure"
-    A reaggregate metric can be selected beside any other measure or metric (other facts, totals and grain overrides, filterContext, cumulative, period-over-period and window metrics), used in `having` and `orderBy`, referenced from a derived metric: `expression: '{[Avg Revenue per Customer]} / {[Revenue]}'`, and named as a [window metric's](#window-metrics) `measure`.
+    A reaggregate metric can be selected beside any other measure or metric (other facts, totals and grain overrides, filterContext, cumulative, period-over-period and window metrics), used in `having` and `orderBy`, referenced from a derived metric: `expression: '{[Avg Revenue per Customer]} / {[Revenue]}'`, and named as a [window](#window-metrics) or [cumulative](#cumulative-metrics) metric's `measure`.
 
 Rules:
 
@@ -1198,7 +1211,7 @@ Rules:
 - If every `per` dimension is already in the query, at its grain or a finer one, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
 - An average of averages is refused (`REAGGREGATE_AVG_OF_AVG`): `aggregation: avg` over a measure with `aggregation: avg`, over a reaggregate metric with `aggregation: avg`, or over a `min`, `max`, `median`, `percentile_cont` or `percentile_disc` reaggregate metric of either, which picks one of those averages (or a point between two). Each group would count alike however many rows its average covers. A `sum` or `count` over averages is no longer an average, so `avg` over it is allowed, as are `sum`, `min`, `max`, `count`, `median` and the percentiles over an average. To average over the finer groups instead, name both dimensions in one `per`.
 - Result type: `avg` returns the model's default numeric type and is exact over integer values on every dialect; `count` returns a big integer; `sum`, `min` and `max` keep the measure's type; `median` is the exact, continuous median of the stage-1 values (the mean of the two middle ones for an even count), typed as a `median` measure is on each dialect (see [Dialects](dialects.md#median)); `percentile_cont` and `percentile_disc` take `percentile:` as the measure aggregations do and are typed as they are. A declared `dataType` wins.
-- Not available: `grouping: rollup` / `cube` (`REAGGREGATE_WITH_ROLLUP`), since each subtotal row needs a first stage of its own. A derived metric that combines a reaggregate metric with a total, grain override, filterContext, cumulative or period-over-period component in one formula, or with a window over anything but a reaggregate metric (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`); select those metrics side by side instead. A window metric over a reaggregate metric is available, and so is a formula reading one; see [Window Metrics](#window-metrics).
+- Not available: `grouping: rollup` / `cube` (`REAGGREGATE_WITH_ROLLUP`), since each subtotal row needs a first stage of its own. A derived metric that combines a reaggregate metric with a total, grain override, filterContext, cumulative or period-over-period component in one formula, or with a window over anything but a reaggregate metric (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`); select those metrics side by side instead. A window metric over a reaggregate metric is available, and so is a formula reading one; see [Window Metrics](#window-metrics). So is a [cumulative metric](#cumulative-metrics) over one.
 
 ### Metric Properties
 

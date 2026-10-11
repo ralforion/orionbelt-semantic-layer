@@ -1339,3 +1339,27 @@ class TestWindowOverReaggregate:
         ).sql
         outer = sql.rsplit('FROM "late_window_base"', 1)[0].rsplit("SELECT", 1)[1]
         assert '"Avg Revenue per Customer" - LAG("Avg Revenue per Customer", 1)' in outer
+
+
+class TestCumulativeOverReaggregate:
+    _CUMULATIVE = (
+        "  Running Avg:\n    type: cumulative\n    measure: Avg Revenue per Customer\n"
+        "    timeDimension: Order Date\n    cumulativeType: sum\n"
+    )
+
+    def test_parser_accepts_a_reaggregate_base(self) -> None:
+        _model, result = _resolve(MODEL_YAML + self._CUMULATIVE)
+        assert result.valid, result.errors
+
+    def test_running_over_the_finished_rows(self) -> None:
+        probe_model, result = _resolve(MODEL_YAML + self._CUMULATIVE)
+        assert result.valid, result.errors
+        sql = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Order Date"], measures=["Running Avg"])),
+        ).sql
+        # The cumulative pass leaves it; the late pass windows the finished
+        # column and joins the values back.
+        assert '"cumulative_base"' not in sql
+        assert '"late_cumulative_1" AS (' in sql
+        assert 'SUM("Avg Revenue per Customer") OVER (ORDER BY "Order Date"' in sql

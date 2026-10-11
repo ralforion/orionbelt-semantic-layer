@@ -87,6 +87,13 @@ _GRAIN_TRUNC_MAP: dict[GrainToDate, str] = {
 }
 
 
+def _ours(m: ResolvedMeasure) -> bool:
+    """A cumulative metric this pass computes: one over a reaggregate metric is
+    computed after the reaggregate pass (``late_window``), its column passing
+    through here like any measure's."""
+    return m.is_cumulative and not m.cumulative_over_reaggregate
+
+
 def _build_cumulative_window(
     measure: ResolvedMeasure,
     time_dim_name: str,
@@ -269,11 +276,9 @@ def wrap_with_cumulative(
 
     selected = {d.name for d in resolved.dimensions}
     cumulative_measures: list[ResolvedMeasure] = [
-        m for m in resolved.measures if m.is_cumulative and m.cumulative_time_dimension in selected
+        m for m in resolved.measures if _ours(m) and m.cumulative_time_dimension in selected
     ]
-    as_of_measures = [
-        m for m in resolved.measures if m.is_cumulative and m not in cumulative_measures
-    ]
+    as_of_measures = [m for m in resolved.measures if _ours(m) and m not in cumulative_measures]
 
     cte_name = "cumulative_base"
     over_cte = wraps_a_cte(ast)
@@ -302,7 +307,7 @@ def wrap_with_cumulative(
         for dim in resolved.dimensions:
             outer_columns.append(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
         for m in resolved.measures:
-            if m.is_cumulative:
+            if _ours(m):
                 window_expr = _window_for(m, resolved, model, dialect)
                 window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
                 outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))
@@ -358,7 +363,7 @@ def wrap_with_cumulative(
     ]
     for m in resolved.measures:
         column: Expr = ColumnRef(name=m.name)
-        if m.is_cumulative:
+        if _ours(m):
             column = _apply_metric_cast(column, m.name, model, dialect)
         outer.append(AliasedExpr(expr=column, alias=m.name))
     return Select(
@@ -392,7 +397,7 @@ def _base_query(
     CTEs split off, and read from that it looked like the planner's own output
     and re-derived the aggregate over tables it does not join.
     """
-    cumulative_names = {m.name for m in resolved.measures if m.is_cumulative}
+    cumulative_names = {m.name for m in resolved.measures if _ours(m)}
     direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
     base_columns: list[Expr] = []
     for col_node in ast.columns:
