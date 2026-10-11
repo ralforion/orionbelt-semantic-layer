@@ -35,6 +35,12 @@ _METRICS: dict[str, dict[str, Any]] = {
         "per": ["Sales Month"],
         "aggregation": "avg",
     },
+    "YTD Months": {
+        "type": "reaggregate",
+        "measure": "YTD Sales",
+        "per": ["Sales Month"],
+        "aggregation": "count",
+    },
     "Year End YTD": {
         "type": "reaggregate",
         "measure": "YTD Sales",
@@ -189,3 +195,23 @@ def test_avg_over_a_running_sum_allowed() -> None:
         }
     )
     assert errors == []
+
+
+@pytest.mark.parametrize("from_february", [False, True])
+def test_query_by_the_same_dimension_at_a_coarser_grain(run: Callable, from_february: bool) -> None:
+    """``Sales Month:year`` beside ``per: [Sales Month]``: two grains of one
+    dimension in stage 1, kept apart before the cumulative is planned, answer
+    as the separate ``Sales Year`` dimension does. Named alike, the look-back
+    joined the months by year and multiplied them (132 months for 11)."""
+    where = [QueryFilter(field="Sales Month", op=">=", value="2021-02-01")] if from_february else []
+    measures = ["Avg Monthly YTD", "YTD Months"]
+    by_year = sorted(
+        (r["Sales Year"], r["Avg Monthly YTD"], r["YTD Months"])
+        for r in run(["Sales Year"], measures, where=where)
+    )
+    same = sorted(
+        (r["Sales Month"], r["Avg Monthly YTD"], r["YTD Months"])
+        for r in run(["Sales Month:year"], measures, where=where)
+    )
+    assert [row[1:] for row in same] == [row[1:] for row in by_year]
+    assert all(row[2] <= 12 for row in same)

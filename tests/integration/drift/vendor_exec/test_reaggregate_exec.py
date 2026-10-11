@@ -920,6 +920,21 @@ def _assert_reaggregate_over_cumulative(target: VendorTarget, model: SemanticMod
     got_all = [_number(r["avg monthly running revenue"]) for r in rows]
     assert got_all == [Decimal("605.5")], f"{target.name}: {got_all}"
 
+    # By the same dimension at a coarser grain: the two columns of Order Month
+    # in stage 1 are kept apart, so February alone is one month, 1126.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Month:year"], measures=["Avg Monthly Running Revenue"]
+            ),
+            where=[QueryFilter(field="Order Month", op=">=", value="2026-02-01")],
+        ),
+    )
+    got_year = [_number(r["avg monthly running revenue"]) for r in rows]
+    assert got_year == [Decimal(1126)], f"{target.name}: {got_year}"
+
 
 def _assert_all(target: VendorTarget) -> None:
     model = _prepare(target)

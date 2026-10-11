@@ -64,6 +64,7 @@ from orionbelt.compiler.type_resolver import (
 )
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.query import (
+    CoalesceDimension,
     DimensionRef,
     QueryFilter,
     QueryObject,
@@ -74,6 +75,7 @@ from orionbelt.models.semantic import (
     DataObject,
     Measure,
     Metric,
+    MetricType,
     ReaggregateAggType,
     ReaggregateHaving,
     SemanticModel,
@@ -144,9 +146,12 @@ def _stage_one(
         ):
             continue
         added.append((entry, ref))
+    plan_model, query_dims, synthetic = _distinct_cumulative_axes(
+        measure, query.select.dimensions, [r for _, r in added], model
+    )
     sub_query = QueryObject(
         select=QuerySelect(
-            dimensions=[*query.select.dimensions, *(entry for entry, _ in added)],
+            dimensions=[*query_dims, *(entry for entry, _ in added)],
             measures=[measure],
         ),
         where=list(query.where),
@@ -159,7 +164,7 @@ def _stage_one(
     from orionbelt.compiler.pipeline import plan_in_own_right
 
     try:
-        scan, sub_resolved = plan_in_own_right(sub_query, model, dialect, qualify_table)
+        scan, sub_resolved = plan_in_own_right(sub_query, plan_model, dialect, qualify_table)
     except ResolutionError as exc:
         # The dimensions such an error names are the scan's, not the query's.
         raise ResolutionError(
@@ -178,10 +183,67 @@ def _stage_one(
     # So are its tables: a ``per`` dimension can join one the query does not,
     # and the result cache has to see it change.
     resolved.subquery_objects.update(sub_resolved.required_objects, sub_resolved.subquery_objects)
+    if synthetic:
+        scan = _rename_columns(scan, synthetic)
     named, columns = _name_per_buckets(
         scan, [d.name for d in resolved.dimensions], [r for _, r in added]
     )
     return named, {entry: column for (entry, _), column in zip(added, columns, strict=True)}
+
+
+def _distinct_cumulative_axes(
+    measure: str,
+    query_dims: list[str | CoalesceDimension],
+    refs: list[DimensionRef],
+    model: SemanticModel,
+) -> tuple[SemanticModel, list[str | CoalesceDimension], dict[str, str]]:
+    """Stage 1's model and query dimensions, with a cumulative's axes kept apart.
+
+    A ``per`` bucket of a dimension the query also groups by at another grain
+    (``per: [Order Date]`` by month, the query by ``Order Date:year``) gives two
+    columns of one name, which the planner names after the dimension. For a
+    plain measure :func:`_name_per_buckets` tells them apart after planning,
+    but a cumulative metric's windows are built while planning: its look-back
+    joined the shown months by year and multiplied the rows. So the query's
+    dimension is planned as a synthetic one at its grain - the cumulative's own
+    time dimension keeps its name, as it has to to be selected - and its column
+    is renamed back afterwards (the returned mapping).
+    """
+    metric = model.metrics.get(measure)
+    if metric is None or metric.type is not MetricType.CUMULATIVE:
+        return model, list(query_dims), {}
+    per_names = {r.name for r in refs}
+    dimensions = dict(model.dimensions)
+    planned: list[str | CoalesceDimension] = []
+    synthetic: dict[str, str] = {}
+    for entry in query_dims:
+        if not isinstance(entry, str):
+            planned.append(entry)
+            continue
+        ref = reaggregate_per_ref(model, entry)
+        declared = model.dimensions.get(ref.name)
+        if declared is None or ref.name not in per_names:
+            planned.append(entry)
+            continue
+        grain = ref.grain or declared.time_grain
+        name = f"__reaggregate_axis_{ref.name}_{grain.value if grain else 'value'}"
+        dimensions[name] = declared.model_copy(update={"name": name, "time_grain": grain})
+        planned.append(name)
+        synthetic[name] = ref.name
+    if not synthetic:
+        return model, list(query_dims), {}
+    return model.model_copy(update={"dimensions": dimensions}), planned, synthetic
+
+
+def _rename_columns(scan: Select, names: dict[str, str]) -> Select:
+    """*scan* with its projected columns aliased per *names* renamed."""
+    columns = [
+        AliasedExpr(expr=c.expr, alias=names[c.alias])
+        if isinstance(c, AliasedExpr) and c.alias in names
+        else c
+        for c in scan.columns
+    ]
+    return replace(scan, columns=columns)
 
 
 def _name_per_buckets(
