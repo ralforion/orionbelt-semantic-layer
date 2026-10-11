@@ -1931,10 +1931,10 @@ class SemanticModel(BaseModel):
     def reaggregated_measure(self, name: str) -> tuple[str, Measure] | None:
         """The measure a reaggregate metric's first stage reads, with its name.
 
-        Follows ``measure`` through nested reaggregate metrics down to the
-        measure at the bottom: that is the fact every stage reads and the
-        source of the values each one aggregates again. ``None`` when the
-        chain ends anywhere else.
+        Follows ``measure`` through nested reaggregate metrics, and a cumulative
+        metric a first stage reads, down to the measure at the bottom: that is
+        the fact every stage reads and the source of the values each one
+        aggregates again. ``None`` when the chain ends anywhere else.
         """
         seen: set[str] = set()
         measures = self.effective_measures
@@ -1942,7 +1942,7 @@ class SemanticModel(BaseModel):
             metric = self.metrics.get(name)
             if (
                 metric is None
-                or metric.type is not MetricType.REAGGREGATE
+                or metric.type not in (MetricType.REAGGREGATE, MetricType.CUMULATIVE)
                 or metric.measure is None
                 or name in seen
             ):

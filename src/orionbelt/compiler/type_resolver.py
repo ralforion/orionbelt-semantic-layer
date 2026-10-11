@@ -21,6 +21,7 @@ from orionbelt.ast.nodes import Expr, FunctionCall
 from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION, Dialect
 from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import (
+    CumulativeAggType,
     DataType,
     Measure,
     Metric,
@@ -366,6 +367,10 @@ def reaggregated_values_are_integers(model: SemanticModel, name: str) -> bool:
     if declared is not None:
         return isinstance(declared, SimpleType) and declared.name in _INTEGER_NAMES
     if metric.aggregation in _INTERPOLATING_REAGGREGATIONS:
+        return False
+    # A running average of integers is not one; the other cumulative types of
+    # integers are.
+    if metric.type is MetricType.CUMULATIVE and metric.cumulative_type is CumulativeAggType.AVG:
         return False
     return metric.measure is not None and reaggregated_values_are_integers(model, metric.measure)
 

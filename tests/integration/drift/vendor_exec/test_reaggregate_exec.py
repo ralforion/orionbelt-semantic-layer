@@ -335,6 +335,11 @@ metrics:
     type: cumulative
     measure: Revenue
     timeDimension: Order Month
+  Avg Monthly Running Revenue:
+    type: reaggregate
+    measure: Running Revenue
+    per: [Order Month]
+    aggregation: avg
   Revenue MoM:
     type: period_over_period
     expression: '{{[Revenue]}}'
@@ -898,6 +903,24 @@ def _assert_windows_over_reaggregate(target: VendorTarget, model: SemanticModel)
         assert running == want, f"{target.name} {bool(where)}: {running}"
 
 
+def _assert_reaggregate_over_cumulative(target: VendorTarget, model: SemanticModel) -> None:
+    """Stage 1 is the running revenue per month; stage 2 averages it.
+
+    By month and country the running revenue is DE 80, 81; FR 5, 1005; the
+    NULL country 40 in February alone; in all 85 and 1126.
+    """
+    got = _by_country(target, model, ["Avg Monthly Running Revenue"])
+    want = {"DE": (Decimal("80.5"),), "FR": (Decimal(505),), None: (Decimal(40),)}
+    assert got == want, f"{target.name}: {got}"
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(measures=["Avg Monthly Running Revenue"])),
+    )
+    got_all = [_number(r["avg monthly running revenue"]) for r in rows]
+    assert got_all == [Decimal("605.5")], f"{target.name}: {got_all}"
+
+
 def _assert_all(target: VendorTarget) -> None:
     model = _prepare(target)
     _assert_grouped(target, model)
@@ -913,6 +936,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_exact_integer_average(target, model)
     _assert_first_last_month(target, model)
     _assert_windows_over_reaggregate(target, model)
+    _assert_reaggregate_over_cumulative(target, model)
 
 
 def test_duckdb_reaggregate(vendor_duckdb: VendorTarget) -> None:

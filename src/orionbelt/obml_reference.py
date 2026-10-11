@@ -435,7 +435,10 @@ the final rows. Select it beside other measures (other facts too), in `having` a
 
 - `measure:` a measure; its `total`, `grain`, `filterContext` and dedup apply
   in stage 1, at the query's dimensions plus `per`. Or another reaggregate
-  metric, which then is stage 1 with its own two stages (a cycle is refused)
+  metric, which then is stage 1 with its own two stages (a cycle is refused).
+  Or a cumulative metric, whose `timeDimension` `per` must name
+  (`REAGGREGATE_CUMULATIVE_TIME_DIMENSION`): the average or last month-end
+  YTD per year
 - `having:` optional conditions on stage-1 groups (`field`/`op`/`value`, as a
   query filter); `field` is a measure computed in stage 1, not a metric
   (`REAGGREGATE_HAVING_MEASURE_ONLY`). No group left: NULL, or 0 for `count`
