@@ -46,8 +46,13 @@ from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import null_safe_eq
 from orionbelt.compiler.type_resolver import resolve_metric_data_type
 from orionbelt.compiler.window_wrap import _apply_metric_cast, _build_window_call
-from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryObject, QuerySelect
-from orionbelt.models.semantic import FilterLogic
+from orionbelt.models.query import (
+    FilterOperator,
+    QueryFilter,
+    QueryFilterGroup,
+    QueryObject,
+    QuerySelect,
+)
 
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
@@ -212,6 +217,7 @@ def _cumulative_ctes(
     from orionbelt.compiler.reaggregate_wrap import _own_cte_names
 
     dim_names = [d.name for d in resolved.dimensions]
+    late_names = {m.name for m in resolved.measures if is_late(m, resolved.metric_components)}
     ctes: list[CTE] = []
     value_of: dict[str, str] = {}
     for index, m in enumerate(cumulatives, 1):
@@ -225,6 +231,7 @@ def _cumulative_ctes(
                     dimensions=list(query.select.dimensions), measures=[m.cumulative_measure]
                 ),
                 where=where,
+                having=_shown_rows_having(list(query.having), late_names),
                 use_path_names=list(query.use_path_names),
                 allow_fan_out=query.allow_fan_out,
             )
@@ -281,39 +288,52 @@ def _without_axis(
     resolved: ResolvedQuery,
     model: SemanticModel,
 ) -> list[QueryFilter | QueryFilterGroup]:
-    """*filters* without those on the time dimension's own column.
+    """*filters* without those that only pick periods of the time dimension.
 
-    "Own column" as the cumulative pass's ``time_filters`` reads it: the
-    dimension, or any dimension or qualified column over the same date column.
-    An ``and`` group is filtered item by item; an ``or`` group is kept unless
-    every item in it is on the time axis.
+    The rule the cumulative pass's ``time_filters`` applies to the resolved
+    filters, at the query's: a top-level filter is a time filter when every
+    leaf in it tests the time dimension's own column (the dimension, or any
+    dimension or qualified column over the same date column), whatever its
+    logic or negation; a group mixing columns is not one, and is never split,
+    since removing part of a negated group changes what the rest means. An
+    ``exists`` / ``nonexists`` filter tests a relationship, not a period, and
+    always stays.
     """
     time_dim = next((d for d in resolved.dimensions if d.name == time_dim_name), None)
     if time_dim is None or time_dim.via is not None:
         return list(filters)
     axis = (time_dim.object_name, time_dim.column_name)
 
-    def on_axis(field: str) -> bool:
-        name = field.split(":", 1)[0]
+    def subject(item: QueryFilter | QueryFilterGroup) -> tuple[str, str] | None:
+        if isinstance(item, QueryFilterGroup):
+            subjects = {subject(child) for child in item.filters}
+            return next(iter(subjects)) if len(subjects) == 1 else None
+        if item.op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
+            return None
+        name = item.field.split(":", 1)[0]
         dimension = model.dimensions.get(name)
         if dimension is not None:
-            return dimension.via is None and (dimension.view, dimension.column) == axis
-        if "." in field:
-            obj, col = (part.strip() for part in field.split(".", 1))
-            return (obj, col) == axis
-        return False
+            if dimension.via is not None or dimension.view is None or dimension.column is None:
+                return None
+            return (dimension.view, dimension.column)
+        if "." in item.field:
+            obj, col = (part.strip() for part in item.field.split(".", 1))
+            return (obj, col)
+        return None
 
-    def keep(item: QueryFilter | QueryFilterGroup) -> QueryFilter | QueryFilterGroup | None:
-        if isinstance(item, QueryFilter):
-            return None if on_axis(item.field) else item
-        kept = [k for k in (keep(child) for child in item.filters) if k is not None]
-        if item.logic is FilterLogic.AND:
-            return replace_group(item, kept) if kept else None
-        return None if not kept else item
+    return [f for f in filters if subject(f) != axis]
 
-    def replace_group(
-        group: QueryFilterGroup, filters: list[QueryFilter | QueryFilterGroup]
-    ) -> QueryFilterGroup:
-        return group.model_copy(update={"filters": filters})
 
-    return [k for k in (keep(f) for f in filters) if k is not None]
+def _shown_rows_having(
+    having: list[QueryFilter | QueryFilterGroup], late_names: set[str]
+) -> list[QueryFilter | QueryFilterGroup]:
+    """The query's HAVING for the look-back: it picks which periods there are,
+    so the look-back keeps it, but a condition on a late metric filters the
+    shown rows once that metric is finished, and is left out here."""
+
+    def mentions_late(item: QueryFilter | QueryFilterGroup) -> bool:
+        if isinstance(item, QueryFilterGroup):
+            return any(mentions_late(child) for child in item.filters)
+        return item.field in late_names
+
+    return [h for h in having if not mentions_late(h)]

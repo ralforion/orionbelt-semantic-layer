@@ -20,7 +20,14 @@ duckdb = pytest.importorskip("duckdb")
 
 from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
 from orionbelt.compiler.resolution import ResolutionError  # noqa: E402
-from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect  # noqa: E402
+from orionbelt.models.query import (  # noqa: E402
+    FilterOperator,
+    QueryFilter,
+    QueryFilterGroup,
+    QueryObject,
+    QuerySelect,
+    Subquery,
+)
 from orionbelt.models.semantic import SemanticModel  # noqa: E402
 from orionbelt.parser.loader import TrackedLoader  # noqa: E402
 from orionbelt.parser.resolver import ReferenceResolver  # noqa: E402
@@ -157,3 +164,53 @@ def test_without_its_time_dimension_refused(model: SemanticModel) -> None:
         ResolutionError, match="CUMULATIVE_TIME_DIMENSION_NOT_IN_SELECT|timeDimension"
     ):
         CompilationPipeline().compile(query, model, "duckdb")
+
+
+def test_having_kept_when_reading_past_the_time_filter(run: Callable) -> None:
+    """HAVING picks the periods there are: a time bound that removes nothing
+    must not bring back a month it excluded."""
+    having = [QueryFilter(field="Total Sales", op=">", value=300000)]
+    plain = run(["Sales Month"], ["Running Avg Client"], having=having)
+    bound = [QueryFilter(field="Sales Month", op=">=", value="2000-01-01")]
+    bounded = run(["Sales Month"], ["Running Avg Client"], having=having, where=bound)
+    assert {r["Sales Month"]: r["Running Avg Client"] for r in bounded} == {
+        r["Sales Month"]: r["Running Avg Client"] for r in plain
+    }
+    assert len(plain) < len(_series(run, [])[()])
+
+
+def test_negated_mixed_group_kept(run: Callable) -> None:
+    """``NOT (before March AND Germany)`` is no time filter: split, it read as
+    ``NOT Germany`` and dropped valid rows."""
+    group = QueryFilterGroup(
+        negated=True,
+        filters=[
+            QueryFilter(field="Sales Month", op="<", value="2021-03-01"),
+            QueryFilter(field="Country Name", op="=", value="Germany"),
+        ],
+    )
+    want = _running(_series(run, [], where=[group])[()])
+    rows = run(["Sales Month"], ["Running Avg Client"], where=[group])
+    assert {r["Sales Month"]: r["Running Avg Client"] for r in rows} == want
+
+
+def test_time_filter_classification(model: SemanticModel) -> None:
+    from orionbelt.compiler.late_window import _without_axis
+    from orionbelt.compiler.resolution import QueryResolver
+
+    query = QueryObject(select=QuerySelect(dimensions=["Sales Month"], measures=["Total Sales"]))
+    resolved = QueryResolver().resolve(query, model)
+    on_time = QueryFilter(field="Sales Month", op=">=", value="2021-03-01")
+    other_grain = QueryFilter(field="Sales Year", op="=", value=2021)
+    other = QueryFilter(field="Country Name", op="=", value="Germany")
+    time_group = QueryFilterGroup(negated=True, filters=[on_time, other_grain])
+    mixed = QueryFilterGroup(filters=[on_time, other])
+    exists = QueryFilter(
+        field="Sales Date",
+        op=FilterOperator.EXISTS,
+        subquery=Subquery(data_object="Clients"),
+    )
+    kept = _without_axis(
+        [on_time, other_grain, other, time_group, mixed, exists], "Sales Month", resolved, model
+    )
+    assert kept == [other, mixed, exists]
