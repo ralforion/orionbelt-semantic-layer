@@ -54,6 +54,7 @@ _METRICS: dict[str, dict[str, Any]] = {
     "Sales Rank": {"type": "window", "measure": "Total Sales", "windowFunction": "rank"},
     "Mixed": {"expression": "{[Prior Avg Client]} - {[Sales Rank]}"},
     "Prior Doubled": {"expression": "{[Prior Avg Client]} * 2"},
+    "Rank Plus One": {"expression": "{[Avg Client Rank]} + 1"},
     # Over a measure the totals pass finishes.
     "Prior Share": {"expression": "{[Prior Avg Client]} / {[Grand Total Sales]}"},
 }
@@ -211,3 +212,13 @@ def test_having_on_a_formula_over_the_window(run: Callable, formula: str) -> Non
     rows = run(["Sales Month"], [formula], having=[QueryFilter(field=formula, op=">", value=0)])
     assert [(r["Sales Month"], r[formula]) for r in rows] == want
     assert want
+
+
+@pytest.mark.parametrize("measure", ["Avg Client Rank", "Rank Plus One"])
+@pytest.mark.parametrize("country", [None, "nowhere"])
+def test_without_dimensions_one_row(run: Callable, measure: str, country: str | None) -> None:
+    """One aggregate row, over source rows or none: the late metric's placeholder
+    must not leave the reaggregate pass a base that scans the facts ungrouped."""
+    where = [QueryFilter(field="Country Name", op="=", value=country)] if country else []
+    rows = run([], [measure], where=where)
+    assert len(rows) == 1, rows

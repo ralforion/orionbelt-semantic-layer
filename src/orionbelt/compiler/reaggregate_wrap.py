@@ -549,7 +549,13 @@ def wrap_with_reaggregate(
         groups.setdefault(key, []).append(m)
 
     ctes = list(ast.ctes)
-    base_columns = [c for c in ast.columns if _alias(c) not in names | split.keys()]
+    # A window over a reaggregate metric, or a formula reading one, is finished
+    # by the late window pass; here it is a constant in the outer projection.
+    # Kept in the base, it was the base's only column for a query selecting
+    # nothing else, which then scanned the fact rows ungrouped: one result row
+    # per source row rather than the single one, and none over no rows.
+    late = {m.name for m in resolved.measures if is_late(m, resolved.metric_components)}
+    base_columns = [c for c in ast.columns if _alias(c) not in names | split.keys() | late]
     # With no dimensions and nothing else selected the base projects nothing;
     # each stage-2 CTE is then the one row the query returns.
     keep_base = bool(base_columns)
@@ -621,6 +627,8 @@ def wrap_with_reaggregate(
         return value
 
     def read(alias: str) -> Expr:
+        if alias in late:
+            return _late_placeholder()
         if alias in split:
             # Assembled in the outer projection, so it is read by its alias.
             return ColumnRef(name=alias)
