@@ -43,6 +43,7 @@ from orionbelt.dialect.base import Dialect
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import (
     TWO_COLUMN_AGGREGATIONS,
+    DataColumnRef,
     DataObjectColumn,
     Measure,
     SemanticModel,
@@ -101,6 +102,26 @@ def is_multi_field(measure: ResolvedMeasure) -> bool:
     return isinstance(measure.aggregate, FunctionCall) and len(measure.aggregate.args) > 1
 
 
+def _source_column(ref: DataColumnRef, model: SemanticModel) -> DataObjectColumn | None:
+    obj = model.data_objects.get(ref.view) if ref.view else None
+    return obj.columns.get(ref.column) if obj and ref.column else None
+
+
+def resolve_sort_key_type(measure: ResolvedMeasure, model: SemanticModel) -> str | None:
+    """The type of the sort key a leg carries for *measure*, for its NULL pads.
+
+    Untyped, the pads of the legs that do not own the measure came first in a
+    union of three and Postgres resolved the column as text, which a date key
+    from the owning leg then could not join (``UNION types text and date
+    cannot be matched``).
+    """
+    model_measure = model.effective_measures.get(measure.name)
+    if model_measure is None or model_measure.within_group is None:
+        return None
+    column = _source_column(model_measure.within_group.column, model)
+    return column.abstract_type.value if column is not None else None
+
+
 def resolve_null_type_for_field(
     measure: ResolvedMeasure,
     field_idx: int,
@@ -153,13 +174,16 @@ def resolve_null_type_for_field(
             if obj and ref.column in obj.columns:
                 return obj.columns[ref.column].abstract_type.value
         return model_measure.result_type.value
-    # Single-/zero-column passthrough: pad with the source column's
-    # native type so UNION ALL legs agree (raw column, not aggregate).
-    if is_passthrough_style and len(model_measure.columns) == 1:
-        ref = model_measure.columns[0]
-        obj = model.data_objects.get(ref.view) if ref.view else None
-        if obj and ref.column in obj.columns:
-            return obj.columns[ref.column].abstract_type.value
+    # A single column the legs project raw: a passthrough's, or one that is
+    # not a number at all. A text or temporal value aggregated by min / max /
+    # first / last / mode keeps its own type; aligned on the numeric default it
+    # was cast to FLOAT, which no engine does to a string or a date.
+    if len(model_measure.columns) == 1:
+        column = _source_column(model_measure.columns[0], model)
+        if column is not None and (
+            is_passthrough_style or column.abstract_type.value not in ("int", "float")
+        ):
+            return column.abstract_type.value
     # Numeric aggregates: align padding with the outer CAST target.
     if dialect is not None and len(model_measure.columns) <= 1:
         resolved = resolve_measure_data_type(model_measure, model.settings)

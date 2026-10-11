@@ -32,6 +32,13 @@ pytestmark = pytest.mark.docker
 
 TABLE = "first_last_values"
 
+#: The other tables of the multi-fact query: the groups every fact joins to,
+#: and two more facts, so the measures' column has three UNION legs.
+GROUPS, OTHER, MORE = "first_last_groups", "first_last_other", "first_last_more"
+GROUP_ROWS = [("A",), ("B",), ("C",), ("D",)]
+OTHER_ROWS = [("A", 1), ("B", 2)]
+MORE_ROWS = [("A", 10), ("D", 20)]
+
 SCHEMAS = {
     "bigquery": SEED_SCHEMA,
     "snowflake": SEED_SCHEMA,
@@ -74,18 +81,51 @@ MODEL_YAML = """
 version: "1.0"
 name: first_last_vendor
 dataObjects:
+  Groups:
+    code: {groups}
+    schema: '{schema}'
+    columns:
+      Group: {{code: grp, abstractType: string}}
   Values:
     code: {table}
     schema: '{schema}'
     columns:
-      Group: {{code: grp, abstractType: string}}
+      Value Group: {{code: grp, abstractType: string}}
       Seq: {{code: seq, abstractType: int}}
       Value: {{code: val, abstractType: int}}
       Label: {{code: label, abstractType: string}}
       Day: {{code: day, abstractType: date}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Groups, columnsFrom: [Value Group], columnsTo: [Group]}}
+  Other:
+    code: {other}
+    schema: '{schema}'
+    columns:
+      Other Group: {{code: grp, abstractType: string}}
+      Amount: {{code: amt, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Groups, columnsFrom: [Other Group], columnsTo: [Group]}}
+  More:
+    code: {more}
+    schema: '{schema}'
+    columns:
+      More Group: {{code: grp, abstractType: string}}
+      Amount: {{code: amt, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Groups, columnsFrom: [More Group], columnsTo: [Group]}}
 dimensions:
-  Group: {{dataObject: Values, column: Group, resultType: string}}
+  Group: {{dataObject: Groups, column: Group, resultType: string}}
 measures:
+  Other Total:
+    columns: [{{dataObject: Other, column: Amount}}]
+    aggregation: sum
+  More Total:
+    columns: [{{dataObject: More, column: Amount}}]
+    aggregation: sum
+  Last Day:
+    columns: [{{dataObject: Values, column: Day}}]
+    aggregation: last
+    withinGroup: {{column: {{dataObject: Values, column: Seq}}}}
   Last Value:
     columns: [{{dataObject: Values, column: Value}}]
     aggregation: last
@@ -143,16 +183,39 @@ def _prepare(target: VendorTarget) -> SemanticModel:
         )
         for row in ROWS
     )
-    engine = " ENGINE = Memory" if target.dialect == "clickhouse" else ""
-    for statement in (f"DROP TABLE IF EXISTS {ref}", f"CREATE TABLE {ref}{engine} AS {legs}"):
-        # DDL returns no cursor description for the fixture to read.
-        with contextlib.suppress(TypeError):
-            target.execute(statement)
-    yaml_text = MODEL_YAML.format(table=TABLE, schema=schema or "")
+    _create(target, ref, legs)
+    for name, rows, types in (
+        (GROUPS, GROUP_ROWS, (("grp", text),)),
+        (OTHER, OTHER_ROWS, (("grp", text), ("amt", integer))),
+        (MORE, MORE_ROWS, (("grp", text), ("amt", integer))),
+    ):
+        table = dialect.quote_identifier(name)
+        if schema:
+            table = f"{dialect.quote_identifier(schema)}.{table}"
+        select = " UNION ALL ".join(
+            "SELECT "
+            + ", ".join(
+                f"{_literal(value, type_name)} AS {dialect.quote_identifier(column)}"
+                for value, (column, type_name) in zip(row, types, strict=True)
+            )
+            for row in rows
+        )
+        _create(target, table, select)
+    yaml_text = MODEL_YAML.format(
+        table=TABLE, groups=GROUPS, other=OTHER, more=MORE, schema=schema or ""
+    )
     raw, source_map = TrackedLoader().load_string(yaml_text)
     model, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     return model
+
+
+def _create(target: VendorTarget, ref: str, select: str) -> None:
+    engine = " ENGINE = Memory" if target.dialect == "clickhouse" else ""
+    for statement in (f"DROP TABLE IF EXISTS {ref}", f"CREATE TABLE {ref}{engine} AS {select}"):
+        # DDL returns no cursor description for the fixture to read.
+        with contextlib.suppress(TypeError):
+            target.execute(statement)
 
 
 def _run(
@@ -181,6 +244,27 @@ def _assert_all(target: VendorTarget) -> None:
         "D": (9007199254740993, 1, "big", 9007199254740993, 1),
     }
     assert got == want, f"{target.name}: {got}"
+
+    # Beside two other facts, the measures' value and sort-key columns have three
+    # UNION legs, the first two padding them: text and dates keep their type
+    # rather than the numeric default, and the pads are typed as the key.
+    multi = ["Other Total", "More Total", "Last Label", "Last Day", "Last Value"]
+    rows = _run(target, model, ["Group"], multi)
+    got_multi = {
+        r["group"]: tuple(
+            str(r[m.lower()])[:10] if m == "Last Day" and r[m.lower()] else r[m.lower()]
+            for m in multi
+        )
+        for r in rows
+    }
+    want_multi = {
+        "A": (1, 10, "seven", "2026-03-01", 7),
+        "B": (2, None, "four", "2026-02-01", 4),
+        # C's one row has a day but no value.
+        "C": (None, None, None, "2026-01-01", None),
+        "D": (None, 20, "big", "2026-05-01", 9007199254740993),
+    }
+    assert got_multi == want_multi, f"{target.name}: {got_multi}"
 
     # Inside a formula the value is one operand.
     rows = _run(target, model, ["Group"], ["Last Doubled"], [_group("A")])

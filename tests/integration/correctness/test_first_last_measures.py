@@ -35,13 +35,23 @@ _MEASURES = {
     }
     for aggregation in ("first", "last")
 }
+#: A text and a date value: in a multi-fact query their UNION legs keep the
+#: column's type, not the numeric default (FLOAT, which neither converts to).
+_TYPED = {
+    f"Last {column}": {
+        "columns": [{"dataObject": "Sales", "column": column}],
+        "aggregation": "last",
+        "withinGroup": {"column": {"dataObject": "Sales", "column": "Sales Date"}},
+    }
+    for column in ("Product", "Sales Date")
+}
 
 
 @pytest.fixture(scope="module")
 def model() -> SemanticModel:
     _require_seed()
     raw, source_map = TrackedLoader().load(COMMERCE_MODEL_YAML)
-    raw["measures"].update(_MEASURES)
+    raw["measures"].update({**_MEASURES, **_TYPED})
     raw["dimensions"]["Sale ID"] = {
         "dataObject": "Sales",
         "column": "Sales ID",
@@ -96,6 +106,17 @@ def test_beside_another_fact(run: Callable, reference: dict) -> None:
     """The ``UNION ALL`` legs carry the sale date; the outer query orders by it."""
     rows = run(["Country Name"], [*_MEASURES, "Total Purchases"])
     _check([r for r in rows if r["Country Name"] in reference], reference)
+
+
+def test_text_and_dates_beside_two_other_facts(run: Callable) -> None:
+    """Three UNION legs, the first two padding the value and its sort key."""
+    alone = {r["Country Name"]: r for r in run(["Country Name"], list(_TYPED))}
+    rows = run(["Country Name"], ["Total Purchases", "Total Returns", *_TYPED])
+    beside = {r["Country Name"]: r for r in rows if r["Country Name"] in alone}
+    assert beside.keys() == alone.keys()
+    for country, row in alone.items():
+        assert {n: beside[country][n] for n in _TYPED} == {n: row[n] for n in _TYPED}
+    assert any(isinstance(r["Last Product"], str) for r in alone.values())
 
 
 def test_under_a_query_filter(run: Callable, reference: dict) -> None:
