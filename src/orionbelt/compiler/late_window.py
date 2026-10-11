@@ -71,7 +71,14 @@ def wrap_with_late_window(
     ORDER BY, LIMIT and OFFSET and the outer query applies them, as the window
     pass does.
     """
-    components = resolved.metric_components
+    # The placeholders every pass before this one read give way to the real
+    # formulas, for the formulas selected and those nested in them.
+    components = {
+        name: replace(c, expression=c.deferred_expression)
+        if c.deferred_expression is not None
+        else c
+        for name, c in resolved.metric_components.items()
+    }
     late = [m for m in resolved.measures if is_late(m, components)]
     if not late:
         return ast
@@ -96,7 +103,8 @@ def wrap_with_late_window(
         if m.window_over_reaggregate:
             value = window_over(m)
         elif m in late:
-            value = expand_metric_expression(m.expression, components, value_of)
+            formula = m.deferred_expression if m.deferred_expression is not None else m.expression
+            value = expand_metric_expression(formula, components, value_of)
             metric = model.metrics.get(m.name) if model is not None else None
             if metric is not None and dialect is not None:
                 target = resolve_metric_data_type(metric, model.settings if model else None)

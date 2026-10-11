@@ -53,6 +53,9 @@ _METRICS: dict[str, dict[str, Any]] = {
     # A plain window beside: still the window pass's.
     "Sales Rank": {"type": "window", "measure": "Total Sales", "windowFunction": "rank"},
     "Mixed": {"expression": "{[Prior Avg Client]} - {[Sales Rank]}"},
+    "Prior Doubled": {"expression": "{[Prior Avg Client]} * 2"},
+    # Over a measure the totals pass finishes.
+    "Prior Share": {"expression": "{[Prior Avg Client]} / {[Grand Total Sales]}"},
 }
 
 
@@ -61,6 +64,11 @@ def model() -> SemanticModel:
     _require_seed()
     raw, source_map = TrackedLoader().load(COMMERCE_MODEL_YAML)
     raw["metrics"].update(_METRICS)
+    raw["measures"]["Grand Total Sales"] = {
+        "columns": [{"dataObject": "Sales", "column": "Sales Amount"}],
+        "aggregation": "sum",
+        "total": True,
+    }
     resolved, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     return resolved
@@ -166,3 +174,40 @@ def test_formula_mixing_a_plain_window(run: Callable) -> None:
     for r in rows:
         prior, rank = finished[r["Sales Month"]]
         assert r["Mixed"] == (None if prior is None else prior - rank), r
+
+
+def _by(rows: list[dict[str, Any]], key: str) -> dict[Any, dict[str, Any]]:
+    return {r[key]: r for r in rows}
+
+
+def test_beside_a_period_over_period_metric(run: Callable) -> None:
+    """Period-over-period rebuilds its columns from the resolution: the late
+    metrics are placeholders there, finished after the reaggregate pass."""
+    alone = _by(run(["Sales Month"], ["Avg Client Change", "Prior Avg Client"]), "Sales Month")
+    pop = _by(run(["Sales Month"], ["Sales MoM Change"]), "Sales Month")
+    rows = run(["Sales Month"], ["Avg Client Change", "Prior Avg Client", "Sales MoM Change"])
+    for r in rows:
+        month = r["Sales Month"]
+        assert r["Avg Client Change"] == alone[month]["Avg Client Change"], month
+        assert r["Prior Avg Client"] == alone[month]["Prior Avg Client"], month
+        assert r["Sales MoM Change"] == pop[month]["Sales MoM Change"], month
+
+
+def test_formula_over_a_total_measure(run: Callable) -> None:
+    prior = _by(run(["Sales Month"], ["Prior Avg Client"]), "Sales Month")
+    total = run(["Sales Month"], ["Grand Total Sales"])[0]["Grand Total Sales"]
+    for r in run(["Sales Month"], ["Prior Share"]):
+        value = prior[r["Sales Month"]]["Prior Avg Client"]
+        want = None if value is None else round(value / total, 6)
+        assert r["Prior Share"] == want, r
+
+
+@pytest.mark.parametrize("formula", ["Prior Doubled", "Mixed"])
+def test_having_on_a_formula_over_the_window(run: Callable, formula: str) -> None:
+    """The predicate waits for the late window pass, as it does for any
+    window: before it, the formula is a placeholder."""
+    unfiltered = run(["Sales Month"], [formula])
+    want = [(r["Sales Month"], r[formula]) for r in unfiltered if (r[formula] or 0) > 0]
+    rows = run(["Sales Month"], [formula], having=[QueryFilter(field=formula, op=">", value=0)])
+    assert [(r["Sales Month"], r[formula]) for r in rows] == want
+    assert want

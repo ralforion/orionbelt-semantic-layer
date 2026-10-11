@@ -591,6 +591,11 @@ class ResolvedMeasure:
     # A window over a reaggregate metric: computed after the reaggregate pass,
     # over its finished rows (``late_window``), not by the window pass.
     window_over_reaggregate: bool = False
+    # A formula over such a window keeps its expression here while its
+    # ``expression`` is a placeholder for every pass before the late window
+    # pass: a wrapper that rebuilds a column from the resolution (period-over-
+    # period, totals) would otherwise read the unfinished reaggregate column.
+    deferred_expression: Expr | None = None
     # Reaggregate metric fields: the measure is computed at the query grain plus
     # ``reaggregate_per``, then aggregated again by ``reaggregate_aggregation``
     is_reaggregate: bool = False

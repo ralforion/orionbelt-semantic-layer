@@ -111,6 +111,7 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
     wrong.
     """
     # Local imports: both modules import this one for the split.
+    from orionbelt.compiler.late_window import is_late
     from orionbelt.compiler.total_wrap import (
         _metrics_with_total_components,
         _needs_window_wrap,
@@ -134,6 +135,9 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
             # one. Not a window, but finished by a wrapper all the same, so a
             # predicate on it is held back until the value exists.
             or measure.is_reaggregate
+            # late_window: a window over a reaggregate metric, or a formula
+            # reading one, finished after the reaggregate pass.
+            or is_late(measure, resolved.metric_components)
             or any(
                 c.is_reaggregate
                 for c in metric_leaf_components(measure, resolved.metric_components)
