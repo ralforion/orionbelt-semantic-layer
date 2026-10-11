@@ -40,6 +40,7 @@ from orionbelt.ast.nodes import (
     Select,
     Unnest,
 )
+from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression, metric_leaf_components
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
@@ -217,7 +218,10 @@ def _cumulative_ctes(
     from orionbelt.compiler.reaggregate_wrap import _own_cte_names
 
     dim_names = [d.name for d in resolved.dimensions]
-    late_names = {m.name for m in resolved.measures if is_late(m, resolved.metric_components)}
+    # A HAVING the main query evaluates after a wrapper finished its value - a
+    # reaggregate, cumulative, window or total - filters the shown rows, not
+    # the periods read: the having hoist's own classification says which.
+    deferred = windowed_aliases(resolved)
     ctes: list[CTE] = []
     value_of: dict[str, str] = {}
     for index, m in enumerate(cumulatives, 1):
@@ -231,7 +235,7 @@ def _cumulative_ctes(
                     dimensions=list(query.select.dimensions), measures=[m.cumulative_measure]
                 ),
                 where=where,
-                having=_shown_rows_having(list(query.having), late_names),
+                having=_periods_having(list(query.having), deferred),
                 use_path_names=list(query.use_path_names),
                 allow_fan_out=query.allow_fan_out,
             )
@@ -324,16 +328,18 @@ def _without_axis(
     return [f for f in filters if subject(f) != axis]
 
 
-def _shown_rows_having(
-    having: list[QueryFilter | QueryFilterGroup], late_names: set[str]
+def _periods_having(
+    having: list[QueryFilter | QueryFilterGroup], deferred: set[str]
 ) -> list[QueryFilter | QueryFilterGroup]:
-    """The query's HAVING for the look-back: it picks which periods there are,
-    so the look-back keeps it, but a condition on a late metric filters the
-    shown rows once that metric is finished, and is left out here."""
+    """The query's HAVING for the look-back: the conditions evaluated in the
+    grouped query pick which periods there are, so the look-back keeps them;
+    one on a value a wrapper finishes (*deferred*, the having hoist's
+    ``windowed_aliases``) filters the shown rows afterwards, and is left out.
+    A group mentioning one is hoisted whole, so it is left out whole."""
 
-    def mentions_late(item: QueryFilter | QueryFilterGroup) -> bool:
+    def mentions(item: QueryFilter | QueryFilterGroup) -> bool:
         if isinstance(item, QueryFilterGroup):
-            return any(mentions_late(child) for child in item.filters)
-        return item.field in late_names
+            return any(mentions(child) for child in item.filters)
+        return item.field in deferred
 
-    return [h for h in having if not mentions_late(h)]
+    return [h for h in having if not mentions(h)]

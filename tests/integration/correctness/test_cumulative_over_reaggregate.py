@@ -214,3 +214,24 @@ def test_time_filter_classification(model: SemanticModel) -> None:
         [on_time, other_grain, other, time_group, mixed, exists], "Sales Month", resolved, model
     )
     assert kept == [other, mixed, exists]
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        # Evaluated after the reaggregate pass, on the shown rows.
+        QueryFilter(field=_AVG, op=">", value=8000),
+        # Evaluated after the cumulative pass, on the shown rows.
+        QueryFilter(field="Cumulative Sales", op=">", value=1000000),
+    ],
+)
+def test_deferred_having_stays_out_of_the_look_back(run: Callable, condition: QueryFilter) -> None:
+    """A HAVING on a value a wrapper finishes filters the rows shown, not the
+    periods read: a time bound that removes nothing changes nothing."""
+    plain = run(["Sales Month"], ["Running Avg Client"], having=[condition])
+    bound = [QueryFilter(field="Sales Month", op=">=", value="2000-01-01")]
+    bounded = run(["Sales Month"], ["Running Avg Client"], having=[condition], where=bound)
+    assert {r["Sales Month"]: r["Running Avg Client"] for r in bounded} == {
+        r["Sales Month"]: r["Running Avg Client"] for r in plain
+    }
+    assert 0 < len(plain) < len(_series(run, [])[()])
