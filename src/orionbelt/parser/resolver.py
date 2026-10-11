@@ -1113,6 +1113,7 @@ class ReferenceResolver:
                         ref_measure
                         and ref_measure not in measures
                         and ref_measure not in synthesized_measure_names
+                        and not _is_reaggregate(raw_metrics.get(ref_measure))
                     ):
                         span = source_map.get(f"metrics.{name}.measure") if source_map else None
                         errors.append(

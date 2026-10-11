@@ -367,9 +367,13 @@ def resolve_cumulative_metric(
         )
         return None
 
-    # Validate referenced measure exists
+    # A reaggregate metric as the base: its values exist only once the
+    # reaggregate pass has run, so the window is computed after it, over the
+    # finished rows or, past a time filter, the query planned without it.
+    base_metric = ctx.model.metrics.get(metric.measure)
+    over_reaggregate = base_metric is not None and base_metric.type is MetricType.REAGGREGATE
     base_measure = ctx.model.effective_measures.get(metric.measure)
-    if base_measure is None:
+    if base_measure is None and not over_reaggregate:
         ctx.errors.append(
             SemanticError(
                 code="UNKNOWN_MEASURE",
@@ -400,6 +404,20 @@ def resolve_cumulative_metric(
     # period (``cumulative_wrap``). A rolled-up query has subtotal rows, which
     # have no single group to evaluate it for.
     dim_names = {d.name for d in ctx.result.dimensions}
+    if over_reaggregate and metric.time_dimension not in dim_names:
+        ctx.errors.append(
+            SemanticError(
+                code="CUMULATIVE_TIME_DIMENSION_NOT_IN_SELECT",
+                message=(
+                    f"Cumulative metric '{name}' over the reaggregate metric "
+                    f"'{metric.measure}' requires timeDimension '{metric.time_dimension}' "
+                    f"to be in the query's selected dimensions"
+                ),
+                path=f"metrics.{name}.timeDimension",
+                hint="Select the time dimension; as of one period is not available here.",
+            )
+        )
+        return None
     if metric.time_dimension not in dim_names and ctx.result.grouping is not None:
         ctx.errors.append(
             SemanticError(
@@ -426,7 +444,11 @@ def resolve_cumulative_metric(
 
     # Resolve the base measure as a component (reuse existing resolution)
     if metric.measure not in ctx.result.metric_components:
-        comp = resolver._resolve_measure(ctx, metric.measure)
+        comp = (
+            resolver._resolve_metric(ctx, metric.measure, base_metric)
+            if over_reaggregate and base_metric is not None
+            else resolver._resolve_measure(ctx, metric.measure)
+        )
         if comp:
             ctx.result.metric_components[metric.measure] = comp
 
@@ -434,11 +456,12 @@ def resolve_cumulative_metric(
     # The actual window function is built during the cumulative_wrap phase
     return ResolvedMeasure(
         name=name,
-        aggregation=base_measure.aggregation,
+        aggregation=base_measure.aggregation if base_measure is not None else "",
         expression=ColumnRef(name=metric.measure),
         is_expression=True,
         component_measures=[metric.measure],
         is_cumulative=True,
+        cumulative_over_reaggregate=over_reaggregate,
         cumulative_measure=metric.measure,
         cumulative_time_dimension=metric.time_dimension,
         cumulative_type=metric.cumulative_type,

@@ -457,7 +457,9 @@ the final rows. Select it beside other measures (other facts too), in `having` a
   cumulative, period-over-period and window ones
 - A window metric may name it as its `measure`: the window runs over its
   finished values (lag / rank of the average customer), and a formula reading
-  that window is computed over the finished rows too
+  that window is computed over the finished rows too. So may a cumulative
+  metric (running / YTD / rolling of the average customer), reading past a
+  time filter as usual; its time dimension must be selected
 - Refused: `grouping: rollup/cube`, and a derived formula combining it with a
   total/grain, filterContext, cumulative or PoP component, or a window over
   anything else (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`; select them side by

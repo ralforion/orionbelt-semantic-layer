@@ -244,7 +244,9 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
             # A window over a reaggregate metric, and a formula reading one,
             # over the rows the reaggregate pass finished.
             applies=late_window_applies,
-            run=lambda ast, ctx: wrap_with_late_window(ast, ctx.resolved, ctx.model, ctx.dialect),
+            run=lambda ast, ctx: wrap_with_late_window(
+                ast, ctx.resolved, ctx.model, ctx.dialect, ctx.query, ctx.qualify_table
+            ),
         ),
         CompilerPass(
             name=PASS_HAVING_WINDOW,
@@ -569,7 +571,7 @@ def _refuse_reaggregate_combinations(resolved: ResolvedQuery) -> None:
                 c.total
                 or c.grain_override is not None
                 or c.filter_context is not None
-                or c.is_cumulative
+                or (c.is_cumulative and not c.cumulative_over_reaggregate)
                 or c.is_pop
                 or (c.is_window and not c.window_over_reaggregate)
                 or c.name in resolved.dedup_measures

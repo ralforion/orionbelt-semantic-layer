@@ -1024,7 +1024,7 @@
         },
         "measure": {
           "type": "string",
-          "description": "Name of base measure (required for cumulative and reaggregate metrics). A reaggregate metric may also name another reaggregate metric, whose two stages then run as its first. A window metric may name a reaggregate metric: the window then runs over its finished values."
+          "description": "Name of base measure (required for cumulative and reaggregate metrics). A reaggregate metric may also name another reaggregate metric, whose two stages then run as its first. A window or cumulative metric may name a reaggregate metric: the window then runs over its finished values."
         },
         "timeDimension": {
           "type": "string",
