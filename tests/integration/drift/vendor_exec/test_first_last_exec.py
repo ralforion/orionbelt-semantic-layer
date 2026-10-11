@@ -287,19 +287,27 @@ def _assert_all(target: VendorTarget) -> None:
 #: Berlin falls back (00:30Z is 02:30 there, 01:10Z is 02:10: by wall clock the
 #: earlier trade would read as the last).
 KEYS = "first_last_keys"
+#: Also keys a guessed pad type rounds: milliseconds (cast to seconds on
+#: ClickHouse they tied) and a double near zero (cast to a decimal, 0).
 KEY_ROWS = [
-    ("E", "9007199254740992", "2026-10-25 01:10:00", 9),
-    ("E", "9007199254740993", "2026-10-25 00:30:00", 1),
+    ("E", "9007199254740992", "2026-10-25 01:10:00", "2026-01-01 12:00:00.100", "1e-25", 9),
+    ("E", "9007199254740993", "2026-10-25 00:30:00", "2026-01-01 12:00:00.200", "2e-25", 1),
 ]
-#: (decimal(20, 0), timestamp with zone) as each engine spells them in a CAST.
-KEY_TYPES: dict[str, tuple[str, str]] = {
-    "duckdb": ("DECIMAL(20, 0)", "TIMESTAMPTZ"),
-    "postgres": ("NUMERIC(20, 0)", "TIMESTAMPTZ"),
-    "clickhouse": ("Nullable(Decimal(20, 0))", "Nullable(DateTime64(3, 'UTC'))"),
-    "snowflake": ("NUMBER(20, 0)", "TIMESTAMP_TZ"),
-    "bigquery": ("NUMERIC", "TIMESTAMP"),
-    "databricks": ("DECIMAL(20, 0)", "TIMESTAMP"),
-    "dremio": ("DECIMAL(20, 0)", "TIMESTAMP"),
+#: (decimal(20, 0), timestamp with zone, timestamp with milliseconds, double)
+#: as each engine spells them in a CAST.
+KEY_TYPES: dict[str, tuple[str, str, str, str]] = {
+    "duckdb": ("DECIMAL(20, 0)", "TIMESTAMPTZ", "TIMESTAMP", "DOUBLE"),
+    "postgres": ("NUMERIC(20, 0)", "TIMESTAMPTZ", "TIMESTAMP(3)", "DOUBLE PRECISION"),
+    "clickhouse": (
+        "Nullable(Decimal(20, 0))",
+        "Nullable(DateTime64(3, 'UTC'))",
+        "Nullable(DateTime64(3, 'UTC'))",
+        "Nullable(Float64)",
+    ),
+    "snowflake": ("NUMBER(20, 0)", "TIMESTAMP_TZ", "TIMESTAMP_NTZ(3)", "DOUBLE"),
+    "bigquery": ("NUMERIC", "TIMESTAMP", "DATETIME", "FLOAT64"),
+    "databricks": ("DECIMAL(20, 0)", "TIMESTAMP", "TIMESTAMP_NTZ", "DOUBLE"),
+    "dremio": ("DECIMAL(20, 0)", "TIMESTAMP", "TIMESTAMP", "DOUBLE"),
 }
 
 KEYS_YAML = """
@@ -320,6 +328,8 @@ dataObjects:
       Key Group: {{code: grp, abstractType: string}}
       Exact Key: {{code: dkey, abstractType: float}}
       Instant: {{code: tkey, abstractType: timestamp_tz}}
+      Moment: {{code: mkey, abstractType: timestamp}}
+      Tiny Key: {{code: fkey, abstractType: float}}
       Value: {{code: val, abstractType: int}}
     joins:
       - {{joinType: many-to-one, joinTo: Groups, columnsFrom: [Key Group], columnsTo: [Group]}}
@@ -345,6 +355,14 @@ measures:
     columns: [{{dataObject: Keys, column: Value}}]
     aggregation: last
     withinGroup: {{column: {{dataObject: Keys, column: Instant}}}}
+  Last By Moment:
+    columns: [{{dataObject: Keys, column: Value}}]
+    aggregation: last
+    withinGroup: {{column: {{dataObject: Keys, column: Moment}}}}
+  Last By Tiny Key:
+    columns: [{{dataObject: Keys, column: Value}}]
+    aggregation: last
+    withinGroup: {{column: {{dataObject: Keys, column: Tiny Key}}}}
 """
 
 
@@ -354,8 +372,15 @@ def _assert_key_types(target: VendorTarget) -> None:
     dialect = DialectRegistry.get(target.dialect)
     schema = SCHEMAS.get(target.dialect)
     text, integer, _day = TYPES[target.dialect]
-    exact, instant = KEY_TYPES[target.dialect]
-    columns = (("grp", text), ("dkey", exact), ("tkey", instant), ("val", integer))
+    exact, instant, moment, double = KEY_TYPES[target.dialect]
+    columns = (
+        ("grp", text),
+        ("dkey", exact),
+        ("tkey", instant),
+        ("mkey", moment),
+        ("fkey", double),
+        ("val", integer),
+    )
     table = dialect.quote_identifier(KEYS)
     if schema:
         table = f"{dialect.quote_identifier(schema)}.{table}"
@@ -372,11 +397,11 @@ def _assert_key_types(target: VendorTarget) -> None:
     raw, source_map = TrackedLoader().load_string(yaml_text)
     model, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
-    keyed = ["Last By Exact Key", "Last By Instant"]
+    keyed = ["Last By Exact Key", "Last By Instant", "Last By Moment", "Last By Tiny Key"]
     for extra in ([], ["Other Total"]):
         rows = _run(target, model, ["Group"], [*extra, *keyed], [_group("E")])
         got = [tuple(r[m.lower()] for m in keyed) for r in rows]
-        assert got == [(1, 9)], f"{target.name} {extra}: {got}"
+        assert got == [(1, 9, 1, 1)], f"{target.name} {extra}: {got}"
 
 
 def _group(value: str) -> QueryFilter:

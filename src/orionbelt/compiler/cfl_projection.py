@@ -117,40 +117,33 @@ def _sort_key_column(measure: ResolvedMeasure, model: SemanticModel) -> DataObje
 def resolve_sort_key_type(
     measure: ResolvedMeasure, model: SemanticModel, dialect: Dialect | None = None
 ) -> str | None:
-    """The type every UNION leg agrees on for *measure*'s sort-key column.
+    """The type of the NULL pads of *measure*'s sort-key column, or ``None`` for
+    bare ones.
 
-    The key aligns as a measure's value does (:func:`resolve_union_alignment_type`):
-    an integer key on BIGINT, a fractional one on its declared width or the
-    wide decimal, anything else on its own type. Untyped, the pads of the legs
-    that did not own the measure came first in a union of three and Postgres
-    resolved the column as text (``UNION types text and bigint cannot be
-    matched``); padded as FLOAT, an exact decimal key became a double there and
-    9007199254740992 tied with 9007199254740993. The key is the raw column, in
-    no query timezone (see ``_within_group_order``), so its own type is the
-    expression's.
+    Bare wherever the engine gives a union column of leading NULLs the type of
+    the leg with a value (``Dialect.untyped_union_nulls_resolve``), since a
+    typed pad can only be a guess from the model: cast to it, a DateTime64
+    key lost its milliseconds on ClickHouse and a double of 1e-25 its value in
+    a decimal, and the winning row changed. The owning leg's key is never
+    cast, for the same reason.
+
+    Postgres resolves leading NULLs as text (``UNION types text and bigint
+    cannot be matched``), so there the pads are typed as the key aligns: an
+    integer key on BIGINT, a fractional one on its declared width or the wide
+    decimal, anything else on its own type. Postgres then unifies to the key's
+    own type (numeric with numeric is plain numeric; a numeric pad with a
+    double is a double), where a FLOAT pad had made an exact decimal key a
+    double and tied 9007199254740993 with 9007199254740992.
     """
+    if dialect is None or dialect.untyped_union_nulls_resolve:
+        return None
     column = _sort_key_column(measure, model)
     if column is None:
         return None
     kind = column.abstract_type.value
-    if dialect is None or kind not in ("int", "float"):
+    if kind not in ("int", "float"):
         return kind
     return _numeric_alignment(kind, column, dialect)
-
-
-def resolve_owning_sort_key_cast(
-    measure: ResolvedMeasure, model: SemanticModel, dialect: Dialect | None = None
-) -> str | None:
-    """The cast for the owning leg's sort key, or ``None``: as for its value
-    (:func:`resolve_owning_leg_cast_type`), a numeric key is left to the
-    engine's own union resolution where it has one, and cast otherwise."""
-    column = _sort_key_column(measure, model)
-    if column is None:
-        return None
-    numeric = column.abstract_type.value in ("int", "float")
-    if numeric and dialect is not None and dialect.unions_resolve_leg_types:
-        return None
-    return resolve_sort_key_type(measure, model, dialect)
 
 
 def resolve_null_type_for_field(

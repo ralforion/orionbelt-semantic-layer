@@ -488,6 +488,18 @@ class Dialect(ABC):
     #: per union column has to be spelled out (#339).
     unions_resolve_leg_types: bool = True
 
+    #: Whether a union column whose first legs are bare ``NULL`` takes the type
+    #: of the leg that has a value. Probed with two NULL legs before a key of
+    #: each type (timestamps with milliseconds and microseconds, a double of
+    #: 2e-25, a DECIMAL(20, 0) of 9007199254740993, a date): DuckDB, Snowflake,
+    #: Databricks, Dremio, ClickHouse and BigQuery keep the key's own type and
+    #: value; Postgres resolves the NULLs as text and refuses the union
+    #: (``UNION types text and date cannot be matched``). Where it holds, a sort
+    #: key's pads stay bare, so no guessed type can round the key: a pad's type
+    #: is read off the model, and the model does not know a DateTime64's
+    #: precision or whether a float column is a double or a decimal.
+    untyped_union_nulls_resolve: bool = True
+
     #: Whether ``AVG`` over a 64-bit integer column is exact natively.
     #:
     #: True on Postgres (``numeric``), MySQL (``decimal``) and Snowflake, which

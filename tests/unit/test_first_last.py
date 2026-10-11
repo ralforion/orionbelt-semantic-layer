@@ -226,15 +226,38 @@ class TestMultiFactKeys:
         """Converted, a timestamp_tz key was a DATETIME on BigQuery beside TIMESTAMP pads,
         and ordered by wall-clock time, which repeats an hour where a zone falls back."""
         sql = self._sql("Close", "bigquery")
-        assert "CAST(NULL AS TIMESTAMP) AS `Close__wg`" in sql
-        assert "CAST(`Trades`.`TRADED_AT` AS TIMESTAMP) AS `Close__wg`" in sql
+        assert "`Trades`.`TRADED_AT` AS `Close__wg`" in sql
         assert "DATETIME" not in sql
 
-    def test_clickhouse_casts_the_owning_key(self) -> None:
-        """ClickHouse does not settle a union's types itself, as for values."""
-        sql = self._sql("Last By Seq", "clickhouse")
-        assert sql.count('AS "Last By Seq__wg"') == 2
-        assert '"Trades"."SEQ" AS "Last By Seq__wg"' not in sql
+    # DuckDB and Snowflake union by name, with no pads at all.
+    @pytest.mark.parametrize("dialect", ["bigquery", "clickhouse", "dremio", "databricks"])
+    def test_bare_pads_and_an_uncast_key_where_nulls_resolve(self, dialect: str) -> None:
+        """A typed pad is a guess from the model: cast to it, a DateTime64 key lost
+        its milliseconds on ClickHouse and a double of 1e-25 its value."""
+        sql = self._sql("Last By Seq", dialect)
+        quote = "`" if dialect in ("bigquery", "databricks") else '"'
+        alias = f"{quote}Last By Seq__wg{quote}"
+        assert f"NULL AS {alias}" in sql and "CAST(NULL AS" not in sql.split(alias)[0][-40:]
+        assert f"{quote}Trades{quote}.{quote}SEQ{quote} AS {alias}" in sql
+
+
+class TestListaggUnderAQueryTimezone:
+    """A LISTAGG ordered by its own timestamp stays self-ordered in the query's time."""
+
+    YAML = MULTI_FACT_YAML + (
+        "  Trade Times:\n"
+        "    columns: [{dataObject: Trades, column: Traded At}]\n"
+        "    aggregation: listagg\n"
+        "    withinGroup: {column: {dataObject: Trades, column: Traded At}}\n"
+    )
+
+    @pytest.mark.parametrize("dialect", ["clickhouse", "databricks"])
+    def test_compiles(self, dialect: str) -> None:
+        raw, source_map = TrackedLoader().load_string(self.YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(select=QuerySelect(dimensions=["Ticker"], measures=["Trade Times"]))
+        assert CompilationPipeline().compile(query, model, dialect).sql
 
 
 class TestDialects:

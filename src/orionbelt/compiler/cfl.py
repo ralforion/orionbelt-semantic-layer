@@ -621,12 +621,8 @@ class CFLPlanner:
                     # column so the outer re-aggregation can order by it.
                     wg_item = self._within_group_item(m)
                     if wg_item is not None:
-                        key_expr: Expr = wg_item.expr
-                        key_cast = cfl_projection.resolve_owning_sort_key_cast(m, model, dialect)
-                        if key_cast:
-                            key_expr = Cast(expr=key_expr, type_name=key_cast)
                         leg_builder.select(
-                            AliasedExpr(expr=key_expr, alias=aliases.within_group[m.name])
+                            AliasedExpr(expr=wg_item.expr, alias=aliases.within_group[m.name])
                         )
                 elif not union_by_name:
                     model_measure = model.measures.get(m.name)
