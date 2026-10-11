@@ -1294,3 +1294,48 @@ class TestGraph:
         }
         assert ("Order Date", "per") in labels
         assert ("Revenue", None) in labels
+
+
+class TestWindowOverReaggregate:
+    """A window metric over a reaggregate metric runs after the reaggregate pass."""
+
+    _WINDOWS = (
+        "  Prior Avg:\n    type: window\n    measure: Avg Revenue per Customer\n"
+        "    windowFunction: lag\n    timeDimension: Order Date\n    offset: 1\n"
+        "  Avg Change:\n    expression: '{[Avg Revenue per Customer]} - {[Prior Avg]}'\n"
+    )
+
+    def _model(self) -> SemanticModel:
+        probe_model, result = _resolve(MODEL_YAML + self._WINDOWS)
+        assert result.valid, result.errors
+        return probe_model
+
+    def test_parser_accepts_a_reaggregate_base(self) -> None:
+        self._model()
+
+    def test_unknown_base_still_refused(self) -> None:
+        yaml_text = MODEL_YAML + self._WINDOWS.replace(
+            "measure: Avg Revenue per Customer", "measure: Nothing Here"
+        )
+        _model, result = _resolve(yaml_text)
+        assert "UNKNOWN_MEASURE" in {e.code for e in result.errors}
+
+    def test_window_over_the_finished_rows(self) -> None:
+        sql = _compile(
+            self._model(),
+            QueryObject(select=QuerySelect(dimensions=["Order Date"], measures=["Prior Avg"])),
+        ).sql
+        # The window reads the reaggregate metric's finished column, and that
+        # column, not selected, is left out of the result.
+        assert '"late_window_base" AS (' in sql
+        outer = sql.rsplit('FROM "late_window_base"', 1)[0].rsplit("SELECT", 1)[1]
+        assert 'LAG("Avg Revenue per Customer", 1) OVER (ORDER BY "Order Date"' in outer
+        assert 'AS "Avg Revenue per Customer"' not in outer
+
+    def test_formula_reading_the_window(self) -> None:
+        sql = _compile(
+            self._model(),
+            QueryObject(select=QuerySelect(dimensions=["Order Date"], measures=["Avg Change"])),
+        ).sql
+        outer = sql.rsplit('FROM "late_window_base"', 1)[0].rsplit("SELECT", 1)[1]
+        assert '"Avg Revenue per Customer" - LAG("Avg Revenue per Customer", 1)' in outer

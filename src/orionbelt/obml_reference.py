@@ -455,9 +455,13 @@ the final rows. Select it beside other measures (other facts too), in `having` a
   `REAGGREGATE_NO_OP` warning
 - Selects beside any measure or metric, including total/grain, filterContext,
   cumulative, period-over-period and window ones
+- A window metric may name it as its `measure`: the window runs over its
+  finished values (lag / rank of the average customer), and a formula reading
+  that window is computed over the finished rows too
 - Refused: `grouping: rollup/cube`, and a derived formula combining it with a
-  total/grain, filterContext, cumulative, PoP or window component
-  (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`; select them side by side)
+  total/grain, filterContext, cumulative or PoP component, or a window over
+  anything else (`REAGGREGATE_COMBINATION_NOT_SUPPORTED`; select them side by
+  side)
 
 ## 5. synonyms — alternative names (optional, LLM hints)
 

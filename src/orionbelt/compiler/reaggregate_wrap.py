@@ -50,6 +50,7 @@ from orionbelt.ast.nodes import (
     Select,
     Unnest,
 )
+from orionbelt.compiler.late_window import is_late
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
 from orionbelt.compiler.metric_resolution import reaggregate_per_covered, reaggregate_per_ref
 from orionbelt.compiler.outer_order_by import outer_order_by
@@ -355,9 +356,24 @@ def _split_metrics(
     split = {
         m.name: m
         for m in resolved.measures
-        if not m.is_reaggregate and any(c.is_reaggregate for c in leaves[m.name])
+        if not m.is_reaggregate
+        and any(c.is_reaggregate for c in leaves[m.name])
+        # Finished by the late window pass, a placeholder until then.
+        and not is_late(m, resolved.metric_components)
     }
     return leaves, split
+
+
+def _late_placeholder() -> Expr:
+    """A NULL standing in for a value the late window pass computes.
+
+    A constant, not an aggregate: it is rebuilt from the resolution by wrappers
+    whose outer query is not grouped (totals, a period-over-period comparison),
+    where ``MAX(NULL)`` beside a dimension is an error. The query stays one row
+    per group all the same, since the reaggregate metric it reads is always
+    projected, and that placeholder is an aggregate (``_placeholder_value``).
+    """
+    return Cast(expr=Literal(value=None), type_name="float")
 
 
 def _plain_components(
@@ -437,9 +453,20 @@ def capture_reaggregate_components(
     selected measure's, which is cast to the measure's type, so reading it
     would make the metric depend on what else is selected.
     """
+    late = [
+        m
+        for m in [*resolved.measures, *resolved.metric_components.values()]
+        if is_late(m, resolved.metric_components)
+    ]
     for m in [*resolved.measures, *resolved.metric_components.values()]:
         if m.is_reaggregate:
             m.expression = _placeholder_value(m, model, dialect)
+    # A window over a reaggregate metric, and a formula reading one, is finished
+    # by the late window pass; until then every pass reads a placeholder.
+    for m in late:
+        if m.deferred_expression is None:
+            m.deferred_expression = m.expression
+            m.expression = _late_placeholder()
 
     leaves, split = _split_metrics(resolved)
     components = _plain_components(leaves, split)
@@ -456,10 +483,16 @@ def capture_reaggregate_components(
 
     reaggregates = {m.name: m for m in resolved.measures if m.is_reaggregate}
 
+    late_names = {m.name for m in late}
+
     def placeholder(col: Expr) -> Expr:
         alias = _alias(col)
         if alias in reaggregates:
             return AliasedExpr(expr=reaggregates[alias].expression, alias=alias)
+        if alias in late_names:
+            # A window over a reaggregate metric, or a formula reading one: the
+            # late window pass computes it from finished columns.
+            return AliasedExpr(expr=_late_placeholder(), alias=alias)
         if alias not in split:
             return col
         by_name = {c.name: c for c in leaves[alias]}
@@ -516,7 +549,13 @@ def wrap_with_reaggregate(
         groups.setdefault(key, []).append(m)
 
     ctes = list(ast.ctes)
-    base_columns = [c for c in ast.columns if _alias(c) not in names | split.keys()]
+    # A window over a reaggregate metric, or a formula reading one, is finished
+    # by the late window pass; here it is a constant in the outer projection.
+    # Kept in the base, it was the base's only column for a query selecting
+    # nothing else, which then scanned the fact rows ungrouped: one result row
+    # per source row rather than the single one, and none over no rows.
+    late = {m.name for m in resolved.measures if is_late(m, resolved.metric_components)}
+    base_columns = [c for c in ast.columns if _alias(c) not in names | split.keys() | late]
     # With no dimensions and nothing else selected the base projects nothing;
     # each stage-2 CTE is then the one row the query returns.
     keep_base = bool(base_columns)
@@ -588,6 +627,8 @@ def wrap_with_reaggregate(
         return value
 
     def read(alias: str) -> Expr:
+        if alias in late:
+            return _late_placeholder()
         if alias in split:
             # Assembled in the outer projection, so it is read by its alias.
             return ColumnRef(name=alias)
