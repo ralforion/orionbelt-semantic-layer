@@ -280,9 +280,10 @@ class ReaggregateAggType(StrEnum):
 
     Applied to the measure's per-group values, so ``avg`` is the unweighted
     mean of those values, not the row-weighted mean of the measure,
-    ``median`` is the exact, continuous median of them, and
+    ``median`` is the exact, continuous median of them,
     ``percentile_cont`` / ``percentile_disc`` their percentile at
-    ``percentile``.
+    ``percentile``, and ``first`` / ``last`` the value of the earliest / latest
+    group, ordered by the one time dimension in ``per``.
     """
 
     SUM = "sum"
@@ -293,6 +294,8 @@ class ReaggregateAggType(StrEnum):
     MEDIAN = "median"
     PERCENTILE_CONT = "percentile_cont"
     PERCENTILE_DISC = "percentile_disc"
+    FIRST = "first"
+    LAST = "last"
 
 
 class GrainToDate(StrEnum):

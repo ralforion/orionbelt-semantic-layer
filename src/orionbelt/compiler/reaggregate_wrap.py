@@ -62,10 +62,17 @@ from orionbelt.compiler.type_resolver import (
     resolve_metric_data_type,
 )
 from orionbelt.dialect.base import Dialect
-from orionbelt.models.query import DimensionRef, QueryFilter, QueryObject, QuerySelect
+from orionbelt.models.query import (
+    DimensionRef,
+    QueryFilter,
+    QueryObject,
+    QuerySelect,
+    time_per_entries,
+)
 from orionbelt.models.semantic import (
     DataObject,
     Measure,
+    Metric,
     ReaggregateAggType,
     ReaggregateHaving,
     SemanticModel,
@@ -84,6 +91,8 @@ _FUNCTIONS: dict[ReaggregateAggType, str] = {
     ReaggregateAggType.MEDIAN: "MEDIAN",
     ReaggregateAggType.PERCENTILE_CONT: "PERCENTILE_CONT",
     ReaggregateAggType.PERCENTILE_DISC: "PERCENTILE_DISC",
+    ReaggregateAggType.FIRST: "FIRST",
+    ReaggregateAggType.LAST: "LAST",
 }
 
 
@@ -115,8 +124,9 @@ def _stage_one(
     model: SemanticModel,
     dialect: Dialect,
     qualify_table: Callable[[DataObject], str],
-) -> Select:
-    """The measure at the query grain plus *per*, planned as a query of its own.
+) -> tuple[Select, dict[str, str]]:
+    """The measure at the query grain plus *per*, planned as a query of its own,
+    and the column each ``per`` entry it added groups by.
 
     Only the query's row filters carry over: its HAVING, ORDER BY and LIMIT
     describe the final result, not this scan. The scan's HAVING is the
@@ -167,10 +177,15 @@ def _stage_one(
     # So are its tables: a ``per`` dimension can join one the query does not,
     # and the result cache has to see it change.
     resolved.subquery_objects.update(sub_resolved.required_objects, sub_resolved.subquery_objects)
-    return _name_per_buckets(scan, [d.name for d in resolved.dimensions], [r for _, r in added])
+    named, columns = _name_per_buckets(
+        scan, [d.name for d in resolved.dimensions], [r for _, r in added]
+    )
+    return named, {entry: column for (entry, _), column in zip(added, columns, strict=True)}
 
 
-def _name_per_buckets(scan: Select, query_dims: list[str], refs: list[DimensionRef]) -> Select:
+def _name_per_buckets(
+    scan: Select, query_dims: list[str], refs: list[DimensionRef]
+) -> tuple[Select, list[str]]:
     """Give each ``per`` bucket of a dimension named twice a column of its own.
 
     The planner names a dimension's column after the dimension at any grain, so
@@ -178,12 +193,14 @@ def _name_per_buckets(scan: Select, query_dims: list[str], refs: list[DimensionR
     second ``per`` bucket of that date, would leave two columns of one name,
     which most engines reject in a CTE and the second stage could not tell
     apart. Such a ``per`` column becomes ``name:grain``. The query's own
-    columns come first in the scan and keep their names.
+    columns come first in the scan and keep their names. Returns the scan and
+    each ref's column name.
     """
     names = [*query_dims, *(r.name for r in refs)]
     pending = {name: [r for r in refs if r.name == name] for name in names if names.count(name) > 1}
+    columns_of = [r.name for r in refs]
     if not pending:
-        return scan
+        return scan, columns_of
     query_columns = Counter(query_dims)
     columns: list[Expr] = []
     for col in scan.columns:
@@ -195,20 +212,25 @@ def _name_per_buckets(scan: Select, query_dims: list[str], refs: list[DimensionR
                 ref = pending[alias].pop(0)
                 grain = ref.grain.value if ref.grain else "value"
                 col = AliasedExpr(expr=col.expr, alias=f"{ref.name}:{grain}")
+                columns_of[refs.index(ref)] = col.alias
         columns.append(col)
     if any(pending.values()):
         raise RuntimeError(f"reaggregate stage 1 lost a 'per' column: {pending}")
-    return replace(scan, columns=columns)
+    return replace(scan, columns=columns), columns_of
 
 
 def _stage_two(
     inner: str,
     metrics: list[ResolvedMeasure],
     dim_names: list[str],
+    per_columns: dict[str, str],
     model: SemanticModel,
     dialect: Dialect,
 ) -> Select:
-    """Each metric's aggregate over the stage-1 values, grouped by the query grain."""
+    """Each metric's aggregate over the stage-1 values, grouped by the query grain.
+
+    *per_columns* names the stage-1 column of each ``per`` entry stage 1 added.
+    """
     columns: list[Expr] = [
         AliasedExpr(expr=ColumnRef(name=d, table=inner), alias=d) for d in dim_names
     ]
@@ -228,7 +250,10 @@ def _stage_two(
             if metric is not None and metric.percentile is not None:
                 fraction = Decimal(str(metric.percentile))
             expr = FunctionCall(
-                name=_FUNCTIONS[m.reaggregate_aggregation], args=[arg], fraction=fraction
+                name=_FUNCTIONS[m.reaggregate_aggregation],
+                args=[arg],
+                fraction=fraction,
+                order_by=_time_order(m, metric, per_columns, inner, model, arg),
             )
             target = resolve_metric_data_type(metric, model.settings) if metric else None
         if target is not None:
@@ -239,6 +264,29 @@ def _stage_two(
         from_=From(source=inner, alias=inner),
         group_by=[ColumnRef(name=d, table=inner) for d in dim_names],
     )
+
+
+def _time_order(
+    m: ResolvedMeasure,
+    metric: Metric | None,
+    per_columns: dict[str, str],
+    inner: str,
+    model: SemanticModel,
+    value: Expr,
+) -> list[OrderByItem]:
+    """The ordering of a ``first`` / ``last`` second stage: by its time ``per`` entry.
+
+    A ``per`` bucket the query's grouping covers is not a stage-1 column, and
+    then each group holds one value, which any order picks: the value orders
+    itself.
+    """
+    aggregation = m.reaggregate_aggregation
+    if metric is None or aggregation not in (ReaggregateAggType.FIRST, ReaggregateAggType.LAST):
+        return []
+    entries = time_per_entries(metric.per, model.dimensions)
+    column = per_columns.get(entries[0]) if entries else None
+    key: Expr = ColumnRef(name=column, table=inner) if column else value
+    return [OrderByItem(expr=key, desc=aggregation is ReaggregateAggType.LAST)]
 
 
 def _own_cte_names(scan: Select, prefix: str) -> Select:
@@ -502,13 +550,12 @@ def wrap_with_reaggregate(
         inner_name = f"reagg_{idx}_inner"
         outer_name = f"reagg_{idx}"
         having = _having(model, metrics[0].name)
-        scan = _stage_one(
+        scan, per_columns = _stage_one(
             measure, list(per), having, resolved, query, model, dialect, qualify_table
         )
         ctes.append(CTE(name=inner_name, query=_own_cte_names(scan, f"{inner_name}_")))
-        ctes.append(
-            CTE(name=outer_name, query=_stage_two(inner_name, metrics, dim_names, model, dialect))
-        )
+        stage_two = _stage_two(inner_name, metrics, dim_names, per_columns, model, dialect)
+        ctes.append(CTE(name=outer_name, query=stage_two))
         stage_two_names.append(outer_name)
         for m in metrics:
             source_of[m.name] = outer_name

@@ -23,7 +23,7 @@ enums:
     values: ['sum', 'avg', 'min', 'max', 'count']
   ReaggregateAggType:
     python: orionbelt.models.semantic.ReaggregateAggType
-    values: ['sum', 'avg', 'min', 'max', 'count', 'median', 'percentile_cont', 'percentile_disc']
+    values: ['sum', 'avg', 'min', 'max', 'count', 'median', 'percentile_cont', 'percentile_disc', 'first', 'last']
   DataType:
     python: orionbelt.models.semantic.DataType
     values: ['string', 'json', 'int', 'float', 'date', 'time', 'time_tz', 'timestamp', 'timestamp_tz', 'boolean']

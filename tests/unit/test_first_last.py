@@ -145,9 +145,12 @@ class TestCompile:
         with pytest.raises(Exception, match="does not support total"):
             _sql(CLOSE + "    total: true\n")
 
-    def test_mysql_refused(self) -> None:
+    @pytest.mark.parametrize("dialect", ["mysql", "dremio"])
+    def test_refused(self, dialect: str) -> None:
+        """MySQL has no ordered aggregate; Dremio's answers an empty array for
+        a NULL group key."""
         with pytest.raises(UnsupportedAggregationError, match="LAST"):
-            _sql(CLOSE, dialect="mysql")
+            _sql(CLOSE, dialect=dialect)
 
 
 def _call(name: str) -> FunctionCall:
@@ -230,7 +233,7 @@ class TestMultiFactKeys:
         assert "DATETIME" not in sql
 
     # DuckDB and Snowflake union by name, with no pads at all.
-    @pytest.mark.parametrize("dialect", ["bigquery", "clickhouse", "dremio", "databricks"])
+    @pytest.mark.parametrize("dialect", ["bigquery", "clickhouse", "databricks"])
     def test_bare_pads_and_an_uncast_key_where_nulls_resolve(self, dialect: str) -> None:
         """A typed pad is a guess from the model: cast to it, a DateTime64 key lost
         its milliseconds on ClickHouse and a double of 1e-25 its value."""
@@ -285,11 +288,6 @@ class TestDialects:
                 "bigquery",
                 "IGNORE NULLS ORDER BY `k` DESC, `v` DESC LIMIT 1)[SAFE_OFFSET(0)]",
                 "IGNORE NULLS ORDER BY `k` ASC, `v` ASC LIMIT 1)[SAFE_OFFSET(0)]",
-            ),
-            (
-                "dremio",
-                'WITHIN GROUP (ORDER BY "k" DESC, "v" DESC)[0]',
-                'WITHIN GROUP (ORDER BY "k" ASC, "v" ASC)[0]',
             ),
         ],
     )

@@ -41,7 +41,19 @@ class DremioDialect(Dialect):
             # to a nested object's ``code`` where one is declared.
             supports_from_unnest=False,
             # ``measure`` is Databricks Metric View specific.
-            unsupported_aggregations=["mode", "measure"],
+            unsupported_aggregations=[
+                "mode",
+                "measure",
+                # The value at the greatest / least key. Dremio has no MAX_BY,
+                # takes no ORDER BY inside ARRAY_AGG, indexes arrays only by a
+                # literal, and its ARRAY_AGG ... WITHIN GROUP returns an empty
+                # array for the group whose key is NULL (probed: DE right, the
+                # NULL group [], where MAX, ARRAY_AGG, LISTAGG and
+                # PERCENTILE_DISC see its rows), which reads as a NULL first /
+                # last: a wrong answer rather than an error.
+                "first",
+                "last",
+            ],
         )
 
     def render_unnest(self, node: Unnest) -> str:
@@ -252,18 +264,6 @@ class DremioDialect(Dialect):
         return f"MEDIAN(CAST({col_sql} AS DOUBLE))"
 
     _percentile_cont_over_doubles = True
-
-    def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:
-        """Dremio: the first of the values ordered by key and value, read at the
-        literal index 0 (the only index Dremio takes). ``ARRAY_AGG`` skips the
-        NULL a row without a key carries."""
-        v = self.compile_expr(value)
-        k = self.compile_expr(key)
-        direction = "DESC" if last else "ASC"
-        return (
-            f"ARRAY_AGG(CASE WHEN {k} IS NOT NULL THEN {v} END)"
-            f" WITHIN GROUP (ORDER BY {k} {direction}, {v} {direction})[0]"
-        )
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """Dremio does not support MODE aggregation."""

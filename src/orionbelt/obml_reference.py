@@ -251,7 +251,7 @@ value whose cumulative share reaches p, a value from the data:
 `first` / `last` take the value at the least / greatest key named in
 `withinGroup` (required, no `order`): rows without a value or key are
 skipped, a tie on the key goes to the least / greatest value. One row's
-value, not a semi-additive sum. Not on MySQL:
+value, not a semi-additive sum. Not on MySQL or Dremio:
 
 ```yaml
   Closing Price:
@@ -406,7 +406,8 @@ metrics:
     measure: Revenue        # stage 1: a measure (not a metric), unchanged
     per: [Customer]         # dimensions added to the query grain for stage 1
     aggregation: avg        # stage 2: sum | avg | min | max | count | median |
-                            #   percentile_cont | percentile_disc (+ percentile:)
+                            #   percentile_cont | percentile_disc (+ percentile:) |
+                            #   first | last (by the one time dimension in per)
 
   Avg Orders per Customer:
     type: reaggregate
@@ -444,7 +445,9 @@ the final rows. Select it beside other measures (other facts too), in `having` a
 - `aggregation:` required; `avg` is exact over integers, `count` is bigint,
   `sum`/`min`/`max` keep the measure's type, `median`, `percentile_cont`
   and `percentile_disc` are typed as those measure aggregations are; the
-  percentiles take `percentile:`
+  percentiles take `percentile:`; `first` / `last` take the value of the
+  earliest / latest group by the one time dimension in `per` (a grain like
+  `'Order Date:month'` or a date dimension; else `REAGGREGATE_ORDER_KEY`)
 - `avg` over an average is refused (`REAGGREGATE_AVG_OF_AVG`): an `avg`
   measure, an `avg` reaggregate metric, or a `min`/`max`/`median`/percentile
   one over either

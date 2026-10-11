@@ -352,13 +352,12 @@ The continuous percentile has the median's types: a floating-point number on Pos
 | BigQuery | `ARRAY_AGG(IF(k IS NULL, NULL, v) IGNORE NULLS ORDER BY k DESC, v DESC LIMIT 1)[SAFE_OFFSET(0)]` |
 | ClickHouse | `if(countIf(...) = 0, NULL, argMaxIf(v, (k, v), isNotNull(k) AND isNotNull(v)))` |
 | Databricks | `max_by(v, CASE WHEN k IS NOT NULL AND v IS NOT NULL THEN struct(k, v) END)` |
-| Dremio | `ARRAY_AGG(CASE WHEN k IS NOT NULL THEN v END) WITHIN GROUP (ORDER BY k DESC, v DESC)[0]` |
+| Dremio | Not supported: no `MAX_BY`, no `ORDER BY` inside `ARRAY_AGG`, and its `ARRAY_AGG ... WITHIN GROUP` returns an empty array for the group whose key is NULL, which would read as a NULL `last` |
 | DuckDB | `arg_max(v, struct_pack(k := k, v := v)) FILTER (WHERE v IS NOT NULL AND k IS NOT NULL)` |
 | MySQL | Not supported: `GROUP_CONCAT` would return a string whatever the column's type |
 | Postgres | `(ARRAY_AGG(v ORDER BY k DESC, v DESC) FILTER (WHERE v IS NOT NULL AND k IS NOT NULL))[1]` |
 | Snowflake | `MAX_BY(v, IFF(k IS NULL OR v IS NULL, NULL, ARRAY_CONSTRUCT(k, v)))` (arrays order as their elements: probed over numbers, dates, timestamps with and without a zone, strings and booleans) |
 
-An ungrouped query whose `first` / `last` reads no rows returns no row on Dremio, as for its median.
 
 ### MODE
 

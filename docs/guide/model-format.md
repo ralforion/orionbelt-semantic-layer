@@ -747,7 +747,7 @@ By ticker and month this is each ticker's last price of the month. The value kee
 - `withinGroup` is required and takes no `order`: `last` is always the greatest key. One column (or an `expression`), no `distinct`, no `total`.
 - A timestamp key orders by its instants, not in the model's `queryTimezone`: where a zone falls back, the wall-clock times of one hour repeat, and the instants still order truly. The value itself is read in the query timezone as usual.
 - Repeated rows leave the answer as it is, so a fanned-out join does not change it, as for `min` and `max`.
-- Not available on MySQL (`UNSUPPORTED_AGGREGATION_FOR_DIALECT`): its only ordered aggregate, `GROUP_CONCAT`, returns a string whatever the column's type.
+- Not available on MySQL or Dremio (`UNSUPPORTED_AGGREGATION_FOR_DIALECT`): MySQL's only ordered aggregate, `GROUP_CONCAT`, returns a string whatever the column's type, and Dremio's ordered `ARRAY_AGG` returns an empty array for a group whose key is NULL, a wrong NULL rather than an error.
 
 This is one row's value per group, not a semi-additive sum (the total across accounts of each one's last balance), and not the `first_value` / `last_value` [window metric](#window-metrics), which reads the rows of the query's result. See [per-dialect SQL](dialects.md#first-and-last).
 
@@ -1083,7 +1083,7 @@ metrics:
     type: reaggregate
     measure: Revenue          # stage 1: an existing measure, unchanged
     per: [Customer]           # dimensions added to the query's grain for stage 1
-    aggregation: avg          # stage 2: sum | avg | min | max | count | median | percentile_cont | percentile_disc
+    aggregation: avg          # stage 2: sum | avg | min | max | count | median | percentile_cont | percentile_disc | first | last
 
   Avg Orders per Customer:
     type: reaggregate
@@ -1165,6 +1165,17 @@ By `Country`, this averages revenue per customer within each country and month, 
 Rules:
 
 - `measure` names a measure or another reaggregate metric; any other metric is refused (`REAGGREGATE_MEASURE_ONLY`), and so is a chain of reaggregate metrics that leads back to itself (`REAGGREGATE_CYCLE`). A measure with `total`, `grain` or `filterContext` is allowed, and is computed as a query at the stage-1 grouping would compute it: a `total` is over every stage-1 row, a `grain` override is relative to the stage-1 dimensions, and a `filterContext` changes the query's `where` for stage 1. A `grain` with `mode: FIXED` has to be covered by the query's dimensions plus `per`, as in any query (`GRAIN_NOT_SUBSET`, prefixed with the stage it was raised in).
+- `first` / `last` take the value of the earliest / latest stage-1 group, ordered by the one time dimension in `per`: an entry with a grain (`'Order Date:month'`), a dimension that declares a `timeGrain`, or a date or timestamp dimension. None or several is `REAGGREGATE_ORDER_KEY`. A closing value per year:
+
+    ```yaml
+    Year-End Active Customers:
+      type: reaggregate
+      measure: Active Customers
+      per: ['Order Date:month']
+      aggregation: last
+    ```
+
+    By year, each year's last month with data (its value, not the year's). Groups whose value is NULL are skipped, and a tie on the time key (other `per` entries beside it) goes to the greatest value for `last`, the least for `first`, as for the [`first` / `last` measures](#first-and-last). When the query already groups as finely as the time entry (by month here), each group has one value, the measure's. Not on MySQL or Dremio.
 - `having` is a list of conditions, all of which a stage-1 group has to meet. Each takes a query filter's `field`, `op` and `value` (any operator but `exists` / `nonexists`), and `field` names a measure, a synthesized count included: a metric is refused (`REAGGREGATE_HAVING_MEASURE_ONLY`), an unknown name is `UNKNOWN_MEASURE`. Metrics that differ only in their `aggregation` share stage 1 when their `having` is the same too.
 - `per` lists model dimensions (`REAGGREGATE_UNKNOWN_DIMENSION`), each optionally at a time grain (`'Order Date:day'`); a bare name groups by the dimension's declared `timeGrain`. The grain needs a date-bearing column and a `resultType` that can hold the bucket, as in a query.
 - If every `per` dimension is already in the query, at its grain or a finer one, each group has one stage-1 value; the query compiles with a `REAGGREGATE_NO_OP` warning.
@@ -1185,7 +1196,7 @@ Rules:
 | `grainToDate` | `"year"` \| `"quarter"` \| `"month"` \| `"week"` | — | Reset boundary (mutually exclusive with `window`) |
 | `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics. Each entry must be a model dimension in the query's SELECT. Cumulative metrics are also partitioned by the query's other dimensions. |
 | `per` | list | — | Dimensions added to the query's grain for the first stage (required for reaggregate) |
-| `aggregation` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` \| `"median"` \| `"percentile_cont"` \| `"percentile_disc"` | — | Second-stage aggregation (required for reaggregate) |
+| `aggregation` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` \| `"median"` \| `"percentile_cont"` \| `"percentile_disc"` \| `"first"` \| `"last"` | — | Second-stage aggregation (required for reaggregate) |
 | `percentile` | number | — | Fraction of a `percentile_cont` / `percentile_disc` second stage, between 0 and 1 exclusive (reaggregate only) |
 | `having` | list | — | Conditions (`field`, `op`, `value`) over measures that each stage-1 group has to meet (reaggregate only) |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
