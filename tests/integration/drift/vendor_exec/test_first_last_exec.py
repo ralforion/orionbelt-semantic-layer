@@ -35,7 +35,7 @@ TABLE = "first_last_values"
 #: The other tables of the multi-fact query: the groups every fact joins to,
 #: and two more facts, so the measures' column has three UNION legs.
 GROUPS, OTHER, MORE = "first_last_groups", "first_last_other", "first_last_more"
-GROUP_ROWS = [("A",), ("B",), ("C",), ("D",)]
+GROUP_ROWS = [("A",), ("B",), ("C",), ("D",), ("E",)]
 OTHER_ROWS = [("A", 1), ("B", 2)]
 MORE_ROWS = [("A", 10), ("D", 20)]
 
@@ -282,16 +282,115 @@ def _assert_all(target: VendorTarget) -> None:
     assert [r["last value"] for r in rows] == want_none, f"{target.name}: {rows}"
 
 
+#: Keys whose type the multi-fact legs' pads must match: an exact decimal past
+#: a double's 2^53, and an instant under a query timezone, around the hour
+#: Berlin falls back (00:30Z is 02:30 there, 01:10Z is 02:10: by wall clock the
+#: earlier trade would read as the last).
+KEYS = "first_last_keys"
+KEY_ROWS = [
+    ("E", "9007199254740992", "2026-10-25 01:10:00", 9),
+    ("E", "9007199254740993", "2026-10-25 00:30:00", 1),
+]
+#: (decimal(20, 0), timestamp with zone) as each engine spells them in a CAST.
+KEY_TYPES: dict[str, tuple[str, str]] = {
+    "duckdb": ("DECIMAL(20, 0)", "TIMESTAMPTZ"),
+    "postgres": ("NUMERIC(20, 0)", "TIMESTAMPTZ"),
+    "clickhouse": ("Nullable(Decimal(20, 0))", "Nullable(DateTime64(3, 'UTC'))"),
+    "snowflake": ("NUMBER(20, 0)", "TIMESTAMP_TZ"),
+    "bigquery": ("NUMERIC", "TIMESTAMP"),
+    "databricks": ("DECIMAL(20, 0)", "TIMESTAMP"),
+    "dremio": ("DECIMAL(20, 0)", "TIMESTAMP"),
+}
+
+KEYS_YAML = """
+version: "1.0"
+name: first_last_keys
+settings:
+  queryTimezone: Europe/Berlin
+dataObjects:
+  Groups:
+    code: {groups}
+    schema: '{schema}'
+    columns:
+      Group: {{code: grp, abstractType: string}}
+  Keys:
+    code: {keys}
+    schema: '{schema}'
+    columns:
+      Key Group: {{code: grp, abstractType: string}}
+      Exact Key: {{code: dkey, abstractType: float}}
+      Instant: {{code: tkey, abstractType: timestamp_tz}}
+      Value: {{code: val, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Groups, columnsFrom: [Key Group], columnsTo: [Group]}}
+  Other:
+    code: {other}
+    schema: '{schema}'
+    columns:
+      Other Group: {{code: grp, abstractType: string}}
+      Amount: {{code: amt, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Groups, columnsFrom: [Other Group], columnsTo: [Group]}}
+dimensions:
+  Group: {{dataObject: Groups, column: Group, resultType: string}}
+measures:
+  Other Total:
+    columns: [{{dataObject: Other, column: Amount}}]
+    aggregation: sum
+  Last By Exact Key:
+    columns: [{{dataObject: Keys, column: Value}}]
+    aggregation: last
+    withinGroup: {{column: {{dataObject: Keys, column: Exact Key}}}}
+  Last By Instant:
+    columns: [{{dataObject: Keys, column: Value}}]
+    aggregation: last
+    withinGroup: {{column: {{dataObject: Keys, column: Instant}}}}
+"""
+
+
+def _assert_key_types(target: VendorTarget) -> None:
+    """Alone and beside another fact: the pads keep the key's type."""
+    _prepare(target)
+    dialect = DialectRegistry.get(target.dialect)
+    schema = SCHEMAS.get(target.dialect)
+    text, integer, _day = TYPES[target.dialect]
+    exact, instant = KEY_TYPES[target.dialect]
+    columns = (("grp", text), ("dkey", exact), ("tkey", instant), ("val", integer))
+    table = dialect.quote_identifier(KEYS)
+    if schema:
+        table = f"{dialect.quote_identifier(schema)}.{table}"
+    select = " UNION ALL ".join(
+        "SELECT "
+        + ", ".join(
+            f"{_literal(value, type_name)} AS {dialect.quote_identifier(name)}"
+            for value, (name, type_name) in zip(row, columns, strict=True)
+        )
+        for row in KEY_ROWS
+    )
+    _create(target, table, select)
+    yaml_text = KEYS_YAML.format(groups=GROUPS, keys=KEYS, other=OTHER, schema=schema or "")
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    keyed = ["Last By Exact Key", "Last By Instant"]
+    for extra in ([], ["Other Total"]):
+        rows = _run(target, model, ["Group"], [*extra, *keyed], [_group("E")])
+        got = [tuple(r[m.lower()] for m in keyed) for r in rows]
+        assert got == [(1, 9)], f"{target.name} {extra}: {got}"
+
+
 def _group(value: str) -> QueryFilter:
     return QueryFilter(field="Group", op="=", value=value)
 
 
 def test_duckdb_first_last(vendor_duckdb: VendorTarget) -> None:
     _assert_all(vendor_duckdb)
+    _assert_key_types(vendor_duckdb)
 
 
 def test_postgres_first_last(vendor_postgres: VendorTarget) -> None:
     _assert_all(vendor_postgres)
+    _assert_key_types(vendor_postgres)
 
 
 def test_mysql_refuses_first_last(vendor_mysql: VendorTarget) -> None:
@@ -302,19 +401,24 @@ def test_mysql_refuses_first_last(vendor_mysql: VendorTarget) -> None:
 
 def test_clickhouse_first_last(vendor_clickhouse: VendorTarget) -> None:
     _assert_all(vendor_clickhouse)
+    _assert_key_types(vendor_clickhouse)
 
 
 def test_snowflake_first_last(vendor_snowflake: VendorTarget) -> None:
     _assert_all(vendor_snowflake)
+    _assert_key_types(vendor_snowflake)
 
 
 def test_bigquery_first_last(vendor_bigquery: VendorTarget) -> None:
     _assert_all(vendor_bigquery)
+    _assert_key_types(vendor_bigquery)
 
 
 def test_databricks_first_last(vendor_databricks: VendorTarget) -> None:
     _assert_all(vendor_databricks)
+    _assert_key_types(vendor_databricks)
 
 
 def test_dremio_first_last(vendor_dremio: VendorTarget) -> None:
     _assert_all(vendor_dremio)
+    _assert_key_types(vendor_dremio)

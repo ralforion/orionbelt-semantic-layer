@@ -158,6 +158,85 @@ def _call(name: str) -> FunctionCall:
     )
 
 
+MULTI_FACT_YAML = """\
+version: 1.0
+settings:
+  queryTimezone: Europe/Berlin
+dataObjects:
+  Tickers:
+    code: TICKERS
+    database: W
+    schema: P
+    columns:
+      Ticker: {code: TICKER, abstractType: string}
+  Trades:
+    code: TRADES
+    database: W
+    schema: P
+    columns:
+      Trade Ticker: {code: TICKER, abstractType: string}
+      Price: {code: PRICE, abstractType: float}
+      Seq: {code: SEQ, abstractType: float, sqlPrecision: 20, sqlScale: 0}
+      Traded At: {code: TRADED_AT, abstractType: timestamp_tz}
+    joins:
+      - {joinType: many-to-one, joinTo: Tickers, columnsFrom: [Trade Ticker], columnsTo: [Ticker]}
+  Quotes:
+    code: QUOTES
+    database: W
+    schema: P
+    columns:
+      Quote Ticker: {code: TICKER, abstractType: string}
+      Bid: {code: BID, abstractType: float}
+    joins:
+      - {joinType: many-to-one, joinTo: Tickers, columnsFrom: [Quote Ticker], columnsTo: [Ticker]}
+dimensions:
+  Ticker: {dataObject: Tickers, column: Ticker, resultType: string}
+measures:
+  Bids:
+    columns: [{dataObject: Quotes, column: Bid}]
+    aggregation: sum
+  Close:
+    columns: [{dataObject: Trades, column: Price}]
+    aggregation: last
+    withinGroup: {column: {dataObject: Trades, column: Traded At}}
+  Last By Seq:
+    columns: [{dataObject: Trades, column: Price}]
+    aggregation: last
+    withinGroup: {column: {dataObject: Trades, column: Seq}}
+"""
+
+
+class TestMultiFactKeys:
+    """The legs that pad a sort key cast it to the type the owning leg's key has."""
+
+    def _sql(self, measure: str, dialect: str) -> str:
+        raw, source_map = TrackedLoader().load_string(MULTI_FACT_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(select=QuerySelect(dimensions=["Ticker"], measures=["Bids", measure]))
+        return CompilationPipeline().compile(query, model, dialect).sql
+
+    def test_decimal_key_keeps_its_declared_width(self) -> None:
+        """As FLOAT, 9007199254740993 tied with 9007199254740992 on Postgres."""
+        sql = self._sql("Last By Seq", "postgres")
+        assert 'CAST(NULL AS DECIMAL(20, 0)) AS "Last By Seq__wg"' in sql
+        assert "AS FLOAT" not in sql
+
+    def test_instant_key_in_no_query_timezone(self) -> None:
+        """Converted, a timestamp_tz key was a DATETIME on BigQuery beside TIMESTAMP pads,
+        and ordered by wall-clock time, which repeats an hour where a zone falls back."""
+        sql = self._sql("Close", "bigquery")
+        assert "CAST(NULL AS TIMESTAMP) AS `Close__wg`" in sql
+        assert "CAST(`Trades`.`TRADED_AT` AS TIMESTAMP) AS `Close__wg`" in sql
+        assert "DATETIME" not in sql
+
+    def test_clickhouse_casts_the_owning_key(self) -> None:
+        """ClickHouse does not settle a union's types itself, as for values."""
+        sql = self._sql("Last By Seq", "clickhouse")
+        assert sql.count('AS "Last By Seq__wg"') == 2
+        assert '"Trades"."SEQ" AS "Last By Seq__wg"' not in sql
+
+
 class TestDialects:
     @pytest.mark.parametrize(
         ("dialect", "last", "first"),

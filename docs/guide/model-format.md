@@ -745,6 +745,7 @@ By ticker and month this is each ticker's last price of the month. The value kee
 - Rows whose value or key is NULL are skipped (the last value there is, not the value of the last row); a group without such a row is NULL.
 - A tie on the key goes to the greatest value for `last` and the least for `first`, so every dialect answers the same.
 - `withinGroup` is required and takes no `order`: `last` is always the greatest key. One column (or an `expression`), no `distinct`, no `total`.
+- A timestamp key orders by its instants, not in the model's `queryTimezone`: where a zone falls back, the wall-clock times of one hour repeat, and the instants still order truly. The value itself is read in the query timezone as usual.
 - Repeated rows leave the answer as it is, so a fanned-out join does not change it, as for `min` and `max`.
 - Not available on MySQL (`UNSUPPORTED_AGGREGATION_FOR_DIALECT`): its only ordered aggregate, `GROUP_CONCAT`, returns a string whatever the column's type.
 

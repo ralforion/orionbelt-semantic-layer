@@ -107,19 +107,50 @@ def _source_column(ref: DataColumnRef, model: SemanticModel) -> DataObjectColumn
     return obj.columns.get(ref.column) if obj and ref.column else None
 
 
-def resolve_sort_key_type(measure: ResolvedMeasure, model: SemanticModel) -> str | None:
-    """The type of the sort key a leg carries for *measure*, for its NULL pads.
-
-    Untyped, the pads of the legs that do not own the measure came first in a
-    union of three and Postgres resolved the column as text, which a date key
-    from the owning leg then could not join (``UNION types text and date
-    cannot be matched``).
-    """
+def _sort_key_column(measure: ResolvedMeasure, model: SemanticModel) -> DataObjectColumn | None:
     model_measure = model.effective_measures.get(measure.name)
     if model_measure is None or model_measure.within_group is None:
         return None
-    column = _source_column(model_measure.within_group.column, model)
-    return column.abstract_type.value if column is not None else None
+    return _source_column(model_measure.within_group.column, model)
+
+
+def resolve_sort_key_type(
+    measure: ResolvedMeasure, model: SemanticModel, dialect: Dialect | None = None
+) -> str | None:
+    """The type every UNION leg agrees on for *measure*'s sort-key column.
+
+    The key aligns as a measure's value does (:func:`resolve_union_alignment_type`):
+    an integer key on BIGINT, a fractional one on its declared width or the
+    wide decimal, anything else on its own type. Untyped, the pads of the legs
+    that did not own the measure came first in a union of three and Postgres
+    resolved the column as text (``UNION types text and bigint cannot be
+    matched``); padded as FLOAT, an exact decimal key became a double there and
+    9007199254740992 tied with 9007199254740993. The key is the raw column, in
+    no query timezone (see ``_within_group_order``), so its own type is the
+    expression's.
+    """
+    column = _sort_key_column(measure, model)
+    if column is None:
+        return None
+    kind = column.abstract_type.value
+    if dialect is None or kind not in ("int", "float"):
+        return kind
+    return _numeric_alignment(kind, column, dialect)
+
+
+def resolve_owning_sort_key_cast(
+    measure: ResolvedMeasure, model: SemanticModel, dialect: Dialect | None = None
+) -> str | None:
+    """The cast for the owning leg's sort key, or ``None``: as for its value
+    (:func:`resolve_owning_leg_cast_type`), a numeric key is left to the
+    engine's own union resolution where it has one, and cast otherwise."""
+    column = _sort_key_column(measure, model)
+    if column is None:
+        return None
+    numeric = column.abstract_type.value in ("int", "float")
+    if numeric and dialect is not None and dialect.unions_resolve_leg_types:
+        return None
+    return resolve_sort_key_type(measure, model, dialect)
 
 
 def resolve_null_type_for_field(
@@ -288,6 +319,12 @@ def resolve_union_alignment_type(
     kind, column = _alignment_source(model_measure, model)
     if kind is None:
         return resolve_null_type_for_field(measure, 0, model, dialect)
+    return _numeric_alignment(kind, column, dialect)
+
+
+def _numeric_alignment(kind: str, column: DataObjectColumn | None, dialect: Dialect) -> str:
+    """BIGINT for an integer source; for a fractional one, its declared width or
+    the wide decimal of :func:`_fallback_alignment`."""
     if kind == "int":
         return dialect.render_obml_type(parse_data_type("bigint"))
 

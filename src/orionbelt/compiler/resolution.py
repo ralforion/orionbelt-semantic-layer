@@ -1665,7 +1665,14 @@ class QueryResolver:
         wg_col_name = wg.column.column or ""
         wg_obj = ctx.model.data_objects.get(wg_obj_name)
         if wg_obj and wg_col_name in wg_obj.columns:
-            wg_expr: Expr = make_column_expr(ctx.model, wg_obj_name, wg_col_name)
+            # In the column's own time, not the query's: a key only orders, and
+            # instants order truly where wall-clock times repeat (the hour a
+            # zone falls back). It also keeps the key the type its column
+            # declares, which the multi-fact legs' pads are cast to; converted,
+            # a timestamp_tz key was a DATETIME on BigQuery beside TIMESTAMP pads.
+            wg_expr: Expr = make_column_expr(
+                ctx.model, wg_obj_name, wg_col_name, in_query_timezone=False
+            )
         else:
             wg_expr = ColumnRef(name=wg_col_name, table=wg_obj_name)
         desc = agg == "LAST" if agg in _ORDERED_VALUE_CALLS else wg.order.upper() == "DESC"
