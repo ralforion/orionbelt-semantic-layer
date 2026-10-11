@@ -19,7 +19,7 @@ from orionbelt.models.concept_links import (
 )
 from orionbelt.models.errors import SemanticError, ValidationResult
 from orionbelt.models.expressions import find_malformed_measure_refs, find_qualified_refs
-from orionbelt.models.query import DimensionRef
+from orionbelt.models.query import DimensionRef, time_per_entries
 from orionbelt.models.rules import (
     AGGREGATE,
     ROW_LEVEL,
@@ -1997,6 +1997,18 @@ class ReferenceResolver:
         per = raw_metric.get("per")
         if not isinstance(per, list):
             return
+        if raw_metric.get("aggregation") in (ReaggregateAggType.FIRST, ReaggregateAggType.LAST):
+            entries = [e for e in per if isinstance(e, str)] if isinstance(per, list) else []
+            times = time_per_entries(entries, dimensions)
+            if len(times) != 1:
+                found = f"found {', '.join(repr(t) for t in times)}" if times else "found none"
+                report(
+                    "REAGGREGATE_ORDER_KEY",
+                    "per",
+                    f"Reaggregate metric '{name}' takes the {raw_metric['aggregation']} group "
+                    "by time, so 'per' needs exactly one time dimension to order by (a grain "
+                    f"such as 'Order Date:month', or a date or timestamp dimension); {found}.",
+                )
         for entry in per:
             if not isinstance(entry, str):
                 continue
@@ -2197,6 +2209,8 @@ _PICKS_AN_INNER_VALUE = frozenset(
         ReaggregateAggType.MEDIAN,
         ReaggregateAggType.PERCENTILE_CONT,
         ReaggregateAggType.PERCENTILE_DISC,
+        ReaggregateAggType.FIRST,
+        ReaggregateAggType.LAST,
     }
 )
 

@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from orionbelt.models.semantic import FilterLogic, TimeGrain
+from orionbelt.models.semantic import DataType, Dimension, FilterLogic, TimeGrain
 
 
 class Grouping(StrEnum):
@@ -106,6 +106,31 @@ class DimensionRef(BaseModel):
             name, grain_str = raw.rsplit(":", 1)
             return cls(name=name, grain=TimeGrain(grain_str))
         return cls(name=raw)
+
+
+_TEMPORAL_RESULT_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
+
+
+def time_per_entries(per: list[str], dimensions: dict[str, Dimension]) -> list[str]:
+    """The entries of a reaggregate metric's *per* that are points in time.
+
+    A ``first`` / ``last`` second stage orders the stage-1 groups by the one
+    such entry: one with a grain (``'Order Date:month'``), a dimension declaring
+    a ``timeGrain``, or a date or timestamp dimension. Entries that do not
+    parse or name no dimension are skipped; they are reported elsewhere.
+    """
+    entries: list[str] = []
+    for entry in per:
+        try:
+            ref = DimensionRef.parse(entry)
+        except ValueError:
+            continue
+        dimension = dimensions.get(ref.name)
+        if dimension is None:
+            continue
+        if ref.grain or dimension.time_grain or dimension.result_type in _TEMPORAL_RESULT_TYPES:
+            entries.append(entry)
+    return entries
 
 
 class Subquery(BaseModel):

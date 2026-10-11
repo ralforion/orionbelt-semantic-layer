@@ -7,7 +7,7 @@ on the key arbitrarily, so each rendering orders by the (key, value) pair: a
 tie goes to the greatest value for ``last`` and the least for ``first``. Rows
 without a value or a key are skipped. The same answers are asserted on seven
 engines, for integers past a double's 2^53, strings, a date key, NULLs, a tie,
-a measure filter, a derived metric and no rows; MySQL refuses the aggregation.
+a measure filter, a derived metric and no rows; MySQL and Dremio refuse the aggregation.
 """
 
 from __future__ import annotations
@@ -75,6 +75,9 @@ ROWS: list[tuple[str, int | None, int | None, str | None, str | None]] = [
     # Past a double's 2^53.
     ("D", 5, 9007199254740993, "big", "2026-05-01"),
     ("D", 4, 1, "one", "2026-04-01"),
+    # A group whose key is NULL, as any unmatched join makes one: Dremio's
+    # ordered ARRAY_AGG returned an empty array for it.
+    (None, 2, 3, "three", "2026-02-01"),
 ]
 
 MODEL_YAML = """
@@ -242,6 +245,7 @@ def _assert_all(target: VendorTarget) -> None:
         "B": (4, 4, "four", 4, 4),
         "C": (None, None, None, None, None),
         "D": (9007199254740993, 1, "big", 9007199254740993, 1),
+        None: (3, 3, "three", 3, 3),
     }
     assert got == want, f"{target.name}: {got}"
 
@@ -263,6 +267,7 @@ def _assert_all(target: VendorTarget) -> None:
         # C's one row has a day but no value.
         "C": (None, None, None, "2026-01-01", None),
         "D": (None, 20, "big", "2026-05-01", 9007199254740993),
+        None: (None, None, "three", "2026-02-01", 3),
     }
     assert got_multi == want_multi, f"{target.name}: {got_multi}"
 
@@ -275,11 +280,9 @@ def _assert_all(target: VendorTarget) -> None:
     got_all = [(r["last value"], r["first value"], r["latest value"]) for r in rows]
     assert got_all == [(9007199254740993, 10, 9007199254740993)], f"{target.name}: {got_all}"
 
-    # No rows at all: NULL. Dremio returns no row for an ungrouped ordered
-    # ARRAY_AGG over no rows, as for its median.
+    # No rows at all: NULL.
     rows = _run(target, model, [], ["Last Value"], [_group("none")])
-    want_none = [] if target.dialect == "dremio" else [None]
-    assert [r["last value"] for r in rows] == want_none, f"{target.name}: {rows}"
+    assert [r["last value"] for r in rows] == [None], f"{target.name}: {rows}"
 
 
 #: Keys whose type the multi-fact legs' pads must match: an exact decimal past
@@ -307,7 +310,6 @@ KEY_TYPES: dict[str, tuple[str, str, str, str]] = {
     "snowflake": ("NUMBER(20, 0)", "TIMESTAMP_TZ", "TIMESTAMP_NTZ(3)", "DOUBLE"),
     "bigquery": ("NUMERIC", "TIMESTAMP", "DATETIME", "FLOAT64"),
     "databricks": ("DECIMAL(20, 0)", "TIMESTAMP", "TIMESTAMP_NTZ", "DOUBLE"),
-    "dremio": ("DECIMAL(20, 0)", "TIMESTAMP", "TIMESTAMP", "DOUBLE"),
 }
 
 KEYS_YAML = """
@@ -424,6 +426,13 @@ def test_mysql_refuses_first_last(vendor_mysql: VendorTarget) -> None:
         _run(vendor_mysql, model, ["Group"], ["Last Value"])
 
 
+def test_dremio_refuses_first_last(vendor_dremio: VendorTarget) -> None:
+    """Its ordered ARRAY_AGG answers an empty array for a NULL group key."""
+    model = _prepare(vendor_dremio)
+    with pytest.raises(UnsupportedAggregationError, match="LAST"):
+        _run(vendor_dremio, model, ["Group"], ["Last Value"])
+
+
 def test_clickhouse_first_last(vendor_clickhouse: VendorTarget) -> None:
     _assert_all(vendor_clickhouse)
     _assert_key_types(vendor_clickhouse)
@@ -442,8 +451,3 @@ def test_bigquery_first_last(vendor_bigquery: VendorTarget) -> None:
 def test_databricks_first_last(vendor_databricks: VendorTarget) -> None:
     _assert_all(vendor_databricks)
     _assert_key_types(vendor_databricks)
-
-
-def test_dremio_first_last(vendor_dremio: VendorTarget) -> None:
-    _assert_all(vendor_dremio)
-    _assert_key_types(vendor_dremio)

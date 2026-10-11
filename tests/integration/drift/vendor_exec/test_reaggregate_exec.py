@@ -35,6 +35,7 @@ from typing import Any
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import QueryFilter, QueryObject, QueryOrderBy, QuerySelect
 from orionbelt.models.semantic import SemanticModel
@@ -178,6 +179,16 @@ metrics:
     per: [Customer]
     aggregation: percentile_disc
     percentile: 0.25
+  First Month Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Order Month]
+    aggregation: first
+  Last Month Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Order Month]
+    aggregation: last
   Median Orders per Customer:
     type: reaggregate
     measure: Orders Count
@@ -807,6 +818,28 @@ def _assert_exact_integer_average(target: VendorTarget, model: SemanticModel) ->
     assert got == [(want, want)], f"{target.name}: {got}"
 
 
+def _assert_first_last_month(target: VendorTarget, model: SemanticModel) -> None:
+    """The earliest / latest month's revenue, ordered by the time ``per`` entry.
+
+    By month: DE Jan 80, Feb 1; FR Jan 5, Feb 1000; NULL Feb 40 alone. In all,
+    Jan 85 and Feb 1041. MySQL has no ordered aggregate to take them with, and
+    Dremio's answers an empty array for the NULL country.
+    """
+    measures = ["First Month Revenue", "Last Month Revenue"]
+    if target.dialect in ("mysql", "dremio"):
+        with pytest.raises(UnsupportedAggregationError):
+            _by_country(target, model, measures)
+        return
+    got = _by_country(target, model, measures)
+    want = {"DE": (80, 1), "FR": (5, 1000), None: (40, 40)}
+    assert got == {k: tuple(Decimal(v) for v in vs) for k, vs in want.items()}, (
+        f"{target.name}: {got}"
+    )
+    rows = _run(target, model, QueryObject(select=QuerySelect(measures=measures)))
+    got_all = [tuple(_number(r[m.lower()]) for m in measures) for r in rows]
+    assert got_all == [(Decimal(85), Decimal(1041))], f"{target.name}: {got_all}"
+
+
 def _assert_all(target: VendorTarget) -> None:
     model = _prepare(target)
     _assert_grouped(target, model)
@@ -820,6 +853,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_nested(target, model)
     _assert_having(target, model)
     _assert_exact_integer_average(target, model)
+    _assert_first_last_month(target, model)
 
 
 def test_duckdb_reaggregate(vendor_duckdb: VendorTarget) -> None:

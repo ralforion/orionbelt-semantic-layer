@@ -282,7 +282,7 @@ Represents a two-stage metric: the base measure is aggregated at the query grain
 Additional required:
 - exactly one of `obsl:baseMeasure` or `obsl:baseMetric` (another `obsl:ReaggregateMetric`, whose two stages then run as this metric's first)
 - `obsl:per` (one or more dimension labels, optionally `name:grain`)
-- `obsl:aggregation` (second-stage function: sum, avg, min, max, count, median, percentile_cont, percentile_disc)
+- `obsl:aggregation` (second-stage function: sum, avg, min, max, count, median, percentile_cont, percentile_disc, first, last)
 - `obsl:percentile` (the fraction of a percentile_cont / percentile_disc stage)
 
 Optional:
