@@ -270,14 +270,20 @@ def _with_population(
             f"no data object of {all_per} reaches the others, so there is no one table "
             f"of members to list",
         )
-    outside = [
-        d.name for d in resolved.dimensions if d.via is not None or d.object_name not in members
-    ]
+    # A dimension counts with every object its computed column reads: one on
+    # the clients computed from the sales is no property of a client without
+    # sales, and the member query, which has no sales, could not read it.
+    reads = {
+        d.name: None if d.via is not None else _column_objects(d.object_name, d.column_name, model)
+        for d in resolved.dimensions
+    }
+    reads.update({entry: _field_objects(entry, model) for entry in all_per})
+    outside = [name for name, objs in reads.items() if objs is None or not objs <= members]
     if outside:
         _refuse_population(
             measure,
-            f"each dimension of the query has to describe the members of {per}, reached "
-            f"from their data object, and {outside} "
+            f"each dimension of the query and of 'per' has to describe the members of "
+            f"{all_per}, read from their data objects alone, and {outside} "
             f"{'does' if len(outside) == 1 else 'do'} not",
         )
     member_model = model.model_copy(
@@ -384,11 +390,9 @@ def _filter_objects(item: QueryFilter, model: SemanticModel) -> set[str] | None:
     filters' fields, resolved as the subquery resolves them (a column of its
     object, a dimension, or a qualified ``Object.Column``).
     """
-    found: set[str] = set()
-    column = _field_column(item.field, model)
-    if column is None:
+    found = _field_objects(item.field, model)
+    if found is None:
         return None
-    found |= _column_objects(*column, model)
     if item.subquery is not None:
         inner = item.subquery
         found.add(inner.data_object)
@@ -403,6 +407,12 @@ def _filter_objects(item: QueryFilter, model: SemanticModel) -> set[str] | None:
                     return None
                 found |= nested
     return found
+
+
+def _field_objects(field: str, model: SemanticModel) -> set[str] | None:
+    """The data objects a dimension or ``Object.Column`` *field* reads."""
+    column = _field_column(field, model)
+    return None if column is None else _column_objects(*column, model)
 
 
 def _field_column(field: str, model: SemanticModel) -> tuple[str, str] | None:

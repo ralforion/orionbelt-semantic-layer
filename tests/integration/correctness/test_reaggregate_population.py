@@ -329,9 +329,9 @@ def test_exists_on_member_objects_limits_the_members(
     assert row["Clients All"] == len([c for c in clients if c["country"] == "Germany"])
 
 
-def test_computed_member_column_reading_the_facts(commerce_db: duckdb.DuckDBPyConnection) -> None:
-    """A clients column computed from the sales reads a fact: a filter on it
-    limits the measure, and stays out of the member query, which has no sales."""
+@pytest.fixture(scope="module")
+def sale_date_model() -> SemanticModel:
+    """The clients with a column computed from the sales, and metrics over it."""
     _require_seed()
     raw, source_map = TrackedLoader().load(COMMERCE_MODEL_YAML)
     raw["dataObjects"]["Clients"]["columns"]["Client Sale Date"] = {
@@ -344,12 +344,40 @@ def test_computed_member_column_reading_the_facts(commerce_db: duckdb.DuckDBPyCo
         "resultType": "date",
     }
     raw["metrics"]["Clients All"] = _METRICS["Clients All"]
-    probe_model, result = ReferenceResolver().resolve(raw, source_map)
+    raw["metrics"]["Clients by Sale Date"] = {
+        **_METRICS["Clients All"],
+        "per": ["Client Name", "Client Sale Date"],
+    }
+    resolved, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
+    return resolved
+
+
+def test_computed_member_column_reading_the_facts(
+    sale_date_model: SemanticModel, commerce_db: duckdb.DuckDBPyConnection
+) -> None:
+    """A clients column computed from the sales reads a fact: a filter on it
+    limits the measure, and stays out of the member query, which has no sales."""
     query = QueryObject(
         select=QuerySelect(measures=["Clients All"]),
         where=[QueryFilter(field="Client Sale Date", op=">=", value="2022-01-01")],
     )
-    sql = CompilationPipeline().compile(query, probe_model, "duckdb").sql
+    sql = CompilationPipeline().compile(query, sale_date_model, "duckdb").sql
     ((count,),) = commerce_db.sql(sql).fetchall()
     assert count == 500
+
+
+@pytest.mark.parametrize(
+    ("dimensions", "measure"),
+    [(["Client Sale Date"], "Clients All"), ([], "Clients by Sale Date")],
+    ids=["grouped by it", "in per"],
+)
+def test_computed_dimension_reading_the_facts_refused(
+    sale_date_model: SemanticModel, dimensions: list[str], measure: str
+) -> None:
+    """The same column as a dimension, of the query or in ``per``, is no
+    property of a client without sales: refused, not compiled to SQL that reads
+    a table the member query does not have."""
+    query = QueryObject(select=QuerySelect(dimensions=dimensions, measures=[measure]))
+    with pytest.raises(ResolutionError, match="Client Sale Date"):
+        CompilationPipeline().compile(query, sale_date_model, "duckdb")
