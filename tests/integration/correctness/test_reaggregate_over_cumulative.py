@@ -41,6 +41,24 @@ _METRICS: dict[str, dict[str, Any]] = {
         "per": ["Sales Month"],
         "aggregation": "count",
     },
+    "Max Monthly YTD": {
+        "type": "reaggregate",
+        "measure": "Avg Monthly YTD",
+        "per": ["Sales Month"],
+        "aggregation": "max",
+    },
+    **{
+        f"{agg.title()} By {'Year First' if year_first else 'Month First'}": {
+            "type": "reaggregate",
+            "measure": "YTD Sales",
+            "per": ["Sales Month:year", "Sales Month"]
+            if year_first
+            else ["Sales Month", "Sales Month:year"],
+            "aggregation": agg,
+        }
+        for agg in ("avg", "count")
+        for year_first in (True, False)
+    },
     "Year End YTD": {
         "type": "reaggregate",
         "measure": "YTD Sales",
@@ -215,3 +233,37 @@ def test_query_by_the_same_dimension_at_a_coarser_grain(run: Callable, from_febr
     )
     assert [row[1:] for row in same] == [row[1:] for row in by_year]
     assert all(row[2] <= 12 for row in same)
+
+
+_FEBRUARY = [QueryFilter(field="Sales Month", op=">=", value="2021-02-01")]
+
+
+def test_nested_over_the_same_dimension_at_a_coarser_grain(run: Callable) -> None:
+    """The axes are kept apart down the chain: an outer reaggregate metric
+    passes ``Sales Month:year`` and its own ``per`` to the inner one."""
+    by_year = sorted(
+        (r["Sales Year"], r["Max Monthly YTD"])
+        for r in run(["Sales Year"], ["Max Monthly YTD"], where=_FEBRUARY)
+    )
+    same = sorted(
+        (r["Sales Month"], r["Max Monthly YTD"])
+        for r in run(["Sales Month:year"], ["Max Monthly YTD"], where=_FEBRUARY)
+    )
+    assert [v for _, v in same] == [v for _, v in by_year]
+
+
+def test_two_grains_of_one_dimension_in_per(run: Callable) -> None:
+    """``per: [Sales Month:year, Sales Month]`` answers as the reversed order:
+    the cumulative's own grain keeps the name, whichever comes first."""
+    year_first = ["Avg By Year First", "Count By Year First"]
+    month_first = ["Avg By Month First", "Count By Month First"]
+    a = run(["Country Name"], year_first, where=_FEBRUARY)
+    b = {r["Country Name"]: r for r in run(["Country Name"], month_first, where=_FEBRUARY)}
+    assert a
+    for r in a:
+        other = b[r["Country Name"]]
+        assert (r[year_first[0]], r[year_first[1]]) == (
+            other[month_first[0]],
+            other[month_first[1]],
+        )
+        assert r[year_first[1]] <= 60

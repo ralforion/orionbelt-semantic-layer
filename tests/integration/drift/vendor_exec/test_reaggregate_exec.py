@@ -340,6 +340,11 @@ metrics:
     measure: Running Revenue
     per: [Order Month]
     aggregation: avg
+  Months Running Revenue:
+    type: reaggregate
+    measure: Running Revenue
+    per: ['Order Month:year', Order Month]
+    aggregation: count
   Revenue MoM:
     type: period_over_period
     expression: '{{[Revenue]}}'
@@ -934,6 +939,18 @@ def _assert_reaggregate_over_cumulative(target: VendorTarget, model: SemanticMod
     )
     got_year = [_number(r["avg monthly running revenue"]) for r in rows]
     assert got_year == [Decimal(1126)], f"{target.name}: {got_year}"
+
+    # Two grains of it in per: one stage-1 group per month shown.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(measures=["Months Running Revenue"]),
+            where=[QueryFilter(field="Order Month", op=">=", value="2026-02-01")],
+        ),
+    )
+    months = [_number(r["months running revenue"]) for r in rows]
+    assert months == [1], f"{target.name}: {months}"
 
 
 def _assert_all(target: VendorTarget) -> None:

@@ -146,14 +146,11 @@ def _stage_one(
         ):
             continue
         added.append((entry, ref))
-    plan_model, query_dims, synthetic = _distinct_cumulative_axes(
-        measure, query.select.dimensions, [r for _, r in added], model
+    plan_model, planned_dims, synthetic = _distinct_cumulative_axes(
+        measure, [*query.select.dimensions, *(entry for entry, _ in added)], model
     )
     sub_query = QueryObject(
-        select=QuerySelect(
-            dimensions=[*query_dims, *(entry for entry, _ in added)],
-            measures=[measure],
-        ),
+        select=QuerySelect(dimensions=planned_dims, measures=[measure]),
         where=list(query.where),
         having=[QueryFilter(field=h.field, op=h.op, value=h.value) for h in having],
         use_path_names=list(query.use_path_names),
@@ -191,47 +188,81 @@ def _stage_one(
     return named, {entry: column for (entry, _), column in zip(added, columns, strict=True)}
 
 
+def _cumulative_time_dimension(measure: str, model: SemanticModel) -> str | None:
+    """The time dimension of the cumulative metric *measure*'s chain reaches,
+    through reaggregate metrics, or ``None`` when it reaches none."""
+    seen: set[str] = set()
+    current: str | None = measure
+    while current is not None and current not in seen:
+        seen.add(current)
+        metric = model.metrics.get(current)
+        if metric is None:
+            return None
+        if metric.type is MetricType.CUMULATIVE:
+            return metric.time_dimension
+        if metric.type is not MetricType.REAGGREGATE:
+            return None
+        current = metric.measure
+    return None
+
+
 def _distinct_cumulative_axes(
     measure: str,
-    query_dims: list[str | CoalesceDimension],
-    refs: list[DimensionRef],
+    dims: list[str | CoalesceDimension],
     model: SemanticModel,
 ) -> tuple[SemanticModel, list[str | CoalesceDimension], dict[str, str]]:
-    """Stage 1's model and query dimensions, with a cumulative's axes kept apart.
+    """Stage 1's model and dimensions, with a cumulative's axes kept apart.
 
-    A ``per`` bucket of a dimension the query also groups by at another grain
-    (``per: [Order Date]`` by month, the query by ``Order Date:year``) gives two
-    columns of one name, which the planner names after the dimension. For a
-    plain measure :func:`_name_per_buckets` tells them apart after planning,
-    but a cumulative metric's windows are built while planning: its look-back
-    joined the shown months by year and multiplied the rows. So the query's
-    dimension is planned as a synthetic one at its grain - the cumulative's own
-    time dimension keeps its name, as it has to to be selected - and its column
-    is renamed back afterwards (the returned mapping).
+    A dimension named twice at different grains - the query's
+    ``Order Date:year`` beside ``per: [Order Date]``, two ``per`` buckets of
+    it, or one an outer reaggregate metric passes down - gives two columns of
+    one name, which the planner names after the dimension. For a plain measure
+    :func:`_name_per_buckets` tells them apart after planning, but a cumulative
+    metric's windows are built while planning, anywhere down the chain: its
+    look-back joined the shown months by year and multiplied the rows.
+
+    So when the chain reaches a cumulative metric, each dimension named more
+    than once keeps its name for one entry - for the cumulative's own time
+    dimension the one at its declared grain, which the cumulative has to find
+    selected - and every other entry is planned as a synthetic dimension at its
+    grain. The returned mapping renames those columns back after planning,
+    each to its dimension's name, which :func:`_name_per_buckets` then tells
+    apart by position as for any measure.
     """
-    metric = model.metrics.get(measure)
-    if metric is None or metric.type is not MetricType.CUMULATIVE:
-        return model, list(query_dims), {}
-    per_names = {r.name for r in refs}
+    time_dim = _cumulative_time_dimension(measure, model)
+    if time_dim is None:
+        return model, list(dims), {}
+    refs = [
+        (index, reaggregate_per_ref(model, entry))
+        for index, entry in enumerate(dims)
+        if isinstance(entry, str)
+    ]
+    by_name: dict[str, list[tuple[int, DimensionRef]]] = {}
+    for index, ref in refs:
+        by_name.setdefault(ref.name, []).append((index, ref))
+    renamed: set[int] = set()
+    for name, entries in by_name.items():
+        if len(entries) < 2 or name not in model.dimensions:
+            continue
+        declared = model.dimensions[name].time_grain
+        keep = entries[0][0]
+        if name == time_dim:
+            keep = next((i for i, r in entries if (r.grain or declared) == declared), keep)
+        renamed.update(i for i, _ in entries if i != keep)
+    if not renamed:
+        return model, list(dims), {}
     dimensions = dict(model.dimensions)
-    planned: list[str | CoalesceDimension] = []
+    planned: list[str | CoalesceDimension] = list(dims)
     synthetic: dict[str, str] = {}
-    for entry in query_dims:
-        if not isinstance(entry, str):
-            planned.append(entry)
+    for index, ref in refs:
+        if index not in renamed:
             continue
-        ref = reaggregate_per_ref(model, entry)
-        declared = model.dimensions.get(ref.name)
-        if declared is None or ref.name not in per_names:
-            planned.append(entry)
-            continue
-        grain = ref.grain or declared.time_grain
-        name = f"__reaggregate_axis_{ref.name}_{grain.value if grain else 'value'}"
-        dimensions[name] = declared.model_copy(update={"name": name, "time_grain": grain})
-        planned.append(name)
+        declared_dim = model.dimensions[ref.name]
+        grain = ref.grain or declared_dim.time_grain
+        name = f"__reaggregate_axis_{index}_{ref.name}"
+        dimensions[name] = declared_dim.model_copy(update={"name": name, "time_grain": grain})
+        planned[index] = name
         synthetic[name] = ref.name
-    if not synthetic:
-        return model, list(query_dims), {}
     return model.model_copy(update={"dimensions": dimensions}), planned, synthetic
 
 
