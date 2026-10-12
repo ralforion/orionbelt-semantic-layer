@@ -298,6 +298,18 @@ class ReaggregateAggType(StrEnum):
     LAST = "last"
 
 
+class ReaggregatePopulation(StrEnum):
+    """Where a reaggregate metric's first-stage groups come from.
+
+    ``facts``: the groups the measure has rows for. ``dimension``: every member
+    of the ``per`` dimensions, read from their own data object; a member
+    without rows takes the measure's ``defaultValue``, 0 for a count, else NULL.
+    """
+
+    FACTS = "facts"
+    DIMENSION = "dimension"
+
+
 class GrainToDate(StrEnum):
     YEAR = "year"
     QUARTER = "quarter"
@@ -1265,6 +1277,7 @@ _REAGGREGATE_FIELDS = frozenset(
         "aggregation",
         "having",
         "percentile",
+        "population",
         "data_type",
         "description",
         "format",
@@ -1319,6 +1332,9 @@ class Metric(BaseModel):
     having: list[ReaggregateHaving] = Field(default_factory=list)
     # The fraction of a ``percentile_cont`` / ``percentile_disc`` second stage.
     percentile: float | None = None
+    # Where the first-stage groups come from: the facts (default) or every
+    # member of the ``per`` dimensions.
+    population: ReaggregatePopulation | None = None
     # Common
     data_type: str | None = Field(None, alias="dataType")
     description: str | None = None
@@ -1344,10 +1360,16 @@ class Metric(BaseModel):
         if self.type == MetricType.REAGGREGATE:
             self._validate_reaggregate()
             return self
-        if self.per or self.aggregation is not None or self.having or self.percentile is not None:
+        if (
+            self.per
+            or self.aggregation is not None
+            or self.having
+            or self.percentile is not None
+            or self.population is not None
+        ):
             raise ValueError(
-                "'per', 'aggregation', 'having' and 'percentile' are only valid on "
-                "reaggregate metrics"
+                "'per', 'aggregation', 'having', 'percentile' and 'population' are only "
+                "valid on reaggregate metrics"
             )
         if self.type == MetricType.DERIVED:
             if not self.expression:

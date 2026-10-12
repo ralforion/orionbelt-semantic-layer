@@ -33,6 +33,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import replace
 from decimal import Decimal
 from itertools import count
+from typing import NoReturn
 
 from orionbelt.ast.nodes import (
     CTE,
@@ -50,6 +51,8 @@ from orionbelt.ast.nodes import (
     Select,
     Unnest,
 )
+from orionbelt.compiler.filters import _resolve_subquery_filter_field
+from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.late_window import is_late
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
 from orionbelt.compiler.metric_resolution import (
@@ -67,21 +70,26 @@ from orionbelt.compiler.type_resolver import (
     resolve_metric_data_type,
 )
 from orionbelt.dialect.base import Dialect
+from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
     CoalesceDimension,
     DimensionRef,
     QueryFilter,
+    QueryFilterGroup,
     QueryObject,
     QuerySelect,
     time_per_entries,
 )
 from orionbelt.models.semantic import (
+    AggregationType,
     DataObject,
+    FilterLogic,
     Measure,
     Metric,
     MetricType,
     ReaggregateAggType,
     ReaggregateHaving,
+    ReaggregatePopulation,
     SemanticModel,
     TimeGrain,
 )
@@ -115,6 +123,12 @@ def _having(model: SemanticModel, name: str) -> list[ReaggregateHaving]:
     return metric.having if metric is not None else []
 
 
+def _population(model: SemanticModel, name: str) -> ReaggregatePopulation:
+    """Where the reaggregate metric *name*'s first-stage groups come from."""
+    metric = model.metrics.get(name)
+    return (metric.population if metric is not None else None) or ReaggregatePopulation.FACTS
+
+
 def _having_key(having: list[ReaggregateHaving]) -> str:
     return "\n".join(h.model_dump_json() for h in having)
 
@@ -127,6 +141,7 @@ def _stage_one(
     measure: str,
     per: list[str],
     having: list[ReaggregateHaving],
+    population: ReaggregatePopulation,
     resolved: ResolvedQuery,
     query: QueryObject,
     model: SemanticModel,
@@ -142,6 +157,10 @@ def _stage_one(
 
     A ``per`` entry the query's grouping already covers is left out, and so is
     one naming the same bucket as an earlier entry.
+
+    With *population* ``dimension`` the groups are every member of the ``per``
+    dimensions instead of the ones the measure has rows for (see
+    :func:`_with_population`).
     """
     added: list[tuple[str, DimensionRef]] = []
     for entry in per:
@@ -190,7 +209,228 @@ def _stage_one(
     named, columns = _name_per_buckets(
         scan, [d.name for d in resolved.dimensions], [r for _, r in added]
     )
+    if population is ReaggregatePopulation.DIMENSION and added:
+        named = _with_population(
+            named,
+            measure,
+            per,
+            [entry for entry, _ in added],
+            resolved,
+            query,
+            model,
+            dialect,
+            qualify_table,
+        )
     return named, {entry: column for (entry, _), column in zip(added, columns, strict=True)}
+
+
+_MEMBERS = "reagg_members"
+_FACTS = "reagg_facts"
+
+
+def _with_population(
+    facts: Select,
+    measure: str,
+    all_per: list[str],
+    per: list[str],
+    resolved: ResolvedQuery,
+    query: QueryObject,
+    model: SemanticModel,
+    dialect: Dialect,
+    qualify_table: Callable[[DataObject], str],
+) -> Select:
+    """*facts* over every member of the *per* dimensions, not only those with rows.
+
+    *all_per* is the metric's ``per``, *per* the entries stage 1 added to the
+    query's grouping. The members are the query's dimensions and *per*,
+    planned as a query of their own over the data objects one of the
+    *all_per* dimensions' objects reaches - so it starts from the member
+    table, not from a fact, also when the query already groups by that
+    dimension. Each query dimension has to be among them: it describes the
+    member (the customer's country), and one from elsewhere (the order month)
+    has no members to list. The part of a filter that tests only those
+    objects applies to the members (see :func:`_member_part`); one on the
+    facts limits the measure, not who counts.
+
+    A member without rows takes the measure's ``defaultValue``, or 0 for a
+    count, which is what a count reports over no rows; otherwise NULL.
+    """
+    dim_names = [d.name for d in resolved.dimensions]
+    graph = JoinGraph.of(model, query.use_path_names)
+    roots = {view for entry in all_per if (view := model.dimensions[entry].view) is not None}
+    # The objects one of the ``per`` dimensions' objects reaches, if one reaches
+    # the others; then the query's dimensions not among them.
+    members = next(
+        (reach for root in sorted(roots) if roots <= (reach := {root} | graph.descendants(root))),
+        None,
+    )
+    if members is None:
+        _refuse_population(
+            measure,
+            f"no data object of {all_per} reaches the others, so there is no one table "
+            f"of members to list",
+        )
+    # A dimension counts with every object its computed column reads: one on
+    # the clients computed from the sales is no property of a client without
+    # sales, and the member query, which has no sales, could not read it.
+    reads = {
+        d.name: None if d.via is not None else _column_objects(d.object_name, d.column_name, model)
+        for d in resolved.dimensions
+    }
+    reads.update({entry: _field_objects(entry, model) for entry in all_per})
+    outside = [name for name, objs in reads.items() if objs is None or not objs <= members]
+    if outside:
+        _refuse_population(
+            measure,
+            f"each dimension of the query and of 'per' has to describe the members of "
+            f"{all_per}, read from their data objects alone, and {outside} "
+            f"{'does' if len(outside) == 1 else 'do'} not",
+        )
+    member_model = model.model_copy(
+        update={"data_objects": {n: o for n, o in model.data_objects.items() if n in members}}
+    )
+    member_query = QueryObject(
+        select=QuerySelect(dimensions=[*query.select.dimensions, *per]),
+        where=[part for f in query.where if (part := _member_part(f, members, model))],
+        use_path_names=list(query.use_path_names),
+    )
+    # Imported here for the same reason as in :func:`_stage_one`.
+    from orionbelt.compiler.pipeline import plan_in_own_right
+
+    listed, _ = plan_in_own_right(member_query, member_model, dialect, qualify_table)
+    listed = _own_cte_names(listed, f"{_MEMBERS}_")
+    facts = _own_cte_names(facts, f"{_FACTS}_")
+    keys = [*dim_names, *per]
+    ctes = [
+        *listed.ctes,
+        CTE(name=_MEMBERS, query=replace(listed, ctes=[])),
+        *facts.ctes,
+        CTE(name=_FACTS, query=replace(facts, ctes=[])),
+    ]
+    value: Expr = ColumnRef(name=measure, table=_FACTS)
+    empty = _empty_value(measure, model)
+    if empty is not None:
+        value = FunctionCall(name="COALESCE", args=[value, empty])
+    return Select(
+        columns=[
+            *(AliasedExpr(expr=ColumnRef(name=k, table=_MEMBERS), alias=k) for k in keys),
+            AliasedExpr(expr=value, alias=measure),
+        ],
+        from_=From(source=_MEMBERS, alias=_MEMBERS),
+        joins=[
+            Join(
+                join_type=JoinType.LEFT,
+                source=_FACTS,
+                alias=_FACTS,
+                on=_join_on(_MEMBERS, _FACTS, keys),
+            )
+        ],
+        ctes=ctes,
+    )
+
+
+def _refuse_population(measure: str, reason: str) -> NoReturn:
+    raise ResolutionError(
+        [
+            SemanticError(
+                code="REAGGREGATE_POPULATION_GROUPING",
+                message=(
+                    f"The first stage of '{measure}' takes its population from the "
+                    f"dimension, but {reason}."
+                ),
+                path="select.dimensions",
+                hint=(
+                    "Group by dimensions of the members, or use a reaggregate metric "
+                    "without 'population: dimension'."
+                ),
+            )
+        ]
+    )
+
+
+def _empty_value(measure: str, model: SemanticModel) -> Expr | None:
+    """What *measure* reports for a member without rows (see :func:`_with_population`)."""
+    declared = model.effective_measures.get(measure)
+    if declared is None:
+        return None
+    if declared.default_value is not None:
+        return Literal(value=declared.default_value)
+    if declared.aggregation in (AggregationType.COUNT, AggregationType.COUNT_DISTINCT):
+        return Literal.number(0)
+    return None
+
+
+def _member_part(
+    item: QueryFilter | QueryFilterGroup, objects: set[str], model: SemanticModel
+) -> QueryFilter | QueryFilterGroup | None:
+    """The part of *item* that tests only columns on *objects*, or ``None``.
+
+    The conjuncts of an ``and`` group stand alone, so the ones on the members
+    apply to them whatever the others test: ``Gender = F and Order Date >=
+    2022`` keeps ``Gender = F``. An ``or`` or negated group is all or nothing,
+    since dropping part of it changes what the rest means. An ``exists`` /
+    ``nonexists`` test applies only when its subquery reads *objects* only too.
+    A computed column counts with every object its expression reads.
+    """
+    if isinstance(item, QueryFilterGroup):
+        if item.logic is FilterLogic.AND and not item.negated:
+            parts = [p for child in item.filters if (p := _member_part(child, objects, model))]
+            return item.model_copy(update={"filters": parts}) if parts else None
+        whole = all(_member_part(child, objects, model) == child for child in item.filters)
+        return item if whole else None
+    reads = _filter_objects(item, model)
+    return item if reads is not None and reads <= objects else None
+
+
+def _filter_objects(item: QueryFilter, model: SemanticModel) -> set[str] | None:
+    """Every data object *item* reads, or ``None`` when it reads through a role.
+
+    A field's own object and whatever its computed column reads; for an
+    ``exists`` / ``nonexists``, also the subquery's object and each of its
+    filters' fields, resolved as the subquery resolves them (a column of its
+    object, a dimension, or a qualified ``Object.Column``).
+    """
+    found = _field_objects(item.field, model)
+    if found is None:
+        return None
+    if item.subquery is not None:
+        inner = item.subquery
+        found.add(inner.data_object)
+        for sub in inner.filter:
+            ref = _resolve_subquery_filter_field(sub.field, model, inner.data_object, [])
+            if ref is None:
+                return None
+            found |= _column_objects(*ref, model)
+            if sub.subquery is not None:
+                nested = _filter_objects(sub, model)
+                if nested is None:
+                    return None
+                found |= nested
+    return found
+
+
+def _field_objects(field: str, model: SemanticModel) -> set[str] | None:
+    """The data objects a dimension or ``Object.Column`` *field* reads."""
+    column = _field_column(field, model)
+    return None if column is None else _column_objects(*column, model)
+
+
+def _field_column(field: str, model: SemanticModel) -> tuple[str, str] | None:
+    """The (data object, column) a query filter's *field* tests."""
+    dimension = model.dimensions.get(field.split(":", 1)[0])
+    if dimension is not None:
+        if dimension.via is not None or dimension.view is None or dimension.column is None:
+            return None
+        return dimension.view, dimension.column
+    if "." in field:
+        obj, _, col = field.partition(".")
+        return obj.strip(), col.strip()
+    return None
+
+
+def _column_objects(obj: str, column: str, model: SemanticModel) -> set[str]:
+    """*obj* and the data objects its *column*'s expression reads."""
+    return {obj, *model.column_reference_objects(obj, column)}
 
 
 def _cumulative_time_dimension(measure: str, model: SemanticModel) -> str | None:
@@ -649,11 +889,17 @@ def wrap_with_reaggregate(
 
     # One pair of CTEs per (measure, per, having): two metrics that differ only
     # in their second-stage function share the scan.
-    groups: dict[tuple[str, tuple[str, ...], str], list[ResolvedMeasure]] = {}
+    groups: dict[tuple[str, tuple[str, ...], str, ReaggregatePopulation], list[ResolvedMeasure]]
+    groups = {}
     for m in reaggregates:
         assert m.reaggregate_measure is not None
         having = _having(model, m.name)
-        key = (m.reaggregate_measure, tuple(m.reaggregate_per), _having_key(having))
+        key = (
+            m.reaggregate_measure,
+            tuple(m.reaggregate_per),
+            _having_key(having),
+            _population(model, m.name),
+        )
         groups.setdefault(key, []).append(m)
 
     ctes = list(ast.ctes)
@@ -693,12 +939,12 @@ def wrap_with_reaggregate(
     }
     source_of: dict[str, str] = {}
     stage_two_names: list[str] = []
-    for idx, ((measure, per, _), metrics) in enumerate(groups.items(), start=1):
+    for idx, ((measure, per, _, population), metrics) in enumerate(groups.items(), start=1):
         inner_name = f"reagg_{idx}_inner"
         outer_name = f"reagg_{idx}"
         having = _having(model, metrics[0].name)
         scan, per_columns = _stage_one(
-            measure, list(per), having, resolved, query, model, dialect, qualify_table
+            measure, list(per), having, population, resolved, query, model, dialect, qualify_table
         )
         ctes.append(CTE(name=inner_name, query=_own_cte_names(scan, f"{inner_name}_")))
         stage_two = _stage_two(inner_name, metrics, dim_names, per_columns, model, dialect)

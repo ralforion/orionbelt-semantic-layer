@@ -14,6 +14,8 @@ metric over another one nests the inner metric's stages in its first. A
 metric's ``having`` is its first stage's HAVING, and a country it empties
 reads 0 for ``count`` through the outer COALESCE. A ``median`` or percentile
 second stage is each engine's exact rendering over the first stage's values.
+A ``population: dimension`` metric lists its members from their own table and
+joins each to its first-stage value, a member without rows at its default.
 
 The rows are built per engine rather than read from the corpus seed: the seed
 has no NULL group and no integers past a double's mantissa, and Dremio has no
@@ -49,6 +51,7 @@ pytestmark = pytest.mark.docker
 
 ORDERS = "reagg_orders"
 SHIPMENTS = "reagg_shipments"
+CUSTOMERS = "reagg_customers"
 
 #: Where each engine keeps the tables. The containers use their connection's
 #: default; the cloud engines the seeded schema; Dremio its writable scratch.
@@ -87,6 +90,19 @@ ORDER_ROWS: list[tuple[str, str | None, int, str]] = [
 #: value; a floating-point AVG of the two answers 9007199254740989.44.
 SHIPMENT_ROWS: list[tuple[str, int]] = [("a", 9007199254740991), ("b", 9007199254740990)]
 
+#: Every customer, with c8 (DE) and c9 (no country) that never ordered.
+CUSTOMER_ROWS: list[tuple[str, str | None]] = [
+    ("c1", "DE"),
+    ("c2", "DE"),
+    ("c7", "DE"),
+    ("c8", "DE"),
+    ("c3", "FR"),
+    ("c6", "FR"),
+    ("c4", None),
+    ("c5", None),
+    ("c9", None),
+]
+
 MODEL_YAML = """
 version: "1.0"
 name: reaggregate_vendor
@@ -99,6 +115,14 @@ dataObjects:
       Country: {{code: country, abstractType: string}}
       Amount: {{code: amount, abstractType: float}}
       Order Date: {{code: order_date, abstractType: date}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Customers, columnsFrom: [Customer], columnsTo: [Customer]}}
+  Customers:
+    code: {customers}
+    schema: '{schema}'
+    columns:
+      Customer: {{code: customer_id, abstractType: string}}
+      Country: {{code: country, abstractType: string}}
   Shipments:
     code: {shipments}
     schema: '{schema}'
@@ -111,10 +135,16 @@ dimensions:
   Order Date: {{dataObject: Orders, column: Order Date, resultType: date}}
   Order Month: {{dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}}
   Shipment Customer: {{dataObject: Shipments, column: Customer, resultType: string}}
+  Member: {{dataObject: Customers, column: Customer, resultType: string}}
+  Member Country: {{dataObject: Customers, column: Country, resultType: string}}
 measures:
   Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
+  Revenue or Zero:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    defaultValue: 0
   Last Customer:
     columns: [{{dataObject: Orders, column: Customer}}]
     aggregation: max
@@ -331,6 +361,24 @@ metrics:
     measure: Avg Repeat Customer Revenue
     per: ['Order Date:day']
     aggregation: max
+  Avg Revenue per Member:
+    type: reaggregate
+    measure: Revenue or Zero
+    per: [Member]
+    aggregation: avg
+    population: dimension
+  Members:
+    type: reaggregate
+    measure: Orders Count
+    per: [Member]
+    aggregation: count
+    population: dimension
+  Min Orders per Member:
+    type: reaggregate
+    measure: Orders Count
+    per: [Member]
+    aggregation: min
+    population: dimension
   Running Revenue:
     type: cumulative
     measure: Revenue
@@ -379,7 +427,10 @@ metrics:
 
 def _model(target: VendorTarget) -> SemanticModel:
     yaml_text = MODEL_YAML.format(
-        orders=ORDERS, shipments=SHIPMENTS, schema=SCHEMAS.get(target.dialect, "")
+        orders=ORDERS,
+        shipments=SHIPMENTS,
+        customers=CUSTOMERS,
+        schema=SCHEMAS.get(target.dialect, ""),
     )
     raw, source_map = TrackedLoader().load_string(yaml_text)
     model, result = ReferenceResolver().resolve(raw, source_map)
@@ -429,6 +480,7 @@ def _prepare(target: VendorTarget) -> SemanticModel:
         ORDER_ROWS,
     )
     _create(target, SHIPMENTS, [("customer_id", 0), ("units", 2)], SHIPMENT_ROWS)
+    _create(target, CUSTOMERS, [("customer_id", 0), ("country", 0)], CUSTOMER_ROWS)
     return _model(target)
 
 
@@ -965,6 +1017,41 @@ def _assert_reaggregate_over_cumulative(target: VendorTarget, model: SemanticMod
     assert got_daily == want_daily, f"{target.name}: {got_daily}"
 
 
+def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
+    """``population: dimension``: every customer of the customer table, c8 and
+    c9 without orders included, the revenue of one without orders 0 (its
+    measure's defaultValue) and its order count 0."""
+    measures = ["Avg Revenue per Member", "Members", "Min Orders per Member"]
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Member Country"], measures=measures)),
+    )
+    got = {r["member country"]: tuple(_number(r[m.lower()]) for m in measures) for r in rows}
+    # DE: (30 + 50 + 1 + 0) / 4; FR: (5 + 1000) / 2; none: (10 + 30 + 0) / 3.
+    want = {
+        "DE": (Decimal("20.25"), Decimal(4), Decimal(0)),
+        "FR": (Decimal("502.5"), Decimal(2), Decimal(1)),
+        None: (Decimal("13.33"), Decimal(3), Decimal(0)),
+    }
+    assert got == want, f"{target.name}: {got}"
+
+    # A filter on the orders limits the revenue, not the customers: from
+    # February DE has c7 1 and three customers at 0.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Member Country"], measures=measures[:2]),
+            where=[QueryFilter(field="Order Date", op=">=", value="2026-02-01")],
+        ),
+    )
+    got_feb = {r["member country"]: _number(r["avg revenue per member"]) for r in rows}
+    assert got_feb == {"DE": Decimal("0.25"), "FR": Decimal(500), None: Decimal("13.33")}, (
+        f"{target.name}: {got_feb}"
+    )
+
+
 def _assert_all(target: VendorTarget) -> None:
     model = _prepare(target)
     _assert_grouped(target, model)
@@ -981,6 +1068,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_first_last_month(target, model)
     _assert_windows_over_reaggregate(target, model)
     _assert_reaggregate_over_cumulative(target, model)
+    _assert_population(target, model)
 
 
 def test_duckdb_reaggregate(vendor_duckdb: VendorTarget) -> None:

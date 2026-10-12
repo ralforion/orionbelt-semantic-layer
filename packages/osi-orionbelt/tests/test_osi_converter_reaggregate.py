@@ -62,3 +62,16 @@ def test_roundtrip_restores_the_definition() -> None:
     osi = conv.OBMLtoOSI(_OBML).convert()
     obml = conv.OSItoOBML(osi).convert()
     assert obml["metrics"]["Avg Revenue per Customer"] == _REAGGREGATE
+
+
+def test_roundtrip_keeps_the_population() -> None:
+    metric = {
+        "type": "reaggregate",
+        "measure": "Revenue",
+        "per": ["Customer"],
+        "aggregation": "avg",
+        "population": "dimension",
+    }
+    model = {**_OBML, "metrics": {"Avg Revenue per Customer (all)": metric}}
+    obml = conv.OSItoOBML(conv.OBMLtoOSI(model).convert()).convert()
+    assert obml["metrics"]["Avg Revenue per Customer (all)"] == metric

@@ -24,6 +24,9 @@ enums:
   ReaggregateAggType:
     python: orionbelt.models.semantic.ReaggregateAggType
     values: ['sum', 'avg', 'min', 'max', 'count', 'median', 'percentile_cont', 'percentile_disc', 'first', 'last']
+  ReaggregatePopulation:
+    python: orionbelt.models.semantic.ReaggregatePopulation
+    values: ['facts', 'dimension']
   DataType:
     python: orionbelt.models.semantic.DataType
     values: ['string', 'json', 'int', 'float', 'date', 'time', 'time_tz', 'timestamp', 'timestamp_tz', 'boolean']
@@ -971,6 +974,12 @@ classes:
         type: "float | None"
         json_schema: true
         ontology_property: percentile
+        osi_roundtrip: true
+      population:
+        alias: population
+        type: "ReaggregatePopulation | None"
+        json_schema: true
+        ontology_property: population
         osi_roundtrip: true
       data_type:
         alias: dataType

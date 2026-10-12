@@ -1157,7 +1157,33 @@ metrics:
 By `Order Date:month`, stage 1 groups by month and day and stage 2 averages the daily totals within each month. Only days with orders count: a month with ten trading days averages ten values. A `per` bucket that does not nest in the query's is still split by it: under `Order Date:week`, a `per` of `'Order Date:month'` takes a week that crosses a month boundary as two values.
 
 !!! note "Which groups are counted"
-    Stage 1 groups the rows that reach the measure after the query's `where`, so a customer without orders in the filtered range is not part of the average, and `count` counts customers with a non-NULL stage-1 value. A query's `having` on the metric filters the final rows, like any metric; the metric's own `having` (below) filters the stage-1 groups.
+    Stage 1 groups the rows that reach the measure after the query's `where`, so a customer without orders in the filtered range is not part of the average, and `count` counts customers with a non-NULL stage-1 value. A query's `having` on the metric filters the final rows, like any metric; the metric's own `having` (below) filters the stage-1 groups. To count every customer, buyers or not, take the population from the dimension (below).
+
+`population: dimension` takes the stage-1 groups from the `per` dimensions themselves, every member of them, instead of the groups the measure has rows for:
+
+```yaml
+measures:
+  Revenue or Zero:
+    columns: [{dataObject: Sales, column: Amount}]
+    aggregation: sum
+    defaultValue: 0
+
+metrics:
+  Avg Revenue per Customer (all):
+    type: reaggregate
+    measure: Revenue or Zero
+    per: [Customer]
+    aggregation: avg
+    population: dimension
+```
+
+By `Country`, stage 1 lists every customer of each country from the customer data object, joins each to its revenue, and stage 2 averages over all of them: a customer without orders counts as 0. A member without rows takes the measure's `defaultValue`, or 0 for a `count` / `count_distinct` measure, which is what a count reports over no rows; without either it is NULL, which `avg`, `sum`, `min`, `max` and `count` skip, so the default is what brings a non-buyer into an average. With `aggregation: count` it counts every member.
+
+- Each `per` entry is a plain dimension of its own data object: no time grain, written (`'Order Date:month'`) or declared (`timeGrain`), and no `via` role reached through a fact, since a period or a role has no table of members (`REAGGREGATE_POPULATION_PER`; so is a cumulative `measure`, whose `per` is its time dimension). One of the `per` dimensions' data objects has to reach the others' along the joins; the members are listed from it also when the query already groups by that dimension.
+- The query's dimensions have to describe the members: reached from that data object, as a customer's country is (`REAGGREGATE_POPULATION_GROUPING` at compile time otherwise). An order month is not, since a customer without orders has none, and neither is a customer column computed from the orders: a dimension, of the query or in `per`, counts with every data object its computed column reads.
+- A query filter limits the members when every column it tests is on the members' data objects (`Country = Germany`); a filter on the facts (an order date range) limits the measure, not who counts, so a customer without orders in the range counts with the default value. Each condition of an `and` group stands alone, so the member conditions in it apply; an `or` or negated group mixing both is all or nothing, and does not limit the members. An `exists` / `nonexists` filter limits them only when its subquery and its filters read the members' data objects too: "has orders" tests the facts. A computed column counts with every data object its expression reads, so a client column computed from the sales is a fact condition.
+- `having` is refused (`REAGGREGATE_POPULATION_HAVING`): a member it removed would come back with the default value. Filter the members with the query instead.
+- The query's rows still come from the query: a country with no orders at all is not a row, as for every measure.
 
 The metric's `having` keeps only the stage-1 groups that meet every condition, each over a measure at the query's dimensions plus `per`:
 
@@ -1229,6 +1255,7 @@ Rules:
 | `aggregation` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` \| `"median"` \| `"percentile_cont"` \| `"percentile_disc"` \| `"first"` \| `"last"` | — | Second-stage aggregation (required for reaggregate) |
 | `percentile` | number | — | Fraction of a `percentile_cont` / `percentile_disc` second stage, between 0 and 1 exclusive (reaggregate only) |
 | `having` | list | — | Conditions (`field`, `op`, `value`) over measures that each stage-1 group has to meet (reaggregate only) |
+| `population` | `"facts"` \| `"dimension"` | `"facts"` | Where the stage-1 groups come from: the measure's rows, or every member of the `per` dimensions (reaggregate only) |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
 | `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics) |
 | `offset` | integer | — | Row offset for `lag` / `lead` (>= 1) |

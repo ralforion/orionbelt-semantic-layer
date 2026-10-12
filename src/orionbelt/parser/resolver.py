@@ -54,6 +54,7 @@ from orionbelt.models.semantic import (
     OntologyConfig,
     PeriodOverPeriod,
     ReaggregateAggType,
+    ReaggregatePopulation,
     RefreshPolicy,
     Rule,
     RuleCondition,
@@ -1096,11 +1097,12 @@ class ReferenceResolver:
                 # The other branches pass only their own fields to the model, so
                 # these would be dropped silently rather than refused there.
                 if metric_type != MetricType.REAGGREGATE and any(
-                    key in raw_metric for key in ("per", "aggregation", "having", "percentile")
+                    key in raw_metric
+                    for key in ("per", "aggregation", "having", "percentile", "population")
                 ):
                     raise ValueError(
-                        "'per', 'aggregation', 'having' and 'percentile' are only valid on "
-                        "reaggregate metrics"
+                        "'per', 'aggregation', 'having', 'percentile' and 'population' are "
+                        "only valid on reaggregate metrics"
                     )
                 concept_links = _parse_concept_mappings(
                     raw_metric, f"metrics.{name}", prefixes, errors, source_map
@@ -1951,6 +1953,14 @@ class ReferenceResolver:
                             f"'{ref}', so 'per' has to name its timeDimension '{time_dim}': "
                             f"the first stage then holds one running value per period.",
                         )
+                    if raw_metric.get("population") == ReaggregatePopulation.DIMENSION:
+                        report(
+                            "REAGGREGATE_POPULATION_PER",
+                            "population",
+                            f"Reaggregate metric '{name}' reaggregates the cumulative metric "
+                            f"'{ref}' per its time dimension, a period with no data object "
+                            f"of members to list; its population is the facts'.",
+                        )
                     if cycle := _reaggregate_cycle(name, raw_metrics):
                         report(
                             "REAGGREGATE_CYCLE",
@@ -2023,6 +2033,37 @@ class ReferenceResolver:
         per = raw_metric.get("per")
         if not isinstance(per, list):
             return
+        if raw_metric.get("population") == ReaggregatePopulation.DIMENSION:
+            # The members are read from the dimensions' own data object: a time
+            # bucket has no member table, a role reached through a fact (``via``)
+            # is defined by that fact, and a ``having`` would bring a member it
+            # removes back with the default value.
+            for entry in per:
+                if not isinstance(entry, str):
+                    continue
+                declared = dimensions.get(entry)
+                # An unknown name is REAGGREGATE_UNKNOWN_DIMENSION's. A declared
+                # ``timeGrain`` makes the entry a time bucket as ``:grain`` does.
+                if ":" in entry or (
+                    declared is not None
+                    and (declared.via is not None or declared.time_grain is not None)
+                ):
+                    report(
+                        "REAGGREGATE_POPULATION_PER",
+                        "per",
+                        f"Reaggregate metric '{name}' takes its population from the "
+                        f"dimension, so each 'per' entry has to be a dimension of its own "
+                        f"data object, without a time grain (written or declared) or "
+                        f"'via'; '{entry}' is not.",
+                    )
+            if raw_metric.get("having"):
+                report(
+                    "REAGGREGATE_POPULATION_HAVING",
+                    "having",
+                    f"Reaggregate metric '{name}' takes its population from the dimension, "
+                    f"where 'having' would bring a member it removes back with the default "
+                    f"value; filter the members with the query instead.",
+                )
         if raw_metric.get("aggregation") in (ReaggregateAggType.FIRST, ReaggregateAggType.LAST):
             entries = [e for e in per if isinstance(e, str)] if isinstance(per, list) else []
             times = time_per_entries(entries, dimensions)

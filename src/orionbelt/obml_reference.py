@@ -422,6 +422,13 @@ metrics:
     aggregation: avg
     having:                 # optional: stage-1 groups to keep (all must hold)
       - {field: Orders Count, op: ">", value: 5}
+
+  Avg Revenue per Customer (all):
+    type: reaggregate
+    measure: Revenue        # with defaultValue: 0, a non-buyer counts as 0
+    per: [Customer]
+    aggregation: avg
+    population: dimension   # every customer, not only those with rows
 ```
 
 Stage 1 computes the measure grouped by the query's dimensions plus `per`;
@@ -442,6 +449,14 @@ the final rows. Select it beside other measures (other facts too), in `having` a
 - `having:` optional conditions on stage-1 groups (`field`/`op`/`value`, as a
   query filter); `field` is a measure computed in stage 1, not a metric
   (`REAGGREGATE_HAVING_MEASURE_ONLY`). No group left: NULL, or 0 for `count`
+- `population:` `facts` (default) or `dimension`: stage 1 lists every member
+  of the `per` dimensions from their own data object; one without rows takes
+  the measure's `defaultValue` (0 for a count, else NULL). `per` entries are
+  plain dimensions, no grain (written or declared)/`via`, no cumulative `measure`
+  (`REAGGREGATE_POPULATION_PER`), no `having`
+  (`REAGGREGATE_POPULATION_HAVING`); the query's dimensions must describe the
+  members (`REAGGREGATE_POPULATION_GROUPING`); only filters on the members'
+  objects limit them
 - `per:` model dimensions, optionally at a time grain (`'Order Date:day'`); by
   `Order Date:month` that averages daily totals within each month (only days
   with rows count)

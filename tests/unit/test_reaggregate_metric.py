@@ -33,6 +33,7 @@ from orionbelt.models.semantic import (
     Metric,
     MetricType,
     ReaggregateAggType,
+    ReaggregatePopulation,
     SemanticModel,
 )
 from orionbelt.obsl.exporter import export_obsl
@@ -444,6 +445,62 @@ class TestReferences:
         )
         err = next(e for e in result.errors if e.code == "REAGGREGATE_UNKNOWN_DIMENSION")
         assert "Customer" in err.suggestions
+
+
+class TestPopulation:
+    """``population: dimension`` lists every member of ``per`` from its own data object."""
+
+    _BASE = "type: reaggregate\nmeasure: Revenue\naggregation: avg\npopulation: dimension\n"
+
+    def test_parsed(self) -> None:
+        probe_model, result = _resolve(_with_metric(self._BASE + "per: [Customer]"))
+        assert result.valid, result.errors
+        assert probe_model.metrics["Probe"].population == ReaggregatePopulation.DIMENSION
+        assert probe_model.metrics["Avg Revenue per Customer"].population is None
+
+    @pytest.mark.parametrize(
+        ("body", "code"),
+        [
+            ("per: ['Order Date:day']", "REAGGREGATE_POPULATION_PER"),
+            (
+                "per: [Customer]\nhaving: [{field: Revenue, op: '>', value: 1}]",
+                "REAGGREGATE_POPULATION_HAVING",
+            ),
+        ],
+    )
+    def test_refused(self, body: str, code: str) -> None:
+        assert code in _codes(_with_metric(self._BASE + body))
+
+    def test_refused_over_a_cumulative(self) -> None:
+        yaml_text = _with_metric(
+            "type: reaggregate\nmeasure: Running Revenue\nper: [Order Date]\n"
+            "aggregation: avg\npopulation: dimension"
+        ) + (
+            "  Running Revenue:\n    type: cumulative\n    measure: Revenue\n"
+            "    timeDimension: Order Date\n"
+        )
+        assert "REAGGREGATE_POPULATION_PER" in _codes(yaml_text)
+
+    def test_unknown_value_refused(self) -> None:
+        body = "type: reaggregate\nmeasure: Revenue\nper: [Customer]\naggregation: avg\n"
+        assert "METRIC_PARSE_ERROR" in _codes(_with_metric(body + "population: members"))
+
+    def test_only_on_reaggregate(self) -> None:
+        _model, result = _resolve(_with_metric("expression: '{[Revenue]}'\npopulation: dimension"))
+        assert any(
+            e.code == "METRIC_PARSE_ERROR" and "only valid on reaggregate" in e.message
+            for e in result.errors
+        )
+        with pytest.raises(ValidationError, match="only valid on reaggregate"):
+            Metric(name="D", expression="{[Revenue]}", population="dimension")
+
+    def test_rdf_triple(self) -> None:
+        probe_model, result = _resolve(_with_metric(self._BASE + "per: [Customer]"))
+        assert result.valid, result.errors
+        g = export_obsl(probe_model, "m")
+        probe = next(g.subjects(RDFS.label, Literal("Probe")))
+        population = URIRef("https://ralforion.com/ns/obsl#population")
+        assert set(g.objects(probe, population)) == {Literal("dimension")}
 
 
 class TestStrayFields:
@@ -1227,6 +1284,13 @@ class TestJsonSchema:
         assert self._validate({**metric, "aggregation": "percentile_cont"})
         assert self._validate({**metric, "aggregation": "avg", "percentile": 0.9})
         assert self._validate({"expression": "{[R]}", "percentile": 0.9})
+
+    def test_population(self) -> None:
+        metric = {"type": "reaggregate", "measure": "R", "per": ["C"], "aggregation": "avg"}
+        assert self._validate({**metric, "population": "dimension"}) == []
+        assert self._validate({**metric, "population": "facts"}) == []
+        assert self._validate({**metric, "population": "members"})
+        assert self._validate({"expression": "{[R]}", "population": "dimension"})
 
 
 class TestGraph:
