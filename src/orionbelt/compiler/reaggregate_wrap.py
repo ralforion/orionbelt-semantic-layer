@@ -52,7 +52,11 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.late_window import is_late
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
-from orionbelt.compiler.metric_resolution import reaggregate_per_covered, reaggregate_per_ref
+from orionbelt.compiler.metric_resolution import (
+    _GRAIN_RANK,
+    reaggregate_per_covered,
+    reaggregate_per_ref,
+)
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import null_safe_eq, rename_cte_sources
@@ -64,6 +68,7 @@ from orionbelt.compiler.type_resolver import (
 )
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.query import (
+    CoalesceDimension,
     DimensionRef,
     QueryFilter,
     QueryObject,
@@ -74,9 +79,11 @@ from orionbelt.models.semantic import (
     DataObject,
     Measure,
     Metric,
+    MetricType,
     ReaggregateAggType,
     ReaggregateHaving,
     SemanticModel,
+    TimeGrain,
 )
 from orionbelt.models.types import OBMLType
 
@@ -144,11 +151,11 @@ def _stage_one(
         ):
             continue
         added.append((entry, ref))
+    plan_model, planned_dims, synthetic = _distinct_cumulative_axes(
+        measure, [*query.select.dimensions, *(entry for entry, _ in added)], model
+    )
     sub_query = QueryObject(
-        select=QuerySelect(
-            dimensions=[*query.select.dimensions, *(entry for entry, _ in added)],
-            measures=[measure],
-        ),
+        select=QuerySelect(dimensions=planned_dims, measures=[measure]),
         where=list(query.where),
         having=[QueryFilter(field=h.field, op=h.op, value=h.value) for h in having],
         use_path_names=list(query.use_path_names),
@@ -159,7 +166,7 @@ def _stage_one(
     from orionbelt.compiler.pipeline import plan_in_own_right
 
     try:
-        scan, sub_resolved = plan_in_own_right(sub_query, model, dialect, qualify_table)
+        scan, sub_resolved = plan_in_own_right(sub_query, plan_model, dialect, qualify_table)
     except ResolutionError as exc:
         # The dimensions such an error names are the scan's, not the query's.
         raise ResolutionError(
@@ -178,10 +185,111 @@ def _stage_one(
     # So are its tables: a ``per`` dimension can join one the query does not,
     # and the result cache has to see it change.
     resolved.subquery_objects.update(sub_resolved.required_objects, sub_resolved.subquery_objects)
+    if synthetic:
+        scan = _rename_columns(scan, synthetic)
     named, columns = _name_per_buckets(
         scan, [d.name for d in resolved.dimensions], [r for _, r in added]
     )
     return named, {entry: column for (entry, _), column in zip(added, columns, strict=True)}
+
+
+def _cumulative_time_dimension(measure: str, model: SemanticModel) -> str | None:
+    """The time dimension of the cumulative metric *measure*'s chain reaches,
+    through reaggregate metrics, or ``None`` when it reaches none."""
+    seen: set[str] = set()
+    current: str | None = measure
+    while current is not None and current not in seen:
+        seen.add(current)
+        metric = model.metrics.get(current)
+        if metric is None:
+            return None
+        if metric.type is MetricType.CUMULATIVE:
+            return metric.time_dimension
+        if metric.type is not MetricType.REAGGREGATE:
+            return None
+        current = metric.measure
+    return None
+
+
+def _rank(grain: TimeGrain | None) -> int:
+    """A grain's place from finest to coarsest; no grain is the column itself."""
+    return _GRAIN_RANK[grain] if grain is not None else -1
+
+
+def _distinct_cumulative_axes(
+    measure: str,
+    dims: list[str | CoalesceDimension],
+    model: SemanticModel,
+) -> tuple[SemanticModel, list[str | CoalesceDimension], dict[str, str]]:
+    """Stage 1's model and dimensions, with a cumulative's axes kept apart.
+
+    A dimension named twice at different grains - the query's
+    ``Order Date:year`` beside ``per: [Order Date]``, two ``per`` buckets of
+    it, or one an outer reaggregate metric passes down - gives two columns of
+    one name, which the planner names after the dimension. For a plain measure
+    :func:`_name_per_buckets` tells them apart after planning, but a cumulative
+    metric's windows are built while planning, anywhere down the chain: its
+    look-back joined the shown months by year and multiplied the rows.
+
+    So when the chain reaches a cumulative metric, each dimension named more
+    than once keeps its name for one entry - for the cumulative's own time
+    dimension, which the cumulative has to find selected, the one at the
+    finest grain, so its window orders the rows stage 1 has without ties - and
+    every other entry is planned as a synthetic dimension at its grain. The
+    returned mapping renames those columns back after planning,
+    each to its dimension's name, which :func:`_name_per_buckets` then tells
+    apart by position as for any measure.
+    """
+    time_dim = _cumulative_time_dimension(measure, model)
+    if time_dim is None:
+        return model, list(dims), {}
+    refs = [
+        (index, reaggregate_per_ref(model, entry))
+        for index, entry in enumerate(dims)
+        if isinstance(entry, str)
+    ]
+    by_name: dict[str, list[tuple[int, DimensionRef]]] = {}
+    for index, ref in refs:
+        by_name.setdefault(ref.name, []).append((index, ref))
+    renamed: set[int] = set()
+    for name, entries in by_name.items():
+        if len(entries) < 2 or name not in model.dimensions:
+            continue
+        declared = model.dimensions[name].time_grain
+        keep = entries[0][0]
+        if name == time_dim:
+            # The finest of them: stage 1 has a row per bucket of it, and a
+            # coarser key would leave those rows tied in the running window
+            # (per day and month, ordered by month, the order depended on how
+            # the rows arrived). A bucket with no grain is the column itself.
+            keep = min(entries, key=lambda e: _rank(e[1].grain or declared))[0]
+        renamed.update(i for i, _ in entries if i != keep)
+    if not renamed:
+        return model, list(dims), {}
+    dimensions = dict(model.dimensions)
+    planned: list[str | CoalesceDimension] = list(dims)
+    synthetic: dict[str, str] = {}
+    for index, ref in refs:
+        if index not in renamed:
+            continue
+        declared_dim = model.dimensions[ref.name]
+        grain = ref.grain or declared_dim.time_grain
+        name = f"__reaggregate_axis_{index}_{ref.name}"
+        dimensions[name] = declared_dim.model_copy(update={"name": name, "time_grain": grain})
+        planned[index] = name
+        synthetic[name] = ref.name
+    return model.model_copy(update={"dimensions": dimensions}), planned, synthetic
+
+
+def _rename_columns(scan: Select, names: dict[str, str]) -> Select:
+    """*scan* with its projected columns aliased per *names* renamed."""
+    columns = [
+        AliasedExpr(expr=c.expr, alias=names[c.alias])
+        if isinstance(c, AliasedExpr) and c.alias in names
+        else c
+        for c in scan.columns
+    ]
+    return replace(scan, columns=columns)
 
 
 def _name_per_buckets(

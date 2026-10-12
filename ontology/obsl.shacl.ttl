@@ -386,14 +386,31 @@ obsl:MetricShape a sh:NodeShape ;
 obsl:CumulativeMetricShape a sh:NodeShape ;
     sh:targetClass obsl:CumulativeMetric ;
     rdfs:label "OBSL Cumulative Metric Shape" ;
-    rdfs:comment "Validates cumulative metrics that aggregate a base measure over a time window." ;
-    sh:property [
-        sh:path obsl:baseMeasure ;
-        sh:minCount 1 ;
-        sh:maxCount 1 ;
-        sh:name "base measure" ;
-        sh:message "Cumulative metrics must reference exactly one obsl:baseMeasure."
-    ] ;
+    rdfs:comment "Validates cumulative metrics that aggregate a base measure, or a base reaggregate metric, over a time window." ;
+    sh:xone (
+        [ sh:property [
+            sh:path obsl:baseMeasure ;
+            sh:minCount 1 ;
+            sh:maxCount 1 ;
+            sh:name "base measure" ;
+            sh:message "Cumulative metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
+        ] ; sh:property [
+            sh:path obsl:baseMetric ;
+            sh:maxCount 0 ;
+            sh:message "Cumulative metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
+        ] ]
+        [ sh:property [
+            sh:path obsl:baseMetric ;
+            sh:minCount 1 ;
+            sh:maxCount 1 ;
+            sh:name "base metric" ;
+            sh:message "Cumulative metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
+        ] ; sh:property [
+            sh:path obsl:baseMeasure ;
+            sh:maxCount 0 ;
+            sh:message "Cumulative metrics must reference exactly one obsl:baseMeasure or one obsl:baseMetric."
+        ] ]
+    ) ;
     sh:property [
         sh:path obsl:timeDimension ;
         sh:minCount 1 ;
@@ -436,7 +453,7 @@ obsl:CumulativeMetricShape a sh:NodeShape ;
 obsl:ReaggregateMetricShape a sh:NodeShape ;
     sh:targetClass obsl:ReaggregateMetric ;
     rdfs:label "OBSL Reaggregate Metric Shape" ;
-    rdfs:comment "Validates two-stage metrics: one base measure or base reaggregate metric, at least one per dimension, one second-stage aggregation." ;
+    rdfs:comment "Validates two-stage metrics: one base measure or base metric (a reaggregate or cumulative metric), at least one per dimension, one second-stage aggregation." ;
     sh:xone (
         [ sh:property [
             sh:path obsl:baseMeasure ;
@@ -463,9 +480,9 @@ obsl:ReaggregateMetricShape a sh:NodeShape ;
     ) ;
     sh:property [
         sh:path obsl:baseMetric ;
-        sh:class obsl:ReaggregateMetric ;
+        sh:or ( [ sh:class obsl:ReaggregateMetric ] [ sh:class obsl:CumulativeMetric ] ) ;
         sh:name "base metric" ;
-        sh:message "obsl:baseMetric must name a reaggregate metric."
+        sh:message "obsl:baseMetric must name a reaggregate or cumulative metric."
     ] ;
     sh:property [
         sh:path obsl:per ;

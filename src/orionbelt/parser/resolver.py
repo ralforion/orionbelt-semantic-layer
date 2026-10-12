@@ -1937,12 +1937,34 @@ class ReferenceResolver:
         if isinstance(ref, str) and ref:
             measure = measures.get(ref)
             if ref in raw_metrics and measure is None:
-                if not _is_reaggregate(raw_metrics[ref]):
+                if _is_cumulative(raw_metrics[ref]):
+                    # Stage 1 plans the cumulative as a query of its own at the
+                    # query's dimensions plus ``per``; without its time
+                    # dimension there it would be evaluated as of one period.
+                    time_dim = raw_metrics[ref].get("timeDimension")
+                    per_names = raw_metric.get("per") or []
+                    if time_dim and time_dim not in per_names:
+                        report(
+                            "REAGGREGATE_CUMULATIVE_TIME_DIMENSION",
+                            "per",
+                            f"Reaggregate metric '{name}' reaggregates the cumulative metric "
+                            f"'{ref}', so 'per' has to name its timeDimension '{time_dim}': "
+                            f"the first stage then holds one running value per period.",
+                        )
+                    if cycle := _reaggregate_cycle(name, raw_metrics):
+                        report(
+                            "REAGGREGATE_CYCLE",
+                            "measure",
+                            "Reaggregate metrics reference each other in a cycle: "
+                            + " -> ".join(cycle),
+                        )
+                elif not _is_reaggregate(raw_metrics[ref]):
                     report(
                         "REAGGREGATE_MEASURE_ONLY",
                         "measure",
                         f"Reaggregate metric '{name}' references metric '{ref}'; "
-                        f"'measure' must name a measure or a reaggregate metric.",
+                        f"'measure' must name a measure, a reaggregate metric or a "
+                        f"cumulative metric.",
                     )
                 elif cycle := _reaggregate_cycle(name, raw_metrics):
                     report(
@@ -2194,10 +2216,18 @@ def _is_reaggregate(raw_metric: object) -> bool:
 
 
 def _reaggregate_cycle(name: str, raw_metrics: dict[str, Any]) -> list[str]:
-    """The chain of reaggregate metrics from *name* back to itself, if it has one."""
+    """The chain of reaggregate metrics from *name* back to itself, if it has one.
+
+    Followed through a cumulative metric too: a reaggregate metric may read one,
+    and a cumulative metric may read a reaggregate metric.
+    """
     chain = [name]
     ref = raw_metrics[name].get("measure")
-    while isinstance(ref, str) and ref not in chain and _is_reaggregate(raw_metrics.get(ref)):
+    while (
+        isinstance(ref, str)
+        and ref not in chain
+        and (_is_reaggregate(raw_metrics.get(ref)) or _is_cumulative(raw_metrics.get(ref)))
+    ):
         chain.append(ref)
         ref = raw_metrics[ref].get("measure")
     return [*chain, name] if ref == name else []
@@ -2219,6 +2249,10 @@ _PICKS_AN_INNER_VALUE = frozenset(
 )
 
 
+def _is_cumulative(raw_metric: object) -> bool:
+    return isinstance(raw_metric, dict) and raw_metric.get("type") == MetricType.CUMULATIVE
+
+
 def _average_path(ref: str, measures: dict[str, Measure], raw_metrics: dict[str, Any]) -> list[str]:
     """The chain from *ref* down to an average its value is, if it is one.
 
@@ -2234,6 +2268,17 @@ def _average_path(ref: str, measures: dict[str, Measure], raw_metrics: dict[str,
         if current in measures:
             return path if measures[current].aggregation == AggregationType.AVG else []
         raw = raw_metrics.get(current)
+        if _is_cumulative(raw):
+            # A running average is one; a running min / max is one of the values
+            # it reads; a running sum or count is no longer an average.
+            assert isinstance(raw, dict)
+            kind = raw.get("cumulativeType", "sum")
+            if kind == "avg":
+                return path
+            if kind not in ("min", "max"):
+                return []
+            current = raw.get("measure")
+            continue
         if not _is_reaggregate(raw):
             return []
         assert isinstance(raw, dict)

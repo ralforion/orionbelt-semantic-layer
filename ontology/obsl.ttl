@@ -236,9 +236,9 @@ obsl:baseMeasure a owl:ObjectProperty ;
 
 obsl:baseMetric a owl:ObjectProperty ;
     rdfs:label "base metric" ;
-    rdfs:comment "Reaggregate metric that another reaggregate metric is computed from: its first stage is this metric at the query grain plus the outer metric's obsl:per dimensions.  Used in place of obsl:baseMeasure." ;
-    rdfs:domain obsl:ReaggregateMetric ;
-    rdfs:range obsl:ReaggregateMetric .
+    rdfs:comment "Metric another metric is computed from, used in place of obsl:baseMeasure: a reaggregate or cumulative metric a reaggregate metric's first stage reads (at the query grain plus its obsl:per dimensions), or a reaggregate metric a window or cumulative metric runs over (after its two stages)." ;
+    rdfs:domain obsl:Metric ;
+    rdfs:range obsl:Metric .
 
 obsl:referencesMeasure a owl:ObjectProperty ;
     rdfs:label "references measure" ;
