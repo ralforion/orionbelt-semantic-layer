@@ -452,7 +452,7 @@ the final rows. Select it beside other measures (other facts too), in `having` a
 - `population:` `facts` (default) or `dimension`: stage 1 lists every member
   of the `per` dimensions from their own data object; one without rows takes
   the measure's `defaultValue` (0 for a count, else NULL). `per` entries are
-  plain dimensions, no grain/`via`, no cumulative `measure`
+  plain dimensions, no grain (written or declared)/`via`, no cumulative `measure`
   (`REAGGREGATE_POPULATION_PER`), no `having`
   (`REAGGREGATE_POPULATION_HAVING`); the query's dimensions must describe the
   members (`REAGGREGATE_POPULATION_GROUPING`); only filters on the members'

@@ -2042,14 +2042,19 @@ class ReferenceResolver:
                 if not isinstance(entry, str):
                     continue
                 declared = dimensions.get(entry)
-                # An unknown name is REAGGREGATE_UNKNOWN_DIMENSION's.
-                if ":" in entry or (declared is not None and declared.via is not None):
+                # An unknown name is REAGGREGATE_UNKNOWN_DIMENSION's. A declared
+                # ``timeGrain`` makes the entry a time bucket as ``:grain`` does.
+                if ":" in entry or (
+                    declared is not None
+                    and (declared.via is not None or declared.time_grain is not None)
+                ):
                     report(
                         "REAGGREGATE_POPULATION_PER",
                         "per",
                         f"Reaggregate metric '{name}' takes its population from the "
                         f"dimension, so each 'per' entry has to be a dimension of its own "
-                        f"data object, without a time grain or 'via'; '{entry}' is not.",
+                        f"data object, without a time grain (written or declared) or "
+                        f"'via'; '{entry}' is not.",
                     )
             if raw_metric.get("having"):
                 report(

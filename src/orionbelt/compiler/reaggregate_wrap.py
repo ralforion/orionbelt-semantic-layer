@@ -82,6 +82,7 @@ from orionbelt.models.query import (
 from orionbelt.models.semantic import (
     AggregationType,
     DataObject,
+    FilterLogic,
     Measure,
     Metric,
     MetricType,
@@ -211,6 +212,7 @@ def _stage_one(
         named = _with_population(
             named,
             measure,
+            per,
             [entry for entry, _ in added],
             resolved,
             query,
@@ -228,6 +230,7 @@ _FACTS = "reagg_facts"
 def _with_population(
     facts: Select,
     measure: str,
+    all_per: list[str],
     per: list[str],
     resolved: ResolvedQuery,
     query: QueryObject,
@@ -237,20 +240,23 @@ def _with_population(
 ) -> Select:
     """*facts* over every member of the *per* dimensions, not only those with rows.
 
-    The members are the query's dimensions and *per*, planned as a query of
-    their own over the data objects one of the *per* dimensions' objects
-    reaches - so it starts from the member table, not from a fact. Each query
-    dimension has to be among them: it describes the member (the customer's
-    country), and one from elsewhere (the order month) has no members to list.
-    A filter applies to the members when every column it tests is among those
-    objects; one on the facts limits the measure, not who counts.
+    *all_per* is the metric's ``per``, *per* the entries stage 1 added to the
+    query's grouping. The members are the query's dimensions and *per*,
+    planned as a query of their own over the data objects one of the
+    *all_per* dimensions' objects reaches - so it starts from the member
+    table, not from a fact, also when the query already groups by that
+    dimension. Each query dimension has to be among them: it describes the
+    member (the customer's country), and one from elsewhere (the order month)
+    has no members to list. The part of a filter that tests only those
+    objects applies to the members (see :func:`_member_part`); one on the
+    facts limits the measure, not who counts.
 
     A member without rows takes the measure's ``defaultValue``, or 0 for a
     count, which is what a count reports over no rows; otherwise NULL.
     """
     dim_names = [d.name for d in resolved.dimensions]
     graph = JoinGraph.of(model, query.use_path_names)
-    roots = {view for entry in per if (view := model.dimensions[entry].view) is not None}
+    roots = {view for entry in all_per if (view := model.dimensions[entry].view) is not None}
     # The objects one of the ``per`` dimensions' objects reaches, if one reaches
     # the others; then the query's dimensions not among them.
     members = next(
@@ -260,7 +266,7 @@ def _with_population(
     if members is None:
         _refuse_population(
             measure,
-            f"no data object of {per} reaches the others, so there is no one table "
+            f"no data object of {all_per} reaches the others, so there is no one table "
             f"of members to list",
         )
     outside = [
@@ -278,7 +284,7 @@ def _with_population(
     )
     member_query = QueryObject(
         select=QuerySelect(dimensions=[*query.select.dimensions, *per]),
-        where=[f for f in query.where if _tests_only(f, members, model)],
+        where=[part for f in query.where if (part := _member_part(f, members, model))],
         use_path_names=list(query.use_path_names),
     )
     # Imported here for the same reason as in :func:`_stage_one`.
@@ -347,18 +353,39 @@ def _empty_value(measure: str, model: SemanticModel) -> Expr | None:
     return None
 
 
-def _tests_only(
+def _member_part(
     item: QueryFilter | QueryFilterGroup, objects: set[str], model: SemanticModel
-) -> bool:
-    """Whether every column *item* tests is on one of *objects*."""
+) -> QueryFilter | QueryFilterGroup | None:
+    """The part of *item* that tests only columns on *objects*, or ``None``.
+
+    The conjuncts of an ``and`` group stand alone, so the ones on the members
+    apply to them whatever the others test: ``Gender = F and Order Date >=
+    2022`` keeps ``Gender = F``. An ``or`` or negated group is all or nothing,
+    since dropping part of it changes what the rest means. An ``exists`` /
+    ``nonexists`` test applies only when its subquery reads one of *objects*
+    too, by its own columns.
+    """
     if isinstance(item, QueryFilterGroup):
-        return all(_tests_only(child, objects, model) for child in item.filters)
+        if item.logic is FilterLogic.AND and not item.negated:
+            parts = [p for child in item.filters if (p := _member_part(child, objects, model))]
+            return item.model_copy(update={"filters": parts}) if parts else None
+        whole = all(_member_part(child, objects, model) == child for child in item.filters)
+        return item if whole else None
+    if item.subquery is not None:
+        inner = item.subquery
+        target = model.data_objects.get(inner.data_object)
+        if (
+            inner.data_object not in objects
+            or target is None
+            or any(f.field not in target.columns for f in inner.filter)
+        ):
+            return None
     dimension = model.dimensions.get(item.field.split(":", 1)[0])
     if dimension is not None:
-        return dimension.via is None and dimension.view in objects
-    if "." in item.field:
-        return item.field.split(".", 1)[0].strip() in objects
-    return False
+        on_members = dimension.via is None and dimension.view in objects
+    else:
+        on_members = "." in item.field and item.field.split(".", 1)[0].strip() in objects
+    return item if on_members else None
 
 
 def _cumulative_time_dimension(measure: str, model: SemanticModel) -> str | None:

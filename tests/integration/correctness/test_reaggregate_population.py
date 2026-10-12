@@ -17,7 +17,14 @@ duckdb = pytest.importorskip("duckdb")
 
 from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
 from orionbelt.compiler.resolution import ResolutionError  # noqa: E402
-from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect  # noqa: E402
+from orionbelt.models.query import (  # noqa: E402
+    FilterOperator,
+    QueryFilter,
+    QueryFilterGroup,
+    QueryObject,
+    QuerySelect,
+    Subquery,
+)
 from orionbelt.models.semantic import SemanticModel  # noqa: E402
 from orionbelt.parser.loader import TrackedLoader  # noqa: E402
 from orionbelt.parser.resolver import ReferenceResolver  # noqa: E402
@@ -53,6 +60,13 @@ _METRICS: dict[str, dict[str, Any]] = {
         **_PER_CLIENT,
         "measure": "Sales Count",
         "aggregation": "min",
+        "population": "dimension",
+    },
+    "Avg Orders per Client and Country": {
+        "type": "reaggregate",
+        "per": ["Client Name", "Country Name"],
+        "measure": "Sales Count",
+        "aggregation": "avg",
         "population": "dimension",
     },
     "Clients All": {
@@ -232,3 +246,66 @@ def test_members_without_a_common_data_object_refused() -> None:
     query = QueryObject(select=QuerySelect(measures=["Probe"]))
     with pytest.raises(ResolutionError, match="no data object"):
         CompilationPipeline().compile(query, probe_model, "duckdb")
+
+
+def test_member_part_of_an_and_group_applies(run: Callable, clients: list[dict[str, Any]]) -> None:
+    """``Gender = F and Sales Date >= 2022`` in one group: the gender still
+    limits the members, as the same two filters side by side do."""
+    gender = QueryFilter(field="Client Gender", op="=", value="F")
+    date = QueryFilter(field="Sales Date", op=">=", value="2022-01-01")
+    flat = run([], ["Clients All", "Avg Client Orders All"], where=[gender, date])
+    grouped = run(
+        [],
+        ["Clients All", "Avg Client Orders All"],
+        where=[QueryFilterGroup(filters=[gender, date])],
+    )
+    assert grouped == flat
+    assert flat[0]["Clients All"] == len([c for c in clients if c["gender"] == "F"])
+
+
+def test_or_group_mixing_members_and_facts_is_not_split(run: Callable) -> None:
+    """``Gender = F or Sales Date >= 2022`` is no condition on the members."""
+    group = QueryFilterGroup(
+        logic="or",
+        filters=[
+            QueryFilter(field="Client Gender", op="=", value="F"),
+            QueryFilter(field="Sales Date", op=">=", value="2022-01-01"),
+        ],
+    )
+    (row,) = run([], ["Clients All"], where=[group])
+    assert row["Clients All"] == 500
+
+
+def test_root_from_the_whole_per(run: Callable, clients: list[dict[str, Any]]) -> None:
+    """``per: [Client Name, Country Name]`` by ``Client Name``: the query covers
+    the client, and the members are still listed from the clients."""
+    rows = run(["Client Name"], ["Avg Orders per Client and Country"])
+    assert len(rows) == len([c for c in clients if c["orders"]])
+    assert all(r["Avg Orders per Client and Country"] >= 1 for r in rows)
+
+
+def test_exists_on_the_facts_does_not_limit_the_members(run: Callable) -> None:
+    """An ``exists`` whose subquery reads the sales tests the facts: it limits
+    the measure, and the member query, which has no sales, never sees it."""
+    has_sales = QueryFilter(
+        field="Client Name",
+        op=FilterOperator.EXISTS,
+        subquery=Subquery(data_object="Sales"),
+    )
+    (row,) = run([], ["Clients All"], where=[has_sales])
+    assert row["Clients All"] == 500
+
+
+def test_declared_time_grain_refused() -> None:
+    """``Sales Month`` declares a month grain: a time bucket, not a member."""
+    _require_seed()
+    _model, result = _resolve_with(
+        {
+            "type": "reaggregate",
+            "measure": "Total Sales",
+            "per": ["Sales Month"],
+            "aggregation": "avg",
+            "population": "dimension",
+        }
+    )
+    assert "REAGGREGATE_POPULATION_PER" in {e.code for e in result.errors}
