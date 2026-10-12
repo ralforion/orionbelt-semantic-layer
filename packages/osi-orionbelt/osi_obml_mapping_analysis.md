@@ -52,6 +52,7 @@ The converter handles this decomposition automatically:
 | `AGG(dataset.column)` | Direct measure |
 | `AGG(DISTINCT dataset.column)` | Measure with `distinct: true` |
 | `AGG(expr)` (e.g., `SUM(a.x * a.y)`) | Expression-based measure |
+| `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY a.x)` / `PERCENTILE_DISC(...)`, `PERCENTILE_CONT(a.x, p)`, Spark's exact `percentile(a.x, p)` | Measure with `aggregation: percentile_cont` / `percentile_disc` and `percentile: p` (a descending or multi-key order, a fraction that is not a literal in (0, 1) with at most 9 places, and `APPROX_PERCENTILE` are preserved verbatim) |
 | Multi-aggregation expression | Auto-generated measures + metric formula |
 | Aggregate nested in a larger expression (`ROUND(SUM(a.x), 2)`, `CASE WHEN SUM(a.x) > 0 THEN SUM(a.y) END`) | Auto-generated measures + metric formula |
 
