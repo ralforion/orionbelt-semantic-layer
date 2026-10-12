@@ -513,6 +513,13 @@ obsl:ReaggregateMetricShape a sh:NodeShape ;
         sh:maxExclusive 1 ;
         sh:name "percentile" ;
         sh:message "A reaggregate metric may have at most one obsl:percentile, a decimal between 0 and 1 exclusive."
+    ] ;
+    sh:property [
+        sh:path obsl:population ;
+        sh:maxCount 1 ;
+        sh:in ( "facts" "dimension" ) ;
+        sh:name "population" ;
+        sh:message "A reaggregate metric may have at most one obsl:population, \"facts\" or \"dimension\"."
     ] .
 
 # -----------------------------------------------------------------------------

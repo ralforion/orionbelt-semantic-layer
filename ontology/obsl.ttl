@@ -588,6 +588,12 @@ obsl:reaggregateHaving a owl:DatatypeProperty ;
     rdfs:domain obsl:ReaggregateMetric ;
     rdfs:range xsd:string .
 
+obsl:population a owl:DatatypeProperty ;
+    rdfs:label "population" ;
+    rdfs:comment "Where the first-stage groups of a reaggregate metric come from: \"facts\" (the groups the measure has rows for; the default) or \"dimension\" (every member of the per dimensions, read from their own data object; a member without rows takes the measure's defaultValue, 0 for a count)." ;
+    rdfs:domain obsl:ReaggregateMetric ;
+    rdfs:range xsd:string .
+
 # =============================================================================
 # 8.5 REFRESH POLICY --- freshness contract on a data object's source table
 # =============================================================================
@@ -885,6 +891,7 @@ obsl:primaryKey a owl:FunctionalProperty .
 obsl:numClass a owl:FunctionalProperty .
 obsl:delimiter a owl:FunctionalProperty .
 obsl:percentile a owl:FunctionalProperty .
+obsl:population a owl:FunctionalProperty .
 obsl:withinGroupOrder a owl:FunctionalProperty .
 
 obsl:vendor a owl:FunctionalProperty .

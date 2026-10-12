@@ -1109,6 +1109,14 @@
           "exclusiveMaximum": 1,
           "description": "Reaggregate metrics: the fraction of a percentile_cont or percentile_disc second stage, between 0 and 1 exclusive, with at most 9 decimal places. Required by those aggregations, refused with any other."
         },
+        "population": {
+          "type": "string",
+          "enum": [
+            "facts",
+            "dimension"
+          ],
+          "description": "Reaggregate metrics: where the first-stage groups come from. facts (default): the groups the measure has rows for. dimension: every member of the per dimensions, read from their own data object (each per entry a plain dimension, no time grain or via; no having); a member without rows takes the measure's defaultValue, 0 for a count, otherwise NULL. The query's dimensions must describe the members, and only filters on the members' data objects limit them."
+        },
         "description": {
           "type": "string",
           "description": "Business description of this metric"
@@ -1275,6 +1283,11 @@
                 {
                   "required": [
                     "percentile"
+                  ]
+                },
+                {
+                  "required": [
+                    "population"
                   ]
                 }
               ]
