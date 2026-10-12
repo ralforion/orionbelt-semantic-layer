@@ -340,6 +340,11 @@ metrics:
     measure: Running Revenue
     per: [Order Month]
     aggregation: avg
+  Avg Daily Running Revenue:
+    type: reaggregate
+    measure: Running Revenue
+    per: ['Order Month:day', Order Month]
+    aggregation: avg
   Months Running Revenue:
     type: reaggregate
     measure: Running Revenue
@@ -951,6 +956,13 @@ def _assert_reaggregate_over_cumulative(target: VendorTarget, model: SemanticMod
     )
     months = [_number(r["months running revenue"]) for r in rows]
     assert months == [1], f"{target.name}: {months}"
+
+    # A finer grain of it in per: the running window orders by day, the rows
+    # stage 1 has. By day the running revenue is DE 30, 80, 81; FR 5, 1005;
+    # the NULL country 10, 40.
+    got_daily = _by_country(target, model, ["Avg Daily Running Revenue"])
+    want_daily = {"DE": (Decimal("63.67"),), "FR": (Decimal(505),), None: (Decimal(25),)}
+    assert got_daily == want_daily, f"{target.name}: {got_daily}"
 
 
 def _assert_all(target: VendorTarget) -> None:

@@ -59,6 +59,18 @@ _METRICS: dict[str, dict[str, Any]] = {
         for agg in ("avg", "count")
         for year_first in (True, False)
     },
+    "Avg Daily YTD": {
+        "type": "reaggregate",
+        "measure": "YTD Sales",
+        "per": ["Sales Month:day", "Sales Month"],
+        "aggregation": "avg",
+    },
+    "Avg Daily YTD Reversed": {
+        "type": "reaggregate",
+        "measure": "YTD Sales",
+        "per": ["Sales Month", "Sales Month:day"],
+        "aggregation": "avg",
+    },
     "Year End YTD": {
         "type": "reaggregate",
         "measure": "YTD Sales",
@@ -267,3 +279,28 @@ def test_two_grains_of_one_dimension_in_per(run: Callable) -> None:
             other[month_first[1]],
         )
         assert r[year_first[1]] <= 60
+
+
+def test_finer_grain_in_per_orders_the_running_values(run: Callable) -> None:
+    """``per: [Sales Month:day, Sales Month]``: stage 1 has a row per day, so
+    the running window orders by day; ordered by month, the days of a month
+    tied and the answer depended on the order rows arrived in."""
+    daily: dict[Any, list[tuple[Any, Decimal]]] = defaultdict(list)
+    for r in run(["Country Name", "Sales Date"], ["Total Sales"]):
+        if r["Total Sales"] is not None and r["Sales Date"] is not None:
+            daily[r["Country Name"]].append((r["Sales Date"], r["Total Sales"]))
+    want: dict[Any, Decimal] = {}
+    for country, pairs in daily.items():
+        running: list[Decimal] = []
+        total, year = Decimal(0), None
+        for day, value in sorted(pairs):
+            if day.year != year:
+                total, year = Decimal(0), day.year
+            total += value
+            running.append(total)
+        want[country] = sum(running) / len(running)
+    rows = run(["Country Name"], ["Avg Daily YTD", "Avg Daily YTD Reversed"])
+    assert rows
+    for r in rows:
+        assert r["Avg Daily YTD"] == r["Avg Daily YTD Reversed"], r
+        assert _close(r["Avg Daily YTD"], want[r["Country Name"]]), r

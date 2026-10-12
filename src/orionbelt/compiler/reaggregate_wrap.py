@@ -52,7 +52,11 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.late_window import is_late
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
-from orionbelt.compiler.metric_resolution import reaggregate_per_covered, reaggregate_per_ref
+from orionbelt.compiler.metric_resolution import (
+    _GRAIN_RANK,
+    reaggregate_per_covered,
+    reaggregate_per_ref,
+)
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import null_safe_eq, rename_cte_sources
@@ -79,6 +83,7 @@ from orionbelt.models.semantic import (
     ReaggregateAggType,
     ReaggregateHaving,
     SemanticModel,
+    TimeGrain,
 )
 from orionbelt.models.types import OBMLType
 
@@ -206,6 +211,11 @@ def _cumulative_time_dimension(measure: str, model: SemanticModel) -> str | None
     return None
 
 
+def _rank(grain: TimeGrain | None) -> int:
+    """A grain's place from finest to coarsest; no grain is the column itself."""
+    return _GRAIN_RANK[grain] if grain is not None else -1
+
+
 def _distinct_cumulative_axes(
     measure: str,
     dims: list[str | CoalesceDimension],
@@ -223,9 +233,10 @@ def _distinct_cumulative_axes(
 
     So when the chain reaches a cumulative metric, each dimension named more
     than once keeps its name for one entry - for the cumulative's own time
-    dimension the one at its declared grain, which the cumulative has to find
-    selected - and every other entry is planned as a synthetic dimension at its
-    grain. The returned mapping renames those columns back after planning,
+    dimension, which the cumulative has to find selected, the one at the
+    finest grain, so its window orders the rows stage 1 has without ties - and
+    every other entry is planned as a synthetic dimension at its grain. The
+    returned mapping renames those columns back after planning,
     each to its dimension's name, which :func:`_name_per_buckets` then tells
     apart by position as for any measure.
     """
@@ -247,7 +258,11 @@ def _distinct_cumulative_axes(
         declared = model.dimensions[name].time_grain
         keep = entries[0][0]
         if name == time_dim:
-            keep = next((i for i, r in entries if (r.grain or declared) == declared), keep)
+            # The finest of them: stage 1 has a row per bucket of it, and a
+            # coarser key would leave those rows tied in the running window
+            # (per day and month, ordered by month, the order depended on how
+            # the rows arrived). A bucket with no grain is the column itself.
+            keep = min(entries, key=lambda e: _rank(e[1].grain or declared))[0]
         renamed.update(i for i, _ in entries if i != keep)
     if not renamed:
         return model, list(dims), {}
