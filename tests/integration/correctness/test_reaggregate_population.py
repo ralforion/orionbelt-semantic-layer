@@ -309,3 +309,47 @@ def test_declared_time_grain_refused() -> None:
         }
     )
     assert "REAGGREGATE_POPULATION_PER" in {e.code for e in result.errors}
+
+
+@pytest.mark.parametrize("field", ["Country Name", "Countries.Country Name"])
+def test_exists_on_member_objects_limits_the_members(
+    run: Callable, clients: list[dict[str, Any]], field: str
+) -> None:
+    """An ``exists`` into the clients' country names the members' objects only,
+    however its filter names the column: it limits the members."""
+    in_germany = QueryFilter(
+        field="Client Name",
+        op=FilterOperator.EXISTS,
+        subquery=Subquery(
+            data_object="Countries",
+            filter=[QueryFilter(field=field, op="=", value="Germany")],
+        ),
+    )
+    (row,) = run([], ["Clients All"], where=[in_germany])
+    assert row["Clients All"] == len([c for c in clients if c["country"] == "Germany"])
+
+
+def test_computed_member_column_reading_the_facts(commerce_db: duckdb.DuckDBPyConnection) -> None:
+    """A clients column computed from the sales reads a fact: a filter on it
+    limits the measure, and stays out of the member query, which has no sales."""
+    _require_seed()
+    raw, source_map = TrackedLoader().load(COMMERCE_MODEL_YAML)
+    raw["dataObjects"]["Clients"]["columns"]["Client Sale Date"] = {
+        "expression": "{[Sales].[Sales Date]}",
+        "abstractType": "date",
+    }
+    raw["dimensions"]["Client Sale Date"] = {
+        "dataObject": "Clients",
+        "column": "Client Sale Date",
+        "resultType": "date",
+    }
+    raw["metrics"]["Clients All"] = _METRICS["Clients All"]
+    probe_model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = QueryObject(
+        select=QuerySelect(measures=["Clients All"]),
+        where=[QueryFilter(field="Client Sale Date", op=">=", value="2022-01-01")],
+    )
+    sql = CompilationPipeline().compile(query, probe_model, "duckdb").sql
+    ((count,),) = commerce_db.sql(sql).fetchall()
+    assert count == 500

@@ -51,6 +51,7 @@ from orionbelt.ast.nodes import (
     Select,
     Unnest,
 )
+from orionbelt.compiler.filters import _resolve_subquery_filter_field
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.late_window import is_late
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
@@ -362,8 +363,8 @@ def _member_part(
     apply to them whatever the others test: ``Gender = F and Order Date >=
     2022`` keeps ``Gender = F``. An ``or`` or negated group is all or nothing,
     since dropping part of it changes what the rest means. An ``exists`` /
-    ``nonexists`` test applies only when its subquery reads one of *objects*
-    too, by its own columns.
+    ``nonexists`` test applies only when its subquery reads *objects* only too.
+    A computed column counts with every object its expression reads.
     """
     if isinstance(item, QueryFilterGroup):
         if item.logic is FilterLogic.AND and not item.negated:
@@ -371,21 +372,55 @@ def _member_part(
             return item.model_copy(update={"filters": parts}) if parts else None
         whole = all(_member_part(child, objects, model) == child for child in item.filters)
         return item if whole else None
+    reads = _filter_objects(item, model)
+    return item if reads is not None and reads <= objects else None
+
+
+def _filter_objects(item: QueryFilter, model: SemanticModel) -> set[str] | None:
+    """Every data object *item* reads, or ``None`` when it reads through a role.
+
+    A field's own object and whatever its computed column reads; for an
+    ``exists`` / ``nonexists``, also the subquery's object and each of its
+    filters' fields, resolved as the subquery resolves them (a column of its
+    object, a dimension, or a qualified ``Object.Column``).
+    """
+    found: set[str] = set()
+    column = _field_column(item.field, model)
+    if column is None:
+        return None
+    found |= _column_objects(*column, model)
     if item.subquery is not None:
         inner = item.subquery
-        target = model.data_objects.get(inner.data_object)
-        if (
-            inner.data_object not in objects
-            or target is None
-            or any(f.field not in target.columns for f in inner.filter)
-        ):
-            return None
-    dimension = model.dimensions.get(item.field.split(":", 1)[0])
+        found.add(inner.data_object)
+        for sub in inner.filter:
+            ref = _resolve_subquery_filter_field(sub.field, model, inner.data_object, [])
+            if ref is None:
+                return None
+            found |= _column_objects(*ref, model)
+            if sub.subquery is not None:
+                nested = _filter_objects(sub, model)
+                if nested is None:
+                    return None
+                found |= nested
+    return found
+
+
+def _field_column(field: str, model: SemanticModel) -> tuple[str, str] | None:
+    """The (data object, column) a query filter's *field* tests."""
+    dimension = model.dimensions.get(field.split(":", 1)[0])
     if dimension is not None:
-        on_members = dimension.via is None and dimension.view in objects
-    else:
-        on_members = "." in item.field and item.field.split(".", 1)[0].strip() in objects
-    return item if on_members else None
+        if dimension.via is not None or dimension.view is None or dimension.column is None:
+            return None
+        return dimension.view, dimension.column
+    if "." in field:
+        obj, _, col = field.partition(".")
+        return obj.strip(), col.strip()
+    return None
+
+
+def _column_objects(obj: str, column: str, model: SemanticModel) -> set[str]:
+    """*obj* and the data objects its *column*'s expression reads."""
+    return {obj, *model.column_reference_objects(obj, column)}
 
 
 def _cumulative_time_dimension(measure: str, model: SemanticModel) -> str | None:
