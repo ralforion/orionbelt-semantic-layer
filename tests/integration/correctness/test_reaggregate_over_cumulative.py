@@ -71,6 +71,18 @@ _METRICS: dict[str, dict[str, Any]] = {
         "per": ["Sales Month", "Sales Month:day"],
         "aggregation": "avg",
     },
+    "Avg Weekly YTD": {
+        "type": "reaggregate",
+        "measure": "YTD Sales",
+        "per": ["Sales Month:week", "Sales Month"],
+        "aggregation": "avg",
+    },
+    "Avg Weekly YTD Reversed": {
+        "type": "reaggregate",
+        "measure": "YTD Sales",
+        "per": ["Sales Month", "Sales Month:week"],
+        "aggregation": "avg",
+    },
     "Year End YTD": {
         "type": "reaggregate",
         "measure": "YTD Sales",
@@ -304,3 +316,50 @@ def test_finer_grain_in_per_orders_the_running_values(run: Callable) -> None:
     for r in rows:
         assert r["Avg Daily YTD"] == r["Avg Daily YTD Reversed"], r
         assert _close(r["Avg Daily YTD"], want[r["Country Name"]]), r
+
+
+def _daily_running_ytd(run: Callable) -> dict[tuple[Any, Any], Decimal]:
+    """Each country's and day's year-to-date sales, accumulated by day."""
+    daily: dict[Any, list[tuple[Any, Decimal]]] = defaultdict(list)
+    for r in run(["Country Name", "Sales Date"], ["Total Sales"]):
+        if r["Total Sales"] is not None and r["Sales Date"] is not None:
+            daily[r["Country Name"]].append((r["Sales Date"], r["Total Sales"]))
+    out: dict[tuple[Any, Any], Decimal] = {}
+    for country, pairs in daily.items():
+        total, year = Decimal(0), None
+        for day, value in sorted(pairs):
+            if day.year != year:
+                total, year = Decimal(0), day.year
+            total += value
+            out[(country, day)] = total
+    return out
+
+
+def test_separately_named_dimension_on_the_same_axis(run: Callable) -> None:
+    """The query's daily ``Sales Date`` beside ``per: [Sales Month]``: another
+    dimension over the same date column orders the running window too, so a
+    day's value is the year-to-date at that day, not a tie within its month."""
+    want = _daily_running_ytd(run)
+    rows = run(["Country Name", "Sales Date"], ["Avg Monthly YTD"])
+    assert rows
+    for r in rows:
+        assert r["Avg Monthly YTD"] == want[(r["Country Name"], r["Sales Date"])], r
+
+
+def test_plain_cumulative_breaks_ties_on_the_same_axis(run: Callable) -> None:
+    """The same in an ordinary cumulative query: ``YTD Sales`` by month beside
+    the daily dimension accumulates by day, deterministically."""
+    want = _daily_running_ytd(run)
+    rows = run(["Country Name", "Sales Month", "Sales Date"], ["YTD Sales"])
+    assert rows
+    for r in rows:
+        assert r["YTD Sales"] == want[(r["Country Name"], r["Sales Date"])], r
+
+
+def test_overlapping_week_buckets(run: Callable) -> None:
+    """``per: [Sales Month:week, Sales Month]``: a week split across two months
+    is two stage-1 rows, ordered by week and then month, in either order."""
+    rows = run(["Country Name"], ["Avg Weekly YTD", "Avg Weekly YTD Reversed"])
+    assert rows
+    for r in rows:
+        assert r["Avg Weekly YTD"] == r["Avg Weekly YTD Reversed"], r

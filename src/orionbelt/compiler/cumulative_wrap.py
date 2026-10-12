@@ -48,6 +48,7 @@ from orionbelt.ast.nodes import (
     WindowFrame,
     WindowFunction,
 )
+from orionbelt.compiler.metric_resolution import _GRAIN_RANK
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import lookback_query, null_safe_eq, time_filters
@@ -100,6 +101,7 @@ def _build_cumulative_window(
     dialect: Dialect | None = None,
     group_dims: list[str] | None = None,
     model: SemanticModel | None = None,
+    axis_dims: list[str] | None = None,
 ) -> Expr:
     """Build the window function expression for a cumulative metric.
 
@@ -111,7 +113,15 @@ def _build_cumulative_window(
     func_name = _CUMULATIVE_AGG_MAP[measure.cumulative_type]
     base_ref = ColumnRef(name=measure.cumulative_measure or measure.name)
     time_ref = ColumnRef(name=time_dim_name)
-    order_by = [OrderByItem(expr=time_ref)]
+    # The time dimension, then the query's other dimensions on the same date
+    # column (*axis_dims*): rows of a finer or overlapping bucket of it (a day
+    # beside its month, a week split across two months) would otherwise tie in
+    # the ``ROWS`` frame, and the running value would depend on the order the
+    # rows arrived in.
+    order_by = [
+        OrderByItem(expr=time_ref),
+        *(OrderByItem(expr=ColumnRef(name=d)) for d in axis_dims or []),
+    ]
     # The query's other dimensions partition the window, so the metric
     # accumulates per group (per country, per product, ...), then any
     # metric-level ``partitionBy`` keys that the query did not already add.
@@ -439,7 +449,24 @@ def _window_for(
         dialect,
         _group_dimensions(resolved, m.cumulative_time_dimension),
         model,
+        _axis_dimensions(resolved, m.cumulative_time_dimension),
     )
+
+
+def _axis_dimensions(resolved: ResolvedQuery, time_dim_name: str) -> list[str]:
+    """The query's other dimensions on the time dimension's date column,
+    coarsest grain first: positions on the time axis that break its ties."""
+    time_dim = next((d for d in resolved.dimensions if d.name == time_dim_name), None)
+    if time_dim is None:
+        return []
+    axis = (time_dim.object_name, time_dim.column_name, time_dim.via)
+    same = [
+        d
+        for d in resolved.dimensions
+        if d.name != time_dim_name and (d.object_name, d.column_name, d.via) == axis
+    ]
+    # Coarsest first; a dimension with no grain is the column itself, finest.
+    return [d.name for d in sorted(same, key=lambda d: -_GRAIN_RANK[d.grain] if d.grain else 1)]
 
 
 def _value_ctes(
