@@ -170,7 +170,7 @@ def _stage_one(
         ):
             continue
         added.append((entry, ref))
-    plan_model, planned_dims, synthetic = _distinct_cumulative_axes(
+    plan_model, planned_dims, synthetic = _distinct_axes(
         measure, [*query.select.dimensions, *(entry for entry, _ in added)], model
     )
     sub_query = QueryObject(
@@ -226,6 +226,7 @@ def _stage_one(
 
 _MEMBERS = "reagg_members"
 _FACTS = "reagg_facts"
+_PERIODS = "reagg_periods"
 
 
 def _with_population(
@@ -246,11 +247,13 @@ def _with_population(
     planned as a query of their own over the data objects one of the
     *all_per* dimensions' objects reaches - so it starts from the member
     table, not from a fact, also when the query already groups by that
-    dimension. Each query dimension has to be among them: it describes the
-    member (the customer's country), and one from elsewhere (the order month)
-    has no members to list. The part of a filter that tests only those
-    objects applies to the members (see :func:`_member_part`); one on the
-    facts limits the measure, not who counts.
+    dimension. A query dimension among them describes the member (the
+    customer's country); one that reads none of them (the order month) is
+    crossed with the members, its values the ones *facts* has, so every
+    customer is in every month with orders. One reading both is refused. The
+    part of a filter that tests only the member objects applies to the
+    members (see :func:`_member_part`); one on the facts limits the measure,
+    and so the periods, not who counts.
 
     A member without rows takes the measure's ``defaultValue``, or 0 for a
     count, which is what a count reports over no rows; otherwise NULL.
@@ -277,20 +280,36 @@ def _with_population(
         d.name: None if d.via is not None else _column_objects(d.object_name, d.column_name, model)
         for d in resolved.dimensions
     }
+    # A query dimension reading no member object is a period to cross with them.
+    periods = [
+        d.name
+        for d in resolved.dimensions
+        if d.coalesce_alias is None and (objs := reads[d.name]) is not None and not objs & members
+    ]
     reads.update({entry: _field_objects(entry, model) for entry in all_per})
-    outside = [name for name, objs in reads.items() if objs is None or not objs <= members]
+    outside = [
+        name
+        for name, objs in reads.items()
+        if name not in periods and (objs is None or not objs <= members)
+    ]
     if outside:
         _refuse_population(
             measure,
-            f"each dimension of the query and of 'per' has to describe the members of "
-            f"{all_per}, read from their data objects alone, and {outside} "
+            f"each dimension of 'per' has to describe the members of {all_per}, and "
+            f"one of the query either them or none of their data objects, read from "
+            f"their data objects alone, and {outside} "
             f"{'does' if len(outside) == 1 else 'do'} not",
         )
     member_model = model.model_copy(
         update={"data_objects": {n: o for n, o in model.data_objects.items() if n in members}}
     )
+    described = [
+        d
+        for d in query.select.dimensions
+        if not (isinstance(d, str) and DimensionRef.parse(d).name in periods)
+    ]
     member_query = QueryObject(
-        select=QuerySelect(dimensions=[*query.select.dimensions, *per]),
+        select=QuerySelect(dimensions=[*described, *per]),
         where=[part for f in query.where if (part := _member_part(f, members, model))],
         use_path_names=list(query.use_path_names),
     )
@@ -307,24 +326,44 @@ def _with_population(
         *facts.ctes,
         CTE(name=_FACTS, query=replace(facts, ctes=[])),
     ]
+    joins: list[Join | Unnest] = []
+    if periods:
+        ctes.append(
+            CTE(
+                name=_PERIODS,
+                query=Select(
+                    columns=[
+                        AliasedExpr(expr=ColumnRef(name=p, table=_FACTS), alias=p) for p in periods
+                    ],
+                    from_=From(source=_FACTS, alias=_FACTS),
+                    distinct=True,
+                ),
+            )
+        )
+        joins.append(Join(join_type=JoinType.CROSS, source=_PERIODS, alias=_PERIODS))
     value: Expr = ColumnRef(name=measure, table=_FACTS)
     empty = _empty_value(measure, model)
     if empty is not None:
         value = FunctionCall(name="COALESCE", args=[value, empty])
+    member_keys = [k for k in keys if k not in periods]
+    on = _join_on(_MEMBERS, _FACTS, member_keys) if member_keys else None
+    if periods:
+        by_period = _join_on(_PERIODS, _FACTS, periods)
+        on = by_period if on is None else BinaryOp(left=on, op="AND", right=by_period)
+    joins.append(Join(join_type=JoinType.LEFT, source=_FACTS, alias=_FACTS, on=on))
     return Select(
         columns=[
-            *(AliasedExpr(expr=ColumnRef(name=k, table=_MEMBERS), alias=k) for k in keys),
+            *(
+                AliasedExpr(
+                    expr=ColumnRef(name=k, table=_PERIODS if k in periods else _MEMBERS),
+                    alias=k,
+                )
+                for k in keys
+            ),
             AliasedExpr(expr=value, alias=measure),
         ],
         from_=From(source=_MEMBERS, alias=_MEMBERS),
-        joins=[
-            Join(
-                join_type=JoinType.LEFT,
-                source=_FACTS,
-                alias=_FACTS,
-                on=_join_on(_MEMBERS, _FACTS, keys),
-            )
-        ],
+        joins=joins,
         ctes=ctes,
     )
 
@@ -456,32 +495,36 @@ def _rank(grain: TimeGrain | None) -> int:
     return _GRAIN_RANK[grain] if grain is not None else -1
 
 
-def _distinct_cumulative_axes(
+def _distinct_axes(
     measure: str,
     dims: list[str | CoalesceDimension],
     model: SemanticModel,
 ) -> tuple[SemanticModel, list[str | CoalesceDimension], dict[str, str]]:
-    """Stage 1's model and dimensions, with a cumulative's axes kept apart.
+    """Stage 1's model and dimensions, with a metric's axes kept apart.
 
     A dimension named twice at different grains - the query's
     ``Order Date:year`` beside ``per: [Order Date]``, two ``per`` buckets of
     it, or one an outer reaggregate metric passes down - gives two columns of
     one name, which the planner names after the dimension. For a plain measure
-    :func:`_name_per_buckets` tells them apart after planning, but a cumulative
-    metric's windows are built while planning, anywhere down the chain: its
-    look-back joined the shown months by year and multiplied the rows.
+    :func:`_name_per_buckets` tells them apart after planning, but a metric
+    planned by a pass of its own reads them by name while planning: a
+    cumulative's look-back joined the shown months by year and multiplied the
+    rows, and a nested reaggregate metric's stages joined and grouped the
+    months by year.
 
-    So when the chain reaches a cumulative metric, each dimension named more
-    than once keeps its name for one entry - for the cumulative's own time
-    dimension, which the cumulative has to find selected, the one at the
-    finest grain, so its window orders the rows stage 1 has without ties - and
-    every other entry is planned as a synthetic dimension at its grain. The
+    So when *measure* is a reaggregate metric or its chain reaches a
+    cumulative one, each dimension named more than once keeps its name for one
+    entry - the first, or for the cumulative's own time dimension, which the
+    cumulative has to find selected, the one at the finest grain, so its
+    window orders the rows stage 1 has without ties - and every other entry is
+    planned as a synthetic dimension at its grain. The
     returned mapping renames those columns back after planning,
     each to its dimension's name, which :func:`_name_per_buckets` then tells
     apart by position as for any measure.
     """
     time_dim = _cumulative_time_dimension(measure, model)
-    if time_dim is None:
+    metric = model.metrics.get(measure)
+    if time_dim is None and (metric is None or metric.type is not MetricType.REAGGREGATE):
         return model, list(dims), {}
     refs = [
         (index, reaggregate_per_ref(model, entry))
