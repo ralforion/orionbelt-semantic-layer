@@ -288,6 +288,7 @@ Additional required:
 Optional:
 - `obsl:reaggregateHaving` (multi-valued): a condition on the first-stage groups over a measure, as an expression string (e.g. `Order Count > 5`); only the groups meeting every condition are aggregated again
 - `obsl:population`: where the first-stage groups come from, `facts` (default) or `dimension` (every member of the `per` dimensions, from their own data object; a member without rows takes the measure's `defaultValue`, 0 for a count)
+- `obsl:carryForward` (boolean): with population `dimension`, a member with no row in a period takes its latest earlier value (a balance carried between snapshots)
 
 ### 5.10 ExternalConceptMapping
 Represents a qualified link from a modeling element to a concept in an external ontology (a corporate glossary, FIBO, schema.org). Descriptive metadata only: it never affects SQL planning or execution.
@@ -533,6 +534,7 @@ Any of model, data object, dimension, measure, metric:
 - `having` -> `obsl:reaggregateHaving` (one triple per condition, `field op value`)
 - `percentile` -> `obsl:percentile`
 - `population` -> `obsl:population`
+- `carryForward` -> `obsl:carryForward` (only when true)
 
 Fields intentionally excluded from Core mapping:
 - expression AST nodes

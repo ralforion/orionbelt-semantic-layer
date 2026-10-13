@@ -376,6 +376,19 @@ metrics:
     measure: Avg Revenue per Member
     per: ['Order Date:month']
     aggregation: max
+  Avg Revenue per Member Seen:
+    type: reaggregate
+    measure: Revenue
+    per: [Member]
+    aggregation: avg
+    population: dimension
+  Closing Amount:
+    type: reaggregate
+    measure: Largest Order
+    per: [Member]
+    aggregation: sum
+    population: dimension
+    carryForward: true
   Members:
     type: reaggregate
     measure: Orders Count
@@ -1056,6 +1069,12 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
         ),
     )
     got_feb = {r["member country"]: _number(r["avg revenue per member"]) for r in rows}
+    # Without a defaultValue a customer without orders is NULL, which the
+    # average skips: DE (30 + 50 + 1) / 3, not / 4.
+    seen = _by_country_rows(target, model, ["Avg Revenue per Member Seen"])
+    assert seen == {"DE": Decimal(27), "FR": Decimal("502.5"), None: Decimal(20)}, (
+        f"{target.name}: {seen}"
+    )
     assert got_feb == {"DE": Decimal("0.25"), "FR": Decimal(500), None: Decimal("13.33")}, (
         f"{target.name}: {got_feb}"
     )
@@ -1099,6 +1118,77 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
     )
     got_peak = [_number(r["peak month revenue per member"]) for r in rows]
     assert got_peak == [Decimal("115.67")], f"{target.name}: {got_peak}"
+
+
+def _by_country_rows(
+    target: VendorTarget, model: SemanticModel, measures: list[str]
+) -> dict[str | None, Decimal | None]:
+    """The first of *measures* by member country."""
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Member Country"], measures=measures)),
+    )
+    return {r["member country"]: _number(r[measures[0].lower()]) for r in rows}
+
+
+def _assert_carry_forward(target: VendorTarget, model: SemanticModel) -> None:
+    """``carryForward``: each customer's largest order in its latest month
+    with orders up to then, summed. A max rather than a ``last`` measure,
+    which MySQL and Dremio refuse; the carrying is the same window SQL on every
+    engine. January DE: c1 20, c2 50; February DE carries both beside c7's 1.
+    From February on, January is still read."""
+    want = {
+        ("DE", "2026-01"): Decimal(70),
+        ("FR", "2026-01"): Decimal(5),
+        ("DE", "2026-02"): Decimal(71),
+        ("FR", "2026-02"): Decimal(1005),
+        (None, "2026-02"): Decimal(37),
+    }
+    for where, expected in (
+        ([], want),
+        (
+            [QueryFilter(field="Order Date", op=">=", value="2026-02-01")],
+            {k: v for k, v in want.items() if k[1] == "2026-02"},
+        ),
+    ):
+        rows = _run(
+            target,
+            model,
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Member Country", "Order Month"], measures=["Closing Amount"]
+                ),
+                where=where,
+            ),
+        )
+        got = {
+            (r["member country"], str(r["order month"])[:7]): _number(r["closing amount"])
+            for r in rows
+        }
+        assert got == expected, f"{target.name}: {got}"
+
+    # By the member itself, ``per`` adds no column and the members still
+    # carry; each row here is a month the customer ordered in.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Member", "Order Month"], measures=["Closing Amount"])
+        ),
+    )
+    got_members = {
+        (r["member"], str(r["order month"])[:7]): _number(r["closing amount"]) for r in rows
+    }
+    assert got_members == {
+        ("c1", "2026-01"): Decimal(20),
+        ("c2", "2026-01"): Decimal(50),
+        ("c3", "2026-01"): Decimal(5),
+        ("c7", "2026-02"): Decimal(1),
+        ("c6", "2026-02"): Decimal(1000),
+        ("c4", "2026-02"): Decimal(7),
+        ("c5", "2026-02"): Decimal(30),
+    }, f"{target.name}: {got_members}"
 
 
 def _assert_two_grains(target: VendorTarget, model: SemanticModel) -> None:
@@ -1155,6 +1245,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_reaggregate_over_cumulative(target, model)
     _assert_population(target, model)
     _assert_two_grains(target, model)
+    _assert_carry_forward(target, model)
 
 
 def test_duckdb_reaggregate(vendor_duckdb: VendorTarget) -> None:

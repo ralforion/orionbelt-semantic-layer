@@ -503,6 +503,41 @@ class TestPopulation:
         assert set(g.objects(probe, population)) == {Literal("dimension")}
 
 
+class TestCarryForward:
+    """``carryForward`` carries a member's value into the periods it has no row in."""
+
+    _BASE = (
+        "type: reaggregate\nmeasure: Revenue\naggregation: sum\nper: [Customer]\n"
+        "carryForward: true\n"
+    )
+
+    def test_parsed(self) -> None:
+        probe_model, result = _resolve(_with_metric(self._BASE + "population: dimension"))
+        assert result.valid, result.errors
+        assert probe_model.metrics["Probe"].carry_forward is True
+        assert probe_model.metrics["Avg Revenue per Customer"].carry_forward is False
+
+    def test_needs_the_dimension_population(self) -> None:
+        assert "REAGGREGATE_CARRY_FORWARD_POPULATION" in _codes(_with_metric(self._BASE))
+
+    def test_only_on_reaggregate(self) -> None:
+        _model, result = _resolve(_with_metric("expression: '{[Revenue]}'\ncarryForward: true"))
+        assert any(
+            e.code == "METRIC_PARSE_ERROR" and "only valid on reaggregate" in e.message
+            for e in result.errors
+        )
+        with pytest.raises(ValidationError, match="only valid on reaggregate"):
+            Metric(name="D", expression="{[Revenue]}", carry_forward=True)
+
+    def test_rdf_triple(self) -> None:
+        probe_model, result = _resolve(_with_metric(self._BASE + "population: dimension"))
+        assert result.valid, result.errors
+        g = export_obsl(probe_model, "m")
+        probe = next(g.subjects(RDFS.label, Literal("Probe")))
+        carry = URIRef("https://ralforion.com/ns/obsl#carryForward")
+        assert set(g.objects(probe, carry)) == {Literal(True)}
+
+
 class TestStrayFields:
     """``per`` / ``aggregation`` / ``having`` on another metric type is refused, not dropped."""
 
@@ -1291,6 +1326,18 @@ class TestJsonSchema:
         assert self._validate({**metric, "population": "facts"}) == []
         assert self._validate({**metric, "population": "members"})
         assert self._validate({"expression": "{[R]}", "population": "dimension"})
+
+    def test_carry_forward(self) -> None:
+        metric = {
+            "type": "reaggregate",
+            "measure": "R",
+            "per": ["C"],
+            "aggregation": "sum",
+            "population": "dimension",
+        }
+        assert self._validate({**metric, "carryForward": True}) == []
+        assert self._validate({**metric, "carryForward": "yes"})
+        assert self._validate({"expression": "{[R]}", "carryForward": True})
 
 
 class TestGraph:

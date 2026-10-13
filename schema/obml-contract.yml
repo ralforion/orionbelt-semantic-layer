@@ -981,6 +981,12 @@ classes:
         json_schema: true
         ontology_property: population
         osi_roundtrip: true
+      carry_forward:
+        alias: carryForward
+        type: "bool"
+        json_schema: true
+        ontology_property: carryForward
+        osi_roundtrip: true
       data_type:
         alias: dataType
         type: "str | None"

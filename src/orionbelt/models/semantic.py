@@ -1278,6 +1278,7 @@ _REAGGREGATE_FIELDS = frozenset(
         "having",
         "percentile",
         "population",
+        "carry_forward",
         "data_type",
         "description",
         "format",
@@ -1335,6 +1336,9 @@ class Metric(BaseModel):
     # Where the first-stage groups come from: the facts (default) or every
     # member of the ``per`` dimensions.
     population: ReaggregatePopulation | None = None
+    # With population: dimension, a member with no row in a period takes its
+    # latest earlier value (a semi-additive balance between snapshots).
+    carry_forward: bool = Field(False, alias="carryForward")
     # Common
     data_type: str | None = Field(None, alias="dataType")
     description: str | None = None
@@ -1366,10 +1370,11 @@ class Metric(BaseModel):
             or self.having
             or self.percentile is not None
             or self.population is not None
+            or self.carry_forward
         ):
             raise ValueError(
-                "'per', 'aggregation', 'having', 'percentile' and 'population' are only "
-                "valid on reaggregate metrics"
+                "'per', 'aggregation', 'having', 'percentile', 'population' and "
+                "'carryForward' are only valid on reaggregate metrics"
             )
         if self.type == MetricType.DERIVED:
             if not self.expression:

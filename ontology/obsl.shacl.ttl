@@ -520,6 +520,13 @@ obsl:ReaggregateMetricShape a sh:NodeShape ;
         sh:in ( "facts" "dimension" ) ;
         sh:name "population" ;
         sh:message "A reaggregate metric may have at most one obsl:population, \"facts\" or \"dimension\"."
+    ] ;
+    sh:property [
+        sh:path obsl:carryForward ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:boolean ;
+        sh:name "carry forward" ;
+        sh:message "A reaggregate metric may have at most one boolean obsl:carryForward."
     ] .
 
 # -----------------------------------------------------------------------------
