@@ -159,6 +159,10 @@ measures:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
     filterContext: {{mode: RELATIVE, exclude: [Country]}}
+  Revenue All Dates:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    grain: {{mode: RELATIVE, exclude: [Order Date]}}
   Country Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -1100,14 +1104,21 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
 def _assert_two_grains(target: VendorTarget, model: SemanticModel) -> None:
     """One date at two grains: the month is a column of its own,
     ``Order Date:month``, and the average customer's revenue is each month's.
-    January (30 + 50 + 5) / 3, February (1 + 1000 + 10 + 30) / 4."""
+    January (30 + 50 + 5) / 3, February (1 + 1000 + 10 + 30) / 4. A
+    filterContext measure dropping no filter is the revenue; one excluding
+    the date from its grain is the total, 1126, at both grains."""
     rows = _run(
         target,
         model,
         QueryObject(
             select=QuerySelect(
                 dimensions=["Order Date:year", "Order Date:month"],
-                measures=["Revenue", "Avg Revenue per Customer"],
+                measures=[
+                    "Revenue",
+                    "Avg Revenue per Customer",
+                    "Revenue All Countries",
+                    "Revenue All Dates",
+                ],
             )
         ),
     )
@@ -1115,12 +1126,14 @@ def _assert_two_grains(target: VendorTarget, model: SemanticModel) -> None:
         (str(r["order date"])[:7], str(r["order date:month"])[:7]): (
             _number(r["revenue"]),
             _number(r["avg revenue per customer"]),
+            _number(r["revenue all countries"]),
+            _number(r["revenue all dates"]),
         )
         for r in rows
     }
     assert got == {
-        ("2026-01", "2026-01"): (Decimal(85), Decimal("28.33")),
-        ("2026-01", "2026-02"): (Decimal(1041), Decimal("260.25")),
+        ("2026-01", "2026-01"): (Decimal(85), Decimal("28.33"), Decimal(85), Decimal(1126)),
+        ("2026-01", "2026-02"): (Decimal(1041), Decimal("260.25"), Decimal(1041), Decimal(1126)),
     }, f"{target.name}: {got}"
 
 

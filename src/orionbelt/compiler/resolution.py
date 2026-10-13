@@ -560,6 +560,24 @@ def grain_column(dimension: str, grain: TimeGrain | None) -> str:
     return f"{dimension}:{grain.value if grain else 'value'}"
 
 
+def column_name(
+    dimension: str, grain: TimeGrain | None, earlier: list[tuple[str, TimeGrain | None]]
+) -> str:
+    """The column a query names *dimension* at *grain* after the *earlier*
+    (dimension, grain) entries: its own name, or :func:`grain_column` when one
+    of them is the same dimension at another grain."""
+    if any(d == dimension and g != grain for d, g in earlier):
+        return grain_column(dimension, grain)
+    return dimension
+
+
+def dimension_reference(dim: ResolvedDimension) -> str:
+    """*dim* as a query names it: ``Order Date:month``, not its column's name,
+    which is no reference (``Order Date:value``) or, for the first of two
+    grains, names the dimension at its declared grain."""
+    return f"{dim.dimension}:{dim.grain.value}" if dim.grain else dim.dimension
+
+
 @dataclass
 class ResolvedMeasure:
     """A resolved measure with its aggregate expression."""
@@ -919,15 +937,30 @@ class _ResolutionContext:
     qualify_table: Callable[[DataObject], str] | None = None
 
 
-def _resolve_effective_grain(grain: GrainOverride, query_dims: list[str]) -> list[str]:
-    """Compute the effective grain dimensions for a measure grain override."""
+def _resolve_effective_grain(
+    grain: GrainOverride, query_dims: list[ResolvedDimension]
+) -> list[str]:
+    """The columns a measure's grain override groups by.
+
+    The override names model dimensions, and a dimension the query selects at
+    two grains is two columns: excluding it excludes both, keeping or
+    including it keeps both. A name the query does not select stays as it is,
+    for the caller to refuse.
+    """
+
+    def columns(names: list[str]) -> list[str]:
+        out: list[str] = []
+        for name in names:
+            out.extend([d.name for d in query_dims if d.dimension == name] or [name])
+        return out
+
     if grain.mode == GrainMode.FIXED:
         if grain.keep_only:
-            return [d for d in grain.keep_only if d in query_dims]
-        return list(grain.include)
+            return [d.name for d in query_dims if d.dimension in grain.keep_only]
+        return columns(grain.include)
     # RELATIVE mode
-    result = [d for d in query_dims if d not in grain.exclude]
-    result.extend(d for d in grain.include if d not in result)
+    result = [d.name for d in query_dims if d.dimension not in grain.exclude]
+    result.extend(c for c in columns(grain.include) if c not in result)
     return result
 
 
@@ -1311,15 +1344,14 @@ class QueryResolver:
             ctx.result.via_constraints[resolved_dim.object_name] = dim_def.via
         if coalesce_alias is not None:
             resolved_dim.coalesce_alias = coalesce_alias
-        elif any(
-            d.dimension == resolved_dim.dimension
-            and d.grain != resolved_dim.grain
-            and d.coalesce_alias is None
-            for d in ctx.result.dimensions
-        ):
+        else:
             # The same dimension at a second grain: a column of its own, or
             # every wrapper joining and grouping by name reads the first twice.
-            resolved_dim.name = grain_column(resolved_dim.dimension, resolved_dim.grain)
+            resolved_dim.name = column_name(
+                resolved_dim.dimension,
+                resolved_dim.grain,
+                [(d.dimension, d.grain) for d in ctx.result.dimensions if d.coalesce_alias is None],
+            )
         ctx.result.dimensions.append(resolved_dim)
         ctx.result.required_objects.add(resolved_dim.object_name)
         # A computed column may read a column of another data object, which the
@@ -1565,7 +1597,7 @@ class QueryResolver:
         effective_grain: list[str] | None = None
         if grain_override is not None:
             query_dim_names = [d.name for d in ctx.result.dimensions]
-            effective_grain = _resolve_effective_grain(grain_override, query_dim_names)
+            effective_grain = _resolve_effective_grain(grain_override, ctx.result.dimensions)
             if effective_grain is not None and not set(effective_grain) <= set(query_dim_names):
                 bad = sorted(set(effective_grain) - set(query_dim_names))
                 ctx.errors.append(

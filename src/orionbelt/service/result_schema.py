@@ -168,19 +168,18 @@ def dimension_labels(entries: Any, model: Any) -> list[tuple[str | None, Any]]:
     as the compiler labels it (``At:month`` beside ``At:year``, see
     :func:`orionbelt.compiler.resolution.grain_column`).
     """
-    from orionbelt.compiler.resolution import grain_column
+    from orionbelt.compiler.resolution import column_name
     from orionbelt.models.query import DimensionRef
 
     out: list[tuple[str | None, Any]] = []
-    grains: dict[str, list[Any]] = {}
+    earlier: list[tuple[str, Any]] = []
     for entry in entries or []:
         label, declared = dimension_label_and_declaration(entry, model)
         if isinstance(entry, str) and label is not None:
             grain = DimensionRef.parse(entry).grain or getattr(declared, "time_grain", None)
-            seen = grains.setdefault(label, [])
-            if any(g != grain for g in seen):
-                label = grain_column(label, grain)
-            seen.append(grain)
+            dimension = label
+            label = column_name(dimension, grain, earlier)
+            earlier.append((dimension, grain))
         out.append((label, declared))
     return out
 
@@ -292,10 +291,9 @@ def declared_arrow_types(model: Any, query: Any = None) -> dict[str, Any]:
             types[label] = obml_type_to_arrow(rt)
     if query is not None:
         select = getattr(query, "select", None)
-        entries = getattr(select, "dimensions", None) or []
-        for entry, (label, declared) in zip(entries, dimension_labels(entries, model), strict=True):
-            if entry == label:
-                continue  # a plain name, already in the model map under it
+        for label, declared in dimension_labels(getattr(select, "dimensions", None), model):
+            if label in model.dimensions:
+                continue  # a dimension's own name, already in the model map under it
             rt = getattr(getattr(declared, "result_type", None), "value", None)
             if label and rt:
                 types[label] = obml_type_to_arrow(rt)

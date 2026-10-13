@@ -102,10 +102,9 @@ def build_type_map(model: Any, query: Any = None) -> dict[str, str]:
         from orionbelt.service.result_schema import dimension_labels
 
         select = getattr(query, "select", None)
-        entries = getattr(select, "dimensions", None) or []
-        for entry, (label, declared) in zip(entries, dimension_labels(entries, model), strict=True):
-            if entry == label:
-                continue  # a plain name, already mapped under it
+        for label, declared in dimension_labels(getattr(select, "dimensions", None), model):
+            if label in model.dimensions:
+                continue  # a dimension's own name, already mapped under it
             rt = getattr(getattr(declared, "result_type", None), "value", None)
             if label and rt:
                 types[label] = RESULT_TYPE_TO_HINT.get(rt, "string")

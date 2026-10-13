@@ -91,7 +91,7 @@ Supported grains: `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `
 
 This overrides any `timeGrain` set on the dimension definition.
 
-The result column is named after the dimension: `Order Date`. When the query selects one dimension at more than one grain, as above, the first keeps that name and each other one is named with its grain, `Order Date:quarter` and `Order Date:year` (`Order Date:value` for the column without a grain), which is also the name `orderBy` uses. Cumulative and window metrics order by their time dimension and then by its other grains in the query, so the months of a year are not ties. A period-over-period metric compares at its own grain, so its time dimension can be selected only once (`INVALID_METRIC`).
+The result column is named after the dimension: `Order Date`. When the query selects one dimension at more than one grain, as above, the first keeps that name and each other one is named with its grain, `Order Date:quarter` and `Order Date:year` (`Order Date:value` for the column without a grain), which is also the name `orderBy` uses. A measure's `grain` override names the dimension, so `exclude: [Order Date]` drops it at every grain the query selects. Cumulative and window metrics order by their time dimension and then by its other grains in the query, so the months of a year are not ties. A period-over-period metric compares at its own grain, so its time dimension can be selected only once (`INVALID_METRIC`).
 
 Two things are checked before the query is answered rather than after.
 

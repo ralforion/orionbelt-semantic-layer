@@ -65,6 +65,7 @@ from orionbelt.compiler.resolution import (
     ResolutionError,
     ResolvedMeasure,
     ResolvedQuery,
+    column_name,
     grain_column,
 )
 from orionbelt.compiler.time_lookback import null_safe_eq, rename_cte_sources
@@ -522,10 +523,11 @@ def _distinct_axes(
     entry - the first, or for the cumulative's own time dimension, which the
     cumulative has to find selected, the one at the finest grain, so its
     window orders the rows stage 1 has without ties - and every other entry is
-    planned as a synthetic dimension at its grain. The
-    returned mapping renames those columns back after planning,
-    each to its dimension's name, which :func:`_name_per_buckets` then tells
-    apart by position as for any measure.
+    planned as a synthetic dimension at its grain. The returned mapping
+    renames those columns back after planning, each to the column the query
+    names it by (``Order Date:month`` for the second of two grains, see
+    :func:`column_name`); a ``per`` column left with the plain name
+    :func:`_name_per_buckets` then tells apart by position as for any measure.
     """
     time_dim = _cumulative_time_dimension(measure, model)
     metric = model.metrics.get(measure)
@@ -557,7 +559,11 @@ def _distinct_axes(
     dimensions = dict(model.dimensions)
     planned: list[str | CoalesceDimension] = list(dims)
     synthetic: dict[str, str] = {}
+    earlier: list[tuple[str, TimeGrain | None]] = []
     for index, ref in refs:
+        # The column the query names this entry by, as resolution names it.
+        column = column_name(ref.name, ref.grain, earlier)
+        earlier.append((ref.name, ref.grain))
         if index not in renamed:
             continue
         declared_dim = model.dimensions[ref.name]
@@ -565,7 +571,7 @@ def _distinct_axes(
         name = f"__reaggregate_axis_{index}_{ref.name}"
         dimensions[name] = declared_dim.model_copy(update={"name": name, "time_grain": grain})
         planned[index] = name
-        synthetic[name] = ref.name
+        synthetic[name] = column
     return model.model_copy(update={"dimensions": dimensions}), planned, synthetic
 
 

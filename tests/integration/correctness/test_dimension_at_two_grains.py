@@ -47,6 +47,18 @@ def model() -> SemanticModel:
                 "timeDimension": "Sales Date",
             },
             "Avg Client Orders": {**_PER_CLIENT, "aggregation": "avg"},
+            "Peak Day Client Orders": {
+                "type": "reaggregate",
+                "measure": "Avg Client Orders",
+                "per": ["Sales Date:day"],
+                "aggregation": "max",
+            },
+            "Avg Running Sales": {
+                "type": "reaggregate",
+                "measure": "Running Sales",
+                "per": ["Sales Date"],
+                "aggregation": "avg",
+            },
             "Avg Client Orders All": {
                 **_PER_CLIENT,
                 "aggregation": "avg",
@@ -61,6 +73,23 @@ def model() -> SemanticModel:
                     "offset": -1,
                     "offsetGrain": "month",
                 },
+            },
+        }
+    )
+    # A date with no declared grain: the column itself is ``Raw Date:value``
+    # beside another grain of it.
+    raw["dimensions"]["Raw Date"] = {
+        "dataObject": "Sales",
+        "column": "Sales Date",
+        "resultType": "date",
+    }
+    total = dict(raw["measures"]["Total Sales"])
+    raw["measures"].update(
+        {
+            "Sales All Dates": {**total, "grain": {"mode": "RELATIVE", "exclude": ["Sales Date"]}},
+            "Sales Any Country": {
+                **total,
+                "filterContext": {"mode": "RELATIVE", "exclude": ["Country Name"]},
             },
         }
     )
@@ -86,6 +115,9 @@ def _run(
         "Prior Sales",
         "Avg Client Orders",
         "Avg Client Orders All",
+        "Peak Day Client Orders",
+        "Avg Running Sales",
+        "Sales Any Country",
     ],
 )
 def test_each_row_is_its_month(
@@ -154,3 +186,59 @@ def test_order_by_the_second_grain(
     months = [r[1] for r in rows]
     assert months == sorted(months, reverse=True)
     assert len(set(months)) == 3
+
+
+def test_grain_exclude_takes_every_grain(
+    model: SemanticModel, commerce_db: duckdb.DuckDBPyConnection
+) -> None:
+    """``grain.exclude: [Sales Date]`` drops the dimension at both grains: the
+    grand total on every row, not each month's."""
+    _, rows = _run(commerce_db, model, ["Sales Date:year", "Sales Date:month"], "Sales All Dates")
+    ((total,),) = commerce_db.sql(
+        "SELECT CAST(SUM(salesamount) AS DECIMAL(18, 2)) FROM orionbelt_1.sales"
+    ).fetchall()
+    assert {r[-1] for r in rows} == {total}
+
+
+def test_filter_context_at_a_written_grain(
+    model: SemanticModel, commerce_db: duckdb.DuckDBPyConnection
+) -> None:
+    """With no filter to drop, a filterContext measure is the plain one. Its
+    scan names the dimensions as the query does: ``Sales Date:month`` alone
+    was scanned at the declared day grain, ``Raw Date:value`` is no reference."""
+    for dims in (["Sales Date:month"], ["Raw Date:month", "Raw Date"]):
+        query = QueryObject(
+            select=QuerySelect(dimensions=dims, measures=["Sales Any Country", "Total Sales"])
+        )
+        rows = commerce_db.sql(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
+        assert rows
+        assert all(r[-2] == r[-1] for r in rows), dims
+
+
+def test_type_maps_name_the_second_grain(model: SemanticModel) -> None:
+    """The declared types reach the generated column too, so a result whose
+    driver hands back ``date64`` is reconciled to the declared ``date32``."""
+    import pyarrow as pa
+
+    from orionbelt.api.query_cache import build_type_map
+    from orionbelt.service.result_schema import declared_arrow_types, reconcile_to_declared
+
+    query = QueryObject(
+        select=QuerySelect(
+            dimensions=["Sales Date:year", "Sales Date:month"], measures=["Total Sales"]
+        )
+    )
+    declared = declared_arrow_types(model, query)
+    assert declared["Sales Date:month"] == pa.date32()
+    assert (
+        build_type_map(model, query)["Sales Date:month"]
+        == build_type_map(model, query)["Sales Date"]
+    )
+    table = pa.table(
+        {
+            "Sales Date": pa.array([0], pa.date64()),
+            "Sales Date:month": pa.array([0], pa.date64()),
+        }
+    )
+    reconciled, _ = reconcile_to_declared(table, declared)
+    assert reconciled.schema.field("Sales Date:month").type == pa.date32()
