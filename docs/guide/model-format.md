@@ -1184,7 +1184,7 @@ By `Country`, stage 1 lists every customer of each country from the customer dat
 - A query filter limits the members when every column it tests is on the members' data objects (`Country = Germany`); a filter on the facts (an order date range) limits the measure, not who counts, so a customer without orders in the range counts with the default value. Each condition of an `and` group stands alone, so the member conditions in it apply; an `or` or negated group mixing both is all or nothing, and does not limit the members. An `exists` / `nonexists` filter limits them only when its subquery and its filters read the members' data objects too: "has orders" tests the facts. A computed column counts with every data object its expression reads, so a client column computed from the sales is a fact condition.
 - `having` is refused (`REAGGREGATE_POPULATION_HAVING`): a member it removed would come back with the default value. Filter the members with the query instead.
 - `carryForward: true` gives a member with no row in a period its latest earlier value instead of the default; see [Semi-additive measures](#semi-additive-measures).
-- The query's rows still come from the query: a country with no orders at all is not a row, as for every measure.
+- Every member is a row of the query too: by `Country`, a country whose customers have no orders at all; by `Customer` and `Order Month`, every customer in every month with orders. Another measure selected beside the metric reports there what it does over no rows: its `defaultValue`, 0 for a count, otherwise NULL (a `total` or `grain` measure too).
 
 #### Semi-additive measures
 
@@ -1229,7 +1229,7 @@ By `Snapshot Date:month`, stage 1 lists every account in every month with snapsh
 - `carryForward` needs `population: dimension` (`REAGGREGATE_CARRY_FORWARD_POPULATION`): carrying needs a row for every account in every period, which only the members have.
 - The periods are the query's dimensions on one date: a grain (`Snapshot Date:month`), or a date or timestamp dimension; grains of one date order coarsest first. Two different dates are refused (`REAGGREGATE_CARRY_FORWARD_AXIS`). Another period, such as a product, keeps balances of its own: an account's balance in a product carries only that product's snapshots. Without a date in the query there is one period and nothing to carry.
 - A filter on the date limits the periods shown, not the snapshots read: from February on, February still carries an account's January balance, as a cumulative metric reads the months before its first.
-- The periods are the ones with any snapshot after the filters, so a month with no snapshot from any account is not a row; and, as for every population, a row of the query (a branch in a month) needs a snapshot in it.
+- The periods are the ones with any snapshot after the filters, so a month with no snapshot from any account is not a row. Every account, and every branch with accounts, is a row in each of them: by account and month, an account's balance in a month without its own snapshot is its carried one.
 - A value is a period's measure: one whose measure is NULL carries the one before it.
 - It works on every engine (a running count and a `MAX` over each run, not `IGNORE NULLS`); the `last` measure is what MySQL and Dremio refuse, and a `max` or `sum` measure carries there too.
 

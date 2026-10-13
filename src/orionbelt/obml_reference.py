@@ -459,7 +459,9 @@ the final rows. Select it beside other measures (other facts too), in `having` a
   (`REAGGREGATE_POPULATION_HAVING`); a query dimension describes the members
   or reads none of their objects (an order month: every member in every month
   the facts have), not both (`REAGGREGATE_POPULATION_GROUPING`); only filters
-  on the members' objects limit them
+  on the members' objects limit them. Every member group is a row of the
+  query; other measures report there their defaultValue, 0 for a count, else
+  NULL
 - `carryForward: true` (needs `population: dimension`,
   `REAGGREGATE_CARRY_FORWARD_POPULATION`): a member with no row in a period
   takes its latest earlier value (a balance between snapshots), read past a

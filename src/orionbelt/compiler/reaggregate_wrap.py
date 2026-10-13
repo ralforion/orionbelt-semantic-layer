@@ -50,6 +50,7 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
     Select,
+    UnionAll,
     Unnest,
     WindowFrame,
     WindowFunction,
@@ -239,10 +240,9 @@ def _stage_one(
         return _name_per_buckets(planned, query_columns, refs)
 
     named, columns = named_columns(scan)
-    # With every ``per`` dimension selected, the groups are the query's own
-    # and the members add nothing - unless they carry a value forward, which
-    # needs them all the same.
-    if population is ReaggregatePopulation.DIMENSION and (added or carry):
+    # Also with every ``per`` dimension selected: the groups are then the
+    # query's own, and the members are the ones without rows among them.
+    if population is ReaggregatePopulation.DIMENSION:
         layout = _population_layout(measure, per, carry, resolved, query, model)
         history = _history(scan, sub_resolved, layout.axis, resolved)
         named = _with_population(
@@ -270,6 +270,8 @@ _CARRIED = "reagg_carried"
 _SHOWN = "reagg_shown"
 _RUN = "__reagg_run"
 _MATCHED = "__reagg_matched"
+_ROWS_ALL = "reagg_rows_all"
+_ROWS = "reagg_rows"
 
 
 @dataclass(frozen=True)
@@ -1259,6 +1261,7 @@ def wrap_with_reaggregate(
     }
     source_of: dict[str, str] = {}
     stage_two_names: list[str] = []
+    grid_names: list[str] = []
     for idx, ((measure, per, _, population, carry), metrics) in enumerate(groups.items(), start=1):
         inner_name = f"reagg_{idx}_inner"
         outer_name = f"reagg_{idx}"
@@ -1279,12 +1282,29 @@ def wrap_with_reaggregate(
         stage_two = _stage_two(inner_name, metrics, dim_names, per_columns, model, dialect)
         ctes.append(CTE(name=outer_name, query=stage_two))
         stage_two_names.append(outer_name)
+        if population is ReaggregatePopulation.DIMENSION:
+            grid_names.append(outer_name)
         for m in metrics:
             source_of[m.name] = outer_name
 
     anchor = _BASE if keep_base else stage_two_names[0]
+    # Every member counts in a population metric, so its groups are rows of
+    # the query too: by account and month, every account in every month, also
+    # one without a snapshot. The rows are those and the base's.
+    by_rows = bool(dim_names and keep_base and grid_names)
+    if by_rows:
+        ctes.append(
+            CTE(
+                name=_ROWS_ALL,
+                query=UnionAll(
+                    queries=[_distinct(name, dim_names) for name in [_BASE, *grid_names]]
+                ),
+            )
+        )
+        ctes.append(CTE(name=_ROWS, query=_distinct(_ROWS_ALL, dim_names)))
+        anchor = _ROWS
     joins: list[Join | Unnest] = []
-    for name in [*stage_two_names, *joined]:
+    for name in [*([_BASE] if by_rows else []), *stage_two_names, *joined]:
         if name == anchor:
             continue
         joins.append(
@@ -1317,7 +1337,13 @@ def wrap_with_reaggregate(
             return ColumnRef(name=alias)
         if alias in source_of:
             return stage_two_value(alias)
-        return ColumnRef(name=alias, table=anchor)
+        if not by_rows or alias in dim_names:
+            return ColumnRef(name=alias, table=anchor)
+        # A measure on a row only the population has: no rows of its own, so
+        # what it reports over none (its defaultValue, 0 for a count), or NULL.
+        value: Expr = ColumnRef(name=alias, table=_BASE)
+        empty = _empty_value(alias, model)
+        return value if empty is None else FunctionCall(name="COALESCE", args=[value, empty])
 
     columns: list[Expr] = []
     for col in ast.columns:

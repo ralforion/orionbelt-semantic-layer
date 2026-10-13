@@ -384,10 +384,13 @@ def test_or_group_mixing_members_and_facts_is_not_split(run: Callable) -> None:
 
 def test_root_from_the_whole_per(run: Callable, clients: list[dict[str, Any]]) -> None:
     """``per: [Client Name, Country Name]`` by ``Client Name``: the query covers
-    the client, and the members are still listed from the clients."""
+    the client, and the members are still listed from the clients - every one
+    a row, a client without orders at 0."""
     rows = run(["Client Name"], ["Avg Orders per Client and Country"])
-    assert len(rows) == len([c for c in clients if c["orders"]])
-    assert all(r["Avg Orders per Client and Country"] >= 1 for r in rows)
+    assert len(rows) == len(clients) == 500
+    values = sorted(r["Avg Orders per Client and Country"] for r in rows)
+    assert values.count(0) == len([c for c in clients if not c["orders"]]) == 29
+    assert all(v >= 1 for v in values[29:])
 
 
 def test_exists_on_the_facts_does_not_limit_the_members(run: Callable) -> None:
@@ -487,3 +490,16 @@ def test_computed_dimension_reading_the_facts_refused(
     query = QueryObject(select=QuerySelect(dimensions=dimensions, measures=[measure]))
     with pytest.raises(ResolutionError, match="Client Sale Date"):
         CompilationPipeline().compile(query, sale_date_model, "duckdb")
+
+
+def test_every_member_is_a_row_beside_other_measures(
+    run: Callable, clients: list[dict[str, Any]]
+) -> None:
+    """By client, the 29 without sales are rows too. A plain measure beside
+    the metric reports what it reports over no rows there: a count 0, a sum
+    without a defaultValue NULL."""
+    rows = run(["Client Name"], ["Clients All", "Sales Count", "Total Sales"])
+    assert len(rows) == 500
+    idle = [r for r in rows if r["Sales Count"] == 0]
+    assert len(idle) == len([c for c in clients if not c["orders"]]) == 29
+    assert all(r["Total Sales"] is None and r["Clients All"] == 1 for r in idle)

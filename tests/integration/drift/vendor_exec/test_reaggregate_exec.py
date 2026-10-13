@@ -1080,8 +1080,8 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
     )
 
     # An order month reads no customer: every customer counts in each month
-    # with orders. No January row for the customers without a country, who
-    # ordered in February only.
+    # with orders, and each group of them is a row - the customers without a
+    # country in January too, at 0 for each.
     rows = _run(
         target,
         model,
@@ -1099,6 +1099,7 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
     assert got_month == {
         ("DE", "2026-01"): (Decimal(20), Decimal(4)),
         ("FR", "2026-01"): (Decimal("2.5"), Decimal(2)),
+        (None, "2026-01"): (Decimal(0), Decimal(3)),
         ("DE", "2026-02"): (Decimal("0.25"), Decimal(4)),
         ("FR", "2026-02"): (Decimal(500), Decimal(2)),
         (None, "2026-02"): (Decimal("13.33"), Decimal(3)),
@@ -1141,6 +1142,7 @@ def _assert_carry_forward(target: VendorTarget, model: SemanticModel) -> None:
     want = {
         ("DE", "2026-01"): Decimal(70),
         ("FR", "2026-01"): Decimal(5),
+        (None, "2026-01"): None,
         ("DE", "2026-02"): Decimal(71),
         ("FR", "2026-02"): Decimal(1005),
         (None, "2026-02"): Decimal(37),
@@ -1169,7 +1171,7 @@ def _assert_carry_forward(target: VendorTarget, model: SemanticModel) -> None:
         assert got == expected, f"{target.name}: {got}"
 
     # By the member itself, ``per`` adds no column and the members still
-    # carry; each row here is a month the customer ordered in.
+    # carry, every one a row in each month: NULL before its first order.
     rows = _run(
         target,
         model,
@@ -1180,14 +1182,13 @@ def _assert_carry_forward(target: VendorTarget, model: SemanticModel) -> None:
     got_members = {
         (r["member"], str(r["order month"])[:7]): _number(r["closing amount"]) for r in rows
     }
+    january = {"c1": Decimal(20), "c2": Decimal(50), "c3": Decimal(5)}
+    february = {**january, "c7": Decimal(1), "c6": Decimal(1000), "c4": Decimal(7)}
+    february["c5"] = Decimal(30)
+    customers = [f"c{i}" for i in range(1, 10)]
     assert got_members == {
-        ("c1", "2026-01"): Decimal(20),
-        ("c2", "2026-01"): Decimal(50),
-        ("c3", "2026-01"): Decimal(5),
-        ("c7", "2026-02"): Decimal(1),
-        ("c6", "2026-02"): Decimal(1000),
-        ("c4", "2026-02"): Decimal(7),
-        ("c5", "2026-02"): Decimal(30),
+        **{(c, "2026-01"): january.get(c) for c in customers},
+        **{(c, "2026-02"): february.get(c) for c in customers},
     }, f"{target.name}: {got_members}"
 
 
