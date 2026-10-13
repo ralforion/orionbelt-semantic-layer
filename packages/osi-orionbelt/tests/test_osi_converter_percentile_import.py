@@ -153,6 +153,11 @@ def test_inside_a_formula() -> None:
         "PERCENTILE_CONT(CAST(0.9 AS DECIMAL(5))) WITHIN GROUP (ORDER BY Orders.amount)",
         "PERCENTILE_CONT(CAST(0.9 AS INT)) WITHIN GROUP (ORDER BY Orders.amount)",
         "PERCENTILE_CONT(CAST(Orders.cost AS DOUBLE)) WITHIN GROUP (ORDER BY Orders.amount)",
+        "PERCENTILE_DISC(CAST(0.1 AS FLOAT)) WITHIN GROUP (ORDER BY Orders.amount)",
+        "PERCENTILE_DISC(CAST(0.1 AS REAL)) WITHIN GROUP (ORDER BY Orders.amount)",
+        "PERCENTILE_CONT(CAST(CAST(0.1 AS FLOAT) AS DOUBLE)) WITHIN GROUP (ORDER BY Orders.amount)",
+        "PERCENTILE_CONT(CAST('NaN' AS DOUBLE)) WITHIN GROUP (ORDER BY Orders.amount)",
+        "PERCENTILE_CONT(CAST('Infinity' AS DOUBLE)) WITHIN GROUP (ORDER BY Orders.amount)",
         "SUM(Orders.amount) FILTER (WHERE Orders.cost > 0)",
         "SUM(Orders.amount) OVER () - SUM(Orders.cost)",
     ],
@@ -178,6 +183,11 @@ def test_inside_a_formula() -> None:
         "cast to decimal without scale",
         "cast to int",
         "cast of a column",
+        "float rounds 0.1",
+        "real rounds 0.1",
+        "float under double",
+        "nan",
+        "infinity",
         "sum filter",
         "sum over in a formula",
     ],
@@ -264,6 +274,12 @@ def test_descending_continuous_is_the_ascending_one_at_one_minus_p(
             0.9,
         ),
         (
+            "PERCENTILE_DISC(CAST(0.25 AS REAL)) WITHIN GROUP (ORDER BY Orders.amount)",
+            "ANSI_SQL",
+            "percentile_disc",
+            0.25,
+        ),
+        (
             "PERCENTILE_DISC(CAST(0.25 AS FLOAT)) WITHIN GROUP (ORDER BY Orders.amount)",
             "ANSI_SQL",
             "percentile_disc",
@@ -302,3 +318,14 @@ def test_fraction_through_a_cast_that_keeps_it(
 ) -> None:
     obml = _import(expression, dialect)
     assert obml["measures"]["Probe"] == _column_measure(aggregation, percentile)
+
+
+def test_a_nan_fraction_leaves_the_rest_of_the_model_importing() -> None:
+    """A NaN fraction preserves its metric; it used to abort the whole import."""
+    total = _metric("Total", "SUM(Orders.amount)")
+    obml = _import(
+        "PERCENTILE_CONT(CAST('NaN' AS DOUBLE)) WITHIN GROUP (ORDER BY Orders.amount)",
+        before=[total],
+    )
+    assert obml["measures"]["Total"]["aggregation"] == "sum"
+    assert "Probe" not in obml.get("measures", {})

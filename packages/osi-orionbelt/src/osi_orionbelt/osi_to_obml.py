@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -1535,6 +1536,9 @@ class OSItoOBML:
             value = Decimal(node.this)
         except InvalidOperation:
             return None
+        # ``CAST('NaN' AS DOUBLE)`` reaches here too; a NaN does not compare.
+        if not value.is_finite():
+            return None
         exponent = value.as_tuple().exponent
         if not 0 < value < 1 or not isinstance(exponent, int) or exponent < -9:
             return None
@@ -1542,9 +1546,29 @@ class OSItoOBML:
 
     @staticmethod
     def _keeps_fraction(to: exp.DataType, value: exp.Expr) -> bool:
-        """Whether a cast to *to* keeps the literal *value* unrounded."""
-        if to.this in (exp.DataType.Type.DOUBLE, exp.DataType.Type.FLOAT):
+        """Whether a cast to *to* keeps the literal *value* unrounded.
+
+        A ``DOUBLE`` is what the engines read a plain fractional literal as
+        already, so a cast to it changes nothing the uncast literal would not
+        (on DuckDB ``PERCENTILE_DISC(CAST(0.1 AS DOUBLE))`` over 1 to 10 is 1,
+        as for ``0.1``). ``FLOAT`` / ``REAL`` is single precision on Databricks
+        and DuckDB, where 0.1 becomes 0.100000001 and that percentile 2; it is
+        looked through only for a value single precision holds exactly
+        (0.25, 0.5, 0.125).
+        """
+        if to.this is exp.DataType.Type.DOUBLE:
             return True
+        if to.this is exp.DataType.Type.FLOAT:
+            if not isinstance(value, exp.Literal):
+                return False
+            try:
+                number = Decimal(value.this)
+            except InvalidOperation:
+                return False
+            if not number.is_finite():
+                return False
+            single = struct.unpack("f", struct.pack("f", float(number)))[0]
+            return Decimal(single) == number
         if to.this is not exp.DataType.Type.DECIMAL or len(to.expressions) != 2:
             return False
         scale = to.expressions[1].this
