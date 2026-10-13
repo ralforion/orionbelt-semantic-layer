@@ -25,7 +25,18 @@ def _field(name: str) -> dict[str, Any]:
     }
 
 
-def _import(expression: str, dialect: str = "ANSI_SQL") -> dict[str, Any]:
+def _metric(name: str, expression: str, dialect: str = "ANSI_SQL") -> dict[str, Any]:
+    return {
+        "name": name,
+        "expression": {"dialects": [{"dialect": dialect, "expression": expression}]},
+    }
+
+
+def _import(
+    expression: str, dialect: str = "ANSI_SQL", before: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """The OBML of a model whose metric ``Probe`` is *expression*, after the
+    metrics *before*."""
     osi = {
         "version": "0.2.0.dev0",
         "semantic_model": [
@@ -38,14 +49,7 @@ def _import(expression: str, dialect: str = "ANSI_SQL") -> dict[str, Any]:
                         "fields": [_field("amount"), _field("cost")],
                     }
                 ],
-                "metrics": [
-                    {
-                        "name": "Probe",
-                        "expression": {
-                            "dialects": [{"dialect": dialect, "expression": expression}]
-                        },
-                    }
-                ],
+                "metrics": [*(before or []), _metric("Probe", expression, dialect)],
             }
         ],
     }
@@ -135,11 +139,70 @@ def test_inside_a_formula() -> None:
         "PERCENTILE_CONT(0.0000000001) WITHIN GROUP (ORDER BY Orders.amount)",
         "PERCENTILE_CONT(Orders.cost) WITHIN GROUP (ORDER BY Orders.amount)",
         "APPROX_PERCENTILE(Orders.amount, 0.9)",
+        "percentile(Orders.amount, 0.3, Orders.cost)",
+        "percentile(Orders.amount, 0.3, Orders.cost) - SUM(Orders.cost)",
+        "quantile_cont(Orders.amount, 0.3, Orders.cost)",
+        "percentile(DISTINCT Orders.amount, 0.3)",
+        "PERCENTILE_CONT(0.3, 1) WITHIN GROUP (ORDER BY Orders.amount)",
     ],
-    ids=["desc", "two keys", "above 1", "zero", "ten places", "column fraction", "approx"],
+    ids=[
+        "desc",
+        "two keys",
+        "above 1",
+        "zero",
+        "ten places",
+        "column fraction",
+        "approx",
+        "frequency",
+        "frequency in a formula",
+        "duckdb third argument",
+        "distinct",
+        "within group two arguments",
+    ],
 )
 def test_preserved_when_not_modelable(expression: str) -> None:
-    dialect = "SNOWFLAKE" if expression.startswith("APPROX") else "ANSI_SQL"
+    """Each would otherwise import as a different measure: a weighted
+    percentile as an unweighted one (sqlglot drops the frequency argument), a
+    DISTINCT one as an invalid expression."""
+    dialect = (
+        "SNOWFLAKE"
+        if expression.startswith("APPROX")
+        else "DATABRICKS"
+        if expression.startswith("percentile(")
+        else "ANSI_SQL"
+    )
     obml = _import(expression, dialect)
     assert "Probe" not in obml.get("measures", {})
     assert "Probe" not in obml.get("metrics", {})
+
+
+def test_nested_call_in_the_argument_still_imports() -> None:
+    """Commas inside the argument's own parentheses are not percentile arguments."""
+    obml = _import("percentile(COALESCE(Orders.amount, 0), 0.3)", "DATABRICKS")
+    assert obml["measures"]["Probe"]["percentile"] == 0.3
+
+
+def test_fraction_tells_measures_apart_when_reusing_named_ones() -> None:
+    """A named P50 first: the IQR formula's P75 and P25 are not it, and each
+    operand keeps its own fraction."""
+    p50 = _metric("P50", "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY Orders.amount)")
+    obml = _import(
+        "PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY Orders.amount)"
+        " - PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY Orders.amount)",
+        before=[p50],
+    )
+    formula = obml["metrics"]["Probe"]["expression"]
+    assert "{[P50]}" not in formula
+    fractions = sorted(
+        m["percentile"] for name, m in obml["measures"].items() if "{[" + name + "]}" in formula
+    )
+    assert fractions == [0.25, 0.75]
+
+
+def test_an_equal_named_percentile_is_reused() -> None:
+    p75 = _metric("P75", "PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY Orders.amount)")
+    obml = _import(
+        "PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY Orders.amount) - SUM(Orders.cost)",
+        before=[p75],
+    )
+    assert "{[P75]}" in obml["metrics"]["Probe"]["expression"]
