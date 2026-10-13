@@ -1235,7 +1235,18 @@ def wrap_with_reaggregate(
     # With no dimensions and nothing else selected the base projects nothing;
     # each stage-2 CTE is then the one row the query returns.
     keep_base = bool(base_columns)
+    # Every member counts in a population metric, so its groups are rows of
+    # the query too: by account and month, every account in every month, also
+    # one without a snapshot. The rows are those and the base's, and the base
+    # marks its own, where a row only the members have reads the empty value.
+    by_rows = bool(
+        dim_names
+        and keep_base
+        and any(population is ReaggregatePopulation.DIMENSION for _, _, _, population, _ in groups)
+    )
     if keep_base:
+        if by_rows:
+            base_columns = [*base_columns, AliasedExpr(expr=Literal.number(1), alias=_MATCHED)]
         ctes.append(
             CTE(
                 name=_BASE,
@@ -1254,10 +1265,13 @@ def wrap_with_reaggregate(
         ctes.append(CTE(name=_COMPONENTS, query=replace(captured, ctes=[])))
         joined.append(_COMPONENTS)
 
+    # A count with no stage-2 row for a row of the query counted no group: a
+    # ``having`` removed them all, or the row is one only the members have.
     counted_after_having = {
         m.name
         for m in reaggregates
-        if m.reaggregate_aggregation is ReaggregateAggType.COUNT and _having(model, m.name)
+        if m.reaggregate_aggregation is ReaggregateAggType.COUNT
+        and (by_rows or _having(model, m.name))
     }
     source_of: dict[str, str] = {}
     stage_two_names: list[str] = []
@@ -1288,10 +1302,6 @@ def wrap_with_reaggregate(
             source_of[m.name] = outer_name
 
     anchor = _BASE if keep_base else stage_two_names[0]
-    # Every member counts in a population metric, so its groups are rows of
-    # the query too: by account and month, every account in every month, also
-    # one without a snapshot. The rows are those and the base's.
-    by_rows = bool(dim_names and keep_base and grid_names)
     if by_rows:
         ctes.append(
             CTE(
@@ -1329,6 +1339,31 @@ def wrap_with_reaggregate(
             return FunctionCall(name="COALESCE", args=[value, zero])
         return value
 
+    def empty_of(name: str) -> Expr:
+        """What *name* reports over no rows: a measure its defaultValue, 0 for
+        a count, a derived metric its formula over those, otherwise NULL."""
+        empty = _empty_value(name, model)
+        if empty is not None:
+            return empty
+        metric = next((m for m in resolved.measures if m.name == name), None)
+        if metric is not None and metric.expression is not None and metric.component_measures:
+            return metric_over_components(
+                metric, resolved.metric_components, empty_of, model, dialect
+            )
+        return Literal.null()
+
+    def on_base_row(value: Expr, name: str) -> Expr:
+        """*value*, read from the base or a CTE with its rows, where the base
+        has the row; :func:`empty_of` where only the members do. Tested on
+        the base's marker, not on *value*: ClickHouse reads an unmatched
+        non-Nullable column as 0."""
+        if not by_rows:
+            return value
+        matched = BinaryOp(
+            left=ColumnRef(name=_MATCHED, table=_BASE), op="=", right=Literal.number(1)
+        )
+        return CaseExpr(when_clauses=[(matched, value)], else_clause=empty_of(name))
+
     def read(alias: str) -> Expr:
         if alias in late:
             return _late_placeholder()
@@ -1337,13 +1372,9 @@ def wrap_with_reaggregate(
             return ColumnRef(name=alias)
         if alias in source_of:
             return stage_two_value(alias)
-        if not by_rows or alias in dim_names:
+        if alias in dim_names:
             return ColumnRef(name=alias, table=anchor)
-        # A measure on a row only the population has: no rows of its own, so
-        # what it reports over none (its defaultValue, 0 for a count), or NULL.
-        value: Expr = ColumnRef(name=alias, table=_BASE)
-        empty = _empty_value(alias, model)
-        return value if empty is None else FunctionCall(name="COALESCE", args=[value, empty])
+        return on_base_row(ColumnRef(name=alias, table=anchor if not by_rows else _BASE), alias)
 
     columns: list[Expr] = []
     for col in ast.columns:
@@ -1354,7 +1385,7 @@ def wrap_with_reaggregate(
                 split[alias],
                 resolved.metric_components,
                 lambda name: (
-                    ColumnRef(name=component_alias[name], table=_COMPONENTS)
+                    on_base_row(ColumnRef(name=component_alias[name], table=_COMPONENTS), name)
                     if name in component_alias
                     else stage_two_value(name)
                 ),

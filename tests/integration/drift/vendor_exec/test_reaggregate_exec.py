@@ -151,6 +151,10 @@ measures:
   Largest Order:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: max
+  Largest Order or 99:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: max
+    defaultValue: 99
   Revenue Total:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -1069,6 +1073,26 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
         ),
     )
     got_feb = {r["member country"]: _number(r["avg revenue per member"]) for r in rows}
+    # By customer, c8 and c9 without orders are rows of the population; a
+    # plain measure beside it reports over no rows there: a max NULL, or its
+    # defaultValue - not the 0 ClickHouse reads an unmatched column as.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Member"],
+                measures=["Members", "Largest Order", "Largest Order or 99"],
+            )
+        ),
+    )
+    idle = {
+        r["member"]: (_number(r["largest order"]), _number(r["largest order or 99"]))
+        for r in rows
+        if r["member"] in ("c8", "c9")
+    }
+    assert len(rows) == 9, f"{target.name}: {rows}"
+    assert idle == {"c8": (None, Decimal(99)), "c9": (None, Decimal(99))}, f"{target.name}: {idle}"
     # Without a defaultValue a customer without orders is NULL, which the
     # average skips: DE (30 + 50 + 1) / 3, not / 4.
     seen = _by_country_rows(target, model, ["Avg Revenue per Member Seen"])

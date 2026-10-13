@@ -75,6 +75,10 @@ _METRICS: dict[str, dict[str, Any]] = {
         "aggregation": "count",
         "population": "dimension",
     },
+    "Buyers": {**_PER_CLIENT, "measure": "Sales Count", "aggregation": "count"},
+    "Clients Plus Orders": {"expression": "{[Clients All]} + {[Sales Count]}"},
+    "Clients Plus Sales": {"expression": "{[Clients All]} + {[Total Sales Or Zero]}"},
+    "Orders Doubled": {"expression": "{[Sales Count]} * 2"},
     "Avg Client Orders Buyers": {
         **_PER_CLIENT,
         "measure": "Sales Count",
@@ -503,3 +507,45 @@ def test_every_member_is_a_row_beside_other_measures(
     idle = [r for r in rows if r["Sales Count"] == 0]
     assert len(idle) == len([c for c in clients if not c["orders"]]) == 29
     assert all(r["Total Sales"] is None and r["Clients All"] == 1 for r in idle)
+
+
+@pytest.mark.parametrize(
+    "having",
+    [
+        QueryFilter(field="Sales Count", op=">", value=0),
+        QueryFilter(field="Total Sales", op=">", value=50000),
+    ],
+    ids=["count > 0", "sales > 50000"],
+)
+def test_having_sees_the_member_rows(
+    run: Callable, clients: list[dict[str, Any]], having: QueryFilter
+) -> None:
+    """A HAVING on another measure filters the final rows, the members' too:
+    evaluated before them, the members it removed came back."""
+    rows = run(["Client Name"], ["Clients All", "Sales Count", "Total Sales"], having=[having])
+    if having.field == "Sales Count":
+        assert len(rows) == len([c for c in clients if c["orders"]]) == 471
+    else:
+        assert all(r["Total Sales"] > 50000 for r in rows)
+        assert len(rows) == len([c for c in clients if c["sales"] > 50000]) > 0
+
+
+def test_on_a_member_row_other_values_are_over_no_rows(run: Callable) -> None:
+    """On the 29 clients without sales: a formula over the metric reads its
+    other components as over no rows (a count 0, a sum's defaultValue 0), a
+    formula of plain measures is its value over no rows, and a facts-population
+    count counted no group."""
+    rows = run(
+        ["Client Name"],
+        ["Sales Count", "Clients Plus Orders", "Clients Plus Sales", "Orders Doubled", "Buyers"],
+    )
+    idle = [r for r in rows if r["Sales Count"] == 0]
+    assert len(idle) == 29
+    for r in idle:
+        assert r["Clients Plus Orders"] == 1, r
+        assert r["Clients Plus Sales"] == 1, r
+        assert r["Orders Doubled"] == 0, r
+        assert r["Buyers"] == 0, r
+    busy = [r for r in rows if r["Sales Count"]]
+    assert all(r["Buyers"] == 1 for r in busy)
+    assert all(r["Orders Doubled"] == 2 * r["Sales Count"] for r in busy)

@@ -151,6 +151,12 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
         )
         if is_windowed:
             names.add(measure.name)
+    if resolved.member_rows:
+        # The rows are finished by the reaggregate pass, which adds a
+        # population metric's member groups: a predicate evaluated before it
+        # would see members whose rows are not there yet, which then come
+        # back unfiltered.
+        names |= {m.name for m in resolved.measures} | {d.name for d in resolved.dimensions}
     return names
 
 

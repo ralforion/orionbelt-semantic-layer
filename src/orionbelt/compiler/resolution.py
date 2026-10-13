@@ -636,6 +636,9 @@ class ResolvedMeasure:
     reaggregate_measure: str | None = None
     reaggregate_per: list[str] = field(default_factory=list)
     reaggregate_aggregation: ReaggregateAggType | None = None
+    # ``population: dimension``: every member of ``per`` is a group, and with
+    # the query's dimensions a row of the query.
+    reaggregate_members: bool = False
 
     @property
     def aggregate(self) -> Expr:
@@ -826,6 +829,14 @@ class ResolvedQuery:
     final SELECT projection. Today they appear in output as an extra
     column, which keeps the SQL valid and the user gets a visual hint
     that the HAVING filter referenced an additional measure."""
+
+    @property
+    def member_rows(self) -> bool:
+        """Whether a ``population: dimension`` metric adds its member groups
+        to the query's rows: then a HAVING has to see the final rows."""
+        return bool(self.dimensions) and any(
+            m.reaggregate_members for m in [*self.measures, *self.metric_components.values()]
+        )
 
     @property
     def dedup_targets(self) -> dict[str, str]:

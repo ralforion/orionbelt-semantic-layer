@@ -22,6 +22,7 @@ from orionbelt.models.query import DimensionRef
 from orionbelt.models.semantic import (
     Metric,
     MetricType,
+    ReaggregatePopulation,
     SemanticModel,
     TimeGrain,
     WindowFunctionKind,
@@ -562,6 +563,7 @@ def resolve_reaggregate_metric(
         reaggregate_measure=metric.measure,
         reaggregate_per=list(metric.per),
         reaggregate_aggregation=metric.aggregation,
+        reaggregate_members=metric.population is ReaggregatePopulation.DIMENSION,
     )
 
 
