@@ -524,8 +524,9 @@ def _distinct_axes(
     cumulative has to find selected, the one at the finest grain, so its
     window orders the rows stage 1 has without ties - and every other entry is
     planned as a synthetic dimension at its grain. The returned mapping
-    renames those columns back after planning, each to the column the query
-    names it by (``Order Date:month`` for the second of two grains, see
+    renames those columns back after planning, and the kept one when it is
+    not the first, each to the column the query names it by
+    (``Order Date:month`` for the second of two grains, see
     :func:`column_name`); a ``per`` column left with the plain name
     :func:`_name_per_buckets` then tells apart by position as for any measure.
     """
@@ -565,6 +566,12 @@ def _distinct_axes(
         column = column_name(ref.name, ref.grain, earlier)
         earlier.append((ref.name, ref.grain))
         if index not in renamed:
+            # The entry that keeps its name is planned under it, the only one
+            # by that name; selected after another grain, its column is still
+            # the suffixed one. One per name, and renamed in one pass with the
+            # synthetic ones, so it cannot take another entry's column.
+            if column != ref.name:
+                synthetic[ref.name] = column
             continue
         declared_dim = model.dimensions[ref.name]
         grain = ref.grain or declared_dim.time_grain

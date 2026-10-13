@@ -53,6 +53,12 @@ def model() -> SemanticModel:
                 "per": ["Sales Date:day"],
                 "aggregation": "max",
             },
+            "Last YTD Sales": {
+                "type": "reaggregate",
+                "measure": "YTD Sales",
+                "per": ["Sales Month"],
+                "aggregation": "last",
+            },
             "Avg Running Sales": {
                 "type": "reaggregate",
                 "measure": "Running Sales",
@@ -242,3 +248,27 @@ def test_type_maps_name_the_second_grain(model: SemanticModel) -> None:
     )
     reconciled, _ = reconcile_to_declared(table, declared)
     assert reconciled.schema.field("Sales Date:month").type == pa.date32()
+
+
+@pytest.mark.parametrize(
+    ("dims", "month"),
+    [
+        (["Sales Month:year", "Sales Month"], "Sales Month:month"),
+        (["Sales Month", "Sales Month:year"], "Sales Month"),
+    ],
+    ids=["month second", "month first"],
+)
+def test_reaggregate_over_a_cumulative_keeps_its_axis_column(
+    model: SemanticModel, commerce_db: duckdb.DuckDBPyConnection, dims: list[str], month: str
+) -> None:
+    """The cumulative's own axis is planned under its name; selected after
+    the year it is still the suffixed column, in either order each month's
+    value."""
+    _, by_month = _run(commerce_db, model, ["Sales Month"], "Last YTD Sales")
+    want = dict(by_month)
+    columns, rows = _run(commerce_db, model, dims, "Last YTD Sales")
+    assert month in columns
+    at = columns.index(month)
+    assert len(rows) == len(want)
+    for row in rows:
+        assert row[-1] == want[row[at]], row
