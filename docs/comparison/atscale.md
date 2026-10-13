@@ -112,7 +112,7 @@ Caller-level authentication is a separate axis and does exist: `AUTH_MODE=api_ke
 | Association / regression | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via MDX calculated members — not first-class measure types |
 | Grand totals | `total: bool` on the measure | Native to OLAP — every grain rolls up by construction |
 
-**The honest difference**: AtScale's OLAP heritage gives it stronger *semi-additive* primitives (last-value, opening / closing balances) that OBSL doesn't model. OBSL's statistical / regression aggregations are first-class declarative measure types with arity validation and dialect gating; AtScale reaches the same functions through MDX calculated members. Different mental models — both can compute the same SQL.
+**The honest difference**: AtScale's OLAP heritage gives it *semi-additive* measures as a primitive (last non-empty, opening / closing balances). OBSL composes them: a `last` / `first` measure reaggregated with `sum` per account is the closing / opening balance, but an account with no snapshot in a period is not carried forward from an earlier one. OBSL's statistical / regression aggregations are first-class declarative measure types with arity validation and dialect gating; AtScale reaches the same functions through MDX calculated members. Different mental models — both can compute the same SQL.
 
 ### 4.2 Metric types
 
@@ -237,7 +237,7 @@ The free **Developer Community Edition** lowers AtScale's barrier for evaluation
 | First-class declarative cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy`) | Via MDX time intelligence |
 | First-class declarative window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ | Via MDX calculated members |
 | First-class statistical / regression aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) as measure types | ✅ 9 declarative aggregations | Via MDX calculated members — not first-class measure types |
-| Semi-additive measures (last/first non-empty) | Partial: `first` / `last` measures, the value at a group's least / greatest key; not the sum across members of each one's last value | ✅ first-class OLAP |
+| Semi-additive measures (last/first non-empty) | Partial: a `last` / `first` measure reaggregated with `sum` per member (closing / opening balance); no carry-forward across periods without a snapshot | ✅ first-class OLAP |
 | Apache Arrow Flight SQL | ✅ | ❌ |
 | DB-API 2.0 drivers | ✅ 8 drivers | ❌ |
 | RDF/SPARQL graph view | ✅ | ❌ |

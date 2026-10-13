@@ -749,7 +749,7 @@ By ticker and month this is each ticker's last price of the month. The value kee
 - Repeated rows leave the answer as it is, so a fanned-out join does not change it, as for `min` and `max`.
 - Not available on MySQL or Dremio (`UNSUPPORTED_AGGREGATION_FOR_DIALECT`): MySQL's only ordered aggregate, `GROUP_CONCAT`, returns a string whatever the column's type, and Dremio's ordered `ARRAY_AGG` returns an empty array for a group whose key is NULL, a wrong NULL rather than an error.
 
-This is one row's value per group, not a semi-additive sum (the total across accounts of each one's last balance), and not the `first_value` / `last_value` [window metric](#window-metrics), which reads the rows of the query's result. See [per-dialect SQL](dialects.md#first-and-last).
+This is one row's value per group. The total across accounts of each one's last balance, a semi-additive sum, is this measure reaggregated with `sum` per account (see [Semi-additive measures](#semi-additive-measures)). It is not the `first_value` / `last_value` [window metric](#window-metrics), which reads the rows of the query's result. See [per-dialect SQL](dialects.md#first-and-last).
 
 #### Statistical aggregates
 
@@ -1184,6 +1184,32 @@ By `Country`, stage 1 lists every customer of each country from the customer dat
 - A query filter limits the members when every column it tests is on the members' data objects (`Country = Germany`); a filter on the facts (an order date range) limits the measure, not who counts, so a customer without orders in the range counts with the default value. Each condition of an `and` group stands alone, so the member conditions in it apply; an `or` or negated group mixing both is all or nothing, and does not limit the members. An `exists` / `nonexists` filter limits them only when its subquery and its filters read the members' data objects too: "has orders" tests the facts. A computed column counts with every data object its expression reads, so a client column computed from the sales is a fact condition.
 - `having` is refused (`REAGGREGATE_POPULATION_HAVING`): a member it removed would come back with the default value. Filter the members with the query instead.
 - The query's rows still come from the query: a country with no orders at all is not a row, as for every measure.
+
+#### Semi-additive measures
+
+A balance, an inventory level or a headcount adds up across accounts but not across time: the total balance for a month is the sum over accounts of each one's last balance in the month, not the sum of every snapshot. That is a [`last` measure](#first-and-last) reaggregated with `sum` per account:
+
+```yaml
+measures:
+  Last Balance:
+    columns: [{dataObject: Snapshots, column: Balance}]
+    aggregation: last
+    withinGroup:
+      column: {dataObject: Snapshots, column: Snapshot Date}
+
+metrics:
+  Closing Balance:
+    type: reaggregate
+    measure: Last Balance
+    per: [Account]
+    aggregation: sum
+```
+
+By month, stage 1 takes each account's last balance in the month and stage 2 adds them up; by branch and quarter, each account's last balance in the quarter, summed per branch. `first` instead of `last` gives the opening balance, and `aggregation: avg` over the same stage 1 the average closing balance per account. The average daily total over a period is the other common form: a `sum` measure reaggregated with `avg` per `'Snapshot Date:day'`.
+
+- An account with no snapshot in a period contributes nothing to it: its last earlier balance is not carried forward. That fits a snapshot table with a row per account and period (the usual shape); for sparse snapshots, the carried-forward balance needs a row per period in the data.
+- Two snapshots of one account at the same last time are a tie, which `last` resolves to the greater value.
+- Not on MySQL or Dremio, as for `first` / `last`.
 
 The metric's `having` keeps only the stage-1 groups that meet every condition, each over a measure at the query's dimensions plus `per`:
 
