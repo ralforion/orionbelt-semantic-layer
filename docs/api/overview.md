@@ -4,7 +4,7 @@ description: "REST API overview for OrionBelt Semantic Layer: FastAPI endpoints 
 
 # API Overview
 
-OrionBelt exposes a REST API — FastAPI-powered HTTP endpoints for session-based model management, validation, query compilation, and query execution.
+OrionBelt exposes a REST API for task-specific model-and-query batches, session-based model management, validation, query compilation, and query execution.
 
 ## REST API
 
@@ -28,6 +28,7 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 
 | Prefix | Tag | Description |
 |--------|-----|-------------|
+| `/v1/oneshot/batch` | oneshot | Submit inline OBML or reference a loaded model, then compile or execute multiple independent queries in one request |
 | `/v1/sessions` | sessions | Session-scoped model management, validation, query compilation, and execution |
 | `/v1/sessions/.../models/.../` | model-discovery | Schema, dimensions, measures, metrics, explain, find, join-graph |
 | `/v1/schema`, `/v1/dimensions`, ... | model-discovery | Top-level shortcuts (auto-resolve single session/model) |
@@ -36,9 +37,25 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | `/v1/settings` | settings | Public configuration: version, single-model mode, TTL, model settings, timezone & dialect resolution |
 | `/health` | health | Health check (no prefix) |
 
+### One-shot Agent Workflow
+
+An agent can author a model for a set of questions and submit the model and queries
+together to `POST /v1/oneshot/batch`. Provide `model_yaml` and a `queries` list;
+OBSL creates a session when needed, validates the model, and returns an individual
+result for each query. Compilation is the default; set `execute: true` to run queries
+when database execution is configured.
+
+Freshly loaded models are removed after the batch by default. Set
+`persist_model: true` to retain a model in the session and use the returned
+`session_id` and `model_id` in later batches. Existing models that are referenced
+or reused are retained. The session itself remains until closed or expired.
+
+See [Agent Workflows](../guide/agent-workflows.md) for a complete example and
+[One-shot Batch](endpoints.md#one-shot-batch) for the request and response contract.
+
 ### Session-Based Workflow
 
-The primary API workflow uses sessions to manage model state:
+For iterative model management and discovery, use sessions explicitly:
 
 1. **Create a session** — `POST /v1/sessions` returns a `session_id`
 2. **Load models** — `POST /v1/sessions/{id}/models` with OBML YAML

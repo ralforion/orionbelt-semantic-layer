@@ -1,10 +1,23 @@
 ---
-description: "Ready-made OrionBelt tools for popular AI frameworks, built on the REST shortcut endpoints and the MCP server, so agents query governed models instead of raw tables."
+description: "Connect agents to OrionBelt: author task-specific OBML and queries with the one-shot API, or use framework adapters and MCP to discover and query shared models."
 ---
 
 # AI Integrations
 
-OrionBelt provides ready-to-use tools for popular AI frameworks. All REST API integrations use the [shortcut endpoints](../api/endpoints.md) and work best with OrionBelt running in [admin-curated mode](../reference/configuration.md#admin-curated-mode).
+Agents can work with OrionBelt in two ways:
+
+- **Model the current questions.** Author only the OBML needed for a task and submit
+  it with several independent queries to `POST /v1/oneshot/batch`. The model can
+  be temporary or retained for follow-up questions. The
+  [Agent Workflows guide](agent-workflows.md) includes a complete REST example
+  that can be wrapped as a tool in your agent framework.
+- **Query shared models.** Discover established dimensions, measures, and metrics,
+  then compose queries using the framework adapters below or the MCP server.
+
+The ready-to-use REST integrations below use the [shortcut endpoints](../api/endpoints.md)
+and work best in [admin-curated mode](../reference/configuration.md#admin-curated-mode).
+Inline model authoring through the one-shot API requires a deployment that permits
+model uploads; admin-curated deployments accept batches referencing existing models.
 
 ## Available Integrations
 

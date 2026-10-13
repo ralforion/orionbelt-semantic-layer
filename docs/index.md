@@ -18,6 +18,9 @@ Define dimensions, measures, metrics, business rules, and semantic context in de
 
 Query using **business concepts** — not raw tables and SQL. The same semantic model powers AI agents, analytics workflows, data-quality checks, regulatory and business KPIs, and reporting use cases. **Analytics as Code — and beyond.** The full loop from declarative YAML through executable SQL, DQ rules, KPIs, and semantic context to query results is programmable, reviewable, and reproducible — no BI tool in the middle.
 
+!!! tip "Agents can model the questions"
+    Start with a set of questions and define just the data objects, relationships, and calculations they need. Submit the OBML model and independent queries together to `POST /v1/oneshot/batch` for validation, compilation, and optional execution in one request. Fresh models are removed after the batch by default, or retained in the session for follow-ups. [Try the complete agent workflow](guide/agent-workflows.md).
+
 ## What is a Semantic Sidecar?
 
 The *sidecar pattern* comes from container platforms: a small, focused process runs alongside a main application and adds capability the main process doesn't have, without changing it.
@@ -55,6 +58,7 @@ OBSQL flows over **Apache Arrow Flight SQL** (v2.4+) and **PostgreSQL wire** (v2
 
 ## Why OrionBelt?
 
+- **Model a task as it arrives** — An agent can author a small OBML model and submit it with multiple questions in one [one-shot batch](guide/agent-workflows.md), using the same compiler as shared models
 - **One model, many consumers** — Author dimensions / measures / metrics / business rules once in YAML; agentic AI, BI tools, DQ pipelines, regulatory KPIs, and reporting all read from the same governed surface
 - **Analytics as Code — and beyond** — Version-controlled YAML compiles to dialect-specific SQL, executable DQ rules, KPI definitions, and semantic context. No BI tool in the middle: the full loop from declarative model to query results is programmable, reviewable, and reproducible
 - **One model, many dialects** — BigQuery, ClickHouse, Databricks, Dremio, DuckDB / MotherDuck, MySQL, PostgreSQL, and Snowflake — no runtime lock-in to any single warehouse
