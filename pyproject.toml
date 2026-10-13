@@ -124,7 +124,7 @@ ui = [
     # The playground fetches query results over the self-contained Arrow IPC
     # transport (format=arrow) and decodes them client-side, so the UI image
     # needs pyarrow even though it proxies execution to the API.
-    "pyarrow>=16.0,<26.0",
+    "pyarrow>=16.0,<27.0",
 ]
 # OBML <-> OSI converter (packages/osi-orionbelt). Optional: a bare install
 # stays lean, and the /convert + /models/from-osi|/osi endpoints return a clear
@@ -135,7 +135,7 @@ osi = [
     "osi-orionbelt>=0.2",
 ]
 flight = [
-    "pyarrow>=16.0,<26.0",
+    "pyarrow>=16.0,<27.0",
     "ob-flight-extension>=0.1",
     "ob-driver-core>=0.1",
     "ob-bigquery>=0.1",
@@ -158,7 +158,7 @@ flight = [
 # seed file). Drops the seven non-DuckDB vendor wheels and pyarrow
 # transitives they pull in, shrinking the runtime image substantially.
 flight-duckdb-only = [
-    "pyarrow>=16.0,<26.0",
+    "pyarrow>=16.0,<27.0",
     "ob-flight-extension>=0.1",
     "ob-driver-core>=0.1",
     "ob-duckdb>=0.1",
@@ -292,7 +292,7 @@ dev = [
     "mkdocs-git-revision-date-localized-plugin>=1.2",
     # Keep in step with the `ui` extra floor (see the note there).
     "gradio>=6.15.1,<7.0",
-    "pyarrow>=16.0,<26.0",
+    "pyarrow>=16.0,<27.0",
     "ob-flight-extension>=0.1",
     "ob-driver-core>=0.1",
     "ob-bigquery>=0.1",
