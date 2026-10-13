@@ -239,7 +239,10 @@ def _stage_one(
         return _name_per_buckets(planned, query_columns, refs)
 
     named, columns = named_columns(scan)
-    if population is ReaggregatePopulation.DIMENSION and added:
+    # With every ``per`` dimension selected, the groups are the query's own
+    # and the members add nothing - unless they carry a value forward, which
+    # needs them all the same.
+    if population is ReaggregatePopulation.DIMENSION and (added or carry):
         layout = _population_layout(measure, per, carry, resolved, query, model)
         history = _history(scan, sub_resolved, layout.axis, resolved)
         named = _with_population(

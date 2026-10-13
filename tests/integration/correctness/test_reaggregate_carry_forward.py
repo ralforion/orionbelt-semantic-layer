@@ -220,3 +220,65 @@ def test_only_on_reaggregate_metrics() -> None:
         }
     )
     assert any("carryForward" in e for e in errors), errors
+
+
+_SNAPSHOTS_MODEL = """
+version: "1.0"
+dataObjects:
+  Snapshots:
+    code: snapshots
+    schema: main
+    columns:
+      Account: {code: account, abstractType: string}
+      Snapshot Date: {code: d, abstractType: date}
+      Balance: {code: balance, abstractType: float}
+    joins:
+      - {joinType: many-to-one, joinTo: Accounts, columnsFrom: [Account], columnsTo: [Account]}
+  Accounts:
+    code: accounts
+    schema: main
+    columns:
+      Account: {code: account, abstractType: string}
+dimensions:
+  Account: {dataObject: Accounts, column: Account, resultType: string}
+  Snapshot Month:
+    dataObject: Snapshots
+    column: Snapshot Date
+    resultType: date
+    timeGrain: month
+measures:
+  Last Balance:
+    columns: [{dataObject: Snapshots, column: Balance}]
+    aggregation: last
+    withinGroup: {column: {dataObject: Snapshots, column: Snapshot Date}}
+metrics:
+  Closing Balance:
+    type: reaggregate
+    measure: Last Balance
+    per: [Account]
+    aggregation: sum
+    population: dimension
+    carryForward: true
+"""
+
+
+@pytest.mark.parametrize(
+    "dims", [["Snapshot Month"], ["Account", "Snapshot Month"]], ids=["by month", "by account"]
+)
+def test_selecting_the_per_dimension_still_carries(dims: list[str]) -> None:
+    """A's February snapshot has no balance, so February carries January's
+    10, also when the query groups by the account itself: the members are
+    needed to carry, whether or not ``per`` adds a column."""
+    db = duckdb.connect()
+    db.execute("CREATE TABLE accounts AS SELECT 'A' AS account")
+    db.execute(
+        "CREATE TABLE snapshots AS SELECT * FROM (VALUES "
+        "('A', DATE '2026-01-10', 10.0), ('A', DATE '2026-02-10', NULL)"
+        ") AS t(account, d, balance)"
+    )
+    raw, source_map = TrackedLoader().load_string(_SNAPSHOTS_MODEL)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = QueryObject(select=QuerySelect(dimensions=dims, measures=["Closing Balance"]))
+    rows = db.sql(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
+    assert sorted(r[-1] for r in rows) == [10, 10]

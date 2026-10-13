@@ -1168,6 +1168,28 @@ def _assert_carry_forward(target: VendorTarget, model: SemanticModel) -> None:
         }
         assert got == expected, f"{target.name}: {got}"
 
+    # By the member itself, ``per`` adds no column and the members still
+    # carry; each row here is a month the customer ordered in.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Member", "Order Month"], measures=["Closing Amount"])
+        ),
+    )
+    got_members = {
+        (r["member"], str(r["order month"])[:7]): _number(r["closing amount"]) for r in rows
+    }
+    assert got_members == {
+        ("c1", "2026-01"): Decimal(20),
+        ("c2", "2026-01"): Decimal(50),
+        ("c3", "2026-01"): Decimal(5),
+        ("c7", "2026-02"): Decimal(1),
+        ("c6", "2026-02"): Decimal(1000),
+        ("c4", "2026-02"): Decimal(7),
+        ("c5", "2026-02"): Decimal(30),
+    }, f"{target.name}: {got_members}"
+
 
 def _assert_two_grains(target: VendorTarget, model: SemanticModel) -> None:
     """One date at two grains: the month is a column of its own,
