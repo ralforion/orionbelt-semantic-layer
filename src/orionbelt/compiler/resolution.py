@@ -250,7 +250,7 @@ def make_dimension_expr(
     if not dim.grain or dialect is None:
         return col
     col = dialect.render_time_grain(col, dim.grain)
-    declared = model.dimensions.get(dim.name)
+    declared = model.dimensions.get(dim.dimension)
     if declared is None or declared.result_type not in CASTABLE_TEMPORAL_TYPES:
         return col
     return dialect.cast_to_obml_type(col, parse_data_type(declared.result_type.value))
@@ -544,6 +544,20 @@ class ResolvedDimension:
     grain: TimeGrain | None = None
     via: str | None = None  # Role-playing waypoint (data object the join must traverse)
     coalesce_alias: str | None = None  # Set when this dim is part of a coalesce group
+    dimension: str = ""
+    """The model dimension; ``name`` is its column's, which differs for the
+    second grain of a dimension the query selects twice (``Date:month``)."""
+
+    def __post_init__(self) -> None:
+        if not self.dimension:
+            self.dimension = self.name
+
+
+def grain_column(dimension: str, grain: TimeGrain | None) -> str:
+    """The column of *dimension* at *grain* when the query has it at another
+    grain too: ``Order Date:month``, or ``Order Date:value`` for the column
+    itself."""
+    return f"{dimension}:{grain.value if grain else 'value'}"
 
 
 @dataclass
@@ -1297,6 +1311,15 @@ class QueryResolver:
             ctx.result.via_constraints[resolved_dim.object_name] = dim_def.via
         if coalesce_alias is not None:
             resolved_dim.coalesce_alias = coalesce_alias
+        elif any(
+            d.dimension == resolved_dim.dimension
+            and d.grain != resolved_dim.grain
+            and d.coalesce_alias is None
+            for d in ctx.result.dimensions
+        ):
+            # The same dimension at a second grain: a column of its own, or
+            # every wrapper joining and grouping by name reads the first twice.
+            resolved_dim.name = grain_column(resolved_dim.dimension, resolved_dim.grain)
         ctx.result.dimensions.append(resolved_dim)
         ctx.result.required_objects.add(resolved_dim.object_name)
         # A computed column may read a column of another data object, which the

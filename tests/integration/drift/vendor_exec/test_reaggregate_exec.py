@@ -1097,6 +1097,33 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
     assert got_peak == [Decimal("115.67")], f"{target.name}: {got_peak}"
 
 
+def _assert_two_grains(target: VendorTarget, model: SemanticModel) -> None:
+    """One date at two grains: the month is a column of its own,
+    ``Order Date:month``, and the average customer's revenue is each month's.
+    January (30 + 50 + 5) / 3, February (1 + 1000 + 10 + 30) / 4."""
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date:year", "Order Date:month"],
+                measures=["Revenue", "Avg Revenue per Customer"],
+            )
+        ),
+    )
+    got = {
+        (str(r["order date"])[:7], str(r["order date:month"])[:7]): (
+            _number(r["revenue"]),
+            _number(r["avg revenue per customer"]),
+        )
+        for r in rows
+    }
+    assert got == {
+        ("2026-01", "2026-01"): (Decimal(85), Decimal("28.33")),
+        ("2026-01", "2026-02"): (Decimal(1041), Decimal("260.25")),
+    }, f"{target.name}: {got}"
+
+
 def _assert_all(target: VendorTarget) -> None:
     model = _prepare(target)
     _assert_grouped(target, model)
@@ -1114,6 +1141,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_windows_over_reaggregate(target, model)
     _assert_reaggregate_over_cumulative(target, model)
     _assert_population(target, model)
+    _assert_two_grains(target, model)
 
 
 def test_duckdb_reaggregate(vendor_duckdb: VendorTarget) -> None:

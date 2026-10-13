@@ -48,7 +48,6 @@ from orionbelt.ast.nodes import (
     WindowFrame,
     WindowFunction,
 )
-from orionbelt.compiler.metric_resolution import _GRAIN_RANK
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import lookback_query, null_safe_eq, time_filters
@@ -56,7 +55,7 @@ from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
 )
-from orionbelt.compiler.window_wrap import partition_keys, wraps_a_cte
+from orionbelt.compiler.window_wrap import axis_dimensions, partition_keys, wraps_a_cte
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import CumulativeAggType, GrainToDate, TimeGrain
@@ -449,24 +448,8 @@ def _window_for(
         dialect,
         _group_dimensions(resolved, m.cumulative_time_dimension),
         model,
-        _axis_dimensions(resolved, m.cumulative_time_dimension),
+        axis_dimensions(resolved, m.cumulative_time_dimension),
     )
-
-
-def _axis_dimensions(resolved: ResolvedQuery, time_dim_name: str) -> list[str]:
-    """The query's other dimensions on the time dimension's date column,
-    coarsest grain first: positions on the time axis that break its ties."""
-    time_dim = next((d for d in resolved.dimensions if d.name == time_dim_name), None)
-    if time_dim is None:
-        return []
-    axis = (time_dim.object_name, time_dim.column_name, time_dim.via)
-    same = [
-        d
-        for d in resolved.dimensions
-        if d.name != time_dim_name and (d.object_name, d.column_name, d.via) == axis
-    ]
-    # Coarsest first; a dimension with no grain is the column itself, finest.
-    return [d.name for d in sorted(same, key=lambda d: -_GRAIN_RANK[d.grain] if d.grain else 1)]
 
 
 def _value_ctes(

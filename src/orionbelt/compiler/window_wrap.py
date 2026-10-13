@@ -29,6 +29,7 @@ from orionbelt.compiler.metric_expansion import (
     expand_metric_expression,
     metric_leaf_components,
 )
+from orionbelt.compiler.metric_resolution import _GRAIN_RANK
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
@@ -84,10 +85,33 @@ def _is_float_dimension(model: SemanticModel, name: str) -> bool:
     return column is not None and column.abstract_type is DataType.FLOAT
 
 
+def axis_dimensions(resolved: ResolvedQuery, time_dim_name: str) -> list[str]:
+    """The query's other dimensions on the time dimension's date column,
+    coarsest grain first: positions on the time axis that break its ties."""
+    time_dim = next((d for d in resolved.dimensions if d.name == time_dim_name), None)
+    if time_dim is None:
+        return []
+    axis = (time_dim.object_name, time_dim.column_name, time_dim.via)
+    same = [
+        d
+        for d in resolved.dimensions
+        if d.name != time_dim_name and (d.object_name, d.column_name, d.via) == axis
+    ]
+    # Coarsest first; a dimension with no grain is the column itself, finest.
+    return [d.name for d in sorted(same, key=lambda d: -_GRAIN_RANK[d.grain] if d.grain else 1)]
+
+
 def _build_window_call(
-    measure: ResolvedMeasure, model: SemanticModel | None, dialect: Dialect | None
+    measure: ResolvedMeasure,
+    resolved: ResolvedQuery,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
 ) -> WindowFunction:
-    """Build the window-function AST node for a ``MetricType.WINDOW`` metric."""
+    """Build the window-function AST node for a ``MetricType.WINDOW`` metric.
+
+    Ordered by the time dimension, the window also orders by the query's other
+    dimensions on its date column (see :func:`axis_dimensions`): by year and
+    month, the months of a year are not ties."""
     assert measure.window_function is not None
     kind = measure.window_function
     func_name = _WINDOW_FUNCTION_NAMES[kind]
@@ -100,25 +124,33 @@ def _build_window_call(
     args: list[Expr] = []
     order_by: list[OrderByItem] = []
 
+    def by_time(descending: bool) -> list[OrderByItem]:
+        assert measure.window_time_dimension is not None
+        names = [
+            measure.window_time_dimension,
+            *axis_dimensions(resolved, measure.window_time_dimension),
+        ]
+        return [OrderByItem(expr=ColumnRef(name=n), desc=descending) for n in names]
+
     if kind in {WindowFunctionKind.RANK, WindowFunctionKind.DENSE_RANK}:
         # RANK() ordered by the base measure (or the time dimension if no measure)
         if base_ref is not None:
             order_by = [OrderByItem(expr=base_ref, desc=desc)]
         elif measure.window_time_dimension:
-            order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=desc)]
+            order_by = by_time(desc)
     elif kind == WindowFunctionKind.ROW_NUMBER:
         # ROW_NUMBER() — order by the measure if given, otherwise by time dim
         if base_ref is not None:
             order_by = [OrderByItem(expr=base_ref, desc=desc)]
         elif measure.window_time_dimension:
-            order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=desc)]
+            order_by = by_time(desc)
     elif kind == WindowFunctionKind.NTILE:
         assert measure.window_buckets is not None
         args = [Literal.number(measure.window_buckets)]
         if base_ref is not None:
             order_by = [OrderByItem(expr=base_ref, desc=desc)]
         elif measure.window_time_dimension:
-            order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=desc)]
+            order_by = by_time(desc)
     elif kind in {WindowFunctionKind.LAG, WindowFunctionKind.LEAD}:
         assert base_ref is not None
         assert measure.window_offset is not None
@@ -127,12 +159,12 @@ def _build_window_call(
         if measure.window_default_value is not None:
             args.append(Literal(value=measure.window_default_value))
         # LAG/LEAD always order ascending by time (semantics: prior/next in time)
-        order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=False)]
+        order_by = by_time(False)
     elif kind in {WindowFunctionKind.FIRST_VALUE, WindowFunctionKind.LAST_VALUE}:
         assert base_ref is not None
         args = [base_ref]
         if measure.window_time_dimension:
-            order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=desc)]
+            order_by = by_time(desc)
 
     return WindowFunction(
         func_name=func_name,
@@ -292,6 +324,7 @@ def _substitute_for_outer(
     expr: Expr,
     metric_components: dict[str, ResolvedMeasure],
     direct_measure_names: set[str],
+    resolved: ResolvedQuery,
     model: SemanticModel | None,
     dialect: Dialect | None,
 ) -> Expr:
@@ -312,7 +345,7 @@ def _substitute_for_outer(
     def value_of(comp: ResolvedMeasure) -> Expr:
         if comp.is_window:
             return _apply_metric_cast(
-                _build_window_call(comp, model, dialect), comp.name, model, dialect
+                _build_window_call(comp, resolved, model, dialect), comp.name, model, dialect
             )
         return ColumnRef(name=comp.name)
 
@@ -441,7 +474,7 @@ def wrap_with_window(
 
     for m in resolved.measures:
         if m.is_window and not m.window_over_reaggregate:
-            window_expr: Expr = _build_window_call(m, model, dialect)
+            window_expr: Expr = _build_window_call(m, resolved, model, dialect)
             window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
             outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))
         elif m.name in ddm_names:
@@ -454,6 +487,7 @@ def wrap_with_window(
                 m.expression,
                 resolved.metric_components,
                 direct_measure_names,
+                resolved,
                 model,
                 dialect,
             )

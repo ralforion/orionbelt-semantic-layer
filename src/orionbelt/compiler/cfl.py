@@ -573,7 +573,7 @@ class CFLPlanner:
                     col: Expr = make_dimension_expr(model, dim, dialect)
                     leg_builder.select(AliasedExpr(expr=col, alias=dim.name))
                 elif not union_by_name:
-                    model_dim = model.dimensions.get(dim.name)
+                    model_dim = model.dimensions.get(dim.dimension)
                     dim_type = model_dim.result_type.value if model_dim else None
                     col = Cast(Literal.null(), type_name=dim_type) if dim_type else Literal.null()
                     leg_builder.select(AliasedExpr(expr=col, alias=dim.name))

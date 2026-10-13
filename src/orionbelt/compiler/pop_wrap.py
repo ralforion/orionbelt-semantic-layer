@@ -245,6 +245,30 @@ def wrap_with_pop(
             ]
         )
 
+    # The comparison buckets its time dimension at its own grain, the column
+    # read from the date spine, so a second grain of it has no value to show.
+    twice = [
+        d.name
+        for d in resolved.dimensions
+        if d.dimension == pop_config.pop_time_dimension and d.name != d.dimension
+    ]
+    if twice:
+        raise ResolutionError(
+            [
+                SemanticError(
+                    code="INVALID_METRIC",
+                    message=(
+                        f"Period-over-period metric '{pop_config.name}' compares over "
+                        f"{pop_config.pop_time_dimension} at its own grain "
+                        f"({pop_config.pop_grain}), so the query cannot select that "
+                        f"dimension at a second grain: {twice}."
+                    ),
+                    path="select.dimensions",
+                    hint=f"Select {pop_config.pop_time_dimension} once.",
+                )
+            ]
+        )
+
     grain = pop_config.pop_grain.value
     offset = pop_config.pop_offset
     offset_grain = pop_config.pop_offset_grain.value

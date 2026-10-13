@@ -161,6 +161,30 @@ def dimension_label_and_declaration(entry: Any, model: Any) -> tuple[str | None,
     return label, None
 
 
+def dimension_labels(entries: Any, model: Any) -> list[tuple[str | None, Any]]:
+    """:func:`dimension_label_and_declaration` for each of a query's *entries*.
+
+    A dimension selected at a second grain is a column of its own, labelled
+    as the compiler labels it (``At:month`` beside ``At:year``, see
+    :func:`orionbelt.compiler.resolution.grain_column`).
+    """
+    from orionbelt.compiler.resolution import grain_column
+    from orionbelt.models.query import DimensionRef
+
+    out: list[tuple[str | None, Any]] = []
+    grains: dict[str, list[Any]] = {}
+    for entry in entries or []:
+        label, declared = dimension_label_and_declaration(entry, model)
+        if isinstance(entry, str) and label is not None:
+            grain = DimensionRef.parse(entry).grain or getattr(declared, "time_grain", None)
+            seen = grains.setdefault(label, [])
+            if any(g != grain for g in seen):
+                label = grain_column(label, grain)
+            seen.append(grain)
+        out.append((label, declared))
+    return out
+
+
 def raw_field_arrow_type(reference: str, model: Any) -> Any:
     """The Arrow type of a raw ``"<DataObject>"."<Column>"`` projection.
 
@@ -207,8 +231,7 @@ def declared_result_schema(query: Any, model: Any) -> Any:
 
     dims = getattr(query.select, "dimensions", [])
     measures = getattr(query.select, "measures", [])
-    for entry in dims:
-        label, dim = dimension_label_and_declaration(entry, model)
+    for label, dim in dimension_labels(dims, model):
         if label is None:
             continue
         rt = getattr(getattr(dim, "result_type", None), "value", None) or "string"
@@ -231,8 +254,7 @@ def declared_result_schema(query: Any, model: Any) -> Any:
     if getattr(query, "grouping", None) is not None:
         # GROUPING() flag columns - int64, one per dimension. See
         # PLAN_with_rollup.md §"Output: GROUPING() flag columns".
-        for entry in dims:
-            label, _ = dimension_label_and_declaration(entry, model)
+        for label, _ in dimension_labels(dims, model):
             if label is None:
                 continue
             fields.append(pa.field(f"_g_{label}", pa.int64()))
@@ -270,10 +292,10 @@ def declared_arrow_types(model: Any, query: Any = None) -> dict[str, Any]:
             types[label] = obml_type_to_arrow(rt)
     if query is not None:
         select = getattr(query, "select", None)
-        for entry in getattr(select, "dimensions", None) or []:
-            if isinstance(entry, str):
+        entries = getattr(select, "dimensions", None) or []
+        for entry, (label, declared) in zip(entries, dimension_labels(entries, model), strict=True):
+            if entry == label:
                 continue  # a plain name, already in the model map under it
-            label, declared = dimension_label_and_declaration(entry, model)
             rt = getattr(getattr(declared, "result_type", None), "value", None)
             if label and rt:
                 types[label] = obml_type_to_arrow(rt)

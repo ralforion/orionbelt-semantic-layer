@@ -61,7 +61,12 @@ from orionbelt.compiler.metric_resolution import (
     reaggregate_per_ref,
 )
 from orionbelt.compiler.outer_order_by import outer_order_by
-from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.resolution import (
+    ResolutionError,
+    ResolvedMeasure,
+    ResolvedQuery,
+    grain_column,
+)
 from orionbelt.compiler.time_lookback import null_safe_eq, rename_cte_sources
 from orionbelt.compiler.type_resolver import (
     exact_reaggregate_avg,
@@ -584,13 +589,20 @@ def _name_per_buckets(
     ``Order Date:day`` beside the query's ``Order Date:month``, or beside a
     second ``per`` bucket of that date, would leave two columns of one name,
     which most engines reject in a CTE and the second stage could not tell
-    apart. Such a ``per`` column becomes ``name:grain``. The query's own
-    columns come first in the scan and keep their names. Returns the scan and
-    each ref's column name.
+    apart. Such a ``per`` column becomes ``name:grain``, as the planner names
+    one itself when it sees both (see :func:`grain_column`); a column it
+    named so is kept. The query's own columns come first in the scan and keep
+    their names. Returns the scan and each ref's column name.
     """
     names = [*query_dims, *(r.name for r in refs)]
     pending = {name: [r for r in refs if r.name == name] for name in names if names.count(name) > 1}
     columns_of = [r.name for r in refs]
+    aliases = {_alias(c) for c in scan.columns}
+    for index, ref in enumerate(refs):
+        named = grain_column(ref.name, ref.grain)
+        if named in aliases and named not in query_dims and ref in pending.get(ref.name, []):
+            pending[ref.name].remove(ref)
+            columns_of[index] = named
     if not pending:
         return scan, columns_of
     query_columns = Counter(query_dims)
@@ -602,8 +614,7 @@ def _name_per_buckets(
                 query_columns[alias] -= 1
             else:
                 ref = pending[alias].pop(0)
-                grain = ref.grain.value if ref.grain else "value"
-                col = AliasedExpr(expr=col.expr, alias=f"{ref.name}:{grain}")
+                col = AliasedExpr(expr=col.expr, alias=grain_column(ref.name, ref.grain))
                 columns_of[refs.index(ref)] = col.alias
         columns.append(col)
     if any(pending.values()):

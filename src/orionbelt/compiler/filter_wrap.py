@@ -450,7 +450,7 @@ def wrap_with_filter_context(
         # Build CTE columns: grain dimensions + measures
         cte_columns: list[Expr] = []
         for dim in resolved.dimensions:
-            if dim.name in grain:
+            if dim.dimension in grain:
                 col: Expr = make_dimension_expr(model, dim, dialect)
                 cte_columns.append(AliasedExpr(expr=col, alias=dim.name))
 
@@ -460,7 +460,7 @@ def wrap_with_filter_context(
         # GROUP BY
         cte_group_by: list[Expr] = []
         for dim in resolved.dimensions:
-            if dim.name in grain:
+            if dim.dimension in grain:
                 gb_col: Expr = make_dimension_expr(model, dim, dialect)
                 cte_group_by.append(gb_col)
 
