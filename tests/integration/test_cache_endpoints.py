@@ -42,6 +42,12 @@ def _decode_frame(content: bytes):
     return meta, table
 
 
+#: The database time the stub reports for a miss. A cache hit reports its own
+#: fetch time, rounded, which is never this; with 1.0 a fetch that took about a
+#: millisecond, as one can on a CI runner, rounded to the same number.
+_STUB_DB_TIME_MS = 987654.32
+
+
 def _stub_exec_result() -> ExecutionResult:
     """A small fixed ExecutionResult — independent of dialect/SQL."""
     return ExecutionResult(
@@ -51,7 +57,7 @@ def _stub_exec_result() -> ExecutionResult:
         ],
         raw_rows=[["US", 100.0], ["UK", 200.0]],
         row_count=2,
-        execution_time_ms=1.0,
+        execution_time_ms=_STUB_DB_TIME_MS,
     )
 
 
@@ -252,7 +258,7 @@ class TestSessionExecuteCache:
     ) -> None:
         """Regression: the 2nd (cache-hit) run reports the cache fetch time.
 
-        The stubbed executor bakes ``execution_time_ms=1.0`` into the miss; a
+        The stubbed executor bakes ``_STUB_DB_TIME_MS`` into the miss; a
         hit must report the freshly-measured cache fetch time and ``cached=true``
         for every surface (JSON here, Arrow envelope below), never the DB time.
         """
@@ -265,6 +271,7 @@ class TestSessionExecuteCache:
 
         miss = (await client.post(f"/v1/sessions/{sid}/query/execute", json=body)).json()
         assert miss["cached"] is False
+        assert miss["execution_time_ms"] == _STUB_DB_TIME_MS
 
         hit = (await client.post(f"/v1/sessions/{sid}/query/execute", json=body)).json()
         assert hit["cached"] is True
