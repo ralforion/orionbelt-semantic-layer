@@ -158,6 +158,8 @@ def test_inside_a_formula() -> None:
         "PERCENTILE_CONT(CAST(CAST(0.1 AS FLOAT) AS DOUBLE)) WITHIN GROUP (ORDER BY Orders.amount)",
         "PERCENTILE_CONT(CAST('NaN' AS DOUBLE)) WITHIN GROUP (ORDER BY Orders.amount)",
         "PERCENTILE_CONT(CAST('Infinity' AS DOUBLE)) WITHIN GROUP (ORDER BY Orders.amount)",
+        "PERCENTILE_CONT(CAST(1e40 AS FLOAT)) WITHIN GROUP (ORDER BY Orders.amount)",
+        "PERCENTILE_CONT(CAST(-1e40 AS FLOAT)) WITHIN GROUP (ORDER BY Orders.amount)",
         "SUM(Orders.amount) FILTER (WHERE Orders.cost > 0)",
         "SUM(Orders.amount) OVER () - SUM(Orders.cost)",
     ],
@@ -188,6 +190,8 @@ def test_inside_a_formula() -> None:
         "float under double",
         "nan",
         "infinity",
+        "float overflow",
+        "float negative overflow",
         "sum filter",
         "sum over in a formula",
     ],
@@ -320,11 +324,13 @@ def test_fraction_through_a_cast_that_keeps_it(
     assert obml["measures"]["Probe"] == _column_measure(aggregation, percentile)
 
 
-def test_a_nan_fraction_leaves_the_rest_of_the_model_importing() -> None:
-    """A NaN fraction preserves its metric; it used to abort the whole import."""
+@pytest.mark.parametrize("fraction", ["CAST('NaN' AS DOUBLE)", "CAST(1e40 AS FLOAT)"])
+def test_an_unusable_fraction_leaves_the_rest_of_the_model_importing(fraction: str) -> None:
+    """A NaN fraction, or one past single precision's range, preserves its
+    metric; each used to raise and abort the whole import."""
     total = _metric("Total", "SUM(Orders.amount)")
     obml = _import(
-        "PERCENTILE_CONT(CAST('NaN' AS DOUBLE)) WITHIN GROUP (ORDER BY Orders.amount)",
+        f"PERCENTILE_CONT({fraction}) WITHIN GROUP (ORDER BY Orders.amount)",
         before=[total],
     )
     assert obml["measures"]["Total"]["aggregation"] == "sum"

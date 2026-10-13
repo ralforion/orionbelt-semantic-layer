@@ -1565,7 +1565,9 @@ class OSItoOBML:
                 number = Decimal(value.this)
             except InvalidOperation:
                 return False
-            if not number.is_finite():
+            # Out of (0, 1) it is no fraction anyway, and past single
+            # precision's range ``struct.pack`` raises instead of rounding.
+            if not number.is_finite() or not 0 < number < 1:
                 return False
             single = struct.unpack("f", struct.pack("f", float(number)))[0]
             return Decimal(single) == number
