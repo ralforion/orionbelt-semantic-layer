@@ -386,6 +386,11 @@ metrics:
     per: [Member]
     aggregation: avg
     population: dimension
+  Peak Customer Order:
+    type: reaggregate
+    measure: Largest Order
+    per: [Customer]
+    aggregation: max
   Closing Amount:
     type: reaggregate
     measure: Largest Order
@@ -1082,17 +1087,29 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
         QueryObject(
             select=QuerySelect(
                 dimensions=["Member"],
-                measures=["Members", "Largest Order", "Largest Order or 99"],
+                measures=[
+                    "Members",
+                    "Largest Order",
+                    "Largest Order or 99",
+                    "Peak Customer Order",
+                ],
             )
         ),
     )
+    # So does a reaggregate metric over the facts beside it: no group, NULL.
     idle = {
-        r["member"]: (_number(r["largest order"]), _number(r["largest order or 99"]))
+        r["member"]: (
+            _number(r["largest order"]),
+            _number(r["largest order or 99"]),
+            _number(r["peak customer order"]),
+        )
         for r in rows
         if r["member"] in ("c8", "c9")
     }
     assert len(rows) == 9, f"{target.name}: {rows}"
-    assert idle == {"c8": (None, Decimal(99)), "c9": (None, Decimal(99))}, f"{target.name}: {idle}"
+    assert idle == {"c8": (None, Decimal(99), None), "c9": (None, Decimal(99), None)}, (
+        f"{target.name}: {idle}"
+    )
     # Without a defaultValue a customer without orders is NULL, which the
     # average skips: DE (30 + 50 + 1) / 3, not / 4.
     seen = _by_country_rows(target, model, ["Avg Revenue per Member Seen"])

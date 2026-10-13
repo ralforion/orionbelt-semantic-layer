@@ -79,6 +79,8 @@ _METRICS: dict[str, dict[str, Any]] = {
     "Clients Plus Orders": {"expression": "{[Clients All]} + {[Sales Count]}"},
     "Clients Plus Sales": {"expression": "{[Clients All]} + {[Total Sales Or Zero]}"},
     "Orders Doubled": {"expression": "{[Sales Count]} * 2"},
+    "Count Rank": {"type": "window", "windowFunction": "rank", "measure": "Sales Count"},
+    "Rank Plus One": {"expression": "{[Count Rank]} + 1"},
     "Avg Client Orders Buyers": {
         **_PER_CLIENT,
         "measure": "Sales Count",
@@ -549,3 +551,42 @@ def test_on_a_member_row_other_values_are_over_no_rows(run: Callable) -> None:
     busy = [r for r in rows if r["Sales Count"]]
     assert all(r["Buyers"] == 1 for r in busy)
     assert all(r["Orders Doubled"] == 2 * r["Sales Count"] for r in busy)
+
+
+def _idle_client(commerce_db: duckdb.DuckDBPyConnection) -> str:
+    (name,) = commerce_db.sql(
+        "SELECT clientname FROM orionbelt_1.clients "
+        "WHERE clientid NOT IN (SELECT salesclient FROM orionbelt_1.sales) "
+        "ORDER BY clientname LIMIT 1"
+    ).fetchone()
+    return str(name)
+
+
+@pytest.mark.parametrize("field", ["Client Name", "Clients.Client Name"])
+def test_having_on_a_qualified_column_sees_the_member_rows(
+    run: Callable, commerce_db: duckdb.DuckDBPyConnection, field: str
+) -> None:
+    """The dimension and its qualified column are one predicate: both keep
+    only the client named, a member row among the rest."""
+    name = _idle_client(commerce_db)
+    rows = run(
+        ["Client Name"], ["Clients All"], having=[QueryFilter(field=field, op="=", value=name)]
+    )
+    assert [r["Client Name"] for r in rows] == [name]
+
+
+@pytest.mark.parametrize(
+    "measures",
+    [["Count Rank"], ["Rank Plus One"], ["Count Rank", "Rank Plus One"]],
+    ids=["rank", "formula over it", "both"],
+)
+def test_a_window_on_a_member_row_is_null(
+    run: Callable, commerce_db: duckdb.DuckDBPyConnection, measures: list[str]
+) -> None:
+    """A window ranks the base's rows; a member row has no place among them,
+    so the rank is NULL, and so is a formula over it, selected beside it or
+    not - not the rank's components read as over no rows."""
+    name = _idle_client(commerce_db)
+    rows = run(["Client Name"], ["Clients All", *measures])
+    (idle,) = [r for r in rows if r["Client Name"] == name]
+    assert all(idle[m] is None for m in measures), idle

@@ -156,7 +156,8 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
         # population metric's member groups: a predicate evaluated before it
         # would see members whose rows are not there yet, which then come
         # back unfiltered.
-        names |= {m.name for m in resolved.measures} | {d.name for d in resolved.dimensions}
+        # Every field a predicate names, a qualified column too.
+        names |= {field for hf in resolved.having_filters for field in hf.referenced_fields}
     return names
 
 

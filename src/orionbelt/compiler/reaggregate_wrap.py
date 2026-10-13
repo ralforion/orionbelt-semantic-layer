@@ -1294,6 +1294,10 @@ def wrap_with_reaggregate(
         )
         ctes.append(CTE(name=inner_name, query=_own_cte_names(scan, f"{inner_name}_")))
         stage_two = _stage_two(inner_name, metrics, dim_names, per_columns, model, dialect)
+        if by_rows:
+            # Marked like the base: a row of the query it has no group for
+            # reads as one, not as ClickHouse's 0 for an unmatched column.
+            stage_two = _marked(stage_two)
         ctes.append(CTE(name=outer_name, query=stage_two))
         stage_two_names.append(outer_name)
         if population is ReaggregatePopulation.DIMENSION:
@@ -1328,15 +1332,24 @@ def wrap_with_reaggregate(
 
     def stage_two_value(name: str) -> Expr:
         value = ColumnRef(name=name, table=source_of[name])
+        missing: Expr | None = None
         if name in counted_after_having:
             # A group whose stage-1 rows ``having`` all removed has no stage-2
             # row; the join leaves NULL where the count is 0. The 0 takes the
             # count's own cast, so a declared ``dataType`` holds on both sides.
-            zero: Expr = Literal.number(0)
+            missing = Literal.number(0)
             target = resolve_metric_data_type(model.metrics[name], model.settings)
             if target is not None:
-                zero = dialect.cast_to_obml_type(zero, target)
-            return FunctionCall(name="COALESCE", args=[value, zero])
+                missing = dialect.cast_to_obml_type(missing, target)
+        if by_rows:
+            matched = BinaryOp(
+                left=ColumnRef(name=_MATCHED, table=source_of[name]),
+                op="=",
+                right=Literal.number(1),
+            )
+            return CaseExpr(when_clauses=[(matched, value)], else_clause=missing)
+        if missing is not None:
+            return FunctionCall(name="COALESCE", args=[value, missing])
         return value
 
     def empty_of(name: str) -> Expr:
@@ -1345,6 +1358,11 @@ def wrap_with_reaggregate(
         empty = _empty_value(name, model)
         if empty is not None:
             return empty
+        # A formula over components, not a window or other wrapped metric,
+        # whose value over the base's rows has no member rows to be read over.
+        declared = model.metrics.get(name)
+        if declared is None or declared.type is not MetricType.DERIVED:
+            return Literal.null()
         metric = next((m for m in resolved.measures if m.name == name), None)
         if metric is not None and metric.expression is not None and metric.component_measures:
             return metric_over_components(
