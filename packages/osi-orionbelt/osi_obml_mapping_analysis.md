@@ -52,8 +52,10 @@ The converter handles this decomposition automatically:
 | `AGG(dataset.column)` | Direct measure |
 | `AGG(DISTINCT dataset.column)` | Measure with `distinct: true` |
 | `AGG(expr)` (e.g., `SUM(a.x * a.y)`) | Expression-based measure |
+| `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY a.x)` / `PERCENTILE_DISC(...)`, `PERCENTILE_CONT(a.x, p)`, Spark's exact `percentile(a.x, p)` | Measure with `aggregation: percentile_cont` / `percentile_disc` and `percentile: p` (a descending or multi-key order, a fraction that is not a literal in (0, 1) with at most 9 places, a weighted `percentile(x, p, frequency)`, `DISTINCT`, and `APPROX_PERCENTILE` are preserved verbatim) |
 | Multi-aggregation expression | Auto-generated measures + metric formula |
 | Aggregate nested in a larger expression (`ROUND(SUM(a.x), 2)`, `CASE WHEN SUM(a.x) > 0 THEN SUM(a.y) END`) | Auto-generated measures + metric formula |
+| Aggregate with `FILTER (WHERE ...)` or `OVER (...)` | Preserved verbatim: neither is part of the measure the aggregate would become |
 
 The decomposition is driven by **sqlglot**: the resolved SQL is parsed under its source dialect grammar, the aggregate nodes are located in the AST, and each is lifted into an auto-measure with the surrounding expression becoming the metric formula. This is why an aggregate nested inside `ROUND(...)`, a `CASE` expression, or any other function decomposes rather than falling back to preserve-verbatim, and why a numeric or string literal containing a dot (`1.23`, `'north.1'`) is never mistaken for a `dataset.column` reference.
 

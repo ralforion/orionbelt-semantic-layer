@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import json
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import sqlglot
 from sqlglot import expressions as exp
+from sqlglot.tokens import TokenType
 
 from osi_orionbelt._common import (
     _INTERNAL_VENDORS,
@@ -66,12 +68,37 @@ _ANON_AGG_TO_OBML = {
     "LISTAGG": "listagg",
 }
 
+# Exact percentile aggregates, keyed by the sqlglot node: the ordered-set form
+# ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` parses as a ``WithinGroup``
+# over one of these with the fraction as its only argument; the two-argument
+# form (DuckDB ``quantile_cont(x, p)``) as the node itself; Spark's exact
+# ``percentile(x, p)`` as ``Quantile``. ``APPROX_PERCENTILE`` is an
+# ``ApproxQuantile``, not listed: an approximation is not the same measure.
+_PERCENTILE_AGGS: dict[type[exp.Expr], str] = {
+    exp.PercentileCont: "percentile_cont",
+    exp.PercentileDisc: "percentile_disc",
+    exp.Quantile: "percentile_cont",
+}
+
+# The names sqlglot reads as a ``_PERCENTILE_AGGS`` node. It drops a third
+# argument from each (see ``_drops_percentile_arguments``).
+_PERCENTILE_NAMES = frozenset(
+    {
+        "PERCENTILE",
+        "PERCENTILE_CONT",
+        "PERCENTILE_DISC",
+        "QUANTILE",
+        "QUANTILE_CONT",
+        "QUANTILE_DISC",
+    }
+)
+
 # Aggregations whose result is fractional regardless of the input column type.
 # Everything else defaults to int, except listagg (string) - see
 # ``_measure_result_type``. (Without the column's declared type this is a
 # best-effort guess, matching the converter's other type heuristics.)
 _FLOAT_RESULT_AGGS = frozenset(
-    {"sum", "avg", "median", "stddev", "stddev_pop", "variance", "var_pop"}
+    {"sum", "avg", "median", "percentile_cont", "stddev", "stddev_pop", "variance", "var_pop"}
 )
 
 
@@ -1063,11 +1090,12 @@ class OSItoOBML:
                 continue
 
             if decomposed[0] == "simple":
-                _, agg, dataset, column, is_distinct = decomposed
+                _, agg, dataset, column, is_distinct, extra = decomposed
                 measure_def: dict[str, Any] = {
                     "columns": [{"dataObject": dataset, "column": column}],
                     "resultType": self._measure_result_type(agg),
                     "aggregation": agg.lower(),
+                    **extra,
                 }
                 if is_distinct:
                     measure_def["distinct"] = True
@@ -1079,11 +1107,12 @@ class OSItoOBML:
                 measures[name] = measure_def
 
             elif decomposed[0] == "expr":
-                _, agg, obml_expr, is_distinct = decomposed
+                _, agg, obml_expr, is_distinct, extra = decomposed
                 measure_def = {
                     "expression": obml_expr,
                     "resultType": self._measure_result_type(agg),
                     "aggregation": agg.lower(),
+                    **extra,
                 }
                 if is_distinct:
                     measure_def["distinct"] = True
@@ -1302,6 +1331,9 @@ class OSItoOBML:
             return False
         if a.get("distinct", False) != b.get("distinct", False):
             return False
+        # A P75 and a P25 of one column are different measures.
+        if a.get("percentile") != b.get("percentile"):
+            return False
         # Compare column-based measures
         if a.get("columns") and b.get("columns"):
             return a["columns"] == b["columns"]
@@ -1401,11 +1433,112 @@ class OSItoOBML:
         )
 
     @staticmethod
+    def _percentile_parts(
+        node: exp.Expr,
+    ) -> tuple[str, exp.Expr | None, Decimal | None] | None:
+        """``(aggregation, argument, fraction)`` of a percentile aggregate, or
+        ``None`` when *node* is not one (see ``_PERCENTILE_AGGS``).
+
+        The argument is ``None`` when OBML cannot model it: an ordered-set form
+        ordering by more than one key, or descending (a ``percentile_disc``
+        descending is not the ascending one at ``1 - p``). The fraction is
+        ``None`` unless it is a literal OBML accepts, between 0 and 1 exclusive
+        with at most 9 decimal places. Either way the caller preserves the
+        metric rather than emitting another one.
+        """
+        if isinstance(node, exp.WithinGroup):
+            inner = node.this
+            agg = _PERCENTILE_AGGS.get(type(inner))
+            if agg is None or not isinstance(inner, (exp.PercentileCont, exp.PercentileDisc)):
+                return None
+            order = node.expression
+            keys = order.expressions if isinstance(order, exp.Order) else []
+            arg = keys[0].this if len(keys) == 1 and not keys[0].args.get("desc") else None
+            # ``PERCENTILE_CONT(p, x)`` takes the fraction alone.
+            fraction = None if inner.args.get("expression") else inner.this
+            return agg, OSItoOBML._plain(arg), OSItoOBML._fraction(fraction)
+        agg = _PERCENTILE_AGGS.get(type(node))
+        if agg is None:
+            return None
+        fraction = node.args.get("quantile") or node.args.get("expression")
+        return agg, OSItoOBML._plain(node.this), OSItoOBML._fraction(fraction)
+
+    @staticmethod
+    def _plain(arg: exp.Expr | None) -> exp.Expr | None:
+        """*arg*, unless it is ``DISTINCT x``: a percentile measure has no
+        distinct form."""
+        return None if isinstance(arg, exp.Distinct) else arg
+
+    @staticmethod
+    def _drops_percentile_arguments(expr_text: str, read: str | None) -> bool:
+        """Whether a percentile call in *expr_text* passes more than two
+        arguments, which sqlglot drops from the parsed tree.
+
+        Databricks' ``percentile(x, p, frequency)`` weights each value, and
+        DuckDB's ``quantile_cont`` takes more than a fraction; both parse to the
+        two-argument node, which would import as an unweighted measure with no
+        trace of the third argument. Counted on the tokens, at the call's own
+        depth. Text that does not tokenize counts as dropping, so the metric is
+        preserved.
+        """
+        try:
+            tokens = sqlglot.tokenize(expr_text, read=read)
+        except Exception:
+            return True
+        for i, token in enumerate(tokens[:-1]):
+            if token.text.upper() not in _PERCENTILE_NAMES:
+                continue
+            if tokens[i + 1].token_type is not TokenType.L_PAREN:
+                continue
+            depth, commas = 0, 0
+            for inner in tokens[i + 1 :]:
+                if inner.token_type in (TokenType.L_PAREN, TokenType.L_BRACKET):
+                    depth += 1
+                elif inner.token_type in (TokenType.R_PAREN, TokenType.R_BRACKET):
+                    depth -= 1
+                    if depth == 0:
+                        break
+                elif inner.token_type is TokenType.COMMA and depth == 1:
+                    commas += 1
+            if commas > 1:
+                return True
+        return False
+
+    @staticmethod
+    def _fraction(node: exp.Expr | None) -> Decimal | None:
+        """*node* as a percentile fraction OBML accepts, else ``None``."""
+        if not isinstance(node, exp.Literal) or node.is_string:
+            return None
+        try:
+            value = Decimal(node.this)
+        except InvalidOperation:
+            return None
+        exponent = value.as_tuple().exponent
+        if not 0 < value < 1 or not isinstance(exponent, int) or exponent < -9:
+            return None
+        return value
+
+    @staticmethod
+    def _inside_within_group(node: exp.Expr) -> bool:
+        """Whether *node* is the function of a percentile's ``WITHIN GROUP``,
+        which the ``WithinGroup`` node stands for as a whole."""
+        return (
+            isinstance(node, (exp.PercentileCont, exp.PercentileDisc))
+            and isinstance(node.parent, exp.WithinGroup)
+            and node.parent.this is node
+        )
+
+    @staticmethod
     def _obml_agg_name(node: exp.Expr) -> str | None:
         """OBML aggregation name for a sqlglot aggregate, or ``None`` when OBML
         has no single-argument equivalent (``VAR_POP``, ``CORR``, ...). Handles
         both real ``exp.AggFunc`` nodes and the ``exp.Anonymous`` nodes sqlglot
-        produces for ``LISTAGG``."""
+        produces for ``LISTAGG``; a percentile only with an argument and a
+        fraction OBML can model."""
+        parts = OSItoOBML._percentile_parts(node)
+        if parts is not None:
+            agg, arg, fraction = parts
+            return agg if arg is not None and fraction is not None else None
         if isinstance(node, exp.AggFunc):
             return _SQLGLOT_AGG_TO_OBML.get(node.sql_name())
         if isinstance(node, exp.Anonymous):
@@ -1417,13 +1550,36 @@ class OSItoOBML:
     def _is_agg_node(node: exp.Expr) -> bool:
         """Whether ``node`` is an aggregate call - a real ``exp.AggFunc`` (even
         one OBML can't model, so we can preserve rather than mis-emit) or an
-        ``exp.Anonymous`` whose name is a known aggregate."""
+        ``exp.Anonymous`` whose name is a known aggregate. A percentile's
+        ``WITHIN GROUP`` is the aggregate, not the function inside it."""
+        if isinstance(node, exp.WithinGroup):
+            return OSItoOBML._percentile_parts(node) is not None
         if isinstance(node, exp.AggFunc):
-            return True
+            return not OSItoOBML._inside_within_group(node)
         if isinstance(node, exp.Anonymous):
             name = node.this if isinstance(node.this, str) else ""
             return name.upper() in _ANON_AGG_TO_OBML
         return False
+
+    @staticmethod
+    def _filtered_or_windowed(node: exp.Expr) -> bool:
+        """Whether aggregate *node* carries a ``FILTER (WHERE ...)`` or an
+        ``OVER (...)``, directly or around its ``WITHIN GROUP``.
+
+        Neither is part of the measure the aggregate becomes, so lifting the
+        aggregate out left ``{[measure]} FILTER (...)`` / ``{[measure]} OVER ()``
+        in the formula, which OBML does not parse. Such a metric is preserved.
+        """
+        outer = node.parent if isinstance(node.parent, exp.WithinGroup) else node
+        return isinstance(outer.parent, (exp.Filter, exp.Window))
+
+    @staticmethod
+    def _percentile_extra(node: exp.Expr) -> dict[str, Any]:
+        """``{"percentile": p}`` for a percentile aggregate, else empty."""
+        parts = OSItoOBML._percentile_parts(node)
+        if parts is None or parts[2] is None:
+            return {}
+        return {"percentile": float(parts[2])}
 
     @staticmethod
     def _measure_result_type(agg: str) -> str:
@@ -1442,6 +1598,9 @@ class OSItoOBML:
         multi-argument aggregate - a two-column ``CORR(a, b)`` or a
         ``LISTAGG(col, delimiter)`` - so the caller preserves the metric rather
         than silently dropping the extra argument."""
+        parts = OSItoOBML._percentile_parts(node)
+        if parts is not None:
+            return parts[1], False
         if isinstance(node, exp.Anonymous):
             args = node.expressions or []
             return (args[0] if len(args) == 1 else None), False
@@ -1502,8 +1661,8 @@ class OSItoOBML:
         """Classify/decompose a metric SQL expression using sqlglot.
 
         Returns one of:
-          ``("simple", agg, dataset, column, is_distinct)``   -> column measure
-          ``("expr", agg, obml_expression, is_distinct)``     -> expression measure
+          ``("simple", agg, dataset, column, is_distinct, extra)``   -> column measure
+          ``("expr", agg, obml_expression, is_distinct, extra)``     -> expression measure
           ``("complex", obml_outer_formula, auto_measures)``  -> measures + metric
         or ``None`` when the expression has no aggregate, an unsupported or nested
         aggregate, a reference that cannot be resolved, or one sqlglot cannot
@@ -1512,7 +1671,7 @@ class OSItoOBML:
         """
         read = _OSI_DIALECT_TO_SQLGLOT.get(osi_dialect or "")
         tree = self._parse_metric_sql(expr_text, read)
-        if tree is None:
+        if tree is None or self._drops_percentile_arguments(expr_text, read):
             return None
 
         # Resolve qualified column refs on the parsed AST, canonicalising each
@@ -1546,7 +1705,7 @@ class OSItoOBML:
         # An unsupported aggregate (no single-argument OBML equivalent) or a
         # nested aggregate cannot be modelled as measures + a formula; preserve.
         for a in aggs:
-            if self._obml_agg_name(a) is None:
+            if self._obml_agg_name(a) is None or self._filtered_or_windowed(a):
                 return None
             p = a.parent
             while p is not None:
@@ -1561,9 +1720,10 @@ class OSItoOBML:
             arg, is_distinct = self._agg_arg(tree)
             if agg is None or arg is None:
                 return None
+            extra = self._percentile_extra(tree)
             if isinstance(arg, exp.Column) and arg.table:
-                return ("simple", agg, arg.table, arg.name, is_distinct)
-            return ("expr", agg, self._render_obml(arg), is_distinct)
+                return ("simple", agg, arg.table, arg.name, is_distinct, extra)
+            return ("expr", agg, self._render_obml(arg), is_distinct, extra)
 
         # Otherwise aggregates are embedded in a larger formula: each becomes an
         # auto-measure leaf, replaced by a ``{[key]}`` reference in the outer
@@ -1594,6 +1754,10 @@ class OSItoOBML:
                 }
             if is_distinct:
                 measure_def["distinct"] = True
+            percentile = self._percentile_extra(a)
+            if percentile:
+                measure_def.update(percentile)
+                key += "_" + re.sub(r"\W+", "_", str(percentile["percentile"]))
             auto_measures[key] = measure_def
             a.replace(exp.var("{[" + key + "]}"))
 
