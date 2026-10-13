@@ -193,10 +193,67 @@ def test_fact_filter_limits_the_measure_not_the_members(
     assert _close(row["Avg Client Orders All"], orders / 500)
 
 
-def test_grouping_outside_the_members_refused(model: SemanticModel) -> None:
-    """An order month does not describe a client, so it has no members to list."""
+# Each country's and year's order count, and each country's clients.
+_YEARS = """
+SELECT co.countryname AS country, year(s.salesdate) AS yr, COUNT(*) AS orders
+FROM orionbelt_1.sales s
+JOIN orionbelt_1.clients cl ON s.salesclient = cl.clientid
+LEFT JOIN orionbelt_1.countries co ON cl.clientcountryid = co.countryid
+GROUP BY ALL
+"""
+
+
+def test_every_client_in_every_year(
+    run: Callable, clients: list[dict[str, Any]], commerce_db: duckdb.DuckDBPyConnection
+) -> None:
+    """A sales year reads no clients' data object: each client counts in every
+    year, one without orders in it as 0. The rows are still the query's: the
+    years a country has orders in."""
+    years = _rows_as_dicts(commerce_db, _YEARS)
+    rows = run(["Country Name", "Sales Year"], ["Clients All", "Avg Client Orders All"])
+    assert len(rows) == len(years)
+    for r in rows:
+        (want,) = [
+            y
+            for y in years
+            if y["country"] == r["Country Name"] and y["yr"] == r["Sales Year"].year
+        ]
+        mine = len([c for c in clients if c["country"] == r["Country Name"]])
+        assert r["Clients All"] == mine, r
+        assert _close(r["Avg Client Orders All"], Decimal(want["orders"]) / mine), r
+
+
+def test_every_client_in_every_month(run: Callable, commerce_db: duckdb.DuckDBPyConnection) -> None:
+    """By month alone, every client counts in each month; a filter on the
+    sales date limits the months, not the clients."""
+    where = [QueryFilter(field="Sales Date", op=">=", value="2022-01-01")]
+    rows = run(["Sales Month"], ["Clients All", "Avg Client Orders All"], where=where)
+    months = dict(
+        commerce_db.sql(
+            "SELECT CAST(date_trunc('month', salesdate) AS DATE), COUNT(*) FROM orionbelt_1.sales "
+            "WHERE salesdate >= DATE '2022-01-01' GROUP BY ALL"
+        ).fetchall()
+    )
+    assert len(rows) == len(months) > 1
+    for r in rows:
+        assert r["Clients All"] == 500, r
+        assert _close(r["Avg Client Orders All"], Decimal(months[r["Sales Month"]]) / 500), r
+
+
+def test_member_filter_with_a_period(run: Callable, clients: list[dict[str, Any]]) -> None:
+    """A filter on the clients still limits who counts in each year."""
+    where = [QueryFilter(field="Client Gender", op="=", value="F")]
+    rows = run(["Sales Year"], ["Clients All"], where=where)
+    women = len([c for c in clients if c["gender"] == "F"])
+    assert rows
+    assert all(r["Clients All"] == women for r in rows), rows
+
+
+def test_role_grouping_refused(model: SemanticModel) -> None:
+    """A role reaches the clients through the sales: it reads a member object,
+    so it is no period, and a client without sales has no value for it."""
     query = QueryObject(
-        select=QuerySelect(dimensions=["Sales Month"], measures=["Avg Client Orders All"])
+        select=QuerySelect(dimensions=["Sales Client Gender"], measures=["Avg Client Orders All"])
     )
     with pytest.raises(ResolutionError, match="REAGGREGATE_POPULATION_GROUPING|describe"):
         CompilationPipeline().compile(query, model, "duckdb")

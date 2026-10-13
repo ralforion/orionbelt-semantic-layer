@@ -455,9 +455,10 @@ the final rows. Select it beside other measures (other facts too), in `having` a
   the measure's `defaultValue` (0 for a count, else NULL). `per` entries are
   plain dimensions, no grain (written or declared)/`via`, no cumulative `measure`
   (`REAGGREGATE_POPULATION_PER`), no `having`
-  (`REAGGREGATE_POPULATION_HAVING`); the query's dimensions must describe the
-  members (`REAGGREGATE_POPULATION_GROUPING`); only filters on the members'
-  objects limit them
+  (`REAGGREGATE_POPULATION_HAVING`); a query dimension describes the members
+  or reads none of their objects (an order month: every member in every month
+  the facts have), not both (`REAGGREGATE_POPULATION_GROUPING`); only filters
+  on the members' objects limit them
 - `per:` model dimensions, optionally at a time grain (`'Order Date:day'`); by
   `Order Date:month` that averages daily totals within each month (only days
   with rows count)

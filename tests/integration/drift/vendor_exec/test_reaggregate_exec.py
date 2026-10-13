@@ -1051,6 +1051,31 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
         f"{target.name}: {got_feb}"
     )
 
+    # An order month reads no customer: every customer counts in each month
+    # with orders. No January row for the customers without a country, who
+    # ordered in February only.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Member Country", "Order Month"], measures=measures[:2])
+        ),
+    )
+    got_month = {
+        (r["member country"], str(r["order month"])[:7]): (
+            _number(r["avg revenue per member"]),
+            _number(r["members"]),
+        )
+        for r in rows
+    }
+    assert got_month == {
+        ("DE", "2026-01"): (Decimal(20), Decimal(4)),
+        ("FR", "2026-01"): (Decimal("2.5"), Decimal(2)),
+        ("DE", "2026-02"): (Decimal("0.25"), Decimal(4)),
+        ("FR", "2026-02"): (Decimal(500), Decimal(2)),
+        (None, "2026-02"): (Decimal("13.33"), Decimal(3)),
+    }, f"{target.name}: {got_month}"
+
 
 def _assert_all(target: VendorTarget) -> None:
     model = _prepare(target)
