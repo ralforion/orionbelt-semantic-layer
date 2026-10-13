@@ -1562,6 +1562,18 @@ class OSItoOBML:
         return False
 
     @staticmethod
+    def _filtered_or_windowed(node: exp.Expr) -> bool:
+        """Whether aggregate *node* carries a ``FILTER (WHERE ...)`` or an
+        ``OVER (...)``, directly or around its ``WITHIN GROUP``.
+
+        Neither is part of the measure the aggregate becomes, so lifting the
+        aggregate out left ``{[measure]} FILTER (...)`` / ``{[measure]} OVER ()``
+        in the formula, which OBML does not parse. Such a metric is preserved.
+        """
+        outer = node.parent if isinstance(node.parent, exp.WithinGroup) else node
+        return isinstance(outer.parent, (exp.Filter, exp.Window))
+
+    @staticmethod
     def _percentile_extra(node: exp.Expr) -> dict[str, Any]:
         """``{"percentile": p}`` for a percentile aggregate, else empty."""
         parts = OSItoOBML._percentile_parts(node)
@@ -1693,7 +1705,7 @@ class OSItoOBML:
         # An unsupported aggregate (no single-argument OBML equivalent) or a
         # nested aggregate cannot be modelled as measures + a formula; preserve.
         for a in aggs:
-            if self._obml_agg_name(a) is None:
+            if self._obml_agg_name(a) is None or self._filtered_or_windowed(a):
                 return None
             p = a.parent
             while p is not None:

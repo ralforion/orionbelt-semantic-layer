@@ -144,6 +144,12 @@ def test_inside_a_formula() -> None:
         "quantile_cont(Orders.amount, 0.3, Orders.cost)",
         "percentile(DISTINCT Orders.amount, 0.3)",
         "PERCENTILE_CONT(0.3, 1) WITHIN GROUP (ORDER BY Orders.amount)",
+        "percentile(Orders.amount, 0.3) FILTER (WHERE Orders.cost > 0)",
+        "percentile(Orders.amount, 0.3) OVER ()",
+        "PERCENTILE_CONT(0.3) WITHIN GROUP (ORDER BY Orders.amount) FILTER (WHERE Orders.cost > 0)",
+        "PERCENTILE_CONT(0.3) WITHIN GROUP (ORDER BY Orders.amount) OVER ()",
+        "SUM(Orders.amount) FILTER (WHERE Orders.cost > 0)",
+        "SUM(Orders.amount) OVER () - SUM(Orders.cost)",
     ],
     ids=[
         "desc",
@@ -158,12 +164,19 @@ def test_inside_a_formula() -> None:
         "duckdb third argument",
         "distinct",
         "within group two arguments",
+        "filter",
+        "over",
+        "within group filter",
+        "within group over",
+        "sum filter",
+        "sum over in a formula",
     ],
 )
 def test_preserved_when_not_modelable(expression: str) -> None:
     """Each would otherwise import as a different measure: a weighted
     percentile as an unweighted one (sqlglot drops the frequency argument), a
-    DISTINCT one as an invalid expression."""
+    DISTINCT one as an invalid expression, and any aggregate with a FILTER or
+    OVER as a formula OBML does not parse."""
     dialect = (
         "SNOWFLAKE"
         if expression.startswith("APPROX")
