@@ -251,7 +251,8 @@ value whose cumulative share reaches p, a value from the data:
 `first` / `last` take the value at the least / greatest key named in
 `withinGroup` (required, no `order`): rows without a value or key are
 skipped, a tie on the key goes to the least / greatest value. One row's
-value, not a semi-additive sum. Not on MySQL or Dremio:
+value; reaggregated with `sum` per account it is the semi-additive closing
+balance (no carry-forward across periods without a row). Not on MySQL or Dremio:
 
 ```yaml
   Closing Price:
