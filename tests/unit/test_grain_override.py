@@ -24,7 +24,7 @@ from orionbelt.compiler.resolution import (
 )
 from orionbelt.compiler.total_wrap import wrap_with_totals
 from orionbelt.models.query import QueryObject, QuerySelect
-from orionbelt.models.semantic import GrainMode, GrainOverride, Measure, SemanticModel
+from orionbelt.models.semantic import GrainMode, GrainOverride, Measure, SemanticModel, TimeGrain
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 
@@ -203,46 +203,79 @@ class TestGrainOverrideModel:
 # -- Effective grain resolution ------------------------------------------------
 
 
+def _dims(names: list[str]) -> list[ResolvedDimension]:
+    return [
+        ResolvedDimension(name=n, object_name="T", column_name=n, source_column=n) for n in names
+    ]
+
+
 class TestEffectiveGrainResolution:
     def test_fixed_with_include(self) -> None:
         grain = GrainOverride(mode=GrainMode.FIXED, include=["Region"])
-        result = _resolve_effective_grain(grain, ["Region", "Product"])
+        result = _resolve_effective_grain(grain, _dims(["Region", "Product"]))
         assert result == ["Region"]
 
     def test_fixed_empty_grand_total(self) -> None:
         grain = GrainOverride(mode=GrainMode.FIXED)
-        result = _resolve_effective_grain(grain, ["Region", "Product"])
+        result = _resolve_effective_grain(grain, _dims(["Region", "Product"]))
         assert result == []
 
     def test_fixed_keep_only_intersection(self) -> None:
         grain = GrainOverride(mode=GrainMode.FIXED, keep_only=["Region", "Category"])
-        result = _resolve_effective_grain(grain, ["Region", "Product"])
+        result = _resolve_effective_grain(grain, _dims(["Region", "Product"]))
         assert result == ["Region"]
 
     def test_fixed_keep_only_no_overlap(self) -> None:
         grain = GrainOverride(mode=GrainMode.FIXED, keep_only=["Category"])
-        result = _resolve_effective_grain(grain, ["Region", "Product"])
+        result = _resolve_effective_grain(grain, _dims(["Region", "Product"]))
         assert result == []
 
     def test_relative_exclude(self) -> None:
         grain = GrainOverride(mode=GrainMode.RELATIVE, exclude=["Product"])
-        result = _resolve_effective_grain(grain, ["Region", "Product", "Category"])
+        result = _resolve_effective_grain(grain, _dims(["Region", "Product", "Category"]))
         assert result == ["Region", "Category"]
 
     def test_relative_no_changes(self) -> None:
         grain = GrainOverride(mode=GrainMode.RELATIVE)
-        result = _resolve_effective_grain(grain, ["Region", "Product"])
+        result = _resolve_effective_grain(grain, _dims(["Region", "Product"]))
         assert result == ["Region", "Product"]
 
     def test_relative_include_adds(self) -> None:
         grain = GrainOverride(mode=GrainMode.RELATIVE, include=["Category"])
-        result = _resolve_effective_grain(grain, ["Region", "Product"])
+        result = _resolve_effective_grain(grain, _dims(["Region", "Product"]))
         assert result == ["Region", "Product", "Category"]
 
     def test_relative_exclude_and_include(self) -> None:
         grain = GrainOverride(mode=GrainMode.RELATIVE, exclude=["Product"], include=["Category"])
-        result = _resolve_effective_grain(grain, ["Region", "Product"])
+        result = _resolve_effective_grain(grain, _dims(["Region", "Product"]))
         assert result == ["Region", "Category"]
+
+    def test_a_dimension_at_two_grains_is_both_columns(self) -> None:
+        """The override names the dimension; the query has it as two columns."""
+        dims = [
+            ResolvedDimension(
+                name="Date",
+                object_name="T",
+                column_name="d",
+                source_column="d",
+                grain=TimeGrain.YEAR,
+            ),
+            ResolvedDimension(
+                name="Date:month",
+                object_name="T",
+                column_name="d",
+                source_column="d",
+                grain=TimeGrain.MONTH,
+                dimension="Date",
+            ),
+            *_dims(["Region"]),
+        ]
+        exclude = GrainOverride(mode=GrainMode.RELATIVE, exclude=["Date"])
+        assert _resolve_effective_grain(exclude, dims) == ["Region"]
+        keep = GrainOverride(mode=GrainMode.FIXED, keep_only=["Date"])
+        assert _resolve_effective_grain(keep, dims) == ["Date", "Date:month"]
+        include = GrainOverride(mode=GrainMode.FIXED, include=["Date"])
+        assert _resolve_effective_grain(include, dims) == ["Date", "Date:month"]
 
 
 # -- QueryResolver grain resolution -------------------------------------------

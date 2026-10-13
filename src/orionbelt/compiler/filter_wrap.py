@@ -43,6 +43,7 @@ from orionbelt.compiler.resolution import (
     ResolvedFilter,
     ResolvedMeasure,
     ResolvedQuery,
+    dimension_reference,
     make_column_expr,
     make_dimension_expr,
 )
@@ -276,8 +277,14 @@ def _plan_isolated_scan(
     join was summed once per row of the many side, and where a combination the
     single-fact path refuses compiled quietly instead.
     """
+    # Named as the query names them: a column's name is no reference for the
+    # second of two grains, and names the first at its declared grain.
+    references = {d.name: dimension_reference(d) for d in resolved.dimensions}
     sub_query = QueryObject(
-        select=QuerySelect(dimensions=list(grain), measures=[m.name for m in measure_group]),
+        select=QuerySelect(
+            dimensions=[references.get(g, g) for g in grain],
+            measures=[m.name for m in measure_group],
+        ),
         where=list(query.where),
         use_path_names=list(query.use_path_names),
         allow_fan_out=query.allow_fan_out,

@@ -376,6 +376,10 @@ def resolve_order_by_field(
         return ColumnRef(name=field_name)
 
     for dim in ctx.result.dimensions:
+        if dim.name == field_name and dim.name != dim.dimension:
+            # A second grain of a dimension the query selects twice: its own
+            # column, which the date column would name the first grain of.
+            return ColumnRef(name=dim.name)
         if dim.name == field_name:
             # Use make_column_expr so computed columns (which have empty
             # ``code``) inline their expression instead of producing an

@@ -61,7 +61,13 @@ from orionbelt.compiler.metric_resolution import (
     reaggregate_per_ref,
 )
 from orionbelt.compiler.outer_order_by import outer_order_by
-from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.resolution import (
+    ResolutionError,
+    ResolvedMeasure,
+    ResolvedQuery,
+    column_name,
+    grain_column,
+)
 from orionbelt.compiler.time_lookback import null_safe_eq, rename_cte_sources
 from orionbelt.compiler.type_resolver import (
     exact_reaggregate_avg,
@@ -517,10 +523,12 @@ def _distinct_axes(
     entry - the first, or for the cumulative's own time dimension, which the
     cumulative has to find selected, the one at the finest grain, so its
     window orders the rows stage 1 has without ties - and every other entry is
-    planned as a synthetic dimension at its grain. The
-    returned mapping renames those columns back after planning,
-    each to its dimension's name, which :func:`_name_per_buckets` then tells
-    apart by position as for any measure.
+    planned as a synthetic dimension at its grain. The returned mapping
+    renames those columns back after planning, and the kept one when it is
+    not the first, each to the column the query names it by
+    (``Order Date:month`` for the second of two grains, see
+    :func:`column_name`); a ``per`` column left with the plain name
+    :func:`_name_per_buckets` then tells apart by position as for any measure.
     """
     time_dim = _cumulative_time_dimension(measure, model)
     metric = model.metrics.get(measure)
@@ -552,15 +560,25 @@ def _distinct_axes(
     dimensions = dict(model.dimensions)
     planned: list[str | CoalesceDimension] = list(dims)
     synthetic: dict[str, str] = {}
+    earlier: list[tuple[str, TimeGrain | None]] = []
     for index, ref in refs:
+        # The column the query names this entry by, as resolution names it.
+        column = column_name(ref.name, ref.grain, earlier)
+        earlier.append((ref.name, ref.grain))
         if index not in renamed:
+            # The entry that keeps its name is planned under it, the only one
+            # by that name; selected after another grain, its column is still
+            # the suffixed one. One per name, and renamed in one pass with the
+            # synthetic ones, so it cannot take another entry's column.
+            if column != ref.name:
+                synthetic[ref.name] = column
             continue
         declared_dim = model.dimensions[ref.name]
         grain = ref.grain or declared_dim.time_grain
         name = f"__reaggregate_axis_{index}_{ref.name}"
         dimensions[name] = declared_dim.model_copy(update={"name": name, "time_grain": grain})
         planned[index] = name
-        synthetic[name] = ref.name
+        synthetic[name] = column
     return model.model_copy(update={"dimensions": dimensions}), planned, synthetic
 
 
@@ -584,13 +602,20 @@ def _name_per_buckets(
     ``Order Date:day`` beside the query's ``Order Date:month``, or beside a
     second ``per`` bucket of that date, would leave two columns of one name,
     which most engines reject in a CTE and the second stage could not tell
-    apart. Such a ``per`` column becomes ``name:grain``. The query's own
-    columns come first in the scan and keep their names. Returns the scan and
-    each ref's column name.
+    apart. Such a ``per`` column becomes ``name:grain``, as the planner names
+    one itself when it sees both (see :func:`grain_column`); a column it
+    named so is kept. The query's own columns come first in the scan and keep
+    their names. Returns the scan and each ref's column name.
     """
     names = [*query_dims, *(r.name for r in refs)]
     pending = {name: [r for r in refs if r.name == name] for name in names if names.count(name) > 1}
     columns_of = [r.name for r in refs]
+    aliases = {_alias(c) for c in scan.columns}
+    for index, ref in enumerate(refs):
+        named = grain_column(ref.name, ref.grain)
+        if named in aliases and named not in query_dims and ref in pending.get(ref.name, []):
+            pending[ref.name].remove(ref)
+            columns_of[index] = named
     if not pending:
         return scan, columns_of
     query_columns = Counter(query_dims)
@@ -602,8 +627,7 @@ def _name_per_buckets(
                 query_columns[alias] -= 1
             else:
                 ref = pending[alias].pop(0)
-                grain = ref.grain.value if ref.grain else "value"
-                col = AliasedExpr(expr=col.expr, alias=f"{ref.name}:{grain}")
+                col = AliasedExpr(expr=col.expr, alias=grain_column(ref.name, ref.grain))
                 columns_of[refs.index(ref)] = col.alias
         columns.append(col)
     if any(pending.values()):

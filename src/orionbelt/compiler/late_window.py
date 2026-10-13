@@ -147,7 +147,7 @@ def wrap_with_late_window(
         source = _JOINED
 
     def window_over(window: ResolvedMeasure) -> Expr:
-        call = _build_window_call(window, model, dialect)
+        call = _build_window_call(window, resolved, model, dialect)
         return _apply_metric_cast(call, window.name, model, dialect)
 
     def value_of(comp: ResolvedMeasure) -> Expr:

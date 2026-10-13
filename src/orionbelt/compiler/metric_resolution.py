@@ -86,9 +86,9 @@ def reaggregate_per_covered(
     already one month's - so grouping by *ref* as well changes nothing.
     """
     for d in dims:
-        if d.name != ref.name:
+        if d.dimension != ref.name:
             continue
-        declared = model.dimensions.get(d.name)
+        declared = model.dimensions.get(d.dimension)
         grain = d.grain or (declared.time_grain if declared else None)
         if _nests_in(grain, ref.grain):
             return True
