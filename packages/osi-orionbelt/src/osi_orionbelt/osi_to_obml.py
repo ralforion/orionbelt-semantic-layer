@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -1440,11 +1441,14 @@ class OSItoOBML:
         ``None`` when *node* is not one (see ``_PERCENTILE_AGGS``).
 
         The argument is ``None`` when OBML cannot model it: an ordered-set form
-        ordering by more than one key, or descending (a ``percentile_disc``
-        descending is not the ascending one at ``1 - p``). The fraction is
-        ``None`` unless it is a literal OBML accepts, between 0 and 1 exclusive
-        with at most 9 decimal places. Either way the caller preserves the
-        metric rather than emitting another one.
+        ordering by more than one key, or a descending ``percentile_disc``. A
+        descending ``percentile_cont`` is the ascending one at ``1 - p``: the
+        point at ``p * (n - 1)`` from the top is ``(1 - p) * (n - 1)`` from the
+        bottom, so the fraction is turned around, exactly, in decimal. A
+        ``percentile_disc`` steps at different places in each direction (for 1,
+        2, 3, 4 at 0.5, 3 descending and 2 ascending). The fraction is ``None``
+        unless it is a literal OBML accepts (see :meth:`_fraction`). Either way
+        the caller preserves the metric rather than emitting another one.
         """
         if isinstance(node, exp.WithinGroup):
             inner = node.this
@@ -1453,10 +1457,14 @@ class OSItoOBML:
                 return None
             order = node.expression
             keys = order.expressions if isinstance(order, exp.Order) else []
-            arg = keys[0].this if len(keys) == 1 and not keys[0].args.get("desc") else None
+            desc = len(keys) == 1 and bool(keys[0].args.get("desc"))
+            usable = len(keys) == 1 and (not desc or agg == "percentile_cont")
+            arg = keys[0].this if usable else None
             # ``PERCENTILE_CONT(p, x)`` takes the fraction alone.
-            fraction = None if inner.args.get("expression") else inner.this
-            return agg, OSItoOBML._plain(arg), OSItoOBML._fraction(fraction)
+            value = OSItoOBML._fraction(None if inner.args.get("expression") else inner.this)
+            if desc and value is not None:
+                value = 1 - value
+            return agg, OSItoOBML._plain(arg), value
         agg = _PERCENTILE_AGGS.get(type(node))
         if agg is None:
             return None
@@ -1506,17 +1514,74 @@ class OSItoOBML:
 
     @staticmethod
     def _fraction(node: exp.Expr | None) -> Decimal | None:
-        """*node* as a percentile fraction OBML accepts, else ``None``."""
-        if not isinstance(node, exp.Literal) or node.is_string:
+        """*node* as a percentile fraction OBML accepts, else ``None``: a
+        literal between 0 and 1 exclusive with at most 9 decimal places.
+
+        A cast around it (``CAST(0.9 AS DOUBLE)``, ``0.9::numeric(4, 2)``) is
+        the same value when the target keeps it whole - a floating-point type,
+        or a decimal whose scale holds every place - and is looked through.
+        Any other target may round it, and differently per engine: a bare
+        ``DECIMAL`` has scale 0 on Snowflake and Databricks, so
+        ``CAST(0.9 AS DECIMAL)`` is 1 there.
+        """
+        while isinstance(node, exp.Cast):
+            if not OSItoOBML._keeps_fraction(node.to, node.this):
+                return None
+            node = node.this
+        if not isinstance(node, exp.Literal):
+            return None
+        if node.is_string and not isinstance(node.parent, exp.Cast):
             return None
         try:
             value = Decimal(node.this)
         except InvalidOperation:
             return None
+        # ``CAST('NaN' AS DOUBLE)`` reaches here too; a NaN does not compare.
+        if not value.is_finite():
+            return None
         exponent = value.as_tuple().exponent
         if not 0 < value < 1 or not isinstance(exponent, int) or exponent < -9:
             return None
         return value
+
+    @staticmethod
+    def _keeps_fraction(to: exp.DataType, value: exp.Expr) -> bool:
+        """Whether a cast to *to* keeps the literal *value* unrounded.
+
+        A ``DOUBLE`` is what the engines read a plain fractional literal as
+        already, so a cast to it changes nothing the uncast literal would not
+        (on DuckDB ``PERCENTILE_DISC(CAST(0.1 AS DOUBLE))`` over 1 to 10 is 1,
+        as for ``0.1``). ``FLOAT`` / ``REAL`` is single precision on Databricks
+        and DuckDB, where 0.1 becomes 0.100000001 and that percentile 2; it is
+        looked through only for a value single precision holds exactly
+        (0.25, 0.5, 0.125).
+        """
+        if to.this is exp.DataType.Type.DOUBLE:
+            return True
+        if to.this is exp.DataType.Type.FLOAT:
+            if not isinstance(value, exp.Literal):
+                return False
+            try:
+                number = Decimal(value.this)
+            except InvalidOperation:
+                return False
+            # Out of (0, 1) it is no fraction anyway, and past single
+            # precision's range ``struct.pack`` raises instead of rounding.
+            if not number.is_finite() or not 0 < number < 1:
+                return False
+            single = struct.unpack("f", struct.pack("f", float(number)))[0]
+            return Decimal(single) == number
+        if to.this is not exp.DataType.Type.DECIMAL or len(to.expressions) != 2:
+            return False
+        scale = to.expressions[1].this
+        if not isinstance(scale, exp.Literal) or not isinstance(value, exp.Literal):
+            return False
+        try:
+            exponent = Decimal(value.this).as_tuple().exponent
+            places = int(scale.this)
+        except (InvalidOperation, ValueError):
+            return False
+        return isinstance(exponent, int) and -exponent <= places
 
     @staticmethod
     def _inside_within_group(node: exp.Expr) -> bool:
