@@ -1098,11 +1098,18 @@ class ReferenceResolver:
                 # these would be dropped silently rather than refused there.
                 if metric_type != MetricType.REAGGREGATE and any(
                     key in raw_metric
-                    for key in ("per", "aggregation", "having", "percentile", "population")
+                    for key in (
+                        "per",
+                        "aggregation",
+                        "having",
+                        "percentile",
+                        "population",
+                        "carryForward",
+                    )
                 ):
                     raise ValueError(
-                        "'per', 'aggregation', 'having', 'percentile' and 'population' are "
-                        "only valid on reaggregate metrics"
+                        "'per', 'aggregation', 'having', 'percentile', 'population' and "
+                        "'carryForward' are only valid on reaggregate metrics"
                     )
                 concept_links = _parse_concept_mappings(
                     raw_metric, f"metrics.{name}", prefixes, errors, source_map
@@ -2030,6 +2037,17 @@ class ReferenceResolver:
                     _suggest_similar(field, [*measures, *synthesized_measures]),
                 )
 
+        if raw_metric.get("carryForward") is True and (
+            raw_metric.get("population") != ReaggregatePopulation.DIMENSION
+        ):
+            # Carrying needs the members' grid: with the facts' population a
+            # member with no row in a period has no row to carry into.
+            report(
+                "REAGGREGATE_CARRY_FORWARD_POPULATION",
+                "carryForward",
+                f"Reaggregate metric '{name}' carries a member's value forward, which "
+                f"needs every member in every period: set 'population: dimension'.",
+            )
         per = raw_metric.get("per")
         if not isinstance(per, list):
             return

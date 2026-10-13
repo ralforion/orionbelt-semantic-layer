@@ -828,6 +828,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
                 g.add((met_uri, OBSL.percentile, Literal(Decimal(str(met.percentile)))))
             if met.population is not None:
                 g.add((met_uri, OBSL.population, Literal(met.population.value)))
+            if met.carry_forward:
+                g.add((met_uri, OBSL.carryForward, Literal(True)))
 
         if met.description:
             g.add((met_uri, RDFS.comment, Literal(met.description)))

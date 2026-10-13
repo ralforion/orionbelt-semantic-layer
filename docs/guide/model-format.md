@@ -1183,6 +1183,7 @@ By `Country`, stage 1 lists every customer of each country from the customer dat
 - A query dimension either describes the members, reached from that data object as a customer's country is, or reads none of the members' data objects, as an order month does. The members are crossed with the second kind, its values the ones the facts have after the query's filters: by `Order Month`, every customer counts in every month with orders, one without orders in a month with the default value. A dimension reading both, such as a customer column computed from the orders, or a role (`via`), is refused (`REAGGREGATE_POPULATION_GROUPING` at compile time): a dimension, of the query or in `per`, counts with every data object its computed column reads, and a `per` dimension has to describe the members.
 - A query filter limits the members when every column it tests is on the members' data objects (`Country = Germany`); a filter on the facts (an order date range) limits the measure, not who counts, so a customer without orders in the range counts with the default value. Each condition of an `and` group stands alone, so the member conditions in it apply; an `or` or negated group mixing both is all or nothing, and does not limit the members. An `exists` / `nonexists` filter limits them only when its subquery and its filters read the members' data objects too: "has orders" tests the facts. A computed column counts with every data object its expression reads, so a client column computed from the sales is a fact condition.
 - `having` is refused (`REAGGREGATE_POPULATION_HAVING`): a member it removed would come back with the default value. Filter the members with the query instead.
+- `carryForward: true` gives a member with no row in a period its latest earlier value instead of the default; see [Semi-additive measures](#semi-additive-measures).
 - The query's rows still come from the query: a country with no orders at all is not a row, as for every measure.
 
 #### Semi-additive measures
@@ -1207,9 +1208,30 @@ metrics:
 
 By month, stage 1 takes each account's last balance in the month and stage 2 adds them up; by branch and quarter, each account's last balance in the quarter, summed per branch. `first` instead of `last` gives the opening balance, and `aggregation: avg` over the same stage 1 the average closing balance per account. The average daily total over a period is the other common form: a `sum` measure reaggregated with `avg` per `'Snapshot Date:day'`.
 
-- An account with no snapshot in a period contributes nothing to it: its last earlier balance is not carried forward. That fits a snapshot table with a row per account and period (the usual shape); for sparse snapshots, the carried-forward balance needs a row per period in the data.
 - Two snapshots of one account at the same last time are a tie, which `last` resolves to the greater value.
 - Not on MySQL or Dremio, as for `first` / `last`.
+
+As written, an account with no snapshot in a period contributes nothing to it. That fits a snapshot table with a row per account and period. For sparse snapshots, where an account has a row only when its balance changes, `carryForward` carries each account's balance into the periods it has no snapshot in:
+
+```yaml
+metrics:
+  Closing Balance:
+    type: reaggregate
+    measure: Last Balance
+    per: [Account]
+    aggregation: sum
+    population: dimension
+    carryForward: true
+```
+
+By `Snapshot Date:month`, stage 1 lists every account in every month with snapshots (see [`population: dimension`](#reaggregate-metrics)), and an account with no snapshot in a month takes its balance from its latest earlier month with one. An account with no earlier snapshot takes the measure's `defaultValue`, or NULL.
+
+- `carryForward` needs `population: dimension` (`REAGGREGATE_CARRY_FORWARD_POPULATION`): carrying needs a row for every account in every period, which only the members have.
+- The periods are the query's dimensions on one date: a grain (`Snapshot Date:month`), or a date or timestamp dimension; grains of one date order coarsest first. Two different dates are refused (`REAGGREGATE_CARRY_FORWARD_AXIS`). Another period, such as a product, keeps balances of its own: an account's balance in a product carries only that product's snapshots. Without a date in the query there is one period and nothing to carry.
+- A filter on the date limits the periods shown, not the snapshots read: from February on, February still carries an account's January balance, as a cumulative metric reads the months before its first.
+- The periods are the ones with any snapshot after the filters, so a month with no snapshot from any account is not a row; and, as for every population, a row of the query (a branch in a month) needs a snapshot in it.
+- A value is a period's measure: one whose measure is NULL carries the one before it.
+- It works on every engine (a running count and a `MAX` over each run, not `IGNORE NULLS`); the `last` measure is what MySQL and Dremio refuse, and a `max` or `sum` measure carries there too.
 
 The metric's `having` keeps only the stage-1 groups that meet every condition, each over a measure at the query's dimensions plus `per`:
 
@@ -1282,6 +1304,7 @@ Rules:
 | `percentile` | number | — | Fraction of a `percentile_cont` / `percentile_disc` second stage, between 0 and 1 exclusive (reaggregate only) |
 | `having` | list | — | Conditions (`field`, `op`, `value`) over measures that each stage-1 group has to meet (reaggregate only) |
 | `population` | `"facts"` \| `"dimension"` | `"facts"` | Where the stage-1 groups come from: the measure's rows, or every member of the `per` dimensions (reaggregate only) |
+| `carryForward` | boolean | `false` | With `population: dimension`, a member with no row in a period takes its latest earlier value: a balance carried between snapshots (reaggregate only; see [Semi-additive measures](#semi-additive-measures)) |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
 | `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics) |
 | `offset` | integer | — | Row offset for `lag` / `lead` (>= 1) |

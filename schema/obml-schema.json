@@ -1117,6 +1117,10 @@
           ],
           "description": "Reaggregate metrics: where the first-stage groups come from. facts (default): the groups the measure has rows for. dimension: every member of the per dimensions, read from their own data object (each per entry a plain dimension, no time grain or via; no having); a member without rows takes the measure's defaultValue, 0 for a count, otherwise NULL. A query dimension describes the members or reads none of their data objects, as an order month does, which is crossed with them (every member in every month the facts have); only filters on the members' data objects limit them."
         },
+        "carryForward": {
+          "type": "boolean",
+          "description": "Reaggregate metrics with population dimension: a member with no row in a period takes its latest earlier value, a semi-additive balance carried between snapshots. The periods are the query's dimensions on one date (a grain, or a date or timestamp dimension), and the ones the facts have; a value is read past the query's filters on that date. A member with no earlier value takes the measure's defaultValue. Two different dates in the query are refused (REAGGREGATE_CARRY_FORWARD_AXIS)."
+        },
         "description": {
           "type": "string",
           "description": "Business description of this metric"
@@ -1288,6 +1292,11 @@
                 {
                   "required": [
                     "population"
+                  ]
+                },
+                {
+                  "required": [
+                    "carryForward"
                   ]
                 }
               ]

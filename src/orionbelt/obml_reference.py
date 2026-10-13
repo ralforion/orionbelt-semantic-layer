@@ -252,7 +252,8 @@ value whose cumulative share reaches p, a value from the data:
 `withinGroup` (required, no `order`): rows without a value or key are
 skipped, a tie on the key goes to the least / greatest value. One row's
 value; reaggregated with `sum` per account it is the semi-additive closing
-balance (no carry-forward across periods without a row). Not on MySQL or Dremio:
+balance (`population: dimension` + `carryForward: true` carries it into periods
+without a row). Not on MySQL or Dremio:
 
 ```yaml
   Closing Price:
@@ -459,6 +460,11 @@ the final rows. Select it beside other measures (other facts too), in `having` a
   or reads none of their objects (an order month: every member in every month
   the facts have), not both (`REAGGREGATE_POPULATION_GROUPING`); only filters
   on the members' objects limit them
+- `carryForward: true` (needs `population: dimension`,
+  `REAGGREGATE_CARRY_FORWARD_POPULATION`): a member with no row in a period
+  takes its latest earlier value (a balance between snapshots), read past a
+  date filter; the periods are the query's dimensions on one date
+  (`REAGGREGATE_CARRY_FORWARD_AXIS` for two dates)
 - `per:` model dimensions, optionally at a time grain (`'Order Date:day'`); by
   `Order Date:month` that averages daily totals within each month (only days
   with rows count)

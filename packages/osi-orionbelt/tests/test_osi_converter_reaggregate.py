@@ -75,3 +75,17 @@ def test_roundtrip_keeps_the_population() -> None:
     model = {**_OBML, "metrics": {"Avg Revenue per Customer (all)": metric}}
     obml = conv.OSItoOBML(conv.OBMLtoOSI(model).convert()).convert()
     assert obml["metrics"]["Avg Revenue per Customer (all)"] == metric
+
+
+def test_roundtrip_keeps_carry_forward() -> None:
+    metric = {
+        "type": "reaggregate",
+        "measure": "Revenue",
+        "per": ["Customer"],
+        "aggregation": "sum",
+        "population": "dimension",
+        "carryForward": True,
+    }
+    model = {**_OBML, "metrics": {"Closing Revenue": metric}}
+    obml = conv.OSItoOBML(conv.OBMLtoOSI(model).convert()).convert()
+    assert obml["metrics"]["Closing Revenue"] == metric

@@ -265,4 +265,4 @@ One model, four trend primitives, every dialect — no SQL hand-written.
 - **Forecasting / extrapolation** (linear regression beyond the
   `regr_*` aggregates, ARIMA, exponential smoothing) — belongs in the
   BI tool or downstream analytics layer.
-- **Semi-additive measures** (the total of period-end balances across accounts, period-average) are no separate primitive: a [`last` measure](model-format.md#first-and-last) reaggregated with `sum` per account. See [Semi-additive measures](model-format.md#semi-additive-measures), including what happens to an account with no snapshot in a period.
+- **Semi-additive measures** (the total of period-end balances across accounts, period-average) are no separate primitive: a [`last` measure](model-format.md#first-and-last) reaggregated with `sum` per account. With `population: dimension` and `carryForward: true`, an account with no snapshot in a period carries its earlier balance. See [Semi-additive measures](model-format.md#semi-additive-measures).

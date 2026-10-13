@@ -30,7 +30,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Callable, Iterator
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from itertools import count
 from typing import NoReturn
@@ -39,6 +39,7 @@ from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
     BinaryOp,
+    CaseExpr,
     Cast,
     ColumnRef,
     Expr,
@@ -50,6 +51,8 @@ from orionbelt.ast.nodes import (
     OrderByItem,
     Select,
     Unnest,
+    WindowFrame,
+    WindowFunction,
 )
 from orionbelt.compiler.filters import _resolve_subquery_filter_field
 from orionbelt.compiler.graph import JoinGraph
@@ -63,18 +66,25 @@ from orionbelt.compiler.metric_resolution import (
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import (
     ResolutionError,
+    ResolvedDimension,
     ResolvedMeasure,
     ResolvedQuery,
     column_name,
     grain_column,
 )
-from orionbelt.compiler.time_lookback import null_safe_eq, rename_cte_sources
+from orionbelt.compiler.time_lookback import (
+    lookback_query,
+    null_safe_eq,
+    rename_cte_sources,
+    time_filters,
+)
 from orionbelt.compiler.type_resolver import (
     exact_reaggregate_avg,
     reaggregated_data_type,
     reaggregated_values_are_integers,
     resolve_metric_data_type,
 )
+from orionbelt.compiler.window_wrap import partition_keys
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
@@ -87,6 +97,7 @@ from orionbelt.models.query import (
     time_per_entries,
 )
 from orionbelt.models.semantic import (
+    DATE_BEARING_TYPES,
     AggregationType,
     DataObject,
     FilterLogic,
@@ -135,6 +146,12 @@ def _population(model: SemanticModel, name: str) -> ReaggregatePopulation:
     return (metric.population if metric is not None else None) or ReaggregatePopulation.FACTS
 
 
+def _carry_forward(model: SemanticModel, name: str) -> bool:
+    """Whether the reaggregate metric *name* carries a member's value forward."""
+    metric = model.metrics.get(name)
+    return metric is not None and metric.carry_forward
+
+
 def _having_key(having: list[ReaggregateHaving]) -> str:
     return "\n".join(h.model_dump_json() for h in having)
 
@@ -148,6 +165,7 @@ def _stage_one(
     per: list[str],
     having: list[ReaggregateHaving],
     population: ReaggregatePopulation,
+    carry: bool,
     resolved: ResolvedQuery,
     query: QueryObject,
     model: SemanticModel,
@@ -166,7 +184,9 @@ def _stage_one(
 
     With *population* ``dimension`` the groups are every member of the ``per``
     dimensions instead of the ones the measure has rows for (see
-    :func:`_with_population`).
+    :func:`_with_population`), and with *carry* a member with no row in a
+    period takes its latest earlier value, read past the query's time filter
+    (see :func:`_history`).
     """
     added: list[tuple[str, DimensionRef]] = []
     for entry in per:
@@ -210,17 +230,24 @@ def _stage_one(
     # So are its tables: a ``per`` dimension can join one the query does not,
     # and the result cache has to see it change.
     resolved.subquery_objects.update(sub_resolved.required_objects, sub_resolved.subquery_objects)
-    if synthetic:
-        scan = _rename_columns(scan, synthetic)
-    named, columns = _name_per_buckets(
-        scan, [d.name for d in resolved.dimensions], [r for _, r in added]
-    )
+    query_columns = [d.name for d in resolved.dimensions]
+    refs = [r for _, r in added]
+
+    def named_columns(planned: Select) -> tuple[Select, list[str]]:
+        if synthetic:
+            planned = _rename_columns(planned, synthetic)
+        return _name_per_buckets(planned, query_columns, refs)
+
+    named, columns = named_columns(scan)
     if population is ReaggregatePopulation.DIMENSION and added:
+        layout = _population_layout(measure, per, carry, resolved, query, model)
+        history = _history(scan, sub_resolved, layout.axis, resolved)
         named = _with_population(
             named,
+            None if history is None else named_columns(history)[0],
             measure,
-            per,
             [entry for entry, _ in added],
+            layout,
             resolved,
             query,
             model,
@@ -233,42 +260,46 @@ def _stage_one(
 _MEMBERS = "reagg_members"
 _FACTS = "reagg_facts"
 _PERIODS = "reagg_periods"
+_HISTORY = "reagg_history"
+_GRID = "reagg_grid"
+_RUNS = "reagg_runs"
+_CARRIED = "reagg_carried"
+_SHOWN = "reagg_shown"
+_RUN = "__reagg_run"
+_MATCHED = "__reagg_matched"
 
 
-def _with_population(
-    facts: Select,
+@dataclass(frozen=True)
+class _Layout:
+    """Where a ``population: dimension`` first stage reads its groups from."""
+
+    #: The data objects the members are listed from.
+    members: set[str]
+    #: The query's dimensions crossed with the members (an order month).
+    periods: list[str]
+    #: The periods on the time axis a carried value moves along, coarsest
+    #: first; empty when the metric does not carry forward or has no such axis.
+    axis: list[str]
+
+
+def _population_layout(
     measure: str,
     all_per: list[str],
-    per: list[str],
+    carry: bool,
     resolved: ResolvedQuery,
     query: QueryObject,
     model: SemanticModel,
-    dialect: Dialect,
-    qualify_table: Callable[[DataObject], str],
-) -> Select:
-    """*facts* over every member of the *per* dimensions, not only those with rows.
+) -> _Layout:
+    """The members and periods of :func:`_with_population`, refusing a query
+    whose dimensions neither describe the members nor read none of them.
 
-    *all_per* is the metric's ``per``, *per* the entries stage 1 added to the
-    query's grouping. The members are the query's dimensions and *per*,
-    planned as a query of their own over the data objects one of the
-    *all_per* dimensions' objects reaches - so it starts from the member
-    table, not from a fact, also when the query already groups by that
-    dimension. A query dimension among them describes the member (the
-    customer's country); one that reads none of them (the order month) is
-    crossed with the members, its values the ones *facts* has, so every
-    customer is in every month with orders. One reading both is refused. The
-    part of a filter that tests only the member objects applies to the
-    members (see :func:`_member_part`); one on the facts limits the measure,
-    and so the periods, not who counts.
-
-    A member without rows takes the measure's ``defaultValue``, or 0 for a
-    count, which is what a count reports over no rows; otherwise NULL.
+    *all_per* is the metric's ``per``. The members are the data objects one of
+    its dimensions' objects reaches, if one reaches the others. With *carry*,
+    the periods on a date (a grain, or a date or timestamp dimension) are the
+    axis a value is carried along; they have to be one date column.
     """
-    dim_names = [d.name for d in resolved.dimensions]
     graph = JoinGraph.of(model, query.use_path_names)
     roots = {view for entry in all_per if (view := model.dimensions[entry].view) is not None}
-    # The objects one of the ``per`` dimensions' objects reaches, if one reaches
-    # the others; then the query's dimensions not among them.
     members = next(
         (reach for root in sorted(roots) if roots <= (reach := {root} | graph.descendants(root))),
         None,
@@ -306,8 +337,102 @@ def _with_population(
             f"their data objects alone, and {outside} "
             f"{'does' if len(outside) == 1 else 'do'} not",
         )
+    dates = [d for d in resolved.dimensions if d.name in periods and _is_date(d, model)]
+    if not carry or not dates:
+        return _Layout(members, periods, [])
+    columns = {(d.object_name, d.column_name) for d in dates}
+    if len(columns) > 1:
+        raise ResolutionError(
+            [
+                SemanticError(
+                    code="REAGGREGATE_CARRY_FORWARD_AXIS",
+                    message=(
+                        f"The first stage of '{measure}' carries a member's value forward "
+                        f"in time, but the query groups by more than one date: "
+                        f"{[d.name for d in dates]}."
+                    ),
+                    path="select.dimensions",
+                    hint="Group by grains of one date only.",
+                )
+            ]
+        )
+    # Coarsest first; a dimension with no grain is the column itself, finest.
+    axis = sorted(dates, key=lambda d: -_GRAIN_RANK[d.grain] if d.grain else 1)
+    return _Layout(members, periods, [d.name for d in axis])
+
+
+def _is_date(dim: ResolvedDimension, model: SemanticModel) -> bool:
+    """Whether *dim* is a point in time: at a grain, or declared as a date."""
+    declared = model.dimensions.get(dim.dimension)
+    return dim.grain is not None or (
+        declared is not None and declared.result_type in DATE_BEARING_TYPES
+    )
+
+
+def _history(
+    scan: Select, scan_resolved: ResolvedQuery, axis: list[str], resolved: ResolvedQuery
+) -> Select | None:
+    """*scan* read past the query's filters on the *axis* date, or ``None``
+    when there is nothing to carry or no such filter.
+
+    The filter says which periods to show, not which a value may come from:
+    February's balance carries an account's January snapshot when the query
+    starts in February, as a cumulative reads the months before its first.
+    """
+    if not axis:
+        return None
+    time_dim = next(d for d in resolved.dimensions if d.name == axis[0])
+    own = next(
+        (
+            d.name
+            for d in scan_resolved.dimensions
+            if (d.object_name, d.column_name) == (time_dim.object_name, time_dim.column_name)
+        ),
+        None,
+    )
+    predicates = time_filters(scan_resolved, own) if own is not None else []
+    copy = lookback_query(scan, predicates, "_history", scan_resolved) if predicates else None
+    if copy is None:
+        return None
+    added, body = copy
+    return replace(body, ctes=[*scan.ctes, *added])
+
+
+def _with_population(
+    facts: Select,
+    history: Select | None,
+    measure: str,
+    per: list[str],
+    layout: _Layout,
+    resolved: ResolvedQuery,
+    query: QueryObject,
+    model: SemanticModel,
+    dialect: Dialect,
+    qualify_table: Callable[[DataObject], str],
+) -> Select:
+    """*facts* over every member of the *per* dimensions, not only those with rows.
+
+    *per* are the entries stage 1 added to the query's grouping. The members
+    are the query's dimensions and *per*, planned as a query of their own over
+    the data objects of *layout* - so it starts from the member table, not
+    from a fact, also when the query already groups by that dimension. A query
+    dimension among them describes the member (the customer's country); one
+    that reads none of them (the order month) is a period, crossed with the
+    members, its values the ones *facts* has, so every customer is in every
+    month with orders. The part of a filter that tests only the member
+    objects applies to the members (see :func:`_member_part`); one on the
+    facts limits the measure, and so the periods, not who counts.
+
+    A member without rows takes the measure's ``defaultValue``, or 0 for a
+    count, which is what a count reports over no rows; otherwise NULL. On a
+    carried *layout* it first takes its latest earlier value (see
+    :func:`_carried`), read from *history* when the query filters the date.
+    """
+    periods = layout.periods
     member_model = model.model_copy(
-        update={"data_objects": {n: o for n, o in model.data_objects.items() if n in members}}
+        update={
+            "data_objects": {n: o for n, o in model.data_objects.items() if n in layout.members}
+        }
     )
     described = [
         d
@@ -316,7 +441,7 @@ def _with_population(
     ]
     member_query = QueryObject(
         select=QuerySelect(dimensions=[*described, *per]),
-        where=[part for f in query.where if (part := _member_part(f, members, model))],
+        where=[part for f in query.where if (part := _member_part(f, layout.members, model))],
         use_path_names=list(query.use_path_names),
     )
     # Imported here for the same reason as in :func:`_stage_one`.
@@ -324,52 +449,174 @@ def _with_population(
 
     listed, _ = plan_in_own_right(member_query, member_model, dialect, qualify_table)
     listed = _own_cte_names(listed, f"{_MEMBERS}_")
-    facts = _own_cte_names(facts, f"{_FACTS}_")
-    keys = [*dim_names, *per]
+    facts = _own_cte_names(_marked(facts), f"{_FACTS}_")
+    keys = [*(d.name for d in resolved.dimensions), *per]
     ctes = [
         *listed.ctes,
         CTE(name=_MEMBERS, query=replace(listed, ctes=[])),
         *facts.ctes,
         CTE(name=_FACTS, query=replace(facts, ctes=[])),
     ]
+    source = _FACTS
+    if history is not None:
+        history = _own_cte_names(_marked(history), f"{_HISTORY}_")
+        ctes += [*history.ctes, CTE(name=_HISTORY, query=replace(history, ctes=[]))]
+        source = _HISTORY
     joins: list[Join | Unnest] = []
     if periods:
-        ctes.append(
-            CTE(
-                name=_PERIODS,
-                query=Select(
-                    columns=[
-                        AliasedExpr(expr=ColumnRef(name=p, table=_FACTS), alias=p) for p in periods
-                    ],
-                    from_=From(source=_FACTS, alias=_FACTS),
-                    distinct=True,
-                ),
-            )
-        )
+        ctes.append(CTE(name=_PERIODS, query=_distinct(source, periods)))
         joins.append(Join(join_type=JoinType.CROSS, source=_PERIODS, alias=_PERIODS))
-    value: Expr = ColumnRef(name=measure, table=_FACTS)
-    empty = _empty_value(measure, model)
-    if empty is not None:
-        value = FunctionCall(name="COALESCE", args=[value, empty])
     member_keys = [k for k in keys if k not in periods]
-    on = _join_on(_MEMBERS, _FACTS, member_keys) if member_keys else None
+    on = _join_on(_MEMBERS, source, member_keys) if member_keys else None
     if periods:
-        by_period = _join_on(_PERIODS, _FACTS, periods)
+        by_period = _join_on(_PERIODS, source, periods)
         on = by_period if on is None else BinaryOp(left=on, op="AND", right=by_period)
-    joins.append(Join(join_type=JoinType.LEFT, source=_FACTS, alias=_FACTS, on=on))
-    return Select(
-        columns=[
-            *(
-                AliasedExpr(
-                    expr=ColumnRef(name=k, table=_PERIODS if k in periods else _MEMBERS),
-                    alias=k,
-                )
-                for k in keys
-            ),
-            AliasedExpr(expr=value, alias=measure),
-        ],
+    joins.append(Join(join_type=JoinType.LEFT, source=source, alias=source, on=on))
+    # The measure where the member has a row, and NULL where it has none: an
+    # unmatched LEFT JOIN column is NULL on every engine but ClickHouse, which
+    # fills a non-Nullable one with its type's default (0), so the marker the
+    # facts carry tells the two apart.
+    value: Expr = CaseExpr(
+        when_clauses=[
+            (
+                BinaryOp(
+                    left=ColumnRef(name=_MATCHED, table=source), op="=", right=Literal.number(1)
+                ),
+                ColumnRef(name=measure, table=source),
+            )
+        ]
+    )
+    empty = _empty_value(measure, model)
+    columns = [
+        AliasedExpr(
+            expr=ColumnRef(name=k, table=_PERIODS if k in periods else _MEMBERS),
+            alias=k,
+        )
+        for k in keys
+    ]
+    if not layout.axis:
+        if empty is not None:
+            value = FunctionCall(name="COALESCE", args=[value, empty])
+        return Select(
+            columns=[*columns, AliasedExpr(expr=value, alias=measure)],
+            from_=From(source=_MEMBERS, alias=_MEMBERS),
+            joins=joins,
+            ctes=ctes,
+        )
+    grid = Select(
+        columns=[*columns, AliasedExpr(expr=value, alias=measure)],
         from_=From(source=_MEMBERS, alias=_MEMBERS),
         joins=joins,
+    )
+    ctes.append(CTE(name=_GRID, query=grid))
+    if history is not None:
+        ctes.append(CTE(name=_SHOWN, query=_distinct(_FACTS, periods)))
+    return _carried(
+        ctes, keys, measure, layout, empty, shown=history is not None, model=model, dialect=dialect
+    )
+
+
+def _marked(facts: Select) -> Select:
+    """*facts* with a constant column, set on every row it has."""
+    return replace(
+        facts, columns=[*facts.columns, AliasedExpr(expr=Literal.number(1), alias=_MATCHED)]
+    )
+
+
+def _distinct(source: str, columns: list[str]) -> Select:
+    """The distinct *columns* of the CTE *source*."""
+    return Select(
+        columns=[AliasedExpr(expr=ColumnRef(name=c, table=source), alias=c) for c in columns],
+        from_=From(source=source, alias=source),
+        distinct=True,
+    )
+
+
+def _carried(
+    ctes: list[CTE],
+    keys: list[str],
+    measure: str,
+    layout: _Layout,
+    empty: Expr | None,
+    *,
+    shown: bool,
+    model: SemanticModel,
+    dialect: Dialect,
+) -> Select:
+    """The grid's values with each member's carried into the periods it has
+    no row in, then the members without any as the default.
+
+    A running count of a member's values, ordered along the date, numbers its
+    runs: each value starts one, and the periods after it until the next value
+    belong to it. The value is the run's only one, so its ``MAX`` over the run
+    is the carried value - a portable form of ``LAST_VALUE ... IGNORE NULLS``,
+    which Postgres and MySQL do not have. A member's other dimensions and the
+    periods off the date (a product) keep their own runs. A value is a row's
+    measure: a period whose measure is NULL carries the one before it.
+
+    With *shown*, the grid was read past the query's date filter, and only the
+    periods the query has rows in are kept.
+    """
+    partition = partition_keys([k for k in keys if k not in layout.axis], model, dialect)
+    run = WindowFunction(
+        func_name="COUNT",
+        args=[ColumnRef(name=measure)],
+        partition_by=partition,
+        order_by=[
+            OrderByItem(expr=ColumnRef(name=a), desc=False, nulls_last=True) for a in layout.axis
+        ],
+        frame=WindowFrame(),
+    )
+    ctes.append(
+        CTE(
+            name=_RUNS,
+            query=Select(
+                columns=[
+                    *(AliasedExpr(expr=ColumnRef(name=k), alias=k) for k in keys),
+                    AliasedExpr(expr=ColumnRef(name=measure), alias=measure),
+                    AliasedExpr(expr=run, alias=_RUN),
+                ],
+                from_=From(source=_GRID, alias=_GRID),
+            ),
+        )
+    )
+    carried: Expr = WindowFunction(
+        func_name="MAX",
+        args=[ColumnRef(name=measure)],
+        partition_by=[*partition, ColumnRef(name=_RUN)],
+    )
+    if empty is not None:
+        carried = FunctionCall(name="COALESCE", args=[carried, empty])
+    ctes.append(
+        CTE(
+            name=_CARRIED,
+            query=Select(
+                columns=[
+                    *(AliasedExpr(expr=ColumnRef(name=k), alias=k) for k in keys),
+                    AliasedExpr(expr=carried, alias=measure),
+                ],
+                from_=From(source=_RUNS, alias=_RUNS),
+            ),
+        )
+    )
+    return Select(
+        columns=[
+            *(AliasedExpr(expr=ColumnRef(name=k, table=_CARRIED), alias=k) for k in keys),
+            AliasedExpr(expr=ColumnRef(name=measure, table=_CARRIED), alias=measure),
+        ],
+        from_=From(source=_CARRIED, alias=_CARRIED),
+        joins=(
+            [
+                Join(
+                    join_type=JoinType.INNER,
+                    source=_SHOWN,
+                    alias=_SHOWN,
+                    on=_join_on(_CARRIED, _SHOWN, layout.periods),
+                )
+            ]
+            if shown
+            else []
+        ),
         ctes=ctes,
     )
 
@@ -956,7 +1203,9 @@ def wrap_with_reaggregate(
 
     # One pair of CTEs per (measure, per, having): two metrics that differ only
     # in their second-stage function share the scan.
-    groups: dict[tuple[str, tuple[str, ...], str, ReaggregatePopulation], list[ResolvedMeasure]]
+    groups: dict[
+        tuple[str, tuple[str, ...], str, ReaggregatePopulation, bool], list[ResolvedMeasure]
+    ]
     groups = {}
     for m in reaggregates:
         assert m.reaggregate_measure is not None
@@ -966,6 +1215,7 @@ def wrap_with_reaggregate(
             tuple(m.reaggregate_per),
             _having_key(having),
             _population(model, m.name),
+            _carry_forward(model, m.name),
         )
         groups.setdefault(key, []).append(m)
 
@@ -1006,12 +1256,21 @@ def wrap_with_reaggregate(
     }
     source_of: dict[str, str] = {}
     stage_two_names: list[str] = []
-    for idx, ((measure, per, _, population), metrics) in enumerate(groups.items(), start=1):
+    for idx, ((measure, per, _, population, carry), metrics) in enumerate(groups.items(), start=1):
         inner_name = f"reagg_{idx}_inner"
         outer_name = f"reagg_{idx}"
         having = _having(model, metrics[0].name)
         scan, per_columns = _stage_one(
-            measure, list(per), having, population, resolved, query, model, dialect, qualify_table
+            measure,
+            list(per),
+            having,
+            population,
+            carry,
+            resolved,
+            query,
+            model,
+            dialect,
+            qualify_table,
         )
         ctes.append(CTE(name=inner_name, query=_own_cte_names(scan, f"{inner_name}_")))
         stage_two = _stage_two(inner_name, metrics, dim_names, per_columns, model, dialect)
