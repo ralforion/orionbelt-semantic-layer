@@ -367,6 +367,11 @@ metrics:
     per: [Member]
     aggregation: avg
     population: dimension
+  Peak Month Revenue per Member:
+    type: reaggregate
+    measure: Avg Revenue per Member
+    per: ['Order Date:month']
+    aggregation: max
   Members:
     type: reaggregate
     measure: Orders Count
@@ -1075,6 +1080,21 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
         ("FR", "2026-02"): (Decimal(500), Decimal(2)),
         (None, "2026-02"): (Decimal("13.33"), Decimal(3)),
     }, f"{target.name}: {got_month}"
+
+    # By year, the peak month of the average over all nine customers: the
+    # month passed down beside the year stays a column of its own. January
+    # 85 / 9, February 1041 / 9.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date:year"], measures=["Peak Month Revenue per Member"]
+            )
+        ),
+    )
+    got_peak = [_number(r["peak month revenue per member"]) for r in rows]
+    assert got_peak == [Decimal("115.67")], f"{target.name}: {got_peak}"
 
 
 def _assert_all(target: VendorTarget) -> None:

@@ -75,6 +75,23 @@ _METRICS: dict[str, dict[str, Any]] = {
         "aggregation": "count",
         "population": "dimension",
     },
+    "Avg Client Orders Buyers": {
+        **_PER_CLIENT,
+        "measure": "Sales Count",
+        "aggregation": "avg",
+    },
+    "Peak Month All": {
+        "type": "reaggregate",
+        "measure": "Avg Client Orders All",
+        "per": ["Sales Date:month"],
+        "aggregation": "max",
+    },
+    "Peak Month Buyers": {
+        "type": "reaggregate",
+        "measure": "Avg Client Orders Buyers",
+        "per": ["Sales Date:month"],
+        "aggregation": "max",
+    },
 }
 
 # Each client's sales and order count from the tables, every client included.
@@ -238,6 +255,38 @@ def test_every_client_in_every_month(run: Callable, commerce_db: duckdb.DuckDBPy
     for r in rows:
         assert r["Clients All"] == 500, r
         assert _close(r["Avg Client Orders All"], Decimal(months[r["Sales Month"]]) / 500), r
+
+
+@pytest.mark.parametrize(
+    ("measure", "per_month"),
+    [
+        ("Peak Month All", "COUNT(*) / 500"),
+        ("Peak Month Buyers", "COUNT(*) / COUNT(DISTINCT salesclient)"),
+    ],
+    ids=["every client", "buyers"],
+)
+def test_nested_month_under_a_year(
+    run: Callable, commerce_db: duckdb.DuckDBPyConnection, measure: str, per_month: str
+) -> None:
+    """By year, the peak month of the average client's orders: the outer
+    metric passes ``Sales Date:month`` down beside the query's
+    ``Sales Date:year``, and the
+    inner metric keeps the two apart, not joining and grouping the months by
+    year."""
+    want = dict(
+        commerce_db.sql(
+            f"""
+            SELECT CAST(date_trunc('year', m) AS DATE), MAX(v) FROM (
+                SELECT date_trunc('month', salesdate) AS m, {per_month} AS v
+                FROM orionbelt_1.sales GROUP BY ALL
+            ) GROUP BY ALL
+            """
+        ).fetchall()
+    )
+    rows = run(["Sales Date:year"], [measure])
+    assert len(rows) == len(want)
+    for r in rows:
+        assert _close(r[measure], want[r["Sales Date"]]), r
 
 
 def test_member_filter_with_a_period(run: Callable, clients: list[dict[str, Any]]) -> None:

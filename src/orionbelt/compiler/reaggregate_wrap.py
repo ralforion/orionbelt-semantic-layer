@@ -170,7 +170,7 @@ def _stage_one(
         ):
             continue
         added.append((entry, ref))
-    plan_model, planned_dims, synthetic = _distinct_cumulative_axes(
+    plan_model, planned_dims, synthetic = _distinct_axes(
         measure, [*query.select.dimensions, *(entry for entry, _ in added)], model
     )
     sub_query = QueryObject(
@@ -495,32 +495,36 @@ def _rank(grain: TimeGrain | None) -> int:
     return _GRAIN_RANK[grain] if grain is not None else -1
 
 
-def _distinct_cumulative_axes(
+def _distinct_axes(
     measure: str,
     dims: list[str | CoalesceDimension],
     model: SemanticModel,
 ) -> tuple[SemanticModel, list[str | CoalesceDimension], dict[str, str]]:
-    """Stage 1's model and dimensions, with a cumulative's axes kept apart.
+    """Stage 1's model and dimensions, with a metric's axes kept apart.
 
     A dimension named twice at different grains - the query's
     ``Order Date:year`` beside ``per: [Order Date]``, two ``per`` buckets of
     it, or one an outer reaggregate metric passes down - gives two columns of
     one name, which the planner names after the dimension. For a plain measure
-    :func:`_name_per_buckets` tells them apart after planning, but a cumulative
-    metric's windows are built while planning, anywhere down the chain: its
-    look-back joined the shown months by year and multiplied the rows.
+    :func:`_name_per_buckets` tells them apart after planning, but a metric
+    planned by a pass of its own reads them by name while planning: a
+    cumulative's look-back joined the shown months by year and multiplied the
+    rows, and a nested reaggregate metric's stages joined and grouped the
+    months by year.
 
-    So when the chain reaches a cumulative metric, each dimension named more
-    than once keeps its name for one entry - for the cumulative's own time
-    dimension, which the cumulative has to find selected, the one at the
-    finest grain, so its window orders the rows stage 1 has without ties - and
-    every other entry is planned as a synthetic dimension at its grain. The
+    So when *measure* is a reaggregate metric or its chain reaches a
+    cumulative one, each dimension named more than once keeps its name for one
+    entry - the first, or for the cumulative's own time dimension, which the
+    cumulative has to find selected, the one at the finest grain, so its
+    window orders the rows stage 1 has without ties - and every other entry is
+    planned as a synthetic dimension at its grain. The
     returned mapping renames those columns back after planning,
     each to its dimension's name, which :func:`_name_per_buckets` then tells
     apart by position as for any measure.
     """
     time_dim = _cumulative_time_dimension(measure, model)
-    if time_dim is None:
+    metric = model.metrics.get(measure)
+    if time_dim is None and (metric is None or metric.type is not MetricType.REAGGREGATE):
         return model, list(dims), {}
     refs = [
         (index, reaggregate_per_ref(model, entry))
