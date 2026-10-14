@@ -279,28 +279,20 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
     conflict depends on which measure carries the feature, not on whether the
     query contains one anywhere.
 
-    ``totals`` composes, because it selects the base measure *by alias* from the
-    CTE beneath it: it wraps the dedup output in a ``base`` CTE and adds
-    ``AGG(x) OVER ()`` around a column the dedup CTEs already finished. So a
-    total on a base-grain measure never touches the deduplicated one. Only a
-    total on a measure that is *itself* deduplicated conflicts — that value
-    lives in a dedup CTE the totals wrapper does not reach into.
-
-    The rest stay blocked whenever they apply at all. Each was checked by
-    letting it through and executing the result:
-
-    * ``cumulative`` and ``window`` re-project the measure's *raw aggregate*
-      rather than selecting it by alias, emitting ``SUM("Sales"."quantity")``
-      into a CTE whose FROM is only ``main``/``dedup_0`` —
-      ``Referenced table "Sales" not found``. This is the dividing line against
-      ``totals``: alias reference composes, expression re-projection does not.
-    * ``period_over_period`` rebuilds the FROM from a date spine and re-joins
-      the tables the dedup CTEs already joined —
+    * ``totals`` composes: it selects a measure *by alias* from the CTE beneath
+      it and adds ``AGG(x) OVER ()`` around a column dedup already finished.
+      A ``total`` or ``grain`` override on a deduplicated measure or metric
+      component is computed by the dedup pass itself, at that grain. What
+      still conflicts is such an override on a component dedup does not
+      handle, of a metric it splits (see below).
+    * ``cumulative`` composes, and so does ``window`` (``#269``) - except a
+      derived metric over window metrics, which needs several base measures out
+      of one column.
+    * ``filterContext`` composes: its measure is planned as a scan of its own,
+      which deduplicates for itself.
+    * ``period_over_period`` conflicts: it rebuilds the FROM from a date spine
+      and re-joins the tables the dedup CTEs already joined -
       ``Ambiguous reference to table ... duplicate alias``.
-
-    Cumulative and window could be made to compose by selecting from the dedup
-    output by alias, the same repointing ``grain_dedup`` already does for
-    ORDER BY. That is a change inside those wrappers, not a predicate here.
     """
     if pass_name == PASS_CUMULATIVE:
         return False
@@ -316,18 +308,12 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
         return any(_ddm_window_components(m, resolved.metric_components) for m in resolved.measures)
     if pass_name != PASS_TOTALS:
         return True
-    # ``total`` on a deduplicated measure is handled by the dedup pass itself,
-    # which computes it in a CTE deduplicated at no grain. A ``grain`` override
-    # is not: its target grain would need its own dedup CTE, which is not built
-    # yet, so it still conflicts.
-    if any(
-        measure.grain_override is not None
-        for measure in resolved.measures
-        if measure.name in resolved.dedup_measures
-    ):
-        return True
-    # Once a metric is split across dedup CTEs, a ``total`` or ``grain`` on *any*
-    # of its components conflicts — not just on the deduplicated ones. The totals
+    # ``total`` and a ``grain`` override on a deduplicated measure or metric
+    # component are handled by the dedup pass itself, which computes the value
+    # in a CTE deduplicated at that grain (none for a total).
+    #
+    # Once a metric is split across dedup CTEs, a ``total`` or ``grain`` on one
+    # of its components that is *not* deduplicated still conflicts. The totals
     # wrapper decomposes such a metric back into its components and re-projects
     # each one's raw aggregate into a base CTE whose FROM is the dedup output,
     # where the fact tables are gone: ``SUM("Products"."stock_on_hand")`` over
@@ -336,7 +322,11 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
         components = metric_leaf_components(metric, resolved.metric_components)
         if not any(comp.name in resolved.dedup_components for comp in components):
             continue
-        if any(comp.total or comp.grain_override is not None for comp in components):
+        if any(
+            (comp.total or comp.grain_override is not None)
+            and comp.name not in resolved.dedup_targets
+            for comp in components
+        ):
             return True
     return False
 
@@ -487,9 +477,7 @@ def evaluate_compatibility(
             for m in resolved.measures
             for comp in metric_leaf_components(m, resolved.metric_components)
         ]
-        avg_totals = sorted(
-            {c.name for c in candidates if is_avg_total(c, resolved.dedup_measures)}
-        )
+        avg_totals = sorted({c.name for c in candidates if is_avg_total(c, resolved.dedup_targets)})
         if avg_totals:
             listed = ", ".join(f"'{name}'" for name in avg_totals)
             raise ResolutionError(

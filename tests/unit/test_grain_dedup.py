@@ -610,14 +610,40 @@ def test_metric_reaching_a_deduplicated_measure_through_a_wrapper_metric_is_refu
         _compile({"select": {"dimensions": ["Region"], "measures": ["Doubled Stock Rank"]}})
 
 
-def test_total_on_a_deduplicated_metric_component_is_refused() -> None:
-    """The totals wrapper re-projects the component's raw aggregate.
+def _stock_db() -> duckdb.DuckDBPyConnection:
+    """Three products sold four times: p1 in both regions, so it replicates."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'),"
+        " ('p2', 9.99, 110, 'tools'), ('p3', 5.0, 300, 'parts')"
+    )
+    con.execute("CREATE TABLE customers (id VARCHAR, age INTEGER)")
+    con.execute("INSERT INTO customers VALUES ('c1', 40)")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p2','c1','north',1),"
+        " ('s3','p1','c1','south',1), ('s4','p3','c1','south',1)"
+    )
+    return con
 
-    Its base CTE reads from the dedup output, where the fact tables are gone —
-    so the combination is refused rather than emitted.
-    """
-    with pytest.raises(GrainDedupUnsupportedError, match="totals"):
-        _compile({"select": {"dimensions": ["Region"], "measures": ["Stock Share"]}})
+
+def test_total_on_a_deduplicated_metric_component() -> None:
+    """A deduplicated component's total is computed by the dedup pass, in a CTE
+    at no grain: each product once (510), not a window over the per-region
+    values, which count p1 in both regions (610)."""
+    result = _compile({"select": {"dimensions": ["Region"], "measures": ["Stock Share"]}})
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [(r, round(float(v), 4)) for r, v in rows] == [
+        ("north", round(210 / 510, 4)),
+        ("south", round(400 / 510, 4)),
+    ]
 
 
 def test_total_on_any_component_of_a_split_metric_is_refused() -> None:
@@ -1385,23 +1411,62 @@ def test_total_on_the_deduplicated_measure_uses_a_scalar_grain_dedup_cte() -> No
     assert rows == [("north", 510), ("south", 510)]
 
 
-def test_grain_override_on_a_deduplicated_measure_is_still_refused() -> None:
-    """Unlike ``total``, a grain override has no dedup CTE built for its grain yet."""
+@pytest.mark.parametrize(
+    "grain",
+    ["mode: FIXED\n      keepOnly: [Region]", "mode: RELATIVE\n      exclude: [Category]"],
+    ids=["keepOnly", "exclude"],
+)
+def test_grain_override_on_a_deduplicated_measure(grain: str) -> None:
+    """A grain override is deduplicated at its own grain: by region and
+    category, the stock at the region's grain counts each product once per
+    region (north 210, south 400), on every category row of it."""
     yaml_text = MODEL_YAML.replace(
         "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n",
         "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n"
-        "    grain:\n      mode: FIXED\n      keepOnly: [Region]\n",
+        f"    grain:\n      {grain}\n",
     )
-    with pytest.raises(GrainDedupUnsupportedError, match="totals"):
-        _compile(
-            {
-                "select": {
-                    "dimensions": ["Region"],
-                    "measures": ["Sold Quantity", "Total Stock On Hand"],
-                }
-            },
-            yaml_text,
-        )
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region", "Category"],
+                "measures": ["Sold Quantity", "Total Stock On Hand"],
+            }
+        },
+        yaml_text,
+    )
+    rows = sorted(
+        (r[0], r[1], int(r[2]), int(r[3])) for r in _stock_db().execute(result.sql).fetchall()
+    )
+    assert rows == [
+        ("north", "tools", 2, 210),
+        ("south", "parts", 1, 400),
+        ("south", "tools", 1, 400),
+    ]
+
+
+def test_grain_override_on_a_deduplicated_metric_component() -> None:
+    """A metric over the stock and the stock at the region's grain: each
+    category's share of its region, each product counted once per region."""
+    yaml_text = MODEL_YAML.replace(
+        "metrics:\n",
+        "  Region Stock:\n    resultType: int\n    aggregation: sum\n"
+        "    expression: '{[Products].[Stock On Hand]}'\n"
+        "    grain:\n      mode: FIXED\n      keepOnly: [Region]\n"
+        "metrics:\n  Share of Region Stock:\n"
+        "    expression: '{[Total Stock On Hand]} / {[Region Stock]}'\n",
+    )
+    result = _compile(
+        {"select": {"dimensions": ["Region", "Category"], "measures": ["Share of Region Stock"]}},
+        yaml_text,
+    )
+    rows = sorted(
+        (r[0], r[1], round(float(r[2]), 4)) for r in _stock_db().execute(result.sql).fetchall()
+    )
+    assert rows == [
+        ("north", "tools", 1.0),
+        ("south", "parts", round(300 / 400, 4)),
+        ("south", "tools", round(100 / 400, 4)),
+    ]
 
 
 def test_deduplicated_total_is_not_rewrapped_when_another_total_is_present() -> None:

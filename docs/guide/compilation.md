@@ -331,6 +331,16 @@ legitimately in both — so `SUM(...) OVER ()` would double count. With stock
 100/110/300 and the first product sold in both regions, the grand total is 510;
 summing the per-group values (210 + 400) gives 610.
 
+A `grain` override is deduplicated the same way at its own grain: the columns
+the override keeps, in a `dedup_grain_N` CTE grouped by them and joined back on
+them alone. By region and category, a stock measure with `keepOnly: [Region]`
+counts each product once per region (north 210, south 400) and shows that on
+every category row of the region; a window partitioned by region over the
+per-category values would count a product once per category instead. The same
+holds for a deduplicated component of a split metric with `total` or `grain`,
+so a share of the grand total or of the region's stock is computed from
+deduplicated values on both sides.
+
 A deduplicated `count` reads `0`, not `NULL`, when a group has no matching
 rows on the joined object: that group contributes no row to the dedup CTE, so
 the join back would otherwise yield `NULL`. Other aggregations keep `NULL`,
@@ -385,13 +395,11 @@ than return an inflated number:
 
 | Combination | Why |
 |---|---|
-| `grain` override on a deduplicated measure | Its target grain would need its own dedup CTE, which is not built yet |
 | A derived metric over a **window** metric | Its column is the whole derived expression, with the window metric's base measure inlined — a placeholder only the window pass can resolve, so there is no base value for an earlier wrapper's CTE to carry |
-| `filterContext` | It re-queries the fact tables under a *different* `WHERE`. The dedup output has already applied the query filters and aggregated, so there is no column to take by alias |
 | Period-over-period | Rebuilds the FROM from a date spine and re-joins tables the dedup CTEs already joined: `Ambiguous reference to table ... duplicate alias` |
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
 | A deduplicated measure reached through a **window** metric (a derived metric over one) | That wrapper rebuilds its base measure from the fact tables, which a dedup CTE cannot serve. Nested *derived* metrics are followed and split normally |
-| `total: true` or a `grain` override on *any* component of a split metric | The totals wrapper decomposes the metric again and re-projects every component's raw aggregate into a CTE whose FROM is the dedup output, so a total on a non-deduplicated sibling breaks it just as badly |
+| `total: true` or a `grain` override on a component of a split metric that is *not* deduplicated | The totals wrapper decomposes the metric again and re-projects that component's raw aggregate into a CTE whose FROM is the dedup output, where the fact tables are gone. On a deduplicated component the dedup pass computes it instead (see above) |
 | A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
 
 Anything an aggregate reads beyond its own value columns has to be projected
