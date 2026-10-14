@@ -147,7 +147,7 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
             or (
                 totals_run
                 and not measure.component_measures
-                and _needs_window_wrap(measure, resolved.dedup_measures)
+                and _needs_window_wrap(measure, resolved.dedup_targets)
             )
         )
         if is_windowed:

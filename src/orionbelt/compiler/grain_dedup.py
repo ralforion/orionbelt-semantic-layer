@@ -124,6 +124,7 @@ _MAIN_CTE = "__ob_main"
 _DEDUP_CTE = "__ob_dedup"
 _DEDUP_SRC = "__ob_dedup_src"
 _DEDUP_TOTAL_CTE = "__ob_dedup_total"
+_DEDUP_GRAIN_CTE = "__ob_dedup_grain"
 
 
 class GrainDedupUnsupportedError(FanoutError):
@@ -518,9 +519,30 @@ def wrap_with_grain_dedup(
     # HAVING is evaluated inside ``main``, where a deduplicated measure does not
     # exist yet. Those predicates move to the outer query instead, where every
     # measure is one column of a CTE — the rest stay where the planner put them.
-    outer_having = [hf for hf in resolved.having_filters if hf.referenced_fields & hoisted]
+    # A predicate on a filterContext measure, or on a metric reading one, is
+    # the filterContext pass's, which runs next and computes that value: here
+    # it would read the query-filtered aggregate instead, and drop rows the
+    # final value keeps. That pass applies it once, over its own output. A
+    # predicate on a value a later wrapper windows (a rank over a deduplicated
+    # measure) waits likewise, for ``PASS_HAVING_WINDOW``: here it would
+    # filter the measure before the ranking.
+    filter_context_owned = {
+        m.name
+        for m in resolved.measures
+        if m.filter_context is not None
+        or any(c.filter_context is not None for c in leaf_components[m.name])
+    }
+    windowed = windowed_aliases(resolved)
+    outer_having = [
+        hf
+        for hf in resolved.having_filters
+        if hf.referenced_fields & hoisted
+        and not hf.referenced_fields & (filter_context_owned | windowed)
+    ]
     main_having = ast.having
-    if outer_having:
+    if any(
+        hf.referenced_fields & (hoisted | filter_context_owned) for hf in resolved.having_filters
+    ):
         planner_measures = {m.name for m in resolved.measures}
         planner_exprs = {
             alias: col.expr
@@ -532,7 +554,7 @@ def wrap_with_grain_dedup(
         # (see ``star.py``), and ``PASS_HAVING_WINDOW`` applies it once over
         # the windowed rows. Dedup composes with totals, cumulative and direct
         # window metrics, so this path is reachable.
-        deferred = hoisted | windowed_aliases(resolved)
+        deferred = hoisted | windowed | filter_context_owned
         main_having = _combine(
             _substitute_aliases(hf.expression, planner_exprs)
             for hf in resolved.having_filters
@@ -557,36 +579,45 @@ def wrap_with_grain_dedup(
         )
 
     # --- one dedup CTE per (source object, grain) ---
-    # A ``total: true`` measure is deduplicated at *no* grain: one row per source
-    # object row across the whole query, not per group. Summing the per-group
-    # values instead would double count anything belonging to several groups —
-    # a product sold in two regions is legitimately in both — which is exactly
-    # what a ``SUM(...) OVER ()`` over this pass's output would do.
+    # A measure is deduplicated at its own grain: the query's, a ``grain``
+    # override's columns, or *no* grain for ``total: true`` - one row per
+    # source object row across the whole query, not per group. Summing the
+    # per-group values instead would double count anything belonging to
+    # several groups - a product sold in two regions is legitimately in both -
+    # which is exactly what a ``SUM(...) OVER ()`` over this pass's output
+    # would do, and a window partitioned by an override's grain alike.
     effective_measures = model.effective_measures
-    totals = {
-        name
-        for name in dedup_targets
-        if (m := effective_measures.get(name)) is not None and m.total
-    }
+    resolved_by_name = {**resolved.metric_components, **{m.name: m for m in resolved.measures}}
 
-    by_group: dict[tuple[str, bool], list[str]] = {}
+    def grain_of(name: str) -> tuple[str, ...]:
+        measure = resolved_by_name.get(name)
+        if measure is not None and measure.total:
+            return ()
+        if measure is not None and measure.effective_grain is not None:
+            return tuple(d for d in dim_names if d in measure.effective_grain)
+        return tuple(dim_names)
+
+    by_group: dict[tuple[str, tuple[str, ...]], list[str]] = {}
     for measure_name, object_name in dedup_targets.items():
-        by_group.setdefault((object_name, measure_name in totals), []).append(measure_name)
+        by_group.setdefault((object_name, grain_of(measure_name)), []).append(measure_name)
 
     cte_for_measure: dict[str, str] = {}
-    grand_total_ctes: set[str] = set()
+    grain_of_cte: dict[str, tuple[str, ...]] = {}
     for idx, group_key in enumerate(sorted(by_group)):
-        object_name, is_total = group_key
-        cte_name = f"{_DEDUP_TOTAL_CTE}_{idx}" if is_total else f"{_DEDUP_CTE}_{idx}"
+        object_name, grain = group_key
+        if not grain and dim_names:
+            cte_name = f"{_DEDUP_TOTAL_CTE}_{idx}"
+        elif len(grain) < len(dim_names):
+            cte_name = f"{_DEDUP_GRAIN_CTE}_{idx}"
+        else:
+            cte_name = f"{_DEDUP_CTE}_{idx}"
         src_alias = f"{_DEDUP_SRC}_{idx}"
         measure_names = by_group[group_key]
         for measure_name in measure_names:
             cte_for_measure[measure_name] = cte_name
-        if is_total:
-            grand_total_ctes.add(cte_name)
-        # A grand total collapses the grain entirely.
-        group_dims = [] if is_total else resolved.dimensions
-        group_dim_names = [] if is_total else dim_names
+        grain_of_cte[cte_name] = grain
+        group_dims = [d for d in resolved.dimensions if d.name in grain]
+        group_dim_names = [d.name for d in group_dims]
         # Inner projection: the query's grain, the source object's identity, and
         # every column the measures read. DISTINCT over those collapses the
         # replication to exactly one row per (grain, source-object row).
@@ -731,6 +762,24 @@ def wrap_with_grain_dedup(
             continue
         outer_columns.append(AliasedExpr(expr=measure_ref(alias), alias=alias))
 
+    # A split metric with a filterContext component is split again by the
+    # filterContext pass, which runs next and reads its other components from
+    # this query. A deduplicated one exists only as a column of a dedup CTE,
+    # so each is projected here by name; re-projecting its aggregate there
+    # would read tables this query no longer has. That pass returns only the
+    # query's own columns.
+    outer_aliases = {_measure_alias(c) for c in outer_columns}
+    for metric in split_metrics.values():
+        components = leaf_components[metric.name]
+        if not any(c.filter_context is not None for c in components):
+            continue
+        for component in components:
+            if component.filter_context is None and component.name not in outer_aliases:
+                outer_columns.append(
+                    AliasedExpr(expr=measure_ref(component.name), alias=component.name)
+                )
+                outer_aliases.add(component.name)
+
     # HAVING predicates on a deduplicated measure become an outer WHERE: the
     # wrapper's own query is one row per query grain, so filtering it there is
     # exactly what HAVING would have done had the value been available.
@@ -755,13 +804,14 @@ def wrap_with_grain_dedup(
 
     outer_joins: list[Join | Unnest] = []
     for cte_name in joined_ctes:
+        grain = grain_of_cte[cte_name]
         # A grand-total CTE is a single row with no grain to match on.
-        if not dim_names or cte_name in grand_total_ctes:
+        if not grain:
             # Scalar grain: one row each side.
             outer_joins.append(Join(join_type=JoinType.CROSS, source=cte_name, alias=cte_name))
             continue
         on_expr: Expr | None = None
-        for name in dim_names:
+        for name in grain:
             # NULL grain values must match, or a dimension that is legitimately
             # NULL would drop its deduplicated measure.
             condition: Expr = _null_safe_eq(

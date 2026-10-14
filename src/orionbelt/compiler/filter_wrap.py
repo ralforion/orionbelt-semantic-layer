@@ -365,12 +365,22 @@ def wrap_with_filter_context(
     inline_measures = [m for m in resolved.measures if m.filter_context is None]
     inline_names = {m.name for m in inline_measures if m.name not in split_metrics}
 
+    # A split metric's other components, when the query beneath already
+    # projects them by name: the grain dedup pass does, for the ones it
+    # computed in CTEs of its own, which their aggregate could not reach.
+    carried = {
+        comp.name
+        for metric in split_metrics.values()
+        for comp in leaf_components[metric.name]
+        if comp.filter_context is None
+    }
+
     # --- Build main CTE from planner AST ---
     main_columns: list[Expr] = []
+    dim_names = {d.name for d in resolved.dimensions}
     for col_node in ast.columns:
         alias = _get_alias(col_node)
-        dim_names = {d.name for d in resolved.dimensions}
-        if alias and alias not in inline_names and alias not in dim_names:
+        if alias and alias not in inline_names | dim_names | carried:
             continue
         main_columns.append(col_node)
 
@@ -403,7 +413,11 @@ def wrap_with_filter_context(
         if hf.referenced_fields & hoisted and not hf.referenced_fields & windowed
     ]
     main_having = ast.having
-    if outer_having:
+    # After grain dedup the query beneath is its join of CTEs, ungrouped, and
+    # it has placed every predicate but this pass's own: rebuilding the rest
+    # as a HAVING over it would apply them twice, over columns no longer
+    # grouped. Its filter stays as it is.
+    if outer_having and not resolved.dedup_targets:
         planner_exprs = {
             alias: col.expr
             for col in ast.columns
