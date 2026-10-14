@@ -10,8 +10,14 @@ refused a divisor with more places than its dividend; ClickHouse now divides
 in Float64. The ``DECIMAL(38, 38)`` boundary is in
 ``test_integer_division_exec.py``.
 
-The north region has two sales of 50,000,000,000 and of 5,000 units, so its
-amount is 1e11 and its units 10,000.
+MySQL's period-over-period ratio cast both sides to ``DECIMAL(38, 14)``, which
+clipped 2e30 and 1e30 to the same maximum (a ratio of 1) and rounded 1e-20 to
+0 (NULL). It divides natively now, as its formulas do: any widening costs
+integer digits of a 65-digit decimal, and a grouped quotient past them is
+clipped silently.
+
+The north region has two sales, in January and February, of 50,000,000,000
+and of 5,000 units, so its amount is 1e11 and its units 10,000.
 """
 
 from __future__ import annotations
@@ -34,8 +40,8 @@ pytestmark = pytest.mark.docker
 SALES = "decdiv_sales"
 
 SALE_ROWS = [
-    ("s1", "north", "2026-01-10", 50000000000.0, 5000, 1e30),
-    ("s2", "north", "2026-02-10", 50000000000.0, 5000, 1e30),
+    ("s1", "north", "2026-01-10", 50000000000.0, 5000, 1e30, 1, 300000, "0.00000000000000000001"),
+    ("s2", "north", "2026-02-10", 50000000000.0, 5000, 2e30, 1, 300000, "0.00000000000000000002"),
 ]
 
 MODEL_YAML = """
@@ -52,6 +58,9 @@ dataObjects:
       Amount: {{code: amount, abstractType: float}}
       Units: {{code: units, abstractType: int}}
       Huge: {{code: huge, abstractType: float}}
+      One: {{code: one, abstractType: int}}
+      Many: {{code: many, abstractType: int}}
+      Tiny: {{code: tiny, abstractType: float}}
 dimensions:
   Region: {{dataObject: Sales, column: Region, resultType: string}}
   Month: {{dataObject: Sales, column: Day, resultType: date, timeGrain: month}}
@@ -68,6 +77,16 @@ measures:
     columns: [{{dataObject: Sales, column: Huge}}]
     aggregation: sum
     dataType: double
+  One Sum:
+    columns: [{{dataObject: Sales, column: One}}]
+    aggregation: sum
+  Many Sum:
+    columns: [{{dataObject: Sales, column: Many}}]
+    aggregation: sum
+  Tiny Sum:
+    columns: [{{dataObject: Sales, column: Tiny}}]
+    aggregation: sum
+    dataType: decimal(38, 30)
 metrics:
   Amount over Three:
     expression: '{{[Total Amount]}} / 3'
@@ -81,6 +100,9 @@ metrics:
   Huge over Three:
     expression: '{{[Huge Sum]}} / 3'
     dataType: double
+  Small Share:
+    expression: '{{[One Sum]}} / {{[Many Sum]}}'
+    dataType: decimal(18, 10)
 """
 
 METRICS = {
@@ -90,6 +112,8 @@ METRICS = {
     "Amount per Fine Unit": Decimal("10000000.00"),
     # A quotient over a quotient: (1e11 / 3) / (10,000 / 4).
     "Ratio of Ratios": Decimal("13333333.33"),
+    # Integer sums, at 10 places: 2 / 600,000.
+    "Small Share": Decimal("0.0000033333"),
 }
 
 
@@ -159,31 +183,41 @@ def _model(yaml_template: str, target: VendorTarget, **tables: str) -> SemanticM
 
 
 def _assert_all(target: VendorTarget) -> None:
-    _create(
-        target,
-        SALES,
-        [("id", 0), ("region", 0), ("day", 3), ("amount", 1), ("units", 2), ("huge", 1)],
-        SALE_ROWS,
-    )
+    columns: list[tuple[str, int | str]] = [
+        ("id", 0),
+        ("region", 0),
+        ("day", 3),
+        ("amount", 1),
+        ("units", 2),
+        ("huge", 1),
+        ("one", 2),
+        ("many", 2),
+        ("tiny", _decimal(target.dialect, 38, 30)),
+    ]
+    _create(target, SALES, columns, SALE_ROWS)
     model = _model(MODEL_YAML, target, sales=SALES)
+    metrics = dict(METRICS)
+    if target.dialect in ("mysql", "snowflake"):
+        # Both divide at the dividend's places plus a few, and are left so
+        # (dialects.md): MySQL keeps 4, since places cost it integer digits,
+        # and Snowflake 6, since 12 would fail on a quotient from 1e26.
+        del metrics["Small Share"]
     rows = _run(
         target,
         model,
-        QueryObject(select=QuerySelect(dimensions=["Region"], measures=list(METRICS))),
+        QueryObject(select=QuerySelect(dimensions=["Region"], measures=list(metrics))),
     )
-    got = {m: _number(rows[0][m.lower()]) for m in METRICS}
-    assert got == METRICS, f"{target.name}: {got}"
-    # A double far beyond any Decimal(38, 14): 2e30 / 3.
+    got = {m: _number(rows[0][m.lower()]) for m in metrics}
+    assert got == metrics, f"{target.name}: {got}"
+    # A double far beyond any Decimal(38, 14): 3e30 / 3.
     rows = _run(
         target,
         model,
         QueryObject(select=QuerySelect(dimensions=["Region"], measures=["Huge over Three"])),
     )
     huge = float(rows[0]["huge over three"])
-    assert abs(huge / (2e30 / 3) - 1) < 1e-12, f"{target.name}: {huge}"
+    assert abs(huge / 1e30 - 1) < 1e-12, f"{target.name}: {huge}"
 
-    # The period-over-period ratio builds its division as text: February's
-    # 5e10 over January's 5e10.
     _assert_period_ratio(target)
     _assert_scales(target)
 
@@ -216,22 +250,99 @@ def _assert_scales(target: VendorTarget) -> None:
     assert got == metrics, f"{target.name}: {got}"
 
 
-def _assert_period_ratio(target: VendorTarget) -> None:
-    yaml_extra = """
-  Amount Ratio:
-    type: period_over_period
-    expression: '{{[Total Amount]}}'
-    periodOverPeriod:
-      {{timeDimension: Month, grain: month, offset: -1, offsetGrain: month, comparison: ratio}}
+PERIOD_RATIOS = {"Amount": "Total Amount", "Huge": "Huge Sum", "Tiny": "Tiny Sum"}
+
+
+CLIP = "decdiv_clip"
+
+CLIP_MODEL_YAML = """
+version: "1.0"
+name: decimal_clip_vendor
+dataObjects:
+  Big:
+    code: {clip}
+    schema: '{schema}'
+    columns:
+      Region: {{code: region, abstractType: string}}
+      A: {{code: a, abstractType: int}}
+      Wide: {{code: wide, abstractType: int}}
+dimensions:
+  Region: {{dataObject: Big, column: Region, resultType: string}}
+measures:
+  Third Sum:
+    expression: '{{[Big].[A]}} / 3'
+    aggregation: sum
+    dataType: decimal(38, 0)
+  Fourfold Third Sum:
+    expression: '{{[Big].[A]}} / 3 / 3 / 3 / 3'
+    aggregation: sum
+    dataType: decimal(38, 0)
+  Wide Third Sum:
+    expression: '{{[Big].[Wide]}} / 3'
+    aggregation: sum
+    dataType: decimal(65, 0)
 """
+
+
+#: 1e37 / 3, 1e37 / 81 and 1e50 / 3, rounded to whole numbers.
+CLIP_SUMS = {
+    "Third Sum": Decimal("3" * 37),
+    "Fourfold Third Sum": Decimal("123456790123456790123456790123456790"),
+    "Wide Third Sum": Decimal("3" * 50),
+}
+
+
+def _assert_grouped_quotient_fits(target: VendorTarget) -> None:
+    """MySQL stores a grouped ``SUM(a / 3)`` at the quotient's type, and
+    clips a value beyond its integer digits to the maximum. A dividend widened
+    to 30 places left 35 (1e37 / 3 came back 1e35), to 18 places 47 (1e50 /
+    3 clipped), and each further division takes 4 more."""
+    columns: list[tuple[str, int | str]] = [
+        ("region", 0),
+        ("a", "DECIMAL(38, 0)"),
+        ("wide", "DECIMAL(65, 0)"),
+    ]
+    _create(target, CLIP, columns, [("north", "1" + "0" * 37, "1" + "0" * 50)])
+    model = _model(CLIP_MODEL_YAML, target, clip=CLIP)
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Region"], measures=list(CLIP_SUMS))),
+    )
+    got = {m: _number(rows[0][m.lower()]) for m in CLIP_SUMS}
+    assert got == CLIP_SUMS, f"{target.name}: {got}"
+
+
+def _ratio(value: object) -> float | None:
+    return None if value is None else round(float(str(value)), 9)
+
+
+def _assert_period_ratio(target: VendorTarget) -> None:
+    """The period-over-period ratio builds its division as text. February over
+    January: 5e10 over 5e10, 2e30 over 1e30, and 2e-20 over 1e-20."""
+    yaml_extra = "".join(
+        f"""
+  {name} Ratio:
+    type: period_over_period
+    expression: '{{{{[{measure}]}}}}'
+    periodOverPeriod:
+      {{{{timeDimension: Month, grain: month, offset: -1, offsetGrain: month, comparison: ratio}}}}
+"""
+        for name, measure in PERIOD_RATIOS.items()
+    )
     period_model = _model(MODEL_YAML + yaml_extra, target, sales=SALES)
+    metrics = [f"{name} Ratio" for name in PERIOD_RATIOS]
     rows = _run(
         target,
         period_model,
-        QueryObject(select=QuerySelect(dimensions=["Month"], measures=["Amount Ratio"])),
+        QueryObject(select=QuerySelect(dimensions=["Month"], measures=metrics)),
     )
-    got = {str(r["month"])[:7]: _number(r["amount ratio"]) for r in rows}
-    assert got.get("2026-02") == Decimal(1), f"{target.name}: {got}"
+    got = {
+        str(r["month"])[:7]: tuple(_ratio(r[m.lower()]) for m in metrics)
+        for r in rows
+        if r[metrics[0].lower()] is not None
+    }
+    assert got == {"2026-02": (1.0, 2.0, 2.0)}, f"{target.name}: {got}"
 
 
 def test_duckdb_decimal_division(vendor_duckdb: VendorTarget) -> None:
@@ -244,6 +355,7 @@ def test_postgres_decimal_division(vendor_postgres: VendorTarget) -> None:
 
 def test_mysql_decimal_division(vendor_mysql: VendorTarget) -> None:
     _assert_all(vendor_mysql)
+    _assert_grouped_quotient_fits(vendor_mysql)
 
 
 def test_clickhouse_decimal_division(vendor_clickhouse: VendorTarget) -> None:

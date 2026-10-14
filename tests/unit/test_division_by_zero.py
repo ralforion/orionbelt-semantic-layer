@@ -194,10 +194,12 @@ class TestTheStringBuiltDivisionPath:
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     def test_the_widening_dialects_still_widen(self, dialect: str) -> None:
-        """Guarding must not have cost ClickHouse and MySQL their precision."""
+        """Guarding sits under each dialect's own division: ClickHouse's
+        Float64 and MySQL's native one."""
         sql = DialectRegistry.get(dialect).render_decimal_division_sql("cur", "prev")
         if dialect == "mysql":
-            assert "38, 14" in sql, sql
+            # MySQL's own division: any widening would cost integer digits.
+            assert sql == "cur / NULLIF(prev, 0)", sql
         if dialect == "clickhouse":
             # A Float64 division: the divisor keeps its own type.
             assert sql == "toFloat64(cur) / NULLIF(prev, 0)", sql

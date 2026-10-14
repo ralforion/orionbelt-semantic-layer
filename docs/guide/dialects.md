@@ -265,6 +265,26 @@ OrionBelt automatically wraps aggregate expressions with `CAST` based on resolve
     DOUBLE as well. A quotient that falls exactly on a rounding tie at the
     declared scale can round differently from an engine that divides exactly.
 
+!!! note "MySQL: a quotient has 4 more places than its dividend"
+
+    MySQL divides at the dividend's scale plus `div_precision_increment` (4 by
+    default), so an integer ratio has 4 places (`1 / 3` is `0.3333`) and a
+    `decimal(18, 2)` one 6. OrionBelt leaves this as it is, in formulas and in
+    period-over-period comparisons alike. A MySQL decimal holds 65 digits in
+    all, so every extra place would cost an integer digit, and where MySQL
+    stores a quotient (a grouped `SUM(a / 3)`) a value past its integer digits
+    is clipped to the maximum without an error. A metric declared with more
+    places than the quotient has gets zeros past them.
+
+!!! note "Snowflake: an integer ratio has 6 places"
+
+    Snowflake divides at the dividend's scale plus 6, up to 12 places, so an
+    integer over an integer has 6 (`2 / 600000` is `0.000003`) and a
+    `decimal(18, 2)` dividend 8. OrionBelt leaves this as it is: raising the
+    dividend's scale gives 12 places, but then a quotient of 1e26 or more fails
+    with "Number out of representable range", which Snowflake answers today. A
+    metric declared with more places than that gets zeros past them.
+
 === "BigQuery / Databricks / Dremio / DuckDB / MySQL / Postgres / Snowflake"
 
     ```sql
