@@ -36,6 +36,7 @@ from orionbelt.compiler.filter_wrap import wrap_with_filter_context
 from orionbelt.compiler.grain_dedup import (
     GrainDedupUnsupportedError,
     dedup_warning,
+    is_split_metric,
     mixed_grain_measures,
     mixed_grain_warning,
     wrap_with_grain_dedup,
@@ -320,13 +321,12 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
     # conflicts: that value comes from a scan of its own, which no wrapper
     # here has composed with an override over a split metric.
     for metric in resolved.measures:
-        components = metric_leaf_components(metric, resolved.metric_components)
-        if not any(comp.name in resolved.dedup_components for comp in components):
+        if not is_split_metric(metric, resolved, resolved.dedup_grain_components):
             continue
         if any(
             (comp.total or comp.grain_override is not None)
             and comp.name not in resolved.dedup_computed
-            for comp in components
+            for comp in metric_leaf_components(metric, resolved.metric_components)
         ):
             return True
     return False

@@ -52,7 +52,7 @@ already one row per query grain, so filtering it there means the same thing.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Container, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -243,25 +243,39 @@ def detect_dedup_measures(resolved: ResolvedQuery, model: SemanticModel) -> Dedu
 def split_grain_components(resolved: ResolvedQuery) -> set[str]:
     """The components :attr:`ResolvedQuery.dedup_grain_components` names.
 
-    A metric is split when one of its components is deduplicated. Its other
+    A metric is split when it reads a component this pass computes. Its other
     components are then read from this pass's ``main`` CTE, which holds only
     the query-grain aggregates, so one carrying ``total: true`` or a ``grain``
-    override has to be computed here too, at that grain. A filterContext
-    component is computed by a scan of its own and is not one of them.
+    override has to be computed here too, at that grain. That in turn splits
+    every other metric reading it, so the set is closed over the query's
+    metrics. A filterContext component is computed by a scan of its own and is
+    not one of them.
     """
     found: set[str] = set()
-    for metric in resolved.measures:
-        components = metric_leaf_components(metric, resolved.metric_components)
-        if not any(c.name in resolved.dedup_components for c in components):
-            continue
-        found.update(
+    while True:
+        added = {
             c.name
-            for c in components
+            for metric in resolved.measures
+            if is_split_metric(metric, resolved, found)
+            for c in metric_leaf_components(metric, resolved.metric_components)
             if c.name not in resolved.dedup_targets
             and c.filter_context is None
             and (c.total or c.grain_override is not None)
-        )
-    return found
+        }
+        if added <= found:
+            return found
+        found |= added
+
+
+def is_split_metric(
+    metric: ResolvedMeasure, resolved: ResolvedQuery, grain_components: Container[str]
+) -> bool:
+    """Whether the pass rebuilds *metric* from its components: it reads a
+    deduplicated component or one of *grain_components*."""
+    return any(
+        c.name in resolved.dedup_components or c.name in grain_components
+        for c in metric_leaf_components(metric, resolved.metric_components)
+    )
 
 
 def _metric_component_targets(
@@ -511,10 +525,7 @@ def wrap_with_grain_dedup(
     split_metrics = {
         m.name: m
         for m in resolved.measures
-        if any(
-            c.name in resolved.dedup_components or c.name in resolved.dedup_grain_components
-            for c in leaf_components[m.name]
-        )
+        if is_split_metric(m, resolved, resolved.dedup_grain_components)
     }
 
     # What each measure this pass computes aggregates, keyed by the alias it
@@ -527,11 +538,16 @@ def wrap_with_grain_dedup(
         alias = _measure_alias(col)
         if alias is not None and alias in computed_here:
             measure_columns[alias] = col
-    for name in [*resolved.dedup_components, *resolved.dedup_grain_components]:
-        if name in measure_columns:
-            continue
+
+    # The planner's own expression where it rewrote one: an anchored measure
+    # reads its conformed subquery, not the fact table it names.
+    def component_expr(name: str) -> Expr:
         component = resolved.metric_components[name]
-        measure_columns[name] = AliasedExpr(expr=component.expression, alias=name)
+        return resolved.projected_expressions.get(name, component.expression)
+
+    for name in [*resolved.dedup_components, *resolved.dedup_grain_components]:
+        if name not in measure_columns:
+            measure_columns[name] = AliasedExpr(expr=component_expr(name), alias=name)
 
     # --- main CTE: the query as planned, minus the measures being deduplicated ---
     hoisted = computed_here | set(split_metrics)
@@ -544,7 +560,9 @@ def wrap_with_grain_dedup(
         for component in leaf_components[metric.name]:
             if component.name in computed_here or component.name in main_aliases:
                 continue
-            main_columns.append(AliasedExpr(expr=component.expression, alias=component.name))
+            main_columns.append(
+                AliasedExpr(expr=component_expr(component.name), alias=component.name)
+            )
             main_aliases.add(component.name)
 
     # With no dimensions and every measure deduplicated, ``main`` would project
