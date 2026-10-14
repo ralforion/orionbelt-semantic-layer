@@ -25,9 +25,9 @@ class DremioDialect(Dialect):
 
     # Every integer division truncates: ``SUM`` of an integer stays BIGINT,
     # so a count, a sum or a ratio of them over an integer came back 0.
-    # DECIMAL(38, 10) keeps a large sum exact where DOUBLE rounds it, and
-    # leaves 28 integer digits.
-    _dividend_type = "DECIMAL(38, 10)"
+    # Times 1.0 an integer is an exact decimal (a large sum stays exact, where
+    # DOUBLE rounds it), and a double stays a double.
+    _promotes_dividend = True
 
     @property
     def name(self) -> str:

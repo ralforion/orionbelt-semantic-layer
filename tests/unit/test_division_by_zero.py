@@ -128,10 +128,8 @@ def test_the_guard_survives_nesting() -> None:
     pg = DialectRegistry.get("postgres")
     col = lambda name: ColumnRef(name=name, table="t")  # noqa: E731
     ast = BinaryOp(left=col("a"), op="/", right=BinaryOp(left=col("b"), op="/", right=col("c")))
-    # Postgres also casts each dividend, so integers divide exactly.
-    assert pg.compile_expr(ast) == (
-        'CAST("t"."a" AS NUMERIC) / NULLIF(CAST("t"."b" AS NUMERIC) / NULLIF("t"."c", 0), 0)'
-    )
+    # Postgres also promotes each dividend, so integers divide exactly.
+    assert pg.compile_expr(ast) == ('"t"."a" * 1.0 / NULLIF("t"."b" * 1.0 / NULLIF("t"."c", 0), 0)')
 
 
 def test_period_over_period_does_not_acquire_a_second_guard() -> None:
@@ -200,3 +198,30 @@ class TestTheStringBuiltDivisionPath:
         sql = DialectRegistry.get(dialect).render_decimal_division_sql("cur", "prev")
         if dialect in ("clickhouse", "mysql"):
             assert "38, 14" in sql, sql
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "dremio"])
+def test_a_promoted_dividend_is_rendered_once(dialect: str) -> None:
+    """A dividend promoted for a true division builds on its rendering: a
+    left-nested chain of 18 divisions renders each operand once, not twice
+    per level (1,048,573 calls)."""
+    from unittest.mock import patch
+
+    from orionbelt.ast.nodes import BinaryOp, ColumnRef
+
+    expr = ColumnRef(name="x0", table="t")
+    for i in range(1, 19):
+        expr = BinaryOp(left=expr, op="/", right=ColumnRef(name=f"x{i}", table="t"))
+    renderer = DialectRegistry.get(dialect)
+    original = type(renderer).compile_expr
+    calls = 0
+
+    def counting(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        return original(self, *args, **kwargs)
+
+    with patch.object(type(renderer), "compile_expr", counting):
+        sql = renderer.compile_expr(expr)
+    assert sql.count("* 1.0") == 18
+    assert calls < 100, calls

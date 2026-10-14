@@ -21,8 +21,8 @@ class PostgresDialect(Dialect):
     _MAX_DECIMAL_PRECISION: int = 131072
 
     # ``COUNT(*)`` is a bigint, and bigint / integer truncates: a count over 4
-    # was 0, not 0.5. NUMERIC divides exactly, at any precision.
-    _dividend_type = "NUMERIC"
+    # was 0, not 0.5. Times 1.0 it is an exact NUMERIC.
+    _promotes_dividend = True
 
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "BIGINT",
