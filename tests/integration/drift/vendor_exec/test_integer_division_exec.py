@@ -10,6 +10,10 @@ A promotion must leave a double or a decimal as precise as it was: a double
 of 1e-12, or a ``DECIMAL(38, 12)`` of 1e-11, which ``* 1.0`` narrows to
 ``DECIMAL(38, 10)`` on Dremio, rounding it to 0. Nor may it give a
 ``DECIMAL(38, 38)`` an integer digit, which takes 1e-38 to 0.
+
+A period-over-period ratio or percent change builds its division apart from
+a formula's, and divided a month's count by the previous one's as integers
+there too: 3 sales after 2 was a ratio of 1 and a change of 0.
 """
 
 from __future__ import annotations
@@ -173,6 +177,7 @@ def _assert_all(target: VendorTarget) -> None:
     assert fine == {"north": Decimal("5e-12"), "south": Decimal("5e-12")}, f"{target.name}: {fine}"
     if target.dialect in POINT_DECIMAL:
         _assert_no_integer_digits(target)
+    _assert_period_over_period(target)
 
 
 def _assert_no_integer_digits(target: VendorTarget) -> None:
@@ -189,6 +194,75 @@ def _assert_no_integer_digits(target: VendorTarget) -> None:
     )
     got = {r["region"]: _number(r["point half"]) for r in rows}
     assert got == {"north": Decimal("1e-38")}, f"{target.name}: {got}"
+
+
+MONTHS = "intdiv_months"
+
+MONTH_ROWS = [
+    ("m1", "2026-01-05", 1),
+    ("m2", "2026-01-20", 1),
+    ("m3", "2026-02-03", 1),
+    ("m4", "2026-02-10", 1),
+    ("m5", "2026-02-25", 1),
+]
+
+MONTH_MODEL_YAML = """
+version: "1.0"
+name: period_division_vendor
+dataObjects:
+  Sales:
+    code: {months}
+    schema: '{schema}'
+    columns:
+      Sale ID: {{code: id, abstractType: string, primaryKey: true}}
+      Day: {{code: day, abstractType: date}}
+      Quantity: {{code: quantity, abstractType: int}}
+dimensions:
+  Month: {{dataObject: Sales, column: Day, resultType: date, timeGrain: month}}
+measures:
+  Sales Rows:
+    columns: [{{dataObject: Sales, column: Sale ID}}]
+    aggregation: count
+  Typed Quantity:
+    columns: [{{dataObject: Sales, column: Quantity}}]
+    aggregation: sum
+    resultType: int
+metrics:
+  Rows Ratio:
+    type: period_over_period
+    expression: '{{[Sales Rows]}}'
+    periodOverPeriod:
+      {{timeDimension: Month, grain: month, offset: -1, offsetGrain: month, comparison: ratio}}
+  Rows Change:
+    type: period_over_period
+    expression: '{{[Sales Rows]}}'
+    periodOverPeriod: {{timeDimension: Month, grain: month, offset: -1, offsetGrain: month,
+      comparison: percentChange}}
+  Quantity Ratio:
+    type: period_over_period
+    expression: '{{[Typed Quantity]}}'
+    periodOverPeriod:
+      {{timeDimension: Month, grain: month, offset: -1, offsetGrain: month, comparison: ratio}}
+"""
+
+PERIOD_METRICS = ["Rows Ratio", "Rows Change", "Quantity Ratio"]
+
+
+def _assert_period_over_period(target: VendorTarget) -> None:
+    """February's 3 sales after January's 2: a ratio of 1.5, a change of 0.5."""
+    _create(target, MONTHS, [("id", 0), ("day", 3), ("quantity", 2)], MONTH_ROWS)
+    yaml_text = MONTH_MODEL_YAML.format(months=MONTHS, schema=SCHEMAS.get(target.dialect, ""))
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Month"], measures=PERIOD_METRICS)),
+    )
+    got = {str(r["month"])[:7]: tuple(_number(r[m.lower()]) for m in PERIOD_METRICS) for r in rows}
+    expected = (Decimal("1.5"), Decimal("0.5"), Decimal("1.5"))
+    assert got.get("2026-02") == expected, f"{target.name}: {got}"
 
 
 def test_duckdb_integer_division(vendor_duckdb: VendorTarget) -> None:

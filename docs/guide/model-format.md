@@ -1047,6 +1047,8 @@ Four comparison modes are available:
 | `difference` | `current - prev` | Absolute change |
 | `previousValue` | `prev` | Prior period value alongside current |
 
+`percentChange` and `ratio` are true divisions on every dialect, like a formula's `/` (see [Division by Zero](#division-by-zero)): a month of 3 sales after one of 2 has a ratio of 1.5 on PostgreSQL and Dremio too, not the 1 their integer division gives.
+
 !!! note "Time dimension requirement"
  The `timeDimension` must be included in the query's selected dimensions. All PoP metrics in a single query must share the same `timeDimension` and `grain`.
 

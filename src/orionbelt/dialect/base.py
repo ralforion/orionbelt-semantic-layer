@@ -1817,10 +1817,11 @@ class Dialect(ABC):
         return f"NULLIF({right_sql}, 0)"
 
     def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
-        """Render ``left / right`` for decimal-typed operands, given raw SQL.
+        """Render ``left / right`` as a true division, given raw SQL.
 
         Used by code paths that build division as string SQL (e.g. PoP
-        comparison CTEs) rather than as ``BinaryOp`` AST nodes.
+        comparison CTEs) rather than as ``BinaryOp`` AST nodes. The operands
+        need not be decimals: a ratio of two counts is two bigints.
 
         **Do not override this** - override :meth:`_render_decimal_division`
         instead. This method exists to apply the zero-divisor guard (#319) in
@@ -1836,11 +1837,12 @@ class Dialect(ABC):
     def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
         """The division itself, for dialects that need the operands widened.
 
-        Default is plain SQL division; ClickHouse and MySQL override to widen
+        Default is SQL division of the promoted dividend, as a formula's ``/``
+        has (:meth:`promote_dividend`); ClickHouse and MySQL override to widen
         both sides first so ratio precision survives. The divisor arrives
         already guarded.
         """
-        return f"{left_sql} / {right_sql}"
+        return f"{self.promote_dividend(left_sql)} / {right_sql}"
 
     def render_pop_previous_value_sql(self, prev_sql: str, current_sql: str) -> str:
         """Render a ``previousValue`` PoP projection (the prior period's measure).
