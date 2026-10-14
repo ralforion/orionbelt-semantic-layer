@@ -251,6 +251,43 @@ def _assert_scales(target: VendorTarget) -> None:
 PERIOD_RATIOS = {"Amount": "Total Amount", "Huge": "Huge Sum", "Tiny": "Tiny Sum"}
 
 
+CLIP = "decdiv_clip"
+
+CLIP_MODEL_YAML = """
+version: "1.0"
+name: decimal_clip_vendor
+dataObjects:
+  Big:
+    code: {clip}
+    schema: '{schema}'
+    columns:
+      Region: {{code: region, abstractType: string}}
+      A: {{code: a, abstractType: int}}
+dimensions:
+  Region: {{dataObject: Big, column: Region, resultType: string}}
+measures:
+  Third Sum:
+    expression: '{{[Big].[A]}} / 3'
+    aggregation: sum
+    dataType: decimal(38, 0)
+"""
+
+
+def _assert_grouped_quotient_fits(target: VendorTarget) -> None:
+    """MySQL stores a grouped ``SUM(a / 3)`` at the quotient's type, and
+    clips a value beyond its integer digits to the maximum. Widened by 26
+    places, 1e37 / 3 came back 1e35."""
+    _create(target, CLIP, [("region", 0), ("a", "DECIMAL(38, 0)")], [("north", "1" + "0" * 37)])
+    model = _model(CLIP_MODEL_YAML, target, clip=CLIP)
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Region"], measures=["Third Sum"])),
+    )
+    got = _number(rows[0]["third sum"])
+    assert got == Decimal("3" * 37), f"{target.name}: {got}"
+
+
 def _ratio(value: object) -> float | None:
     return None if value is None else round(float(str(value)), 9)
 
@@ -293,6 +330,7 @@ def test_postgres_decimal_division(vendor_postgres: VendorTarget) -> None:
 
 def test_mysql_decimal_division(vendor_mysql: VendorTarget) -> None:
     _assert_all(vendor_mysql)
+    _assert_grouped_quotient_fits(vendor_mysql)
 
 
 def test_clickhouse_decimal_division(vendor_clickhouse: VendorTarget) -> None:

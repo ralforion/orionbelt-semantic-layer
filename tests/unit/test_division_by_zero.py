@@ -198,7 +198,7 @@ class TestTheStringBuiltDivisionPath:
         sql = DialectRegistry.get(dialect).render_decimal_division_sql("cur", "prev")
         if dialect == "mysql":
             # The dividend only: the divisor keeps its own type.
-            assert sql == "(cur + CAST(0 AS DECIMAL(65, 26))) / NULLIF(prev, 0)", sql
+            assert sql == "(cur + CAST(0 AS DECIMAL(65, 14))) / NULLIF(prev, 0)", sql
         if dialect == "clickhouse":
             # A Float64 division: the divisor keeps its own type.
             assert sql == "toFloat64(cur) / NULLIF(prev, 0)", sql
@@ -210,7 +210,7 @@ class TestTheStringBuiltDivisionPath:
         ("postgres", " * 1.0 /"),
         ("dremio", ", CAST(NULL AS DECIMAL(1, 1))) /"),
         ("clickhouse", "toFloat64("),
-        ("mysql", " + CAST(0 AS DECIMAL(65, 26))) /"),
+        ("mysql", " + CAST(0 AS DECIMAL(65, 14))) /"),
     ],
 )
 def test_a_promoted_dividend_is_rendered_once(dialect: str, promotion: str) -> None:
