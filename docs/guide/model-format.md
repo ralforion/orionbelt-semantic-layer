@@ -1532,9 +1532,11 @@ downstream aggregation and formatting rather than stopping.
 
 Division is also a true division on every dialect. PostgreSQL and Dremio divide
 two integers as integers, so a count over 4 was 0 there, not 0.25, and Dremio's
-`SUM` of an integer column stays one too. Their dividend is multiplied by `1.0`
-first, which makes an integer an exact decimal and leaves a double or a decimal as
-it is. Integer division is `div(a, b)`.
+`SUM` of an integer column stays one too. Their dividend is promoted first, which
+makes an integer an exact decimal and leaves a double or a decimal at its own type
+and precision: times `1.0` on PostgreSQL, and through `COALESCE` with a
+`DECIMAL(1, 0)` NULL on Dremio, where any arithmetic takes scale from a decimal of
+precision 38. Integer division is `div(a, b)`.
 
 A literal divisor that is plainly not zero is left unwrapped:
 

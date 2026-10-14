@@ -20,10 +20,6 @@ class PostgresDialect(Dialect):
 
     _MAX_DECIMAL_PRECISION: int = 131072
 
-    # ``COUNT(*)`` is a bigint, and bigint / integer truncates: a count over 4
-    # was 0, not 0.5. Times 1.0 it is an exact NUMERIC.
-    _promotes_dividend = True
-
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "BIGINT",
         "integer": "INTEGER",
@@ -84,6 +80,14 @@ class PostgresDialect(Dialect):
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
+
+    def promote_dividend(self, dividend_sql: str) -> str:
+        """``COUNT(*)`` is a bigint, and bigint / integer truncates: a count
+        over 4 was 0, not 0.5. Times 1.0 an integer is an exact NUMERIC; a
+        NUMERIC of any scale stays exact, since its precision is unbounded,
+        and a double stays a double.
+        """
+        return f"{dividend_sql} * 1.0"
 
     def _render_safe_number_cast(self, trimmed: str) -> str:
         """``numeric``, since this engine has no safe cast of its own.

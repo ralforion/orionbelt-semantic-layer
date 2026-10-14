@@ -5,6 +5,10 @@ bigint; Dremio does so for every integer type, and its ``SUM`` of an integer
 stays one. A count, a sum or a ratio of them over an integer came back 0
 there, where the other engines answer 0.5. Each region has two sales of one
 unit, so every metric below is 0.5.
+
+A promotion must leave a double or a decimal as precise as it was: a double
+of 1e-12, or a ``DECIMAL(38, 12)`` of 1e-11, which ``* 1.0`` narrows to
+``DECIMAL(38, 10)`` on Dremio, rounding it to 0.
 """
 
 from __future__ import annotations
@@ -25,11 +29,24 @@ pytestmark = pytest.mark.docker
 SALES = "intdiv_sales"
 
 ROWS = [
-    ("s1", "north", 1, 0.000000000001),
-    ("s2", "north", 1, 0.000000000001),
-    ("s3", "south", 1, 0.000000000001),
-    ("s4", "south", 1, 0.000000000001),
+    ("s1", "north", 1, 0.000000000001, "0.000000000010"),
+    ("s2", "north", 1, 0.000000000001, "0.000000000010"),
+    ("s3", "south", 1, 0.000000000001, "0.000000000010"),
+    ("s4", "south", 1, 0.000000000001, "0.000000000010"),
 ]
+
+#: Each engine's ``DECIMAL(38, 12)``; BigQuery casts to no parameterized
+#: type, and its BIGNUMERIC holds 38 places.
+FINE_DECIMAL = {
+    "duckdb": "DECIMAL(38, 12)",
+    "postgres": "NUMERIC(38, 12)",
+    "mysql": "DECIMAL(38, 12)",
+    "clickhouse": "Decimal(38, 12)",
+    "snowflake": "NUMBER(38, 12)",
+    "bigquery": "BIGNUMERIC",
+    "databricks": "DECIMAL(38, 12)",
+    "dremio": "DECIMAL(38, 12)",
+}
 
 MODEL_YAML = """
 version: "1.0"
@@ -43,6 +60,7 @@ dataObjects:
       Region: {{code: region, abstractType: string}}
       Quantity: {{code: quantity, abstractType: int}}
       Tiny: {{code: tiny, abstractType: float}}
+      Fine: {{code: fine, abstractType: float}}
 dimensions:
   Region: {{dataObject: Sales, column: Region, resultType: string}}
 measures:
@@ -59,6 +77,10 @@ measures:
   Tiny Sum:
     columns: [{{dataObject: Sales, column: Tiny}}]
     aggregation: sum
+  Fine Sum:
+    columns: [{{dataObject: Sales, column: Fine}}]
+    aggregation: sum
+    dataType: decimal(38, 12)
 metrics:
   Rows over Four:
     expression: '{{[Sales Rows]}} / 4'
@@ -71,13 +93,23 @@ metrics:
   Tiny over Four:
     expression: '{{[Tiny Sum]}} / 4'
     dataType: double
+  Fine over Four:
+    expression: '{{[Fine Sum]}} / 4'
+    dataType: decimal(38, 12)
 """
 
 METRICS = ["Rows over Four", "Quantity over Four", "Typed over Four", "Rows over Double Quantity"]
 
 
 def _assert_all(target: VendorTarget) -> None:
-    _create(target, SALES, [("id", 0), ("region", 0), ("quantity", 2), ("tiny", 1)], ROWS)
+    columns: list[tuple[str, int | str]] = [
+        ("id", 0),
+        ("region", 0),
+        ("quantity", 2),
+        ("tiny", 1),
+        ("fine", FINE_DECIMAL[target.dialect]),
+    ]
+    _create(target, SALES, columns, ROWS)
     yaml_text = MODEL_YAML.format(sales=SALES, schema=SCHEMAS.get(target.dialect, ""))
     raw, source_map = TrackedLoader().load_string(yaml_text)
     model, result = ReferenceResolver().resolve(raw, source_map)
@@ -86,7 +118,9 @@ def _assert_all(target: VendorTarget) -> None:
         target,
         model,
         QueryObject(
-            select=QuerySelect(dimensions=["Region"], measures=[*METRICS, "Tiny over Four"])
+            select=QuerySelect(
+                dimensions=["Region"], measures=[*METRICS, "Tiny over Four", "Fine over Four"]
+            )
         ),
     )
     got = {r["region"]: tuple(_number(r[m.lower()]) for m in METRICS) for r in rows}
@@ -96,6 +130,9 @@ def _assert_all(target: VendorTarget) -> None:
     # that rounds it to 0.
     tiny = {r["region"]: float(r["tiny over four"]) for r in rows}
     assert all(abs(v - 5e-13) < 1e-18 for v in tiny.values()), f"{target.name}: {tiny}"
+    # So does a decimal: 2e-11 / 4 at scale 12, not narrowed to scale 10.
+    fine = {r["region"]: _number(r["fine over four"]) for r in rows}
+    assert fine == {"north": Decimal("5e-12"), "south": Decimal("5e-12")}, f"{target.name}: {fine}"
 
 
 def test_duckdb_integer_division(vendor_duckdb: VendorTarget) -> None:

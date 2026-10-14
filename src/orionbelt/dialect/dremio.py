@@ -23,12 +23,6 @@ class DremioDialect(Dialect):
 
     like_needs_escape_clause = True
 
-    # Every integer division truncates: ``SUM`` of an integer stays BIGINT,
-    # so a count, a sum or a ratio of them over an integer came back 0.
-    # Times 1.0 an integer is an exact decimal (a large sum stays exact, where
-    # DOUBLE rounds it), and a double stays a double.
-    _promotes_dividend = True
-
     @property
     def name(self) -> str:
         return "dremio"
@@ -229,17 +223,30 @@ class DremioDialect(Dialect):
         digits = self.compile_expr(args[1]) if len(args) > 1 else "0"
         return f"TRUNCATE({value}, {digits})"
 
+    def promote_dividend(self, dividend_sql: str) -> str:
+        """Every integer division truncates: ``SUM`` of an integer stays
+        BIGINT, so a count, a sum or a ratio of them over an integer came
+        back 0.
+
+        No arithmetic leaves every type alone: Dremio sizes a decimal result
+        by Arrow's rules, which take scale away once precision passes 38, so
+        ``DECIMAL(38, 12) * 1.0`` is ``DECIMAL(38, 10)`` and 1e-11 becomes 0.
+        ``COALESCE`` with a ``DECIMAL(1, 0)`` NULL only unifies types: an
+        integer becomes an exact ``DECIMAL(19, 0)`` at most, a decimal keeps
+        its precision and scale, and a double stays a double.
+        """
+        return f"COALESCE({dividend_sql}, CAST(NULL AS DECIMAL(1, 0)))"
+
     def _render_div(self, args: list[Expr]) -> str:
         """Dremio has no integer-division function or operator.
 
-        The quotient is promoted to a float first, because whether Dremio reads
-        ``7 / 2`` as integer division is not something this repo can run and
-        check, and a floored integer division could not be corrected
-        afterwards. With the promotion the rewrite is right either way.
+        ``7 / 2`` is an integer division there, and one that truncates, so
+        the dividend is promoted first: the quotient is then exact, and
+        truncated once, toward zero, by ``SIGN * FLOOR(ABS)``.
         """
-        left = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
+        left = self.promote_dividend(self.compile_expr(args[0]))
         right = self.compile_expr(args[1], _parent_prec=self._PREC_MUL + 1)
-        quotient = f"({left} * 1.0 / {right})"
+        quotient = f"({left} / {right})"
         return self._render_infix(f"SIGN({quotient}) * FLOOR(ABS({quotient}))")
 
     def _render_log(self, args: list[Expr]) -> str:

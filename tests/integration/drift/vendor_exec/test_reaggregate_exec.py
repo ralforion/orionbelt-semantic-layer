@@ -475,12 +475,16 @@ def _literal(value: str | int | None, type_name: str) -> str:
 
 
 def _create(
-    target: VendorTarget, table: str, columns: list[tuple[str, int]], rows: list[tuple[Any, ...]]
+    target: VendorTarget,
+    table: str,
+    columns: list[tuple[str, int | str]],
+    rows: list[tuple[Any, ...]],
 ) -> None:
     """``CREATE TABLE ... AS`` over literal rows, every cell cast.
 
     Casting every cell, not just the first leg's, keeps each engine from
-    picking its own supertype for a column whose first value is NULL.
+    picking its own supertype for a column whose first value is NULL. A
+    column's type is an index into ``TYPES``, or the engine's own type name.
     """
     dialect = DialectRegistry.get(target.dialect)
     types = TYPES[target.dialect]
@@ -491,8 +495,9 @@ def _create(
     legs = " UNION ALL ".join(
         "SELECT "
         + ", ".join(
-            f"{_literal(value, types[type_index])} AS {dialect.quote_identifier(name)}"
-            for value, (name, type_index) in zip(row, columns, strict=True)
+            f"{_literal(value, types[kind] if isinstance(kind, int) else kind)}"
+            f" AS {dialect.quote_identifier(name)}"
+            for value, (name, kind) in zip(row, columns, strict=True)
         )
         for row in rows
     )

@@ -200,8 +200,11 @@ class TestTheStringBuiltDivisionPath:
             assert "38, 14" in sql, sql
 
 
-@pytest.mark.parametrize("dialect", ["postgres", "dremio"])
-def test_a_promoted_dividend_is_rendered_once(dialect: str) -> None:
+@pytest.mark.parametrize(
+    ("dialect", "promotion"),
+    [("postgres", " * 1.0 /"), ("dremio", ", CAST(NULL AS DECIMAL(1, 0))) /")],
+)
+def test_a_promoted_dividend_is_rendered_once(dialect: str, promotion: str) -> None:
     """A dividend promoted for a true division builds on its rendering: a
     left-nested chain of 18 divisions renders each operand once, not twice
     per level (1,048,573 calls)."""
@@ -223,5 +226,5 @@ def test_a_promoted_dividend_is_rendered_once(dialect: str) -> None:
 
     with patch.object(type(renderer), "compile_expr", counting):
         sql = renderer.compile_expr(expr)
-    assert sql.count("* 1.0") == 18
+    assert sql.count(promotion) == 18, sql
     assert calls < 100, calls

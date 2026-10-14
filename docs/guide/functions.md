@@ -447,9 +447,11 @@ is base 10 on DuckDB and Postgres and natural on ClickHouse, MySQL and BigQuery,
 a silent factor of 2.3, so only the explicit `log(base, x)` is admitted. And
 `/` is a true division on every engine: Postgres and Dremio divide two
 integers as integers (`7 / 2` is 3, a `COUNT(*)` over 4 is 0), so their
-dividend is multiplied by `1.0` first: an integer becomes an exact decimal, and a
-double or decimal keeps its type and precision. Ask for integer division with
-`div(a, b)`.
+dividend is promoted first: an integer becomes an exact decimal, and a double or
+decimal keeps its type and precision. Postgres multiplies it by `1.0`; Dremio
+narrows a wide decimal under any arithmetic (`DECIMAL(38, 12) * 1.0` is
+`DECIMAL(38, 10)`), so there it goes through `COALESCE` with a `DECIMAL(1, 0)`
+NULL, which only unifies the types. Ask for integer division with `div(a, b)`.
 
 ```yaml
 Clients:
