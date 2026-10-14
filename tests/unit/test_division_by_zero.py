@@ -199,8 +199,8 @@ class TestTheStringBuiltDivisionPath:
         if dialect == "mysql":
             assert "38, 14" in sql, sql
         if dialect == "clickhouse":
-            # The dividend only: the divisor keeps its own type.
-            assert sql == "(cur + toDecimal256(0, 24)) / NULLIF(prev, 0)", sql
+            # A Float64 division: the divisor keeps its own type.
+            assert sql == "toFloat64(cur) / NULLIF(prev, 0)", sql
 
 
 @pytest.mark.parametrize(
@@ -208,7 +208,7 @@ class TestTheStringBuiltDivisionPath:
     [
         ("postgres", " * 1.0 /"),
         ("dremio", ", CAST(NULL AS DECIMAL(1, 1))) /"),
-        ("clickhouse", " + toDecimal256(0, 24)) /"),
+        ("clickhouse", "toFloat64("),
     ],
 )
 def test_a_promoted_dividend_is_rendered_once(dialect: str, promotion: str) -> None:

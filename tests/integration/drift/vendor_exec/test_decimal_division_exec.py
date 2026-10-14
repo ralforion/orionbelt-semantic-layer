@@ -4,7 +4,11 @@ ClickHouse divided at ``Decimal(38, 14)`` on both sides. Its decimal division
 computes ``a * 10^s / b`` in the dividend's type without an overflow check, so
 28 of the 38 digits went to scale: 100,000,000,000 / 3 came back
 -694,903,358.76, silently. The cast also cut every scale above 14 (1e-38
-became 0) and could not hold a double above 1e24 (DECIMAL_OVERFLOW).
+became 0) and could not hold a double above 1e24 (DECIMAL_OVERFLOW). Keeping
+the operands' scale instead wrapped a quotient of 38 places divided again, and
+refused a divisor with more places than its dividend; ClickHouse now divides
+in Float64. The ``DECIMAL(38, 38)`` boundary is in
+``test_integer_division_exec.py``.
 
 The north region has two sales of 50,000,000,000 and of 5,000 units, so its
 amount is 1e11 and its units 10,000.
@@ -22,6 +26,7 @@ from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 
 from .conftest import VendorTarget
+from .test_integer_division_exec import POINT_DECIMAL
 from .test_reaggregate_exec import SCHEMAS, _create, _number, _run
 
 pytestmark = pytest.mark.docker
@@ -87,43 +92,61 @@ METRICS = {
     "Ratio of Ratios": Decimal("13333333.33"),
 }
 
-#: Each engine's ``DECIMAL(38, 38)``. MySQL allows at most 30 places and
-#: Snowflake 37, so neither has one; BigQuery casts to no parameterized
-#: type, and its BIGNUMERIC holds 38 places.
-POINT_DECIMAL = {
-    "duckdb": "DECIMAL(38, 38)",
-    "postgres": "NUMERIC(38, 38)",
-    "clickhouse": "Decimal(38, 38)",
-    "bigquery": "BIGNUMERIC",
-    "databricks": "DECIMAL(38, 38)",
-    "dremio": "DECIMAL(38, 38)",
-}
 
-POINTS = "decdiv_points"
+SCALES = "decdiv_scales"
 
-POINT_ROWS = [("north", "0.00000000000000000000000000000000000001")] * 2
+#: Halves of 0.9, 0.1, 10 and 2, so each sums to the whole over two rows.
+SCALE_ROWS = [("north", "0.45", "0.05", "5.00", "1.0")] * 2
 
-POINT_MODEL_YAML = """
+
+#: Each engine's ``DECIMAL(p, s)``, so that the sums reach the division as
+#: decimals; BigQuery casts to no parameterized type.
+def _decimal(dialect: str, precision: int, scale: int) -> str:
+    if dialect == "bigquery":
+        return "BIGNUMERIC"
+    name = {"postgres": "NUMERIC", "clickhouse": "Decimal", "snowflake": "NUMBER"}
+    return f"{name.get(dialect, 'DECIMAL')}({precision}, {scale})"
+
+
+SCALE_MODEL_YAML = """
 version: "1.0"
-name: decimal_scale_vendor
+name: decimal_scale_division_vendor
 dataObjects:
-  Points:
-    code: {points}
+  Scales:
+    code: {scales}
     schema: '{schema}'
     columns:
       Region: {{code: region, abstractType: string}}
-      Point: {{code: point, abstractType: float}}
+      A: {{code: a, abstractType: float}}
+      B: {{code: b, abstractType: float}}
+      Ten: {{code: ten, abstractType: float}}
+      Two: {{code: two, abstractType: float}}
 dimensions:
-  Region: {{dataObject: Points, column: Region, resultType: string}}
+  Region: {{dataObject: Scales, column: Region, resultType: string}}
 measures:
-  Point Sum:
-    columns: [{{dataObject: Points, column: Point}}]
+  Fine A:
+    columns: [{{dataObject: Scales, column: A}}]
     aggregation: sum
     dataType: decimal(38, 38)
-metrics:
-  Point Half:
-    expression: '{{[Point Sum]}} / 2'
+  Fine B:
+    columns: [{{dataObject: Scales, column: B}}]
+    aggregation: sum
     dataType: decimal(38, 38)
+  Coarse Ten:
+    columns: [{{dataObject: Scales, column: Ten}}]
+    aggregation: sum
+    dataType: decimal(18, 2)
+  Fine Two:
+    columns: [{{dataObject: Scales, column: Two}}]
+    aggregation: sum
+    dataType: decimal(38, 25)
+metrics:
+  Twice Divided:
+    expression: '({{[Fine A]}} / {{[Fine B]}}) / {{[Fine B]}}'
+    dataType: decimal(18, 2)
+  Over a Finer Divisor:
+    expression: '{{[Coarse Ten]}} / {{[Fine Two]}}'
+    dataType: decimal(18, 2)
 """
 
 
@@ -162,9 +185,35 @@ def _assert_all(target: VendorTarget) -> None:
     # The period-over-period ratio builds its division as text: February's
     # 5e10 over January's 5e10.
     _assert_period_ratio(target)
+    _assert_scales(target)
 
+
+def _assert_scales(target: VendorTarget) -> None:
+    """A divisor with more places than its dividend: 10 at 2 places over 2 at
+    25. And where the engine has 38 places, a quotient of them divided again:
+    (0.9 / 0.1) / 0.1, which kept at 38 places outgrew 76 digits and wrapped.
+    """
+    # Where the engine has no 38 places (MySQL, Snowflake), 30.
+    fine = POINT_DECIMAL.get(target.dialect, _decimal(target.dialect, 38, 30))
+    columns: list[tuple[str, int | str]] = [
+        ("region", 0),
+        ("a", fine),
+        ("b", fine),
+        ("ten", _decimal(target.dialect, 18, 2)),
+        ("two", _decimal(target.dialect, 38, 25)),
+    ]
+    _create(target, SCALES, columns, SCALE_ROWS)
+    model = _model(SCALE_MODEL_YAML, target, scales=SCALES)
+    metrics = {"Over a Finer Divisor": Decimal("5.00")}
     if target.dialect in POINT_DECIMAL:
-        _assert_no_integer_digits(target)
+        metrics["Twice Divided"] = Decimal("90.00")
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Region"], measures=list(metrics))),
+    )
+    got = {m: _number(rows[0][m.lower()]) for m in metrics}
+    assert got == metrics, f"{target.name}: {got}"
 
 
 def _assert_period_ratio(target: VendorTarget) -> None:
@@ -183,19 +232,6 @@ def _assert_period_ratio(target: VendorTarget) -> None:
     )
     got = {str(r["month"])[:7]: _number(r["amount ratio"]) for r in rows}
     assert got.get("2026-02") == Decimal(1), f"{target.name}: {got}"
-
-
-def _assert_no_integer_digits(target: VendorTarget) -> None:
-    """A decimal with no integer digit keeps all 38 places: 2e-38 / 2."""
-    _create(target, POINTS, [("region", 0), ("point", POINT_DECIMAL[target.dialect])], POINT_ROWS)
-    model = _model(POINT_MODEL_YAML, target, points=POINTS)
-    rows = _run(
-        target,
-        model,
-        QueryObject(select=QuerySelect(dimensions=["Region"], measures=["Point Half"])),
-    )
-    got = {r["region"]: _number(r["point half"]) for r in rows}
-    assert got == {"north": Decimal("1e-38")}, f"{target.name}: {got}"
 
 
 def test_duckdb_decimal_division(vendor_duckdb: VendorTarget) -> None:

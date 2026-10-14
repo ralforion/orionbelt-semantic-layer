@@ -242,28 +242,28 @@ OrionBelt automatically wraps aggregate expressions with `CAST` based on resolve
 | Snowflake, DuckDB, Databricks, Dremio | 38 |
 | BigQuery | 38 |
 
-!!! note "ClickHouse: decimal division"
+!!! note "ClickHouse: division is in Float64"
 
-    ClickHouse divides decimals at the dividend's scale rather than widening
-    it, so a ratio of `decimal(18, 2)` values would be truncated to two places:
+    ClickHouse's decimal division cannot serve every operand. It divides at the
+    dividend's scale, so a ratio of `decimal(18, 2)` values would be truncated
+    to two places:
 
     ```sql
     SELECT toDecimal64(4254, 2) / toDecimal64(10000, 2)   -- 0.42
     ```
 
-    It also computes the quotient as `a * 10^s / b` (`s` the divisor's scale) in
-    the dividend's type without an overflow check, so too narrow a type gives a
-    wrong number, not an error. OrionBelt therefore adds a `Decimal256` zero
-    of 24 places to every dividend, `(a + toDecimal256(0, 24)) / b`:
+    It refuses a divisor with more places than its dividend, and it computes
+    the quotient as `a * 10^s / b` (`s` the divisor's scale) in the dividend's
+    type without an overflow check, so too narrow a type gives a wrong number,
+    not an error. No fixed decimal type holds 38 places, large values and a
+    quotient divided again within its 76 digits, and the exact `divideDecimal`
+    measured some 2,000 times slower than `/`.
 
-    - the quotient has at least 24 places, and a dividend with more keeps them;
-    - 76 digits leave a decimal dividend all of its integer digits beside any
-      divisor of up to 24 places;
-    - an integer becomes an exact decimal, and a float or double is not
-      converted, so a double beyond any `Decimal128` divides as a double.
-
-    The divisor keeps its own type. A divisor with more places than its
-    dividend (beyond 24) is refused by ClickHouse with `ARGUMENT_OUT_OF_BOUND`.
+    OrionBelt therefore divides in Float64 on ClickHouse, `toFloat64(a) / b`: a
+    quotient right to about 16 significant digits at any magnitude and any
+    scale, rounded to the metric's declared type. DuckDB divides decimals in
+    DOUBLE as well. A quotient that falls exactly on a rounding tie at the
+    declared scale can round differently from an engine that divides exactly.
 
 === "BigQuery / Databricks / Dremio / DuckDB / MySQL / Postgres / Snowflake"
 

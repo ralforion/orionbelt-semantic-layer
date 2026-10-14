@@ -418,55 +418,45 @@ class ClickHouseDialect(Dialect):
             return f"GROUP BY {groups} WITH CUBE"
         return super().compile_group_by(group_by, grouping)
 
-    #: Added to a dividend before ``/``. A sum of decimals takes the larger
-    #: scale, so this lifts a dividend to at least 24 places and never takes
-    #: places away; an integer becomes an exact Decimal256, a float stays a
-    #: float. See :meth:`_widen_dividend`.
-    _DIVIDEND_FLOOR = "toDecimal256(0, 24)"
+    def _float_dividend(self, dividend_sql: str) -> str:
+        """Divide in Float64: the one division ClickHouse can do for every
+        operand without a silent wrong number.
 
-    def _widen_dividend(self, dividend_sql: str) -> str:
-        """Give a dividend the room a ClickHouse decimal division needs.
+        ClickHouse divides decimals at the dividend's scale (``Decimal(18, 2)
+        / 3`` is 0.08), refuses a divisor with more places than its dividend,
+        and computes ``a * 10^s / b`` (``s`` the divisor's scale) in the
+        dividend's type without an overflow check. No fixed decimal type
+        holds 38 places, large values and a quotient over a quotient within
+        76 digits: ``Decimal(38, 14)`` on both sides gave -694,903,358.76 for
+        100,000,000,000 / 3, and keeping 38 places wrapped
+        ``(0.9 / 0.1) / 0.1``. ``divideDecimal`` is exact and checked, but
+        measured some 2,000 times slower than ``/``.
 
-        ClickHouse divides decimals at the dividend's scale, so
-        ``Decimal(18, 2) / 3`` is 0.08, and it computes ``a * 10^s / b`` (``s``
-        the divisor's scale) in the dividend's type without checking for
-        overflow. Casting both sides to ``Decimal(38, 14)`` fixed the first and
-        caused the second: 28 of 38 digits went to scale, so 100,000,000,000
-        / 3 came back -694,903,358.76, silently. The cast also cut a scale
-        above 14 (1e-38 became 0) and could not hold a double above 1e24.
-
-        Adding a ``Decimal256`` zero only widens. The quotient keeps at least
-        24 places, 76 digits leave a decimal dividend all of its integer
-        digits next to any divisor of up to 24 places, a larger scale stays,
-        and a float or a double is not converted at all. The divisor keeps its
-        own type. One with more places than its dividend is refused by
-        ClickHouse (ARGUMENT_OUT_OF_BOUND), loudly, never a wrong number.
+        A Float64 quotient is right to about 16 significant digits for any
+        magnitude and any scale, and the metric's declared type rounds it
+        (DuckDB divides decimals in DOUBLE too). An integer over an integer
+        is already a Float64 division on ClickHouse.
         """
-        return f"({dividend_sql} + {self._DIVIDEND_FLOOR})"
+        return f"toFloat64({dividend_sql})"
 
     def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
-        """Widen the dividend for raw-SQL division, as in the BinaryOp
-        override, where SQL is built as text (e.g. the PoP comparison CTE).
+        """Divide in Float64, as the BinaryOp override does, where SQL is built
+        as text (e.g. the PoP comparison CTE).
         """
-        return f"{self._widen_dividend(left_sql)} / {right_sql}"
+        return f"{self._float_dividend(left_sql)} / {right_sql}"
 
     def _compile_binary_op(self, left: Expr, op: str, right: Expr) -> str:
-        """Widen the dividend so a ratio keeps its precision.
-
-        See :meth:`_widen_dividend`. Other engines either widen automatically
-        (Postgres, DuckDB) or use float division; the outer measure CAST then
-        narrows back to the declared type.
+        """Divide in Float64; see :meth:`_float_dividend`.
 
         Returns the SQL fragment *without* an outer ``(...)`` wrap -
         the dispatcher in ``compile_expr`` adds one only when the
         surrounding precedence requires it (v2.7.4 #79).
         """
         if op == "/":
-            # The widened dividend is parenthesised, and the divisor goes
-            # through NULLIF, so neither needs a parent precedence. ClickHouse
-            # raises on a zero decimal divisor, so the guard is what keeps a
-            # zero from becoming ILLEGAL_DIVISION (#319).
-            l_sql = self._widen_dividend(self.compile_expr(left))
+            # toFloat64(...) is an atom, and the divisor goes through NULLIF,
+            # so neither needs a parent precedence. A zero divisor is NULL,
+            # not inf (#319).
+            l_sql = self._float_dividend(self.compile_expr(left))
             r_sql = self.compile_expr(right)
             return f"{l_sql} / {self.guard_zero_divisor(right, r_sql)}"
         return super()._compile_binary_op(left, op, right)
