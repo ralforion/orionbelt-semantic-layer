@@ -818,7 +818,10 @@ def test_grain_override_on_a_fact_side_component_of_a_split_metric() -> None:
     ]
 
 
-def test_period_over_period_over_a_deduplicated_component_is_refused() -> None:
+def test_period_over_period_over_a_deduplicated_component() -> None:
+    """PoP rebuilds the query from its source rows, so it deduplicates them
+    itself: each product once per month. January's p1 sold twice is 100, not
+    200, and February's growth is 110 - 100."""
     yaml_text = (
         CUMULATIVE_YAML
         + """  Stock Growth:
@@ -830,13 +833,81 @@ def test_period_over_period_over_a_deduplicated_component_is_refused() -> None:
       offset: -1
       offsetGrain: month
       comparison: difference
+  Stock per Quantity:
+    expression: '{[Total Stock On Hand]} / {[Sold Quantity]}'
 """
     )
-    with pytest.raises(GrainDedupUnsupportedError, match="period_over_period"):
-        _compile(
-            {"select": {"dimensions": ["Sale Month"], "measures": ["Stock Growth"]}},
-            yaml_text,
-        )
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Sale Month"],
+                "measures": ["Total Stock On Hand", "Stock Growth", "Stock per Quantity"],
+            }
+        },
+        yaml_text,
+    )
+    assert "ROW_NUMBER() OVER" in result.sql
+    rows = sorted(_cumulative_db().execute(result.sql).fetchall())
+    # A derived metric over the deduplicated component too: 100 / 3, 110 / 4.
+    assert [
+        (str(m)[:7], int(s), g if g is None else int(g), round(float(r), 2)) for m, s, g, r in rows
+    ] == [("2024-01", 100, None, 33.33), ("2024-02", 110, 10, 27.5)]
+
+    # The whole aggregate input is read on the first row only, not the
+    # object's columns: a count of rows reads none (``COUNT(1)``), and a value
+    # computed from them is not NULL where they are. One product a month, so
+    # no growth; 101 and 111, so 10.
+    extra = yaml_text.replace(
+        "  Total Stock On Hand:\n",
+        "  Stock Plus One:\n"
+        "    resultType: int\n"
+        "    aggregation: sum\n"
+        "    expression: 'COALESCE({[Products].[Stock On Hand]}, 0) + 1'\n"
+        "  Total Stock On Hand:\n",
+    ) + "".join(
+        f"""  {name} Growth:
+    type: period_over_period
+    expression: '{{[{measure}]}}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+        for name, measure in (("Count", "Products Count"), ("Plus One", "Stock Plus One"))
+    )
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Sale Month"],
+                "measures": ["Products Count", "Count Growth", "Stock Plus One", "Plus One Growth"],
+            }
+        },
+        extra,
+    )
+    con = _cumulative_db()
+    # A March sale of a product that does not exist: the join finds no row, so
+    # there is no product to count and no stock to add one to.
+    con.execute("INSERT INTO sales VALUES ('s4','p9','2024-03-03',1)")
+    rows = sorted(con.execute(result.sql).fetchall())
+    assert [tuple(None if v is None else int(v) for v in r[1:]) for r in rows] == [
+        (1, None, 101, None),
+        (1, 0, 111, 10),
+        (0, -1, None, None),
+    ]
+
+    # A time filter: the prior month comes from the look-back, which
+    # deduplicates the same way.
+    result = _compile(
+        {
+            "select": {"dimensions": ["Sale Month"], "measures": ["Stock Growth"]},
+            "where": [{"field": "Sale Month", "op": ">=", "value": "2024-02-01"}],
+        },
+        yaml_text,
+    )
+    rows = _cumulative_db().execute(result.sql).fetchall()
+    assert [(str(m)[:7], int(g)) for m, g in rows] == [("2024-02", 10)]
 
 
 # --- HAVING on deduplicated measures -------------------------------------

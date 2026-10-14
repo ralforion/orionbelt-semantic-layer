@@ -439,6 +439,52 @@ def _identity_columns(
     return []
 
 
+def dedup_identity(
+    object_name: str,
+    measure_names: Iterable[str],
+    resolved: ResolvedQuery,
+    model: SemanticModel,
+) -> list[str]:
+    """The identity columns deduplicating *object_name* for *measure_names*.
+
+    Without an identity a DISTINCT would also collapse two genuinely different
+    rows that happen to share a value, turning an overcount into an
+    undercount, so the query is refused rather than guessed at.
+    """
+    identity = _identity_columns(object_name, resolved, model)
+    if identity:
+        return identity
+    listed = ", ".join(f"'{m}'" for m in sorted(measure_names))
+    unnested = sorted({s.to_object for s in resolved.join_steps if s.nested})
+    if unnested:
+        # The replication came out of the FROM clause rather than a
+        # join, so the usual "the join names no target columns" reads as
+        # a non sequitur: there is no join. What the dedup needs is the
+        # same either way - one row per row of the object being summed -
+        # and here only the object itself can say which rows those are.
+        objects = ", ".join(f"'{name}'" for name in unnested)
+        msg = (
+            f"Measure(s) {listed} are sourced from '{object_name}', whose rows "
+            f"this query multiplies by unnesting {objects}: one row per array "
+            f"element, so a charge carrying two labels is summed twice. "
+            f"Deduplicating needs to know which rows are one row of "
+            f"'{object_name}', and it declares no primaryKey. Declare one, "
+            f"select the measure without the nested dimension, or set "
+            f"allowFanOut: true if the duplication is intended."
+        )
+        raise GrainDedupUnsupportedError(msg)
+    msg = (
+        f"Measure(s) {listed} are sourced from '{object_name}', whose rows "
+        f"this query's joins replicate, but '{object_name}' declares no "
+        f"primaryKey and the join reaching it names no target columns. "
+        f"Without a key OrionBelt cannot deduplicate the rows, and the "
+        f"result would be overcounted. Declare primaryKey on "
+        f"'{object_name}', or set allowFanOut: true if the duplication is "
+        f"intended."
+    )
+    raise GrainDedupUnsupportedError(msg)
+
+
 def _substitute_aliases(expr: Expr, by_alias: dict[str, Expr]) -> Expr:
     """Replace every bare (unqualified) ``ColumnRef`` that names a mapped alias.
 
@@ -699,40 +745,7 @@ def wrap_with_grain_dedup(
             dim_expr: Expr = make_dimension_expr(model, dim, dialect)
             inner_columns.append(AliasedExpr(expr=dim_expr, alias=dim.name))
 
-        # Without an identity the DISTINCT would also collapse two genuinely
-        # different rows that happen to share a value, turning an overcount into
-        # an undercount. Refuse rather than guess.
-        identity = _identity_columns(object_name, resolved, model)
-        if not identity:
-            listed = ", ".join(f"'{m}'" for m in sorted(measure_names))
-            unnested = sorted({s.to_object for s in resolved.join_steps if s.nested})
-            if unnested:
-                # The replication came out of the FROM clause rather than a
-                # join, so the usual "the join names no target columns" reads as
-                # a non sequitur: there is no join. What the dedup needs is the
-                # same either way - one row per row of the object being summed -
-                # and here only the object itself can say which rows those are.
-                objects = ", ".join(f"'{name}'" for name in unnested)
-                msg = (
-                    f"Measure(s) {listed} are sourced from '{object_name}', whose rows "
-                    f"this query multiplies by unnesting {objects}: one row per array "
-                    f"element, so a charge carrying two labels is summed twice. "
-                    f"Deduplicating needs to know which rows are one row of "
-                    f"'{object_name}', and it declares no primaryKey. Declare one, "
-                    f"select the measure without the nested dimension, or set "
-                    f"allowFanOut: true if the duplication is intended."
-                )
-                raise GrainDedupUnsupportedError(msg)
-            msg = (
-                f"Measure(s) {listed} are sourced from '{object_name}', whose rows "
-                f"this query's joins replicate, but '{object_name}' declares no "
-                f"primaryKey and the join reaching it names no target columns. "
-                f"Without a key OrionBelt cannot deduplicate the rows, and the "
-                f"result would be overcounted. Declare primaryKey on "
-                f"'{object_name}', or set allowFanOut: true if the duplication is "
-                f"intended."
-            )
-            raise GrainDedupUnsupportedError(msg)
+        identity = dedup_identity(object_name, measure_names, resolved, model)
 
         for key_idx, key_column in enumerate(identity):
             inner_columns.append(

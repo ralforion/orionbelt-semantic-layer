@@ -351,6 +351,17 @@ so it needs no `DISTINCT`. Any other metric in the query that reads the same
 component is rebuilt from that column as well, rather than from an aggregate at
 the query's grain.
 
+A **period-over-period** query is rebuilt from its source rows onto a date
+spine (see below), so it deduplicates them itself rather than through these
+CTEs. Each replicated object gets a first-row flag in the source,
+`ROW_NUMBER() OVER (PARTITION BY <period>, <dimensions>, <object key>) = 1`, and
+a deduplicated measure reads that object's columns only on the flagged row,
+`SUM(CASE WHEN flag = 1 THEN stock END)`: each row of the object counts once per
+period and group, the rows a `DISTINCT` would keep, inside `pop_base`'s single
+`GROUP BY`. The look-back for a time-filtered query does the same. A PoP query
+with a deduplicated measure still refuses the other wrappers (totals,
+filterContext, cumulative, window), whatever they apply to.
+
 A deduplicated `count` reads `0`, not `NULL`, when a group has no matching
 rows on the joined object: that group contributes no row to the dedup CTE, so
 the join back would otherwise yield `NULL`. Other aggregations keep `NULL`,
@@ -408,7 +419,7 @@ than return an inflated number:
 | Combination | Why |
 |---|---|
 | A derived metric over a **window** metric | Its column is the whole derived expression, with the window metric's base measure inlined — a placeholder only the window pass can resolve, so there is no base value for an earlier wrapper's CTE to carry |
-| Period-over-period | Rebuilds the FROM from a date spine and re-joins tables the dedup CTEs already joined: `Ambiguous reference to table ... duplicate alias` |
+| Period-over-period together with totals, filterContext, cumulative or window | PoP deduplicates its own source rows, and the dedup CTEs those wrappers read are not built |
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
 | A deduplicated measure reached through a **window** metric (a derived metric over one) | That wrapper rebuilds its base measure from the fact tables, which a dedup CTE cannot serve. Nested *derived* metrics are followed and split normally |
 | `total: true` or a `grain` override on a **filterContext** component of a split metric | That component comes from a scan of its own, which has not been composed with an override over a split metric. On a deduplicated or a fact-side component the dedup pass computes it instead (see above) |
