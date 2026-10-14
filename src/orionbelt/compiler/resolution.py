@@ -750,6 +750,15 @@ class ResolvedQuery:
     out so the deduplicated ones can be computed in their own CTE and the metric
     recomputed from the results."""
 
+    dedup_grain_components: set[str] = field(default_factory=set)
+    """Components of a metric the ``grain_dedup`` pass splits that are *not*
+    deduplicated but carry a ``total`` or ``grain`` override.
+
+    Once the metric is split, its components are read from the pass's CTEs,
+    where a later wrapper cannot reach the fact tables to compute the override.
+    The pass computes these at their own grain instead, over the plan's own
+    rows, which a fact-side measure needs no deduplication of."""
+
     composite_cte: str | None = None
     """Name of the UNION ALL composite CTE, when the plan actually built one.
 
@@ -842,6 +851,13 @@ class ResolvedQuery:
     def dedup_targets(self) -> dict[str, str]:
         """Every measure the ``grain_dedup`` pass rewrites, component or not."""
         return {**self.dedup_measures, **self.dedup_components}
+
+    @property
+    def dedup_computed(self) -> set[str]:
+        """Every measure whose value the ``grain_dedup`` pass computes: the
+        deduplicated ones and :attr:`dedup_grain_components`. A wrapper that
+        computes a total or grain override leaves these alone."""
+        return set(self.dedup_targets) | self.dedup_grain_components
 
     @property
     def fact_tables(self) -> list[str]:

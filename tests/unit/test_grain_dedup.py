@@ -161,6 +161,11 @@ measures:
     aggregation: sum
     total: true
     expression: '{[Products].[Stock On Hand]}'
+  Region Quantity:
+    resultType: int
+    aggregation: sum
+    grain: {mode: FIXED, keepOnly: [Region]}
+    expression: '{[Sales].[Quantity]}'
 
 metrics:
   Price per Unit:
@@ -182,6 +187,10 @@ metrics:
     expression: '{[Price per Unit]} * 2'
   Stock per Grand Total:
     expression: '{[Total Stock On Hand]} / {[Grand Total Quantity]}'
+  Stock per Region Quantity:
+    expression: '{[Total Stock On Hand]} / {[Region Quantity]}'
+  Doubled Grand Quantity:
+    expression: '{[Grand Total Quantity]} * 2'
 """
 
 
@@ -646,16 +655,63 @@ def test_total_on_a_deduplicated_metric_component() -> None:
     ]
 
 
-def test_total_on_any_component_of_a_split_metric_is_refused() -> None:
-    """The total need not be on the deduplicated component to conflict.
+def test_total_on_a_fact_side_component_of_a_split_metric() -> None:
+    """A metric split across dedup CTEs is read from them, where the totals
+    wrapper cannot reach the fact tables, so this was refused. The dedup pass
+    computes the fact-side total itself, over the plan's own rows: 4 units in
+    all, beside each region's products once (north 210, south 400). Selected
+    on its own too, it reads the same column."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Stock per Grand Total", "Grand Total Quantity"],
+            }
+        }
+    )
+    assert "__ob_at_total_" in result.sql
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [(r, float(v), int(q)) for r, v, q in rows] == [
+        ("north", 52.5, 4),
+        ("south", 100.0, 4),
+    ]
 
-    Once a metric is split across dedup CTEs, the totals wrapper decomposes it
-    again and re-projects *every* component's raw aggregate into a base CTE
-    whose FROM is the dedup output - so a ``total: true`` sibling of a
-    deduplicated component breaks it just as badly.
-    """
-    with pytest.raises(GrainDedupUnsupportedError, match="totals"):
-        _compile({"select": {"dimensions": ["Region"], "measures": ["Stock per Grand Total"]}})
+
+def test_another_metric_reading_that_component_reads_the_same_total() -> None:
+    """The totals wrapper leaves the component to the dedup pass, so a metric
+    that does not need splitting but reads it is rebuilt there too: 8, not the
+    per-region units doubled (4). A HAVING on the split metric still holds."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Stock per Grand Total", "Doubled Grand Quantity"],
+            },
+            "having": [{"field": "Stock per Grand Total", "op": "gt", "value": 60}],
+        }
+    )
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [(r, float(v), int(d)) for r, v, d in rows] == [("south", 100.0, 8)]
+
+
+def test_grain_override_on_a_fact_side_component_of_a_split_metric() -> None:
+    """The same for a ``grain`` override: units per region (2 each), not per
+    region and category, beside the products of each pair once."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region", "Category"],
+                "measures": ["Stock per Region Quantity"],
+            }
+        }
+    )
+    assert "__ob_at_grain_" in result.sql
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [(r, c, float(v)) for r, c, v in rows] == [
+        ("north", "tools", 105.0),
+        ("south", "parts", 150.0),
+        ("south", "tools", 50.0),
+    ]
 
 
 def test_period_over_period_over_a_deduplicated_component_is_refused() -> None:
