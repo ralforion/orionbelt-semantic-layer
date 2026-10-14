@@ -202,7 +202,7 @@ class TestTheStringBuiltDivisionPath:
 
 @pytest.mark.parametrize(
     ("dialect", "promotion"),
-    [("postgres", " * 1.0 /"), ("dremio", ", CAST(NULL AS DECIMAL(1, 0))) /")],
+    [("postgres", " * 1.0 /"), ("dremio", ", CAST(NULL AS DECIMAL(1, 1))) /")],
 )
 def test_a_promoted_dividend_is_rendered_once(dialect: str, promotion: str) -> None:
     """A dividend promoted for a true division builds on its rendering: a

@@ -8,7 +8,8 @@ unit, so every metric below is 0.5.
 
 A promotion must leave a double or a decimal as precise as it was: a double
 of 1e-12, or a ``DECIMAL(38, 12)`` of 1e-11, which ``* 1.0`` narrows to
-``DECIMAL(38, 10)`` on Dremio, rounding it to 0.
+``DECIMAL(38, 10)`` on Dremio, rounding it to 0. Nor may it give a
+``DECIMAL(38, 38)`` an integer digit, which takes 1e-38 to 0.
 """
 
 from __future__ import annotations
@@ -97,6 +98,43 @@ metrics:
     expression: '{{[Fine Sum]}} / 4'
     dataType: decimal(38, 12)
 """
+#: Each engine's ``DECIMAL(38, 38)``. MySQL allows at most 30 places and
+#: Snowflake 37, so neither has one; ClickHouse divides decimals at a fixed
+#: ``Decimal(38, 14)``, which no dividend's promotion decides.
+POINT_DECIMAL = {
+    "duckdb": "DECIMAL(38, 38)",
+    "postgres": "NUMERIC(38, 38)",
+    "bigquery": "BIGNUMERIC",
+    "databricks": "DECIMAL(38, 38)",
+    "dremio": "DECIMAL(38, 38)",
+}
+
+POINTS = "intdiv_points"
+
+POINT_ROWS = [(region, "0.00000000000000000000000000000000000001") for region in ("north",) * 2]
+
+POINT_MODEL_YAML = """
+version: "1.0"
+name: decimal_scale_vendor
+dataObjects:
+  Points:
+    code: {points}
+    schema: '{schema}'
+    columns:
+      Region: {{code: region, abstractType: string}}
+      Point: {{code: point, abstractType: float}}
+dimensions:
+  Region: {{dataObject: Points, column: Region, resultType: string}}
+measures:
+  Point Sum:
+    columns: [{{dataObject: Points, column: Point}}]
+    aggregation: sum
+    dataType: decimal(38, 38)
+metrics:
+  Point Half:
+    expression: '{{[Point Sum]}} / 2'
+    dataType: decimal(38, 38)
+"""
 
 METRICS = ["Rows over Four", "Quantity over Four", "Typed over Four", "Rows over Double Quantity"]
 
@@ -133,6 +171,24 @@ def _assert_all(target: VendorTarget) -> None:
     # So does a decimal: 2e-11 / 4 at scale 12, not narrowed to scale 10.
     fine = {r["region"]: _number(r["fine over four"]) for r in rows}
     assert fine == {"north": Decimal("5e-12"), "south": Decimal("5e-12")}, f"{target.name}: {fine}"
+    if target.dialect in POINT_DECIMAL:
+        _assert_no_integer_digits(target)
+
+
+def _assert_no_integer_digits(target: VendorTarget) -> None:
+    """A decimal with no integer digit keeps all 38 places: 2e-38 / 2."""
+    _create(target, POINTS, [("region", 0), ("point", POINT_DECIMAL[target.dialect])], POINT_ROWS)
+    yaml_text = POINT_MODEL_YAML.format(points=POINTS, schema=SCHEMAS.get(target.dialect, ""))
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Region"], measures=["Point Half"])),
+    )
+    got = {r["region"]: _number(r["point half"]) for r in rows}
+    assert got == {"north": Decimal("1e-38")}, f"{target.name}: {got}"
 
 
 def test_duckdb_integer_division(vendor_duckdb: VendorTarget) -> None:

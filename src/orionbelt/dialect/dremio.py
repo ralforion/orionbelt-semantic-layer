@@ -231,11 +231,14 @@ class DremioDialect(Dialect):
         No arithmetic leaves every type alone: Dremio sizes a decimal result
         by Arrow's rules, which take scale away once precision passes 38, so
         ``DECIMAL(38, 12) * 1.0`` is ``DECIMAL(38, 10)`` and 1e-11 becomes 0.
-        ``COALESCE`` with a ``DECIMAL(1, 0)`` NULL only unifies types: an
-        integer becomes an exact ``DECIMAL(19, 0)`` at most, a decimal keeps
-        its precision and scale, and a double stays a double.
+        ``COALESCE`` with a ``DECIMAL(1, 1)`` NULL only unifies types: an
+        integer becomes an exact ``DECIMAL(20, 1)`` at most, a decimal keeps
+        its precision and scale, and a double stays a double. The NULL has no
+        integer digit, so a ``DECIMAL(38, 38)`` is not made to find room for
+        one (a ``DECIMAL(1, 0)`` NULL took 1e-38 to 0); a ``DECIMAL(38, 0)``
+        keeps its integer digits, the NULL's one decimal giving way instead.
         """
-        return f"COALESCE({dividend_sql}, CAST(NULL AS DECIMAL(1, 0)))"
+        return f"COALESCE({dividend_sql}, CAST(NULL AS DECIMAL(1, 1)))"
 
     def _render_div(self, args: list[Expr]) -> str:
         """Dremio has no integer-division function or operator.
