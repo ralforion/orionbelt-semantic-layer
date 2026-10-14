@@ -822,9 +822,13 @@ def _build_pop_base_sql(
         partition = [_bucket_sql(time_dim, model, dialect, grain)]
         partition.extend(dialect.compile_expr(expr) for _, expr in dim_entries if expr is not None)
         partition.extend(identity)
+        # A base row the join found no object row for carries a NULL identity:
+        # it is not one of the object's rows, so it is never the first of one,
+        # or a count of the object would count a phantom.
+        present = " AND ".join(f"{key} IS NOT NULL" for key in identity)
         projections.append(
-            f"ROW_NUMBER() OVER (PARTITION BY {', '.join(partition)} "
-            f"ORDER BY {', '.join(identity)}) AS {dialect.quote_identifier(flag)}"
+            f"CASE WHEN {present} THEN ROW_NUMBER() OVER (PARTITION BY {', '.join(partition)} "
+            f"ORDER BY {', '.join(identity)}) END AS {dialect.quote_identifier(flag)}"
         )
 
     def _repoint(expr: Expr) -> Expr:

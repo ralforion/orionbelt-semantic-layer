@@ -886,10 +886,15 @@ def test_period_over_period_over_a_deduplicated_component() -> None:
         },
         extra,
     )
-    rows = sorted(_cumulative_db().execute(result.sql).fetchall())
+    con = _cumulative_db()
+    # A March sale of a product that does not exist: the join finds no row, so
+    # there is no product to count and no stock to add one to.
+    con.execute("INSERT INTO sales VALUES ('s4','p9','2024-03-03',1)")
+    rows = sorted(con.execute(result.sql).fetchall())
     assert [tuple(None if v is None else int(v) for v in r[1:]) for r in rows] == [
         (1, None, 101, None),
         (1, 0, 111, 10),
+        (0, -1, None, None),
     ]
 
     # A time filter: the prior month comes from the look-back, which
