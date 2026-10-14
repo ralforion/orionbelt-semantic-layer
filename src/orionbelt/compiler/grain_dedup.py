@@ -741,6 +741,24 @@ def wrap_with_grain_dedup(
             continue
         outer_columns.append(AliasedExpr(expr=measure_ref(alias), alias=alias))
 
+    # A split metric with a filterContext component is split again by the
+    # filterContext pass, which runs next and reads its other components from
+    # this query. A deduplicated one exists only as a column of a dedup CTE,
+    # so each is projected here by name; re-projecting its aggregate there
+    # would read tables this query no longer has. That pass returns only the
+    # query's own columns.
+    outer_aliases = {_measure_alias(c) for c in outer_columns}
+    for metric in split_metrics.values():
+        components = leaf_components[metric.name]
+        if not any(c.filter_context is not None for c in components):
+            continue
+        for component in components:
+            if component.filter_context is None and component.name not in outer_aliases:
+                outer_columns.append(
+                    AliasedExpr(expr=measure_ref(component.name), alias=component.name)
+                )
+                outer_aliases.add(component.name)
+
     # HAVING predicates on a deduplicated measure become an outer WHERE: the
     # wrapper's own query is one row per query grain, so filtering it there is
     # exactly what HAVING would have done had the value been available.

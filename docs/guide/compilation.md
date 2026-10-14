@@ -363,7 +363,9 @@ FROM __ob_main LEFT JOIN __ob_dedup_0 ON ...
 ```
 
 A component that is also selected in its own right is computed once and read
-twice. A cumulative or window metric works the same way: its base measure is
+twice. A metric that also has a `filterContext` component is split again by that
+pass, which reads each deduplicated component by name from this query's
+output. A cumulative or window metric works the same way: its base measure is
 split out, and the wrapper windows over that column by alias.
 
 ### `HAVING` on a deduplicated measure

@@ -73,7 +73,13 @@ measures:
     columns: [{{dataObject: Products, column: Stock}}]
     aggregation: sum
     grain: {{mode: FIXED, keepOnly: [Region]}}
+  Filtered Quantity:
+    columns: [{{dataObject: Sales, column: Quantity}}]
+    aggregation: sum
+    filterContext: {{mode: FIXED}}
 metrics:
+  Region Stock per Quantity:
+    expression: '{{[Region Stock]}} / {{[Filtered Quantity]}}'
   Stock Share:
     expression: '{{[Total Stock]}} / {{[Grand Stock]}}'
   Share of Region Stock:
@@ -136,7 +142,7 @@ def _assert_all(target: VendorTarget) -> None:
         QueryObject(
             select=QuerySelect(
                 dimensions=["Region", "Category"],
-                measures=["Stock Share", "Share of Region Stock"],
+                measures=["Stock Share", "Share of Region Stock", "Region Stock per Quantity"],
             )
         ),
     )
@@ -144,16 +150,19 @@ def _assert_all(target: VendorTarget) -> None:
         (r["region"], r["category"]): (
             _ratio(r["stock share"]),
             _ratio(r["share of region stock"]),
+            _ratio(r["region stock per quantity"]),
         )
         for r in rows
     }
+    # The last beside a filterContext component, which splits the metric again
+    # and reads the deduplicated one by name: quantity is 2, 1, 1.
     expected = {
-        ("north", "tools"): (210 / 510, 1.0),
-        ("south", "parts"): (300 / 510, 300 / 400),
-        ("south", "tools"): (100 / 510, 100 / 400),
+        ("north", "tools"): (210 / 510, 1.0, 105),
+        ("south", "parts"): (300 / 510, 300 / 400, 400),
+        ("south", "tools"): (100 / 510, 100 / 400, 400),
     }
     assert shares == {
-        k: (round(Decimal(str(a)), 4), round(Decimal(str(b)), 4)) for k, (a, b) in expected.items()
+        k: tuple(round(Decimal(str(v)), 4) for v in values) for k, values in expected.items()
     }, f"{target.name}: {shares}"
 
 

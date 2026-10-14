@@ -1469,6 +1469,56 @@ def test_grain_override_on_a_deduplicated_metric_component() -> None:
     ]
 
 
+_FILTER_CONTEXT_METRICS = """  Region Stock:
+    resultType: int
+    aggregation: sum
+    expression: '{[Products].[Stock On Hand]}'
+    grain: {mode: FIXED, keepOnly: [Region]}
+  Stock Total:
+    resultType: int
+    aggregation: sum
+    expression: '{[Products].[Stock On Hand]}'
+    total: true
+  Filtered Quantity:
+    resultType: int
+    aggregation: sum
+    expression: '{[Sales].[Quantity]}'
+    filterContext: {mode: FIXED}
+metrics:
+  Region Stock per Quantity:
+    expression: '{[Region Stock]} / {[Filtered Quantity]}'
+  Stock Total per Quantity:
+    expression: '{[Stock Total]} / {[Filtered Quantity]}'
+  Stock per Filtered Quantity:
+    expression: '{[Total Stock On Hand]} / {[Filtered Quantity]}'
+"""
+
+
+@pytest.mark.parametrize(
+    ("metric", "values"),
+    [
+        ("Stock per Filtered Quantity", (105, 300, 100)),
+        ("Region Stock per Quantity", (105, 400, 400)),
+        ("Stock Total per Quantity", (255, 510, 510)),
+    ],
+    ids=["query grain", "grain override", "total"],
+)
+def test_deduplicated_component_beside_a_filter_context_component(
+    metric: str, values: tuple[int, int, int]
+) -> None:
+    """The filterContext pass splits the metric again and reads its other
+    components from the query beneath, where a deduplicated one is a column of
+    a dedup CTE: re-projecting its aggregate read ``Products``, out of scope.
+    Quantity by region and category is 2, 1, 1."""
+    yaml_text = MODEL_YAML.replace("metrics:\n", _FILTER_CONTEXT_METRICS, 1)
+    result = _compile(
+        {"select": {"dimensions": ["Region", "Category"], "measures": [metric]}}, yaml_text
+    )
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [r[:2] for r in rows] == [("north", "tools"), ("south", "parts"), ("south", "tools")]
+    assert tuple(float(r[2]) for r in rows) == values
+
+
 def test_deduplicated_total_is_not_rewrapped_when_another_total_is_present() -> None:
     """The totals pass must treat dedup-handled measures as pass-through throughout.
 
