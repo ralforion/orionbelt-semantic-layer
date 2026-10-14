@@ -129,6 +129,7 @@ nav:
       - Development: getting-started/development.md
   - OBSQL: guide/semantic-ql.md
   - Guide:
+      - Agent Workflows (One-shot): guide/agent-workflows.md
       - OBML Model Format: guide/model-format.md
       - Portable Functions: guide/functions.md
       - Query Language: guide/query-language.md

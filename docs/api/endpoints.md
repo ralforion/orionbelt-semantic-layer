@@ -637,7 +637,7 @@ UK	9.870,00
 
 ### `POST /v1/oneshot/batch`
 
-Load (or reference) a model and run multiple independent queries against it in a single round trip. Designed for agent workflows: one model, N sub-questions, parallel execution under a server-capped semaphore. See `design/PLAN_oneshot_batch.md` for the full design.
+Load (or reference) a model and run multiple independent queries against it in a single round trip. An agent can author just the OBML needed for its current questions and submit that model together with the queries. With the default `fail_fast: false`, queries run under a server-capped concurrency limit. See [Agent Workflows: Model the Questions](../guide/agent-workflows.md) for a complete example.
 
 **Request:**
 
@@ -722,6 +722,12 @@ Load (or reference) a model and run multiple independent queries against it in a
 ```
 
 `model_load` is `"fresh"` (parsed and loaded), `"reused"` (matched dedup index), or `"referenced"` (caller supplied `model_id`).
+
+A freshly loaded model is removed after the batch unless `persist_model: true`.
+Reused and referenced models remain loaded. The session itself remains until
+explicitly closed or expired; retaining a model does not extend it beyond that
+session's lifetime. In admin-curated mode, inline `model_yaml` uploads are rejected;
+use the existing model's `session_id` and `model_id`.
 
 Per-query `status` is `"ok"`, `"error"` (with an `error` envelope: `{code, message, path, hint}`), or `"cancelled"` (only when `fail_fast: true` triggers and remaining queries are short-circuited).
 

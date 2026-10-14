@@ -4,7 +4,7 @@
 
 <h1 align="center">OrionBelt&reg; Semantic and Context Layer, Rule Engine, and Semantic Sidecar</h1>
 
-<p align="center"><strong>Define your metrics once in YAML. Let agents and BI tools query them without ever touching your schema.</strong></p>
+<p align="center"><strong>Define shared metrics or model a set of questions in YAML. Let agents and BI tools query through one semantic compiler.</strong></p>
 
 <p align="center">A <a href="https://ralforion.com/semantic-sidecar.html">semantic sidecar</a>: it rides alongside the systems you already run instead of replacing them.</p>
 
@@ -24,9 +24,17 @@
 
 Ask an LLM to write SQL against a raw star schema and sooner or later it joins two fact tables and hands you a revenue number inflated by a factor of eight. It looks right. Nobody catches it.
 
-OrionBelt is a **semantic and context layer** with a **rule engine**, and it runs as a **[semantic sidecar](https://ralforion.com/semantic-sidecar.html)**. You declare dimensions, measures, metrics, and joins in version-controlled YAML. OrionBelt compiles them into dialect-specific SQL through a real AST, and routes multi-fact queries through a Composite Fact Layer planner that [blocks the join paths that produce fan traps](https://ralforion.com/text-to-sql.html). Agents and BI tools ask for `"Total Revenue" by "Country"`. They never see a table name.
+OrionBelt is a **semantic and context layer** with a **rule engine**, and it runs as a **[semantic sidecar](https://ralforion.com/semantic-sidecar.html)**. You or an agent declare dimensions, measures, metrics, and joins in YAML, scoped to one task or maintained as a shared model. OrionBelt compiles them into dialect-specific SQL through a real AST, and routes multi-fact queries through a Composite Fact Layer planner that [blocks the join paths that produce fan traps](https://ralforion.com/text-to-sql.html). Queries ask for `"Total Revenue" by "Country"`; physical table and column mappings live in the model.
 
 No BI tool in the middle. No runtime lock-in. Point it at what you already have.
+
+## Model the questions
+
+**An agent can model just the questions it needs to answer.** With `POST /v1/oneshot/batch`, it submits a task-specific OBML model and several independent queries in one request. OBSL validates the model, compiles or executes the queries, and returns separately identified results with SQL, explanations, warnings, and errors as applicable.
+
+For "revenue by country, monthly revenue, and average order value," the agent defines the relevant columns and calculations once and asks three questions against them. A freshly loaded model is removed after the batch by default; `persist_model: true` keeps it in the session for follow-up questions. The same compiler supports this workflow and long-lived shared models.
+
+[Follow the agent workflow guide](https://ralforion.com/orionbelt-semantic-layer/guide/agent-workflows/) for a complete example, or see the [one-shot API contract](https://ralforion.com/orionbelt-semantic-layer/api/endpoints/#one-shot-batch).
 
 ## Four ways in
 
@@ -128,6 +136,7 @@ OrionBelt is a sidecar, not a platform. It compiles a YAML model into correct SQ
 
 **Reach for OrionBelt when:**
 
+- An agent needs to author a small model for a set of questions, submit the model and queries together, and optionally reuse it for follow-up analysis.
 - Agents query your data and a silently wrong number is unacceptable. Multi-fact queries route through a Composite Fact Layer planner that blocks fan-trap join paths instead of quietly summing across them.
 - You want your metric definitions in reviewable YAML, with no JavaScript or Python in the model layer.
 - Your BI tool should connect over the Postgres driver it already ships, with no new connector to install and no vendor runtime in the path.
@@ -194,7 +203,7 @@ Guides: [Business Rules](https://ralforion.com/orionbelt-semantic-layer/guide/bu
 
 ## Contents
 
-[Four ways in](#four-ways-in) · [What is a Context Layer?](#what-is-a-context-layer) · [Meaning, not just metrics](#meaning-not-just-metrics) · [Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
+[Model the questions](#model-the-questions) · [Four ways in](#four-ways-in) · [What is a Context Layer?](#what-is-a-context-layer) · [Meaning, not just metrics](#meaning-not-just-metrics) · [Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
 
 ---
 
@@ -468,6 +477,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 
 ### Agent-Facing API
 
+- **One-shot Model + Queries**: submit task-specific OBML and independent sub-questions to `POST /v1/oneshot/batch`; get per-query results and optionally retain the model for follow-ups. See [Agent Workflows](https://ralforion.com/orionbelt-semantic-layer/guide/agent-workflows/).
 - **Model Health on Load** — every model load returns a `health` block with orphan dataObjects, fan-trap risks, and unreachable dimensions — agents skip the defensive second round trip
 - **Query Plan Endpoint** — `POST /query/plan` returns the planner's understanding (planner choice, physical tables, join path, `would_compile`) without compiling SQL or executing; opt-in `include_database_explain` adds the warehouse's raw EXPLAIN
 - **Structured Warnings** — every `warnings` list across the API uses a stable `{code, severity, message, path, hint, context}` shape with a documented code taxonomy; agents branch on codes instead of parsing messages
