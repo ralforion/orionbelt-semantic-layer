@@ -78,6 +78,11 @@ measures:
     aggregation: sum
     filterContext: {{mode: FIXED}}
 metrics:
+  Region Stock Rank:
+    type: window
+    windowFunction: dense_rank
+    measure: Region Stock
+    orderDirection: desc
   Region Stock per Quantity:
     expression: '{{[Region Stock]}} / {{[Filtered Quantity]}}'
   Stock Share:
@@ -203,6 +208,21 @@ def _assert_having_after_filter_context(target: VendorTarget, model: SemanticMod
     )
     kept = sorted((r["region"], r["category"]) for r in rows)
     assert kept == [("south", "parts"), ("south", "tools")], f"{target.name}: {kept}"
+
+    # A rank over the deduplicated measure is filtered after the ranking, not
+    # by comparing the stock itself with 1.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Region", "Category"], measures=["Region Stock", "Region Stock Rank"]
+            ),
+            having=[QueryFilter(field="Region Stock Rank", op="<=", value=1)],
+        ),
+    )
+    ranked = sorted((r["region"], r["category"]) for r in rows)
+    assert ranked == [("south", "parts"), ("south", "tools")], f"{target.name}: {ranked}"
 
 
 def test_duckdb_grain_dedup(vendor_duckdb: VendorTarget) -> None:

@@ -522,17 +522,22 @@ def wrap_with_grain_dedup(
     # A predicate on a filterContext measure, or on a metric reading one, is
     # the filterContext pass's, which runs next and computes that value: here
     # it would read the query-filtered aggregate instead, and drop rows the
-    # final value keeps. That pass applies it once, over its own output.
+    # final value keeps. That pass applies it once, over its own output. A
+    # predicate on a value a later wrapper windows (a rank over a deduplicated
+    # measure) waits likewise, for ``PASS_HAVING_WINDOW``: here it would
+    # filter the measure before the ranking.
     filter_context_owned = {
         m.name
         for m in resolved.measures
         if m.filter_context is not None
         or any(c.filter_context is not None for c in leaf_components[m.name])
     }
+    windowed = windowed_aliases(resolved)
     outer_having = [
         hf
         for hf in resolved.having_filters
-        if hf.referenced_fields & hoisted and not hf.referenced_fields & filter_context_owned
+        if hf.referenced_fields & hoisted
+        and not hf.referenced_fields & (filter_context_owned | windowed)
     ]
     main_having = ast.having
     if any(
@@ -549,7 +554,7 @@ def wrap_with_grain_dedup(
         # (see ``star.py``), and ``PASS_HAVING_WINDOW`` applies it once over
         # the windowed rows. Dedup composes with totals, cumulative and direct
         # window metrics, so this path is reachable.
-        deferred = hoisted | windowed_aliases(resolved) | filter_context_owned
+        deferred = hoisted | windowed | filter_context_owned
         main_having = _combine(
             _substitute_aliases(hf.expression, planner_exprs)
             for hf in resolved.having_filters

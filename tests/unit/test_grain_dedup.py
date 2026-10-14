@@ -1587,6 +1587,42 @@ def test_separate_having_predicates_beside_a_filter_context_metric(
     assert [r[:2] for r in rows] == kept
 
 
+@pytest.mark.parametrize(
+    ("dims", "measure", "rank", "kept"),
+    [
+        (["Region"], "Total Stock On Hand", "Stock Rank", [("south",)]),
+        (
+            ["Region", "Category"],
+            "Region Stock",
+            "Region Stock Rank",
+            [("south", "parts"), ("south", "tools")],
+        ),
+    ],
+    ids=["query grain", "grain override"],
+)
+def test_having_on_a_rank_over_a_deduplicated_measure(
+    dims: list[str], measure: str, rank: str, kept: list[tuple[str, ...]]
+) -> None:
+    """``rank <= 1`` filters the ranked rows: applied by dedup beforehand it
+    compared the stock itself with 1 and kept nothing."""
+    yaml_text = MODEL_YAML.replace(
+        "metrics:\n",
+        _FILTER_CONTEXT_METRICS
+        + "  Region Stock Rank:\n    type: window\n    windowFunction: dense_rank\n"
+        "    measure: Region Stock\n    orderDirection: desc\n",
+        1,
+    )
+    result = _compile(
+        {
+            "select": {"dimensions": dims, "measures": [measure, rank]},
+            "having": [{"field": rank, "op": "<=", "value": 1}],
+        },
+        yaml_text,
+    )
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [r[: len(dims)] for r in rows] == kept
+
+
 def test_deduplicated_total_is_not_rewrapped_when_another_total_is_present() -> None:
     """The totals pass must treat dedup-handled measures as pass-through throughout.
 
