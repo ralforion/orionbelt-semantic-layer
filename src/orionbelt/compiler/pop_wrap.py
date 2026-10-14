@@ -23,7 +23,7 @@ than an expression over tables it has not joined yet.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from textwrap import indent
 from typing import TYPE_CHECKING
 
@@ -35,12 +35,13 @@ from orionbelt.ast.nodes import (
     ColumnRef,
     Expr,
     From,
+    FunctionCall,
     Literal,
     RawSQL,
     Select,
 )
 from orionbelt.compiler.expr_rewrite import collect_column_refs, map_column_refs
-from orionbelt.compiler.grain_dedup import dedup_identity
+from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError, dedup_identity
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.outer_order_by import outer_order_by
@@ -58,6 +59,7 @@ from orionbelt.compiler.type_resolver import (
     apply_exact_integer_sum,
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
+    unwrap_default,
 )
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import PeriodOverPeriodComparison, SemanticModel
@@ -693,25 +695,31 @@ def _build_pop_base_sql(
         dim_entries.append((dim.name, dim_expr))
 
     # A measure sourced from an object the query's joins replicate counts each
-    # row of that object once per period and group: its columns are read only
-    # on the first source row of each (period, dimensions, object row), the
-    # rest reading NULL, which every aggregate skips. The same rows the grain
-    # dedup pass keeps with a DISTINCT, without leaving this one GROUP BY.
+    # row of that object once per period and group: its aggregate reads its
+    # input only on the first source row of each (period, dimensions, object
+    # row), the rest reading NULL, which every aggregate skips. The same rows
+    # the grain dedup pass keeps with a DISTINCT, without leaving this one
+    # GROUP BY. The whole input, as a measure filter wraps it, not the
+    # object's columns: ``COUNT(1)`` reads none, and ``COALESCE(x, 0) + 1``
+    # is not NULL where they are.
     first_flags: dict[str, str] = {}
 
     def _deduplicated(name: str, expr: Expr) -> Expr:
         object_name = resolved.dedup_targets.get(name)
         if object_name is None:
             return expr
+        aggregate, rewrap = unwrap_default(expr)
+        if not isinstance(aggregate, FunctionCall):
+            raise GrainDedupUnsupportedError(
+                f"Measure '{name}' is sourced from '{object_name}', whose rows this "
+                f"query's joins replicate, but is not a single aggregate that a "
+                f"period-over-period query can deduplicate. Query it without the "
+                f"period-over-period metric, or set allowFanOut: true."
+            )
         flag = first_flags.setdefault(object_name, f"{_FIRST_FLAG}{len(first_flags)}")
         first = BinaryOp(ColumnRef(name=flag, table=_SRC_ALIAS), "=", Literal.number(1))
-
-        def _on_first_row(ref: ColumnRef) -> Expr:
-            if ref.table != object_name:
-                return ref
-            return CaseExpr(when_clauses=[(first, ref)])
-
-        return map_column_refs(expr, _on_first_row)
+        args: list[Expr] = [CaseExpr(when_clauses=[(first, arg)]) for arg in aggregate.args]
+        return rewrap(replace(aggregate, args=args))
 
     measure_entries: list[tuple[str, Expr]] = []
     seen: set[str] = set()

@@ -223,7 +223,7 @@ def rewrite_exact_integer_avg(
         return None
     if measure.aggregation.upper() != "AVG" or measure.result_type != DataType.INT:
         return None
-    aggregate, rebuild = _unwrap_default(expr)
+    aggregate, rebuild = unwrap_default(expr)
     if not isinstance(aggregate, FunctionCall) or aggregate.name != "AVG":
         return None
     if aggregate.distinct or len(aggregate.args) != 1:
@@ -408,7 +408,7 @@ def apply_exact_integer_sum(
     """
     if dialect is None or not _is_integer_sum(measure):
         return expr
-    aggregate, rebuild = _unwrap_default(expr)
+    aggregate, rebuild = unwrap_default(expr)
     if not isinstance(aggregate, FunctionCall) or aggregate.name != "SUM":
         return expr
     if aggregate.distinct or len(aggregate.args) != 1:
@@ -631,7 +631,7 @@ def cast_measure_to_resolved_type(
     )
 
 
-def _unwrap_default(expr: Expr) -> tuple[Expr, Callable[[Expr], Expr]]:
+def unwrap_default(expr: Expr) -> tuple[Expr, Callable[[Expr], Expr]]:
     """See past a ``defaultValue`` wrapper to the aggregate inside it.
 
     ``defaultValue`` emits ``COALESCE(AVG(x), 0)``, so what reaches the rewrite

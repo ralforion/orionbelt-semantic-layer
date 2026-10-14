@@ -853,6 +853,45 @@ def test_period_over_period_over_a_deduplicated_component() -> None:
         (str(m)[:7], int(s), g if g is None else int(g), round(float(r), 2)) for m, s, g, r in rows
     ] == [("2024-01", 100, None, 33.33), ("2024-02", 110, 10, 27.5)]
 
+    # The whole aggregate input is read on the first row only, not the
+    # object's columns: a count of rows reads none (``COUNT(1)``), and a value
+    # computed from them is not NULL where they are. One product a month, so
+    # no growth; 101 and 111, so 10.
+    extra = yaml_text.replace(
+        "  Total Stock On Hand:\n",
+        "  Stock Plus One:\n"
+        "    resultType: int\n"
+        "    aggregation: sum\n"
+        "    expression: 'COALESCE({[Products].[Stock On Hand]}, 0) + 1'\n"
+        "  Total Stock On Hand:\n",
+    ) + "".join(
+        f"""  {name} Growth:
+    type: period_over_period
+    expression: '{{[{measure}]}}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+        for name, measure in (("Count", "Products Count"), ("Plus One", "Stock Plus One"))
+    )
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Sale Month"],
+                "measures": ["Products Count", "Count Growth", "Stock Plus One", "Plus One Growth"],
+            }
+        },
+        extra,
+    )
+    rows = sorted(_cumulative_db().execute(result.sql).fetchall())
+    assert [tuple(None if v is None else int(v) for v in r[1:]) for r in rows] == [
+        (1, None, 101, None),
+        (1, 0, 111, 10),
+    ]
+
     # A time filter: the prior month comes from the look-back, which
     # deduplicates the same way.
     result = _compile(

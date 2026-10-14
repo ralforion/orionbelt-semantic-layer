@@ -303,13 +303,20 @@ metrics:
         comparison: difference}}
   Stock per Quantity:
     expression: '{{[Total Stock]}} / {{[Sold Quantity]}}'
+  Count Growth:
+    type: period_over_period
+    expression: '{{[Products Count]}}'
+    periodOverPeriod:
+      {{timeDimension: Sale Month, grain: month, offset: -1, offsetGrain: month,
+        comparison: difference}}
 """
 
 
 def _assert_period_over_period(target: VendorTarget) -> None:
     """p1 sells twice in January: its stock counts once per month (100, not
     200), February's p2 is 110, so the growth is 10 and the stock per unit
-    100 / 3 and 110 / 4."""
+    100 / 3 and 110 / 4. One product a month (a ``COUNT(1)``), so no count
+    growth."""
     _create(target, POP_PRODUCTS, [("id", 0), ("stock", 1)], [("p1", 100), ("p2", 110)])
     _create(
         target,
@@ -327,14 +334,14 @@ def _assert_period_over_period(target: VendorTarget) -> None:
     raw, source_map = TrackedLoader().load_string(yaml_text)
     model, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
-    metrics = ["Total Stock", "Stock Growth", "Stock per Quantity"]
+    metrics = ["Total Stock", "Stock Growth", "Stock per Quantity", "Count Growth"]
     rows = _run(
         target,
         model,
         QueryObject(select=QuerySelect(dimensions=["Sale Month"], measures=metrics)),
     )
     got = {str(r["sale month"])[:7]: tuple(_ratio(r[m.lower()]) for m in metrics) for r in rows}
-    expected = {"2026-01": (100, None, 100 / 3), "2026-02": (110, 10, 110 / 4)}
+    expected = {"2026-01": (100, None, 100 / 3, None), "2026-02": (110, 10, 110 / 4, 0)}
     assert got == {
         k: tuple(None if v is None else round(Decimal(str(v)), 4) for v in values)
         for k, values in expected.items()
