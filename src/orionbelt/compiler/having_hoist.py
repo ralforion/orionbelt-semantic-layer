@@ -41,6 +41,7 @@ sets are disjoint: :func:`windowed_aliases` excludes deduplicated measures via
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from orionbelt.ast.nodes import (
@@ -54,7 +55,8 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.expr_rewrite import map_column_refs
 from orionbelt.compiler.metric_expansion import metric_leaf_components
-from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
+from orionbelt.compiler.metric_resolution import _GRAIN_RANK
+from orionbelt.compiler.resolution import ResolutionError, ResolvedDimension, ResolvedQuery
 from orionbelt.models.errors import SemanticError
 
 
@@ -180,22 +182,36 @@ def hoisted_predicates(resolved: ResolvedQuery) -> list[Expr]:
     by the time this runs, so those refs are rewritten to the dimension's output
     alias, which every wrapper projects. Anything left unresolvable is caught by
     :func:`apply_having_hoist`.
+
+    A date selected at two grains is two columns over one physical column. The
+    predicate compares the column's own value, so it reads the column of a
+    dimension it names, at the finest grain the query has: ``At`` beside
+    ``At:month`` filters the dates, not the months.
     """
     windowed = windowed_aliases(resolved)
-    by_physical = {
-        (dim.source_column, dim.object_name): dim.name
-        for dim in resolved.dimensions
-        if dim.source_column
-    }
 
-    def to_alias(ref: ColumnRef) -> Expr:
-        if ref.table is None:
-            return ref
-        alias = by_physical.get((ref.name, ref.table))
-        return ColumnRef(name=alias) if alias is not None else ref
+    def finest_first(dim: ResolvedDimension) -> int:
+        return _GRAIN_RANK[dim.grain] if dim.grain else -1
+
+    def to_alias(fields: frozenset[str]) -> Callable[[ColumnRef], Expr]:
+        by_physical: dict[tuple[str, str], str] = {}
+        ordered = sorted(
+            resolved.dimensions, key=lambda d: (d.dimension not in fields, finest_first(d))
+        )
+        for dim in ordered:
+            if dim.source_column:
+                by_physical.setdefault((dim.source_column, dim.object_name), dim.name)
+
+        def rewrite(ref: ColumnRef) -> Expr:
+            if ref.table is None:
+                return ref
+            alias = by_physical.get((ref.name, ref.table))
+            return ColumnRef(name=alias) if alias is not None else ref
+
+        return rewrite
 
     return [
-        map_column_refs(hf.expression, to_alias)
+        map_column_refs(hf.expression, to_alias(hf.referenced_fields))
         for hf in resolved.having_filters
         if hf.referenced_fields & windowed
     ]

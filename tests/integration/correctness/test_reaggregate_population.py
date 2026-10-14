@@ -81,6 +81,8 @@ _METRICS: dict[str, dict[str, Any]] = {
     "Orders Doubled": {"expression": "{[Sales Count]} * 2"},
     "Count Rank": {"type": "window", "windowFunction": "rank", "measure": "Sales Count"},
     "Rank Plus One": {"expression": "{[Count Rank]} + 1"},
+    "One": {"expression": "1"},
+    "Orders Plus One": {"expression": "{[Sales Count]} + {[One]}"},
     "Avg Client Orders Buyers": {
         **_PER_CLIENT,
         "measure": "Sales Count",
@@ -121,6 +123,13 @@ def model() -> SemanticModel:
         "defaultValue": 0,
     }
     raw["metrics"].update(_METRICS)
+    # The sales date with no declared grain, so a query can select the date
+    # itself beside a grain of it.
+    raw["dimensions"]["Raw Date"] = {
+        "dataObject": "Sales",
+        "column": "Sales Date",
+        "resultType": "date",
+    }
     resolved, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     return resolved
@@ -590,3 +599,36 @@ def test_a_window_on_a_member_row_is_null(
     rows = run(["Client Name"], ["Clients All", *measures])
     (idle,) = [r for r in rows if r["Client Name"] == name]
     assert all(idle[m] is None for m in measures), idle
+
+
+@pytest.mark.parametrize(
+    "dims",
+    [["Raw Date", "Raw Date:month"], ["Raw Date:month", "Raw Date"]],
+    ids=["date first", "month first"],
+)
+def test_having_on_a_date_reads_the_date_not_a_grain_of_it(run: Callable, dims: list[str]) -> None:
+    """``Raw Date = 2022-01-10`` beside ``Raw Date:month`` compares the dates,
+    in either order: the predicate names the date, not its month."""
+    rows = run(
+        dims,
+        ["Clients All", "Sales Count"],
+        having=[QueryFilter(field="Raw Date", op="=", value="2022-01-10")],
+    )
+    assert len(rows) == 1
+    assert rows[0]["Clients All"] == 500 and rows[0]["Sales Count"] > 0
+
+
+@pytest.mark.parametrize(
+    "measures",
+    [["One"], ["Orders Plus One"], ["One", "Orders Plus One"]],
+    ids=["constant", "formula", "both"],
+)
+def test_a_constant_on_a_member_row(
+    run: Callable, commerce_db: duckdb.DuckDBPyConnection, measures: list[str]
+) -> None:
+    """A constant metric is its constant on a member row, and so is a formula
+    reading it as over no rows, whether or not the constant is selected."""
+    name = _idle_client(commerce_db)
+    rows = run(["Client Name"], ["Clients All", *measures])
+    (idle,) = [r for r in rows if r["Client Name"] == name]
+    assert all(idle[m] == 1 for m in measures), idle

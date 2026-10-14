@@ -1363,8 +1363,17 @@ def wrap_with_reaggregate(
         declared = model.metrics.get(name)
         if declared is None or declared.type is not MetricType.DERIVED:
             return Literal.null()
-        metric = next((m for m in resolved.measures if m.name == name), None)
-        if metric is not None and metric.expression is not None and metric.component_measures:
+        # Selected or only a component, and with or without components of its
+        # own: a constant formula is its constant.
+        metric = next(
+            (
+                m
+                for m in [*resolved.measures, *resolved.metric_components.values()]
+                if m.name == name
+            ),
+            None,
+        )
+        if metric is not None and metric.expression is not None:
             return metric_over_components(
                 metric, resolved.metric_components, empty_of, model, dialect
             )
