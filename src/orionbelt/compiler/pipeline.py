@@ -10,7 +10,7 @@ from orionbelt.ast.nodes import Select
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.fanout import detect_fanout
-from orionbelt.compiler.grain_dedup import detect_dedup_measures
+from orionbelt.compiler.grain_dedup import detect_dedup_measures, split_grain_components
 from orionbelt.compiler.graph import JoinStep, reuse_join_graphs
 from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
 from orionbelt.compiler.raw import RawPlanner
@@ -307,6 +307,7 @@ class CompilationPipeline:
             resolved.dedup_components = {
                 k: v for k, v in dedup_plan.components.items() if k not in isolated
             }
+            resolved.dedup_grain_components = split_grain_components(resolved)
 
     def compile(
         self,

@@ -77,6 +77,14 @@ measures:
     columns: [{{dataObject: Sales, column: Quantity}}]
     aggregation: sum
     filterContext: {{mode: FIXED}}
+  Grand Quantity:
+    columns: [{{dataObject: Sales, column: Quantity}}]
+    aggregation: sum
+    total: true
+  Region Quantity:
+    columns: [{{dataObject: Sales, column: Quantity}}]
+    aggregation: sum
+    grain: {{mode: FIXED, keepOnly: [Region]}}
 metrics:
   Region Stock Rank:
     type: window
@@ -89,6 +97,12 @@ metrics:
     expression: '{{[Total Stock]}} / {{[Grand Stock]}}'
   Share of Region Stock:
     expression: '{{[Total Stock]}} / {{[Region Stock]}}'
+  Stock per Grand Quantity:
+    expression: '{{[Total Stock]}} / {{[Grand Quantity]}}'
+  Stock per Region Quantity:
+    expression: '{{[Total Stock]}} / {{[Region Quantity]}}'
+  Doubled Grand Quantity:
+    expression: '{{[Grand Quantity]}} * 2'
 """
 
 
@@ -171,6 +185,28 @@ def _assert_all(target: VendorTarget) -> None:
     }, f"{target.name}: {shares}"
 
     _assert_having_after_filter_context(target, model)
+    _assert_fact_side_components(target, model)
+
+
+def _assert_fact_side_components(target: VendorTarget, model: SemanticModel) -> None:
+    """A split metric's fact-side component with a total (4 units) or a grain
+    override (2 per region), computed by the dedup pass at that grain, and a
+    metric that reads the same total without needing a split (8)."""
+    metrics = ["Stock per Grand Quantity", "Stock per Region Quantity", "Doubled Grand Quantity"]
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Region", "Category"], measures=metrics)),
+    )
+    got = {(r["region"], r["category"]): tuple(_ratio(r[m.lower()]) for m in metrics) for r in rows}
+    expected = {
+        ("north", "tools"): (52.5, 105, 8),
+        ("south", "parts"): (75, 150, 8),
+        ("south", "tools"): (25, 50, 8),
+    }
+    assert got == {
+        k: tuple(round(Decimal(str(v)), 4) for v in values) for k, values in expected.items()
+    }, f"{target.name}: {got}"
 
 
 def _assert_having_after_filter_context(target: VendorTarget, model: SemanticModel) -> None:

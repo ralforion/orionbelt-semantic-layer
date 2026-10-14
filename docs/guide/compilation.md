@@ -341,6 +341,16 @@ holds for a deduplicated component of a split metric with `total` or `grain`,
 so a share of the grand total or of the region's stock is computed from
 deduplicated values on both sides.
 
+A split metric's other components are read from the pass's CTEs too, where no
+later wrapper can reach the fact tables. So a fact-side component with `total`
+or `grain` (stock per *grand total* of units sold) is computed by the dedup pass
+as well, at its own grain: the query's own FROM, joins and WHERE, aggregated in
+an `at_total_N` CTE with no `GROUP BY`, or an `at_grain_N` CTE grouped by the
+override's columns. A fact-side measure is not replicated by the query's joins,
+so it needs no `DISTINCT`. Any other metric in the query that reads the same
+component is rebuilt from that column as well, rather than from an aggregate at
+the query's grain.
+
 A deduplicated `count` reads `0`, not `NULL`, when a group has no matching
 rows on the joined object: that group contributes no row to the dedup CTE, so
 the join back would otherwise yield `NULL`. Other aggregations keep `NULL`,
@@ -401,7 +411,7 @@ than return an inflated number:
 | Period-over-period | Rebuilds the FROM from a date spine and re-joins tables the dedup CTEs already joined: `Ambiguous reference to table ... duplicate alias` |
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
 | A deduplicated measure reached through a **window** metric (a derived metric over one) | That wrapper rebuilds its base measure from the fact tables, which a dedup CTE cannot serve. Nested *derived* metrics are followed and split normally |
-| `total: true` or a `grain` override on a component of a split metric that is *not* deduplicated | The totals wrapper decomposes the metric again and re-projects that component's raw aggregate into a CTE whose FROM is the dedup output, where the fact tables are gone. On a deduplicated component the dedup pass computes it instead (see above) |
+| `total: true` or a `grain` override on a **filterContext** component of a split metric | That component comes from a scan of its own, which has not been composed with an override over a split metric. On a deduplicated or a fact-side component the dedup pass computes it instead (see above) |
 | A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
 
 Anything an aggregate reads beyond its own value columns has to be projected

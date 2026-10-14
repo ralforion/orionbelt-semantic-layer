@@ -75,36 +75,37 @@ def _reagg_func(aggregation: str) -> str:
     return "SUM"
 
 
-def _needs_window_wrap(measure: ResolvedMeasure, dedup_targets: Container[str]) -> bool:
+def _needs_window_wrap(measure: ResolvedMeasure, dedup_computed: Container[str]) -> bool:
     """Check if a measure needs window wrapping (total or grain override).
 
     Measures with ``filter_context`` are handled by ``filter_wrap`` and skipped
-    here. Measures and metric components in *dedup_targets* are handled by
+    here. Measures and metric components in *dedup_computed* are handled by
     ``compiler.grain_dedup``, which computes their total or grain override in a
-    CTE deduplicated at that grain — a window over this pass's input cannot
-    reproduce that, because the per-group values it would sum belong to
-    overlapping groups and would double count. Both are pass-through as far as
-    this wrapper is concerned.
+    CTE at that grain — deduplicated, where a window over this pass's input
+    cannot reproduce it, because the per-group values it would sum belong to
+    overlapping groups and would double count; or a fact-side component of a
+    metric that pass splits, whose fact tables this pass no longer sees. Both
+    are pass-through as far as this wrapper is concerned.
 
-    *dedup_targets* is required rather than defaulted: every caller has it, and
+    *dedup_computed* is required rather than defaulted: every caller has it, and
     a default is exactly how the exclusion came to be applied in one place and
     forgotten in the outer projection.
     """
-    if measure.name in dedup_targets:
+    if measure.name in dedup_computed:
         return False
     if measure.filter_context is not None:
         return False
     return measure.total or measure.grain_override is not None
 
 
-def is_avg_total(measure: ResolvedMeasure, dedup_targets: Container[str]) -> bool:
+def is_avg_total(measure: ResolvedMeasure, dedup_computed: Container[str]) -> bool:
     """Whether a measure is an AVG total/grain-override, needing sum+count helpers.
 
     Public because it is also a *precondition*: the helpers decompose the
     aggregate's argument, so this measure cannot be window-wrapped over a value
     some earlier pass already averaged. ``compiler.passes`` refuses that.
     """
-    return _needs_window_wrap(measure, dedup_targets) and measure.aggregation.upper() == "AVG"
+    return _needs_window_wrap(measure, dedup_computed) and measure.aggregation.upper() == "AVG"
 
 
 def _avg_sum_alias(name: str) -> str:
@@ -144,19 +145,19 @@ def _peel_default(expr: Expr, measure: ResolvedMeasure) -> Expr:
     return expr
 
 
-def _build_total_window(measure: ResolvedMeasure, dedup_targets: Container[str]) -> Expr:
+def _build_total_window(measure: ResolvedMeasure, dedup_computed: Container[str]) -> Expr:
     """Build a window function for a total/grain-override measure's outer column.
 
     This is where the measure's value is finally produced, so a declared default
     is re-applied here - :func:`_peel_default` took it off the column the window
     reads.
     """
-    return measure.with_default(_build_total_window_expr(measure, dedup_targets))
+    return measure.with_default(_build_total_window_expr(measure, dedup_computed))
 
 
-def _build_total_window_expr(measure: ResolvedMeasure, dedup_targets: Container[str]) -> Expr:
+def _build_total_window_expr(measure: ResolvedMeasure, dedup_computed: Container[str]) -> Expr:
     partition_by = _partition_by_exprs(measure)
-    if is_avg_total(measure, dedup_targets):
+    if is_avg_total(measure, dedup_computed):
         return BinaryOp(
             left=WindowFunction(
                 func_name="SUM",
@@ -187,7 +188,7 @@ def _collect_total_names(resolved: ResolvedQuery) -> set[str]:
     groups, so ``SUM(...) OVER ()`` would double count.
     """
     names: set[str] = set()
-    dedup = resolved.dedup_targets
+    dedup = resolved.dedup_computed
     for m in resolved.measures:
         if _needs_window_wrap(m, dedup):
             names.add(m.name)
@@ -204,7 +205,7 @@ def _metrics_with_total_components(resolved: ResolvedQuery) -> set[str]:
         if not m.component_measures:
             continue
         for comp in metric_leaf_components(m, resolved.metric_components):
-            if _needs_window_wrap(comp, resolved.dedup_targets):
+            if _needs_window_wrap(comp, resolved.dedup_computed):
                 names.add(m.name)
                 break
     return names
@@ -225,8 +226,8 @@ def _substitute_metric_refs(
     """
 
     def value_of(comp: ResolvedMeasure) -> Expr:
-        if _needs_window_wrap(comp, resolved.dedup_targets):
-            return _build_total_window(comp, resolved.dedup_targets)
+        if _needs_window_wrap(comp, resolved.dedup_computed):
+            return _build_total_window(comp, resolved.dedup_computed)
         return ColumnRef(name=comp.name)
 
     return expand_metric_expression(expr, resolved.metric_components, value_of)
@@ -261,7 +262,7 @@ def wrap_with_totals(
             for comp in metric_leaf_components(metric, resolved.metric_components):
                 if comp.name in direct_measure_names:
                     continue  # Already present as a direct measure
-                if is_avg_total(comp, resolved.dedup_targets):
+                if is_avg_total(comp, resolved.dedup_computed):
                     # AVG total needs sum + count helper columns
                     comp_expr = resolved.projected_expressions.get(comp.name, comp.expression)
                     base_columns.append(_build_avg_helpers_base_col(comp, "sum", comp_expr))
@@ -327,10 +328,10 @@ def wrap_with_totals(
             else:
                 # Metric without total components: pass-through
                 outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
-        elif _needs_window_wrap(m, resolved.dedup_targets):
+        elif _needs_window_wrap(m, resolved.dedup_computed):
             # Total or grain-override measure: window function
             outer_columns.append(
-                AliasedExpr(expr=_build_total_window(m, resolved.dedup_targets), alias=m.name)
+                AliasedExpr(expr=_build_total_window(m, resolved.dedup_computed), alias=m.name)
             )
         else:
             # Regular measure: pass-through
@@ -372,7 +373,7 @@ def _is_avg_window_wrap_by_name(name: str, resolved: ResolvedQuery) -> bool:
     """Check if a direct measure with given name is an AVG total/grain-override."""
     for m in resolved.measures:
         if m.name == name and not m.component_measures:
-            return is_avg_total(m, resolved.dedup_targets)
+            return is_avg_total(m, resolved.dedup_computed)
     return False
 
 
@@ -380,7 +381,7 @@ def _is_window_wrapped_by_name(name: str, resolved: ResolvedQuery) -> bool:
     """Check if a direct measure with given name is re-aggregated by a window."""
     for m in resolved.measures:
         if m.name == name and not m.component_measures:
-            return _needs_window_wrap(m, resolved.dedup_targets)
+            return _needs_window_wrap(m, resolved.dedup_computed)
     return False
 
 

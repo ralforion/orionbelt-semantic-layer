@@ -161,6 +161,16 @@ measures:
     aggregation: sum
     total: true
     expression: '{[Products].[Stock On Hand]}'
+  Region Quantity:
+    resultType: int
+    aggregation: sum
+    grain: {mode: FIXED, keepOnly: [Region]}
+    expression: '{[Sales].[Quantity]}'
+  Doubled Total Quantity:
+    resultType: int
+    aggregation: sum
+    total: true
+    expression: '{[Sales].[Quantity]} * 2'
 
 metrics:
   Price per Unit:
@@ -182,6 +192,12 @@ metrics:
     expression: '{[Price per Unit]} * 2'
   Stock per Grand Total:
     expression: '{[Total Stock On Hand]} / {[Grand Total Quantity]}'
+  Stock per Region Quantity:
+    expression: '{[Total Stock On Hand]} / {[Region Quantity]}'
+  Doubled Grand Quantity:
+    expression: '{[Grand Total Quantity]} * 2'
+  Grand over Doubled Total:
+    expression: '{[Grand Total Quantity]} / {[Doubled Total Quantity]}'
 """
 
 
@@ -646,16 +662,160 @@ def test_total_on_a_deduplicated_metric_component() -> None:
     ]
 
 
-def test_total_on_any_component_of_a_split_metric_is_refused() -> None:
-    """The total need not be on the deduplicated component to conflict.
+def test_total_on_a_fact_side_component_of_a_split_metric() -> None:
+    """A metric split across dedup CTEs is read from them, where the totals
+    wrapper cannot reach the fact tables, so this was refused. The dedup pass
+    computes the fact-side total itself, over the plan's own rows: 4 units in
+    all, beside each region's products once (north 210, south 400). Selected
+    on its own too, it reads the same column."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Stock per Grand Total", "Grand Total Quantity"],
+            }
+        }
+    )
+    assert "__ob_at_total_" in result.sql
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [(r, float(v), int(q)) for r, v, q in rows] == [
+        ("north", 52.5, 4),
+        ("south", 100.0, 4),
+    ]
 
-    Once a metric is split across dedup CTEs, the totals wrapper decomposes it
-    again and re-projects *every* component's raw aggregate into a base CTE
-    whose FROM is the dedup output - so a ``total: true`` sibling of a
-    deduplicated component breaks it just as badly.
-    """
-    with pytest.raises(GrainDedupUnsupportedError, match="totals"):
-        _compile({"select": {"dimensions": ["Region"], "measures": ["Stock per Grand Total"]}})
+
+def test_another_metric_reading_that_component_reads_the_same_total() -> None:
+    """The totals wrapper leaves the component to the dedup pass, so a metric
+    that does not need splitting but reads it is rebuilt there too: 8, not the
+    per-region units doubled (4). A HAVING on the split metric still holds."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Stock per Grand Total", "Doubled Grand Quantity"],
+            },
+            "having": [{"field": "Stock per Grand Total", "op": "gt", "value": 60}],
+        }
+    )
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [(r, float(v), int(d)) for r, v, d in rows] == [("south", 100.0, 8)]
+
+
+def test_a_metric_split_through_a_shared_total_has_its_own_totals_computed() -> None:
+    """A metric split only because it reads a total the pass computes is
+    rebuilt from the pass's CTEs, so its other total components are computed
+    there too: 4 over 8, where the totals wrapper re-projected
+    ``SUM("Sales"."quantity")`` over CTEs that no longer have Sales."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Stock per Grand Total", "Grand over Doubled Total"],
+            }
+        }
+    )
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [(r, float(v), float(g)) for r, v, g in rows] == [
+        ("north", 52.5, 0.5),
+        ("south", 100.0, 0.5),
+    ]
+
+
+ANCHORED_YAML = """\
+version: 1.0
+name: anchored_dedup
+dataObjects:
+  Calendar:
+    code: calendar
+    columns:
+      Date Key: {code: datekey, abstractType: string, primaryKey: true}
+      Year: {code: year, abstractType: int}
+  Products:
+    code: products
+    columns:
+      Product ID: {code: id, abstractType: string, primaryKey: true}
+      Stock: {code: stock, abstractType: int}
+  Sales:
+    code: sales
+    columns:
+      Sale ID: {code: id, abstractType: string, primaryKey: true}
+      Sale Date Key: {code: datekey, abstractType: string}
+      Product: {code: product_id, abstractType: string}
+      Qty: {code: qty, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Sale Date Key]
+        columnsTo: [Date Key]
+      - {joinType: many-to-one, joinTo: Products, columnsFrom: [Product], columnsTo: [Product ID]}
+  Returns:
+    code: returns
+    columns:
+      Return ID: {code: id, abstractType: string, primaryKey: true}
+      Return Date Key: {code: datekey, abstractType: string}
+      Qty: {code: qty, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Return Date Key]
+        columnsTo: [Date Key]
+dimensions:
+  Year: {dataObject: Calendar, column: Year, resultType: int}
+measures:
+  Total Stock:
+    resultType: int
+    aggregation: sum
+    expression: '{[Products].[Stock]}'
+  Cross Total:
+    resultType: float
+    aggregation: sum
+    total: true
+    anchor: Sales
+    expression: '{[Sales].[Qty]} * {[Returns].[Qty]}'
+metrics:
+  Stock per Cross Total:
+    expression: '{[Total Stock]} / {[Cross Total]}'
+"""
+
+
+def test_an_anchored_total_component_reads_the_planners_expression() -> None:
+    """An anchored measure reads its conformed subquery, which the planner put
+    in place of the second fact. Computed at its own grain it has to read the
+    same, or ``"Returns"."qty"`` binds to nothing. Stock 100 + 50 over
+    2 * 1 + 3 * 1 + 1 * 1."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE calendar AS SELECT 'd1' AS datekey, 2026 AS year")
+    con.execute("CREATE TABLE products AS FROM (VALUES ('p1', 100), ('p2', 50)) t(id, stock)")
+    con.execute(
+        "CREATE TABLE sales AS FROM (VALUES ('s1', 'd1', 'p1', 2.0), ('s2', 'd1', 'p1', 3.0),"
+        " ('s3', 'd1', 'p2', 1.0)) t(id, datekey, product_id, qty)"
+    )
+    con.execute("CREATE TABLE returns AS SELECT 'r1' AS id, 'd1' AS datekey, 1.0 AS qty")
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Stock per Cross Total"]}},
+        ANCHORED_YAML,
+    )
+    assert [(y, float(v)) for y, v in con.execute(result.sql).fetchall()] == [(2026, 25.0)]
+
+
+def test_grain_override_on_a_fact_side_component_of_a_split_metric() -> None:
+    """The same for a ``grain`` override: units per region (2 each), not per
+    region and category, beside the products of each pair once."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region", "Category"],
+                "measures": ["Stock per Region Quantity"],
+            }
+        }
+    )
+    assert "__ob_at_grain_" in result.sql
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [(r, c, float(v)) for r, c, v in rows] == [
+        ("north", "tools", 105.0),
+        ("south", "parts", 150.0),
+        ("south", "tools", 50.0),
+    ]
 
 
 def test_period_over_period_over_a_deduplicated_component_is_refused() -> None:
