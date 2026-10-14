@@ -196,13 +196,20 @@ class TestTheStringBuiltDivisionPath:
     def test_the_widening_dialects_still_widen(self, dialect: str) -> None:
         """Guarding must not have cost ClickHouse and MySQL their precision."""
         sql = DialectRegistry.get(dialect).render_decimal_division_sql("cur", "prev")
-        if dialect in ("clickhouse", "mysql"):
+        if dialect == "mysql":
             assert "38, 14" in sql, sql
+        if dialect == "clickhouse":
+            # The dividend only: the divisor keeps its own type.
+            assert sql == "(cur + toDecimal256(0, 24)) / NULLIF(prev, 0)", sql
 
 
 @pytest.mark.parametrize(
     ("dialect", "promotion"),
-    [("postgres", " * 1.0 /"), ("dremio", ", CAST(NULL AS DECIMAL(1, 1))) /")],
+    [
+        ("postgres", " * 1.0 /"),
+        ("dremio", ", CAST(NULL AS DECIMAL(1, 1))) /"),
+        ("clickhouse", " + toDecimal256(0, 24)) /"),
+    ],
 )
 def test_a_promoted_dividend_is_rendered_once(dialect: str, promotion: str) -> None:
     """A dividend promoted for a true division builds on its rendering: a

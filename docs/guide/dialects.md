@@ -242,24 +242,28 @@ OrionBelt automatically wraps aggregate expressions with `CAST` based on resolve
 | Snowflake, DuckDB, Databricks, Dremio | 38 |
 | BigQuery | 38 |
 
-!!! warning "ClickHouse: decimal division keeps the operand's scale"
+!!! note "ClickHouse: decimal division"
 
-    Dividing two decimals on ClickHouse produces a result at the *operands'*
-    scale rather than widening it, so a ratio built from `decimal(18, 2)`
-    columns is truncated to two places:
+    ClickHouse divides decimals at the dividend's scale rather than widening
+    it, so a ratio of `decimal(18, 2)` values would be truncated to two places:
 
     ```sql
     SELECT toDecimal64(4254, 2) / toDecimal64(10000, 2)   -- 0.42
-    SELECT toDecimal64(4254, 4) / toDecimal64(10000, 4)   -- 0.4254
     ```
 
-    Every other supported dialect widens the scale for you. If a metric divides
-    decimal measures and you need the precision, declare the metric's
-    `dataType` with the scale you want, or give the measures a `float`
-    `resultType` so the division happens in floating point. This is a
-    ClickHouse arithmetic rule, not something OrionBelt applies -- it is
-    documented here because a ratio that reads `0.42` on one engine and
-    `0.4254` on another looks like a compiler bug and is not.
+    It also computes the quotient as `a * 10^s / b` (`s` the divisor's scale) in
+    the dividend's type without an overflow check, so too narrow a type gives a
+    wrong number, not an error. OrionBelt therefore adds a `Decimal256` zero
+    of 24 places to every dividend, `(a + toDecimal256(0, 24)) / b`:
+
+    - the quotient has at least 24 places, and a dividend with more keeps them;
+    - 76 digits leave a decimal dividend all of its integer digits beside any
+      divisor of up to 24 places;
+    - an integer becomes an exact decimal, and a float or double is not
+      converted, so a double beyond any `Decimal128` divides as a double.
+
+    The divisor keeps its own type. A divisor with more places than its
+    dividend (beyond 24) is refused by ClickHouse with `ARGUMENT_OUT_OF_BOUND`.
 
 === "BigQuery / Databricks / Dremio / DuckDB / MySQL / Postgres / Snowflake"
 
