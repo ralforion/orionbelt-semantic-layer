@@ -185,6 +185,25 @@ def _assert_having_after_filter_context(target: VendorTarget, model: SemanticMod
     got = {r["region"]: _ratio(r["region stock per quantity"]) for r in rows}
     assert got == {"south": Decimal(50)}, f"{target.name}: {got}"
 
+    # A separate predicate on a deduplicated measure is dedup's to apply; the
+    # filterContext pass does not rebuild it as a HAVING over dedup's output.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Region", "Category"],
+                measures=["Region Stock per Quantity", "Region Stock"],
+            ),
+            having=[
+                QueryFilter(field="Region Stock per Quantity", op=">", value=0),
+                QueryFilter(field="Region Stock", op=">", value=300),
+            ],
+        ),
+    )
+    kept = sorted((r["region"], r["category"]) for r in rows)
+    assert kept == [("south", "parts"), ("south", "tools")], f"{target.name}: {kept}"
+
 
 def test_duckdb_grain_dedup(vendor_duckdb: VendorTarget) -> None:
     _assert_all(vendor_duckdb)

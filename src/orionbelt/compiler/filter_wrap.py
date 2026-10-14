@@ -413,7 +413,11 @@ def wrap_with_filter_context(
         if hf.referenced_fields & hoisted and not hf.referenced_fields & windowed
     ]
     main_having = ast.having
-    if outer_having:
+    # After grain dedup the query beneath is its join of CTEs, ungrouped, and
+    # it has placed every predicate but this pass's own: rebuilding the rest
+    # as a HAVING over it would apply them twice, over columns no longer
+    # grouped. Its filter stays as it is.
+    if outer_having and not resolved.dedup_targets:
         planner_exprs = {
             alias: col.expr
             for col in ast.columns

@@ -1554,6 +1554,39 @@ def test_having_on_a_filter_context_value_reads_the_final_value(
     assert [r[0] for r in rows] == kept
 
 
+@pytest.mark.parametrize(
+    ("other", "kept"),
+    [
+        (("Region Stock", ">", 300), [("south", "parts"), ("south", "tools")]),
+        (("Sold Quantity", ">=", 2), [("north", "tools")]),
+    ],
+    ids=["deduplicated measure", "base measure"],
+)
+def test_separate_having_predicates_beside_a_filter_context_metric(
+    other: tuple[str, str, int], kept: list[tuple[str, str]]
+) -> None:
+    """A predicate on the filterContext metric and a separate one on another
+    measure: dedup applies the second, the filterContext pass only the first,
+    and neither is rebuilt as a HAVING over dedup's ungrouped output."""
+    yaml_text = MODEL_YAML.replace("metrics:\n", _FILTER_CONTEXT_METRICS, 1)
+    field, op, value = other
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region", "Category"],
+                "measures": ["Region Stock per Quantity", "Region Stock", "Sold Quantity"],
+            },
+            "having": [
+                {"field": "Region Stock per Quantity", "op": ">", "value": 0},
+                {"field": field, "op": op, "value": value},
+            ],
+        },
+        yaml_text,
+    )
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [r[:2] for r in rows] == kept
+
+
 def test_deduplicated_total_is_not_rewrapped_when_another_total_is_present() -> None:
     """The totals pass must treat dedup-handled measures as pass-through throughout.
 
