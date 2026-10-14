@@ -130,6 +130,7 @@ def model() -> SemanticModel:
         "column": "Sales Date",
         "resultType": "date",
     }
+    raw["dimensions"]["Raw Date Alias"] = {**raw["dimensions"]["Raw Date"]}
     resolved, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     return resolved
@@ -632,3 +633,17 @@ def test_a_constant_on_a_member_row(
     rows = run(["Client Name"], ["Clients All", *measures])
     (idle,) = [r for r in rows if r["Client Name"] == name]
     assert all(idle[m] == 1 for m in measures), idle
+
+
+@pytest.mark.parametrize("field", ["Raw Date", "Sales.Sales Date"])
+def test_having_on_a_date_reads_another_dimension_of_it(run: Callable, field: str) -> None:
+    """``Raw Date:month`` beside ``Raw Date Alias``, a second dimension on the
+    same date: ``Raw Date = 2022-01-10`` compares the alias's dates, the
+    column's own value, not the named dimension's months."""
+    rows = run(
+        ["Raw Date:month", "Raw Date Alias"],
+        ["Clients All", "Sales Count"],
+        having=[QueryFilter(field=field, op="=", value="2022-01-10")],
+    )
+    assert len(rows) == 1
+    assert str(rows[0]["Raw Date Alias"]) == "2022-01-10"
