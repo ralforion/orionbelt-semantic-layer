@@ -9,11 +9,12 @@ its public surface is unchanged.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
     BinaryOp,
+    CaseExpr,
     Cast,
     ColumnRef,
     Exists,
@@ -511,11 +512,14 @@ class CompositeAliases:
     ``multi_field`` maps a multi-field measure to one column name per argument
     (the legs project the arguments separately; the outer query concatenates
     them). ``within_group`` maps an ordered aggregate to the column carrying its
-    sort key.
+    sort key. ``first_flags`` maps a measure deduplicated inside the union
+    (``ResolvedQuery.leg_dedup_targets``) to the column flagging the first row
+    of each row of its object per group.
     """
 
     multi_field: dict[str, list[str]]
     within_group: dict[str, str]
+    first_flags: dict[str, str]
 
 
 def composite_aliases(resolved: ResolvedQuery) -> CompositeAliases:
@@ -558,7 +562,12 @@ def composite_aliases(resolved: ResolvedQuery) -> CompositeAliases:
             multi_field[name] = [allocate(f"{name}__f{i}") for i in range(len(aggregate.args))]
         if within_group_item(measure) is not None:
             within_group[name] = allocate(f"{name}__wg")
-    return CompositeAliases(multi_field=multi_field, within_group=within_group)
+    # After the others, so a plan that has not found its deduplicated measures
+    # yet allocates every other name the same.
+    first_flags = {name: allocate(f"{name}__first") for name in sorted(resolved.leg_dedup_targets)}
+    return CompositeAliases(
+        multi_field=multi_field, within_group=within_group, first_flags=first_flags
+    )
 
 
 def unwrap_aggregation(measure: ResolvedMeasure) -> Expr:
@@ -774,6 +783,16 @@ def build_outer_measure_expr(
             rebuilt = build_outer_concat_count(field_aliases, agg, distinct, cte_name)
     else:
         rebuilt = build_outer_aggregate(measure, cte_name, aliases.within_group)
+        flag = aliases.first_flags.get(measure.name)
+        if flag is not None:
+            # A row of a replicated object counts once per group: its leg
+            # flagged the first of its rows, and every other one reads NULL,
+            # which the aggregate skips. The whole input, so a ``COUNT(1)``
+            # counts object rows rather than union rows.
+            first = BinaryOp(ColumnRef(name=flag, table=cte_name), "=", Literal.number(1))
+            rebuilt = replace(
+                rebuilt, args=[CaseExpr(when_clauses=[(first, arg)]) for arg in rebuilt.args]
+            )
     # The legs carried the aggregate's input; the default belongs on the value
     # this rebuild produces, which is what the query finally reports.
     return measure.with_default(rebuilt)

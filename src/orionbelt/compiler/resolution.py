@@ -759,6 +759,16 @@ class ResolvedQuery:
     The pass computes these at their own grain instead, over the plan's own
     rows, which a fact-side measure needs no deduplication of."""
 
+    leg_dedup_targets: dict[str, str] = field(default_factory=dict)
+    """Measures a multi-fact plan deduplicates inside its union, mapped to the
+    replicated object they are sourced from.
+
+    Resolution cannot see these: its join steps are the base object's, and the
+    join that replicates lives inside one leg. The CFL planner finds them per
+    leg, flags the first row of each object row per group there, and the outer
+    aggregate reads its input only on flagged rows (see
+    :func:`~orionbelt.compiler.cfl_projection.composite_aliases`)."""
+
     composite_cte: str | None = None
     """Name of the UNION ALL composite CTE, when the plan actually built one.
 

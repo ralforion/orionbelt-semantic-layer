@@ -187,6 +187,7 @@ def _assert_all(target: VendorTarget) -> None:
     _assert_having_after_filter_context(target, model)
     _assert_fact_side_components(target, model)
     _assert_period_over_period(target)
+    _assert_multi_fact(target)
 
 
 def _assert_fact_side_components(target: VendorTarget, model: SemanticModel) -> None:
@@ -351,6 +352,100 @@ def _assert_period_over_period(target: VendorTarget) -> None:
     assert got == {
         k: tuple(None if v is None else round(Decimal(str(v)), 4) for v in values)
         for k, values in expected.items()
+    }, f"{target.name}: {got}"
+
+
+CFL_DATES = "dedup_cfl_dates"
+CFL_PRODUCTS = "dedup_cfl_products"
+CFL_SALES = "dedup_cfl_sales"
+CFL_REFUNDS = "dedup_cfl_refunds"
+
+CFL_MODEL_YAML = """
+version: "1.0"
+name: grain_dedup_cfl_vendor
+dataObjects:
+  Dates:
+    code: {dates}
+    schema: '{schema}'
+    columns:
+      Date Key: {{code: id, abstractType: string, primaryKey: true}}
+      Month: {{code: month, abstractType: int}}
+  Products:
+    code: {products}
+    schema: '{schema}'
+    columns:
+      Product ID: {{code: id, abstractType: string, primaryKey: true}}
+      Stock: {{code: stock, abstractType: float}}
+  Sales:
+    code: {sales}
+    schema: '{schema}'
+    columns:
+      Sale ID: {{code: id, abstractType: string, primaryKey: true}}
+      Date: {{code: date_id, abstractType: string}}
+      Product: {{code: product_id, abstractType: string}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Dates, columnsFrom: [Date], columnsTo: [Date Key]}}
+      - {{joinType: many-to-one, joinTo: Products, columnsFrom: [Product], columnsTo: [Product ID]}}
+  Refunds:
+    code: {refunds}
+    schema: '{schema}'
+    columns:
+      Refund ID: {{code: id, abstractType: string, primaryKey: true}}
+      Date: {{code: date_id, abstractType: string}}
+      Refund: {{code: refund, abstractType: float}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Dates, columnsFrom: [Date], columnsTo: [Date Key]}}
+dimensions:
+  Month: {{dataObject: Dates, column: Month, resultType: int}}
+measures:
+  Total Stock:
+    columns: [{{dataObject: Products, column: Stock}}]
+    aggregation: sum
+  Refund Amount:
+    columns: [{{dataObject: Refunds, column: Refund}}]
+    aggregation: sum
+"""
+
+
+def _assert_multi_fact(target: VendorTarget) -> None:
+    """Sales and refunds share only the dates, so the query is a UNION ALL,
+    and the sales leg replicates products: p1 sold twice in month 1 counts
+    once (100, one product), and the sale of a missing product p9 in month 2
+    is no product at all."""
+    _create(target, CFL_DATES, [("id", 0), ("month", 2)], [("d1", 1), ("d2", 2)])
+    _create(target, CFL_PRODUCTS, [("id", 0), ("stock", 1)], [("p1", 100), ("p2", 110)])
+    _create(
+        target,
+        CFL_SALES,
+        [("id", 0), ("date_id", 0), ("product_id", 0)],
+        [("s1", "d1", "p1"), ("s2", "d1", "p1"), ("s3", "d2", "p2"), ("s4", "d2", "p9")],
+    )
+    _create(
+        target,
+        CFL_REFUNDS,
+        [("id", 0), ("date_id", 0), ("refund", 1)],
+        [("r1", "d1", 1), ("r2", "d2", 4)],
+    )
+    yaml_text = CFL_MODEL_YAML.format(
+        dates=CFL_DATES,
+        products=CFL_PRODUCTS,
+        sales=CFL_SALES,
+        refunds=CFL_REFUNDS,
+        schema=SCHEMAS.get(target.dialect, ""),
+    )
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    metrics = ["Total Stock", "Products Count", "Refund Amount"]
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Month"], measures=metrics)),
+    )
+    got = {int(r["month"]): tuple(_ratio(r[m.lower()]) for m in metrics) for r in rows}
+    expected = {1: (100, 1, 1), 2: (110, 1, 4)}
+    assert got == {
+        k: tuple(round(Decimal(str(v)), 4) for v in values) for k, values in expected.items()
     }, f"{target.name}: {got}"
 
 
