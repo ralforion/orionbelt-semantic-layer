@@ -151,6 +151,10 @@ measures:
   Largest Order:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: max
+  Largest Order or 99:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: max
+    defaultValue: 99
   Revenue Total:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -382,6 +386,11 @@ metrics:
     per: [Member]
     aggregation: avg
     population: dimension
+  Peak Customer Order:
+    type: reaggregate
+    measure: Largest Order
+    per: [Customer]
+    aggregation: max
   Closing Amount:
     type: reaggregate
     measure: Largest Order
@@ -1069,6 +1078,38 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
         ),
     )
     got_feb = {r["member country"]: _number(r["avg revenue per member"]) for r in rows}
+    # By customer, c8 and c9 without orders are rows of the population; a
+    # plain measure beside it reports over no rows there: a max NULL, or its
+    # defaultValue - not the 0 ClickHouse reads an unmatched column as.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Member"],
+                measures=[
+                    "Members",
+                    "Largest Order",
+                    "Largest Order or 99",
+                    "Peak Customer Order",
+                ],
+            )
+        ),
+    )
+    # So does a reaggregate metric over the facts beside it: no group, NULL.
+    idle = {
+        r["member"]: (
+            _number(r["largest order"]),
+            _number(r["largest order or 99"]),
+            _number(r["peak customer order"]),
+        )
+        for r in rows
+        if r["member"] in ("c8", "c9")
+    }
+    assert len(rows) == 9, f"{target.name}: {rows}"
+    assert idle == {"c8": (None, Decimal(99), None), "c9": (None, Decimal(99), None)}, (
+        f"{target.name}: {idle}"
+    )
     # Without a defaultValue a customer without orders is NULL, which the
     # average skips: DE (30 + 50 + 1) / 3, not / 4.
     seen = _by_country_rows(target, model, ["Avg Revenue per Member Seen"])
@@ -1080,8 +1121,8 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
     )
 
     # An order month reads no customer: every customer counts in each month
-    # with orders. No January row for the customers without a country, who
-    # ordered in February only.
+    # with orders, and each group of them is a row - the customers without a
+    # country in January too, at 0 for each.
     rows = _run(
         target,
         model,
@@ -1099,6 +1140,7 @@ def _assert_population(target: VendorTarget, model: SemanticModel) -> None:
     assert got_month == {
         ("DE", "2026-01"): (Decimal(20), Decimal(4)),
         ("FR", "2026-01"): (Decimal("2.5"), Decimal(2)),
+        (None, "2026-01"): (Decimal(0), Decimal(3)),
         ("DE", "2026-02"): (Decimal("0.25"), Decimal(4)),
         ("FR", "2026-02"): (Decimal(500), Decimal(2)),
         (None, "2026-02"): (Decimal("13.33"), Decimal(3)),
@@ -1141,6 +1183,7 @@ def _assert_carry_forward(target: VendorTarget, model: SemanticModel) -> None:
     want = {
         ("DE", "2026-01"): Decimal(70),
         ("FR", "2026-01"): Decimal(5),
+        (None, "2026-01"): None,
         ("DE", "2026-02"): Decimal(71),
         ("FR", "2026-02"): Decimal(1005),
         (None, "2026-02"): Decimal(37),
@@ -1169,7 +1212,7 @@ def _assert_carry_forward(target: VendorTarget, model: SemanticModel) -> None:
         assert got == expected, f"{target.name}: {got}"
 
     # By the member itself, ``per`` adds no column and the members still
-    # carry; each row here is a month the customer ordered in.
+    # carry, every one a row in each month: NULL before its first order.
     rows = _run(
         target,
         model,
@@ -1180,14 +1223,13 @@ def _assert_carry_forward(target: VendorTarget, model: SemanticModel) -> None:
     got_members = {
         (r["member"], str(r["order month"])[:7]): _number(r["closing amount"]) for r in rows
     }
+    january = {"c1": Decimal(20), "c2": Decimal(50), "c3": Decimal(5)}
+    february = {**january, "c7": Decimal(1), "c6": Decimal(1000), "c4": Decimal(7)}
+    february["c5"] = Decimal(30)
+    customers = [f"c{i}" for i in range(1, 10)]
     assert got_members == {
-        ("c1", "2026-01"): Decimal(20),
-        ("c2", "2026-01"): Decimal(50),
-        ("c3", "2026-01"): Decimal(5),
-        ("c7", "2026-02"): Decimal(1),
-        ("c6", "2026-02"): Decimal(1000),
-        ("c4", "2026-02"): Decimal(7),
-        ("c5", "2026-02"): Decimal(30),
+        **{(c, "2026-01"): january.get(c) for c in customers},
+        **{(c, "2026-02"): february.get(c) for c in customers},
     }, f"{target.name}: {got_members}"
 
 

@@ -65,14 +65,9 @@ SELECT {group_out}m, SUM(v) FROM balances GROUP BY ALL
 def _reference(
     db: duckdb.DuckDBPyConnection, group: str | None = None, since: str = "1900-01-01"
 ) -> dict[Any, Decimal]:
-    """Closing totals by month, or by *group* (``country`` / ``product``) and month."""
+    """Closing totals by month, or by product name and month."""
     joins, col = {
         None: ("", ""),
-        "country": (
-            "JOIN orionbelt_1.clients cl ON s.salesclient = cl.clientid "
-            "LEFT JOIN orionbelt_1.countries co ON cl.clientcountryid = co.countryid",
-            "co.countryname",
-        ),
         "product": (
             "LEFT JOIN orionbelt_1.products p ON s.product = p.productid",
             "p.productname",
@@ -152,12 +147,42 @@ def test_a_date_filter_reads_the_history_before_it(
 
 
 def test_by_country_and_month(run: Callable, commerce_db: duckdb.DuckDBPyConnection) -> None:
-    """A dimension of the clients groups them; its rows are the query's."""
-    want = _reference(commerce_db, "country")
+    """A dimension of the clients groups them. Every country with clients is
+    a row in every month with sales, also one its clients bought nothing in:
+    their balances carry. A country before its clients' first sale is NULL."""
+    want = {
+        (country, month): v
+        for country, month, v in commerce_db.sql(
+            """
+            WITH months AS (
+                SELECT DISTINCT CAST(date_trunc('month', salesdate) AS DATE) AS m
+                FROM orionbelt_1.sales
+            ),
+            balances AS (
+                SELECT cl.clientid, mo.m,
+                       arg_max(s.salesamount, (s.salesdate, s.salesamount)) AS v
+                FROM months mo
+                JOIN orionbelt_1.sales s
+                  ON s.salesdate < mo.m + INTERVAL 1 MONTH AND s.salesamount IS NOT NULL
+                JOIN orionbelt_1.clients cl ON s.salesclient = cl.clientid
+                GROUP BY ALL
+            )
+            SELECT co.countryname, mo.m, SUM(b.v)
+            FROM orionbelt_1.clients cl
+            LEFT JOIN orionbelt_1.countries co ON cl.clientcountryid = co.countryid
+            CROSS JOIN months mo
+            LEFT JOIN balances b ON b.clientid = cl.clientid AND b.m = mo.m
+            GROUP BY ALL
+            """
+        ).fetchall()
+    }
     rows = run(["Country Name", "Sales Month"], ["Closing Total"])
-    assert rows
+    assert len(rows) == len(want)
     for country, month, carried in rows:
-        assert _close(carried, want[(country, month)]), (country, month)
+        expected = want[(country, month)]
+        assert (carried is None) == (expected is None), (country, month)
+        if expected is not None:
+            assert _close(carried, expected), (country, month)
 
 
 def test_by_product_and_month(run: Callable, commerce_db: duckdb.DuckDBPyConnection) -> None:

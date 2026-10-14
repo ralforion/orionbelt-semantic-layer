@@ -75,6 +75,14 @@ _METRICS: dict[str, dict[str, Any]] = {
         "aggregation": "count",
         "population": "dimension",
     },
+    "Buyers": {**_PER_CLIENT, "measure": "Sales Count", "aggregation": "count"},
+    "Clients Plus Orders": {"expression": "{[Clients All]} + {[Sales Count]}"},
+    "Clients Plus Sales": {"expression": "{[Clients All]} + {[Total Sales Or Zero]}"},
+    "Orders Doubled": {"expression": "{[Sales Count]} * 2"},
+    "Count Rank": {"type": "window", "windowFunction": "rank", "measure": "Sales Count"},
+    "Rank Plus One": {"expression": "{[Count Rank]} + 1"},
+    "One": {"expression": "1"},
+    "Orders Plus One": {"expression": "{[Sales Count]} + {[One]}"},
     "Avg Client Orders Buyers": {
         **_PER_CLIENT,
         "measure": "Sales Count",
@@ -115,6 +123,14 @@ def model() -> SemanticModel:
         "defaultValue": 0,
     }
     raw["metrics"].update(_METRICS)
+    # The sales date with no declared grain, so a query can select the date
+    # itself beside a grain of it.
+    raw["dimensions"]["Raw Date"] = {
+        "dataObject": "Sales",
+        "column": "Sales Date",
+        "resultType": "date",
+    }
+    raw["dimensions"]["Raw Date Alias"] = {**raw["dimensions"]["Raw Date"]}
     resolved, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     return resolved
@@ -384,10 +400,13 @@ def test_or_group_mixing_members_and_facts_is_not_split(run: Callable) -> None:
 
 def test_root_from_the_whole_per(run: Callable, clients: list[dict[str, Any]]) -> None:
     """``per: [Client Name, Country Name]`` by ``Client Name``: the query covers
-    the client, and the members are still listed from the clients."""
+    the client, and the members are still listed from the clients - every one
+    a row, a client without orders at 0."""
     rows = run(["Client Name"], ["Avg Orders per Client and Country"])
-    assert len(rows) == len([c for c in clients if c["orders"]])
-    assert all(r["Avg Orders per Client and Country"] >= 1 for r in rows)
+    assert len(rows) == len(clients) == 500
+    values = sorted(r["Avg Orders per Client and Country"] for r in rows)
+    assert values.count(0) == len([c for c in clients if not c["orders"]]) == 29
+    assert all(v >= 1 for v in values[29:])
 
 
 def test_exists_on_the_facts_does_not_limit_the_members(run: Callable) -> None:
@@ -487,3 +506,144 @@ def test_computed_dimension_reading_the_facts_refused(
     query = QueryObject(select=QuerySelect(dimensions=dimensions, measures=[measure]))
     with pytest.raises(ResolutionError, match="Client Sale Date"):
         CompilationPipeline().compile(query, sale_date_model, "duckdb")
+
+
+def test_every_member_is_a_row_beside_other_measures(
+    run: Callable, clients: list[dict[str, Any]]
+) -> None:
+    """By client, the 29 without sales are rows too. A plain measure beside
+    the metric reports what it reports over no rows there: a count 0, a sum
+    without a defaultValue NULL."""
+    rows = run(["Client Name"], ["Clients All", "Sales Count", "Total Sales"])
+    assert len(rows) == 500
+    idle = [r for r in rows if r["Sales Count"] == 0]
+    assert len(idle) == len([c for c in clients if not c["orders"]]) == 29
+    assert all(r["Total Sales"] is None and r["Clients All"] == 1 for r in idle)
+
+
+@pytest.mark.parametrize(
+    "having",
+    [
+        QueryFilter(field="Sales Count", op=">", value=0),
+        QueryFilter(field="Total Sales", op=">", value=50000),
+    ],
+    ids=["count > 0", "sales > 50000"],
+)
+def test_having_sees_the_member_rows(
+    run: Callable, clients: list[dict[str, Any]], having: QueryFilter
+) -> None:
+    """A HAVING on another measure filters the final rows, the members' too:
+    evaluated before them, the members it removed came back."""
+    rows = run(["Client Name"], ["Clients All", "Sales Count", "Total Sales"], having=[having])
+    if having.field == "Sales Count":
+        assert len(rows) == len([c for c in clients if c["orders"]]) == 471
+    else:
+        assert all(r["Total Sales"] > 50000 for r in rows)
+        assert len(rows) == len([c for c in clients if c["sales"] > 50000]) > 0
+
+
+def test_on_a_member_row_other_values_are_over_no_rows(run: Callable) -> None:
+    """On the 29 clients without sales: a formula over the metric reads its
+    other components as over no rows (a count 0, a sum's defaultValue 0), a
+    formula of plain measures is its value over no rows, and a facts-population
+    count counted no group."""
+    rows = run(
+        ["Client Name"],
+        ["Sales Count", "Clients Plus Orders", "Clients Plus Sales", "Orders Doubled", "Buyers"],
+    )
+    idle = [r for r in rows if r["Sales Count"] == 0]
+    assert len(idle) == 29
+    for r in idle:
+        assert r["Clients Plus Orders"] == 1, r
+        assert r["Clients Plus Sales"] == 1, r
+        assert r["Orders Doubled"] == 0, r
+        assert r["Buyers"] == 0, r
+    busy = [r for r in rows if r["Sales Count"]]
+    assert all(r["Buyers"] == 1 for r in busy)
+    assert all(r["Orders Doubled"] == 2 * r["Sales Count"] for r in busy)
+
+
+def _idle_client(commerce_db: duckdb.DuckDBPyConnection) -> str:
+    (name,) = commerce_db.sql(
+        "SELECT clientname FROM orionbelt_1.clients "
+        "WHERE clientid NOT IN (SELECT salesclient FROM orionbelt_1.sales) "
+        "ORDER BY clientname LIMIT 1"
+    ).fetchone()
+    return str(name)
+
+
+@pytest.mark.parametrize("field", ["Client Name", "Clients.Client Name"])
+def test_having_on_a_qualified_column_sees_the_member_rows(
+    run: Callable, commerce_db: duckdb.DuckDBPyConnection, field: str
+) -> None:
+    """The dimension and its qualified column are one predicate: both keep
+    only the client named, a member row among the rest."""
+    name = _idle_client(commerce_db)
+    rows = run(
+        ["Client Name"], ["Clients All"], having=[QueryFilter(field=field, op="=", value=name)]
+    )
+    assert [r["Client Name"] for r in rows] == [name]
+
+
+@pytest.mark.parametrize(
+    "measures",
+    [["Count Rank"], ["Rank Plus One"], ["Count Rank", "Rank Plus One"]],
+    ids=["rank", "formula over it", "both"],
+)
+def test_a_window_on_a_member_row_is_null(
+    run: Callable, commerce_db: duckdb.DuckDBPyConnection, measures: list[str]
+) -> None:
+    """A window ranks the base's rows; a member row has no place among them,
+    so the rank is NULL, and so is a formula over it, selected beside it or
+    not - not the rank's components read as over no rows."""
+    name = _idle_client(commerce_db)
+    rows = run(["Client Name"], ["Clients All", *measures])
+    (idle,) = [r for r in rows if r["Client Name"] == name]
+    assert all(idle[m] is None for m in measures), idle
+
+
+@pytest.mark.parametrize(
+    "dims",
+    [["Raw Date", "Raw Date:month"], ["Raw Date:month", "Raw Date"]],
+    ids=["date first", "month first"],
+)
+def test_having_on_a_date_reads_the_date_not_a_grain_of_it(run: Callable, dims: list[str]) -> None:
+    """``Raw Date = 2022-01-10`` beside ``Raw Date:month`` compares the dates,
+    in either order: the predicate names the date, not its month."""
+    rows = run(
+        dims,
+        ["Clients All", "Sales Count"],
+        having=[QueryFilter(field="Raw Date", op="=", value="2022-01-10")],
+    )
+    assert len(rows) == 1
+    assert rows[0]["Clients All"] == 500 and rows[0]["Sales Count"] > 0
+
+
+@pytest.mark.parametrize(
+    "measures",
+    [["One"], ["Orders Plus One"], ["One", "Orders Plus One"]],
+    ids=["constant", "formula", "both"],
+)
+def test_a_constant_on_a_member_row(
+    run: Callable, commerce_db: duckdb.DuckDBPyConnection, measures: list[str]
+) -> None:
+    """A constant metric is its constant on a member row, and so is a formula
+    reading it as over no rows, whether or not the constant is selected."""
+    name = _idle_client(commerce_db)
+    rows = run(["Client Name"], ["Clients All", *measures])
+    (idle,) = [r for r in rows if r["Client Name"] == name]
+    assert all(idle[m] == 1 for m in measures), idle
+
+
+@pytest.mark.parametrize("field", ["Raw Date", "Sales.Sales Date"])
+def test_having_on_a_date_reads_another_dimension_of_it(run: Callable, field: str) -> None:
+    """``Raw Date:month`` beside ``Raw Date Alias``, a second dimension on the
+    same date: ``Raw Date = 2022-01-10`` compares the alias's dates, the
+    column's own value, not the named dimension's months."""
+    rows = run(
+        ["Raw Date:month", "Raw Date Alias"],
+        ["Clients All", "Sales Count"],
+        having=[QueryFilter(field=field, op="=", value="2022-01-10")],
+    )
+    assert len(rows) == 1
+    assert str(rows[0]["Raw Date Alias"]) == "2022-01-10"

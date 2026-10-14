@@ -54,6 +54,7 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.expr_rewrite import map_column_refs
 from orionbelt.compiler.metric_expansion import metric_leaf_components
+from orionbelt.compiler.metric_resolution import _GRAIN_RANK
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.models.errors import SemanticError
 
@@ -151,6 +152,13 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
         )
         if is_windowed:
             names.add(measure.name)
+    if resolved.member_rows:
+        # The rows are finished by the reaggregate pass, which adds a
+        # population metric's member groups: a predicate evaluated before it
+        # would see members whose rows are not there yet, which then come
+        # back unfiltered.
+        # Every field a predicate names, a qualified column too.
+        names |= {field for hf in resolved.having_filters for field in hf.referenced_fields}
     return names
 
 
@@ -173,13 +181,19 @@ def hoisted_predicates(resolved: ResolvedQuery) -> list[Expr]:
     by the time this runs, so those refs are rewritten to the dimension's output
     alias, which every wrapper projects. Anything left unresolvable is caught by
     :func:`apply_having_hoist`.
+
+    One physical column can be several columns of the query: a date at two
+    grains, or two dimensions over it. The predicate compares the column's own
+    value, so it reads the one at the finest grain the query has, whichever
+    dimension that is: ``At`` beside ``At:month`` filters the dates, not the
+    months.
     """
     windowed = windowed_aliases(resolved)
-    by_physical = {
-        (dim.source_column, dim.object_name): dim.name
-        for dim in resolved.dimensions
-        if dim.source_column
-    }
+    by_physical: dict[tuple[str, str], str] = {}
+    # Finest first; a dimension with no grain is the column itself.
+    for dim in sorted(resolved.dimensions, key=lambda d: _GRAIN_RANK[d.grain] if d.grain else -1):
+        if dim.source_column:
+            by_physical.setdefault((dim.source_column, dim.object_name), dim.name)
 
     def to_alias(ref: ColumnRef) -> Expr:
         if ref.table is None:
