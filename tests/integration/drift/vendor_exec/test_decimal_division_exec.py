@@ -10,10 +10,11 @@ refused a divisor with more places than its dividend; ClickHouse now divides
 in Float64. The ``DECIMAL(38, 38)`` boundary is in
 ``test_integer_division_exec.py``.
 
-MySQL divides at the dividend's scale plus 4, so a ratio of integer sums kept
-4 places (2 / 600,000 was 0), and its period-over-period ratio cast both sides
-to ``DECIMAL(38, 14)``, which clipped 2e30 and 1e30 to the same maximum (a
-ratio of 1) and rounded 1e-20 to 0 (NULL).
+MySQL's period-over-period ratio cast both sides to ``DECIMAL(38, 14)``, which
+clipped 2e30 and 1e30 to the same maximum (a ratio of 1) and rounded 1e-20 to
+0 (NULL). It divides natively now, as its formulas do: any widening costs
+integer digits of a 65-digit decimal, and a grouped quotient past them is
+clipped silently.
 
 The north region has two sales, in January and February, of 50,000,000,000
 and of 5,000 units, so its amount is 1e11 and its units 10,000.
@@ -196,9 +197,10 @@ def _assert_all(target: VendorTarget) -> None:
     _create(target, SALES, columns, SALE_ROWS)
     model = _model(MODEL_YAML, target, sales=SALES)
     metrics = dict(METRICS)
-    if target.dialect == "snowflake":
-        # Snowflake divides integers at 6 places (0.000003) and is left so:
-        # 12 places would fail on a quotient from 1e26. See dialects.md.
+    if target.dialect in ("mysql", "snowflake"):
+        # Both divide at the dividend's places plus a few, and are left so
+        # (dialects.md): MySQL keeps 4, since places cost it integer digits,
+        # and Snowflake 6, since 12 would fail on a quotient from 1e26.
         del metrics["Small Share"]
     rows = _run(
         target,
@@ -263,6 +265,7 @@ dataObjects:
     columns:
       Region: {{code: region, abstractType: string}}
       A: {{code: a, abstractType: int}}
+      Wide: {{code: wide, abstractType: int}}
 dimensions:
   Region: {{dataObject: Big, column: Region, resultType: string}}
 measures:
@@ -270,22 +273,44 @@ measures:
     expression: '{{[Big].[A]}} / 3'
     aggregation: sum
     dataType: decimal(38, 0)
+  Fourfold Third Sum:
+    expression: '{{[Big].[A]}} / 3 / 3 / 3 / 3'
+    aggregation: sum
+    dataType: decimal(38, 0)
+  Wide Third Sum:
+    expression: '{{[Big].[Wide]}} / 3'
+    aggregation: sum
+    dataType: decimal(65, 0)
 """
+
+
+#: 1e37 / 3, 1e37 / 81 and 1e50 / 3, rounded to whole numbers.
+CLIP_SUMS = {
+    "Third Sum": Decimal("3" * 37),
+    "Fourfold Third Sum": Decimal("123456790123456790123456790123456790"),
+    "Wide Third Sum": Decimal("3" * 50),
+}
 
 
 def _assert_grouped_quotient_fits(target: VendorTarget) -> None:
     """MySQL stores a grouped ``SUM(a / 3)`` at the quotient's type, and
-    clips a value beyond its integer digits to the maximum. Widened by 26
-    places, 1e37 / 3 came back 1e35."""
-    _create(target, CLIP, [("region", 0), ("a", "DECIMAL(38, 0)")], [("north", "1" + "0" * 37)])
+    clips a value beyond its integer digits to the maximum. A dividend widened
+    to 30 places left 35 (1e37 / 3 came back 1e35), to 18 places 47 (1e50 /
+    3 clipped), and each further division takes 4 more."""
+    columns: list[tuple[str, int | str]] = [
+        ("region", 0),
+        ("a", "DECIMAL(38, 0)"),
+        ("wide", "DECIMAL(65, 0)"),
+    ]
+    _create(target, CLIP, columns, [("north", "1" + "0" * 37, "1" + "0" * 50)])
     model = _model(CLIP_MODEL_YAML, target, clip=CLIP)
     rows = _run(
         target,
         model,
-        QueryObject(select=QuerySelect(dimensions=["Region"], measures=["Third Sum"])),
+        QueryObject(select=QuerySelect(dimensions=["Region"], measures=list(CLIP_SUMS))),
     )
-    got = _number(rows[0]["third sum"])
-    assert got == Decimal("3" * 37), f"{target.name}: {got}"
+    got = {m: _number(rows[0][m.lower()]) for m in CLIP_SUMS}
+    assert got == CLIP_SUMS, f"{target.name}: {got}"
 
 
 def _ratio(value: object) -> float | None:

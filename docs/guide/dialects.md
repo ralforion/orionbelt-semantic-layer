@@ -265,18 +265,16 @@ OrionBelt automatically wraps aggregate expressions with `CAST` based on resolve
     DOUBLE as well. A quotient that falls exactly on a rounding tie at the
     declared scale can round differently from an engine that divides exactly.
 
-!!! note "MySQL: a quotient has at least 18 places"
+!!! note "MySQL: a quotient has 4 more places than its dividend"
 
     MySQL divides at the dividend's scale plus `div_precision_increment` (4 by
-    default), so a ratio of integer sums kept 4 places. OrionBelt adds a
-    `DECIMAL(65, 14)` zero to every dividend, `(a + CAST(0 AS DECIMAL(65, 14))) / b`:
-    the quotient has at least 18 places, a dividend with more keeps them, an
-    integer becomes an exact decimal, and a DOUBLE stays a DOUBLE.
-
-    The places come out of MySQL's 65 digits, and where MySQL stores a quotient
-    (a grouped `SUM(a / 3)`), a value beyond its integer digits is clipped to the
-    type's maximum without an error. 14 places leave 47 integer digits: every
-    value a 38-digit type holds, divided by a divisor of up to 9 places.
+    default), so an integer ratio has 4 places (`1 / 3` is `0.3333`) and a
+    `decimal(18, 2)` one 6. OrionBelt leaves this as it is, in formulas and in
+    period-over-period comparisons alike. A MySQL decimal holds 65 digits in
+    all, so every extra place would cost an integer digit, and where MySQL
+    stores a quotient (a grouped `SUM(a / 3)`) a value past its integer digits
+    is clipped to the maximum without an error. A metric declared with more
+    places than the quotient has gets zeros past them.
 
 !!! note "Snowflake: an integer ratio has 6 places"
 

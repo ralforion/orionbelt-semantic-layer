@@ -378,29 +378,12 @@ class MySQLDialect(Dialect):
             return obml_type
         return DecimalType(precision=PORTABLE_DECIMAL_PRECISION, scale=obml_type.scale)
 
-    def promote_dividend(self, dividend_sql: str) -> str:
-        """Give a quotient 18 places without taking any from its operands.
-
-        MySQL divides at the dividend's scale plus ``div_precision_increment``
-        (4 by default), so a count over a count kept 4 places (1 / 300000
-        was 0.0000) and a ``DECIMAL(18, 2)`` ratio 6. Casting both sides to
-        ``DECIMAL(38, 14)``, as the period-over-period ratio did, clipped
-        every value from 1e24 to the type's maximum (2e30 / 1e30 was 1) and
-        rounded every value below 1e-14 to 0, without an error.
-
-        Adding a ``DECIMAL(65, 14)`` zero only widens: the sum takes the
-        larger scale, so the quotient has at least 18 places, a dividend with
-        more keeps them, an integer becomes an exact decimal, and a DOUBLE
-        stays a DOUBLE. The divisor keeps its own type.
-
-        The places are paid for in integer digits. A quotient is typed at most
-        65 digits, and where MySQL stores one (a grouped ``SUM(a / 3)``) a
-        value beyond its integer digits is clipped to the type's maximum,
-        silently. A 26-place zero left 35, and 1e37 / 3 came back 1e35. With
-        14, a dividend of up to 14 places leaves 47: every value a 38-digit
-        type holds, divided by a divisor of up to 9 places.
-        """
-        return f"({dividend_sql} + CAST(0 AS DECIMAL(65, 14)))"
+    # Division is MySQL's own, in a formula and in a period-over-period ratio
+    # alike: the quotient has the dividend's places plus 4
+    # (``div_precision_increment``). Any widening costs integer digits, since a
+    # MySQL decimal holds 65 digits in all, and a stored value past them, as in
+    # a grouped ``SUM(a / 3)``, is clipped to the maximum without an error.
+    # Casting both sides to ``DECIMAL(38, 14)`` clipped 2e30 / 1e30 to 1.
 
     def _compile_cast(self, inner: Expr, type_name: str, *, source_exact: bool = False) -> str:
         """MySQL ``CAST`` accepts a fixed vocabulary that excludes ``VARCHAR``.
