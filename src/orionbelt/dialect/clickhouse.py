@@ -418,49 +418,46 @@ class ClickHouseDialect(Dialect):
             return f"GROUP BY {groups} WITH CUBE"
         return super().compile_group_by(group_by, grouping)
 
-    def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
-        """Widen operands for raw-SQL decimal division — same fix as the
-        BinaryOp override but applied where SQL is built as text (e.g.
-        the PoP comparison CTE).
+    def _float_dividend(self, dividend_sql: str) -> str:
+        """Divide in Float64: the one division ClickHouse can do for every
+        operand without a silent wrong number.
 
-        ClickHouse stores ``Decimal(P, S)`` as an integer scaled by
-        ``10^S``; division pre-scales the numerator by ``10^S`` again
-        to preserve scale, so very wide scales overflow on values with
-        ~10+ integer digits (we hit ``Decimal(38, 16)`` overflowing on
-        ``$42M / 10k``). ``Decimal(38, 14)`` is the sweet spot —
-        13 fractional digits in the result (enough for the 12-sig-fig
-        cross-vendor comparison) and ``38 - 14 = 24`` integer digits
-        of headroom (plenty for any aggregate in this corpus).
+        ClickHouse divides decimals at the dividend's scale (``Decimal(18, 2)
+        / 3`` is 0.08), refuses a divisor with more places than its dividend,
+        and computes ``a * 10^s / b`` (``s`` the divisor's scale) in the
+        dividend's type without an overflow check. No fixed decimal type
+        holds 38 places, large values and a quotient over a quotient within
+        76 digits: ``Decimal(38, 14)`` on both sides gave -694,903,358.76 for
+        100,000,000,000 / 3, and keeping 38 places wrapped
+        ``(0.9 / 0.1) / 0.1``. ``divideDecimal`` is exact and checked, but
+        measured some 2,000 times slower than ``/``.
+
+        A Float64 quotient is right to about 16 significant digits for any
+        magnitude and any scale, and the metric's declared type rounds it
+        (DuckDB divides decimals in DOUBLE too). An integer over an integer
+        is already a Float64 division on ClickHouse.
         """
-        wide = "Nullable(Decimal(38, 14))"
-        return f"CAST({left_sql} AS {wide}) / CAST({right_sql} AS {wide})"
+        return f"toFloat64({dividend_sql})"
+
+    def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
+        """Divide in Float64, as the BinaryOp override does, where SQL is built
+        as text (e.g. the PoP comparison CTE).
+        """
+        return f"{self._float_dividend(left_sql)} / {right_sql}"
 
     def _compile_binary_op(self, left: Expr, op: str, right: Expr) -> str:
-        """Widen division operands so ratio precision survives.
+        """Divide in Float64; see :meth:`_float_dividend`.
 
-        ClickHouse's Decimal arithmetic preserves the operand scale on
-        ``/``: ``Decimal(18, 2) / Decimal(18, 2) = Decimal(18, 2)``,
-        which truncates ratios to 2-dp (e.g. ``0.0365`` becomes
-        ``0.03``). Other engines either widen automatically (Postgres,
-        DuckDB) or use float division. To match the cross-engine
-        contract OBSL promises — ratios at the metric's declared
-        ``decimal(18, 4)`` precision — we cast both operands to
-        ``Decimal(38, 10)`` before dividing. The outer measure CAST
-        then narrows back to the declared type.
-
-        Returns the SQL fragment *without* an outer ``(...)`` wrap —
+        Returns the SQL fragment *without* an outer ``(...)`` wrap -
         the dispatcher in ``compile_expr`` adds one only when the
         surrounding precedence requires it (v2.7.4 #79).
         """
         if op == "/":
-            wide = "Nullable(Decimal(38, 14))"
-            # CAST(...) is itself an atom from a precedence standpoint —
-            # no risk of the children needing a higher parent prec here.
-            l_sql = f"CAST({self.compile_expr(left)} AS {wide})"
-            r_sql = f"CAST({self.compile_expr(right)} AS {wide})"
-            # Guarded after widening, not before: ClickHouse is the engine that
-            # raises on a zero decimal divisor, so the widening is exactly what
-            # turns an inert 0 into ILLEGAL_DIVISION (#319).
+            # toFloat64(...) is an atom, and the divisor goes through NULLIF,
+            # so neither needs a parent precedence. A zero divisor is NULL,
+            # not inf (#319).
+            l_sql = self._float_dividend(self.compile_expr(left))
+            r_sql = self.compile_expr(right)
             return f"{l_sql} / {self.guard_zero_divisor(right, r_sql)}"
         return super()._compile_binary_op(left, op, right)
 

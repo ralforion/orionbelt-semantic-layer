@@ -103,11 +103,11 @@ metrics:
     dataType: decimal(38, 12)
 """
 #: Each engine's ``DECIMAL(38, 38)``. MySQL allows at most 30 places and
-#: Snowflake 37, so neither has one; ClickHouse divides decimals at a fixed
-#: ``Decimal(38, 14)``, which no dividend's promotion decides.
+#: Snowflake 37, so neither has one.
 POINT_DECIMAL = {
     "duckdb": "DECIMAL(38, 38)",
     "postgres": "NUMERIC(38, 38)",
+    "clickhouse": "Decimal(38, 38)",
     "bigquery": "BIGNUMERIC",
     "databricks": "DECIMAL(38, 38)",
     "dremio": "DECIMAL(38, 38)",
