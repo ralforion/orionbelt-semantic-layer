@@ -378,16 +378,24 @@ class MySQLDialect(Dialect):
             return obml_type
         return DecimalType(precision=PORTABLE_DECIMAL_PRECISION, scale=obml_type.scale)
 
-    def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
-        """MySQL's ``div_precision_increment`` defaults to 4, capping
-        ratio results at the operand scale plus 4 fractional digits.
-        For ``DECIMAL(18, 2) / DECIMAL(18, 2)`` that's 6 dp — too few
-        for the 11-sig-fig cross-vendor comparison. Widening both
-        operands to ``DECIMAL(38, 14)`` lifts the result scale to 18
-        dp without changing session state.
+    def promote_dividend(self, dividend_sql: str) -> str:
+        """Give a quotient 30 places without taking any from its operands.
+
+        MySQL divides at the dividend's scale plus ``div_precision_increment``
+        (4 by default), so a count over a count kept 4 places (1 / 300000
+        was 0.0000) and a ``DECIMAL(18, 2)`` ratio 6. Casting both sides to
+        ``DECIMAL(38, 14)``, as the period-over-period ratio did, clipped
+        every value from 1e24 to the type's maximum (2e30 / 1e30 was 1) and
+        rounded every value below 1e-14 to 0, without an error.
+
+        Adding a ``DECIMAL(65, 26)`` zero only widens: the sum takes the
+        larger scale, so the quotient reaches MySQL's 30 places, a dividend
+        with more keeps them, and up to 65 digits leave room for the integer
+        ones. An integer becomes an exact decimal, and a DOUBLE stays a
+        DOUBLE. The divisor keeps its own type; MySQL's decimal arithmetic is
+        exact to 65 digits whatever its scale.
         """
-        wide = "DECIMAL(38, 14)"
-        return f"CAST({left_sql} AS {wide}) / CAST({right_sql} AS {wide})"
+        return f"({dividend_sql} + CAST(0 AS DECIMAL(65, 26)))"
 
     def _compile_cast(self, inner: Expr, type_name: str, *, source_exact: bool = False) -> str:
         """MySQL ``CAST`` accepts a fixed vocabulary that excludes ``VARCHAR``.

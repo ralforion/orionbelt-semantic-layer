@@ -1838,9 +1838,8 @@ class Dialect(ABC):
         """The division itself, for dialects that need the operands widened.
 
         Default is SQL division of the promoted dividend, as a formula's ``/``
-        has (:meth:`promote_dividend`); ClickHouse and MySQL override to widen
-        both sides first so ratio precision survives. The divisor arrives
-        already guarded.
+        has (:meth:`promote_dividend`); ClickHouse overrides it to divide in
+        Float64. The divisor arrives already guarded.
         """
         return f"{self.promote_dividend(left_sql)} / {right_sql}"
 
