@@ -23,6 +23,12 @@ class DremioDialect(Dialect):
 
     like_needs_escape_clause = True
 
+    # Every integer division truncates: ``SUM`` of an integer stays BIGINT,
+    # so a count, a sum or a ratio of them over an integer came back 0.
+    # DECIMAL(38, 10) keeps a large sum exact where DOUBLE rounds it, and
+    # leaves 28 integer digits.
+    _dividend_type = "DECIMAL(38, 10)"
+
     @property
     def name(self) -> str:
         return "dremio"

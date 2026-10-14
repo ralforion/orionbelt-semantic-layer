@@ -445,9 +445,10 @@ picture strings on Snowflake and `%`-style on BigQuery, which is its own problem
 rather than a rewrite. The single-argument `log`
 is base 10 on DuckDB and Postgres and natural on ClickHouse, MySQL and BigQuery,
 a silent factor of 2.3, so only the explicit `log(base, x)` is admitted. And
-`/` is left to the engine: it is float division everywhere except Postgres,
-where `7 / 2` is 3, so ask for integer division with `div(a, b)` and write
-`{A} * 1.0 / {B}` when you mean the float.
+`/` is a true division on every engine: Postgres and Dremio divide two
+integers as integers (`7 / 2` is 3, a `COUNT(*)` over 4 is 0), so their
+dividend is cast first (`NUMERIC` on Postgres, `DECIMAL(38, 10)` on Dremio).
+Ask for integer division with `div(a, b)`.
 
 ```yaml
 Clients:

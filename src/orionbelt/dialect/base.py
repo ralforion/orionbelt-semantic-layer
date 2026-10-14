@@ -1739,6 +1739,13 @@ class Dialect(ABC):
     # subtraction and division are left-associative but ``a - (b - c)``
     # differs from ``a - b - c``, so the right operand is wrapped at
     # equal precedence — see the left-associative branch below.
+    #: The type a dividend is cast to before ``/``, on an engine whose ``/``
+    #: divides two integers as integers: there ``COUNT(*) / 4`` is 0, not
+    #: 0.25, a ratio of integer sums truncates, and so does any metric whose
+    #: formula divides them. ``None`` where ``/`` of integers is a true
+    #: division already.
+    _dividend_type: str | None = None
+
     _NON_ASSOCIATIVE_OPS: frozenset[str] = frozenset(
         {"=", "<>", "!=", "<", "<=", ">", ">=", "LIKE", "NOT LIKE"}
     )
@@ -1767,6 +1774,9 @@ class Dialect(ABC):
         if op.strip() == "/":
             # NULLIF is an atom, so the divisor no longer needs its own parens.
             right_sql = self.guard_zero_divisor(right, self.compile_expr(right))
+            if self._dividend_type is not None:
+                # CAST is an atom too, so the dividend needs none either.
+                left_sql = f"CAST({self.compile_expr(left)} AS {self._dividend_type})"
         return f"{left_sql} {op} {right_sql}"
 
     def guard_zero_divisor(self, right: Expr | None, right_sql: str) -> str:

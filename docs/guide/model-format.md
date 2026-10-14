@@ -1530,6 +1530,12 @@ it reads naturally as "no value" in a BI tool, it matches what MySQL already
 did, and it removes DuckDB's `inf` - the only outcome that can flow on into
 downstream aggregation and formatting rather than stopping.
 
+Division is also a true division on every dialect. PostgreSQL and Dremio divide
+two integers as integers, so a count over 4 was 0 there, not 0.25, and Dremio's
+`SUM` of an integer column stays one too. Their dividend is cast first:
+`NUMERIC` on PostgreSQL, `DECIMAL(38, 10)` on Dremio. Integer division is
+`div(a, b)`.
+
 A literal divisor that is plainly not zero is left unwrapped:
 
 ```yaml

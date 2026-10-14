@@ -128,7 +128,10 @@ def test_the_guard_survives_nesting() -> None:
     pg = DialectRegistry.get("postgres")
     col = lambda name: ColumnRef(name=name, table="t")  # noqa: E731
     ast = BinaryOp(left=col("a"), op="/", right=BinaryOp(left=col("b"), op="/", right=col("c")))
-    assert pg.compile_expr(ast) == '"t"."a" / NULLIF("t"."b" / NULLIF("t"."c", 0), 0)'
+    # Postgres also casts each dividend, so integers divide exactly.
+    assert pg.compile_expr(ast) == (
+        'CAST("t"."a" AS NUMERIC) / NULLIF(CAST("t"."b" AS NUMERIC) / NULLIF("t"."c", 0), 0)'
+    )
 
 
 def test_period_over_period_does_not_acquire_a_second_guard() -> None:
