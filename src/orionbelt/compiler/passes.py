@@ -167,7 +167,9 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
         ),
         CompilerPass(
             name=PASS_GRAIN_DEDUP,
-            applies=lambda r: bool(r.dedup_targets),
+            # A period-over-period query is rebuilt from its source rows by
+            # ``wrap_with_pop``, which deduplicates them itself.
+            applies=lambda r: bool(r.dedup_targets) and not r.has_pop,
             run=lambda ast, ctx: wrap_with_grain_dedup(ast, ctx.resolved, ctx.model, ctx.dialect),
             # Runs first: it rewrites the base projection into CTEs that every
             # later wrapper then wraps. The wrappers below restructure that same
@@ -292,10 +294,14 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
       of one column.
     * ``filterContext`` composes: its measure is planned as a scan of its own,
       which deduplicates for itself.
-    * ``period_over_period`` conflicts: it rebuilds the FROM from a date spine
-      and re-joins the tables the dedup CTEs already joined -
-      ``Ambiguous reference to table ... duplicate alias``.
+    * ``period_over_period`` composes by taking the rewrite over: it rebuilds
+      the query from its source rows onto a date spine, and counts a
+      deduplicated measure once per row of its object in each period and
+      group itself. This pass does not run then, so every other wrapper still
+      conflicts: none of them reads a value this pass computed.
     """
+    if resolved.has_pop:
+        return pass_name != PASS_PERIOD_OVER_PERIOD
     if pass_name == PASS_CUMULATIVE:
         return False
     if pass_name == PASS_FILTER_CONTEXT:
@@ -512,7 +518,7 @@ def evaluate_compatibility(
     # inflated number, which is the exact defect this pass exists to prevent —
     # so this rule raises instead of warning.
     dedup = by_name.get(PASS_GRAIN_DEDUP)
-    if dedup is not None and dedup.applies(resolved):
+    if dedup is not None and resolved.dedup_targets:
         blocking = sorted(
             name
             for name in dedup.incompatible_with

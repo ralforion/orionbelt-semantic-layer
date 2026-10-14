@@ -31,13 +31,16 @@ from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
     BinaryOp,
+    CaseExpr,
     ColumnRef,
     Expr,
     From,
+    Literal,
     RawSQL,
     Select,
 )
 from orionbelt.compiler.expr_rewrite import collect_column_refs, map_column_refs
+from orionbelt.compiler.grain_dedup import dedup_identity
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.outer_order_by import outer_order_by
@@ -513,6 +516,9 @@ class _PopVariant:
 #: the compiler invents, so it cannot collide with a modelled alias.
 _SRC_ALIAS = "__ob_pop_src"
 _BUCKET_COLUMN = "__ob_bucket"
+#: Prefix of the column flagging the first source row of each row of a
+#: replicated object, per period and group; see ``_build_pop_base_sql``.
+_FIRST_FLAG = "__ob_first_"
 
 
 def _flat_alias(table: str | None, name: str, taken: dict[str, tuple[str | None, str]]) -> str:
@@ -686,6 +692,27 @@ def _build_pop_base_sql(
         dim_expr: Expr = make_dimension_expr(model, dim, dialect)
         dim_entries.append((dim.name, dim_expr))
 
+    # A measure sourced from an object the query's joins replicate counts each
+    # row of that object once per period and group: its columns are read only
+    # on the first source row of each (period, dimensions, object row), the
+    # rest reading NULL, which every aggregate skips. The same rows the grain
+    # dedup pass keeps with a DISTINCT, without leaving this one GROUP BY.
+    first_flags: dict[str, str] = {}
+
+    def _deduplicated(name: str, expr: Expr) -> Expr:
+        object_name = resolved.dedup_targets.get(name)
+        if object_name is None:
+            return expr
+        flag = first_flags.setdefault(object_name, f"{_FIRST_FLAG}{len(first_flags)}")
+        first = BinaryOp(ColumnRef(name=flag, table=_SRC_ALIAS), "=", Literal.number(1))
+
+        def _on_first_row(ref: ColumnRef) -> Expr:
+            if ref.table != object_name:
+                return ref
+            return CaseExpr(when_clauses=[(first, ref)])
+
+        return map_column_refs(expr, _on_first_row)
+
     measure_entries: list[tuple[str, Expr]] = []
     seen: set[str] = set()
 
@@ -703,8 +730,9 @@ def _build_pop_base_sql(
             for comp_name in m.component_measures:
                 comp = resolved.metric_components.get(comp_name)
                 if comp:
+                    comp_expr = _deduplicated(comp_name, comp.expression)
                     _add_measure(
-                        comp_name, _apply_measure_cast(comp.expression, comp_name, model, dialect)
+                        comp_name, _apply_measure_cast(comp_expr, comp_name, model, dialect)
                     )
             continue
         # A metric rides along as its components' aggregates, not as its
@@ -714,10 +742,12 @@ def _build_pop_base_sql(
         # column nothing projects at all.
         expr = (
             expand_metric_expression(
-                m.expression, resolved.metric_components, lambda comp: comp.expression
+                m.expression,
+                resolved.metric_components,
+                lambda comp: _deduplicated(comp.name, comp.expression),
             )
             if m.component_measures
-            else m.expression
+            else _deduplicated(m.name, m.expression)
         )
         # Same cast the star planner applies, so a measure keeps its declared
         # type whether or not the query also has a PoP metric.
@@ -758,7 +788,8 @@ def _build_pop_base_sql(
         f"{dialect.quote_identifier(_BUCKET_COLUMN)}"
     ]
     for ref in refs:
-        if ref.table is None or (ref.table, ref.name) in flat_of:
+        # A first-row flag is the source's own column, projected below.
+        if ref.table in (None, _SRC_ALIAS) or (ref.table, ref.name) in flat_of:
             continue
         alias = _flat_alias(ref.table, ref.name, taken)
         # The declared type travels with the reference. The source projects the
@@ -773,6 +804,20 @@ def _build_pop_base_sql(
             name=alias, table=_SRC_ALIAS, abstract_type=ref.abstract_type
         )
         projections.append(f"{dialect.compile_expr(ref)} AS {dialect.quote_identifier(alias)}")
+
+    for object_name, flag in first_flags.items():
+        names = [n for n, o in resolved.dedup_targets.items() if o == object_name]
+        identity = [
+            dialect.compile_expr(make_column_expr(model, object_name, key))
+            for key in dedup_identity(object_name, names, resolved, model)
+        ]
+        partition = [_bucket_sql(time_dim, model, dialect, grain)]
+        partition.extend(dialect.compile_expr(expr) for _, expr in dim_entries if expr is not None)
+        partition.extend(identity)
+        projections.append(
+            f"ROW_NUMBER() OVER (PARTITION BY {', '.join(partition)} "
+            f"ORDER BY {', '.join(identity)}) AS {dialect.quote_identifier(flag)}"
+        )
 
     def _repoint(expr: Expr) -> Expr:
         """Read the same value from the derived table's projection."""

@@ -186,6 +186,7 @@ def _assert_all(target: VendorTarget) -> None:
 
     _assert_having_after_filter_context(target, model)
     _assert_fact_side_components(target, model)
+    _assert_period_over_period(target)
 
 
 def _assert_fact_side_components(target: VendorTarget, model: SemanticModel) -> None:
@@ -259,6 +260,85 @@ def _assert_having_after_filter_context(target: VendorTarget, model: SemanticMod
     )
     ranked = sorted((r["region"], r["category"]) for r in rows)
     assert ranked == [("south", "parts"), ("south", "tools")], f"{target.name}: {ranked}"
+
+
+POP_PRODUCTS = "dedup_pop_products"
+POP_SALES = "dedup_pop_sales"
+
+POP_MODEL_YAML = """
+version: "1.0"
+name: grain_dedup_pop_vendor
+dataObjects:
+  Products:
+    code: {products}
+    schema: '{schema}'
+    columns:
+      Product ID: {{code: id, abstractType: string, primaryKey: true}}
+      Stock: {{code: stock, abstractType: float}}
+  Sales:
+    code: {sales}
+    schema: '{schema}'
+    columns:
+      Sale ID: {{code: id, abstractType: string, primaryKey: true}}
+      Product: {{code: product_id, abstractType: string}}
+      Sale Date: {{code: sale_date, abstractType: date}}
+      Quantity: {{code: quantity, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Products, columnsFrom: [Product], columnsTo: [Product ID]}}
+dimensions:
+  Sale Month: {{dataObject: Sales, column: Sale Date, resultType: date, timeGrain: month}}
+measures:
+  Sold Quantity:
+    columns: [{{dataObject: Sales, column: Quantity}}]
+    aggregation: sum
+  Total Stock:
+    columns: [{{dataObject: Products, column: Stock}}]
+    aggregation: sum
+metrics:
+  Stock Growth:
+    type: period_over_period
+    expression: '{{[Total Stock]}}'
+    periodOverPeriod:
+      {{timeDimension: Sale Month, grain: month, offset: -1, offsetGrain: month,
+        comparison: difference}}
+  Stock per Quantity:
+    expression: '{{[Total Stock]}} / {{[Sold Quantity]}}'
+"""
+
+
+def _assert_period_over_period(target: VendorTarget) -> None:
+    """p1 sells twice in January: its stock counts once per month (100, not
+    200), February's p2 is 110, so the growth is 10 and the stock per unit
+    100 / 3 and 110 / 4."""
+    _create(target, POP_PRODUCTS, [("id", 0), ("stock", 1)], [("p1", 100), ("p2", 110)])
+    _create(
+        target,
+        POP_SALES,
+        [("id", 0), ("product_id", 0), ("sale_date", 3), ("quantity", 2)],
+        [
+            ("s1", "p1", "2026-01-05", 1),
+            ("s2", "p1", "2026-01-20", 2),
+            ("s3", "p2", "2026-02-10", 4),
+        ],
+    )
+    yaml_text = POP_MODEL_YAML.format(
+        products=POP_PRODUCTS, sales=POP_SALES, schema=SCHEMAS.get(target.dialect, "")
+    )
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    metrics = ["Total Stock", "Stock Growth", "Stock per Quantity"]
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Sale Month"], measures=metrics)),
+    )
+    got = {str(r["sale month"])[:7]: tuple(_ratio(r[m.lower()]) for m in metrics) for r in rows}
+    expected = {"2026-01": (100, None, 100 / 3), "2026-02": (110, 10, 110 / 4)}
+    assert got == {
+        k: tuple(None if v is None else round(Decimal(str(v)), 4) for v in values)
+        for k, values in expected.items()
+    }, f"{target.name}: {got}"
 
 
 def test_duckdb_grain_dedup(vendor_duckdb: VendorTarget) -> None:
