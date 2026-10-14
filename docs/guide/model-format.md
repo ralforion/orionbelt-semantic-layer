@@ -1047,6 +1047,8 @@ Four comparison modes are available:
 | `difference` | `current - prev` | Absolute change |
 | `previousValue` | `prev` | Prior period value alongside current |
 
+`percentChange` and `ratio` are true divisions on every dialect, like a formula's `/` (see [Division by Zero](#division-by-zero)): a month of 3 sales after one of 2 has a ratio of 1.5 on PostgreSQL and Dremio too, not the 1 their integer division gives.
+
 !!! note "Time dimension requirement"
  The `timeDimension` must be included in the query's selected dimensions. All PoP metrics in a single query must share the same `timeDimension` and `grain`.
 
@@ -1529,6 +1531,14 @@ warehouse, NULL on another, and fail outright on three. NULL was chosen because
 it reads naturally as "no value" in a BI tool, it matches what MySQL already
 did, and it removes DuckDB's `inf` - the only outcome that can flow on into
 downstream aggregation and formatting rather than stopping.
+
+Division is also a true division on every dialect. PostgreSQL and Dremio divide
+two integers as integers, so a count over 4 was 0 there, not 0.25, and Dremio's
+`SUM` of an integer column stays one too. Their dividend is promoted first, which
+makes an integer an exact decimal and leaves a double or a decimal at its own type
+and precision: times `1.0` on PostgreSQL, and through `COALESCE` with a
+`DECIMAL(1, 1)` NULL on Dremio, where any arithmetic takes scale from a decimal of
+precision 38. Integer division is `div(a, b)`.
 
 A literal divisor that is plainly not zero is left unwrapped:
 

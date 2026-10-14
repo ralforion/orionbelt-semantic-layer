@@ -121,7 +121,10 @@ class TestPrecedenceWrapping:
         # and the guard doubles as the grouping: NULLIF brings its own
         # delimiters, so the inner division needs no parens of its own.
         ast = _bop(_col("a"), "/", _bop(_col("b"), "/", _col("c")))
-        assert pg.compile_expr(ast) == '"t"."a" / NULLIF("t"."b" / NULLIF("t"."c", 0), 0)'
+        # Postgres also promotes each dividend, so integers divide exactly.
+        assert pg.compile_expr(ast) == (
+            '"t"."a" * 1.0 / NULLIF("t"."b" * 1.0 / NULLIF("t"."c", 0), 0)'
+        )
 
 
 class TestComparisonChaining:

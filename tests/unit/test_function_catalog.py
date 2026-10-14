@@ -1329,7 +1329,8 @@ class TestRenderingInvariants:
             (
                 "dremio",
                 "log(2, 8)",
-                "10 / NULLIF((CASE WHEN 2 <= 0 OR 2 = 1 OR 8 <= 0 "
+                "COALESCE(10, CAST(NULL AS DECIMAL(1, 1))) / NULLIF((CASE WHEN 2 <= 0 "
+                "OR 2 = 1 OR 8 <= 0 "
                 "THEN NULL ELSE (LOG10(8) / LOG10(2)) END), 0)",
             ),
         ],

@@ -1,0 +1,297 @@
+"""A metric dividing integers is a true division on every engine.
+
+Postgres divides a bigint by an integer as integers, and ``COUNT(*)`` is a
+bigint; Dremio does so for every integer type, and its ``SUM`` of an integer
+stays one. A count, a sum or a ratio of them over an integer came back 0
+there, where the other engines answer 0.5. Each region has two sales of one
+unit, so every metric below is 0.5.
+
+A promotion must leave a double or a decimal as precise as it was: a double
+of 1e-12, or a ``DECIMAL(38, 12)`` of 1e-11, which ``* 1.0`` narrows to
+``DECIMAL(38, 10)`` on Dremio, rounding it to 0. Nor may it give a
+``DECIMAL(38, 38)`` an integer digit, which takes 1e-38 to 0.
+
+A period-over-period ratio or percent change builds its division apart from
+a formula's, and divided a month's count by the previous one's as integers
+there too: 3 sales after 2 was a ratio of 1 and a change of 0.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+
+import pytest
+
+from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.parser.loader import TrackedLoader
+from orionbelt.parser.resolver import ReferenceResolver
+
+from .conftest import VendorTarget
+from .test_reaggregate_exec import SCHEMAS, _create, _number, _run
+
+pytestmark = pytest.mark.docker
+
+SALES = "intdiv_sales"
+
+ROWS = [
+    ("s1", "north", 1, 0.000000000001, "0.000000000010"),
+    ("s2", "north", 1, 0.000000000001, "0.000000000010"),
+    ("s3", "south", 1, 0.000000000001, "0.000000000010"),
+    ("s4", "south", 1, 0.000000000001, "0.000000000010"),
+]
+
+#: Each engine's ``DECIMAL(38, 12)``; BigQuery casts to no parameterized
+#: type, and its BIGNUMERIC holds 38 places.
+FINE_DECIMAL = {
+    "duckdb": "DECIMAL(38, 12)",
+    "postgres": "NUMERIC(38, 12)",
+    "mysql": "DECIMAL(38, 12)",
+    "clickhouse": "Decimal(38, 12)",
+    "snowflake": "NUMBER(38, 12)",
+    "bigquery": "BIGNUMERIC",
+    "databricks": "DECIMAL(38, 12)",
+    "dremio": "DECIMAL(38, 12)",
+}
+
+MODEL_YAML = """
+version: "1.0"
+name: integer_division_vendor
+dataObjects:
+  Sales:
+    code: {sales}
+    schema: '{schema}'
+    columns:
+      Sale ID: {{code: id, abstractType: string, primaryKey: true}}
+      Region: {{code: region, abstractType: string}}
+      Quantity: {{code: quantity, abstractType: int}}
+      Tiny: {{code: tiny, abstractType: float}}
+      Fine: {{code: fine, abstractType: float}}
+dimensions:
+  Region: {{dataObject: Sales, column: Region, resultType: string}}
+measures:
+  Sales Rows:
+    columns: [{{dataObject: Sales, column: Sale ID}}]
+    aggregation: count
+  Sold Quantity:
+    columns: [{{dataObject: Sales, column: Quantity}}]
+    aggregation: sum
+  Typed Quantity:
+    columns: [{{dataObject: Sales, column: Quantity}}]
+    aggregation: sum
+    resultType: int
+  Tiny Sum:
+    columns: [{{dataObject: Sales, column: Tiny}}]
+    aggregation: sum
+  Fine Sum:
+    columns: [{{dataObject: Sales, column: Fine}}]
+    aggregation: sum
+    dataType: decimal(38, 12)
+metrics:
+  Rows over Four:
+    expression: '{{[Sales Rows]}} / 4'
+  Quantity over Four:
+    expression: '{{[Sold Quantity]}} / 4'
+  Typed over Four:
+    expression: '{{[Typed Quantity]}} / 4'
+  Rows over Double Quantity:
+    expression: '{{[Sales Rows]}} / ({{[Sold Quantity]}} * 2)'
+  Tiny over Four:
+    expression: '{{[Tiny Sum]}} / 4'
+    dataType: double
+  Fine over Four:
+    expression: '{{[Fine Sum]}} / 4'
+    dataType: decimal(38, 12)
+"""
+#: Each engine's ``DECIMAL(38, 38)``. MySQL allows at most 30 places and
+#: Snowflake 37, so neither has one; ClickHouse divides decimals at a fixed
+#: ``Decimal(38, 14)``, which no dividend's promotion decides.
+POINT_DECIMAL = {
+    "duckdb": "DECIMAL(38, 38)",
+    "postgres": "NUMERIC(38, 38)",
+    "bigquery": "BIGNUMERIC",
+    "databricks": "DECIMAL(38, 38)",
+    "dremio": "DECIMAL(38, 38)",
+}
+
+POINTS = "intdiv_points"
+
+POINT_ROWS = [(region, "0.00000000000000000000000000000000000001") for region in ("north",) * 2]
+
+POINT_MODEL_YAML = """
+version: "1.0"
+name: decimal_scale_vendor
+dataObjects:
+  Points:
+    code: {points}
+    schema: '{schema}'
+    columns:
+      Region: {{code: region, abstractType: string}}
+      Point: {{code: point, abstractType: float}}
+dimensions:
+  Region: {{dataObject: Points, column: Region, resultType: string}}
+measures:
+  Point Sum:
+    columns: [{{dataObject: Points, column: Point}}]
+    aggregation: sum
+    dataType: decimal(38, 38)
+metrics:
+  Point Half:
+    expression: '{{[Point Sum]}} / 2'
+    dataType: decimal(38, 38)
+"""
+
+METRICS = ["Rows over Four", "Quantity over Four", "Typed over Four", "Rows over Double Quantity"]
+
+
+def _assert_all(target: VendorTarget) -> None:
+    columns: list[tuple[str, int | str]] = [
+        ("id", 0),
+        ("region", 0),
+        ("quantity", 2),
+        ("tiny", 1),
+        ("fine", FINE_DECIMAL[target.dialect]),
+    ]
+    _create(target, SALES, columns, ROWS)
+    yaml_text = MODEL_YAML.format(sales=SALES, schema=SCHEMAS.get(target.dialect, ""))
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Region"], measures=[*METRICS, "Tiny over Four", "Fine over Four"]
+            )
+        ),
+    )
+    got = {r["region"]: tuple(_number(r[m.lower()]) for m in METRICS) for r in rows}
+    half = (Decimal("0.5"),) * len(METRICS)
+    assert got == {"north": half, "south": half}, f"{target.name}: {got}"
+    # A double dividend keeps its precision: 2e-12 / 4, not a fixed decimal
+    # that rounds it to 0.
+    tiny = {r["region"]: float(r["tiny over four"]) for r in rows}
+    assert all(abs(v - 5e-13) < 1e-18 for v in tiny.values()), f"{target.name}: {tiny}"
+    # So does a decimal: 2e-11 / 4 at scale 12, not narrowed to scale 10.
+    fine = {r["region"]: _number(r["fine over four"]) for r in rows}
+    assert fine == {"north": Decimal("5e-12"), "south": Decimal("5e-12")}, f"{target.name}: {fine}"
+    if target.dialect in POINT_DECIMAL:
+        _assert_no_integer_digits(target)
+    _assert_period_over_period(target)
+
+
+def _assert_no_integer_digits(target: VendorTarget) -> None:
+    """A decimal with no integer digit keeps all 38 places: 2e-38 / 2."""
+    _create(target, POINTS, [("region", 0), ("point", POINT_DECIMAL[target.dialect])], POINT_ROWS)
+    yaml_text = POINT_MODEL_YAML.format(points=POINTS, schema=SCHEMAS.get(target.dialect, ""))
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Region"], measures=["Point Half"])),
+    )
+    got = {r["region"]: _number(r["point half"]) for r in rows}
+    assert got == {"north": Decimal("1e-38")}, f"{target.name}: {got}"
+
+
+MONTHS = "intdiv_months"
+
+MONTH_ROWS = [
+    ("m1", "2026-01-05", 1),
+    ("m2", "2026-01-20", 1),
+    ("m3", "2026-02-03", 1),
+    ("m4", "2026-02-10", 1),
+    ("m5", "2026-02-25", 1),
+]
+
+MONTH_MODEL_YAML = """
+version: "1.0"
+name: period_division_vendor
+dataObjects:
+  Sales:
+    code: {months}
+    schema: '{schema}'
+    columns:
+      Sale ID: {{code: id, abstractType: string, primaryKey: true}}
+      Day: {{code: day, abstractType: date}}
+      Quantity: {{code: quantity, abstractType: int}}
+dimensions:
+  Month: {{dataObject: Sales, column: Day, resultType: date, timeGrain: month}}
+measures:
+  Sales Rows:
+    columns: [{{dataObject: Sales, column: Sale ID}}]
+    aggregation: count
+  Typed Quantity:
+    columns: [{{dataObject: Sales, column: Quantity}}]
+    aggregation: sum
+    resultType: int
+metrics:
+  Rows Ratio:
+    type: period_over_period
+    expression: '{{[Sales Rows]}}'
+    periodOverPeriod:
+      {{timeDimension: Month, grain: month, offset: -1, offsetGrain: month, comparison: ratio}}
+  Rows Change:
+    type: period_over_period
+    expression: '{{[Sales Rows]}}'
+    periodOverPeriod: {{timeDimension: Month, grain: month, offset: -1, offsetGrain: month,
+      comparison: percentChange}}
+  Quantity Ratio:
+    type: period_over_period
+    expression: '{{[Typed Quantity]}}'
+    periodOverPeriod:
+      {{timeDimension: Month, grain: month, offset: -1, offsetGrain: month, comparison: ratio}}
+"""
+
+PERIOD_METRICS = ["Rows Ratio", "Rows Change", "Quantity Ratio"]
+
+
+def _assert_period_over_period(target: VendorTarget) -> None:
+    """February's 3 sales after January's 2: a ratio of 1.5, a change of 0.5."""
+    _create(target, MONTHS, [("id", 0), ("day", 3), ("quantity", 2)], MONTH_ROWS)
+    yaml_text = MONTH_MODEL_YAML.format(months=MONTHS, schema=SCHEMAS.get(target.dialect, ""))
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    rows = _run(
+        target,
+        model,
+        QueryObject(select=QuerySelect(dimensions=["Month"], measures=PERIOD_METRICS)),
+    )
+    got = {str(r["month"])[:7]: tuple(_number(r[m.lower()]) for m in PERIOD_METRICS) for r in rows}
+    expected = (Decimal("1.5"), Decimal("0.5"), Decimal("1.5"))
+    assert got.get("2026-02") == expected, f"{target.name}: {got}"
+
+
+def test_duckdb_integer_division(vendor_duckdb: VendorTarget) -> None:
+    _assert_all(vendor_duckdb)
+
+
+def test_postgres_integer_division(vendor_postgres: VendorTarget) -> None:
+    _assert_all(vendor_postgres)
+
+
+def test_mysql_integer_division(vendor_mysql: VendorTarget) -> None:
+    _assert_all(vendor_mysql)
+
+
+def test_clickhouse_integer_division(vendor_clickhouse: VendorTarget) -> None:
+    _assert_all(vendor_clickhouse)
+
+
+def test_bigquery_integer_division(vendor_bigquery: VendorTarget) -> None:
+    _assert_all(vendor_bigquery)
+
+
+def test_snowflake_integer_division(vendor_snowflake: VendorTarget) -> None:
+    _assert_all(vendor_snowflake)
+
+
+def test_databricks_integer_division(vendor_databricks: VendorTarget) -> None:
+    _assert_all(vendor_databricks)
+
+
+def test_dremio_integer_division(vendor_dremio: VendorTarget) -> None:
+    _assert_all(vendor_dremio)
