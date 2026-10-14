@@ -1519,6 +1519,41 @@ def test_deduplicated_component_beside_a_filter_context_component(
     assert tuple(float(r[2]) for r in rows) == values
 
 
+@pytest.mark.parametrize(
+    ("measures", "having", "kept"),
+    [
+        (["Region Stock per Quantity"], ("Region Stock per Quantity", "<", 60), ["south"]),
+        (["Stock per Filtered Quantity"], ("Stock per Filtered Quantity", "<", 60), ["south"]),
+        (["Stock Total per Quantity"], ("Stock Total per Quantity", "<", 115), ["north", "south"]),
+        (
+            ["Total Stock On Hand", "Filtered Quantity"],
+            ("Filtered Quantity", ">=", 2),
+            ["north", "south"],
+        ),
+    ],
+    ids=["grain override", "query grain", "total", "filterContext measure"],
+)
+def test_having_on_a_filter_context_value_reads_the_final_value(
+    measures: list[str], having: tuple[str, str, int], kept: list[str]
+) -> None:
+    """Filtered to tools, the south's query-filtered quantity is 1 but its
+    filterContext quantity 2: a HAVING on the filterContext value, or on a
+    metric over it, is applied by that pass to the final value, not by dedup
+    beforehand to one over the query-filtered quantity (south 100, not 50)."""
+    yaml_text = MODEL_YAML.replace("metrics:\n", _FILTER_CONTEXT_METRICS, 1)
+    field, op, value = having
+    result = _compile(
+        {
+            "select": {"dimensions": ["Region"], "measures": measures},
+            "where": [{"field": "Category", "op": "=", "value": "tools"}],
+            "having": [{"field": field, "op": op, "value": value}],
+        },
+        yaml_text,
+    )
+    rows = sorted(_stock_db().execute(result.sql).fetchall())
+    assert [r[0] for r in rows] == kept
+
+
 def test_deduplicated_total_is_not_rewrapped_when_another_total_is_present() -> None:
     """The totals pass must treat dedup-handled measures as pass-through throughout.
 

@@ -13,7 +13,7 @@ from decimal import Decimal
 
 import pytest
 
-from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
@@ -164,6 +164,26 @@ def _assert_all(target: VendorTarget) -> None:
     assert shares == {
         k: tuple(round(Decimal(str(v)), 4) for v in values) for k, values in expected.items()
     }, f"{target.name}: {shares}"
+
+    _assert_having_after_filter_context(target, model)
+
+
+def _assert_having_after_filter_context(target: VendorTarget, model: SemanticModel) -> None:
+    """Filtered to tools, the south's quantity is 1 under the query's filter
+    and 2 under the filterContext: its stock per quantity is 100 / 2 = 50, so
+    ``< 60`` keeps it. Applied before the filterContext value existed, the
+    predicate read 100 / 1 and dropped it."""
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Region"], measures=["Region Stock per Quantity"]),
+            where=[QueryFilter(field="Category", op="=", value="tools")],
+            having=[QueryFilter(field="Region Stock per Quantity", op="<", value=60)],
+        ),
+    )
+    got = {r["region"]: _ratio(r["region stock per quantity"]) for r in rows}
+    assert got == {"south": Decimal(50)}, f"{target.name}: {got}"
 
 
 def test_duckdb_grain_dedup(vendor_duckdb: VendorTarget) -> None:
