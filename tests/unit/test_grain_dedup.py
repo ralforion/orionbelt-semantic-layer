@@ -1029,26 +1029,30 @@ def test_having_on_a_metric_over_a_deduplicated_component() -> None:
     assert rows == [("south", 37.5)]
 
 
-def test_having_mixing_a_dimension_with_a_deduplicated_measure_is_refused() -> None:
-    """The moved predicate would carry a physical column with nothing to bind to."""
-    with pytest.raises(GrainDedupUnsupportedError, match="'Region'"):
-        _compile(
-            {
-                "select": {
-                    "dimensions": ["Region"],
-                    "measures": ["Sold Quantity", "Total Stock On Hand"],
-                },
-                "having": [
-                    {
-                        "logic": "or",
-                        "filters": [
-                            {"field": "Region", "op": "equals", "value": "north"},
-                            {"field": "Total Stock On Hand", "op": "gt", "value": 250},
-                        ],
-                    }
-                ],
-            }
-        )
+def test_having_mixing_a_selected_dimension_with_a_deduplicated_measure() -> None:
+    """The moved predicate reads the selected dimension's column of ``main``,
+    which is out of the grouped query with the measures. It used to keep the
+    physical column, with nothing to bind to, and was refused."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Sold Quantity", "Total Stock On Hand"],
+            },
+            "having": [
+                {
+                    "logic": "or",
+                    "filters": [
+                        {"field": "Region", "op": "equals", "value": "north"},
+                        {"field": "Total Stock On Hand", "op": "gt", "value": 250},
+                    ],
+                }
+            ],
+        }
+    )
+    assert '"__ob_main"."Region" = \'north\'' in result.sql
+    rows = sorted(r[0] for r in _sales_db().execute(result.sql).fetchall())
+    assert rows == ["north", "south"]
 
 
 # --- Detection unit-level ------------------------------------------------

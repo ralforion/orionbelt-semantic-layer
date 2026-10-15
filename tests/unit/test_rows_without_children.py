@@ -50,11 +50,19 @@ dataObjects:
         joinTo: Regions
         columnsFrom: [Customer Region ID]
         columnsTo: [Region ID]
+  Products:
+    code: products
+    schema: main
+    columns:
+      Product ID: {code: id, abstractType: int, primaryKey: true}
+      Product Name: {code: name, abstractType: string}
+      Product Or Missing: {expression: "COALESCE({Product Name}, 'missing')", abstractType: string}
   Orders:
     code: orders
     schema: main
     columns:
       Order ID: {code: id, abstractType: int, primaryKey: true}
+      Order Product ID: {code: product_id, abstractType: int}
       Order Customer ID: {code: customer_id, abstractType: int}
       Billing Customer ID: {code: billing_id, abstractType: int}
       Status: {code: status, abstractType: string}
@@ -67,6 +75,10 @@ dataObjects:
         columnsFrom: [Order Customer ID]
         columnsTo: [Customer ID]
       - joinType: many-to-one
+        joinTo: Products
+        columnsFrom: [Order Product ID]
+        columnsTo: [Product ID]
+      - joinType: many-to-one
         joinTo: Customers
         columnsFrom: [Billing Customer ID]
         columnsTo: [Customer ID]
@@ -78,6 +90,7 @@ dimensions:
   Status: {dataObject: Orders, column: Status, resultType: string}
   Status Or Missing: {dataObject: Orders, column: Status Or Missing, resultType: string}
   Status Check: {dataObject: Orders, column: Status Check, resultType: string}
+  Product Or Missing: {dataObject: Products, column: Product Or Missing, resultType: string}
 measures:
   Customer Count:
     columns: [{dataObject: Customers, column: Customer ID}]
@@ -125,12 +138,14 @@ def con() -> duckdb.DuckDBPyConnection:
         "INSERT INTO customers VALUES (1, 1, 'gold', 100), (2, 1, 'silver', 200),"
         " (3, 2, 'gold', 600), (4, 2, 'bronze', 50)"
     )
+    con.execute("CREATE TABLE products (id INTEGER, name VARCHAR)")
+    con.execute("INSERT INTO products VALUES (1, 'Pen')")
     con.execute(
-        "CREATE TABLE orders (id INTEGER, customer_id INTEGER, billing_id INTEGER,"
-        " status VARCHAR, amount DOUBLE)"
+        "CREATE TABLE orders (id INTEGER, product_id INTEGER, customer_id INTEGER,"
+        " billing_id INTEGER, status VARCHAR, amount DOUBLE)"
     )
     # Alice's ok order is billed to Frank.
-    con.execute("INSERT INTO orders VALUES (1, 1, 3, 'ok', 10), (2, 2, 2, 'bad', 20)")
+    con.execute("INSERT INTO orders VALUES (1, 1, 1, 3, 'ok', 10), (2, 1, 2, 2, 'bad', 20)")
     return con
 
 
@@ -407,3 +422,39 @@ class TestReviewFollowUps:
             }
         )
         assert _rows(con, sql) == [(4.0,)]
+
+    def test_having_on_a_selected_dimension_moves_with_it(
+        self, con: duckdb.DuckDBPyConnection
+    ) -> None:
+        sql = _sql(
+            {
+                "select": {"dimensions": ["Tier"], "measures": ["Customer Count"]},
+                "where": GOLD_OR_OK,
+                "having": [{"field": "Tier", "op": "like", "value": "g%"}],
+            }
+        )
+        expected = (
+            f"SELECT c.tier, COUNT(DISTINCT c.id) {LEFT_JOIN}"
+            " WHERE c.tier = 'gold' OR o.status = 'ok' GROUP BY c.tier HAVING c.tier LIKE 'g%'"
+        )
+        assert _rows(con, sql) == _rows(con, expected)
+
+    def test_a_dimension_beyond_the_child_reads_as_null(
+        self, con: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Products is reached only through the orders, so for a customer
+        without orders its name is NULL and the COALESCE gives 'missing'."""
+        sql = _sql(
+            {
+                "select": {"dimensions": ["Product Or Missing"], "measures": ["Customer Count"]},
+                "where": GOLD_OR_OK,
+            }
+        )
+        expected = (
+            "SELECT COALESCE(p.name, 'missing'), COUNT(DISTINCT c.id) FROM customers c"
+            " LEFT JOIN orders o ON o.customer_id = c.id"
+            " LEFT JOIN products p ON p.id = o.product_id"
+            " WHERE c.tier = 'gold' OR o.status = 'ok' GROUP BY 1"
+        )
+        assert _rows(con, sql) == _rows(con, expected)
+        assert ("missing", 1.0) in _rows(con, sql)

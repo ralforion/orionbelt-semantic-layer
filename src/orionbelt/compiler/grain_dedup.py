@@ -86,7 +86,7 @@ from orionbelt.compiler.expr_rewrite import (
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.filters import build_exists_filter_expr, collect_measure_filter_objects
 from orionbelt.compiler.graph import JoinGraph
-from orionbelt.compiler.having_hoist import windowed_aliases
+from orionbelt.compiler.having_hoist import dimensions_to_aliases, windowed_aliases
 from orionbelt.compiler.metric_expansion import (
     metric_leaf_components,
     metric_over_components,
@@ -548,15 +548,15 @@ def _combine(exprs: Iterable[Expr]) -> Expr | None:
 
 def _reject_unmovable_having(
     outer_having: list[ResolvedFilter],
-    available: dict[str, Expr],
+    available: Container[str],
 ) -> None:
     """Refuse a moved HAVING predicate that also references something else.
 
     A predicate leaving ``__ob_main`` is re-expressed against the outer query,
-    where only the measures survive as columns. One that also constrains a
-    dimension still carries that dimension's *physical* column reference, which
-    has nothing to bind to out there — so it is refused rather than emitted as
-    SQL that cannot resolve.
+    where the measures and the selected dimensions survive as columns. One that
+    also constrains anything else (a column no selected dimension reads) still
+    carries a *physical* column reference, which has nothing to bind to out
+    there — so it is refused rather than emitted as SQL that cannot resolve.
     """
     unavailable = sorted(
         {f for hf in outer_having for f in hf.referenced_fields if f not in available}
@@ -932,8 +932,13 @@ def wrap_with_grain_dedup(
         for col in outer_columns
         if (alias := _measure_alias(col)) in selected and isinstance(col, AliasedExpr)
     }
-    _reject_unmovable_having(outer_having, outer_exprs)
-    outer_where = _combine(_substitute_aliases(hf.expression, outer_exprs) for hf in outer_having)
+    # A selected dimension the predicate also tests is a column out here too:
+    # of ``main``, or of the group list when the groups are read from it.
+    _reject_unmovable_having(outer_having, {**outer_exprs, **dict.fromkeys(dim_names)})
+    to_dimensions = dimensions_to_aliases(resolved, model, dims_table)
+    outer_where = _combine(
+        _substitute_aliases(to_dimensions(hf.expression), outer_exprs) for hf in outer_having
+    )
 
     # Without ``main`` the first dedup CTE becomes the FROM and the rest join to
     # it; every one yields a single row at this grain, so a CROSS JOIN is exact.
@@ -1228,13 +1233,14 @@ def _rows_without_children(
     columns: list[Expr] = []
     needed: set[str] = set()
     for dim in group_dims:
-        # The dimension as it reads for a parent without children: a child
-        # column NULL, a computed one over it evaluated as such
-        # (``COALESCE(status, 'missing')`` is 'missing'). One that still reads
-        # an object the parent cannot reach is NULL, as a LEFT JOIN leaves it.
+        # The dimension as it reads for a parent without children: every column
+        # of an object the parent cannot reach NULL, as a LEFT JOIN leaves the
+        # whole child side, and a computed one over them evaluated as such
+        # (``COALESCE(product, 'missing')`` is 'missing'). A ``via`` role the
+        # parent cannot take is NULL outright.
         value = map_nodes(
             make_dimension_expr(model, dim, dialect),
-            lambda node: _as_childless(node, leg.children, model),
+            lambda node: _as_childless(node, reachable, model),
         )
         tables: set[str] = set()
         collect_referenced_tables(value, tables)
@@ -1253,7 +1259,7 @@ def _rows_without_children(
             needed.add(ref.table)
 
     accepts = (
-        map_nodes(ast.where, lambda node: _as_childless(node, leg.children, model))
+        map_nodes(ast.where, lambda node: _as_childless(node, reachable, model))
         if ast.where is not None
         else None
     )
@@ -1310,12 +1316,13 @@ def _rows_without_children(
     )
 
 
-def _as_childless(node: Expr, children: frozenset[str], model: SemanticModel) -> Expr | None:
-    """*node* as it reads for a row with no child rows: a child column NULL, an
-    ``EXISTS`` correlated to one finding nothing."""
-    if isinstance(node, ColumnRef) and node.table in children:
+def _as_childless(node: Expr, reachable: set[str], model: SemanticModel) -> Expr | None:
+    """*node* as it reads for a parent row with no child rows: a column of an
+    object the parent cannot reach NULL, an ``EXISTS`` correlated to one
+    finding nothing."""
+    if isinstance(node, ColumnRef) and node.table is not None and node.table not in reachable:
         return _typed_null(model, node)
-    if isinstance(node, Exists) and correlated_tables(node.subquery) & children:
+    if isinstance(node, Exists) and correlated_tables(node.subquery) - reachable:
         # 1 = 0 / 1 = 1: a boolean literal every dialect accepts.
         return BinaryOp(Literal.number(1), "=", Literal.number(1 if node.negated else 0))
     return None
