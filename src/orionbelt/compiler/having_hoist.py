@@ -213,10 +213,11 @@ def _alias_predicates(
     """The HAVING predicates *select* picks by their fields, over output aliases.
 
     A computed dimension's predicate tests its whole inlined expression
-    (``UPPER("Sales"."city")``), which is rewritten to the dimension's alias as
-    a unit: rewriting only its column refs left the table reference behind,
-    out of scope past the grouped query. A plain column maps by its physical
-    column, at the finest grain the query has.
+    (``UPPER("Sales"."city")``, or a single column for ``{City}``), which is
+    rewritten to the dimension's alias as a unit: rewriting only its column
+    refs left the table reference behind, out of scope past the grouped query.
+    A plain column maps by its physical column, at the finest grain the query
+    has.
     """
     from orionbelt.compiler.resolution import make_column_expr
 
@@ -226,7 +227,9 @@ def _alias_predicates(
         for dim in resolved.dimensions:
             if dim.grain is None and dim.via is None:
                 expr = make_column_expr(model, dim.object_name, dim.column_name)
-                if not isinstance(expr, ColumnRef):
+                # A computed column has no physical source column to map by,
+                # even when its expression is one column (``{City}``).
+                if not dim.source_column or not isinstance(expr, ColumnRef):
                     computed.append((expr, dim.name))
 
     def computed_to_alias(node: Expr) -> Expr | None:
