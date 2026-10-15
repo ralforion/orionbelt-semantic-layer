@@ -73,12 +73,26 @@ _ANON_AGG_TO_OBML = {
 # ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` parses as a ``WithinGroup``
 # over one of these with the fraction as its only argument; the two-argument
 # form (DuckDB ``quantile_cont(x, p)``) as the node itself; Spark's exact
-# ``percentile(x, p)`` as ``Quantile``. ``APPROX_PERCENTILE`` is an
-# ``ApproxQuantile``, not listed: an approximation is not the same measure.
+# ``percentile(x, p)`` as ``Quantile``. ``APPROX_PERCENTILE`` (an
+# ``ApproxQuantile``) is not listed: it is first rewritten to the exact
+# aggregate it estimates (``_APPROX_PERCENTILE_AS``), with a warning.
 _PERCENTILE_AGGS: dict[type[exp.Expr], str] = {
     exp.PercentileCont: "percentile_cont",
     exp.PercentileDisc: "percentile_disc",
     exp.Quantile: "percentile_cont",
+}
+
+# What an approximate percentile estimates, per source dialect, as the exact
+# two-argument node ``_PERCENTILE_AGGS`` imports. Snowflake's
+# ``APPROX_PERCENTILE`` is a t-digest estimate that interpolates between
+# values: ``percentile_cont``. Databricks' ``approx_percentile`` returns "the
+# smallest value in the ordered col values such that no more than percentage of
+# col values is less than the value or equal to that value", a value of the
+# column: ``percentile_disc``. Other dialects do not parse one as an
+# ``ApproxQuantile`` and preserve the metric.
+_APPROX_PERCENTILE_AS: dict[str, type[exp.PercentileCont] | type[exp.PercentileDisc]] = {
+    "snowflake": exp.PercentileCont,
+    "databricks": exp.PercentileDisc,
 }
 
 # The names sqlglot reads as a ``_PERCENTILE_AGGS`` node. It drops a third
@@ -129,6 +143,9 @@ class OSItoOBML:
         self.default_database = default_database
         self.default_schema = default_schema
         self.warnings: list[str] = []
+        # The exact aggregations the last decomposed metric's approximate
+        # percentiles became (see ``_exact_percentiles``).
+        self._approximated: list[str] = []
         # OSI metrics that have no OBML representation (non-SQL dialect only,
         # or an expression our parser cannot decompose). Preserved verbatim
         # rather than dropped — see ``_preserve_unconverted_metric``.
@@ -1089,6 +1106,13 @@ class OSItoOBML:
                     m, f"expression not decomposable into OBML measures/metrics: {expr_text!r}"
                 )
                 continue
+            for exact_agg in dict.fromkeys(self._approximated):
+                self.warnings.append(
+                    f"APPROXIMATE: OSI metric '{name}' uses an approximate percentile, "
+                    f"imported as the exact {exact_agg} it estimates. Values can differ "
+                    f"from the source's in the last digits, and the exact aggregate can "
+                    f"be slower on large tables."
+                )
 
             if decomposed[0] == "simple":
                 _, agg, dataset, column, is_distinct, extra = decomposed
@@ -1472,6 +1496,31 @@ class OSItoOBML:
         return agg, OSItoOBML._plain(node.this), OSItoOBML._fraction(fraction)
 
     @staticmethod
+    def _exact_percentiles(tree: exp.Expr, read: str | None) -> tuple[exp.Expr, list[str]]:
+        """*tree* with each approximate percentile replaced by the exact
+        aggregate it estimates (``_APPROX_PERCENTILE_AS``), and the exact
+        aggregations used, for the caller's warning.
+
+        The exact value is what the approximation estimates, so the measure
+        gets more accurate rather than less; the ``accuracy`` argument only
+        tunes the estimate and goes. A weighted form is left alone, and a
+        list of fractions (``array(0.25, 0.5)``) is no fraction OBML accepts:
+        either is preserved like any percentile OBML cannot model.
+        """
+        exact = _APPROX_PERCENTILE_AS.get(read or "")
+        used: list[str] = []
+        if exact is None:
+            return tree, used
+
+        def _rewrite(node: exp.Expr) -> exp.Expr:
+            if not isinstance(node, exp.ApproxQuantile) or node.args.get("weight") is not None:
+                return node
+            used.append(_PERCENTILE_AGGS[exact])
+            return exact(this=node.this, expression=node.args.get("quantile"))
+
+        return tree.transform(_rewrite), used
+
+    @staticmethod
     def _plain(arg: exp.Expr | None) -> exp.Expr | None:
         """*arg*, unless it is ``DISTINCT x``: a percentile measure has no
         distinct form."""
@@ -1738,6 +1787,7 @@ class OSItoOBML:
         tree = self._parse_metric_sql(expr_text, read)
         if tree is None or self._drops_percentile_arguments(expr_text, read):
             return None
+        tree, self._approximated = self._exact_percentiles(tree, read)
 
         # Resolve qualified column refs on the parsed AST, canonicalising each
         # dataset/column to its model name (case-insensitively). Working on the
