@@ -325,6 +325,17 @@ class TestTheSparqlTab:
         # A plain select (not filterable): open it and pick the option.
         page.get_by_label("Example query").click()
         page.get_by_role("option", name="Does the model link into schema.org? (ASK)").click()
+        # The example reaches the editor through a server round trip and then
+        # ``__obSparql.pull()``. Execute first flushes the editor back to the
+        # query it sends, so clicking before the example has landed re-runs
+        # the previous SELECT and the ASK status never appears (CI, #552).
+        page.wait_for_function(
+            """() => {
+                const el = document.getElementById('ob-sparql-ace');
+                return !!(window.ace && el && window.ace.edit(el).getValue().includes('ASK {'));
+            }""",
+            timeout=30_000,
+        )
         page.get_by_role("button", name="Execute Query").click()
         page.wait_for_function(
             "() => document.querySelector('#ob-sparql-status')?.innerText.includes('ASK:')",
