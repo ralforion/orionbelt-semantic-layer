@@ -49,7 +49,7 @@ def _nulls_last(nulls: NullsPosition | None) -> bool | None:
     return nulls == NullsPosition.LAST
 
 
-def _grouping_flag_alias(dim_alias: str) -> str:
+def grouping_flag_alias(dim_alias: str) -> str:
     """Build the GROUPING() flag column alias for a dimension.
 
     Per PLAN_with_rollup.md §"Output: GROUPING() flag columns" — convention is
@@ -227,7 +227,7 @@ class StarSchemaPlanner:
             for alias in grouping_dim_aliases:
                 gb_arg = group_by_exprs.get(alias) or ColumnRef(name=alias)
                 flag_col = FunctionCall(name="GROUPING", args=[gb_arg])
-                builder.select(AliasedExpr(expr=flag_col, alias=_grouping_flag_alias(alias)))
+                builder.select(AliasedExpr(expr=flag_col, alias=grouping_flag_alias(alias)))
 
         # HAVING — expand alias references to actual CAST'd aggregate expressions.
         # A predicate on a measure some later wrapper finishes with a window

@@ -40,7 +40,7 @@ from orionbelt.compiler.resolution import (
     make_column_expr,
     make_dimension_expr,
 )
-from orionbelt.compiler.star import CflLegInfo, QueryPlan, _grouping_flag_alias, _nulls_last
+from orionbelt.compiler.star import CflLegInfo, QueryPlan, _nulls_last, grouping_flag_alias
 from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
@@ -904,7 +904,7 @@ class CFLPlanner:
                 flag_aliases.append(alias_name)
             for alias in flag_aliases:
                 flag_col = FunctionCall(name="GROUPING", args=[ColumnRef(name=alias)])
-                outer_builder.select(AliasedExpr(expr=flag_col, alias=_grouping_flag_alias(alias)))
+                outer_builder.select(AliasedExpr(expr=flag_col, alias=grouping_flag_alias(alias)))
 
         # HAVING — expand alias references to actual CAST'd aggregate expressions.
         # A predicate on a measure a later wrapper finishes with a window

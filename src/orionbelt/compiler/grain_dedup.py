@@ -54,12 +54,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Container, Iterable
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
     BinaryOp,
+    Cast,
     ColumnRef,
     Expr,
     From,
@@ -70,6 +72,7 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
     Select,
+    UnionAll,
     Unnest,
 )
 from orionbelt.compiler.expr_rewrite import (
@@ -92,7 +95,9 @@ from orionbelt.compiler.resolution import (
     make_column_expr,
     make_dimension_expr,
 )
+from orionbelt.compiler.star import grouping_flag_alias
 from orionbelt.models.errors import SemanticError
+from orionbelt.models.query import Grouping
 from orionbelt.models.semantic import Cardinality, Measure, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
 
@@ -708,11 +713,12 @@ def wrap_with_grain_dedup(
 
     cte_for_measure: dict[str, str] = {}
     grain_of_cte: dict[str, tuple[str, ...]] = {}
+    # CTEs carrying a row per grouping set, matched on its GROUPING() flags too.
+    rolled_up: set[str] = set()
     for idx, group_key in enumerate(sorted(by_group)):
         object_name, grain = group_key
         measure_names = by_group[group_key]
         group_dims = [d for d in resolved.dimensions if d.name in grain]
-        group_dim_names = [d.name for d in group_dims]
         if not object_name:
             cte_name = f"{_AT_GRAIN_CTE if grain else _AT_TOTAL_CTE}_{idx}"
             for measure_name in measure_names:
@@ -733,81 +739,32 @@ def wrap_with_grain_dedup(
             cte_name = f"{_DEDUP_GRAIN_CTE}_{idx}"
         else:
             cte_name = f"{_DEDUP_CTE}_{idx}"
-        src_alias = f"{_DEDUP_SRC}_{idx}"
         for measure_name in measure_names:
             cte_for_measure[measure_name] = cte_name
         grain_of_cte[cte_name] = grain
-        # Inner projection: the query's grain, the source object's identity, and
-        # every column the measures read. DISTINCT over those collapses the
-        # replication to exactly one row per (grain, source-object row).
-        inner_columns: list[Expr] = []
-        for dim in group_dims:
-            dim_expr: Expr = make_dimension_expr(model, dim, dialect)
-            inner_columns.append(AliasedExpr(expr=dim_expr, alias=dim.name))
-
-        identity = dedup_identity(object_name, measure_names, resolved, model)
-
-        for key_idx, key_column in enumerate(identity):
-            inner_columns.append(
-                AliasedExpr(
-                    expr=make_column_expr(model, object_name, key_column),
-                    alias=f"{_KEY_PREFIX}{key_idx}",
-                )
+        columns = [measure_columns[n] for n in measure_names]
+        query: Select | UnionAll
+        if resolved.grouping is not None and grain:
+            # ROLLUP / CUBE: one deduplication per grouping set, each at that
+            # set's grain, so a subtotal counts each object row once rather
+            # than adding up the groups below it, which share object rows.
+            query = _per_grouping_set(
+                ast, object_name, measure_names, columns, resolved, model, dialect, idx
             )
-
-        refs: list[ColumnRef] = []
-        for measure_name in measure_names:
-            collect_column_refs(measure_columns[measure_name], refs)
-
-        ref_map: dict[tuple[str, str | None], ColumnRef] = {}
-        for col_idx, ref in enumerate(refs):
-            projected = f"{_COL_PREFIX}{col_idx}"
-            inner_columns.append(AliasedExpr(expr=ref, alias=projected))
-            ref_map[(ref.name, ref.table)] = ColumnRef(name=projected, table=src_alias)
-
-        deduplicated = Select(
-            columns=inner_columns,
-            from_=ast.from_,
-            joins=ast.joins,
-            where=ast.where,
-            distinct=True,
-        )
-
-        # Outer: re-aggregate the measures against the deduplicated rows. The
-        # measure expressions keep their casts and shape; only their leaf column
-        # refs are repointed at the subquery projection.
-        cte_columns: list[Expr] = [
-            AliasedExpr(expr=ColumnRef(name=name, table=src_alias), alias=name)
-            for name in group_dim_names
-        ]
-        cte_columns.extend(
-            rewrite_column_refs(measure_columns[name], ref_map) for name in measure_names
-        )
-
-        # A base row with no match on the joined object still yields a row, with
-        # the whole object NULL. It is not one of the object's rows, so drop it:
-        # otherwise a grain-anchored COUNT would count a phantom. SUM and the
-        # rest already ignore NULL inputs, so this changes nothing for them.
-        key_present: Expr | None = None
-        for key_idx in range(len(identity)):
-            not_null = IsNull(
-                expr=ColumnRef(name=f"{_KEY_PREFIX}{key_idx}", table=src_alias), negated=True
+            rolled_up.add(cte_name)
+        else:
+            query = _deduplicated_at(
+                ast,
+                object_name,
+                measure_names,
+                columns,
+                group_dims,
+                resolved,
+                model,
+                dialect,
+                f"{_DEDUP_SRC}_{idx}",
             )
-            key_present = (
-                not_null if key_present is None else BinaryOp(key_present, "AND", not_null)
-            )
-
-        all_ctes.append(
-            CTE(
-                name=cte_name,
-                query=Select(
-                    columns=cte_columns,
-                    from_=From(source=deduplicated, alias=src_alias),
-                    where=key_present,
-                    group_by=[ColumnRef(name=name, table=src_alias) for name in group_dim_names],
-                ),
-            )
-        )
+        all_ctes.append(CTE(name=cte_name, query=query))
 
     # --- outer SELECT: main plus each dedup CTE, joined on the query grain ---
     def measure_ref(name: str) -> Expr:
@@ -905,6 +862,17 @@ def wrap_with_grain_dedup(
                 ColumnRef(name=name, table=cte_name),
             )
             on_expr = condition if on_expr is None else BinaryOp(on_expr, "AND", condition)
+        if cte_name in rolled_up:
+            # The flag tells a subtotal's NULL from a NULL value of the
+            # dimension, which the null-safe match alone cannot.
+            for name in grain:
+                flag = grouping_flag_alias(name)
+                same_set: Expr = BinaryOp(
+                    ColumnRef(name=flag, table=outer_from),
+                    "=",
+                    ColumnRef(name=flag, table=cte_name),
+                )
+                on_expr = same_set if on_expr is None else BinaryOp(on_expr, "AND", same_set)
         outer_joins.append(
             Join(join_type=JoinType.LEFT, source=cte_name, alias=cte_name, on=on_expr)
         )
@@ -950,6 +918,147 @@ def wrap_with_grain_dedup(
         offset=ast.offset,
         ctes=all_ctes,
     )
+
+
+def _deduplicated_at(
+    ast: Select,
+    object_name: str,
+    measure_names: list[str],
+    measure_columns: list[Expr],
+    group_dims: list[ResolvedDimension],
+    resolved: ResolvedQuery,
+    model: SemanticModel,
+    dialect: Dialect,
+    src_alias: str,
+) -> Select:
+    """*measure_columns* aggregated over the rows of *object_name*, each once
+    per group of *group_dims*: the query's rows reduced by a DISTINCT over the
+    grain, the object's identity and every column the measures read."""
+    inner_columns: list[Expr] = [
+        AliasedExpr(expr=make_dimension_expr(model, dim, dialect), alias=dim.name)
+        for dim in group_dims
+    ]
+    identity = dedup_identity(object_name, measure_names, resolved, model)
+    for key_idx, key_column in enumerate(identity):
+        inner_columns.append(
+            AliasedExpr(
+                expr=make_column_expr(model, object_name, key_column),
+                alias=f"{_KEY_PREFIX}{key_idx}",
+            )
+        )
+
+    refs: list[ColumnRef] = []
+    for column in measure_columns:
+        collect_column_refs(column, refs)
+    ref_map: dict[tuple[str, str | None], ColumnRef] = {}
+    for col_idx, ref in enumerate(refs):
+        projected = f"{_COL_PREFIX}{col_idx}"
+        inner_columns.append(AliasedExpr(expr=ref, alias=projected))
+        ref_map[(ref.name, ref.table)] = ColumnRef(name=projected, table=src_alias)
+
+    deduplicated = Select(
+        columns=inner_columns,
+        from_=ast.from_,
+        joins=ast.joins,
+        where=ast.where,
+        distinct=True,
+    )
+
+    # Outer: re-aggregate the measures against the deduplicated rows. The
+    # measure expressions keep their casts and shape; only their leaf column
+    # refs are repointed at the subquery projection.
+    cte_columns: list[Expr] = [
+        AliasedExpr(expr=ColumnRef(name=dim.name, table=src_alias), alias=dim.name)
+        for dim in group_dims
+    ]
+    cte_columns.extend(rewrite_column_refs(column, ref_map) for column in measure_columns)
+
+    # A base row with no match on the joined object still yields a row, with
+    # the whole object NULL. It is not one of the object's rows, so drop it:
+    # otherwise a grain-anchored COUNT would count a phantom. SUM and the
+    # rest already ignore NULL inputs, so this changes nothing for them.
+    key_present: Expr | None = None
+    for key_idx in range(len(identity)):
+        not_null = IsNull(
+            expr=ColumnRef(name=f"{_KEY_PREFIX}{key_idx}", table=src_alias), negated=True
+        )
+        key_present = not_null if key_present is None else BinaryOp(key_present, "AND", not_null)
+
+    return Select(
+        columns=cte_columns,
+        from_=From(source=deduplicated, alias=src_alias),
+        where=key_present,
+        group_by=[ColumnRef(name=dim.name, table=src_alias) for dim in group_dims],
+    )
+
+
+def _grouping_sets(
+    dims: list[ResolvedDimension], grouping: Grouping
+) -> list[list[ResolvedDimension]]:
+    """The grouping sets ROLLUP or CUBE expands *dims* into, finest first."""
+    if grouping is Grouping.ROLLUP:
+        return [dims[:size] for size in range(len(dims), -1, -1)]
+    return [
+        [dims[i] for i in kept]
+        for size in range(len(dims), -1, -1)
+        for kept in combinations(range(len(dims)), size)
+    ]
+
+
+def _per_grouping_set(
+    ast: Select,
+    object_name: str,
+    measure_names: list[str],
+    measure_columns: list[Expr],
+    resolved: ResolvedQuery,
+    model: SemanticModel,
+    dialect: Dialect,
+    idx: int,
+) -> UnionAll:
+    """One deduplicated aggregate per grouping set of the query's ROLLUP or
+    CUBE, stacked: every dimension (NULL where the set rolls it up), its
+    ``GROUPING()`` flag as a constant, and the measures."""
+    assert resolved.grouping is not None
+    branches: list[Select] = []
+    for set_idx, kept in enumerate(_grouping_sets(resolved.dimensions, resolved.grouping)):
+        src_alias = f"{_DEDUP_SRC}_{idx}_{set_idx}"
+        inner = _deduplicated_at(
+            ast,
+            object_name,
+            measure_names,
+            measure_columns,
+            kept,
+            resolved,
+            model,
+            dialect,
+            f"{src_alias}_rows",
+        )
+        kept_names = {dim.name for dim in kept}
+        columns: list[Expr] = []
+        for dim in resolved.dimensions:
+            if dim.name in kept_names:
+                value: Expr = ColumnRef(name=dim.name, table=src_alias)
+            else:
+                model_dim = model.dimensions.get(dim.dimension)
+                value = (
+                    Cast(Literal.null(), type_name=model_dim.result_type.value)
+                    if model_dim
+                    else Literal.null()
+                )
+            columns.append(AliasedExpr(expr=value, alias=dim.name))
+        columns.extend(
+            AliasedExpr(
+                expr=Literal.number(0 if dim.name in kept_names else 1),
+                alias=grouping_flag_alias(dim.name),
+            )
+            for dim in resolved.dimensions
+        )
+        columns.extend(
+            AliasedExpr(expr=ColumnRef(name=name, table=src_alias), alias=name)
+            for name in measure_names
+        )
+        branches.append(Select(columns=columns, from_=From(source=inner, alias=src_alias)))
+    return UnionAll(queries=branches)
 
 
 def _aggregate_at_grain(

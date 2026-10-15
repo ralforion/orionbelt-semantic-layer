@@ -186,8 +186,39 @@ def _assert_all(target: VendorTarget) -> None:
 
     _assert_having_after_filter_context(target, model)
     _assert_fact_side_components(target, model)
+    _assert_rollup(target, model)
     _assert_period_over_period(target)
     _assert_multi_fact(target)
+
+
+def _assert_rollup(target: VendorTarget, model: SemanticModel) -> None:
+    """Each subtotal counts a product once at its own grain: p1, sold in both
+    regions, makes the grand total 510, not the regions' 210 + 400."""
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Region", "Category"], measures=["Sold Quantity", "Total Stock"]
+            ),
+            grouping="rollup",
+        ),
+    )
+    got = {
+        (r["region"], r["category"]): (_number(r["sold quantity"]), _number(r["total stock"]))
+        for r in rows
+    }
+    expected = {
+        ("north", "tools"): (2, 210),
+        ("south", "parts"): (1, 300),
+        ("south", "tools"): (1, 100),
+        ("north", None): (2, 210),
+        ("south", None): (2, 400),
+        (None, None): (4, 510),
+    }
+    assert got == {k: (Decimal(q), Decimal(v)) for k, (q, v) in expected.items()}, (
+        f"{target.name}: {got}"
+    )
 
 
 def _assert_fact_side_components(target: VendorTarget, model: SemanticModel) -> None:
