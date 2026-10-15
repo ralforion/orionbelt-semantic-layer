@@ -20,6 +20,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from orionbelt.ast.nodes import BinaryOp, ColumnRef, FunctionCall, IsNull, Literal, UnaryOp
+from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError
 from orionbelt.compiler.null_rejection import can_hold_without
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import ResolutionError
@@ -423,14 +424,16 @@ class TestReviewFollowUps:
         )
         assert _rows(con, sql) == [(4.0,)]
 
+    @pytest.mark.parametrize("field", ["Tier", "Customers.Tier"])
     def test_having_on_a_selected_dimension_moves_with_it(
-        self, con: duckdb.DuckDBPyConnection
+        self, con: duckdb.DuckDBPyConnection, field: str
     ) -> None:
+        """However the predicate spells the dimension, it reads its column."""
         sql = _sql(
             {
                 "select": {"dimensions": ["Tier"], "measures": ["Customer Count"]},
                 "where": GOLD_OR_OK,
-                "having": [{"field": "Tier", "op": "like", "value": "g%"}],
+                "having": [{"field": field, "op": "like", "value": "g%"}],
             }
         )
         expected = (
@@ -458,3 +461,13 @@ class TestReviewFollowUps:
         )
         assert _rows(con, sql) == _rows(con, expected)
         assert ("missing", 1.0) in _rows(con, sql)
+
+    def test_having_on_a_column_no_selected_dimension_reads_is_refused(self) -> None:
+        with pytest.raises(GrainDedupUnsupportedError, match='"Customers"."credit"'):
+            _sql(
+                {
+                    "select": {"dimensions": ["Tier"], "measures": ["Customer Count"]},
+                    "where": GOLD_OR_OK,
+                    "having": [{"field": "Customers.Credit", "op": ">", "value": 0}],
+                }
+            )

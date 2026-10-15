@@ -96,7 +96,6 @@ from orionbelt.compiler.resolution import (
     ChildlessLeg,
     ResolutionError,
     ResolvedDimension,
-    ResolvedFilter,
     ResolvedMeasure,
     ResolvedQuery,
     make_column_expr,
@@ -546,24 +545,29 @@ def _combine(exprs: Iterable[Expr]) -> Expr | None:
     return combined
 
 
-def _reject_unmovable_having(
-    outer_having: list[ResolvedFilter],
-    available: Container[str],
-) -> None:
-    """Refuse a moved HAVING predicate that also references something else.
+def _reject_unmovable_having(predicates: list[Expr], data_objects: Container[str]) -> None:
+    """Refuse a moved HAVING predicate that still reads a base table.
 
     A predicate leaving ``__ob_main`` is re-expressed against the outer query,
-    where the measures and the selected dimensions survive as columns. One that
-    also constrains anything else (a column no selected dimension reads) still
-    carries a *physical* column reference, which has nothing to bind to out
-    there — so it is refused rather than emitted as SQL that cannot resolve.
+    where the measures and the selected dimensions survive as columns, however
+    the predicate spelled them (``Tier`` or ``Customers.Tier``). Checked on the
+    rewritten predicate: a reference still naming a data object's table, or a
+    bare name nothing substituted, has nothing to bind to out there, so it is
+    refused rather than emitted as SQL that cannot resolve.
     """
+    refs: list[ColumnRef] = []
+    for predicate in predicates:
+        collect_column_refs(predicate, refs)
     unavailable = sorted(
-        {f for hf in outer_having for f in hf.referenced_fields if f not in available}
+        {
+            f'"{ref.table}"."{ref.name}"' if ref.table is not None else ref.name
+            for ref in refs
+            if ref.table is None or ref.table in data_objects
+        }
     )
     if not unavailable:
         return
-    listed = ", ".join(repr(name) for name in unavailable)
+    listed = ", ".join(unavailable)
     msg = (
         f"A HAVING filter combines {listed} with a measure that must be aggregated "
         f"over deduplicated rows. The deduplicated measure is only available "
@@ -934,11 +938,10 @@ def wrap_with_grain_dedup(
     }
     # A selected dimension the predicate also tests is a column out here too:
     # of ``main``, or of the group list when the groups are read from it.
-    _reject_unmovable_having(outer_having, {**outer_exprs, **dict.fromkeys(dim_names)})
     to_dimensions = dimensions_to_aliases(resolved, model, dims_table)
-    outer_where = _combine(
-        _substitute_aliases(to_dimensions(hf.expression), outer_exprs) for hf in outer_having
-    )
+    moved = [_substitute_aliases(to_dimensions(hf.expression), outer_exprs) for hf in outer_having]
+    _reject_unmovable_having(moved, model.data_objects)
+    outer_where = _combine(moved)
 
     # Without ``main`` the first dedup CTE becomes the FROM and the rest join to
     # it; every one yields a single row at this grain, so a CROSS JOIN is exact.
