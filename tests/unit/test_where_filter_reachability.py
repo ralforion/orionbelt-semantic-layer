@@ -204,3 +204,53 @@ def test_filter_on_a_disconnected_object_is_refused() -> None:
             yaml_text,
         )
     assert [e.code for e in excinfo.value.errors] == ["UNREACHABLE_FILTER_OBJECT"]
+
+
+def test_query_filter_duplicating_a_static_one_keeps_its_demand() -> None:
+    """Written in the query, the predicate is the caller's, even when the
+    model declares the same one statically. Deduplicated to the static copy,
+    it was skipped on the Refunds leg, which then came back unfiltered."""
+    yaml_text = MODEL_YAML + (
+        "filters:\n  - {dataObject: Orders, column: Status, operator: equals, value: ok}\n"
+    )
+    with pytest.raises(ResolutionError) as excinfo:
+        _sql(
+            {
+                "select": {"measures": ["Revenue", "Refunds"]},
+                "where": [{"field": "Status", "op": "=", "value": "ok"}],
+            },
+            yaml_text,
+        )
+    assert [e.code for e in excinfo.value.errors] == ["FILTER_NOT_APPLICABLE_TO_MEASURE"]
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "{mode: FIXED}",
+        "{exclude: [Status]}",
+        "{keepOnly: [Tier]}",
+    ],
+)
+def test_filter_context_that_drops_the_filter_never_resolves_it(
+    con: duckdb.DuckDBPyConnection, context: str
+) -> None:
+    """A filter-contexted measure's scan drops the Status filter, so that the
+    scan cannot reach Orders is no reason to refuse it."""
+    yaml_text = MODEL_YAML.replace(
+        "  Refunds:\n",
+        "  Unfiltered Refunds:\n"
+        "    columns: [{dataObject: Returns, column: Refund}]\n"
+        "    aggregation: sum\n"
+        "    resultType: float\n"
+        f"    filterContext: {context}\n"
+        "  Refunds:\n",
+    )
+    sql = _sql(
+        {
+            "select": {"measures": ["Revenue", "Unfiltered Refunds"]},
+            "where": [{"field": "Status", "op": "=", "value": "ok"}],
+        },
+        yaml_text,
+    )
+    assert _rows(con, sql) == [(150.0, 15.0)]

@@ -1278,11 +1278,22 @@ class QueryResolver:
                 ctx.result.where_filters.append(static_filter)
                 static_exprs.append(static_filter.expression)
 
-        # 6. Classify filters — skip query-time duplicates of static filters
+        # 6. Classify filters — a query-time duplicate of a static filter is
+        # not added twice, but the one kept now carries the query's demand: a
+        # static filter may be skipped where irrelevant, a query filter may not.
         for qfi in query.where:
             resolved_filter = self._resolve_filter_item(ctx, qfi, is_having=False)
-            if resolved_filter and resolved_filter.expression not in static_exprs:
+            if not resolved_filter:
+                continue
+            if resolved_filter.expression not in static_exprs:
                 ctx.result.where_filters.append(resolved_filter)
+                continue
+            ctx.result.where_filters = [
+                replace(wf, static=False)
+                if wf.static and wf.expression == resolved_filter.expression
+                else wf
+                for wf in ctx.result.where_filters
+            ]
 
         for qfi in query.having:
             resolved_filter = self._resolve_filter_item(ctx, qfi, is_having=True)

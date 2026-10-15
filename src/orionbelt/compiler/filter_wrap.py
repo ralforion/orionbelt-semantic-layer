@@ -48,7 +48,14 @@ from orionbelt.compiler.resolution import (
     make_dimension_expr,
 )
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
+from orionbelt.models.query import (
+    FilterOperator,
+    QueryFilter,
+    QueryFilterGroup,
+    QueryFilterItem,
+    QueryObject,
+    QuerySelect,
+)
 from orionbelt.models.semantic import (
     DataObject,
     FilterContext,
@@ -60,25 +67,36 @@ if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
 
 
+def _kept_by_context[T](
+    fc: FilterContext, filters: list[T], fields_of: Callable[[T], frozenset[str]]
+) -> list[T]:
+    """The filters a filter context keeps, matched on the fields each one reads."""
+    if fc.mode == FilterContextMode.FIXED:
+        return []
+    kept = list(filters)
+    if fc.exclude:
+        exclude_set = set(fc.exclude)
+        kept = [f for f in kept if not (fields_of(f) & exclude_set)]
+    if fc.keep_only:
+        keep_set = set(fc.keep_only)
+        kept = [f for f in kept if fields_of(f) & keep_set]
+    return kept
+
+
 def _compute_effective_filters(
     fc: FilterContext,
     where_filters: list[ResolvedFilter],
 ) -> list[ResolvedFilter]:
     """Determine which WHERE filters apply given a filter context override."""
-    if fc.mode == FilterContextMode.FIXED:
-        effective: list[ResolvedFilter] = []
-    else:
-        effective = list(where_filters)
+    return _kept_by_context(fc, where_filters, lambda f: f.referenced_fields)
 
-    if fc.exclude:
-        exclude_set = set(fc.exclude)
-        effective = [f for f in effective if not (f.referenced_fields & exclude_set)]
 
-    if fc.keep_only:
-        keep_set = set(fc.keep_only)
-        effective = [f for f in effective if f.referenced_fields & keep_set]
-
-    return effective
+def _query_item_fields(item: QueryFilterItem) -> frozenset[str]:
+    """The fields a query WHERE item reads, as resolution records them: a leaf
+    its own field, a group the union of its children's."""
+    if isinstance(item, QueryFilterGroup):
+        return frozenset().union(*(_query_item_fields(child) for child in item.filters))
+    return frozenset({item.field})
 
 
 def _resolve_include_filters(
@@ -265,11 +283,11 @@ def _plan_isolated_scan(
     dimensions and the fanout check all have to be derived for *these* measures
     at *this* grain, and the plan they came from was built for different ones.
 
-    The query is resolved carrying the caller's ``where`` so that resolution
-    joins whatever those filters read - including the ones this context drops,
-    whose joins are then harmless - and its resolved filters are replaced with
-    the effective set afterwards. A context that keeps a filter therefore has
-    the column in scope, and one that drops it does not have to un-join it.
+    The query is resolved carrying the caller's ``where`` items this context
+    keeps, so that resolution joins whatever they read, and its resolved
+    filters are replaced with the effective set afterwards. The items the
+    context drops are not resolved at all: a dropped predicate on an object
+    this scan cannot reach is no reason to refuse it.
 
     It then goes through the phases the pipeline runs between resolving and
     planning, and the wrappers it runs after. Skipping them made this scan the
@@ -280,12 +298,14 @@ def _plan_isolated_scan(
     # Named as the query names them: a column's name is no reference for the
     # second of two grains, and names the first at its declared grain.
     references = {d.name: dimension_reference(d) for d in resolved.dimensions}
+    context = measure_group[0].filter_context
+    assert context is not None
     sub_query = QueryObject(
         select=QuerySelect(
             dimensions=[references.get(g, g) for g in grain],
             measures=[m.name for m in measure_group],
         ),
-        where=list(query.where),
+        where=_kept_by_context(context, list(query.where), _query_item_fields),
         use_path_names=list(query.use_path_names),
         allow_fan_out=query.allow_fan_out,
     )
