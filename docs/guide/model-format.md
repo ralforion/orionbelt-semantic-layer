@@ -71,6 +71,27 @@ metrics:
     owner: team-analytics
 ```
 
+### Composing Models: `extends` and `inherits`
+
+A model can be assembled from parts. `extends` lists fragment files (or, through the API, inline YAML fragments) merged into the model in order. `inherits` names a parent model the child builds on; the child cannot also use `extends`, and neither a fragment nor a child may declare `dataObjects`.
+
+Every top-level key of a fragment or child is either merged or refused. The fragment or child is the *source* below, merged onto the model or parent:
+
+| Key | Merge |
+|---|---|
+| `dimensions`, `measures`, `metrics`, `rules` | By name; the source's definition replaces one of the same name, with a warning |
+| `examples` | By `name`; the source's example replaces one of the same name (with a warning), others are appended |
+| `filters` | Appended: static filters accumulate with AND, so a source can narrow the model but never widen it |
+| `settings` | Key by key; the source's value wins, with a warning when it changes one |
+| `exposeCounts`, `countLabelPattern` | The source's value wins, with a warning when it changes one |
+| `customExtensions`, `externalConceptMappings` | Appended |
+| `ontology` | Prefixes are unioned; rebinding a prefix is refused (`ONTOLOGY_PREFIX_CONFLICT`) |
+| `description`, `owner` | The source's value wins when set |
+| `version` | An inheriting child's wins; a fragment's is the OBML version it was written for |
+| `name` | An inheriting child's wins; refused in a fragment (`EXTENDS_CONTAINS_MODEL_NAME`) |
+
+A fragment that uses `inherits` is refused (`EXTENDS_CONTAINS_INHERITS`), and so is an inline fragment that uses `extends` (`EXTENDS_NESTED_INLINE`), since it has no location to resolve file paths against. Any other key is refused with `UNKNOWN_PROPERTY`, and a section of the wrong shape (`settings` that is not a mapping, `filters` that is not a list) with `INVALID_FRAGMENT_SECTION`.
+
 ## Data Objects
 
 A **data object** maps to a database table or custom SQL statement. Each data object declares its columns and optional join relationships.

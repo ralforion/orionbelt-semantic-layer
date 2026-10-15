@@ -115,7 +115,7 @@ Load an OBML semantic model into a session. The model is parsed, validated, and 
 |---|---|---|---|
 | `model_yaml` | string | — | OBML YAML (or use `model_json`). |
 | `model_json` | object/string | — | OBML as JSON (or use `model_yaml`). |
-| `extends` | array | — | Inline YAML fragments to merge. |
+| `extends` | array | — | Inline YAML fragments to merge; see [Composing Models](../guide/model-format.md#composing-models-extends-and-inherits) for how each key merges. |
 | `inherits` | string | — | Parent model_id to inherit from. |
 | `dedup` | bool | `true` | When true, identical OBML content already loaded in this session reuses the existing `model_id`. Set `false` to force a fresh parse. |
 
