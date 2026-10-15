@@ -268,6 +268,9 @@ _GRID = "reagg_grid"
 _RUNS = "reagg_runs"
 _CARRIED = "reagg_carried"
 _SHOWN = "reagg_shown"
+# The stage-1 groups of a population metric: members and fact groups together.
+_KEYS_ALL = "reagg_keys_all"
+_KEYS = "reagg_keys"
 _RUN = "__reagg_run"
 _MATCHED = "__reagg_matched"
 _ROWS_ALL = "reagg_rows_all"
@@ -432,6 +435,14 @@ def _with_population(
     count, which is what a count reports over no rows; otherwise NULL. On a
     carried *layout* it first takes its latest earlier value (see
     :func:`_carried`), read from *history* when the query filters the date.
+
+    Facts that belong to no member keep their own group beside the members: a
+    customer without a region, an order without a customer. Their values are
+    read like a member's, so nothing the facts hold drops out of the result
+    without a word; a filter on the member columns (``Region`` set) removes
+    the group, from the members and the facts alike. The groups are the
+    members' keys and the facts' keys together (:data:`_KEYS`), which every
+    engine can read, where a FULL OUTER JOIN of the two is not portable.
     """
     periods = layout.periods
     member_model = model.model_copy(
@@ -467,12 +478,13 @@ def _with_population(
         history = _own_cte_names(_marked(history), f"{_HISTORY}_")
         ctes += [*history.ctes, CTE(name=_HISTORY, query=replace(history, ctes=[]))]
         source = _HISTORY
+    member_keys = [k for k in keys if k not in periods]
+    ctes += _group_keys(member_keys)
     joins: list[Join | Unnest] = []
     if periods:
         ctes.append(CTE(name=_PERIODS, query=_distinct(source, periods)))
         joins.append(Join(join_type=JoinType.CROSS, source=_PERIODS, alias=_PERIODS))
-    member_keys = [k for k in keys if k not in periods]
-    on = _join_on(_MEMBERS, source, member_keys) if member_keys else None
+    on = _join_on(_KEYS, source, member_keys) if member_keys else None
     if periods:
         by_period = _join_on(_PERIODS, source, periods)
         on = by_period if on is None else BinaryOp(left=on, op="AND", right=by_period)
@@ -494,7 +506,7 @@ def _with_population(
     empty = _empty_value(measure, model)
     columns = [
         AliasedExpr(
-            expr=ColumnRef(name=k, table=_PERIODS if k in periods else _MEMBERS),
+            expr=ColumnRef(name=k, table=_PERIODS if k in periods else _KEYS),
             alias=k,
         )
         for k in keys
@@ -504,13 +516,13 @@ def _with_population(
             value = FunctionCall(name="COALESCE", args=[value, empty])
         return Select(
             columns=[*columns, AliasedExpr(expr=value, alias=measure)],
-            from_=From(source=_MEMBERS, alias=_MEMBERS),
+            from_=From(source=_KEYS, alias=_KEYS),
             joins=joins,
             ctes=ctes,
         )
     grid = Select(
         columns=[*columns, AliasedExpr(expr=value, alias=measure)],
-        from_=From(source=_MEMBERS, alias=_MEMBERS),
+        from_=From(source=_KEYS, alias=_KEYS),
         joins=joins,
     )
     ctes.append(CTE(name=_GRID, query=grid))
@@ -519,6 +531,27 @@ def _with_population(
     return _carried(
         ctes, keys, measure, layout, empty, shown=history is not None, model=model, dialect=dialect
     )
+
+
+def _group_keys(member_keys: list[str]) -> list[CTE]:
+    """The stage-1 groups: every member's keys and every fact group's, once.
+
+    A fact group that is a member repeats the member's keys and collapses into
+    it; one that is no member (its region NULL) stays a group of its own.
+    """
+    branches = [
+        Select(
+            columns=[
+                AliasedExpr(expr=ColumnRef(name=k, table=source), alias=k) for k in member_keys
+            ],
+            from_=From(source=source, alias=source),
+        )
+        for source in (_MEMBERS, _FACTS)
+    ]
+    return [
+        CTE(name=_KEYS_ALL, query=UnionAll(queries=branches)),
+        CTE(name=_KEYS, query=_distinct(_KEYS_ALL, member_keys)),
+    ]
 
 
 def _marked(facts: Select) -> Select:
