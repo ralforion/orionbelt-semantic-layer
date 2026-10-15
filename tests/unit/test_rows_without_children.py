@@ -56,17 +56,28 @@ dataObjects:
     columns:
       Order ID: {code: id, abstractType: int, primaryKey: true}
       Order Customer ID: {code: customer_id, abstractType: int}
+      Billing Customer ID: {code: billing_id, abstractType: int}
       Status: {code: status, abstractType: string}
       Amount: {code: amount, abstractType: float}
+      Status Or Missing: {expression: "COALESCE({Status}, 'missing')", abstractType: string}
+      Status Check: {expression: "NULLIF('ok', {Status})", abstractType: string}
     joins:
       - joinType: many-to-one
         joinTo: Customers
         columnsFrom: [Order Customer ID]
         columnsTo: [Customer ID]
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Billing Customer ID]
+        columnsTo: [Customer ID]
+        secondary: true
+        pathName: billing
 dimensions:
   Region: {dataObject: Regions, column: Region Name, resultType: string}
   Tier: {dataObject: Customers, column: Tier, resultType: string}
   Status: {dataObject: Orders, column: Status, resultType: string}
+  Status Or Missing: {dataObject: Orders, column: Status Or Missing, resultType: string}
+  Status Check: {dataObject: Orders, column: Status Check, resultType: string}
 measures:
   Customer Count:
     columns: [{dataObject: Customers, column: Customer ID}]
@@ -88,6 +99,16 @@ measures:
     columns: [{dataObject: Orders, column: Order ID}]
     aggregation: count
     resultType: int
+  Revenue Or Zero:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+    resultType: float
+    defaultValue: 0
+  All Customers:
+    columns: [{dataObject: Customers, column: Customer ID}]
+    aggregation: count
+    resultType: int
+    filterContext: {mode: FIXED}
 """
 
 
@@ -105,9 +126,11 @@ def con() -> duckdb.DuckDBPyConnection:
         " (3, 2, 'gold', 600), (4, 2, 'bronze', 50)"
     )
     con.execute(
-        "CREATE TABLE orders (id INTEGER, customer_id INTEGER, status VARCHAR, amount DOUBLE)"
+        "CREATE TABLE orders (id INTEGER, customer_id INTEGER, billing_id INTEGER,"
+        " status VARCHAR, amount DOUBLE)"
     )
-    con.execute("INSERT INTO orders VALUES (1, 1, 'ok', 10), (2, 2, 'bad', 20)")
+    # Alice's ok order is billed to Frank.
+    con.execute("INSERT INTO orders VALUES (1, 1, 3, 'ok', 10), (2, 2, 2, 'bad', 20)")
     return con
 
 
@@ -298,3 +321,89 @@ class TestCanHoldWithout:
     def test_null_propagating_function_cannot_hold(self) -> None:
         upper = FunctionCall(name="UPPER", args=[self.STATUS])
         assert not can_hold_without(BinaryOp(upper, "=", Literal.string("OK")), {"Orders"})
+
+
+class TestReviewFollowUps:
+    """Each one a shape the second leg first got wrong."""
+
+    def test_having_filters_the_finished_groups(self, con: duckdb.DuckDBPyConnection) -> None:
+        """North reads 10 and South nothing: no group passes. Applied in
+        ``main`` only, the deduplicated CTEs brought both groups back."""
+        sql = _sql(
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Customer Count", "Revenue"]},
+                "where": GOLD_OR_OK,
+                "having": [{"field": "Revenue", "op": ">", "value": 15}],
+            }
+        )
+        assert _rows(con, sql) == []
+
+    def test_the_anti_join_follows_the_query_path(self, con: duckdb.DuckDBPyConnection) -> None:
+        """Through billing, Frank has the ok order and Alice none. An anti-join
+        over the primary relationship counted Frank twice."""
+        sql = _sql(
+            {
+                "select": {"measures": ["Customer Count", "Total Credit"]},
+                "where": GOLD_OR_OK,
+                "usePathNames": [
+                    {"source": "Orders", "target": "Customers", "pathName": "billing"}
+                ],
+            }
+        )
+        expected = (
+            "SELECT COUNT(*), SUM(credit) FROM (SELECT DISTINCT c.id, c.credit FROM customers c"
+            " LEFT JOIN orders o ON o.billing_id = c.id"
+            " WHERE c.tier = 'gold' OR o.status = 'ok')"
+        )
+        assert _rows(con, sql) == _rows(con, expected)
+
+    def test_a_computed_child_dimension_is_evaluated(self, con: duckdb.DuckDBPyConnection) -> None:
+        sql = _sql(
+            {
+                "select": {"dimensions": ["Status Or Missing"], "measures": ["Customer Count"]},
+                "where": GOLD_OR_OK,
+            }
+        )
+        expected = (
+            f"SELECT COALESCE(o.status, 'missing'), COUNT(DISTINCT c.id) {LEFT_JOIN}"
+            " WHERE c.tier = 'gold' OR o.status = 'ok' GROUP BY 1"
+        )
+        assert _rows(con, sql) == _rows(con, expected)
+        assert ("missing", 1.0) in _rows(con, sql)
+
+    def test_a_group_only_the_leg_has_takes_declared_defaults(
+        self, con: duckdb.DuckDBPyConnection
+    ) -> None:
+        sql = _sql(
+            {
+                "select": {
+                    "dimensions": ["Region"],
+                    "measures": ["Customer Count", "Revenue Or Zero"],
+                },
+                "where": GOLD_OR_OK,
+            }
+        )
+        assert _rows(con, sql) == [("North", 1.0, 10.0), ("South", 1.0, 0.0)]
+
+    def test_nullif_is_not_taken_for_null_propagating(self, con: duckdb.DuckDBPyConnection) -> None:
+        """NULLIF('ok', status) is 'ok' for a NULL status."""
+        sql = _sql(
+            {
+                "select": {"measures": ["Customer Count"]},
+                "where": [{"field": "Status Check", "op": "=", "value": "ok"}],
+            }
+        )
+        expected = f"SELECT COUNT(DISTINCT c.id) {LEFT_JOIN} WHERE NULLIF('ok', o.status) = 'ok'"
+        assert _rows(con, sql) == _rows(con, expected)
+
+    def test_a_fixed_filter_context_measure_reads_every_parent(
+        self, con: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Its own scan drops the WHERE, so it needs no second leg."""
+        sql = _sql(
+            {
+                "select": {"measures": ["All Customers"]},
+                "where": [{"field": "Orders.Order ID", "op": "notset"}],
+            }
+        )
+        assert _rows(con, sql) == [(4.0,)]

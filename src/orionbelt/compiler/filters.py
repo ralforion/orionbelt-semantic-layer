@@ -777,8 +777,14 @@ def build_exists_filter_expr(
     qualify_table: Callable[[DataObject], str],
     errors: list[SemanticError],
     touched_objects: set[str] | None = None,
+    *,
+    use_path_names: list[UsePathName] | None = None,
 ) -> Expr | None:
     """Compile an ``exists`` / ``nonexists`` filter into an ``Exists`` AST node.
+
+    *use_path_names* are the query's secondary-path choices, so a correlation
+    the planner builds itself follows the same relationship the query's rows
+    do; a ``subquery.pathName`` takes precedence.
 
     The join path from ``subject_object`` to ``qf.subquery.dataObject`` is
     resolved by walking the model's existing ``joins:`` — the same machinery
@@ -883,7 +889,7 @@ def build_exists_filter_expr(
             )
         ]
 
-    graph = JoinGraph.of(model, use_path_names=overrides)
+    graph = JoinGraph.of(model, use_path_names=overrides or use_path_names)
 
     # EXISTS correlates without multiplying outer rows, so cardinality
     # direction is irrelevant — use the undirected walker.

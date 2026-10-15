@@ -55,6 +55,7 @@ dataObjects:
       Order Customer: {{code: customer_id, abstractType: string}}
       Status: {{code: status, abstractType: string}}
       Amount: {{code: amount, abstractType: float}}
+      Status Or Missing: {{expression: "COALESCE({{Status}}, 'missing')", abstractType: string}}
     joins:
       - joinType: many-to-one
         joinTo: Customers
@@ -63,6 +64,7 @@ dataObjects:
 dimensions:
   Region: {{dataObject: Customers, column: Region, resultType: string}}
   Status: {{dataObject: Orders, column: Status, resultType: string}}
+  Status Or Missing: {{dataObject: Orders, column: Status Or Missing, resultType: string}}
 measures:
   Customer Count:
     columns: [{{dataObject: Customers, column: Customer ID}}]
@@ -165,6 +167,23 @@ def _assert_all(target: VendorTarget) -> None:
     assert {row["status"]: _number(row["customer count"]) for row in rows} == {
         "ok": Decimal(1),
         None: Decimal(1),
+    }
+
+    # A computed child dimension reads its expression with the order columns
+    # NULL: the customer without orders is 'missing', not NULL.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            **{
+                "select": {"dimensions": ["Status Or Missing"], "measures": ["Customer Count"]},
+                "where": GOLD_OR_OK,
+            }
+        ),
+    )
+    assert {row["status or missing"]: _number(row["customer count"]) for row in rows} == {
+        "ok": Decimal(1),
+        "missing": Decimal(1),
     }
 
 

@@ -40,9 +40,46 @@ from orionbelt.compiler.expr_rewrite import collect_column_refs
 _T, _F, _N = "T", "F", "N"
 _ANY_TRUTH = frozenset({_T, _F, _N})
 
-# Functions that return NULL whenever an argument is NULL do not need listing;
-# these are the ones that can turn a NULL argument into a value.
-_NULL_ABSORBING = frozenset({"COALESCE", "IFNULL", "NVL", "NVL2", "ISNULL", "IF", "IIF"})
+# Functions known to return NULL whenever an argument is NULL. Any other
+# function counts as able to turn NULL into a value (COALESCE, NULLIF with the
+# NULL second, CONCAT on engines that skip NULLs): the answer then errs towards
+# planning the rows without children, which costs a leg, never a wrong result.
+_NULL_PROPAGATING = frozenset(
+    {
+        "UPPER",
+        "LOWER",
+        "TRIM",
+        "LTRIM",
+        "RTRIM",
+        "LENGTH",
+        "CHAR_LENGTH",
+        "SUBSTRING",
+        "SUBSTR",
+        "LEFT",
+        "RIGHT",
+        "REPLACE",
+        "REVERSE",
+        "ABS",
+        "ROUND",
+        "FLOOR",
+        "CEIL",
+        "CEILING",
+        "SIGN",
+        "MOD",
+        "POWER",
+        "SQRT",
+        "EXP",
+        "LN",
+        "LOG",
+        "LOG10",
+        "DATE_TRUNC",
+        "DATE_PART",
+        "EXTRACT",
+        "YEAR",
+        "MONTH",
+        "DAY",
+    }
+)
 
 _COMPARISONS = frozenset({"=", "<>", "!=", "<", ">", "<=", ">=", "LIKE", "ILIKE"})
 
@@ -63,7 +100,7 @@ def _is_null(expr: Expr, tables: set[str]) -> bool:
             return _is_null(inner, tables)
         case BinaryOp(left=left, op=op, right=right) if op.upper() not in ("AND", "OR"):
             return _is_null(left, tables) or _is_null(right, tables)
-        case FunctionCall(name=name, args=args) if name.upper() not in _NULL_ABSORBING:
+        case FunctionCall(name=name, args=args) if name.upper() in _NULL_PROPAGATING:
             return any(_is_null(arg, tables) for arg in args)
         case _:
             return False

@@ -706,14 +706,19 @@ def wrap_with_grain_dedup(
         or any(c.filter_context is not None for c in leaf_components[m.name])
     }
     windowed = windowed_aliases(resolved)
+    # With groups read from every CTE, a HAVING evaluated in ``main`` removes a
+    # group there only: the deduplicated CTEs bring it back with NULL values. So
+    # every predicate this pass owns filters the finished rows instead.
     outer_having = [
         hf
         for hf in resolved.having_filters
-        if hf.referenced_fields & hoisted
+        if (split_groups or hf.referenced_fields & hoisted)
         and not hf.referenced_fields & (filter_context_owned | windowed)
     ]
     main_having = ast.having
-    if any(
+    if split_groups:
+        main_having = None
+    elif any(
         hf.referenced_fields & (hoisted | filter_context_owned) for hf in resolved.having_filters
     ):
         planner_measures = {m.name for m in resolved.measures}
@@ -847,7 +852,15 @@ def wrap_with_grain_dedup(
         # NULL, which is what SQL returns for an empty input.
         if name in cte_for_measure and _counts_rows(effective_measures.get(name)):
             return FunctionCall(name="COALESCE", args=[ref, Literal.number(0)])
-        return ref
+        return _default_for_split_group(name, ref)
+
+    def _default_for_split_group(name: str, ref: Expr) -> Expr:
+        """A group only parents without children have is no row of ``main``: a
+        measure read there takes its declared default, as one over no rows does."""
+        measure = resolved_by_name.get(name)
+        if not split_groups or measure is None or measure.default_value is None:
+            return ref
+        return measure.with_default(ref)
 
     outer_columns: list[Expr] = []
     for col in ast.columns:
@@ -881,6 +894,8 @@ def wrap_with_grain_dedup(
             # A group of only parents without children has no row in ``main``.
             if split_groups and _counts_rows(effective_measures.get(alias)):
                 main_ref = FunctionCall(name="COALESCE", args=[main_ref, Literal.number(0)])
+            else:
+                main_ref = _default_for_split_group(alias, main_ref)
             outer_columns.append(AliasedExpr(expr=main_ref, alias=alias))
             continue
         outer_columns.append(AliasedExpr(expr=measure_ref(alias), alias=alias))
@@ -1134,12 +1149,16 @@ def _require_parent_dedup(leg: ChildlessLeg, resolved: ResolvedQuery, model: Sem
     without children reach. One that is not (``allowFanOut``, a delegated
     aggregation) refuses the query instead."""
     effective = model.effective_measures
-    names = {m.name for m in resolved.measures if not m.component_measures} | {
+    # A filterContext measure is computed by a scan planned in its own right,
+    # which applies its own filters (and its own leg) or none.
+    names = {
+        m.name for m in resolved.measures if not m.component_measures and m.filter_context is None
+    } | {
         c.name
         for m in resolved.measures
         if m.component_measures
         for c in metric_leaf_components(m, resolved.metric_components)
-        if not c.component_measures
+        if not c.component_measures and c.filter_context is None
     }
     missed = sorted(
         name
@@ -1209,9 +1228,18 @@ def _rows_without_children(
     columns: list[Expr] = []
     needed: set[str] = set()
     for dim in group_dims:
-        if dim.object_name in reachable and (dim.via is None or dim.via in reachable):
-            value = make_dimension_expr(model, dim, dialect)
-            collect_referenced_tables(value, needed)
+        # The dimension as it reads for a parent without children: a child
+        # column NULL, a computed one over it evaluated as such
+        # (``COALESCE(status, 'missing')`` is 'missing'). One that still reads
+        # an object the parent cannot reach is NULL, as a LEFT JOIN leaves it.
+        value = map_nodes(
+            make_dimension_expr(model, dim, dialect),
+            lambda node: _as_childless(node, leg.children, model),
+        )
+        tables: set[str] = set()
+        collect_referenced_tables(value, tables)
+        if tables <= reachable and (dim.via is None or dim.via in reachable):
+            needed |= tables
         else:
             value = _dimension_null(model, dim)
         columns.append(AliasedExpr(expr=value, alias=dim.name))
@@ -1246,6 +1274,7 @@ def _rows_without_children(
         leg.parent,
         childless.qualify_table,
         errors,
+        use_path_names=resolved.use_path_names or None,
     )
     if no_child is None:
         raise ResolutionError(errors)
