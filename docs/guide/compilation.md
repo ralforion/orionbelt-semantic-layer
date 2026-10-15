@@ -319,9 +319,12 @@ below) and the query plans as an ordinary star.
     <object key>) = 1` where the key is present, the other legs pad the flag,
     and the outer aggregate reads its whole input only on flagged rows:
     `SUM(CASE WHEN "Stock__first" = 1 THEN "Stock" END)`. Each object row counts
-    once per group, as in a single-fact plan. A measure aggregating several
-    columns (a multi-column `count_distinct`, a two-column statistic) is
-    refused instead: the union carries its columns apart.
+    once per group, as in a single-fact plan; a coalesced dimension partitions
+    by the `COALESCE` the outer query groups by. Refused instead: a measure
+    aggregating several columns (a multi-column `count_distinct`, a two-column
+    statistic), whose columns the union carries apart, and a coarser grain over
+    the groups (`total: true`, a `grain` override, `ROLLUP` / `CUBE`), which
+    would add up groups sharing an object row.
 
 A `total: true` measure is deduplicated at **no** grain: one row per source
 object row across the whole query, in its own `dedup_total_N` CTE that is

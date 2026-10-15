@@ -975,7 +975,9 @@ class CFLPlanner:
         DISTINCT in a single-fact plan.
 
         A multi-field measure spreads its arguments over several union columns
-        and is refused rather than flagged.
+        and is refused rather than flagged, and so is any coarser grain the
+        outer query combines the groups into: a total, a grain override or a
+        rollup would add up groups that share an object row.
         """
         by_name = {m.name: m for m in (*all_measures, *resolved.metric_components.values())}
         multi_field = sorted(
@@ -1004,9 +1006,39 @@ class CFLPlanner:
                 ]
             )
 
+        coarser = sorted(
+            n for n in leg_dedup if n in by_name and (by_name[n].total or by_name[n].grain_override)
+        )
+        combined: str | None = None
+        if coarser:
+            combined = "A total or grain override"
+        elif resolved.grouping is not None:
+            combined = resolved.grouping.value.upper()
+        if combined is not None:
+            listed = ", ".join(f"'{name}'" for name in coarser or sorted(leg_dedup))
+            raise ResolutionError(
+                [
+                    SemanticError(
+                        code="INCOMPATIBLE_COMBINATION",
+                        message=(
+                            f"Measure(s) {listed} are sourced from an object whose rows this "
+                            f"query's joins replicate, and a query spanning facts that cannot "
+                            f"be joined deduplicates them per group of its own grain. "
+                            f"{combined} combines those groups, which share object rows, "
+                            f"so they would be counted again."
+                        ),
+                        path="select.measures",
+                        hint=(
+                            "Query the measure without the measures from the other fact, or "
+                            "at the query's own grain."
+                        ),
+                        context={"measures": coarser or sorted(leg_dedup)},
+                    )
+                ]
+            )
+
         resolved.leg_dedup_targets = {name: entry[0] for name, entry in leg_dedup.items()}
         aliases = cfl_projection.composite_aliases(resolved)
-        dim_names = {dim.name for dim in resolved.dimensions}
         legs = list(union_legs)
         for name in sorted(leg_dedup):
             object_name, owner, leg_view = leg_dedup[name]
@@ -1021,11 +1053,7 @@ class CFLPlanner:
             assert present is not None
             for idx, leg in enumerate(legs):
                 if idx == owner:
-                    dims = [
-                        col.expr
-                        for col in leg.columns
-                        if isinstance(col, AliasedExpr) and col.alias in dim_names
-                    ]
+                    dims = self._leg_grouping(resolved, leg)
                     flag: Expr = CaseExpr(
                         when_clauses=[
                             (
@@ -1047,6 +1075,34 @@ class CFLPlanner:
                     columns=[*leg.columns, AliasedExpr(expr=flag, alias=aliases.first_flags[name])],
                 )
         return legs, aliases
+
+    @staticmethod
+    def _leg_grouping(resolved: ResolvedQuery, leg: Select) -> list[Expr]:
+        """The outer query's grouping, as *leg* projects it.
+
+        One expression per output group: a coalesced dimension groups by
+        ``COALESCE`` of its members, so two members collapsing into one output
+        value are one group here too. A member the leg does not project (under
+        ``UNION ALL BY NAME``) is NULL, which ``COALESCE`` skips anyway.
+        """
+        projected = {col.alias: col.expr for col in leg.columns if isinstance(col, AliasedExpr)}
+        grouping: list[Expr] = []
+        seen: set[str] = set()
+        for dim in resolved.dimensions:
+            key = dim.coalesce_alias or dim.name
+            if key in seen:
+                continue
+            seen.add(key)
+            members = [
+                projected[d.name]
+                for d in resolved.dimensions
+                if (d.coalesce_alias or d.name) == key and d.name in projected
+            ]
+            if len(members) > 1:
+                grouping.append(FunctionCall(name="COALESCE", args=members))
+            elif members:
+                grouping.append(members[0])
+        return grouping
 
     # -- dimensionsExclude: EXCEPT-based anti-join ----------------------------
 

@@ -19,7 +19,13 @@ import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import ResolutionError
-from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
+from orionbelt.models.query import (
+    CoalesceDimension,
+    FilterOperator,
+    QueryFilter,
+    QueryObject,
+    QuerySelect,
+)
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
@@ -139,6 +145,16 @@ measures:
     columns: [{dataObject: Products, column: Stock On Hand}]
     resultType: float
     aggregation: sum
+  Grand Stock:
+    columns: [{dataObject: Products, column: Stock On Hand}]
+    resultType: float
+    aggregation: sum
+    total: true
+  Fixed Stock:
+    columns: [{dataObject: Products, column: Stock On Hand}]
+    resultType: float
+    aggregation: sum
+    grain: {mode: FIXED, keepOnly: []}
   Fanned Stock:
     columns: [{dataObject: Products, column: Stock On Hand}]
     resultType: float
@@ -490,6 +506,47 @@ class TestAOneSideMeasureInAUnionIsDeduplicated:
             (1.0, 100.0, 1.0, 1.0),
             (2.0, 110.0, 1.0, 4.0),
         ]
+
+    def test_a_coalesced_dimension_partitions_as_the_query_groups(self) -> None:
+        """Product 1 sells on two days of month 1, and ``COALESCE(Month, Day)``
+        is the month: one output group, so one first row, not one per day."""
+        sql = PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=[CoalesceDimension(coalesce=["Month", "Day"], alias="When")],
+                    measures=["Stock", "Products Count", "Refund Amount"],
+                )
+            ),
+            _model(),
+            "duckdb",
+        ).sql
+        rows = sorted(_connect().execute(sql).fetchall())
+        assert [tuple(float(v) for v in row) for row in rows] == [
+            (1.0, 100.0, 1.0, 1.0),
+            (2.0, 110.0, 1.0, 4.0),
+        ]
+
+    @pytest.mark.parametrize(
+        ("measures", "grouping"),
+        [
+            (["Grand Stock", "Refund Amount"], None),
+            (["Fixed Stock", "Refund Amount"], None),
+            (["Stock", "Refund Amount"], "rollup"),
+        ],
+    )
+    def test_a_coarser_grain_is_refused(self, measures: list[str], grouping: str | None) -> None:
+        """The flags deduplicate at the query's grain. A total or a rollup
+        combines its groups, which overlap: product 1 sold in both months
+        would count twice (310 for 210)."""
+        with pytest.raises(ResolutionError, match="grain"):
+            PIPELINE.compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Month"], measures=measures),
+                    grouping=grouping,
+                ),
+                _model(),
+                "duckdb",
+            )
 
     def test_the_owning_leg_flags_its_first_rows(self) -> None:
         sql = _sql(["Stock", "Refund Amount"])
