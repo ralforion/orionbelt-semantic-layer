@@ -39,6 +39,7 @@ from orionbelt.ast.nodes import (
     Select,
     WindowFunction,
 )
+from orionbelt.compiler.having_hoist import apply_having_hoist, grouped_predicates
 from orionbelt.compiler.metric_expansion import expand_metric_expression, metric_leaf_components
 from orionbelt.compiler.outer_order_by import remap_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
@@ -294,13 +295,17 @@ def wrap_with_totals(
             base_columns.append(col_node)
 
     # --- Build base CTE: planner's AST with modified columns, no ORDER BY/LIMIT ---
+    # No HAVING: a total or grain override sums every group at its grain, so
+    # the window has to see the groups a HAVING removes. Evaluated here, a
+    # predicate on any other measure shrank the parent total to the groups it
+    # kept. The predicates filter this wrapper's output instead, below.
     base_cte_query = Select(
         columns=base_columns,
         from_=ast.from_,
         joins=ast.joins,
         where=ast.where,
         group_by=ast.group_by,
-        having=ast.having,
+        having=None,
         order_by=[],
         limit=None,
         offset=None,
@@ -343,7 +348,7 @@ def wrap_with_totals(
     # --- Assemble final Select ---
     all_ctes = list(ast.ctes) + [base_cte]
 
-    return Select(
+    outer = Select(
         columns=outer_columns,
         from_=_from_cte("base"),
         joins=[],
@@ -355,6 +360,11 @@ def wrap_with_totals(
         offset=ast.offset,
         ctes=all_ctes,
     )
+    if ast.having is None:
+        return outer
+    # The rows a later window wrapper sees are the filtered ones, as before:
+    # only the total's own window reads past the HAVING.
+    return apply_having_hoist(outer, grouped_predicates(resolved, model), cte_name="totals_having")
 
 
 def _get_alias(expr: Expr) -> str | None:

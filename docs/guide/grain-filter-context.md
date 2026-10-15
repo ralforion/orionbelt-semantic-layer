@@ -63,6 +63,10 @@ The effective grain must always be a subset of (or equal to) the query dimension
 
 `total: true` is equivalent to `grain: { mode: FIXED }` (empty FIXED = grand total). Both are supported -- `total` is preserved as a convenient shorthand. They are mutually exclusive on the same measure.
 
+### Interaction with `having`
+
+A grain override or `total` sums every group at its grain, including the groups a query's `having` removes. The `having` filters the rows shown, not the groups the total reads: with `having: Revenue > 250`, a region total still adds up all of the region's cities, and only the cities below 250 are left out of the result. A window metric (`rank`, `lag`) in the same query still ranks the rows that pass the `having`.
+
 ## Filter Context
 
 The `filterContext` property controls which query WHERE filters apply to a measure. This is distinct from the existing `filters` property (which adds `CASE WHEN` conditions inside the aggregate function).
