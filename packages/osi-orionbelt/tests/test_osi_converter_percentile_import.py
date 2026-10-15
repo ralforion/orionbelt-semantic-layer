@@ -5,8 +5,9 @@ An Ossie metric written as ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)``,
 Spark's exact ``percentile(x, p)`` becomes a measure with that aggregation and
 ``percentile: p``, alone or inside a formula. What OBML cannot model the same
 way - a descending or multi-key order, a fraction that is not a literal in
-(0, 1) with at most 9 places, an approximate percentile - is preserved
-verbatim rather than converted to another measure.
+(0, 1) with at most 9 places - is preserved verbatim rather than converted to
+another measure. An approximate percentile imports as the exact one it
+estimates, with a warning.
 """
 
 from __future__ import annotations
@@ -104,6 +105,78 @@ def test_imported_as_a_percentile_measure(
     assert "Probe" not in obml.get("metrics", {})
 
 
+def _converter(expression: str, dialect: str) -> conv.OSItoOBML:
+    osi = {
+        "version": "0.2.0.dev0",
+        "semantic_model": [
+            {
+                "name": "sales",
+                "datasets": [
+                    {
+                        "name": "Orders",
+                        "source": "A.P.ORDERS",
+                        "fields": [_field("amount"), _field("cost")],
+                    }
+                ],
+                "metrics": [_metric("Probe", expression, dialect)],
+            }
+        ],
+    }
+    return conv.OSItoOBML(osi)
+
+
+@pytest.mark.parametrize(
+    ("expression", "dialect", "aggregation"),
+    [
+        # Snowflake's t-digest estimate interpolates between values.
+        ("APPROX_PERCENTILE(Orders.amount, 0.9)", "SNOWFLAKE", "percentile_cont"),
+        # Databricks returns a value of the column; the accuracy only tunes the
+        # estimate, which the exact aggregate does not need.
+        ("approx_percentile(Orders.amount, 0.9)", "DATABRICKS", "percentile_disc"),
+        ("approx_percentile(Orders.amount, 0.9, 1000)", "DATABRICKS", "percentile_disc"),
+        ("percentile_approx(Orders.amount, 0.9)", "DATABRICKS", "percentile_disc"),
+    ],
+)
+def test_an_approximate_percentile_imports_as_the_exact_one(
+    expression: str, dialect: str, aggregation: str
+) -> None:
+    """The exact value is what the approximation estimates: the measure gets
+    more accurate, not less, and the import says so."""
+    converter = _converter(expression, dialect)
+    obml = converter.convert()
+    assert obml["measures"]["Probe"] == _column_measure(aggregation, 0.9)
+    approximate = [w for w in converter.warnings if w.startswith("APPROXIMATE:")]
+    assert len(approximate) == 1
+    assert "'Probe'" in approximate[0] and aggregation in approximate[0]
+
+
+def test_an_approximate_percentile_inside_a_formula() -> None:
+    converter = _converter("APPROX_PERCENTILE(Orders.amount, 0.9) - SUM(Orders.cost)", "SNOWFLAKE")
+    obml = converter.convert()
+    aggregations = sorted(m["aggregation"] for m in obml["measures"].values())
+    assert aggregations == ["percentile_cont", "sum"]
+    assert "Probe" in obml["metrics"]
+    assert any(w.startswith("APPROXIMATE:") for w in converter.warnings)
+
+
+@pytest.mark.parametrize(
+    ("expression", "dialect"),
+    [
+        # Several fractions at once: no one measure.
+        ("approx_percentile(Orders.amount, array(0.25, 0.5))", "DATABRICKS"),
+        # ANSI has no approximate percentile; it does not parse as one.
+        ("APPROX_PERCENTILE(Orders.amount, 0.9)", "ANSI_SQL"),
+    ],
+)
+def test_an_approximate_percentile_obml_cannot_model_is_preserved(
+    expression: str, dialect: str
+) -> None:
+    converter = _converter(expression, dialect)
+    obml = converter.convert()
+    assert "Probe" not in obml.get("measures", {})
+    assert not any(w.startswith("APPROXIMATE:") for w in converter.warnings)
+
+
 def test_over_an_expression() -> None:
     obml = _import("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY Orders.amount - Orders.cost)")
     measure = obml["measures"]["Probe"]
@@ -138,7 +211,6 @@ def test_inside_a_formula() -> None:
         "PERCENTILE_CONT(0) WITHIN GROUP (ORDER BY Orders.amount)",
         "PERCENTILE_CONT(0.0000000001) WITHIN GROUP (ORDER BY Orders.amount)",
         "PERCENTILE_CONT(Orders.cost) WITHIN GROUP (ORDER BY Orders.amount)",
-        "APPROX_PERCENTILE(Orders.amount, 0.9)",
         "percentile(Orders.amount, 0.3, Orders.cost)",
         "percentile(Orders.amount, 0.3, Orders.cost) - SUM(Orders.cost)",
         "quantile_cont(Orders.amount, 0.3, Orders.cost)",
@@ -170,7 +242,6 @@ def test_inside_a_formula() -> None:
         "zero",
         "ten places",
         "column fraction",
-        "approx",
         "frequency",
         "frequency in a formula",
         "duckdb third argument",
@@ -201,13 +272,7 @@ def test_preserved_when_not_modelable(expression: str) -> None:
     percentile as an unweighted one (sqlglot drops the frequency argument), a
     DISTINCT one as an invalid expression, and any aggregate with a FILTER or
     OVER as a formula OBML does not parse."""
-    dialect = (
-        "SNOWFLAKE"
-        if expression.startswith("APPROX")
-        else "DATABRICKS"
-        if expression.startswith("percentile(")
-        else "ANSI_SQL"
-    )
+    dialect = "DATABRICKS" if expression.startswith("percentile(") else "ANSI_SQL"
     obml = _import(expression, dialect)
     assert "Probe" not in obml.get("measures", {})
     assert "Probe" not in obml.get("metrics", {})
