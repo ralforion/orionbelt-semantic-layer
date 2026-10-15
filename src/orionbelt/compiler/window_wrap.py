@@ -289,8 +289,8 @@ def _base_measure_column(
 
     Only the direct window-metric column can be re-aliased this way. A derived
     metric over a window metric carries the whole derived expression instead, so
-    there is no base value to lift out; ``evaluate_compatibility`` keeps that
-    combination blocked.
+    there is no base value to lift out; over a CTE, the pass that built it
+    projects that base measure under its own name (see ``wrap_with_window``).
     """
     # An anchored measure's aggregate reads conformed subquery columns, not the
     # foreign fact's own, so re-deriving it here would name a table this CTE
@@ -437,7 +437,11 @@ def wrap_with_window(
                 if base_comp is None:
                     continue
                 already_in_base = any(_get_alias(c) == base_name for c in base_columns)
-                if already_in_base:
+                # Over a CTE the fact tables are gone, and the pass that built
+                # it projects the base measure under its name (grain dedup):
+                # that column is carried through below as it is.
+                carried = over_cte and any(_get_alias(c) == base_name for c in ast.columns)
+                if already_in_base or carried:
                     continue
                 comp_expr = _apply_measure_cast(
                     resolved.projected_expressions.get(base_comp.name, base_comp.expression),

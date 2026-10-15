@@ -363,6 +363,13 @@ metrics:
         comparison: difference}}
   Stock per Quantity:
     expression: '{{[Total Stock]}} / {{[Sold Quantity]}}'
+  Stock Rank:
+    type: window
+    windowFunction: dense_rank
+    measure: Total Stock
+    orderDirection: desc
+  Doubled Stock Rank:
+    expression: '{{[Stock Rank]}} * 2'
   Count Growth:
     type: period_over_period
     expression: '{{[Products Count]}}'
@@ -412,6 +419,21 @@ def _assert_period_over_period(target: VendorTarget) -> None:
         k: tuple(None if v is None else round(Decimal(str(v)), 4) for v in values)
         for k, values in expected.items()
     }, f"{target.name}: {got}"
+
+    # A derived metric over a window metric whose base measure is the
+    # deduplicated one: January's stock is 100, so it ranks below February's
+    # 110 (inflated to 200 it ranked first). March, with no stock, is left out:
+    # engines place NULL at either end of the ranking.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Sale Month"], measures=["Doubled Stock Rank"]),
+            where=[QueryFilter(field="Sale Month", op="<", value="2026-03-01")],
+        ),
+    )
+    ranks = {str(r["sale month"])[:7]: int(r["doubled stock rank"]) for r in rows}
+    assert ranks == {"2026-01": 4, "2026-02": 2}, f"{target.name}: {ranks}"
 
 
 CFL_DATES = "dedup_cfl_dates"

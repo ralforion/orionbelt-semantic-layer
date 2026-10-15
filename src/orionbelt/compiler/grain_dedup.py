@@ -95,6 +95,7 @@ from orionbelt.compiler.resolution import (
     make_dimension_expr,
 )
 from orionbelt.compiler.star import grouping_flag_alias
+from orionbelt.compiler.window_wrap import _ddm_window_components
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import Grouping
 from orionbelt.models.semantic import Cardinality, Measure, SemanticModel
@@ -275,7 +276,11 @@ def is_split_metric(
     metric: ResolvedMeasure, resolved: ResolvedQuery, grain_components: Container[str]
 ) -> bool:
     """Whether the pass rebuilds *metric* from its components: it reads a
-    deduplicated component or one of *grain_components*."""
+    deduplicated component or one of *grain_components*. A metric over a window
+    metric is never rebuilt here: the window pass computes it, from the inputs
+    this pass projects by name (:func:`_window_inputs`)."""
+    if _ddm_window_components(metric, resolved.metric_components):
+        return False
     return any(
         c.name in resolved.dedup_components or c.name in grain_components
         for c in metric_leaf_components(metric, resolved.metric_components)
@@ -296,10 +301,11 @@ def _metric_component_targets(
     inlined aggregate never reaches the replicated join.
 
     Nested *derived* metrics are followed, because they are expanded in place
-    into the same expression. A component computed by its own wrapper — a
-    cumulative, window, or period-over-period metric — is refused instead: that
-    wrapper rebuilds its base measure's aggregate from the fact tables, which a
-    dedup CTE cannot serve.
+    into the same expression. A window metric's base measure is deduplicated in
+    its own right: the window pass reads it by name from this pass's output
+    (:func:`_window_inputs`). A cumulative or period-over-period component is
+    refused: that wrapper rebuilds its base measure's aggregate from the fact
+    tables, which a dedup CTE cannot serve.
     """
     targets: dict[str, str] = {}
     for component in metric_leaf_components(metric, resolved.metric_components):
@@ -317,7 +323,10 @@ def _metric_component_targets(
             or component.pop_base_measure
         )
         target = None if base is None else _dedup_target(base, effective, replicated)
-        if target is None:
+        if target is None or base is None:
+            continue
+        if component.window_base_measure is not None:
+            targets[base] = target
             continue
         msg = (
             f"Metric '{metric.name}' references metric '{component.name}', whose measure "
@@ -577,6 +586,13 @@ def wrap_with_grain_dedup(
         for m in resolved.measures
         if is_split_metric(m, resolved, resolved.dedup_grain_components)
     }
+    window_inputs = _window_inputs(resolved)
+    # A metric over a window metric is a placeholder column until the window
+    # pass computes it: its base measure is a bare name nothing here binds.
+    # That pass rebuilds it from ``window_inputs``, so it is left out here.
+    window_formulas = {
+        m.name for m in resolved.measures if _ddm_window_components(m, resolved.metric_components)
+    }
 
     # What each measure this pass computes aggregates, keyed by the alias it
     # lands under: the planner's own column for a selected measure (casts
@@ -600,7 +616,7 @@ def wrap_with_grain_dedup(
             measure_columns[name] = AliasedExpr(expr=component_expr(name), alias=name)
 
     # --- main CTE: the query as planned, minus the measures being deduplicated ---
-    hoisted = computed_here | set(split_metrics)
+    hoisted = computed_here | set(split_metrics) | window_formulas
     main_columns = [c for c in ast.columns if _measure_alias(c) not in hoisted]
     # A split metric's non-deduplicated components have to be projected in their
     # own right: the metric column that carried them is gone. One with a total
@@ -614,6 +630,14 @@ def wrap_with_grain_dedup(
                 AliasedExpr(expr=component_expr(component.name), alias=component.name)
             )
             main_aliases.add(component.name)
+
+    # A metric over a window metric is computed by the window pass, which reads
+    # its inputs by name: the window's base measure and the formula's other
+    # components. Those not computed here are aggregated in ``main``.
+    for name in window_inputs:
+        if name not in computed_here and name not in main_aliases:
+            main_columns.append(AliasedExpr(expr=component_expr(name), alias=name))
+            main_aliases.add(name)
 
     # With no dimensions and every measure deduplicated, ``main`` would project
     # nothing and degenerate to one row per base row — multiplying the single
@@ -783,6 +807,8 @@ def wrap_with_grain_dedup(
         if alias is None:
             outer_columns.append(col)
             continue
+        if alias in window_formulas:
+            continue
         if alias in split_metrics:
             outer_columns.append(
                 AliasedExpr(
@@ -821,6 +847,11 @@ def wrap_with_grain_dedup(
                     AliasedExpr(expr=measure_ref(component.name), alias=component.name)
                 )
                 outer_aliases.add(component.name)
+
+    for name in window_inputs:
+        if name not in outer_aliases:
+            outer_columns.append(AliasedExpr(expr=measure_ref(name), alias=name))
+            outer_aliases.add(name)
 
     # HAVING predicates on a deduplicated measure become an outer WHERE: the
     # wrapper's own query is one row per query grain, so filtering it there is
@@ -918,6 +949,26 @@ def wrap_with_grain_dedup(
         offset=ast.offset,
         ctes=all_ctes,
     )
+
+
+def _window_inputs(resolved: ResolvedQuery) -> list[str]:
+    """What the window pass reads by name for the query's metrics over window
+    metrics: each window's base measure and the formula's other components.
+
+    The window pass computes such a metric in its outer SELECT, over a CTE. Over
+    this pass's output the fact tables are gone, so it cannot rebuild these
+    aggregates; this pass projects each one under its name instead.
+    """
+    names: list[str] = []
+    for metric in resolved.measures:
+        windows = _ddm_window_components(metric, resolved.metric_components)
+        if not windows:
+            continue
+        for component in metric_leaf_components(metric, resolved.metric_components):
+            name = component.window_base_measure if component.is_window else component.name
+            if name is not None and name not in names:
+                names.append(name)
+    return names
 
 
 def _deduplicated_at(

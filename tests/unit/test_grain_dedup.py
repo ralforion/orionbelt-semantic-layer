@@ -678,18 +678,6 @@ def test_a_nested_derived_metric_splits_the_same_way() -> None:
     assert rows == [("north", 60.0), ("south", 75.0)]
 
 
-def test_metric_reaching_a_deduplicated_measure_through_a_wrapper_metric_is_refused() -> None:
-    """A derived metric over a *window* metric over a deduplicated measure.
-
-    The window wrapper projects the window metric's base measure as a column of
-    its base CTE, rebuilt from the fact tables, which the split cannot supply
-    from a dedup CTE — so the query is refused rather than answered from the
-    inflated value.
-    """
-    with pytest.raises(GrainDedupUnsupportedError, match="Stock Rank"):
-        _compile({"select": {"dimensions": ["Region"], "measures": ["Doubled Stock Rank"]}})
-
-
 def _stock_db() -> duckdb.DuckDBPyConnection:
     """Three products sold four times: p1 in both regions, so it replicates."""
     con = duckdb.connect()
@@ -2128,6 +2116,47 @@ _DEDUPLICATED_BASE_YAML = (
     orderDirection: desc
 """
 )
+
+
+_DERIVED_OVER_WINDOW_YAML = (
+    _DEDUPLICATED_BASE_YAML
+    + """  Doubled Quantity Rank:
+    expression: '{[Quantity Rank]} * 2'
+  Doubled Stock Rank:
+    expression: '{[Stock Rank]} * 2'
+  Rank times Stock:
+    expression: '{[Quantity Rank]} * {[Total Stock On Hand]}'
+"""
+)
+
+
+@pytest.mark.parametrize(
+    ("measures", "expected"),
+    [
+        # A derived metric over a window metric beside a deduplicated measure:
+        # February sold more (4 to 3), so it ranks first.
+        (["Doubled Quantity Rank", "Total Stock On Hand"], [(4, 100), (2, 110)]),
+        # Over a window metric whose base measure is the deduplicated one:
+        # January's stock is p1 once (100), so it ranks below February's 110.
+        # Inflated to 200 it ranked first.
+        (["Doubled Stock Rank"], [(4,), (2,)]),
+        # And a formula reading a window and a deduplicated measure at once.
+        (["Rank times Stock"], [(200,), (110,)]),
+    ],
+)
+def test_a_derived_metric_over_a_window_metric_with_dedup(
+    measures: list[str], expected: list[tuple[int, ...]]
+) -> None:
+    """The window pass computes such a metric over the dedup pass's output,
+    where the fact tables are gone, so the dedup pass projects every input it
+    reads by name: each window's base measure (deduplicated if it is) and the
+    formula's other components."""
+    result = _compile(
+        {"select": {"dimensions": ["Sale Month"], "measures": measures}},
+        _DERIVED_OVER_WINDOW_YAML,
+    )
+    rows = sorted(_cumulative_db().execute(result.sql).fetchall())
+    assert [tuple(int(v) for v in row[1:]) for row in rows] == expected
 
 
 def test_cumulative_over_a_deduplicated_base_measure() -> None:

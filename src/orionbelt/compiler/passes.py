@@ -289,9 +289,9 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
       is one on a fact-side component of a metric it splits. What still
       conflicts is such an override on a filterContext component of a metric
       it splits (see below).
-    * ``cumulative`` composes, and so does ``window`` (``#269``) - except a
-      derived metric over window metrics, which needs several base measures out
-      of one column.
+    * ``cumulative`` composes, and so does ``window`` (``#269``), a derived
+      metric over window metrics included: the dedup pass projects its inputs
+      (each window's base measure, the formula's other components) by name.
     * ``filterContext`` composes: its measure is planned as a scan of its own,
       which deduplicates for itself.
     * ``period_over_period`` composes by taking the rewrite over: it rebuilds
@@ -316,9 +316,9 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
         # feeding the wrapper's ``main``, which is a different name.
         return False
     if pass_name == PASS_WINDOW:
-        # A derived metric over window metrics needs several base measures
-        # out of one column, which re-aliasing cannot supply.
-        return any(_ddm_window_components(m, resolved.metric_components) for m in resolved.measures)
+        # Composes, a derived metric over window metrics included: the dedup
+        # pass projects every input that metric reads by name.
+        return False
     if pass_name != PASS_TOTALS:
         return True
     # ``total`` and a ``grain`` override on a deduplicated measure or metric
