@@ -30,10 +30,8 @@ from orionbelt.compiler.anchored import (
 )
 from orionbelt.compiler.expr_rewrite import inline_measure_aliases
 from orionbelt.compiler.fanout import FanoutError
-from orionbelt.compiler.filter_resolution import (
-    report_unapplied_static_filter,
-    static_filter_unreachable_error,
-)
+from orionbelt.compiler.filter_resolution import report_unapplied_static_filter
+from orionbelt.compiler.filters import static_filter_unreachable_error
 from orionbelt.compiler.grain_dedup import dedup_identity, detect_dedup_measures
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.resolution import (

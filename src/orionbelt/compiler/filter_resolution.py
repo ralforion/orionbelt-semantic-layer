@@ -21,6 +21,8 @@ from orionbelt.ast.nodes import (
 from orionbelt.compiler.filters import (
     build_exists_filter_expr,
     build_filter_expr,
+    static_filter_predicate,
+    static_filter_unreachable_error,
 )
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
@@ -74,7 +76,7 @@ def resolve_static_filter(
     (``STATIC_FILTER_UNREACHABLE``), an ``enforce: relevant`` one is skipped
     with a ``STATIC_FILTER_NOT_APPLIED`` warning.
     """
-    from orionbelt.compiler.resolution import ResolvedFilter, make_column_expr
+    from orionbelt.compiler.resolution import ResolvedFilter
 
     obj = ctx.model.data_objects.get(mf.data_object)
     if obj is None or mf.column not in obj.columns:
@@ -98,13 +100,7 @@ def resolve_static_filter(
             report_unapplied_static_filter(ctx.errors, ctx.result.warnings, mf, mf.data_object)
         return None
 
-    # Route through ``make_column_expr`` so a ``MeasureFilter`` on a
-    # computed column inlines the expression — without this a filter
-    # on a boolean ``expression:`` column emitted ``(1 = FALSE)``
-    # because the empty ``code:`` was collapsed by the CAST.
-    col_expr: Expr = make_column_expr(ctx.model, mf.data_object, mf.column)
-    qf = QueryFilter(field=mf.column, op=mf.operator, value=mf.value or mf.values or None)
-    filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
+    filter_expr = static_filter_predicate(ctx.model, mf, ctx.errors)
     if filter_expr is None:
         return None
     return ResolvedFilter(
@@ -151,19 +147,6 @@ def report_unapplied_static_filter(
                 "or add a join that reaches the filtered data object."
             ),
         )
-    )
-
-
-def static_filter_unreachable_error(label: str, unreachable: str, where: str) -> SemanticError:
-    """The refusal for an ``enforce: always`` static filter that cannot be applied."""
-    return SemanticError(
-        code="STATIC_FILTER_UNREACHABLE",
-        message=(
-            f"The {label} is declared 'enforce: always', and {where} cannot reach "
-            f"'{unreachable}'. The query would return rows the filter excludes."
-        ),
-        path="filters",
-        hint="Query measures and dimensions whose data objects reach the filtered one.",
     )
 
 

@@ -102,7 +102,8 @@ def con() -> duckdb.DuckDBPyConnection:
         "CREATE TABLE orders (id INTEGER, customer_id INTEGER, product_id INTEGER,"
         " tenant_id INTEGER, amount DOUBLE)"
     )
-    con.execute("INSERT INTO orders VALUES (1, 1, 1, 1, 10), (2, 3, 2, 2, 20)")
+    # Order 3 is Alice's, but booked under tenant 2.
+    con.execute("INSERT INTO orders VALUES (1, 1, 1, 1, 10), (2, 3, 2, 2, 20), (3, 1, 2, 2, 30)")
     return con
 
 
@@ -151,9 +152,69 @@ def test_population_members_that_lose_an_enforced_filter_refuse() -> None:
 def test_population_members_apply_an_enforced_filter_on_their_object(
     con: duckdb.DuckDBPyConnection,
 ) -> None:
-    """Alice 10 and Bob 0 (no orders) average to 5; Carol is tenant 2's."""
+    """Alice 40 and Bob 0 (no orders) average to 20; Carol is tenant 2's."""
     sql = _sql(
         {"select": {"measures": ["Avg Revenue per Customer"]}},
         _with_filter("Customers", "Tenant ID", "always"),
     )
-    assert [float(v) for (v,) in con.execute(sql).fetchall()] == [5.0]
+    assert [float(v) for (v,) in con.execute(sql).fetchall()] == [20.0]
+
+
+def _exists_query(op: str) -> dict:
+    return {
+        "select": {"measures": ["Revenue"]},
+        "where": [
+            {
+                "field": "Customers.Customer ID",
+                "op": op,
+                "subquery": {
+                    "dataObject": "Orders",
+                    "filter": [{"field": "Amount", "op": ">", "value": 15}],
+                },
+            }
+        ],
+    }
+
+
+# Revenue declares defaultValue 0, so no matching rows reads 0.
+@pytest.mark.parametrize(("op", "expected"), [("exists", [0.0]), ("nonexists", [10.0])])
+def test_exists_body_applies_an_enforced_filter(
+    con: duckdb.DuckDBPyConnection, op: str, expected: list[float]
+) -> None:
+    """Alice's only order over 15 is tenant 2's. Read past the tenant filter,
+    the subquery answered from it: tenant 2's amount decided tenant 1's result."""
+    sql = _sql(_exists_query(op), _with_filter("Orders", "Order Tenant ID", "always"))
+    assert [float(v) for (v,) in con.execute(sql).fetchall()] == expected
+
+
+def test_exists_body_needs_nothing_for_a_filter_on_the_subject(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """The body's rows belong to an outer customer the outer query filtered."""
+    sql = _sql(_exists_query("exists"), _with_filter("Customers", "Tenant ID", "always"))
+    assert [float(v) for (v,) in con.execute(sql).fetchall()] == [40.0]
+
+
+def test_exists_body_with_a_relevant_filter_is_unchanged(con: duckdb.DuckDBPyConnection) -> None:
+    sql = _sql(_exists_query("exists"), _with_filter("Orders", "Order Tenant ID", "relevant"))
+    assert [float(v) for (v,) in con.execute(sql).fetchall()] == [10.0]
+
+
+def test_exists_body_that_cannot_reach_an_enforced_filter_refuses() -> None:
+    """The body reads Customers, which never reaches Products, and Products is
+    not the correlation subject either."""
+    query = {
+        "select": {"measures": ["Revenue"]},
+        "where": [
+            {
+                "field": "Orders.Order ID",
+                "op": "exists",
+                "subquery": {"dataObject": "Customers"},
+            }
+        ],
+    }
+    with pytest.raises(ResolutionError) as excinfo:
+        _sql(query, _with_filter("Products", "Product ID", "always"))
+    errors = excinfo.value.errors
+    assert [e.code for e in errors] == ["STATIC_FILTER_UNREACHABLE"]
+    assert "subquery on 'Customers'" in errors[0].message

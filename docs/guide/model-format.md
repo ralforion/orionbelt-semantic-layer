@@ -2049,7 +2049,7 @@ Joins are traversed forward only, so a query cannot always reach a static filter
 | `relevant` (default) | Skips it and returns a `STATIC_FILTER_NOT_APPLIED` warning naming the filter. Use for filters that describe one fact, such as `Orders.Status = completed`. |
 | `always` | Is refused with `STATIC_FILTER_UNREACHABLE`. No `filterContext` drops it either. Use for tenant and other row-level restrictions that must never fail open. |
 
-`always` holds on every scan a query plans, not only the main one. The candidate values of a `dimensionsExclude` query and the member list of a `population: dimension` metric are scans of their own; each applies an enforced filter or refuses the query. A `dimensionsExclude` query over independent dimension groups is therefore refused unless every group reaches the filtered data object.
+`always` holds on every scan a query plans, not only the main one. The candidate values of a `dimensionsExclude` query, the member list of a `population: dimension` metric and the body of an `exists` / `nonexists` subquery are scans of their own; each applies an enforced filter or refuses the query. A subquery needs nothing for a filter on its correlation subject, whose rows the outer query has already filtered. A `dimensionsExclude` query over independent dimension groups is therefore refused unless every group reaches the filtered data object.
 
 ```yaml
 filters:

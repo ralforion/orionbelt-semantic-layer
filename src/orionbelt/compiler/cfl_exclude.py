@@ -22,7 +22,7 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler import cfl_projection
-from orionbelt.compiler.filter_resolution import static_filter_unreachable_error
+from orionbelt.compiler.filters import static_filter_unreachable_error
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.resolution import (
     ResolutionError,
