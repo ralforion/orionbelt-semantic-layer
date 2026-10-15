@@ -2159,6 +2159,44 @@ def test_a_derived_metric_over_a_window_metric_with_dedup(
     assert [tuple(int(v) for v in row[1:]) for row in rows] == expected
 
 
+def test_a_window_and_a_metric_over_it_share_one_base_column() -> None:
+    """The window metric selected beside the metric over it: one base measure
+    column, which PostgreSQL otherwise called ambiguous."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Sale Month"],
+                "measures": ["Stock Rank", "Doubled Stock Rank"],
+            }
+        },
+        _DERIVED_OVER_WINDOW_YAML,
+    )
+    window_base = result.sql.split('"window_base" AS (')[1].split("FROM")[0]
+    assert window_base.count('AS "Total Stock On Hand"') == 1
+    rows = sorted(_cumulative_db().execute(result.sql).fetchall())
+    assert [(int(r), int(d)) for _, r, d in rows] == [(2, 4), (1, 2)]
+
+
+def test_a_carried_window_input_keeps_its_declared_cast() -> None:
+    """Stock of 100.2 and 100.4 declared ``decimal(18, 0)`` ranks as two
+    100s, tied: the metric over the rank reads the same (2 and 2), not a rank
+    of the unrounded values."""
+    yaml_text = _DERIVED_OVER_WINDOW_YAML.replace(
+        "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n",
+        "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n"
+        '    dataType: "decimal(18, 0)"\n',
+    )
+    assert yaml_text != _DERIVED_OVER_WINDOW_YAML
+    con = _cumulative_db()
+    con.execute("ALTER TABLE products ALTER stock_on_hand TYPE DOUBLE")
+    con.execute("UPDATE products SET stock_on_hand = CASE id WHEN 'p1' THEN 100.2 ELSE 100.4 END")
+    result = _compile(
+        {"select": {"dimensions": ["Sale Month"], "measures": ["Doubled Stock Rank"]}},
+        yaml_text,
+    )
+    assert [int(v) for _, v in sorted(con.execute(result.sql).fetchall())] == [2, 2]
+
+
 def test_cumulative_over_a_deduplicated_base_measure() -> None:
     """The base measure is the deduplicated one, so it is split into its own CTE.
 

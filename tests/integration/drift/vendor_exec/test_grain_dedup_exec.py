@@ -428,12 +428,18 @@ def _assert_period_over_period(target: VendorTarget) -> None:
         target,
         model,
         QueryObject(
-            select=QuerySelect(dimensions=["Sale Month"], measures=["Doubled Stock Rank"]),
+            select=QuerySelect(
+                dimensions=["Sale Month"], measures=["Stock Rank", "Doubled Stock Rank"]
+            ),
             where=[QueryFilter(field="Sale Month", op="<", value="2026-03-01")],
         ),
     )
-    ranks = {str(r["sale month"])[:7]: int(r["doubled stock rank"]) for r in rows}
-    assert ranks == {"2026-01": 4, "2026-02": 2}, f"{target.name}: {ranks}"
+    # With the window metric beside it, both read one base measure column,
+    # which PostgreSQL called ambiguous when it was projected twice.
+    ranks = {
+        str(r["sale month"])[:7]: (int(r["stock rank"]), int(r["doubled stock rank"])) for r in rows
+    }
+    assert ranks == {"2026-01": (2, 4), "2026-02": (1, 2)}, f"{target.name}: {ranks}"
 
 
 CFL_DATES = "dedup_cfl_dates"

@@ -400,6 +400,20 @@ def wrap_with_window(
     # Whether an earlier pass already replaced the FROM with its own CTE, which
     # decides how a window metric's base measure can be projected below.
     over_cte = wraps_a_cte(ast)
+    # Base measures that CTE already carries under their own name (grain dedup
+    # projects them for a metric over a window metric). Each is passed through
+    # once, with its declared cast, rather than rebuilt.
+    carried = (
+        {
+            name
+            for w in effective_window.values()
+            if (name := w.window_base_measure) is not None
+            and name not in direct_measure_names
+            and any(_get_alias(c) == name for c in ast.columns)
+        }
+        if over_cte
+        else set()
+    )
 
     # --- Build base CTE columns ---
     base_columns: list[Expr] = []
@@ -410,7 +424,7 @@ def wrap_with_window(
         if alias and alias in window_names and alias not in ddm_names:
             win_metric = effective_window[alias]
             base_name = win_metric.window_base_measure
-            if base_name and base_name not in direct_measure_names:
+            if base_name and base_name not in direct_measure_names and base_name not in carried:
                 comp = resolved.metric_components.get(base_name)
                 if comp:
                     already_in_base = any(_get_alias(c) == base_name for c in base_columns)
@@ -437,11 +451,7 @@ def wrap_with_window(
                 if base_comp is None:
                     continue
                 already_in_base = any(_get_alias(c) == base_name for c in base_columns)
-                # Over a CTE the fact tables are gone, and the pass that built
-                # it projects the base measure under its name (grain dedup):
-                # that column is carried through below as it is.
-                carried = over_cte and any(_get_alias(c) == base_name for c in ast.columns)
-                if already_in_base or carried:
+                if already_in_base or base_name in carried:
                     continue
                 comp_expr = _apply_measure_cast(
                     resolved.projected_expressions.get(base_comp.name, base_comp.expression),
@@ -450,6 +460,14 @@ def wrap_with_window(
                     dialect,
                 )
                 base_columns.append(AliasedExpr(expr=comp_expr, alias=base_comp.name))
+        elif alias in carried and isinstance(col_node, AliasedExpr):
+            # The declared cast, as a rebuilt base measure gets it: a ranking
+            # over decimal(18, 0) ranks the rounded values.
+            base_columns.append(
+                AliasedExpr(
+                    expr=_apply_measure_cast(col_node.expr, alias, model, dialect), alias=alias
+                )
+            )
         else:
             base_columns.append(col_node)
 
