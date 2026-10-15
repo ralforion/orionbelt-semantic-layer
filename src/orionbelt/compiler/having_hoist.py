@@ -41,6 +41,7 @@ sets are disjoint: :func:`windowed_aliases` excludes deduplicated measures via
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from orionbelt.ast.nodes import (
@@ -189,6 +190,24 @@ def hoisted_predicates(resolved: ResolvedQuery) -> list[Expr]:
     months.
     """
     windowed = windowed_aliases(resolved)
+    return _alias_predicates(resolved, lambda fields: bool(fields & windowed))
+
+
+def grouped_predicates(resolved: ResolvedQuery) -> list[Expr]:
+    """The HAVING predicates the planner left in the grouped query.
+
+    The complement of :func:`hoisted_predicates`, over output aliases, for a
+    wrapper that has to take them out of its grouped CTE and apply them to its
+    own output instead (``total_wrap``).
+    """
+    windowed = windowed_aliases(resolved)
+    return _alias_predicates(resolved, lambda fields: not fields & windowed)
+
+
+def _alias_predicates(
+    resolved: ResolvedQuery, select: Callable[[frozenset[str]], bool]
+) -> list[Expr]:
+    """The HAVING predicates *select* picks by their fields, over output aliases."""
     by_physical: dict[tuple[str, str], str] = {}
     # Finest first; a dimension with no grain is the column itself.
     for dim in sorted(resolved.dimensions, key=lambda d: _GRAIN_RANK[d.grain] if d.grain else -1):
@@ -204,7 +223,7 @@ def hoisted_predicates(resolved: ResolvedQuery) -> list[Expr]:
     return [
         map_column_refs(hf.expression, to_alias)
         for hf in resolved.having_filters
-        if hf.referenced_fields & windowed
+        if select(hf.referenced_fields)
     ]
 
 

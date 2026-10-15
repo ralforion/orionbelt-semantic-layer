@@ -255,10 +255,9 @@ class TestUnaffectedQueries:
         # No wrapper ran at all, so there is no extra nesting.
         assert "WITH" not in sql
 
-    def test_plain_predicate_stays_in_the_cte_beside_a_windowed_one(
-        self, model: SemanticModel
-    ) -> None:
-        """A mixed query splits: one predicate each side of the window."""
+    def test_plain_predicate_filters_after_the_total_window(self, model: SemanticModel) -> None:
+        """Beside a total, a plain predicate filters the windowed rows: the
+        total sums every group, including the ones the predicate removes."""
         sql = _compile(
             model,
             {
@@ -273,10 +272,10 @@ class TestUnaffectedQueries:
             },
         )
         base = _cte_body(sql, "base")
-        assert "HAVING" in base
-        assert "> 10" in base
-        assert "> 5" not in base
+        assert "HAVING" not in base
+        assert '"Sales Amount" > 10' in _cte_body(sql, "having_window")
         assert '"Grand Total" > 5' in _tail_after_ctes(sql)
+        assert sql.count("> 10") == 1
 
     def test_windowed_measure_without_having_is_unwrapped(self, model: SemanticModel) -> None:
         """No hoisted predicate means no extra CTE, so existing SQL is unchanged."""
@@ -470,11 +469,14 @@ class TestDimensionInHoistedPredicate:
 
 
 class TestPlainPredicateAcrossWrappers:
-    """A plain predicate belongs to the grouped query, and only to it.
+    """A plain predicate is applied once, after the total and before the rank.
 
     Regression: ``inner_having`` re-derived HAVING from the original filter
     list on every wrapper, so a predicate already applied in the grouped CTE
     was copied into the next wrapper's CTE, which has no GROUP BY.
+
+    The total sums every group, so the predicate filters its output; the rank
+    still ranks the groups that pass it.
     """
 
     QUERY = {
@@ -488,13 +490,17 @@ class TestPlainPredicateAcrossWrappers:
         ],
     }
 
-    def test_plain_predicate_stays_only_in_the_grouped_cte(self, model: SemanticModel) -> None:
+    def test_plain_predicate_filters_once_between_total_and_rank(
+        self, model: SemanticModel
+    ) -> None:
         sql = _compile(model, self.QUERY)
         base = _cte_body(sql, "base")
-        assert "GROUP BY" in base and "HAVING" in base
-        assert "> 10" in base
-        # Every later wrapper CTE is ungrouped, so none may carry a HAVING.
-        for cte in ("window_base", "having_window"):
+        assert "GROUP BY" in base and "HAVING" not in base
+        assert "OVER ()" in _cte_body(sql, "totals_having")
+        assert '"Sales Amount" > 10' in _cte_body(sql, "window_base")
+        assert "RANK()" in _cte_body(sql, "having_window")
+        # No wrapper CTE after the grouped one carries a HAVING.
+        for cte in ("totals_having", "window_base", "having_window"):
             body = _cte_body(sql, cte)
             assert "HAVING" not in body, f"{cte}: {body}"
         assert sql.count("> 10") == 1
