@@ -1546,13 +1546,14 @@ filters:
     assert result.resolved.fact_tables == ["Sales"]
 
 
-def test_where_on_a_disconnected_object_is_still_skipped_not_crashed() -> None:
+def test_where_on_a_disconnected_object_is_refused_not_crashed() -> None:
     """Re-anchoring must not fire when nothing can reach the filter's object.
 
     ``find_common_root`` falls back to an undirected Steiner centre, which is a
     best effort rather than a guarantee — and used to raise ``NetworkXNoPath``
     outright when the required objects spanned disconnected components. The base
-    stays put and the filter keeps its existing "irrelevant to this query" skip.
+    stays put, and the filter it cannot honour is refused with a typed error
+    rather than dropped: the unfiltered total is not the answer asked for.
     """
     yaml_text = """
 version: 1.0
@@ -1591,15 +1592,15 @@ measures:
     aggregation: sum
     expression: '{[Sales].[Quantity]}'
 """
-    result = _compile(
-        {
-            "select": {"dimensions": ["Category"], "measures": ["Sold Quantity"]},
-            "where": [{"field": "Supplier Name", "op": "=", "value": "Acme"}],
-        },
-        yaml_text,
-    )
-    assert result.resolved.fact_tables == ["Sales"]
-    assert "suppliers" not in result.sql
+    with pytest.raises(ResolutionError) as excinfo:
+        _compile(
+            {
+                "select": {"dimensions": ["Category"], "measures": ["Sold Quantity"]},
+                "where": [{"field": "Supplier Name", "op": "=", "value": "Acme"}],
+            },
+            yaml_text,
+        )
+    assert [e.code for e in excinfo.value.errors] == ["UNREACHABLE_FILTER_OBJECT"]
 
 
 def test_total_on_a_base_grain_measure_composes_with_dedup() -> None:

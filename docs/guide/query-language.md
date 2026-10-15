@@ -551,7 +551,9 @@ The referenced data object must be reachable from the query's join graph:
 - Directly joined in the query (base object or any object in the join path)
 - A descendant — reachable via directed joins from any already-joined object
 
-If the data object is reachable but not yet in the join path, it is **auto-joined** automatically. If the data object is not reachable at all, the filter is **silently skipped** — it is irrelevant to the current query.
+If the data object is reachable but not yet in the join path, it is **auto-joined** automatically. If the data object is not reachable at all, the query is **refused** with `UNREACHABLE_FILTER_OBJECT`: answering it without the filter would return rows the filter excludes.
+
+When the measures span independent facts (a [CFL](compilation.md) union), each leg applies the filter if its fact reaches the filter's data object. If one leg cannot, the query is refused with `FILTER_NOT_APPLICABLE_TO_MEASURE` rather than computing that leg's measures unfiltered. Static model `filters:` are different: they are declared once for every query and apply where relevant, so a query or leg that cannot reach one skips it.
 
 A `having` filter field must reference a **measure** name.
 
@@ -805,6 +807,8 @@ Invalid queries return error responses:
 | `UNKNOWN_DIMENSION` | 400 | Dimension name not in model |
 | `UNKNOWN_MEASURE` | 400 | Measure name not in model |
 | `UNKNOWN_FILTER_FIELD` | 400 | Filter field is not a dimension (WHERE) or measure (HAVING) |
+| `UNREACHABLE_FILTER_OBJECT` | 400 | WHERE filter names a data object the query cannot reach |
+| `FILTER_NOT_APPLICABLE_TO_MEASURE` | 400 | WHERE filter names a data object one selected measure's fact cannot reach (multi-fact query) |
 | `UNKNOWN_ORDER_BY_FIELD` | 400 | ORDER BY field not in query's SELECT |
 | `INVALID_ORDER_BY_POSITION` | 400 | Numeric ORDER BY position out of range |
 | `INVALID_FILTER_OPERATOR` | 400 | Unrecognized filter operator |

@@ -699,6 +699,10 @@ class ResolvedFilter:
     #: filters, ``having`` and ``exists``: those are never a time filter that a
     #: cumulative or period-over-period look-back may read past.
     subject: tuple[str, str] | None = None
+    #: A static model filter rather than one the query wrote. Static filters
+    #: apply where relevant, so a union leg that cannot reach one skips it; a
+    #: query filter such a leg cannot reach refuses the query.
+    static: bool = False
 
 
 @dataclass
@@ -2179,9 +2183,15 @@ class QueryResolver:
         Deliberately narrow, so this can only turn an error into a result and
         never re-plan a query that already works:
 
-        * Only with **one** measure source object. Multi-fact queries keep their
-          existing base so CFL detection (which runs on it straight after) is
-          untouched.
+        * With **one** measure source object, or with several when the query's
+          WHERE names an object the chosen base cannot reach. Otherwise
+          multi-fact queries keep their existing base so CFL detection (which
+          runs on it straight after) is untouched. With several sources and an
+          unreachable filter object the existing base had no right answer: the
+          filter was dropped, and a count of customers ``WHERE status = 'ok'``
+          counted every customer. Rooted where the filter's rows are, it counts
+          the customers that have such an order, as the single-source case
+          already does.
         * Only when that base genuinely cannot reach the rest — the case that
           errors today.
         * Only when a common root actually exists; otherwise the original base
@@ -2195,15 +2205,15 @@ class QueryResolver:
         are declared "apply where relevant", so they must not drag the base
         towards a table the query never mentioned.
         """
-        if len(ctx.result.measure_source_objects) != 1:
+        graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
+        sources = ctx.result.measure_source_objects
+        if len(sources) != 1 and filter_objects - {best} <= graph.descendants(best):
             return best
 
-        wanted = ctx.result.required_objects | filter_objects
+        wanted = ctx.result.required_objects | sources | filter_objects
         remaining = wanted - {best}
         if not remaining:
             return best
-
-        graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
         if remaining <= graph.descendants(best):
             return best
 
@@ -2453,14 +2463,16 @@ class QueryResolver:
         obj_name: str,
         filter_path: str,
         _field_label: str,
+        *,
+        static: bool = False,
     ) -> bool:
         """Ensure *obj_name* is joined; auto-extend if reachable.
 
-        Silently skips filters on unreachable data objects — they are
-        irrelevant to the current query.
+        An unreachable object refuses a query filter and skips a static one;
+        see ``filter_resolution.resolve_filter_object``.
         """
         return filter_resolution.resolve_filter_object(
-            self, ctx, obj_name, filter_path, _field_label
+            self, ctx, obj_name, filter_path, _field_label, static=static
         )
 
     def _resolve_filter_item(

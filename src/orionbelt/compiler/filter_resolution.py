@@ -46,16 +46,19 @@ def _join_expression_objects(
     column_name: str,
     filter_path: str,
     field_label: str,
+    *,
+    static: bool = False,
 ) -> bool:
     """Join whatever a computed column reads besides its own data object.
 
     ``make_column_expr`` inlines the expression, so the predicate names those
     aliases directly and is only usable once each of them is in the FROM chain.
-    Unreachable means here what it means for the filter's own object: skip the
-    predicate rather than emit SQL that binds to nothing.
+    Unreachable means here what it means for the filter's own object: refused
+    for a query filter, skipped for a static one, never emitted as SQL that
+    binds to nothing.
     """
     return all(
-        resolver._resolve_filter_object(ctx, dep, filter_path, field_label)
+        resolver._resolve_filter_object(ctx, dep, filter_path, field_label, static=static)
         for dep in sorted(ctx.model.column_reference_objects(object_name, column_name))
     )
 
@@ -78,9 +81,11 @@ def resolve_static_filter(
     if col is None:
         return None
 
-    if not resolver._resolve_filter_object(ctx, mf.data_object, "filters", mf.column):
+    if not resolver._resolve_filter_object(ctx, mf.data_object, "filters", mf.column, static=True):
         return None
-    if not _join_expression_objects(resolver, ctx, mf.data_object, mf.column, "filters", mf.column):
+    if not _join_expression_objects(
+        resolver, ctx, mf.data_object, mf.column, "filters", mf.column, static=True
+    ):
         return None
 
     # Route through ``make_column_expr`` so a ``MeasureFilter`` on a
@@ -96,6 +101,7 @@ def resolve_static_filter(
         expression=filter_expr,
         is_aggregate=False,
         referenced_fields=frozenset({mf.column}),
+        static=True,
     )
 
 
@@ -105,11 +111,22 @@ def resolve_filter_object(
     obj_name: str,
     filter_path: str,
     _field_label: str,
+    *,
+    static: bool = False,
 ) -> bool:
     """Ensure *obj_name* is joined; auto-extend if reachable.
 
-    Silently skips filters on unreachable data objects — they are
-    irrelevant to the current query.
+    An object the query cannot reach is handled by who wrote the filter:
+
+    * A **query** filter is refused (``UNREACHABLE_FILTER_OBJECT``). The caller
+      asked for those rows only; dropping the predicate answers a different
+      question with nothing to say so.
+    * A **static** model filter is skipped. It is declared once for every
+      query, and one naming an object this plan never reads is irrelevant to it.
+    * In a **multi-fact** query the predicate is kept when some measure's fact
+      reaches the object: each union leg joins what it needs, and the CFL
+      planner decides per leg (``cfl.CFLPlanner``), refusing a leg it cannot
+      restrict rather than leaving that leg unfiltered.
 
     Refuses, though, when the object is reachable as more than one *role*: a
     predicate on ``Date`` in a query joining two facts that each have their own
@@ -123,6 +140,29 @@ def resolve_filter_object(
         return False
     reachable = any(obj_name in ctx.graph.descendants(j) for j in list(ctx.joined_objects))
     if not reachable:
+        if ctx.result.requires_cfl and any(
+            obj_name in ctx.graph.descendants_without_unnest(source) | {source}
+            for source in ctx.result.measure_source_objects
+        ):
+            return True
+        if static:
+            return False
+        ctx.errors.append(
+            SemanticError(
+                code="UNREACHABLE_FILTER_OBJECT",
+                message=(
+                    f"Filter field '{_field_label}' is on data object '{obj_name}', which "
+                    f"this query cannot reach from its base '{ctx.result.base_object}' via "
+                    f"directed joins. Applying the query without it would return rows the "
+                    f"filter excludes."
+                ),
+                path=filter_path,
+                hint=(
+                    f"Select a measure or dimension whose data object reaches '{obj_name}', "
+                    f"declare a join towards it, or remove the filter."
+                ),
+            )
+        )
         return False
     roles = ctx.graph.role_candidates(
         ctx.joined_objects, obj_name, prefer_from=ctx.result.base_object

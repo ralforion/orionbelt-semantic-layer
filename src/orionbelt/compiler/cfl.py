@@ -341,6 +341,29 @@ class CFLPlanner:
         )
 
     @staticmethod
+    def _reject_filter_outside_leg(missing: set[str], measures: list[ResolvedMeasure]) -> None:
+        """Refuse a query filter one union leg cannot restrict."""
+        objects = ", ".join(f"'{name}'" for name in sorted(missing))
+        names = ", ".join(f"'{m.name}'" for m in measures)
+        raise ResolutionError(
+            [
+                SemanticError(
+                    code="FILTER_NOT_APPLICABLE_TO_MEASURE",
+                    message=(
+                        f"A WHERE filter reads {objects}, which the fact behind {names} "
+                        f"cannot reach. This query is answered as a union of independent "
+                        f"facts, and that leg's measures would be computed without the filter."
+                    ),
+                    path="where",
+                    hint=(
+                        "Filter on a dimension every selected measure's fact reaches, or "
+                        "query the measures that cannot reach it separately."
+                    ),
+                )
+            ]
+        )
+
+    @staticmethod
     def _group_dimensions_into_legs(
         resolved: ResolvedQuery,
         model: SemanticModel,
@@ -663,10 +686,9 @@ class CFLPlanner:
             }
             leg_required.add(obj_name)
             # Only filter objects this leg can actually reach. A nested one it
-            # never can - the leg has no unnest to reach it with - and a static
-            # model filter naming one is documented as skipped rather than
-            # fatal, which is what dropping it here delivers: the applicability
-            # check below then leaves the predicate out, instead of
+            # never can - the leg has no unnest to reach it with. The
+            # applicability check below then skips a static filter on such an
+            # object and refuses a query filter, instead of
             # ``build_join_condition`` raising on a step with no columns.
             leg_required.update(filter_objects & reachable)
             # Include objects referenced by measure expressions, but only
@@ -755,9 +777,21 @@ class CFLPlanner:
                 )
             )
 
-            # Apply WHERE filters to each leg
+            # Apply WHERE filters to each leg that reaches what they read. A
+            # static model filter applies where relevant, so a leg that cannot
+            # reach it skips it. A query filter it cannot reach refuses the
+            # query: emitted, the predicate names a table the leg never joins;
+            # left out, the leg's measures ignore the filter the caller wrote.
+            leg_objects = leg_required | {lead}
             for wf in resolved.where_filters:
-                leg_builder.where(wf.expression)
+                wf_objects: set[str] = set()
+                self._collect_table_refs(wf.expression, wf_objects)
+                cfl_projection.collect_correlated_tables(wf.expression, wf_objects)
+                missing = wf_objects - leg_objects
+                if not missing:
+                    leg_builder.where(wf.expression)
+                elif not wf.static:
+                    self._reject_filter_outside_leg(missing, measures)
 
             union_legs.append(leg_builder.build())
 
