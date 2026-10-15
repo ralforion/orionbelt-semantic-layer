@@ -356,19 +356,22 @@ class TestUnreachableReference:
         assert unreachable, [e.code for e in excinfo.value.errors]
         assert "Warehouse" in unreachable[0].message
 
-    def test_filter_on_an_unreachable_reference_is_skipped(self) -> None:
-        """Same contract as a filter whose own object is unreachable: dropped,
-        never emitted against an alias the FROM chain does not bind."""
-        sql = PIPELINE.compile(
-            QueryObject(
-                select=QuerySelect(dimensions=["Store Zip"], measures=["Sales Amount"]),
-                where=[QueryFilter(field="Zip Matches", op=FilterOperator.EQUALS, value=True)],
-            ),
-            _load(self.UNREACHABLE),
-            "postgres",
-        ).sql
-        assert "WAREHOUSE" not in sql
-        assert "WHERE" not in sql
+    def test_filter_on_an_unreachable_reference_is_refused(self) -> None:
+        """Same contract as a filter whose own object is unreachable: refused,
+        never dropped and never emitted against an alias the FROM chain does
+        not bind."""
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Store Zip"], measures=["Sales Amount"]),
+                    where=[QueryFilter(field="Zip Matches", op=FilterOperator.EQUALS, value=True)],
+                ),
+                _load(self.UNREACHABLE),
+                "postgres",
+            )
+        unreachable = [e for e in excinfo.value.errors if e.code == "UNREACHABLE_FILTER_OBJECT"]
+        assert unreachable, [e.code for e in excinfo.value.errors]
+        assert "Warehouse" in unreachable[0].message
 
 
 class TestReferenceWhitespace:
