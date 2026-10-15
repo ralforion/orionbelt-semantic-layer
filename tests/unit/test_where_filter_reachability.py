@@ -18,7 +18,7 @@ import duckdb
 import pytest
 from ruamel.yaml import YAML
 
-from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
@@ -101,8 +101,12 @@ def _model(yaml_text: str = MODEL_YAML) -> SemanticModel:
     return model
 
 
+def _compile(query: dict, yaml_text: str = MODEL_YAML) -> CompilationResult:
+    return CompilationPipeline().compile(QueryObject(**query), _model(yaml_text), "duckdb")
+
+
 def _sql(query: dict, yaml_text: str = MODEL_YAML) -> str:
-    return CompilationPipeline().compile(QueryObject(**query), _model(yaml_text), "duckdb").sql
+    return _compile(query, yaml_text).sql
 
 
 @pytest.fixture
@@ -128,6 +132,10 @@ def con() -> duckdb.DuckDBPyConnection:
 
 def _rows(con: duckdb.DuckDBPyConnection, sql: str) -> list[tuple[object, ...]]:
     return [tuple(float(v) for v in row) for row in con.execute(sql).fetchall()]
+
+
+def _rows_keyed(con: duckdb.DuckDBPyConnection, sql: str) -> list[tuple[object, ...]]:
+    return [(row[0], *(float(v) for v in row[1:])) for row in con.execute(sql).fetchall()]
 
 
 def test_many_side_filter_restricts_measures_on_both_objects(
@@ -173,13 +181,54 @@ def test_filter_one_fact_cannot_reach_is_refused() -> None:
 def test_static_filter_one_fact_cannot_reach_applies_where_relevant(
     con: duckdb.DuckDBPyConnection,
 ) -> None:
-    """A static model filter is declared for every query, so the leg that
-    cannot reach it skips it, as it always has."""
+    """A static model filter (``enforce: relevant``) is declared for every
+    query, so the leg that cannot reach it skips it, and says so."""
     yaml_text = MODEL_YAML + (
         "filters:\n  - {dataObject: Orders, column: Status, operator: equals, value: ok}\n"
     )
-    sql = _sql({"select": {"measures": ["Revenue", "Refunds"]}}, yaml_text)
-    assert _rows(con, sql) == [(150.0, 15.0)]
+    result = _compile({"select": {"measures": ["Revenue", "Refunds"]}}, yaml_text)
+    assert _rows(con, result.sql) == [(150.0, 15.0)]
+    skipped = [w for w in result.warnings if w.code == "STATIC_FILTER_NOT_APPLIED"]
+    assert len(skipped) == 1
+    assert "'Refunds'" in skipped[0].message
+
+
+def test_enforced_static_filter_one_fact_cannot_reach_refuses_the_query() -> None:
+    yaml_text = MODEL_YAML + (
+        "filters:\n  - {dataObject: Orders, column: Status, operator: equals, value: ok,"
+        " enforce: always}\n"
+    )
+    with pytest.raises(ResolutionError) as excinfo:
+        _sql({"select": {"measures": ["Revenue", "Refunds"]}}, yaml_text)
+    errors = excinfo.value.errors
+    assert [e.code for e in errors] == ["STATIC_FILTER_UNREACHABLE"]
+    assert "'Refunds'" in errors[0].message
+
+
+@pytest.mark.parametrize("context", ["{mode: FIXED}", "{exclude: [Status]}"])
+def test_enforced_static_filter_survives_a_filter_context(
+    con: duckdb.DuckDBPyConnection, context: str
+) -> None:
+    """A FIXED scan of every row is what an enforced filter exists to prevent;
+    a relevant one is dropped by the context as before."""
+    measure = (
+        "  All Revenue:\n"
+        "    columns: [{dataObject: Orders, column: Amount}]\n"
+        "    aggregation: sum\n"
+        "    resultType: float\n"
+        f"    filterContext: {context}\n"
+        "  Refunds:\n"
+    )
+    status = "  - {dataObject: Orders, column: Status, operator: equals, value: ok"
+    enforced = (
+        MODEL_YAML.replace("  Refunds:\n", measure) + f"filters:\n{status}, enforce: always}}\n"
+    )
+    relevant = MODEL_YAML.replace("  Refunds:\n", measure) + f"filters:\n{status}}}\n"
+    query = {"select": {"dimensions": ["Tier"], "measures": ["All Revenue"]}}
+    assert sorted(_rows_keyed(con, _sql(query, enforced))) == [("gold", 150.0)]
+    # The main query's filter still decides which rows exist (silver has no ok
+    # order); the context only drops it inside the scan, so gold reads 157.
+    assert sorted(_rows_keyed(con, _sql(query, relevant))) == [("gold", 157.0)]
 
 
 def test_filter_on_a_disconnected_object_is_refused() -> None:

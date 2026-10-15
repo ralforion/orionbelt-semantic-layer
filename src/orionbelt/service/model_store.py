@@ -15,7 +15,7 @@ from orionbelt.cache.ttl import RefreshContract
 from orionbelt.compiler.health import compute_health
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.models.query import QueryObject
-from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.semantic import FilterEnforcement, SemanticModel
 from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN
 from orionbelt.models.warnings import WarningCode
 from orionbelt.obsl.exporter import export_obsl
@@ -606,6 +606,13 @@ class ModelStore:
                     "operator": f.operator,
                     **({"value": f.value} if f.value is not None else {}),
                     **({"values": f.values} if f.values else {}),
+                    # A parent rebuilt for ``inherits`` must keep it: dropped,
+                    # the child's tenant filter would fail open.
+                    **(
+                        {"enforce": f.enforce.value}
+                        if f.enforce != FilterEnforcement.RELEVANT
+                        else {}
+                    ),
                 }
                 for f in model.filters
             ]

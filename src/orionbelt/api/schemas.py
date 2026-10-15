@@ -1311,6 +1311,10 @@ class ModelFilterDetail(BaseModel):
     operator: str
     value: str | int | float | bool | None = None
     values: list[str | int | float | bool] = Field(default_factory=list)
+    enforce: str = Field(
+        "relevant",
+        description="'relevant' (skipped with a warning where unreachable) or 'always' (refuses)",
+    )
 
 
 class SchemaResponse(BaseModel):

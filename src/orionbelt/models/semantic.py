@@ -1579,6 +1579,20 @@ class ModelSettings(BaseModel):
         return v
 
 
+class FilterEnforcement(StrEnum):
+    """When a static model filter must hold.
+
+    ``relevant`` (default): applied to every query that reads its data object;
+    a query, or a union leg, that cannot reach the object skips it with a
+    ``STATIC_FILTER_NOT_APPLIED`` warning. ``always``: a query or leg that cannot
+    reach it is refused, and no ``filterContext`` drops it. For tenant and other
+    row-level restrictions that must never fail open.
+    """
+
+    RELEVANT = "relevant"
+    ALWAYS = "always"
+
+
 class ModelFilter(BaseModel):
     """Static WHERE filter applied to every query against this model."""
 
@@ -1587,6 +1601,7 @@ class ModelFilter(BaseModel):
     operator: str
     value: str | int | float | bool | None = None
     values: list[str | int | float | bool] = Field(default_factory=list)
+    enforce: FilterEnforcement = FilterEnforcement.RELEVANT
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 

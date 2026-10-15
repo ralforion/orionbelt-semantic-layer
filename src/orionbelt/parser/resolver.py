@@ -39,6 +39,7 @@ from orionbelt.models.semantic import (
     ExternalConceptMapping,
     FilterContext,
     FilterContextFilter,
+    FilterEnforcement,
     FilterValue,
     GrainOverride,
     Measure,
@@ -1430,6 +1431,7 @@ class ReferenceResolver:
                         operator=rf.get("operator", "equals"),
                         value=_coerce_filter_value(raw_val),
                         values=[_coerce_filter_value(v) for v in raw_vals],
+                        enforce=rf.get("enforce", FilterEnforcement.RELEVANT),
                     )
                 )
             except Exception as e:

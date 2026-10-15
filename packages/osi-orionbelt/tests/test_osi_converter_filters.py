@@ -122,3 +122,19 @@ class TestOSItoOBMLFilters:
         osi = converter.convert()
         back = conv.OSItoOBML(osi).convert()
         assert "filters" not in back
+
+
+class TestEnforceRoundtrip:
+    """``enforce`` on a static filter survives OBML -> OSI -> OBML."""
+
+    def test_enforce_always_restored(self):
+        obml = {
+            **_OBML_WITH_FILTERS,
+            "filters": [
+                {**_OBML_WITH_FILTERS["filters"][0], "enforce": "always"},
+                _OBML_WITH_FILTERS["filters"][1],
+            ],
+        }
+        back = conv.OSItoOBML(conv.OBMLtoOSI(obml).convert()).convert()
+        assert back["filters"][0]["enforce"] == "always"
+        assert "enforce" not in back["filters"][1]

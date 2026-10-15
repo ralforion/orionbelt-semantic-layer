@@ -29,7 +29,8 @@ from orionbelt.models.query import (
     QueryFilterGroup,
     QueryFilterItem,
 )
-from orionbelt.models.semantic import ModelFilter
+from orionbelt.models.semantic import FilterEnforcement, ModelFilter
+from orionbelt.models.warnings import WarningCode, warning
 
 if TYPE_CHECKING:
     from orionbelt.compiler.resolution import (
@@ -68,8 +69,10 @@ def resolve_static_filter(
 ) -> ResolvedFilter | None:
     """Resolve a static model filter to a physical WHERE expression.
 
-    Silently skips filters on data objects that are unreachable from the
-    query's join graph — they are simply irrelevant to the current query.
+    A filter on a data object the query cannot reach is never dropped
+    silently: an ``enforce: always`` filter refuses the query
+    (``STATIC_FILTER_UNREACHABLE``), an ``enforce: relevant`` one is skipped
+    with a ``STATIC_FILTER_NOT_APPLIED`` warning.
     """
     from orionbelt.compiler.resolution import ResolvedFilter, make_column_expr
 
@@ -81,11 +84,16 @@ def resolve_static_filter(
     if col is None:
         return None
 
-    if not resolver._resolve_filter_object(ctx, mf.data_object, "filters", mf.column, static=True):
-        return None
-    if not _join_expression_objects(
-        resolver, ctx, mf.data_object, mf.column, "filters", mf.column, static=True
+    errors_before = len(ctx.errors)
+    if not (
+        resolver._resolve_filter_object(ctx, mf.data_object, "filters", mf.column, static=True)
+        and _join_expression_objects(
+            resolver, ctx, mf.data_object, mf.column, "filters", mf.column, static=True
+        )
     ):
+        # An ambiguous route has already been reported as an error of its own.
+        if len(ctx.errors) == errors_before:
+            report_unapplied_static_filter(ctx.errors, ctx.result.warnings, mf, mf.data_object)
         return None
 
     # Route through ``make_column_expr`` so a ``MeasureFilter`` on a
@@ -102,6 +110,58 @@ def resolve_static_filter(
         is_aggregate=False,
         referenced_fields=frozenset({mf.column}),
         static=True,
+        enforced=mf.enforce == FilterEnforcement.ALWAYS,
+    )
+
+
+def report_unapplied_static_filter(
+    errors: list[SemanticError],
+    warnings: list[SemanticError],
+    mf: ModelFilter | None,
+    unreachable: str,
+    measures: str | None = None,
+) -> None:
+    """Record a static filter a query, or one leg of it, cannot apply.
+
+    *mf* is ``None`` when only the resolved filter is at hand (a union leg);
+    then the filter is described by the object it reads. ``enforced`` comes
+    from *mf* when given.
+    """
+    label = (
+        f"static filter on '{mf.data_object}.{mf.column}'"
+        if mf is not None
+        else f"static filter on '{unreachable}'"
+    )
+    where = f"the fact behind {measures}" if measures else "this query"
+    if mf is not None and mf.enforce == FilterEnforcement.ALWAYS:
+        errors.append(static_filter_unreachable_error(label, unreachable, where))
+        return
+    warnings.append(
+        warning(
+            code=WarningCode.STATIC_FILTER_NOT_APPLIED,
+            message=(
+                f"The {label} was not applied: {where} cannot reach '{unreachable}'. "
+                f"Its rows are returned without that restriction."
+            ),
+            path="filters",
+            hint=(
+                "Declare the filter 'enforce: always' to refuse such queries instead, "
+                "or add a join that reaches the filtered data object."
+            ),
+        )
+    )
+
+
+def static_filter_unreachable_error(label: str, unreachable: str, where: str) -> SemanticError:
+    """The refusal for an ``enforce: always`` static filter that cannot be applied."""
+    return SemanticError(
+        code="STATIC_FILTER_UNREACHABLE",
+        message=(
+            f"The {label} is declared 'enforce: always', and {where} cannot reach "
+            f"'{unreachable}'. The query would return rows the filter excludes."
+        ),
+        path="filters",
+        hint="Query measures and dimensions whose data objects reach the filtered one.",
     )
 
 

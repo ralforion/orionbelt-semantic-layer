@@ -703,6 +703,10 @@ class ResolvedFilter:
     #: apply where relevant, so a union leg that cannot reach one skips it; a
     #: query filter such a leg cannot reach refuses the query.
     static: bool = False
+    #: A static filter declared ``enforce: always``: never skipped, never
+    #: dropped by a ``filterContext``; a query or leg that cannot apply it is
+    #: refused.
+    enforced: bool = False
 
 
 @dataclass

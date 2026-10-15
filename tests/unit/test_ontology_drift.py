@@ -99,6 +99,7 @@ _EXCLUDED_FIELDS = frozenset(
         "operator",
         "value",
         "values",
+        "enforce",
         # FilterValue scaffolding (typed value cells)
         "is_null",
         "isNull",

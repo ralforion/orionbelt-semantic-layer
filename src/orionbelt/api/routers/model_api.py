@@ -190,6 +190,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
             operator=f.operator,
             value=f.value,
             values=f.values,
+            enforce=f.enforce.value,
         )
         for f in model.filters
     ]

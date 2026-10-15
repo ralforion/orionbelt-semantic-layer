@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
@@ -298,9 +299,7 @@ class TestStaticFilterCompilation:
         assert "\"REGION\" = 'EMEA'" in result.sql
         assert "LEFT JOIN" in result.sql
 
-    def test_unreachable_filter_silently_ignored(self):
-        """A static filter on a data object unreachable from the query is skipped."""
-        yaml = """\
+    UNREACHABLE_FILTER_MODEL = """\
 version: 1.0
 
 dataObjects:
@@ -341,11 +340,30 @@ filters:
     operator: equals
     value: A
 """
+
+    def test_unreachable_filter_skipped_with_a_warning(self):
+        """A static filter on a data object unreachable from the query is skipped,
+        and the result says so: the rows it returns are not restricted by it."""
+        yaml = self.UNREACHABLE_FILTER_MODEL
         model = _load_model(yaml)
         query = QueryObject(select=QuerySelect(measures=["Total Revenue"]))
         result = PIPELINE.compile(query, model, "postgres")
         assert "RATING" not in result.sql
         assert "SUPPLIERS" not in result.sql
+        skipped = [w for w in result.warnings if w.code == "STATIC_FILTER_NOT_APPLIED"]
+        assert len(skipped) == 1
+        assert "Suppliers.Rating" in skipped[0].message
+
+    def test_unreachable_enforced_filter_refuses_the_query(self):
+        """``enforce: always`` turns the skip into a refusal."""
+        yaml = self.UNREACHABLE_FILTER_MODEL.replace(
+            "    value: A\n", "    value: A\n    enforce: always\n"
+        )
+        model = _load_model(yaml)
+        query = QueryObject(select=QuerySelect(measures=["Total Revenue"]))
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(query, model, "postgres")
+        assert [e.code for e in excinfo.value.errors] == ["STATIC_FILTER_UNREACHABLE"]
 
 
 class TestStaticFilterValidation:
@@ -522,3 +540,22 @@ class TestQueryFilterDateValues:
         assert "'2026-01-01'" in result.sql
         assert "'2026-12-31'" in result.sql
         assert "BETWEEN" in result.sql
+
+
+def test_rebuilt_parent_keeps_enforce() -> None:
+    """``inherits`` falls back to rebuilding the parent from the loaded model;
+    losing ``enforce`` there would let the child's tenant filter fail open."""
+    from orionbelt.service.model_store import ModelStore
+
+    yaml = _model_with_filters("""\
+  - dataObject: Orders
+    column: Status
+    operator: equals
+    value: completed
+    enforce: always
+  - dataObject: Orders
+    column: Status
+    operator: "!="
+    value: void""")
+    raw = ModelStore._model_to_raw(_load_model(yaml))
+    assert [f.get("enforce") for f in raw["filters"]] == ["always", None]
