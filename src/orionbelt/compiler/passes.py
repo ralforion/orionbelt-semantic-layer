@@ -300,6 +300,11 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
       group itself. This pass does not run then, so every other wrapper still
       conflicts: none of them reads a value this pass computed.
     """
+    if resolved.grouping is not None:
+        # ROLLUP / CUBE deduplicates once per grouping set; no wrapper here
+        # reads those rows per set. Checked before PoP, which rebuilds the
+        # query without its grouping sets and so drops the subtotals.
+        return True
     if resolved.has_pop:
         return pass_name != PASS_PERIOD_OVER_PERIOD
     if pass_name == PASS_CUMULATIVE:
@@ -527,7 +532,15 @@ def evaluate_compatibility(
             and _conflicts_with_dedup(name, resolved)
         )
         if resolved.grouping is not None:
-            blocking.append(f"grouping: {resolved.grouping.value}")
+            # Deduplicated once per grouping set, at that set's grain. A total
+            # or grain override sets a grain of its own, which a subtotal row
+            # would have to combine again.
+            by_measure = {**resolved.metric_components, **{m.name: m for m in resolved.measures}}
+            if any(
+                (m := by_measure.get(name)) is not None and (m.total or m.grain_override)
+                for name in resolved.dedup_computed
+            ):
+                blocking.append(f"grouping: {resolved.grouping.value} with a total or grain")
         if blocking:
             listed = ", ".join(f"'{m}'" for m in sorted(resolved.dedup_targets))
             msg = (

@@ -453,13 +453,77 @@ def test_generated_sql_is_valid_for_every_dialect(query: dict) -> None:
 # --- Combinations the rewrite refuses rather than getting wrong ---------
 
 
-def test_rollup_combined_with_dedup_is_refused() -> None:
+@pytest.mark.parametrize(
+    ("grouping", "subtotals"),
+    [
+        ("rollup", {}),
+        # CUBE adds the categories across regions: tools is p1 and p2 once
+        # each (210), where adding the regions' tools counts p1 twice (310).
+        ("cube", {(None, "parts"): (1, 300), (None, "tools"): (3, 210)}),
+    ],
+)
+def test_rollup_and_cube_deduplicate_each_grouping_set(
+    grouping: str, subtotals: dict[tuple[str | None, str | None], tuple[int, int]]
+) -> None:
+    """Each subtotal counts a product once at its own grain: the grand total
+    is 510 (p1 once), not the regions' 210 + 400. Detail and subtotal rows with
+    a NULL dimension are told apart by the GROUPING() flags."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region", "Category"],
+                "measures": ["Sold Quantity", "Total Stock On Hand"],
+            },
+            "grouping": grouping,
+        }
+    )
+    rows = _stock_db().execute(result.sql).fetchall()
+    got = {(r[0], r[1]): (int(r[2]), int(r[3])) for r in rows}
+    assert got == {
+        ("north", "tools"): (2, 210),
+        ("south", "parts"): (1, 300),
+        ("south", "tools"): (1, 100),
+        ("north", None): (2, 210),
+        ("south", None): (2, 400),
+        (None, None): (4, 510),
+        **subtotals,
+    }
+
+
+def test_rollup_with_period_over_period_over_a_deduplicated_measure_is_refused() -> None:
+    """PoP deduplicates its own source rows, and rebuilds the query without
+    its grouping sets: the subtotals would silently go missing."""
+    yaml_text = (
+        CUMULATIVE_YAML
+        + """  Stock Growth:
+    type: period_over_period
+    expression: '{[Total Stock On Hand]}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+    )
+    with pytest.raises(GrainDedupUnsupportedError, match="period_over_period"):
+        _compile(
+            {
+                "select": {"dimensions": ["Sale Month"], "measures": ["Stock Growth"]},
+                "grouping": "rollup",
+            },
+            yaml_text,
+        )
+
+
+def test_rollup_with_a_total_on_a_deduplicated_measure_is_refused() -> None:
+    """A total sets a grain of its own, which a subtotal row would combine."""
     with pytest.raises(GrainDedupUnsupportedError, match="grouping"):
         _compile(
             {
                 "select": {
                     "dimensions": ["Region", "Category"],
-                    "measures": ["Sold Quantity", "Total Stock On Hand"],
+                    "measures": ["Sold Quantity", "Grand Total Stock"],
                 },
                 "grouping": "rollup",
             }

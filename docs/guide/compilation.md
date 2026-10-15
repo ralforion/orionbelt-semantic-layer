@@ -354,6 +354,15 @@ so it needs no `DISTINCT`. Any other metric in the query that reads the same
 component is rebuilt from that column as well, rather than from an aggregate at
 the query's grain.
 
+With **`ROLLUP` / `CUBE`** a subtotal row is a group of its own, and adding
+up the groups below it would count again an object row they share: a product
+sold in two regions is in both regions' stock. So each dedup CTE is built once
+per grouping set, deduplicated at that set's grain, the dimensions it rolls
+up `NULL` and their `GROUPING()` flags constant, and the sets are stacked with
+`UNION ALL`. It joins back on the dimensions and the flags, which tell a
+subtotal's `NULL` from a `NULL` value. The grand total then counts each product
+once (510), not the regions' sum (610).
+
 A **period-over-period** query is rebuilt from its source rows onto a date
 spine (see below), so it deduplicates them itself rather than through these
 CTEs. Each replicated object gets a first-row flag in the source,
@@ -423,7 +432,7 @@ than return an inflated number:
 |---|---|
 | A derived metric over a **window** metric | Its column is the whole derived expression, with the window metric's base measure inlined — a placeholder only the window pass can resolve, so there is no base value for an earlier wrapper's CTE to carry |
 | Period-over-period together with totals, filterContext, cumulative or window | PoP deduplicates its own source rows, and the dedup CTEs those wrappers read are not built |
-| `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
+| `ROLLUP` / `CUBE` with a `total` or `grain` override on a deduplicated measure, or with any other wrapper | Each grouping set is deduplicated at its own grain (see above); an override's grain, or a wrapper reading the rows, would combine those again |
 | A deduplicated measure reached through a **window** metric (a derived metric over one) | That wrapper rebuilds its base measure from the fact tables, which a dedup CTE cannot serve. Nested *derived* metrics are followed and split normally |
 | `total: true` or a `grain` override on a **filterContext** component of a split metric | That component comes from a scan of its own, which has not been composed with an override over a split metric. On a deduplicated or a fact-side component the dedup pass computes it instead (see above) |
 | A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
