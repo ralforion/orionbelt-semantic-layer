@@ -395,6 +395,13 @@ SELECT __ob_main."Region",
 FROM __ob_main LEFT JOIN __ob_dedup_0 ON ...
 ```
 
+A metric over a **window** metric (`{[Stock Rank]} * 2`) is not rebuilt here:
+the window pass computes it, in its outer SELECT over this pass's output, where
+the fact tables are gone. So this pass projects every input it reads under its
+own name instead: each window's base measure, deduplicated if it is one, and
+the formula's other components, aggregated in `__ob_main` otherwise. The window
+pass reads them by name rather than rebuilding their aggregates.
+
 A component that is also selected in its own right is computed once and read
 twice. A metric that also has a `filterContext` component is split again by that
 pass, which reads each deduplicated component by name from this query's
@@ -430,10 +437,9 @@ than return an inflated number:
 
 | Combination | Why |
 |---|---|
-| A derived metric over a **window** metric | Its column is the whole derived expression, with the window metric's base measure inlined — a placeholder only the window pass can resolve, so there is no base value for an earlier wrapper's CTE to carry |
 | Period-over-period together with totals, filterContext, cumulative or window | PoP deduplicates its own source rows, and the dedup CTEs those wrappers read are not built |
 | `ROLLUP` / `CUBE` with a `total` or `grain` override on a deduplicated measure, or with any other wrapper | Each grouping set is deduplicated at its own grain (see above); an override's grain, or a wrapper reading the rows, would combine those again |
-| A deduplicated measure reached through a **window** metric (a derived metric over one) | That wrapper rebuilds its base measure from the fact tables, which a dedup CTE cannot serve. Nested *derived* metrics are followed and split normally |
+| A deduplicated measure reached through a **cumulative** or **period-over-period** metric inside a derived one | Those wrappers rebuild their base measure from the fact tables, which a dedup CTE cannot serve (nesting them is refused at model load anyway). Window metrics, and nested *derived* metrics, are followed |
 | `total: true` or a `grain` override on a **filterContext** component of a split metric | That component comes from a scan of its own, which has not been composed with an override over a split metric. On a deduplicated or a fact-side component the dedup pass computes it instead (see above) |
 | A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
 
