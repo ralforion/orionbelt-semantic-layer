@@ -13,7 +13,7 @@ import pytest
 
 from orionbelt.models.query import QueryObject
 from orionbelt.parser.merger import ExtendsMerger, MergeError
-from orionbelt.service.model_store import ModelStore
+from orionbelt.service.model_store import ModelStore, ModelValidationError
 
 BASE_YAML = """
 version: 1.0
@@ -98,6 +98,33 @@ class TestExtendsMergesEveryKey:
         assert merged["exposeCounts"] is False
         assert merged["countLabelPattern"] == "N {object}"
         assert warnings == []
+
+    @pytest.mark.parametrize("name", ["[totals]", "{a: 1}", "7"])
+    def test_an_example_name_that_is_not_a_string_is_left_to_the_resolver(self, name: str) -> None:
+        """Only a string names an example. Indexing a list crashed the merge
+        with a TypeError, which the API answered with a 500."""
+        merged, warnings = _merge(
+            "examples: [{name: top, query: {}}]",
+            f"examples: [{{name: {name}, query: {{}}}}, {{name: top, query: {{}}}}]",
+        )
+        assert len(merged["examples"]) == 2
+        assert warnings == ["Example 'top' overridden by 'extends[1]'"]
+
+    def test_an_invalid_example_name_is_a_validation_error(self) -> None:
+        store = ModelStore()
+        with pytest.raises(ModelValidationError) as excinfo:
+            store.load_model(
+                BASE_YAML,
+                extends_yaml=["examples: [{name: [totals], query: {select: {measures: []}}}]"],
+            )
+        assert [e.code for e in excinfo.value.errors] == ["EXAMPLES_PARSE_ERROR"]
+
+    def test_a_malformed_target_examples_section_is_left_as_authored(self) -> None:
+        raw = {**_base(), "examples": {"top": {}}}
+        merged, _ = ExtendsMerger().merge_from_strings(
+            raw, extend_yamls=["examples: [{name: one, query: {}}]"]
+        )
+        assert merged["examples"] == {"top": {}}
 
     @pytest.mark.parametrize(
         ("fragment", "code"),

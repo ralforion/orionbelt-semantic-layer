@@ -709,6 +709,20 @@ class TestSessionModelFlow:
         )
         assert response.status_code == 422
 
+    async def test_load_with_an_invalid_fragment_example_name(self, client: AsyncClient) -> None:
+        """A list as an example name in an extends fragment is a validation
+        error, not a 500 from the merge."""
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        response = await client.post(
+            f"/v1/sessions/{sid}/models",
+            json={
+                "model_yaml": SAMPLE_MODEL_YAML,
+                "extends": ["examples: [{name: [totals], query: {select: {measures: []}}}]"],
+            },
+        )
+        assert response.status_code == 422
+        assert "EXAMPLES_PARSE_ERROR" in response.text
+
 
 class TestQueryPlanEndpoint:
     """POST /v1/sessions/{sid}/query/plan — see PLAN_agent_api_improvements §2."""

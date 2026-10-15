@@ -47,6 +47,12 @@ _MERGED_KEYS = frozenset(
 )
 
 
+def _example_name(example: object) -> str | None:
+    """An example's ``name`` when it is a string, the only form that identifies it."""
+    name = example.get("name") if isinstance(example, dict) else None
+    return name if isinstance(name, str) else None
+
+
 class MergeError(Exception):
     """Raised when merging extends or inherits fails."""
 
@@ -419,24 +425,37 @@ class ExtendsMerger:
     def _merge_examples(
         target: dict[str, Any], source: dict[str, Any], origin: str, override_label: str
     ) -> list[str]:
-        """Append the source's examples; one with an existing name replaces it."""
+        """Append the source's examples; one with an existing name replaces it.
+
+        Only a string ``name`` identifies an example. An entry without one, or
+        with a name of another type, is appended as authored for the resolver
+        to report with a source span; indexing it here crashed the load on an
+        unhashable name. A malformed target section (not a list) is left
+        exactly as authored for the same reason, as ``_append_mappings`` does.
+        """
         src_examples = source.get("examples")
         if not src_examples:
             return []
         if not isinstance(src_examples, list):
             raise MergeError("INVALID_FRAGMENT_SECTION", f"'examples' in '{origin}' must be a list")
+        existing = target.get("examples")
+        if existing is None:
+            existing = target["examples"] = []
+        if not isinstance(existing, list):
+            return []
         warnings: list[str] = []
-        merged = list(target.get("examples") or [])
-        position = {ex.get("name"): i for i, ex in enumerate(merged) if isinstance(ex, dict)}
+        position = {
+            name: i for i, ex in enumerate(existing) if (name := _example_name(ex)) is not None
+        }
         for example in src_examples:
-            name = example.get("name") if isinstance(example, dict) else None
+            name = _example_name(example)
             if name is not None and name in position:
                 warnings.append(f"Example '{name}' {override_label}")
-                merged[position[name]] = example
-            else:
-                position[name] = len(merged)
-                merged.append(example)
-        target["examples"] = merged
+                existing[position[name]] = example
+                continue
+            if name is not None:
+                position[name] = len(existing)
+            existing.append(example)
         return warnings
 
     @staticmethod
