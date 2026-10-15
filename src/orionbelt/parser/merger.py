@@ -21,6 +21,37 @@ _ONTOLOGY_KEYS = frozenset(OntologyConfig.model_fields)
 # Origin label for the child side of an ``inherits`` merge in error messages.
 _INHERITING_MODEL = "inheriting model"
 
+# Name-keyed sections: the fragment's or child's definition replaces one of the
+# same name, with a warning.
+_NAMED_SECTIONS = ("dimensions", "measures", "metrics", "rules")
+# Scalars whose value changes how every query is compiled or counted: the
+# fragment's or child's value wins, with a warning when it changes one.
+_BEHAVIOUR_SCALARS = ("exposeCounts", "countLabelPattern")
+# Every top-level key a fragment or inheriting child may carry and the merge
+# handles. Anything else is refused: a key the merge does not read would
+# otherwise vanish, and a security filter or a setting vanished without a word.
+_MERGED_KEYS = frozenset(
+    {
+        *_NAMED_SECTIONS,
+        *_BEHAVIOUR_SCALARS,
+        "examples",
+        "filters",
+        "settings",
+        "customExtensions",
+        "externalConceptMappings",
+        "ontology",
+        "description",
+        "owner",
+        "version",
+    }
+)
+
+
+def _example_name(example: object) -> str | None:
+    """An example's ``name`` when it is a string, the only form that identifies it."""
+    name = example.get("name") if isinstance(example, dict) else None
+    return name if isinstance(name, str) else None
+
 
 class MergeError(Exception):
     """Raised when merging extends or inherits fails."""
@@ -108,6 +139,17 @@ class ExtendsMerger:
                 "EXTENDS_CONTAINS_DATA_OBJECTS",
                 f"Extend fragment '{origin}' must not contain 'dataObjects'",
             )
+        if "name" in ext:
+            raise MergeError(
+                "EXTENDS_CONTAINS_MODEL_NAME",
+                f"Extend fragment '{origin}' must not contain 'name': a fragment adds to "
+                "the model it extends and cannot rename it",
+            )
+        if ext.get("inherits"):
+            raise MergeError(
+                "EXTENDS_CONTAINS_INHERITS",
+                f"Extend fragment '{origin}' must not use 'inherits'",
+            )
 
     @staticmethod
     def _validate_parent(parent: dict[str, Any], origin: str) -> None:
@@ -182,6 +224,7 @@ class ExtendsMerger:
                     seen=seen,
                 )
                 warnings.extend(nested_warnings)
+                ext_dict.pop("_extends_sources", None)
 
             merge_warnings = self._deep_merge_analytical(merged, ext_dict, ext_rel)
             warnings.extend(merge_warnings)
@@ -205,6 +248,12 @@ class ExtendsMerger:
             origin = f"extends[{i}]"
 
             self._validate_extend_dict(ext_dict, origin)
+            if ext_dict.get("extends"):
+                raise MergeError(
+                    "EXTENDS_NESTED_INLINE",
+                    f"Inline fragment '{origin}' must not use 'extends': an inline fragment "
+                    "has no location to resolve file paths against",
+                )
 
             merge_warnings = self._deep_merge_analytical(merged, ext_dict, origin)
             warnings.extend(merge_warnings)
@@ -257,53 +306,17 @@ class ExtendsMerger:
         parent: dict[str, Any],
         origin: str,
     ) -> tuple[dict[str, Any], list[str]]:
-        warnings: list[str] = []
         merged = copy.deepcopy(parent)
-
-        # Child version wins
-        if "version" in child:
-            merged["version"] = child["version"]
-
-        # Child description wins if present
-        if child.get("description"):
-            merged["description"] = child["description"]
-
-        # Override/add analytical definitions — child wins
-        for key in ("dimensions", "measures", "metrics"):
-            parent_section = merged.get(key) or {}
-            child_section = child.get(key) or {}
-            for name, defn in child_section.items():
-                if name in parent_section:
-                    warnings.append(
-                        f"{key[:-1].title()} '{name}' from child overrides parent '{origin}'"
-                    )
-                parent_section[name] = defn
-            if parent_section:
-                merged[key] = parent_section
-
-        # Filters accumulate (AND logic)
-        parent_filters = list(merged.get("filters") or [])
-        child_filters = list(child.get("filters") or [])
-        if parent_filters or child_filters:
-            merged["filters"] = parent_filters + child_filters
-
-        # customExtensions: concatenate
-        parent_exts = list(merged.get("customExtensions") or [])
-        child_exts = list(child.get("customExtensions") or [])
-        if parent_exts or child_exts:
-            merged["customExtensions"] = parent_exts + child_exts
-
-        # externalConceptMappings: the child's are type-checked and appended
-        # to the parent's (``merged`` is already a copy of the parent)
-        self._append_mappings(merged, self._fragment_mappings(child, _INHERITING_MODEL))
-
-        # ontology.prefixes: union; a rebinding is an error, see _merge_prefixes
-        self._merge_prefixes(merged, child, _INHERITING_MODEL)
-
-        # Owner: child wins if present
-        if child.get("owner"):
-            merged["owner"] = child["owner"]
-
+        warnings = self._merge_model_keys(
+            merged,
+            {k: v for k, v in child.items() if k != "name"},
+            _INHERITING_MODEL,
+            override_label=f"from child overrides parent '{origin}'",
+            whole_model=True,
+        )
+        # The child is a model of its own, so its name wins.
+        if child.get("name"):
+            merged["name"] = child["name"]
         merged["_inherits_source"] = origin
         return merged, warnings
 
@@ -315,33 +328,156 @@ class ExtendsMerger:
         source: dict[str, Any],
         origin: str,
     ) -> list[str]:
-        """Merge analytical keys from *source* into *target*. Source wins on conflict."""
-        warnings: list[str] = []
+        """Merge an extend fragment into *target*. Source wins on conflict."""
+        return ExtendsMerger._merge_model_keys(
+            target, source, origin, override_label=f"overridden by '{origin}'"
+        )
 
-        for key in ("dimensions", "measures", "metrics"):
+    @staticmethod
+    def _merge_model_keys(
+        target: dict[str, Any],
+        source: dict[str, Any],
+        origin: str,
+        *,
+        override_label: str,
+        whole_model: bool = False,
+    ) -> list[str]:
+        """Merge every top-level key of *source* into *target*; source wins.
+
+        Shared by ``extends`` (source = fragment) and ``inherits`` (source =
+        child, target = a copy of the parent). Each key is merged or refused;
+        none is skipped. ``dataObjects``, ``name``, ``extends`` and ``inherits``
+        are handled by the callers before this runs.
+        """
+        warnings: list[str] = []
+        unknown = sorted(
+            key
+            for key in source
+            if key not in _MERGED_KEYS and key not in {"dataObjects", "extends", "inherits"}
+        )
+        if unknown:
+            raise MergeError(
+                "UNKNOWN_PROPERTY",
+                f"Unknown or unmergeable top-level propert{'y' if len(unknown) == 1 else 'ies'} "
+                f"{', '.join(repr(k) for k in unknown)} in '{origin}'",
+            )
+
+        for key in _NAMED_SECTIONS:
             src_section = source.get(key)
             if not src_section:
                 continue
-            tgt_section = target.setdefault(key, {})
+            if not isinstance(src_section, dict):
+                raise MergeError(
+                    "INVALID_FRAGMENT_SECTION", f"'{key}' in '{origin}' must be a mapping"
+                )
+            tgt_section = target.get(key)
+            if not isinstance(tgt_section, dict):
+                tgt_section = target[key] = {}
             for name, defn in src_section.items():
                 if name in tgt_section:
-                    warnings.append(f"{key[:-1].title()} '{name}' overridden by '{origin}'")
+                    warnings.append(f"{key[:-1].title()} '{name}' {override_label}")
                 tgt_section[name] = defn
+
+        warnings.extend(ExtendsMerger._merge_examples(target, source, origin, override_label))
+
+        # Static filters accumulate (AND): a fragment or child can narrow the
+        # model, never widen it.
+        src_filters = source.get("filters")
+        if src_filters:
+            if not isinstance(src_filters, list):
+                raise MergeError(
+                    "INVALID_FRAGMENT_SECTION", f"'filters' in '{origin}' must be a list"
+                )
+            target["filters"] = list(target.get("filters") or []) + src_filters
+
+        warnings.extend(ExtendsMerger._merge_settings(target, source, origin, override_label))
+
+        for key in _BEHAVIOUR_SCALARS:
+            if key not in source:
+                continue
+            if key in target and target[key] != source[key]:
+                warnings.append(f"Model property '{key}' {override_label}")
+            target[key] = source[key]
 
         # customExtensions: concatenate lists
         src_exts = source.get("customExtensions")
         if src_exts:
-            target.setdefault("customExtensions", []).extend(src_exts)
+            target["customExtensions"] = list(target.get("customExtensions") or []) + src_exts
 
         # externalConceptMappings: concatenate lists (type-checked first)
         ExtendsMerger._append_mappings(target, ExtendsMerger._fragment_mappings(source, origin))
 
         ExtendsMerger._merge_prefixes(target, source, origin)
 
-        # description: last non-None wins
-        if source.get("description"):
-            target["description"] = source["description"]
+        # description and owner: last non-empty wins
+        for key in ("description", "owner"):
+            if source.get(key):
+                target[key] = source[key]
 
+        # version: the source's only where it is a whole model (inherits); a
+        # fragment's records the OBML version it was written for.
+        if "version" in source and whole_model:
+            target["version"] = source["version"]
+
+        return warnings
+
+    @staticmethod
+    def _merge_examples(
+        target: dict[str, Any], source: dict[str, Any], origin: str, override_label: str
+    ) -> list[str]:
+        """Append the source's examples; one with an existing name replaces it.
+
+        Only a string ``name`` identifies an example. An entry without one, or
+        with a name of another type, is appended as authored for the resolver
+        to report with a source span; indexing it here crashed the load on an
+        unhashable name. A malformed target section (not a list) is left
+        exactly as authored for the same reason, as ``_append_mappings`` does.
+        """
+        src_examples = source.get("examples")
+        if not src_examples:
+            return []
+        if not isinstance(src_examples, list):
+            raise MergeError("INVALID_FRAGMENT_SECTION", f"'examples' in '{origin}' must be a list")
+        existing = target.get("examples")
+        if existing is None:
+            existing = target["examples"] = []
+        if not isinstance(existing, list):
+            return []
+        warnings: list[str] = []
+        position = {
+            name: i for i, ex in enumerate(existing) if (name := _example_name(ex)) is not None
+        }
+        for example in src_examples:
+            name = _example_name(example)
+            if name is not None and name in position:
+                warnings.append(f"Example '{name}' {override_label}")
+                existing[position[name]] = example
+                continue
+            if name is not None:
+                position[name] = len(existing)
+            existing.append(example)
+        return warnings
+
+    @staticmethod
+    def _merge_settings(
+        target: dict[str, Any], source: dict[str, Any], origin: str, override_label: str
+    ) -> list[str]:
+        """Merge the source's settings key by key; a changed value warns."""
+        src_settings = source.get("settings")
+        if not src_settings:
+            return []
+        if not isinstance(src_settings, dict):
+            raise MergeError(
+                "INVALID_FRAGMENT_SECTION", f"'settings' in '{origin}' must be a mapping"
+            )
+        tgt_settings = target.get("settings")
+        if not isinstance(tgt_settings, dict):
+            tgt_settings = target["settings"] = {}
+        warnings: list[str] = []
+        for key, value in src_settings.items():
+            if key in tgt_settings and tgt_settings[key] != value:
+                warnings.append(f"Setting '{key}' {override_label}")
+            tgt_settings[key] = value
         return warnings
 
     @staticmethod
