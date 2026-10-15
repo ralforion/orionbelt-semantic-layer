@@ -555,6 +555,28 @@ If the data object is reachable but not yet in the join path, it is **auto-joine
 
 When the measures span independent facts (a [CFL](compilation.md) union), each leg applies the filter if its fact reaches the filter's data object. If one leg cannot, the query is refused with `FILTER_NOT_APPLICABLE_TO_MEASURE` rather than computing that leg's measures unfiltered. Static model `filters:` are different: they are declared once for every query and, by default, apply where relevant, so a query or leg that cannot reach one skips it with a `STATIC_FILTER_NOT_APPLIED` warning. A static filter declared `enforce: always` refuses such a query instead (`STATIC_FILTER_UNREACHABLE`); see [Static Filters](model-format.md#filters-the-query-cannot-reach).
 
+#### Filters on the many side of a join
+
+A WHERE filter on a data object on the *many* side of the measures' objects (an `Orders` column, with measures on `Customers`) answers the question SQL's `Customers LEFT JOIN Orders WHERE <filter>` does, each customer counted once:
+
+- A customer with orders counts when one of its orders passes the filter. `Status = ok` is "customers with an ok order", and several order conditions in one filter must hold for the same order.
+- A customer *without* orders counts when the filter holds with every order column NULL: `Tier = gold or Status = ok` keeps a gold customer who has never ordered, and `Orders.Order ID` `notset` lists the customers without orders. `NOT (Status = bad)` does not keep them, since a comparison with NULL is not true.
+- Grouped by an order column (`Status`), the customers without orders form the NULL group; measures on the orders read 0 or NULL there.
+
+The two kinds of customer are planned as two sets that do not overlap: the order rows the filter accepts, each customer deduplicated, and the customers with no order at all, read without joining the orders. Neither multiplies the other. The second set is added only when the filter can accept such a customer, so `Status = ok` plans exactly as before.
+
+A shape that cannot carry the second set is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than leaving those customers out: measures on several one-side objects that cannot reach the filtered one, `grouping: rollup` / `cube`, a period-over-period metric, a nested data object, or a measure with `allowFanOut: true` on that side. [`exists` / `nonexists`](#existence-operators) states the question directly:
+
+```yaml
+where:
+  - logic: or
+    filters:
+      - {field: Tier, op: "=", value: gold}
+      - field: Customers.Customer ID
+        op: exists
+        subquery: {dataObject: Orders, filter: [{field: Status, op: "=", value: ok}]}
+```
+
 A `having` filter field must reference a **measure** name.
 
 ### Filter Operators
@@ -808,6 +830,7 @@ Invalid queries return error responses:
 | `UNKNOWN_MEASURE` | 400 | Measure name not in model |
 | `UNKNOWN_FILTER_FIELD` | 400 | Filter field is not a dimension (WHERE) or measure (HAVING) |
 | `UNREACHABLE_FILTER_OBJECT` | 400 | WHERE filter names a data object the query cannot reach |
+| `FILTER_ADMITS_ROWS_WITHOUT` | 400 | WHERE on the many side of the measures' objects could hold for a row with no matching rows there, and the query's shape cannot add those rows (ROLLUP / CUBE, period-over-period, several one-side objects, `allowFanOut`); use `exists` / `nonexists` |
 | `FILTER_NOT_APPLICABLE_TO_MEASURE` | 400 | WHERE filter names a data object one selected measure's fact cannot reach (multi-fact query) |
 | `STATIC_FILTER_UNREACHABLE` | 400 | A static model filter declared `enforce: always` names a data object the query, or one measure's fact, cannot reach |
 | `UNKNOWN_ORDER_BY_FIELD` | 400 | ORDER BY field not in query's SELECT |

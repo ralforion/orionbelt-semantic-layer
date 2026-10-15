@@ -210,7 +210,18 @@ def _alias_predicates(
     model: SemanticModel | None,
     select: Callable[[frozenset[str]], bool],
 ) -> list[Expr]:
-    """The HAVING predicates *select* picks by their fields, over output aliases.
+    """The HAVING predicates *select* picks by their fields, over output aliases."""
+    to_aliases = dimensions_to_aliases(resolved, model)
+    return [
+        to_aliases(hf.expression) for hf in resolved.having_filters if select(hf.referenced_fields)
+    ]
+
+
+def dimensions_to_aliases(
+    resolved: ResolvedQuery, model: SemanticModel | None, table: str | None = None
+) -> Callable[[Expr], Expr]:
+    """Rewrite a predicate's dimension references to the dimensions' output
+    aliases, qualified with *table* when given.
 
     A computed dimension's predicate tests its whole inlined expression
     (``UPPER("Sales"."city")``, or a single column for ``{City}``), which is
@@ -234,7 +245,7 @@ def _alias_predicates(
 
     def computed_to_alias(node: Expr) -> Expr | None:
         alias = next((name for expr, name in computed if expr == node), None)
-        return ColumnRef(name=alias) if alias is not None else None
+        return ColumnRef(name=alias, table=table) if alias is not None else None
 
     by_physical: dict[tuple[str, str], str] = {}
     # Finest first; a dimension with no grain is the column itself.
@@ -246,13 +257,9 @@ def _alias_predicates(
         if ref.table is None:
             return ref
         alias = by_physical.get((ref.name, ref.table))
-        return ColumnRef(name=alias) if alias is not None else ref
+        return ColumnRef(name=alias, table=table) if alias is not None else ref
 
-    return [
-        map_column_refs(map_nodes(hf.expression, computed_to_alias), to_alias)
-        for hf in resolved.having_filters
-        if select(hf.referenced_fields)
-    ]
+    return lambda expr: map_column_refs(map_nodes(expr, computed_to_alias), to_alias)
 
 
 def apply_having_hoist(

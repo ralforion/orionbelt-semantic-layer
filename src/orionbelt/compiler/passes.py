@@ -168,9 +168,13 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
         CompilerPass(
             name=PASS_GRAIN_DEDUP,
             # A period-over-period query is rebuilt from its source rows by
-            # ``wrap_with_pop``, which deduplicates them itself.
-            applies=lambda r: bool(r.dedup_targets) and not r.has_pop,
-            run=lambda ast, ctx: wrap_with_grain_dedup(ast, ctx.resolved, ctx.model, ctx.dialect),
+            # ``wrap_with_pop``, which deduplicates them itself. A planned leg
+            # of rows without children runs it even with nothing to deduplicate,
+            # so it can refuse a measure the leg cannot reach.
+            applies=lambda r: bool(r.dedup_targets or r.childless_leg) and not r.has_pop,
+            run=lambda ast, ctx: wrap_with_grain_dedup(
+                ast, ctx.resolved, ctx.model, ctx.dialect, ctx.qualify_table
+            ),
             # Runs first: it rewrites the base projection into CTEs that every
             # later wrapper then wraps. The wrappers below restructure that same
             # projection, so combining them is rejected in
