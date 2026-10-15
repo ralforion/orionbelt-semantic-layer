@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
+    BinaryOp,
     CaseExpr,
     Cast,
     ColumnRef,
@@ -29,12 +30,13 @@ from orionbelt.compiler.expr_parser import (
     parse_expression,
     tokenize_measure_expression,
 )
-from orionbelt.compiler.expr_rewrite import map_nodes
+from orionbelt.compiler.expr_rewrite import collect_referenced_tables, map_nodes
 from orionbelt.compiler.filters import (
     build_measure_filter_condition,
     collect_measure_filter_objects,
 )
 from orionbelt.compiler.graph import JoinGraph, JoinStep, path_overrides
+from orionbelt.compiler.null_rejection import can_hold_without
 from orionbelt.compiler.type_resolver import resolve_measure_data_type
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.expressions import find_qualified_refs, substitute_placeholders
@@ -1304,6 +1306,8 @@ class QueryResolver:
             if resolved_filter:
                 ctx.result.having_filters.append(resolved_filter)
 
+        self._reject_filters_admitting_childless_rows(ctx)
+
         # 7. Resolve order by — must reference a dimension or measure in SELECT
         select_count = len(ctx.result.dimensions) + len(ctx.result.measures)
         for ob in query.order_by:
@@ -2243,6 +2247,61 @@ class QueryResolver:
         if wanted <= graph.descendants(root) | {root}:
             return root
         return best
+
+    def _reject_filters_admitting_childless_rows(self, ctx: _ResolutionContext) -> None:
+        """Refuse a WHERE that a parent with no child rows could satisfy.
+
+        Measures on the *one* side of a join (customers) with a WHERE on the
+        *many* side (orders) are answered from the orders rows, the customer
+        measures deduplicated. A customer is counted only through an order the
+        predicate accepts, so one without orders is left out - right for
+        ``status = 'ok'``, which no such customer satisfies, and silently wrong
+        for ``tier = 'gold' OR status = 'ok'`` or ``order_id IS NULL``, which
+        one does. Such a predicate is refused (``FILTER_ADMITS_ROWS_WITHOUT``):
+        ``exists`` / ``nonexists`` say which question is meant.
+
+        The tables tested are the ones the WHERE reads that some measure's own
+        object cannot reach; the predicate is evaluated with their columns NULL
+        (:mod:`compiler.null_rejection`).
+        """
+        sources = ctx.result.measure_source_objects
+        if not sources or ctx.result.requires_cfl or ctx.graph is None:
+            return
+        read: set[str] = set()
+        for wf in ctx.result.where_filters:
+            collect_referenced_tables(wf.expression, read)
+        children: set[str] = set()
+        for source in sources:
+            children |= read - ctx.graph.descendants(source) - {source}
+        if not children:
+            return
+        combined: Expr | None = None
+        for wf in ctx.result.where_filters:
+            combined = (
+                wf.expression
+                if combined is None
+                else BinaryOp(left=combined, op="AND", right=wf.expression)
+            )
+        if combined is None or not can_hold_without(combined, children):
+            return
+        objects = ", ".join(f"'{name}'" for name in sorted(children))
+        owners = ", ".join(f"'{name}'" for name in sorted(sources))
+        ctx.errors.append(
+            SemanticError(
+                code="FILTER_ADMITS_ROWS_WITHOUT",
+                message=(
+                    f"The WHERE can hold for a {owners} row with no {objects} rows (an OR "
+                    f"with another condition, a NOT, or an IS NULL), but this query reads "
+                    f"{owners} through {objects} rows, so such rows would be left out "
+                    f"without a word."
+                ),
+                path="where",
+                hint=(
+                    f"Write the condition on {objects} as 'exists' / 'nonexists', which "
+                    f"tests for a matching row and keeps the ones without any."
+                ),
+            )
+        )
 
     def _reject_unsupported_nested_shapes(
         self, ctx: _ResolutionContext, touched_objects: set[str]

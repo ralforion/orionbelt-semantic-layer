@@ -555,6 +555,22 @@ If the data object is reachable but not yet in the join path, it is **auto-joine
 
 When the measures span independent facts (a [CFL](compilation.md) union), each leg applies the filter if its fact reaches the filter's data object. If one leg cannot, the query is refused with `FILTER_NOT_APPLICABLE_TO_MEASURE` rather than computing that leg's measures unfiltered. Static model `filters:` are different: they are declared once for every query and, by default, apply where relevant, so a query or leg that cannot reach one skips it with a `STATIC_FILTER_NOT_APPLIED` warning. A static filter declared `enforce: always` refuses such a query instead (`STATIC_FILTER_UNREACHABLE`); see [Static Filters](model-format.md#filters-the-query-cannot-reach).
 
+#### Filters on the many side of a join
+
+A WHERE filter on a data object on the *many* side of the measures' objects (an `Orders` column, with measures on `Customers`) is answered from those rows, and the measures are deduplicated: a customer counts once, through the orders the filter accepts. That is a semi-join, and it answers `Status = ok` as "customers with an ok order".
+
+A customer without orders has no such row. So a filter such a customer could satisfy is refused with `FILTER_ADMITS_ROWS_WITHOUT` instead of leaving them out: an `or` with a condition on another object (`Tier = gold or Status = ok`), `notset` / `blank` on an order column, or anything else that can be true when every order column is NULL. Write the order condition as [`exists` / `nonexists`](#existence-operators), which tests for a matching row and keeps the customers without one:
+
+```yaml
+where:
+  - logic: or
+    filters:
+      - {field: Tier, op: "=", value: gold}
+      - field: Customers.Customer ID
+        op: exists
+        subquery: {dataObject: Orders, filter: [{field: Status, op: "=", value: ok}]}
+```
+
 A `having` filter field must reference a **measure** name.
 
 ### Filter Operators
@@ -808,6 +824,7 @@ Invalid queries return error responses:
 | `UNKNOWN_MEASURE` | 400 | Measure name not in model |
 | `UNKNOWN_FILTER_FIELD` | 400 | Filter field is not a dimension (WHERE) or measure (HAVING) |
 | `UNREACHABLE_FILTER_OBJECT` | 400 | WHERE filter names a data object the query cannot reach |
+| `FILTER_ADMITS_ROWS_WITHOUT` | 400 | WHERE on the many side of the measures' objects could hold for a row with no matching rows there (OR, IS NULL); use `exists` / `nonexists` |
 | `FILTER_NOT_APPLICABLE_TO_MEASURE` | 400 | WHERE filter names a data object one selected measure's fact cannot reach (multi-fact query) |
 | `STATIC_FILTER_UNREACHABLE` | 400 | A static model filter declared `enforce: always` names a data object the query, or one measure's fact, cannot reach |
 | `UNKNOWN_ORDER_BY_FIELD` | 400 | ORDER BY field not in query's SELECT |
