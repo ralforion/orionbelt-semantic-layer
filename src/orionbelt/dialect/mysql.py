@@ -85,6 +85,9 @@ _MYSQL_CAST_CHAR_MAX = 255
 _MYSQL_CAST_TARGET_REWRITES: dict[str, str] = {
     "TIMESTAMP": "DATETIME",
     "TINYINT(1)": "SIGNED",
+    # ``int`` is ``INT`` in DDL, and no CAST target: a NULL padding an integer
+    # column of a multi-fact union was ``CAST(NULL AS INT)``, error 1064.
+    "INT": "SIGNED",
 }
 
 

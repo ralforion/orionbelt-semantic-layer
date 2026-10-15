@@ -864,6 +864,14 @@ class TestMySQLDialect:
         expr = Cast(expr=col("age"), type_name="boolean")
         assert dialect.compile_expr(expr) == "CAST(`age` AS SIGNED)"
 
+    def test_cast_int_uses_signed(self, dialect: MySQLDialect) -> None:
+        """``INT`` is this dialect's column type for ``int`` and no cast target:
+        a multi-fact union pads an integer column it does not carry with
+        ``CAST(NULL AS int)``, which was error 1064."""
+        assert dialect.compile_expr(Cast(expr=Literal.null(), type_name="int")) == (
+            "CAST(NULL AS SIGNED)"
+        )
+
     def test_cast_timestamp_uses_datetime(self, dialect: MySQLDialect) -> None:
         """``TIMESTAMP`` is not in MySQL's cast vocabulary either (#357).
 

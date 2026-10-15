@@ -9,14 +9,18 @@ from orionbelt.ast.builder import QueryBuilder
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
+    BinaryOp,
+    CaseExpr,
     Cast,
     ColumnRef,
     Expr,
     FunctionCall,
+    IsNull,
     Literal,
     OrderByItem,
     Select,
     UnionAll,
+    WindowFunction,
 )
 from orionbelt.compiler import cfl_exclude, cfl_projection
 from orionbelt.compiler.anchored import (
@@ -26,13 +30,14 @@ from orionbelt.compiler.anchored import (
 )
 from orionbelt.compiler.expr_rewrite import inline_measure_aliases
 from orionbelt.compiler.fanout import FanoutError
-from orionbelt.compiler.grain_dedup import detect_dedup_measures
+from orionbelt.compiler.grain_dedup import dedup_identity, detect_dedup_measures
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.resolution import (
     ResolutionError,
     ResolvedDimension,
     ResolvedMeasure,
     ResolvedQuery,
+    make_column_expr,
     make_dimension_expr,
 )
 from orionbelt.compiler.star import CflLegInfo, QueryPlan, _grouping_flag_alias, _nulls_last
@@ -505,7 +510,9 @@ class CFLPlanner:
         # and the measure's source object with minimal hops.
         union_legs: list[Select] = []
         leg_infos: list[CflLegInfo] = []
-        dedup_offenders: dict[str, str] = {}
+        # Measures a leg's own joins replicate the object of, with the leg and
+        # the leg's view of the query (its joins) that found them.
+        leg_dedup: dict[str, tuple[str, int, ResolvedQuery]] = {}
         for obj_name, measures in measures_by_object.items():
             leg_builder = QueryBuilder()
             this_measure_names = {m.name for m in measures}
@@ -713,18 +720,15 @@ class CFLPlanner:
                         joined_aliases.add(step.to_object)
 
             # A measure sourced from an object this leg's own joins replicate
-            # is summed once per row of the many side. Resolution cannot see
-            # that: its join steps are the base object's, and the step that
-            # replicates lives inside a leg. The union has no per-leg grain to
-            # deduplicate at either - the legs project the values to aggregate
-            # rather than aggregating them - so this is refused rather than
-            # answered with a plausible number in the right group.
-            leg_dedup = detect_dedup_measures(
-                replace(resolved, join_steps=steps, base_object=lead, measures=measures),
-                model,
-            )
-            dedup_offenders.update(leg_dedup.measures)
-            dedup_offenders.update(leg_dedup.components)
+            # would be summed once per row of the many side. Resolution cannot
+            # see that: its join steps are the base object's, and the step that
+            # replicates lives inside a leg. The legs project the values to
+            # aggregate rather than aggregating them, so the leg flags the
+            # first row of each object row per group instead, below.
+            leg_view = replace(resolved, join_steps=steps, base_object=lead, measures=measures)
+            found = detect_dedup_measures(leg_view, model)
+            for name, object_name in {**found.measures, **found.components}.items():
+                leg_dedup[name] = (object_name, len(union_legs), leg_view)
 
             # Capture leg info for explain
             leg_join_strs = (
@@ -757,28 +761,9 @@ class CFLPlanner:
 
             union_legs.append(leg_builder.build())
 
-        if dedup_offenders:
-            listed = ", ".join(f"'{name}'" for name in sorted(dedup_offenders))
-            raise ResolutionError(
-                [
-                    SemanticError(
-                        code="INCOMPATIBLE_COMBINATION",
-                        message=(
-                            f"Measure(s) {listed} are sourced from an object whose rows this "
-                            f"query's joins replicate, so they must be aggregated over "
-                            f"deduplicated rows. This query spans facts that cannot be "
-                            f"joined, so it is planned as a UNION ALL whose legs project the "
-                            f"values to aggregate rather than aggregating them, leaving no "
-                            f"per-leg grain to deduplicate at."
-                        ),
-                        path="select.measures",
-                        hint=(
-                            "Query the measure without the measures from the other fact, or "
-                            "set allowFanOut: true to aggregate the duplicated rows as-is."
-                        ),
-                        context={"measures": sorted(dedup_offenders)},
-                    )
-                ]
+        if leg_dedup:
+            union_legs, aliases = self._flag_first_object_rows(
+                resolved, model, union_legs, leg_dedup, all_measures, union_by_name, dialect
             )
 
         # Create the UNION ALL CTE
@@ -967,6 +952,157 @@ class CFLPlanner:
         )
 
         return QueryPlan(ast=final, cfl_legs=leg_infos)
+
+    def _flag_first_object_rows(
+        self,
+        resolved: ResolvedQuery,
+        model: SemanticModel,
+        union_legs: list[Select],
+        leg_dedup: dict[str, tuple[str, int, ResolvedQuery]],
+        all_measures: list[ResolvedMeasure],
+        union_by_name: bool,
+        dialect: Dialect | None,
+    ) -> tuple[list[Select], cfl_projection.CompositeAliases]:
+        """Flag, in each leg, the first row of each row of a replicated object.
+
+        The leg owning a deduplicated measure projects
+        ``ROW_NUMBER() OVER (PARTITION BY <dimensions>, <object key>) = 1`` for
+        it, where the key is present: a base row the join found no object row
+        for is not one of the object's rows. Every other leg pads the column.
+        The outer aggregate then reads its input only on flagged rows (see
+        :func:`cfl_projection.build_outer_measure_expr`), so each object row
+        counts once per group - the rows the grain dedup pass keeps with a
+        DISTINCT in a single-fact plan.
+
+        A multi-field measure spreads its arguments over several union columns
+        and is refused rather than flagged, and so is any coarser grain the
+        outer query combines the groups into: a total, a grain override or a
+        rollup would add up groups that share an object row.
+        """
+        by_name = {m.name: m for m in (*all_measures, *resolved.metric_components.values())}
+        multi_field = sorted(
+            n for n in leg_dedup if n in by_name and self._is_multi_field(by_name[n])
+        )
+        if multi_field:
+            listed = ", ".join(f"'{name}'" for name in multi_field)
+            raise ResolutionError(
+                [
+                    SemanticError(
+                        code="INCOMPATIBLE_COMBINATION",
+                        message=(
+                            f"Measure(s) {listed} are sourced from an object whose rows this "
+                            f"query's joins replicate, so they must be aggregated over "
+                            f"deduplicated rows. They aggregate several columns, which a "
+                            f"query spanning facts that cannot be joined carries through "
+                            f"its UNION ALL separately, so their rows cannot be flagged."
+                        ),
+                        path="select.measures",
+                        hint=(
+                            "Query the measure without the measures from the other fact, or "
+                            "set allowFanOut: true to aggregate the duplicated rows as-is."
+                        ),
+                        context={"measures": multi_field},
+                    )
+                ]
+            )
+
+        coarser = sorted(
+            n for n in leg_dedup if n in by_name and (by_name[n].total or by_name[n].grain_override)
+        )
+        combined: str | None = None
+        if coarser:
+            combined = "A total or grain override"
+        elif resolved.grouping is not None:
+            combined = resolved.grouping.value.upper()
+        if combined is not None:
+            listed = ", ".join(f"'{name}'" for name in coarser or sorted(leg_dedup))
+            raise ResolutionError(
+                [
+                    SemanticError(
+                        code="INCOMPATIBLE_COMBINATION",
+                        message=(
+                            f"Measure(s) {listed} are sourced from an object whose rows this "
+                            f"query's joins replicate, and a query spanning facts that cannot "
+                            f"be joined deduplicates them per group of its own grain. "
+                            f"{combined} combines those groups, which share object rows, "
+                            f"so they would be counted again."
+                        ),
+                        path="select.measures",
+                        hint=(
+                            "Query the measure without the measures from the other fact, or "
+                            "at the query's own grain."
+                        ),
+                        context={"measures": coarser or sorted(leg_dedup)},
+                    )
+                ]
+            )
+
+        resolved.leg_dedup_targets = {name: entry[0] for name, entry in leg_dedup.items()}
+        aliases = cfl_projection.composite_aliases(resolved)
+        legs = list(union_legs)
+        for name in sorted(leg_dedup):
+            object_name, owner, leg_view = leg_dedup[name]
+            keys: list[Expr] = [
+                make_column_expr(model, object_name, key)
+                for key in dedup_identity(object_name, [name], leg_view, model)
+            ]
+            present: Expr | None = None
+            for key in keys:
+                not_null = IsNull(expr=key, negated=True)
+                present = not_null if present is None else BinaryOp(present, "AND", not_null)
+            assert present is not None
+            for idx, leg in enumerate(legs):
+                if idx == owner:
+                    dims = self._leg_grouping(resolved, leg)
+                    flag: Expr = CaseExpr(
+                        when_clauses=[
+                            (
+                                present,
+                                WindowFunction(
+                                    func_name="ROW_NUMBER",
+                                    partition_by=[*dims, *keys],
+                                    order_by=[OrderByItem(expr=key) for key in keys],
+                                ),
+                            )
+                        ]
+                    )
+                elif union_by_name:
+                    continue
+                else:
+                    flag = Cast(Literal.null(), type_name="int")
+                legs[idx] = replace(
+                    leg,
+                    columns=[*leg.columns, AliasedExpr(expr=flag, alias=aliases.first_flags[name])],
+                )
+        return legs, aliases
+
+    @staticmethod
+    def _leg_grouping(resolved: ResolvedQuery, leg: Select) -> list[Expr]:
+        """The outer query's grouping, as *leg* projects it.
+
+        One expression per output group: a coalesced dimension groups by
+        ``COALESCE`` of its members, so two members collapsing into one output
+        value are one group here too. A member the leg does not project (under
+        ``UNION ALL BY NAME``) is NULL, which ``COALESCE`` skips anyway.
+        """
+        projected = {col.alias: col.expr for col in leg.columns if isinstance(col, AliasedExpr)}
+        grouping: list[Expr] = []
+        seen: set[str] = set()
+        for dim in resolved.dimensions:
+            key = dim.coalesce_alias or dim.name
+            if key in seen:
+                continue
+            seen.add(key)
+            members = [
+                projected[d.name]
+                for d in resolved.dimensions
+                if (d.coalesce_alias or d.name) == key and d.name in projected
+            ]
+            if len(members) > 1:
+                grouping.append(FunctionCall(name="COALESCE", args=members))
+            elif members:
+                grouping.append(members[0])
+        return grouping
 
     # -- dimensionsExclude: EXCEPT-based anti-join ----------------------------
 

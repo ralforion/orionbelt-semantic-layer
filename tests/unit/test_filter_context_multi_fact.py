@@ -19,7 +19,13 @@ import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import ResolutionError
-from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
+from orionbelt.models.query import (
+    CoalesceDimension,
+    FilterOperator,
+    QueryFilter,
+    QueryObject,
+    QuerySelect,
+)
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
@@ -139,6 +145,16 @@ measures:
     columns: [{dataObject: Products, column: Stock On Hand}]
     resultType: float
     aggregation: sum
+  Grand Stock:
+    columns: [{dataObject: Products, column: Stock On Hand}]
+    resultType: float
+    aggregation: sum
+    total: true
+  Fixed Stock:
+    columns: [{dataObject: Products, column: Stock On Hand}]
+    resultType: float
+    aggregation: sum
+    grain: {mode: FIXED, keepOnly: []}
   Fanned Stock:
     columns: [{dataObject: Products, column: Stock On Hand}]
     resultType: float
@@ -445,20 +461,97 @@ class TestALegProjectsWhatItsFromCanReach:
         assert '"Dates"."MONTH" AS "Month"' in leg
 
 
-class TestAOneSideMeasureInAUnionIsRefused:
+class TestAOneSideMeasureInAUnionIsDeduplicated:
     """The legs project the values to aggregate rather than aggregating them,
-    so there is no per-leg grain to deduplicate at: a measure on the *one* side
-    of a replicating join is summed once per row of the many side. Resolution
-    cannot see it - its join steps are the base object's, and the step that
-    replicates lives inside a leg - so the check belongs to the CFL planner.
+    so a measure on the *one* side of a replicating join would be summed once
+    per row of the many side. Resolution cannot see it - its join steps are the
+    base object's, and the step that replicates lives inside a leg - so the
+    CFL planner flags the first row of each object row per group in that leg,
+    and the outer aggregate reads only flagged rows.
     """
 
-    def test_it_is_refused(self) -> None:
-        with pytest.raises(ResolutionError) as exc:
-            _sql(["Stock", "Refund Amount"])
-        message = str(exc.value)
-        assert "'Stock'" in message
-        assert "deduplicated" in message
+    @staticmethod
+    def _unfiltered(dimensions: list[str], extra_sale: str | None = None) -> list[tuple]:
+        """Without the day filter the helpers apply, which would drop product
+        1's second sale: then there is nothing to deduplicate."""
+        sql = PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=dimensions, measures=["Stock", "Products Count", "Refund Amount"]
+                )
+            ),
+            _model(),
+            "duckdb",
+        ).sql
+        con = _connect()
+        if extra_sale:
+            con.execute(f'INSERT INTO "PUBLIC"."SALES" VALUES {extra_sale}')
+        return sorted(
+            tuple(None if v is None else float(v) for v in row)
+            for row in con.execute(sql).fetchall()
+        )
+
+    def test_it_is_answered_as_on_one_fact(self) -> None:
+        """Product 1 sold twice in month 1 counts once: 100, not 200, and one
+        product (a ``COUNT(1)``), not two."""
+        assert self._unfiltered(["Month"]) == [(1.0, 100.0, 1.0, 1.0), (2.0, 110.0, 1.0, 4.0)]
+
+    def test_at_no_grain(self) -> None:
+        assert self._unfiltered([]) == [(210.0, 2.0, 5.0)]
+
+    def test_a_sale_of_a_missing_product_is_no_product(self) -> None:
+        """The join finds no product row: its NULL key is not one of the
+        products' rows, so it is never flagged first."""
+        assert self._unfiltered(["Month"], "(3, 1, 9, 1.0)") == [
+            (1.0, 100.0, 1.0, 1.0),
+            (2.0, 110.0, 1.0, 4.0),
+        ]
+
+    def test_a_coalesced_dimension_partitions_as_the_query_groups(self) -> None:
+        """Product 1 sells on two days of month 1, and ``COALESCE(Month, Day)``
+        is the month: one output group, so one first row, not one per day."""
+        sql = PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=[CoalesceDimension(coalesce=["Month", "Day"], alias="When")],
+                    measures=["Stock", "Products Count", "Refund Amount"],
+                )
+            ),
+            _model(),
+            "duckdb",
+        ).sql
+        rows = sorted(_connect().execute(sql).fetchall())
+        assert [tuple(float(v) for v in row) for row in rows] == [
+            (1.0, 100.0, 1.0, 1.0),
+            (2.0, 110.0, 1.0, 4.0),
+        ]
+
+    @pytest.mark.parametrize(
+        ("measures", "grouping"),
+        [
+            (["Grand Stock", "Refund Amount"], None),
+            (["Fixed Stock", "Refund Amount"], None),
+            (["Stock", "Refund Amount"], "rollup"),
+        ],
+    )
+    def test_a_coarser_grain_is_refused(self, measures: list[str], grouping: str | None) -> None:
+        """The flags deduplicate at the query's grain. A total or a rollup
+        combines its groups, which overlap: product 1 sold in both months
+        would count twice (310 for 210)."""
+        with pytest.raises(ResolutionError, match="grain"):
+            PIPELINE.compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Month"], measures=measures),
+                    grouping=grouping,
+                ),
+                _model(),
+                "duckdb",
+            )
+
+    def test_the_owning_leg_flags_its_first_rows(self) -> None:
+        sql = _sql(["Stock", "Refund Amount"])
+        assert "ROW_NUMBER() OVER" in sql
+        assert '"Stock__first" = 1' in sql
 
     def test_the_same_measure_alone_is_answered(self) -> None:
         """One fact, one plan, and the dedup pass that goes with it."""
