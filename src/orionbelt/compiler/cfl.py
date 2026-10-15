@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 from orionbelt.ast.builder import QueryBuilder
@@ -1190,10 +1190,17 @@ class CFLPlanner:
         qualify: Callable[[DataObject], str],
         via_constraints: dict[str, str] | None = None,
         dialect: Dialect | None = None,
+        enforced: Sequence[ResolvedFilter] = (),
     ) -> Select:
         """Build SELECT DISTINCT (via GROUP BY) for a group of dimensions."""
         return cfl_exclude.build_group_distinct_select(
-            dims, model, graph, qualify, via_constraints=via_constraints, dialect=dialect
+            dims,
+            model,
+            graph,
+            qualify,
+            via_constraints=via_constraints,
+            dialect=dialect,
+            enforced=enforced,
         )
 
     def _build_existing_pairs_select(

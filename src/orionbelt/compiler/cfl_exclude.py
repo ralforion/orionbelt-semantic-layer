@@ -7,7 +7,7 @@ planner keeps thin delegators so the public surface is unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.builder import QueryBuilder
@@ -21,9 +21,13 @@ from orionbelt.ast.nodes import (
     JoinType,
     Select,
 )
+from orionbelt.compiler import cfl_projection
+from orionbelt.compiler.filter_resolution import static_filter_unreachable_error
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.resolution import (
+    ResolutionError,
     ResolvedDimension,
+    ResolvedFilter,
     ResolvedQuery,
     make_dimension_expr,
 )
@@ -65,6 +69,11 @@ def plan_dimensions_exclude(
     # Partition dimensions into independent groups
     dim_groups = planner._partition_dimensions(resolved, graph)
 
+    # The candidate sets are scans of their own: the existing pairs carry the
+    # query's filters, but a candidate read past an ``enforce: always`` filter
+    # comes back as a "missing" pair from rows the filter excludes.
+    enforced = [wf for wf in resolved.where_filters if wf.enforced]
+
     ctes: list[CTE] = []
 
     # CTE per dimension group: SELECT DISTINCT via GROUP BY
@@ -79,6 +88,7 @@ def plan_dimensions_exclude(
             qualify,
             via_constraints=resolved.via_constraints or None,
             dialect=dialect,
+            enforced=enforced,
         )
         ctes.append(CTE(name=cte_name, query=cte_query))
 
@@ -184,8 +194,13 @@ def build_group_distinct_select(
     qualify: Callable[[DataObject], str],
     via_constraints: dict[str, str] | None = None,
     dialect: Dialect | None = None,
+    enforced: Sequence[ResolvedFilter] = (),
 ) -> Select:
-    """Build SELECT DISTINCT (via GROUP BY) for a group of dimensions."""
+    """Build SELECT DISTINCT (via GROUP BY) for a group of dimensions.
+
+    Each *enforced* static filter is joined and applied; one the group's scan
+    cannot reach refuses the query (``STATIC_FILTER_UNREACHABLE``).
+    """
     required_objects = {d.object_name for d in dims}
 
     # Find the common root that can reach all objects in this group
@@ -214,8 +229,30 @@ def build_group_distinct_select(
     if root_obj:
         builder.from_(qualify(root_obj), alias=root)
 
-    # Join to reach all dimension objects from root
-    all_needed = required_objects | {root}
+    reachable = graph.descendants_without_unnest(root) | {root}
+    filter_objects: set[str] = set()
+    for wf in enforced:
+        objects: set[str] = set()
+        cfl_projection.collect_table_refs(wf.expression, objects)
+        cfl_projection.collect_correlated_tables(wf.expression, objects)
+        missing = objects - reachable
+        if missing:
+            unreachable = ", ".join(sorted(missing))
+            names = ", ".join(f"'{d.name}'" for d in dims)
+            raise ResolutionError(
+                [
+                    static_filter_unreachable_error(
+                        f"static filter on '{unreachable}'",
+                        unreachable,
+                        f"the candidate values of {names}",
+                    )
+                ]
+            )
+        filter_objects |= objects
+        builder.where(wf.expression)
+
+    # Join to reach all dimension objects (and enforced filter objects) from root
+    all_needed = required_objects | filter_objects | {root}
     if len(all_needed) > 1:
         steps = graph.find_join_path(
             {root},

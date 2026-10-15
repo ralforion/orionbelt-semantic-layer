@@ -77,11 +77,13 @@ def resolve_static_filter(
     from orionbelt.compiler.resolution import ResolvedFilter, make_column_expr
 
     obj = ctx.model.data_objects.get(mf.data_object)
-    if obj is None:
-        return None
-
-    col = obj.columns.get(mf.column)
-    if col is None:
+    if obj is None or mf.column not in obj.columns:
+        # Only a model narrowed for one scan lacks the object: the member list
+        # of a ``population: dimension`` metric is planned over the members'
+        # data objects alone. Fact filters do not limit who counts there, but
+        # an enforced filter cannot be left behind with the object it reads.
+        if mf.enforce == FilterEnforcement.ALWAYS:
+            report_unapplied_static_filter(ctx.errors, ctx.result.warnings, mf, mf.data_object)
         return None
 
     errors_before = len(ctx.errors)
