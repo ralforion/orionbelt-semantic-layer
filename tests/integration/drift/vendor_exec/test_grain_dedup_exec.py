@@ -58,6 +58,7 @@ dataObjects:
 dimensions:
   Region: {{dataObject: Sales, column: Region, resultType: string}}
   Category: {{dataObject: Products, column: Category, resultType: string}}
+  Units Sold: {{dataObject: Sales, column: Quantity}}
 measures:
   Sold Quantity:
     columns: [{{dataObject: Sales, column: Quantity}}]
@@ -219,6 +220,33 @@ def _assert_rollup(target: VendorTarget, model: SemanticModel) -> None:
     assert got == {k: (Decimal(q), Decimal(v)) for k, (q, v) in expected.items()}, (
         f"{target.name}: {got}"
     )
+
+    # A numeric dimension declaring no resultType, which defaults to string:
+    # the subtotal rows' NULL must take the column's own type, not that one.
+    # ClickHouse shows a non-nullable column's default (0) on a subtotal row
+    # rather than NULL, so the rolled-up value is read by its flag.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            select=QuerySelect(dimensions=["Region", "Units Sold"], measures=["Total Stock"]),
+            grouping="rollup",
+        ),
+    )
+    by_units = {
+        (
+            r["region"],
+            None if r["units sold"] is None or r["_g_units sold"] else int(r["units sold"]),
+        ): _number(r["total stock"])
+        for r in rows
+    }
+    assert by_units == {
+        ("north", 1): Decimal(210),
+        ("south", 1): Decimal(400),
+        ("north", None): Decimal(210),
+        ("south", None): Decimal(400),
+        (None, None): Decimal(510),
+    }, f"{target.name}: {by_units}"
 
 
 def _assert_fact_side_components(target: VendorTarget, model: SemanticModel) -> None:

@@ -490,6 +490,32 @@ def test_rollup_and_cube_deduplicate_each_grouping_set(
     }
 
 
+def test_rollup_with_period_over_period_over_a_deduplicated_measure_is_refused() -> None:
+    """PoP deduplicates its own source rows, and rebuilds the query without
+    its grouping sets: the subtotals would silently go missing."""
+    yaml_text = (
+        CUMULATIVE_YAML
+        + """  Stock Growth:
+    type: period_over_period
+    expression: '{[Total Stock On Hand]}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+    )
+    with pytest.raises(GrainDedupUnsupportedError, match="period_over_period"):
+        _compile(
+            {
+                "select": {"dimensions": ["Sale Month"], "measures": ["Stock Growth"]},
+                "grouping": "rollup",
+            },
+            yaml_text,
+        )
+
+
 def test_rollup_with_a_total_on_a_deduplicated_measure_is_refused() -> None:
     """A total sets a grain of its own, which a subtotal row would combine."""
     with pytest.raises(GrainDedupUnsupportedError, match="grouping"):

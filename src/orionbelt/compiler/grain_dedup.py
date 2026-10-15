@@ -61,7 +61,6 @@ from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
     BinaryOp,
-    Cast,
     ColumnRef,
     Expr,
     From,
@@ -861,18 +860,19 @@ def wrap_with_grain_dedup(
                 ColumnRef(name=name, table=outer_from),
                 ColumnRef(name=name, table=cte_name),
             )
-            on_expr = condition if on_expr is None else BinaryOp(on_expr, "AND", condition)
-        if cte_name in rolled_up:
-            # The flag tells a subtotal's NULL from a NULL value of the
-            # dimension, which the null-safe match alone cannot.
-            for name in grain:
+            if cte_name in rolled_up:
+                # Matched by its GROUPING() flag, which tells a subtotal from a
+                # NULL value of the dimension; and a dimension the set rolls up
+                # is not compared at all, since ClickHouse shows the column's
+                # default there (0, not NULL) where this CTE has NULL.
                 flag = grouping_flag_alias(name)
-                same_set: Expr = BinaryOp(
-                    ColumnRef(name=flag, table=outer_from),
-                    "=",
-                    ColumnRef(name=flag, table=cte_name),
+                main_flag = ColumnRef(name=flag, table=outer_from)
+                condition = BinaryOp(
+                    BinaryOp(main_flag, "=", ColumnRef(name=flag, table=cte_name)),
+                    "AND",
+                    BinaryOp(BinaryOp(main_flag, "=", Literal.number(1)), "OR", condition),
                 )
-                on_expr = same_set if on_expr is None else BinaryOp(on_expr, "AND", same_set)
+            on_expr = condition if on_expr is None else BinaryOp(on_expr, "AND", condition)
         outer_joins.append(
             Join(join_type=JoinType.LEFT, source=cte_name, alias=cte_name, on=on_expr)
         )
@@ -1036,15 +1036,15 @@ def _per_grouping_set(
         kept_names = {dim.name for dim in kept}
         columns: list[Expr] = []
         for dim in resolved.dimensions:
-            if dim.name in kept_names:
-                value: Expr = ColumnRef(name=dim.name, table=src_alias)
-            else:
-                model_dim = model.dimensions.get(dim.dimension)
-                value = (
-                    Cast(Literal.null(), type_name=model_dim.result_type.value)
-                    if model_dim
-                    else Literal.null()
-                )
+            # An untyped NULL takes its type from the finest set's branch,
+            # which comes first and carries the dimension's own expression. A
+            # declared resultType can differ from it (it defaults to string),
+            # and a cast to it fails the union on PostgreSQL.
+            value: Expr = (
+                ColumnRef(name=dim.name, table=src_alias)
+                if dim.name in kept_names
+                else Literal.null()
+            )
             columns.append(AliasedExpr(expr=value, alias=dim.name))
         columns.extend(
             AliasedExpr(

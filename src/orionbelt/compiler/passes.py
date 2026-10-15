@@ -300,12 +300,13 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
       group itself. This pass does not run then, so every other wrapper still
       conflicts: none of them reads a value this pass computed.
     """
-    if resolved.has_pop:
-        return pass_name != PASS_PERIOD_OVER_PERIOD
     if resolved.grouping is not None:
         # ROLLUP / CUBE deduplicates once per grouping set; no wrapper here
-        # reads those rows per set.
+        # reads those rows per set. Checked before PoP, which rebuilds the
+        # query without its grouping sets and so drops the subtotals.
         return True
+    if resolved.has_pop:
+        return pass_name != PASS_PERIOD_OVER_PERIOD
     if pass_name == PASS_CUMULATIVE:
         return False
     if pass_name == PASS_FILTER_CONTEXT:
