@@ -264,7 +264,7 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
                 hf.referenced_fields & windowed_aliases(r) for hf in r.having_filters
             ),
             run=lambda ast, ctx: apply_having_hoist(
-                ast, hoisted_predicates(ctx.resolved), cte_name="having_window"
+                ast, hoisted_predicates(ctx.resolved, ctx.model), cte_name="having_window"
             ),
         ),
         CompilerPass(

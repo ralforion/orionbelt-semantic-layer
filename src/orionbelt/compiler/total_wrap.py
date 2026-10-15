@@ -364,7 +364,7 @@ def wrap_with_totals(
         return outer
     # The rows a later window wrapper sees are the filtered ones, as before:
     # only the total's own window reads past the HAVING.
-    return apply_having_hoist(outer, grouped_predicates(resolved), cte_name="totals_having")
+    return apply_having_hoist(outer, grouped_predicates(resolved, model), cte_name="totals_having")
 
 
 def _get_alias(expr: Expr) -> str | None:

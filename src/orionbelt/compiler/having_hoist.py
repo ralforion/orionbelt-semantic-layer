@@ -53,11 +53,12 @@ from orionbelt.ast.nodes import (
     From,
     Select,
 )
-from orionbelt.compiler.expr_rewrite import map_column_refs
+from orionbelt.compiler.expr_rewrite import map_column_refs, map_nodes
 from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.metric_resolution import _GRAIN_RANK
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.models.errors import SemanticError
+from orionbelt.models.semantic import SemanticModel
 
 
 def _unbindable(unbound: list[str]) -> ResolutionError:
@@ -174,7 +175,7 @@ def _alias_of(column: Expr) -> str | None:
     return column.alias if isinstance(column, AliasedExpr) else None
 
 
-def hoisted_predicates(resolved: ResolvedQuery) -> list[Expr]:
+def hoisted_predicates(resolved: ResolvedQuery, model: SemanticModel) -> list[Expr]:
     """The HAVING predicates that must be evaluated after the window functions.
 
     A predicate may also constrain a dimension, which the planner resolved to a
@@ -190,10 +191,10 @@ def hoisted_predicates(resolved: ResolvedQuery) -> list[Expr]:
     months.
     """
     windowed = windowed_aliases(resolved)
-    return _alias_predicates(resolved, lambda fields: bool(fields & windowed))
+    return _alias_predicates(resolved, model, lambda fields: bool(fields & windowed))
 
 
-def grouped_predicates(resolved: ResolvedQuery) -> list[Expr]:
+def grouped_predicates(resolved: ResolvedQuery, model: SemanticModel | None) -> list[Expr]:
     """The HAVING predicates the planner left in the grouped query.
 
     The complement of :func:`hoisted_predicates`, over output aliases, for a
@@ -201,13 +202,37 @@ def grouped_predicates(resolved: ResolvedQuery) -> list[Expr]:
     own output instead (``total_wrap``).
     """
     windowed = windowed_aliases(resolved)
-    return _alias_predicates(resolved, lambda fields: not fields & windowed)
+    return _alias_predicates(resolved, model, lambda fields: not fields & windowed)
 
 
 def _alias_predicates(
-    resolved: ResolvedQuery, select: Callable[[frozenset[str]], bool]
+    resolved: ResolvedQuery,
+    model: SemanticModel | None,
+    select: Callable[[frozenset[str]], bool],
 ) -> list[Expr]:
-    """The HAVING predicates *select* picks by their fields, over output aliases."""
+    """The HAVING predicates *select* picks by their fields, over output aliases.
+
+    A computed dimension's predicate tests its whole inlined expression
+    (``UPPER("Sales"."city")``), which is rewritten to the dimension's alias as
+    a unit: rewriting only its column refs left the table reference behind,
+    out of scope past the grouped query. A plain column maps by its physical
+    column, at the finest grain the query has.
+    """
+    from orionbelt.compiler.resolution import make_column_expr
+
+    # AST nodes hold lists, so they compare by value but do not hash.
+    computed: list[tuple[Expr, str]] = []
+    if model is not None:
+        for dim in resolved.dimensions:
+            if dim.grain is None and dim.via is None:
+                expr = make_column_expr(model, dim.object_name, dim.column_name)
+                if not isinstance(expr, ColumnRef):
+                    computed.append((expr, dim.name))
+
+    def computed_to_alias(node: Expr) -> Expr | None:
+        alias = next((name for expr, name in computed if expr == node), None)
+        return ColumnRef(name=alias) if alias is not None else None
+
     by_physical: dict[tuple[str, str], str] = {}
     # Finest first; a dimension with no grain is the column itself.
     for dim in sorted(resolved.dimensions, key=lambda d: _GRAIN_RANK[d.grain] if d.grain else -1):
@@ -221,7 +246,7 @@ def _alias_predicates(
         return ColumnRef(name=alias) if alias is not None else ref
 
     return [
-        map_column_refs(hf.expression, to_alias)
+        map_column_refs(map_nodes(hf.expression, computed_to_alias), to_alias)
         for hf in resolved.having_filters
         if select(hf.referenced_fields)
     ]

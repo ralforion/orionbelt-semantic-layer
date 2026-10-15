@@ -28,9 +28,11 @@ dataObjects:
       Region: {code: region, abstractType: string}
       City: {code: city, abstractType: string}
       Amount: {code: amount, abstractType: float}
+      Upper City: {expression: "UPPER({City})", abstractType: string}
 dimensions:
   Region: {dataObject: Sales, column: Region, resultType: string}
   City: {dataObject: Sales, column: City, resultType: string}
+  Upper City: {dataObject: Sales, column: Upper City, resultType: string}
 measures:
   Revenue:
     columns: [{dataObject: Sales, column: Amount}]
@@ -46,6 +48,11 @@ measures:
     aggregation: sum
     resultType: float
     total: true
+metrics:
+  City Rank:
+    type: window
+    measure: Revenue
+    windowFunction: rank
 """
 
 
@@ -84,3 +91,20 @@ def test_having_on_another_measure_keeps_the_total(
         },
     )
     assert rows == [("North", "Bergen", 400.0, north), ("South", "Rome", 300.0, south)]
+
+
+@pytest.mark.parametrize("measure", ["Grand Total", "City Rank"])
+def test_having_on_a_computed_dimension_past_a_window(
+    con: duckdb.DuckDBPyConnection, measure: str
+) -> None:
+    """The predicate tests UPPER(city) as a whole. Past the grouped query only
+    the dimension's alias is in scope; rewriting just its column left
+    ``"Sales"."city"`` behind and the query was refused."""
+    raw = YAML(typ="safe").load(MODEL_YAML)
+    model: SemanticModel = ReferenceResolver().resolve(raw)[0]
+    query = {
+        "select": {"dimensions": ["Upper City"], "measures": ["Revenue", measure]},
+        "having": [{"field": "Upper City", "op": "like", "value": "%O%"}],
+    }
+    sql = CompilationPipeline().compile(QueryObject(**query), model, "duckdb").sql
+    assert sorted(row[0] for row in con.execute(sql).fetchall()) == ["OSLO", "ROME"]
