@@ -218,3 +218,50 @@ def test_exists_body_that_cannot_reach_an_enforced_filter_refuses() -> None:
     errors = excinfo.value.errors
     assert [e.code for e in errors] == ["STATIC_FILTER_UNREACHABLE"]
     assert "subquery on 'Customers'" in errors[0].message
+
+
+WITH_RETURNS = MODEL_YAML.replace(
+    "dimensions:\n",
+    "  Returns:\n"
+    "    code: returns\n"
+    "    schema: main\n"
+    "    columns:\n"
+    "      Return ID: {code: id, abstractType: int, primaryKey: true}\n"
+    "      Return Customer ID: {code: customer_id, abstractType: int}\n"
+    "    joins:\n"
+    "      - joinType: many-to-one\n"
+    "        joinTo: Customers\n"
+    "        columnsFrom: [Return Customer ID]\n"
+    "        columnsTo: [Customer ID]\n"
+    "dimensions:\n",
+)
+RAW_QUERY = {"select": {"fields": ["Orders.Order ID", "Returns.Return ID"]}}
+TENANT_ON_ORDERS = (
+    "filters:\n  - {dataObject: Orders, column: Order Tenant ID, operator: equals, value: 1"
+)
+
+
+def test_raw_leg_that_cannot_reach_an_enforced_filter_refuses() -> None:
+    """Raw multi-fact mode lists each fact's rows in its own leg and skips a
+    filter a leg cannot reach. An enforced one refuses instead."""
+    with pytest.raises(ResolutionError) as excinfo:
+        _sql(RAW_QUERY, WITH_RETURNS + TENANT_ON_ORDERS + ", enforce: always}\n")
+    errors = excinfo.value.errors
+    assert [e.code for e in errors] == ["STATIC_FILTER_UNREACHABLE"]
+    assert "rows of 'Returns'" in errors[0].message
+
+
+def test_raw_leg_that_reaches_a_relevant_filter_applies_it(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """The Orders leg lists tenant 1's order only; it lost the filter when the
+    base object chosen for the query could not reach Orders. The Returns leg
+    cannot apply it and says so."""
+    con.execute("CREATE TABLE returns (id INTEGER, customer_id INTEGER)")
+    con.execute("INSERT INTO returns VALUES (7, 1)")
+    result = CompilationPipeline().compile(
+        QueryObject(**RAW_QUERY), _model(WITH_RETURNS + TENANT_ON_ORDERS + "}\n"), "duckdb"
+    )
+    rows = sorted(con.execute(result.sql).fetchall(), key=str)
+    assert rows == [(1, None), (None, 7)]
+    assert [w.code for w in result.warnings] == ["STATIC_FILTER_NOT_APPLIED"]

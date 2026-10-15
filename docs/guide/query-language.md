@@ -235,7 +235,7 @@ SELECT DISTINCT * FROM composite_raw_01
 
 A "leg root" is a fact data object referenced by some field that is not reachable from another field's source via directed joins — i.e. it is maximal under reachability. Each leg root yields one `UNION ALL` leg. Conformed dim columns (those reachable from every leg) project the same value across legs and line up; fact-specific columns are typed `CAST(NULL AS …)` in legs that don't cover them. `distinct: true` is applied once at the outer query — the most portable place.
 
-WHERE filters are applied to legs whose joined objects contain all the filter's referenced data objects; ORDER BY is remapped to the field aliases at the outer level.
+WHERE filters are applied to legs whose joined objects contain all the filter's referenced data objects; ORDER BY is remapped to the field aliases at the outer level. A static model filter a leg cannot reach is skipped with a `STATIC_FILTER_NOT_APPLIED` warning, or, declared `enforce: always`, refuses the query (`STATIC_FILTER_UNREACHABLE`).
 
 #### `UNION ALL BY NAME` optimization (DuckDB, Snowflake)
 
