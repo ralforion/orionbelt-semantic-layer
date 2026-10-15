@@ -92,7 +92,7 @@ def _truth(expr: Expr, tables: set[str]) -> frozenset[str]:
             return _null_or_any(_is_null(inner, tables))
         case Exists(subquery=subquery, negated=negated):
             # Correlated on a NULL key, the subquery finds no row.
-            if _correlated_tables(subquery) & tables:
+            if correlated_tables(subquery) & tables:
                 return frozenset({_T if negated else _F})
             return _ANY_TRUTH
         case FunctionCall():
@@ -102,7 +102,7 @@ def _truth(expr: Expr, tables: set[str]) -> frozenset[str]:
             return _ANY_TRUTH
 
 
-def _correlated_tables(select: Select) -> set[str]:
+def correlated_tables(select: Select) -> set[str]:
     """The outer tables an ``EXISTS`` body's WHERE names: the ones its own
     FROM and JOINs do not bind."""
     bound = {select.from_.alias} if select.from_ and select.from_.alias else set()

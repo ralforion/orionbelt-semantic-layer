@@ -61,7 +61,9 @@ from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
     BinaryOp,
+    Cast,
     ColumnRef,
+    Exists,
     Expr,
     From,
     FunctionCall,
@@ -76,17 +78,23 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.expr_rewrite import (
     collect_column_refs,
+    collect_referenced_tables,
     map_column_refs,
+    map_nodes,
     rewrite_column_refs,
 )
 from orionbelt.compiler.fanout import FanoutError
-from orionbelt.compiler.filters import collect_measure_filter_objects
+from orionbelt.compiler.filters import build_exists_filter_expr, collect_measure_filter_objects
+from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import (
     metric_leaf_components,
     metric_over_components,
 )
+from orionbelt.compiler.null_rejection import correlated_tables
 from orionbelt.compiler.resolution import (
+    ChildlessLeg,
+    ResolutionError,
     ResolvedDimension,
     ResolvedFilter,
     ResolvedMeasure,
@@ -97,8 +105,8 @@ from orionbelt.compiler.resolution import (
 from orionbelt.compiler.star import grouping_flag_alias
 from orionbelt.compiler.window_wrap import _ddm_window_components
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.query import Grouping
-from orionbelt.models.semantic import Cardinality, Measure, SemanticModel
+from orionbelt.models.query import FilterOperator, Grouping, QueryFilter, Subquery
+from orionbelt.models.semantic import Cardinality, DataObject, Measure, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
 
 if TYPE_CHECKING:
@@ -134,6 +142,9 @@ _DEDUP_GRAIN_CTE = "__ob_dedup_grain"
 # A non-deduplicated component of a split metric, at its own grain.
 _AT_GRAIN_CTE = "__ob_at_grain"
 _AT_TOTAL_CTE = "__ob_at_total"
+# The query's groups when parents without children add some ``main`` lacks.
+_GROUPS_ALL_CTE = "__ob_groups_all"
+_GROUPS_CTE = "__ob_groups"
 
 
 class GrainDedupUnsupportedError(FanoutError):
@@ -230,15 +241,20 @@ def detect_dedup_measures(resolved: ResolvedQuery, model: SemanticModel) -> Dedu
     effective = model.effective_measures
     measures: dict[str, str] = {}
     components: dict[str, str] = {}
+    # Rows without children join the deduplicated rows of their object, so every
+    # measure on it is deduplicated, even one duplication would not change.
+    force = resolved.childless_leg is not None
 
     for resolved_measure in resolved.measures:
         if resolved_measure.component_measures:
             components.update(
-                _metric_component_targets(resolved_measure, resolved, effective, replicated)
+                _metric_component_targets(
+                    resolved_measure, resolved, effective, replicated, force=force
+                )
             )
             continue
 
-        target = _dedup_target(resolved_measure.name, effective, replicated)
+        target = _dedup_target(resolved_measure.name, effective, replicated, force=force)
         if target is not None:
             measures[resolved_measure.name] = target
 
@@ -292,6 +308,8 @@ def _metric_component_targets(
     resolved: ResolvedQuery,
     effective: dict[str, Measure],
     replicated: set[str],
+    *,
+    force: bool = False,
 ) -> dict[str, str]:
     """Components of *metric* that must be deduplicated, keyed by source object.
 
@@ -310,7 +328,7 @@ def _metric_component_targets(
     targets: dict[str, str] = {}
     for component in metric_leaf_components(metric, resolved.metric_components):
         if not component.component_measures:
-            target = _dedup_target(component.name, effective, replicated)
+            target = _dedup_target(component.name, effective, replicated, force=force)
             if target is not None:
                 targets[component.name] = target
             continue
@@ -322,7 +340,7 @@ def _metric_component_targets(
             or component.cumulative_measure
             or component.pop_base_measure
         )
-        target = None if base is None else _dedup_target(base, effective, replicated)
+        target = None if base is None else _dedup_target(base, effective, replicated, force=force)
         if target is None or base is None:
             continue
         if component.window_base_measure is not None:
@@ -344,8 +362,15 @@ def _dedup_target(
     measure_name: str,
     effective: dict[str, Measure],
     replicated: set[str],
+    *,
+    force: bool = False,
 ) -> str | None:
-    """The replicated object a measure must be deduplicated on, if any."""
+    """The replicated object a measure must be deduplicated on, if any.
+
+    *force* deduplicates a measure duplication would not change too (``min``,
+    ``distinct``): the rows of its object without child rows are added beside
+    the deduplicated ones, and only that path reads them.
+    """
     measure = effective.get(measure_name)
     if measure is None or measure.allow_fan_out:
         return None
@@ -354,11 +379,13 @@ def _dedup_target(
     # change the *set* of distinct values, so any such measure already reads
     # correctly over a replicating join — most commonly a
     # ``count`` + ``distinct`` over the parent key, counted from the child fact.
-    if measure.distinct:
+    if measure.distinct and not force:
         return None
 
     aggregation = measure.aggregation.lower()
-    if aggregation in MULTIPLICITY_SAFE_AGGREGATIONS or aggregation == _DELEGATED_AGGREGATION:
+    if aggregation == _DELEGATED_AGGREGATION or (
+        aggregation in MULTIPLICITY_SAFE_AGGREGATIONS and not force
+    ):
         return None
 
     sources = measure_source_objects(measure)
@@ -561,12 +588,24 @@ def wrap_with_grain_dedup(
     resolved: ResolvedQuery,
     model: SemanticModel,
     dialect: Dialect,
+    qualify_table: Callable[[DataObject], str] | None = None,
 ) -> Select:
     """Wrap the planner AST so one-side measures aggregate over deduplicated rows.
+
+    With a ``childless_leg`` (see ``QueryResolver._plan_rows_without_children``)
+    the parent's rows without child rows that the WHERE accepts join its
+    deduplicated rows, and the query's groups are read from both.
 
     Returns *ast* unchanged when no measure needs dedup.
     """
     dedup_targets = resolved.dedup_targets
+    leg = resolved.childless_leg
+    childless: _ChildlessRows | None = None
+    if leg is not None:
+        _require_parent_dedup(leg, resolved, model)
+        childless = _ChildlessRows(
+            leg=leg, qualify_table=qualify_table or (lambda obj: obj.qualified_code)
+        )
     if not dedup_targets:
         return ast
 
@@ -644,6 +683,11 @@ def wrap_with_grain_dedup(
     # scalar result. Drop it and let the dedup CTEs stand alone; each already
     # yields exactly one row at this grain.
     keep_main = bool(main_columns)
+    # A group of only parents without children is in no row of ``main``, which
+    # reads the child rows: the groups are then read from every CTE at the
+    # query grain, and the dimensions from that list.
+    split_groups = childless is not None and keep_main and bool(dim_names)
+    dims_table = _GROUPS_CTE if split_groups else _MAIN_CTE
 
     # HAVING is evaluated inside ``main``, where a deduplicated measure does not
     # exist yet. Those predicates move to the outer query instead, where every
@@ -786,7 +830,11 @@ def wrap_with_grain_dedup(
                 model,
                 dialect,
                 f"{_DEDUP_SRC}_{idx}",
+                childless=childless,
             )
+            if childless is not None:
+                all_ctes.extend(childless.ctes)
+                childless.ctes.clear()
         all_ctes.append(CTE(name=cte_name, query=query))
 
     # --- outer SELECT: main plus each dedup CTE, joined on the query grain ---
@@ -824,9 +872,16 @@ def wrap_with_grain_dedup(
             )
             continue
         if alias not in computed_here:
-            outer_columns.append(
-                AliasedExpr(expr=ColumnRef(name=alias, table=_MAIN_CTE), alias=alias)
-            )
+            if alias in dim_names:
+                outer_columns.append(
+                    AliasedExpr(expr=ColumnRef(name=alias, table=dims_table), alias=alias)
+                )
+                continue
+            main_ref: Expr = ColumnRef(name=alias, table=_MAIN_CTE)
+            # A group of only parents without children has no row in ``main``.
+            if split_groups and _counts_rows(effective_measures.get(alias)):
+                main_ref = FunctionCall(name="COALESCE", args=[main_ref, Literal.number(0)])
+            outer_columns.append(AliasedExpr(expr=main_ref, alias=alias))
             continue
         outer_columns.append(AliasedExpr(expr=measure_ref(alias), alias=alias))
 
@@ -874,6 +929,11 @@ def wrap_with_grain_dedup(
             ordered_ctes.append(name)
     outer_from = _MAIN_CTE if keep_main else ordered_ctes[0]
     joined_ctes = ordered_ctes if keep_main else ordered_ctes[1:]
+    if split_groups:
+        grain_of_cte[_MAIN_CTE] = tuple(dim_names)
+        all_ctes.extend(_group_list(dim_names, [_MAIN_CTE, *ordered_ctes], grain_of_cte))
+        outer_from = _GROUPS_CTE
+        joined_ctes = [_MAIN_CTE, *ordered_ctes]
 
     outer_joins: list[Join | Unnest] = []
     for cte_name in joined_ctes:
@@ -928,6 +988,8 @@ def wrap_with_grain_dedup(
         # output alias — there is no CTE holding the finished value.
         if name in split_metrics:
             return None
+        if name in dim_names:
+            return dims_table
         return cte_for_measure.get(name, _MAIN_CTE)
 
     outer_order_by = [
@@ -981,10 +1043,16 @@ def _deduplicated_at(
     model: SemanticModel,
     dialect: Dialect,
     src_alias: str,
+    *,
+    childless: _ChildlessRows | None = None,
 ) -> Select:
     """*measure_columns* aggregated over the rows of *object_name*, each once
     per group of *group_dims*: the query's rows reduced by a DISTINCT over the
-    grain, the object's identity and every column the measures read."""
+    grain, the object's identity and every column the measures read.
+
+    With *childless* for this object, its rows without child rows that the
+    query's WHERE accepts are added beside them (:func:`_rows_without_children`).
+    """
     inner_columns: list[Expr] = [
         AliasedExpr(expr=make_dimension_expr(model, dim, dialect), alias=dim.name)
         for dim in group_dims
@@ -1014,6 +1082,14 @@ def _deduplicated_at(
         where=ast.where,
         distinct=True,
     )
+    source: str | Select = deduplicated
+    if childless is not None and object_name == childless.leg.parent:
+        rows_name = f"{src_alias}_rows"
+        without = _rows_without_children(
+            childless, ast, object_name, identity, refs, group_dims, resolved, model, dialect
+        )
+        childless.ctes.append(CTE(name=rows_name, query=UnionAll(queries=[deduplicated, without])))
+        source = rows_name
 
     # Outer: re-aggregate the measures against the deduplicated rows. The
     # measure expressions keep their casts and shape; only their leaf column
@@ -1037,9 +1113,233 @@ def _deduplicated_at(
 
     return Select(
         columns=cte_columns,
-        from_=From(source=deduplicated, alias=src_alias),
+        from_=From(source=source, alias=src_alias),
         where=key_present,
         group_by=[ColumnRef(name=dim.name, table=src_alias) for dim in group_dims],
+    )
+
+
+@dataclass
+class _ChildlessRows:
+    """What :func:`_rows_without_children` needs beyond one dedup group's own."""
+
+    leg: ChildlessLeg
+    qualify_table: Callable[[DataObject], str]
+    #: CTEs the rows are emitted as, added to the query ahead of the dedup CTEs.
+    ctes: list[CTE] = field(default_factory=list)
+
+
+def _require_parent_dedup(leg: ChildlessLeg, resolved: ResolvedQuery, model: SemanticModel) -> None:
+    """Every measure on the parent is deduplicated, the only path its rows
+    without children reach. One that is not (``allowFanOut``, a delegated
+    aggregation) refuses the query instead."""
+    effective = model.effective_measures
+    names = {m.name for m in resolved.measures if not m.component_measures} | {
+        c.name
+        for m in resolved.measures
+        if m.component_measures
+        for c in metric_leaf_components(m, resolved.metric_components)
+        if not c.component_measures
+    }
+    missed = sorted(
+        name
+        for name in names
+        if (measure := effective.get(name)) is not None
+        and measure_source_objects(measure) == {leg.parent}
+        and name not in resolved.dedup_targets
+    )
+    if missed:
+        listed = ", ".join(f"'{name}'" for name in missed)
+        raise _unsplittable(leg, f"{listed} cannot be deduplicated (allowFanOut)")
+
+
+def _group_list(
+    dim_names: list[str], sources: list[str], grain_of_cte: dict[str, tuple[str, ...]]
+) -> list[CTE]:
+    """The query's groups, read from every CTE at its grain: ``main`` and the
+    deduplicated ones, which have the groups of parents without children too."""
+    branches = [
+        Select(
+            columns=[
+                AliasedExpr(expr=ColumnRef(name=name, table=source), alias=name)
+                for name in dim_names
+            ],
+            from_=From(source=source, alias=source),
+        )
+        for source in sources
+        if grain_of_cte.get(source) == tuple(dim_names)
+    ]
+    listed = Select(
+        columns=[AliasedExpr(expr=ColumnRef(name=name), alias=name) for name in dim_names],
+        from_=From(source=_GROUPS_ALL_CTE, alias=_GROUPS_ALL_CTE),
+        distinct=True,
+    )
+    return [
+        CTE(name=_GROUPS_ALL_CTE, query=UnionAll(queries=branches)),
+        CTE(name=_GROUPS_CTE, query=listed),
+    ]
+
+
+def _rows_without_children(
+    childless: _ChildlessRows,
+    ast: Select,
+    object_name: str,
+    identity: list[str],
+    refs: list[ColumnRef],
+    group_dims: list[ResolvedDimension],
+    resolved: ResolvedQuery,
+    model: SemanticModel,
+    dialect: Dialect,
+) -> Select:
+    """The rows of *object_name* with no child row that the WHERE accepts.
+
+    Projected like the deduplicated rows they are unioned with: the grain, the
+    object's identity, the columns the measures read. A dimension the parent
+    cannot reach (one on the child, an order status) is NULL, as a ``LEFT
+    JOIN`` would leave it. The WHERE is the query's own with every column of
+    the child tables NULL, typed so a function over one still resolves, beside
+    ``NOT EXISTS`` a child row. The parent's own joins are many-to-one, so each
+    parent row is one row here: nothing to deduplicate, and no child rows to
+    multiply anything.
+    """
+    leg = childless.leg
+    graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
+    reachable = graph.descendants(leg.parent) | {leg.parent}
+
+    columns: list[Expr] = []
+    needed: set[str] = set()
+    for dim in group_dims:
+        if dim.object_name in reachable and (dim.via is None or dim.via in reachable):
+            value = make_dimension_expr(model, dim, dialect)
+            collect_referenced_tables(value, needed)
+        else:
+            value = _dimension_null(model, dim)
+        columns.append(AliasedExpr(expr=value, alias=dim.name))
+    columns.extend(
+        AliasedExpr(expr=make_column_expr(model, object_name, key), alias=f"{_KEY_PREFIX}{i}")
+        for i, key in enumerate(identity)
+    )
+    for col_idx, ref in enumerate(refs):
+        columns.append(AliasedExpr(expr=ref, alias=f"{_COL_PREFIX}{col_idx}"))
+        if ref.table is not None:
+            needed.add(ref.table)
+
+    accepts = (
+        map_nodes(ast.where, lambda node: _as_childless(node, leg.children, model))
+        if ast.where is not None
+        else None
+    )
+    if accepts is not None:
+        collect_referenced_tables(accepts, needed)
+    unreachable = needed - reachable
+    if unreachable:
+        raise _unsplittable(leg, f"'{leg.parent}' cannot reach {', '.join(sorted(unreachable))}")
+
+    errors: list[SemanticError] = []
+    no_child = build_exists_filter_expr(
+        QueryFilter(
+            field=leg.parent,
+            op=FilterOperator.NONEXISTS,
+            subquery=Subquery(data_object=leg.child),
+        ),
+        model,
+        leg.parent,
+        childless.qualify_table,
+        errors,
+    )
+    if no_child is None:
+        raise ResolutionError(errors)
+    where: Expr = no_child if accepts is None else BinaryOp(no_child, "AND", accepts)
+
+    joins: list[Join | Unnest] = []
+    joined = {leg.parent}
+    targets = needed - joined
+    if targets:
+        for step in graph.find_join_path(
+            {leg.parent}, targets | joined, via_constraints=resolved.via_constraints or None
+        ):
+            target = model.data_objects.get(step.to_object)
+            if target is None or step.to_object in joined:
+                continue
+            joins.append(
+                Join(
+                    join_type=step.join_type,
+                    source=childless.qualify_table(target),
+                    alias=step.to_object,
+                    on=graph.build_join_condition(step),
+                )
+            )
+            joined.add(step.to_object)
+
+    parent = model.data_objects[leg.parent]
+    return Select(
+        columns=columns,
+        from_=From(source=childless.qualify_table(parent), alias=leg.parent),
+        joins=joins,
+        where=where,
+        distinct=True,
+    )
+
+
+def _as_childless(node: Expr, children: frozenset[str], model: SemanticModel) -> Expr | None:
+    """*node* as it reads for a row with no child rows: a child column NULL, an
+    ``EXISTS`` correlated to one finding nothing."""
+    if isinstance(node, ColumnRef) and node.table in children:
+        return _typed_null(model, node)
+    if isinstance(node, Exists) and correlated_tables(node.subquery) & children:
+        # 1 = 0 / 1 = 1: a boolean literal every dialect accepts.
+        return BinaryOp(Literal.number(1), "=", Literal.number(1 if node.negated else 0))
+    return None
+
+
+def _dimension_null(model: SemanticModel, dim: ResolvedDimension) -> Expr:
+    """A dimension's NULL in the second branch of a positional union.
+
+    BigQuery types a bare NULL as INT64 and will not unify it with the STRING
+    of the first branch, so a plain column's NULL carries that column's
+    declared type, which is what the first branch reads. A time grain or a
+    computed column renders a type of its own per engine; there a bare NULL
+    takes the first branch's type everywhere else (see ``_per_grouping_set``).
+    """
+    obj = model.data_objects.get(dim.object_name)
+    column = obj.columns.get(dim.column_name) if obj is not None else None
+    if dim.grain is not None or column is None or column.expression or not column.abstract_type:
+        return Literal.null()
+    return Cast(expr=Literal.null(), type_name=column.abstract_type.value)
+
+
+def _typed_null(model: SemanticModel, ref: ColumnRef) -> Expr:
+    """NULL with the type of the column *ref* reads, when the model declares one."""
+    obj = model.data_objects.get(ref.table or "")
+    column = (
+        next((c for c in obj.columns.values() if c.code == ref.name), None)
+        if obj is not None
+        else None
+    )
+    if column is None or column.abstract_type is None:
+        return Literal.null()
+    return Cast(expr=Literal.null(), type_name=column.abstract_type.value)
+
+
+def _unsplittable(leg: ChildlessLeg, reason: str) -> ResolutionError:
+    """The rows without children cannot be added, so the WHERE is refused."""
+    objects = ", ".join(f"'{name}'" for name in sorted(leg.children))
+    return ResolutionError(
+        [
+            SemanticError(
+                code="FILTER_ADMITS_ROWS_WITHOUT",
+                message=(
+                    f"The WHERE can hold for a '{leg.parent}' row with no {objects} rows, "
+                    f"and such rows cannot be added to this query: {reason}. Answered "
+                    f"from the {objects} rows alone, they would be left out without a word."
+                ),
+                path="where",
+                hint=(
+                    f"Write the condition on {objects} as 'exists' / 'nonexists', which "
+                    f"tests for a matching row and keeps the ones without any."
+                ),
+            )
+        ]
     )
 
 

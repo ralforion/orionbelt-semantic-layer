@@ -711,6 +711,20 @@ class ResolvedFilter:
     enforced: bool = False
 
 
+@dataclass(frozen=True)
+class ChildlessLeg:
+    """Rows of *parent* without any *child* row, added beside the plan's own.
+
+    Set when a WHERE on the many side of the measures' object could accept a
+    parent row with no child rows (see ``QueryResolver._plan_rows_without_children``).
+    *children* are the tables whose columns that WHERE reads as NULL for them.
+    """
+
+    parent: str
+    child: str
+    children: frozenset[str]
+
+
 @dataclass
 class ResolvedQuery:
     """Result of query resolution — ready for SQL planning."""
@@ -742,6 +756,9 @@ class ResolvedQuery:
     a measure mixing base-grain and replicated columns."""
     coalesce_aliases: set[str] = field(default_factory=set)
     grouping: Grouping | None = None
+    childless_leg: ChildlessLeg | None = None
+    """Parent rows without child rows that the WHERE accepts, added by the
+    ``grain_dedup`` pass beside the plan's own (``LEFT JOIN`` semantics)."""
     dedup_measures: dict[str, str] = field(default_factory=dict)
     """Measures that must aggregate over deduplicated rows, mapped to the
     replicated data object they are sourced from.
@@ -1306,7 +1323,7 @@ class QueryResolver:
             if resolved_filter:
                 ctx.result.having_filters.append(resolved_filter)
 
-        self._reject_filters_admitting_childless_rows(ctx)
+        self._plan_rows_without_children(ctx)
 
         # 7. Resolve order by — must reference a dimension or measure in SELECT
         select_count = len(ctx.result.dimensions) + len(ctx.result.measures)
@@ -2248,21 +2265,30 @@ class QueryResolver:
             return root
         return best
 
-    def _reject_filters_admitting_childless_rows(self, ctx: _ResolutionContext) -> None:
-        """Refuse a WHERE that a parent with no child rows could satisfy.
+    def _plan_rows_without_children(self, ctx: _ResolutionContext) -> None:
+        """Add the parents without child rows a WHERE accepts, or refuse.
 
         Measures on the *one* side of a join (customers) with a WHERE on the
-        *many* side (orders) are answered from the orders rows, the customer
-        measures deduplicated. A customer is counted only through an order the
-        predicate accepts, so one without orders is left out - right for
-        ``status = 'ok'``, which no such customer satisfies, and silently wrong
-        for ``tier = 'gold' OR status = 'ok'`` or ``order_id IS NULL``, which
-        one does. Such a predicate is refused (``FILTER_ADMITS_ROWS_WITHOUT``):
-        ``exists`` / ``nonexists`` say which question is meant.
+        *many* side (orders) are answered from the order rows, the customer
+        measures deduplicated. A customer counts only through an order the
+        predicate accepts, so one without orders is left out: right for
+        ``status = 'ok'``, which no such customer satisfies, and wrong for
+        ``tier = 'gold' OR status = 'ok'`` or ``order_id IS NULL``, which one
+        does.
 
-        The tables tested are the ones the WHERE reads that some measure's own
-        object cannot reach; the predicate is evaluated with their columns NULL
-        (:mod:`compiler.null_rejection`).
+        The answer meant is ``customers LEFT JOIN orders WHERE <predicate>``,
+        each customer once. Its customers are the ones with an order the
+        predicate accepts - the plan as it stands - and the ones without orders
+        for which the predicate holds with every order column NULL. When that
+        second set can be non-empty (:mod:`compiler.null_rejection`), the plan
+        gets a leg for it (:attr:`ResolvedQuery.childless_leg`, built by
+        ``grain_dedup``): the two sets do not overlap, and the new leg never
+        joins the orders, so neither multiplies the other.
+
+        A shape the leg cannot express is refused instead
+        (``FILTER_ADMITS_ROWS_WITHOUT``): measures on several one-side
+        objects, ``ROLLUP`` / ``CUBE``, a period-over-period metric, or a nested
+        object on either side.
         """
         sources = ctx.result.measure_source_objects
         if not sources or ctx.result.requires_cfl or ctx.graph is None:
@@ -2270,9 +2296,8 @@ class QueryResolver:
         read: set[str] = set()
         for wf in ctx.result.where_filters:
             collect_referenced_tables(wf.expression, read)
-        children: set[str] = set()
-        for source in sources:
-            children |= read - ctx.graph.descendants(source) - {source}
+        unreached = {source: read - ctx.graph.descendants(source) - {source} for source in sources}
+        children = set().union(*unreached.values())
         if not children:
             return
         combined: Expr | None = None
@@ -2284,16 +2309,39 @@ class QueryResolver:
             )
         if combined is None or not can_hold_without(combined, children):
             return
+
+        parents = sorted(source for source, missing in unreached.items() if missing)
+        base = ctx.result.base_object
+        parent = parents[0] if len(parents) == 1 else None
+        reason: str | None = None
+        if parent is None:
+            reason = "the measures read several objects that cannot reach it"
+        elif ctx.result.grouping is not None:
+            reason = "the query uses ROLLUP / CUBE"
+        elif ctx.result.has_pop:
+            reason = "a period-over-period metric rebuilds the query from its own rows"
+        elif parent == base or parent not in ctx.graph.descendants(base):
+            reason = f"'{parent}' is not reached from '{base}'"
+        elif any(
+            (obj := ctx.model.data_objects.get(name)) is not None and obj.is_nested
+            for name in (parent, base)
+        ):
+            reason = "a nested data object is involved"
+        if parent is not None and reason is None:
+            ctx.result.childless_leg = ChildlessLeg(
+                parent=parent, child=base, children=frozenset(children)
+            )
+            return
+
         objects = ", ".join(f"'{name}'" for name in sorted(children))
-        owners = ", ".join(f"'{name}'" for name in sorted(sources))
         ctx.errors.append(
             SemanticError(
                 code="FILTER_ADMITS_ROWS_WITHOUT",
                 message=(
-                    f"The WHERE can hold for a {owners} row with no {objects} rows (an OR "
-                    f"with another condition, a NOT, or an IS NULL), but this query reads "
-                    f"{owners} through {objects} rows, so such rows would be left out "
-                    f"without a word."
+                    f"The WHERE can hold for a row with no {objects} rows (an OR with "
+                    f"another condition, a NOT, or an IS NULL), and such rows cannot be "
+                    f"added to this query: {reason}. Answered from the {objects} rows "
+                    f"alone, they would be left out without a word."
                 ),
                 path="where",
                 hint=(

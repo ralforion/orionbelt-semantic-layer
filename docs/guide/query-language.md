@@ -557,9 +557,15 @@ When the measures span independent facts (a [CFL](compilation.md) union), each l
 
 #### Filters on the many side of a join
 
-A WHERE filter on a data object on the *many* side of the measures' objects (an `Orders` column, with measures on `Customers`) is answered from those rows, and the measures are deduplicated: a customer counts once, through the orders the filter accepts. That is a semi-join, and it answers `Status = ok` as "customers with an ok order".
+A WHERE filter on a data object on the *many* side of the measures' objects (an `Orders` column, with measures on `Customers`) answers the question SQL's `Customers LEFT JOIN Orders WHERE <filter>` does, each customer counted once:
 
-A customer without orders has no such row. So a filter such a customer could satisfy is refused with `FILTER_ADMITS_ROWS_WITHOUT` instead of leaving them out: an `or` with a condition on another object (`Tier = gold or Status = ok`), `notset` / `blank` on an order column, or anything else that can be true when every order column is NULL. Write the order condition as [`exists` / `nonexists`](#existence-operators), which tests for a matching row and keeps the customers without one:
+- A customer with orders counts when one of its orders passes the filter. `Status = ok` is "customers with an ok order", and several order conditions in one filter must hold for the same order.
+- A customer *without* orders counts when the filter holds with every order column NULL: `Tier = gold or Status = ok` keeps a gold customer who has never ordered, and `Orders.Order ID` `notset` lists the customers without orders. `NOT (Status = bad)` does not keep them, since a comparison with NULL is not true.
+- Grouped by an order column (`Status`), the customers without orders form the NULL group; measures on the orders read 0 or NULL there.
+
+The two kinds of customer are planned as two sets that do not overlap: the order rows the filter accepts, each customer deduplicated, and the customers with no order at all, read without joining the orders. Neither multiplies the other. The second set is added only when the filter can accept such a customer, so `Status = ok` plans exactly as before.
+
+A shape that cannot carry the second set is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than leaving those customers out: measures on several one-side objects that cannot reach the filtered one, `grouping: rollup` / `cube`, a period-over-period metric, a nested data object, or a measure with `allowFanOut: true` on that side. [`exists` / `nonexists`](#existence-operators) states the question directly:
 
 ```yaml
 where:
@@ -824,7 +830,7 @@ Invalid queries return error responses:
 | `UNKNOWN_MEASURE` | 400 | Measure name not in model |
 | `UNKNOWN_FILTER_FIELD` | 400 | Filter field is not a dimension (WHERE) or measure (HAVING) |
 | `UNREACHABLE_FILTER_OBJECT` | 400 | WHERE filter names a data object the query cannot reach |
-| `FILTER_ADMITS_ROWS_WITHOUT` | 400 | WHERE on the many side of the measures' objects could hold for a row with no matching rows there (OR, IS NULL); use `exists` / `nonexists` |
+| `FILTER_ADMITS_ROWS_WITHOUT` | 400 | WHERE on the many side of the measures' objects could hold for a row with no matching rows there, and the query's shape cannot add those rows (ROLLUP / CUBE, period-over-period, several one-side objects, `allowFanOut`); use `exists` / `nonexists` |
 | `FILTER_NOT_APPLICABLE_TO_MEASURE` | 400 | WHERE filter names a data object one selected measure's fact cannot reach (multi-fact query) |
 | `STATIC_FILTER_UNREACHABLE` | 400 | A static model filter declared `enforce: always` names a data object the query, or one measure's fact, cannot reach |
 | `UNKNOWN_ORDER_BY_FIELD` | 400 | ORDER BY field not in query's SELECT |
