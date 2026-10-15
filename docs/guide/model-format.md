@@ -1964,6 +1964,7 @@ Multiple static filters are combined with **AND**. They are always injected befo
 | `operator` | string | Yes | Comparison operator (see table below) |
 | `value` | scalar | No | Single comparison value |
 | `values` | list | No | List of values (for `in` / `not_in` / `between`) |
+| `enforce` | string | No | `relevant` (default) or `always`. See [Filters the Query Cannot Reach](#filters-the-query-cannot-reach) |
 
 ### Supported Operators
 
@@ -2038,6 +2039,32 @@ All ISO 8601 variants are supported:
 ### Auto-Join Extension
 
 If a static filter references a data object that is not already in the query's join path, the compiler automatically extends the join graph to include it. For example, a filter on `Customers.Region` will add the `Customers` join even if the query only selects measures from `Orders`.
+
+### Filters the Query Cannot Reach
+
+Joins are traversed forward only, so a query cannot always reach a static filter's data object: a filter on `Orders` is out of reach for a query that reads only `Returns`, and so is one leg of a multi-fact union whose fact does not join `Orders`. What happens then is set per filter with `enforce`:
+
+| `enforce` | Query or union leg that cannot reach the filter |
+|---|---|
+| `relevant` (default) | Skips it and returns a `STATIC_FILTER_NOT_APPLIED` warning naming the filter. Use for filters that describe one fact, such as `Orders.Status = completed`. |
+| `always` | Is refused with `STATIC_FILTER_UNREACHABLE`. No `filterContext` drops it either. Use for tenant and other row-level restrictions that must never fail open. |
+
+`always` holds on every scan a query plans, not only the main one. The candidate values of a `dimensionsExclude` query, the member list of a `population: dimension` metric, the body of an `exists` / `nonexists` subquery and each leg of a multi-fact raw query are scans of their own; each applies an enforced filter or refuses the query. A subquery needs nothing for a filter on its correlation subject, whose rows the outer query has already filtered. A `dimensionsExclude` query over independent dimension groups is therefore refused unless every group reaches the filtered data object.
+
+```yaml
+filters:
+  - dataObject: Customers
+    column: Tenant ID
+    operator: equals
+    value: 42
+    enforce: always # refuse any query that cannot be scoped to tenant 42
+  - dataObject: Orders
+    column: Status
+    operator: equals
+    value: completed # default: applied wherever Orders is read
+```
+
+`enforce: always` is not a security boundary on its own: a caller who can load models can load one without the filter. Pair it with an admin-curated deployment (`MODEL_FILES`) where clients query models they cannot change.
 
 ### Interaction with Query-Time Filters
 

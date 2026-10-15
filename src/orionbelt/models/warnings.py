@@ -65,6 +65,10 @@ class WarningCode:
     # statement compiles and parses but cannot execute (#358)
     OUT_OF_SCOPE_TABLE = "OUT_OF_SCOPE_TABLE"
 
+    # A static model filter (``enforce: relevant``) was skipped because the
+    # query, or one leg of a multi-fact union, cannot reach its data object
+    STATIC_FILTER_NOT_APPLIED = "STATIC_FILTER_NOT_APPLIED"
+
     # Generic merge-time warning (extends/inherits)
     MERGE_WARNING = "MERGE_WARNING"
 

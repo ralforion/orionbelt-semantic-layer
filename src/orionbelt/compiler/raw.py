@@ -26,9 +26,16 @@ from orionbelt.ast.nodes import (
     UnionAll,
 )
 from orionbelt.compiler.expr_rewrite import collect_referenced_tables
+from orionbelt.compiler.filter_resolution import report_unapplied_static_filter
+from orionbelt.compiler.filters import static_filter_unreachable_error
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.nested import emit_join_step
-from orionbelt.compiler.resolution import ResolvedField, ResolvedQuery, make_column_expr
+from orionbelt.compiler.resolution import (
+    ResolutionError,
+    ResolvedField,
+    ResolvedQuery,
+    make_column_expr,
+)
 from orionbelt.compiler.star import CflLegInfo, QueryPlan, _nulls_last
 from orionbelt.models.semantic import DataObject, SemanticModel
 
@@ -321,12 +328,30 @@ class RawPlanner:
 
         # WHERE — apply filters whose referenced objects are in this leg.
         # Filters that touch objects unreachable from this leg are skipped
-        # because the columns they reference don't exist here.
+        # because the columns they reference don't exist here; a static one
+        # says so with a warning. A static filter declared ``enforce: always``
+        # is not skipped: listing this leg's rows without it is what it exists
+        # to prevent, so the query is refused.
         for wf in resolved.where_filters:
             ref_objects: set[str] = set()
             self._collect_table_refs(wf.expression, ref_objects)
             if ref_objects.issubset(leg_objects):
                 builder.where(wf.expression)
+            elif wf.static and not wf.enforced:
+                report_unapplied_static_filter(
+                    [], resolved.warnings, None, ", ".join(sorted(ref_objects - leg_objects))
+                )
+            elif wf.enforced:
+                unreachable = ", ".join(sorted(ref_objects - leg_objects))
+                raise ResolutionError(
+                    [
+                        static_filter_unreachable_error(
+                            f"static filter on '{unreachable}'",
+                            unreachable,
+                            f"the rows of '{root}'",
+                        )
+                    ]
+                )
 
         return builder.build()
 

@@ -235,7 +235,7 @@ SELECT DISTINCT * FROM composite_raw_01
 
 A "leg root" is a fact data object referenced by some field that is not reachable from another field's source via directed joins — i.e. it is maximal under reachability. Each leg root yields one `UNION ALL` leg. Conformed dim columns (those reachable from every leg) project the same value across legs and line up; fact-specific columns are typed `CAST(NULL AS …)` in legs that don't cover them. `distinct: true` is applied once at the outer query — the most portable place.
 
-WHERE filters are applied to legs whose joined objects contain all the filter's referenced data objects; ORDER BY is remapped to the field aliases at the outer level.
+WHERE filters are applied to legs whose joined objects contain all the filter's referenced data objects; ORDER BY is remapped to the field aliases at the outer level. A static model filter a leg cannot reach is skipped with a `STATIC_FILTER_NOT_APPLIED` warning, or, declared `enforce: always`, refuses the query (`STATIC_FILTER_UNREACHABLE`).
 
 #### `UNION ALL BY NAME` optimization (DuckDB, Snowflake)
 
@@ -553,7 +553,7 @@ The referenced data object must be reachable from the query's join graph:
 
 If the data object is reachable but not yet in the join path, it is **auto-joined** automatically. If the data object is not reachable at all, the query is **refused** with `UNREACHABLE_FILTER_OBJECT`: answering it without the filter would return rows the filter excludes.
 
-When the measures span independent facts (a [CFL](compilation.md) union), each leg applies the filter if its fact reaches the filter's data object. If one leg cannot, the query is refused with `FILTER_NOT_APPLICABLE_TO_MEASURE` rather than computing that leg's measures unfiltered. Static model `filters:` are different: they are declared once for every query and apply where relevant, so a query or leg that cannot reach one skips it.
+When the measures span independent facts (a [CFL](compilation.md) union), each leg applies the filter if its fact reaches the filter's data object. If one leg cannot, the query is refused with `FILTER_NOT_APPLICABLE_TO_MEASURE` rather than computing that leg's measures unfiltered. Static model `filters:` are different: they are declared once for every query and, by default, apply where relevant, so a query or leg that cannot reach one skips it with a `STATIC_FILTER_NOT_APPLIED` warning. A static filter declared `enforce: always` refuses such a query instead (`STATIC_FILTER_UNREACHABLE`); see [Static Filters](model-format.md#filters-the-query-cannot-reach).
 
 A `having` filter field must reference a **measure** name.
 
@@ -809,6 +809,7 @@ Invalid queries return error responses:
 | `UNKNOWN_FILTER_FIELD` | 400 | Filter field is not a dimension (WHERE) or measure (HAVING) |
 | `UNREACHABLE_FILTER_OBJECT` | 400 | WHERE filter names a data object the query cannot reach |
 | `FILTER_NOT_APPLICABLE_TO_MEASURE` | 400 | WHERE filter names a data object one selected measure's fact cannot reach (multi-fact query) |
+| `STATIC_FILTER_UNREACHABLE` | 400 | A static model filter declared `enforce: always` names a data object the query, or one measure's fact, cannot reach |
 | `UNKNOWN_ORDER_BY_FIELD` | 400 | ORDER BY field not in query's SELECT |
 | `INVALID_ORDER_BY_POSITION` | 400 | Numeric ORDER BY position out of range |
 | `INVALID_FILTER_OPERATOR` | 400 | Unrecognized filter operator |

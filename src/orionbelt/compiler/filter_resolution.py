@@ -21,6 +21,8 @@ from orionbelt.ast.nodes import (
 from orionbelt.compiler.filters import (
     build_exists_filter_expr,
     build_filter_expr,
+    static_filter_predicate,
+    static_filter_unreachable_error,
 )
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
@@ -29,7 +31,8 @@ from orionbelt.models.query import (
     QueryFilterGroup,
     QueryFilterItem,
 )
-from orionbelt.models.semantic import ModelFilter
+from orionbelt.models.semantic import FilterEnforcement, ModelFilter
+from orionbelt.models.warnings import WarningCode, warning
 
 if TYPE_CHECKING:
     from orionbelt.compiler.resolution import (
@@ -68,33 +71,36 @@ def resolve_static_filter(
 ) -> ResolvedFilter | None:
     """Resolve a static model filter to a physical WHERE expression.
 
-    Silently skips filters on data objects that are unreachable from the
-    query's join graph — they are simply irrelevant to the current query.
+    A filter on a data object the query cannot reach is never dropped
+    silently: an ``enforce: always`` filter refuses the query
+    (``STATIC_FILTER_UNREACHABLE``), an ``enforce: relevant`` one is skipped
+    with a ``STATIC_FILTER_NOT_APPLIED`` warning.
     """
-    from orionbelt.compiler.resolution import ResolvedFilter, make_column_expr
+    from orionbelt.compiler.resolution import ResolvedFilter
 
     obj = ctx.model.data_objects.get(mf.data_object)
-    if obj is None:
+    if obj is None or mf.column not in obj.columns:
+        # Only a model narrowed for one scan lacks the object: the member list
+        # of a ``population: dimension`` metric is planned over the members'
+        # data objects alone. Fact filters do not limit who counts there, but
+        # an enforced filter cannot be left behind with the object it reads.
+        if mf.enforce == FilterEnforcement.ALWAYS:
+            report_unapplied_static_filter(ctx.errors, ctx.result.warnings, mf, mf.data_object)
         return None
 
-    col = obj.columns.get(mf.column)
-    if col is None:
-        return None
-
-    if not resolver._resolve_filter_object(ctx, mf.data_object, "filters", mf.column, static=True):
-        return None
-    if not _join_expression_objects(
-        resolver, ctx, mf.data_object, mf.column, "filters", mf.column, static=True
+    errors_before = len(ctx.errors)
+    if not (
+        resolver._resolve_filter_object(ctx, mf.data_object, "filters", mf.column, static=True)
+        and _join_expression_objects(
+            resolver, ctx, mf.data_object, mf.column, "filters", mf.column, static=True
+        )
     ):
+        # An ambiguous route has already been reported as an error of its own.
+        if len(ctx.errors) == errors_before:
+            report_unapplied_static_filter(ctx.errors, ctx.result.warnings, mf, mf.data_object)
         return None
 
-    # Route through ``make_column_expr`` so a ``MeasureFilter`` on a
-    # computed column inlines the expression — without this a filter
-    # on a boolean ``expression:`` column emitted ``(1 = FALSE)``
-    # because the empty ``code:`` was collapsed by the CAST.
-    col_expr: Expr = make_column_expr(ctx.model, mf.data_object, mf.column)
-    qf = QueryFilter(field=mf.column, op=mf.operator, value=mf.value or mf.values or None)
-    filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
+    filter_expr = static_filter_predicate(ctx.model, mf, ctx.errors)
     if filter_expr is None:
         return None
     return ResolvedFilter(
@@ -102,6 +108,45 @@ def resolve_static_filter(
         is_aggregate=False,
         referenced_fields=frozenset({mf.column}),
         static=True,
+        enforced=mf.enforce == FilterEnforcement.ALWAYS,
+    )
+
+
+def report_unapplied_static_filter(
+    errors: list[SemanticError],
+    warnings: list[SemanticError],
+    mf: ModelFilter | None,
+    unreachable: str,
+    measures: str | None = None,
+) -> None:
+    """Record a static filter a query, or one leg of it, cannot apply.
+
+    *mf* is ``None`` when only the resolved filter is at hand (a union leg);
+    then the filter is described by the object it reads. ``enforced`` comes
+    from *mf* when given.
+    """
+    label = (
+        f"static filter on '{mf.data_object}.{mf.column}'"
+        if mf is not None
+        else f"static filter on '{unreachable}'"
+    )
+    where = f"the fact behind {measures}" if measures else "this query"
+    if mf is not None and mf.enforce == FilterEnforcement.ALWAYS:
+        errors.append(static_filter_unreachable_error(label, unreachable, where))
+        return
+    warnings.append(
+        warning(
+            code=WarningCode.STATIC_FILTER_NOT_APPLIED,
+            message=(
+                f"The {label} was not applied: {where} cannot reach '{unreachable}'. "
+                f"Its rows are returned without that restriction."
+            ),
+            path="filters",
+            hint=(
+                "Declare the filter 'enforce: always' to refuse such queries instead, "
+                "or add a join that reaches the filtered data object."
+            ),
+        )
     )
 
 
@@ -140,9 +185,11 @@ def resolve_filter_object(
         return False
     reachable = any(obj_name in ctx.graph.descendants(j) for j in list(ctx.joined_objects))
     if not reachable:
+        # The union's legs are rooted at the measures' facts, or in raw mode
+        # at the selected fields' objects.
+        roots = ctx.result.measure_source_objects | {f.object_name for f in ctx.result.fields}
         if ctx.result.requires_cfl and any(
-            obj_name in ctx.graph.descendants_without_unnest(source) | {source}
-            for source in ctx.result.measure_source_objects
+            obj_name in ctx.graph.descendants_without_unnest(root) | {root} for root in roots
         ):
             return True
         if static:

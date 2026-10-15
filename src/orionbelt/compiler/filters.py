@@ -29,11 +29,13 @@ from orionbelt.models.query import FilterOperator, QueryFilter, UsePathName
 from orionbelt.models.semantic import (
     DataObject,
     DataType,
+    FilterEnforcement,
     FilterLogic,
     FilterValue,
     MeasureFilter,
     MeasureFilterGroup,
     MeasureFilterItem,
+    ModelFilter,
     SemanticModel,
 )
 
@@ -708,6 +710,66 @@ def _join_filter_object_into_subquery(
     return True
 
 
+def _enforced_filters_in_subquery(
+    model: SemanticModel,
+    *,
+    subject_object: str,
+    target_object: str,
+    graph: JoinGraph,
+    scope: set[str],
+    joins: list[Join | Unnest],
+    qualify_table: Callable[[DataObject], str],
+    errors: list[SemanticError],
+) -> list[Expr]:
+    """The ``enforce: always`` static filters an ``EXISTS`` body must apply.
+
+    The body is a scan of its own: its rows decide the predicate's outcome, so a
+    row the filter excludes would still answer "is there one". Each enforced
+    filter is joined into the body and applied there. One on the correlation
+    subject needs nothing - the body's rows belong to an outer row the outer
+    query has already filtered - and one the body cannot reach refuses the
+    query (``STATIC_FILTER_UNREACHABLE``).
+    """
+    predicates: list[Expr] = []
+    for mf in model.filters:
+        if mf.enforce != FilterEnforcement.ALWAYS:
+            continue
+        needed = [
+            mf.data_object,
+            *sorted(model.column_reference_objects(mf.data_object, mf.column)),
+        ]
+        if set(needed) <= {subject_object}:
+            continue
+        unreachable: list[SemanticError] = []
+        if not all(
+            _join_filter_object_into_subquery(
+                obj,
+                f"{mf.data_object}.{mf.column}",
+                graph=graph,
+                model=model,
+                subject_object=subject_object,
+                target_object=target_object,
+                scope=scope,
+                joins=joins,
+                qualify_table=qualify_table,
+                errors=unreachable,
+            )
+            for obj in needed
+        ):
+            errors.append(
+                static_filter_unreachable_error(
+                    f"static filter on '{mf.data_object}.{mf.column}'",
+                    mf.data_object,
+                    f"the subquery on '{target_object}'",
+                )
+            )
+            continue
+        predicate = static_filter_predicate(model, mf, errors)
+        if predicate is not None:
+            predicates.append(predicate)
+    return predicates
+
+
 def build_exists_filter_expr(
     qf: QueryFilter,
     model: SemanticModel,
@@ -930,6 +992,19 @@ def build_exists_filter_expr(
         if sub_expr is not None:
             where_parts.append(sub_expr)
 
+    where_parts.extend(
+        _enforced_filters_in_subquery(
+            model,
+            subject_object=subject_object,
+            target_object=sub.data_object,
+            graph=graph,
+            scope=scope,
+            joins=joins,
+            qualify_table=qualify_table,
+            errors=errors,
+        )
+    )
+
     if touched_objects is not None:
         touched_objects.update(scope)
 
@@ -945,3 +1020,32 @@ def build_exists_filter_expr(
     )
 
     return Exists(subquery=select, negated=(qf.op == FilterOperator.NONEXISTS))
+
+
+def static_filter_predicate(
+    model: SemanticModel, mf: ModelFilter, errors: list[SemanticError]
+) -> Expr | None:
+    """A static model filter as a predicate over its column.
+
+    Through ``make_column_expr``, so a filter on a computed column inlines the
+    expression; without it a filter on a boolean ``expression:`` column emitted
+    ``(1 = FALSE)`` because the empty ``code:`` was collapsed by the CAST.
+    """
+    from orionbelt.compiler.resolution import make_column_expr
+
+    col_expr = make_column_expr(model, mf.data_object, mf.column)
+    qf = QueryFilter(field=mf.column, op=mf.operator, value=mf.value or mf.values or None)
+    return build_filter_expr(col_expr, qf, errors)
+
+
+def static_filter_unreachable_error(label: str, unreachable: str, where: str) -> SemanticError:
+    """The refusal for an ``enforce: always`` static filter that cannot be applied."""
+    return SemanticError(
+        code="STATIC_FILTER_UNREACHABLE",
+        message=(
+            f"The {label} is declared 'enforce: always', and {where} cannot reach "
+            f"'{unreachable}'. The query would return rows the filter excludes."
+        ),
+        path="filters",
+        hint="Query measures and dimensions whose data objects reach the filtered one.",
+    )

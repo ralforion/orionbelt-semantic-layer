@@ -87,8 +87,14 @@ def _compute_effective_filters(
     fc: FilterContext,
     where_filters: list[ResolvedFilter],
 ) -> list[ResolvedFilter]:
-    """Determine which WHERE filters apply given a filter context override."""
-    return _kept_by_context(fc, where_filters, lambda f: f.referenced_fields)
+    """Determine which WHERE filters apply given a filter context override.
+
+    A static filter declared ``enforce: always`` applies whatever the context
+    says: a measure's ``FIXED`` scan of every tenant's rows is exactly what
+    such a filter exists to prevent.
+    """
+    kept = {id(f) for f in _kept_by_context(fc, where_filters, lambda f: f.referenced_fields)}
+    return [f for f in where_filters if f.enforced or id(f) in kept]
 
 
 def _query_item_fields(item: QueryFilterItem) -> frozenset[str]:

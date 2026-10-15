@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 from orionbelt.ast.builder import QueryBuilder
@@ -30,11 +30,14 @@ from orionbelt.compiler.anchored import (
 )
 from orionbelt.compiler.expr_rewrite import inline_measure_aliases
 from orionbelt.compiler.fanout import FanoutError
+from orionbelt.compiler.filter_resolution import report_unapplied_static_filter
+from orionbelt.compiler.filters import static_filter_unreachable_error
 from orionbelt.compiler.grain_dedup import dedup_identity, detect_dedup_measures
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.resolution import (
     ResolutionError,
     ResolvedDimension,
+    ResolvedFilter,
     ResolvedMeasure,
     ResolvedQuery,
     make_column_expr,
@@ -339,6 +342,22 @@ class CFLPlanner:
                 for name in unreachable
             ]
         )
+
+    @staticmethod
+    def _skip_static_filter_outside_leg(
+        wf: ResolvedFilter,
+        missing: set[str],
+        measures: list[ResolvedMeasure],
+        resolved: ResolvedQuery,
+    ) -> None:
+        """Skip a static filter one union leg cannot reach, or refuse an enforced one."""
+        unreachable = ", ".join(sorted(missing))
+        label = f"static filter on '{unreachable}'"
+        names = ", ".join(f"'{m.name}'" for m in measures)
+        where = f"the fact behind {names}"
+        if wf.enforced:
+            raise ResolutionError([static_filter_unreachable_error(label, unreachable, where)])
+        report_unapplied_static_filter([], resolved.warnings, None, unreachable, names)
 
     @staticmethod
     def _reject_filter_outside_leg(missing: set[str], measures: list[ResolvedMeasure]) -> None:
@@ -778,10 +797,11 @@ class CFLPlanner:
             )
 
             # Apply WHERE filters to each leg that reaches what they read. A
-            # static model filter applies where relevant, so a leg that cannot
-            # reach it skips it. A query filter it cannot reach refuses the
-            # query: emitted, the predicate names a table the leg never joins;
-            # left out, the leg's measures ignore the filter the caller wrote.
+            # query filter, or a static one declared ``enforce: always``, that
+            # the leg cannot reach refuses the query: emitted, the predicate
+            # names a table the leg never joins; left out, the leg's measures
+            # ignore it. Any other static filter applies where relevant, so the
+            # leg skips it and says so.
             leg_objects = leg_required | {lead}
             for wf in resolved.where_filters:
                 wf_objects: set[str] = set()
@@ -792,6 +812,8 @@ class CFLPlanner:
                     leg_builder.where(wf.expression)
                 elif not wf.static:
                     self._reject_filter_outside_leg(missing, measures)
+                else:
+                    self._skip_static_filter_outside_leg(wf, missing, measures, resolved)
 
             union_legs.append(leg_builder.build())
 
@@ -1166,10 +1188,17 @@ class CFLPlanner:
         qualify: Callable[[DataObject], str],
         via_constraints: dict[str, str] | None = None,
         dialect: Dialect | None = None,
+        enforced: Sequence[ResolvedFilter] = (),
     ) -> Select:
         """Build SELECT DISTINCT (via GROUP BY) for a group of dimensions."""
         return cfl_exclude.build_group_distinct_select(
-            dims, model, graph, qualify, via_constraints=via_constraints, dialect=dialect
+            dims,
+            model,
+            graph,
+            qualify,
+            via_constraints=via_constraints,
+            dialect=dialect,
+            enforced=enforced,
         )
 
     def _build_existing_pairs_select(

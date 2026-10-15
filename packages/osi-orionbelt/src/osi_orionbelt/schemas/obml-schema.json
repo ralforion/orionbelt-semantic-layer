@@ -1705,6 +1705,15 @@
                 }
               ]
             }
+          },
+          "enforce": {
+            "type": "string",
+            "enum": [
+              "relevant",
+              "always"
+            ],
+            "default": "relevant",
+            "description": "When the filter must hold. 'relevant' (default): applied to every query that reads its data object; a query or multi-fact leg that cannot reach it skips it with a STATIC_FILTER_NOT_APPLIED warning. 'always': a query or leg that cannot reach it is refused (STATIC_FILTER_UNREACHABLE), and no filterContext drops it. Use 'always' for tenant and other row-level restrictions."
           }
         },
         "required": [
