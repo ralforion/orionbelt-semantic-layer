@@ -488,6 +488,10 @@ class TestAggregateInComputedColumn:
             "CASE WHEN SOME({Amount} > 250) = 1 THEN 'high' ELSE 'low' END",
             "CASE WHEN 1 = SOME({Amount} > 250) THEN 'high' ELSE 'low' END",
             "CASE WHEN ALL({Amount} > 0) THEN 'high' ELSE 'low' END",
+            # ... over anything not recognised as a list.
+            "CASE WHEN TRUE = SOME(COALESCE({Amount} > 250, FALSE)) THEN 'a' ELSE 'b' END",
+            "CASE WHEN TRUE = SOME(TRUE) THEN 'a' ELSE 'b' END",
+            "CASE WHEN 1 = SOME(CASE WHEN {Amount} > 1 THEN 1 ELSE 0 END) THEN 'a' END",
         ],
     )
     def test_the_model_does_not_validate(self, expression: str) -> None:

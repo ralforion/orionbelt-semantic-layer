@@ -170,13 +170,50 @@ _AGGREGATE_PREFIXES = (
 # the two apart, so the spelling is refused: ``SOME`` is the standard
 # quantifier's other name.
 _AMBIGUOUS_ANY = "ANY"
-# ``SOME`` / ``ALL`` are the quantifier when compared with (``x = SOME(list)``).
-# Databricks also has ``some(condition)``, an aggregate like ``bool_or``: it
-# takes a condition and stands as a value of its own. So a call is the
-# quantifier only as the right operand of a comparison, over an argument that
-# is no condition (:func:`_is_condition`); any other is the aggregate.
+# ``SOME`` / ``ALL`` are the quantifier when compared with a list
+# (``x = SOME(list)``). Databricks also has ``some(value)``, an aggregate like
+# ``bool_or``. So a call is the quantifier only as the right operand of a
+# comparison over an argument recognised as a list (:func:`_is_list_valued`);
+# any other call is the aggregate. Unrecognised is not a list: a list form the
+# check does not know is refused, with a hint, rather than an aggregate let in.
 _QUANTIFIERS = frozenset({"SOME", "ALL"})
 _COMPARISONS = frozenset({"=", "<>", "!=", "<", ">", "<=", ">="})
+# Functions that build a list or array.
+_LIST_BUILDERS = frozenset(
+    {
+        "RANGE",
+        "GENERATE_SERIES",
+        "ARRAY",
+        "ARRAY_CONSTRUCT",
+        "LIST_VALUE",
+        "STRING_SPLIT",
+        "STR_SPLIT",
+        "SPLIT",
+        "STRING_TO_ARRAY",
+        "REGEXP_SPLIT_TO_ARRAY",
+        "SEQUENCE",
+    }
+)
+# Functions whose result is a list when their first argument is one.
+_LIST_TRANSFORMS = frozenset(
+    {
+        "LIST_DISTINCT",
+        "LIST_SORT",
+        "LIST_REVERSE_SORT",
+        "LIST_SLICE",
+        "LIST_CONCAT",
+        "LIST_FILTER",
+        "ARRAY_DISTINCT",
+        "ARRAY_SORT",
+        "ARRAY_SLICE",
+        "ARRAY_CAT",
+        "ARRAY_CONCAT",
+        "ARRAY_COMPACT",
+        "ARRAY_REVERSE",
+    }
+)
+# Functions returning one of their arguments, so a list when one of them is.
+_LIST_PASSTHROUGH = frozenset({"COALESCE", "IFNULL", "NVL", "NULLIF"})
 
 
 def _is_aggregate_name(name: str) -> bool:
@@ -202,28 +239,29 @@ def _is_aggregate_name(name: str) -> bool:
     return False
 
 
-def _is_condition(expr: object) -> bool:
-    """Whether *expr* is a true / false condition: what an aggregate such as
-    Databricks' ``some()`` takes, and never the list a quantifier compares with."""
-    from orionbelt.ast.nodes import (
-        Between,
-        BinaryOp,
-        ColumnRef,
-        Exists,
-        InList,
-        IsNull,
-        LikeMatch,
-        RegexMatch,
-        UnaryOp,
-    )
+def _is_list_valued(expr: object) -> bool:
+    """Whether *expr* is recognised as a list or array: what a quantifier
+    compares with. Anything not recognised is not taken for one."""
+    from orionbelt.ast.nodes import CaseExpr, ColumnRef, FunctionCall, SubqueryExpr
 
-    if isinstance(expr, BinaryOp):
-        return expr.op.upper() in _COMPARISONS | {"AND", "OR", "LIKE", "ILIKE"}
-    if isinstance(expr, UnaryOp):
-        return expr.op.upper() == "NOT"
+    if isinstance(expr, SubqueryExpr):
+        return True
     if isinstance(expr, ColumnRef):
-        return expr.abstract_type == DataType.BOOLEAN.value
-    return isinstance(expr, IsNull | InList | Between | LikeMatch | RegexMatch | Exists)
+        return expr.abstract_type == DataType.JSON.value
+    if isinstance(expr, CaseExpr):
+        branches = [result for _, result in expr.when_clauses]
+        if expr.else_clause is not None:
+            branches.append(expr.else_clause)
+        return any(_is_list_valued(branch) for branch in branches)
+    if isinstance(expr, FunctionCall):
+        name = expr.name.upper()
+        if name in _LIST_BUILDERS:
+            return True
+        if name in _LIST_TRANSFORMS:
+            return bool(expr.args) and _is_list_valued(expr.args[0])
+        if name in _LIST_PASSTHROUGH:
+            return any(_is_list_valued(arg) for arg in expr.args)
+    return False
 
 
 class SemanticValidator:
@@ -1487,7 +1525,7 @@ class SemanticValidator:
                         and isinstance(node.right, FunctionCall)
                         and node.right.name.upper() in _QUANTIFIERS
                         and len(node.right.args) == 1
-                        and not _is_condition(node.right.args[0])
+                        and _is_list_valued(node.right.args[0])
                     ):
                         quantifiers.add(id(node.right))
                     if isinstance(node, WindowFunction):
@@ -1525,8 +1563,8 @@ class SemanticValidator:
                             )
                             + (
                                 " 'SOME' / 'ALL' is a quantifier only compared with a "
-                                "list ('x = SOME(list)'); called on a condition, it is "
-                                "Databricks' some() aggregate."
+                                "list built by a list function ('x = SOME(RANGE(...))'); "
+                                "over anything else it is Databricks' some() aggregate."
                                 if _QUANTIFIERS & set(found)
                                 else ""
                             )
