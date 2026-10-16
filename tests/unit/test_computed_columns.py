@@ -477,10 +477,11 @@ class TestAggregateInComputedColumn:
             "APPROX_PERCENTILE({Amount}, 0.5)",
             # ClickHouse's any(), called as a function rather than compared with.
             "ANY({Code})",
-            # ... and compared with: on the right it is still the aggregate,
-            # since its argument is one value per row, not a set.
+            # ... and compared with, over a scalar or an array alike: ANY is
+            # ClickHouse's aggregate there, so the spelling is refused.
             "CASE WHEN 250 < ANY({Amount}) THEN 'high' ELSE 'low' END",
-            "CASE WHEN {Amount} = ANY({Amount} * 2) THEN 'a' ELSE 'b' END",
+            "CASE WHEN ANY(ARRAY({Amount})) > 250 THEN 'high' ELSE 'low' END",
+            "CASE WHEN {Amount} = ANY(RANGE(50, 150)) THEN 'low' ELSE 'high' END",
         ],
     )
     def test_the_model_does_not_validate(self, expression: str) -> None:
@@ -501,8 +502,11 @@ class TestAggregateInComputedColumn:
             "CASE WHEN {Amount} > 250 THEN 'high' ELSE 'low' END",
             "NULLIF({Code}, 'x')",
             "BIT_LENGTH({Code})",
-            # A comparison quantifier over a set, not an aggregate call.
-            "CASE WHEN {Amount} = ANY(RANGE(50, 150)) THEN 'low' ELSE 'high' END",
+            # The quantifier spelled SOME (or ALL), which no engine aggregates by,
+            # over any list expression.
+            "CASE WHEN {Amount} = SOME(RANGE(50, 150)) THEN 'low' ELSE 'high' END",
+            "CASE WHEN {Amount} = SOME(COALESCE(RANGE(50, 150), RANGE(0, 0))) THEN 1 END",
+            "CASE WHEN {Amount} = SOME(LIST_DISTINCT(RANGE(50, 150))) THEN 'a' ELSE 'b' END",
             "CASE WHEN {Amount} > ALL(RANGE(50, 150)) THEN 'high' ELSE 'low' END",
             "CASE WHEN {Code} = SOME(STRING_SPLIT('a,b', ',')) THEN 'x' ELSE 'y' END",
             # A sketch's estimate reads one stored state per row.
@@ -533,21 +537,16 @@ def test_no_portable_function_is_taken_for_an_aggregate() -> None:
 def test_an_aggregate_inside_a_quantifier_is_still_found() -> None:
     """The quantifier is skipped, not what it is applied to."""
     cls = TestAggregateInComputedColumn
-    model = cls()._model("CASE WHEN {Amount} = ANY(SUM({Amount})) THEN 'a' ELSE 'b' END")
+    model = cls()._model("CASE WHEN {Amount} = SOME(SUM({Amount})) THEN 'a' ELSE 'b' END")
     codes = [e.code for e in SemanticValidator().validate(model)]
     assert "AGGREGATE_IN_COLUMN_EXPRESSION" in codes
 
 
-def test_any_is_a_quantifier_only_over_a_set() -> None:
-    """Told apart by the argument: a JSON column is a set a row carries, a
-    scalar column is one value per row, which ClickHouse's any() aggregates."""
-    from orionbelt.ast.nodes import ColumnRef, FunctionCall
-    from orionbelt.parser.validator import _is_quantifier
-
-    def any_of(abstract_type: str) -> FunctionCall:
-        return FunctionCall(
-            name="ANY", args=[ColumnRef(name="c", table="T", abstract_type=abstract_type)]
-        )
-
-    assert _is_quantifier(any_of("json"))
-    assert not _is_quantifier(any_of("float"))
+def test_a_refused_any_points_to_some() -> None:
+    model = TestAggregateInComputedColumn()._model(
+        "CASE WHEN {Amount} = ANY(RANGE(50, 150)) THEN 'low' ELSE 'high' END"
+    )
+    (error,) = [
+        e for e in SemanticValidator().validate(model) if e.code == "AGGREGATE_IN_COLUMN_EXPRESSION"
+    ]
+    assert "SOME(" in (error.hint or "")
