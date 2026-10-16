@@ -477,6 +477,10 @@ class TestAggregateInComputedColumn:
             "APPROX_PERCENTILE({Amount}, 0.5)",
             # ClickHouse's any(), called as a function rather than compared with.
             "ANY({Code})",
+            # ... and compared with: on the right it is still the aggregate,
+            # since its argument is one value per row, not a set.
+            "CASE WHEN 250 < ANY({Amount}) THEN 'high' ELSE 'low' END",
+            "CASE WHEN {Amount} = ANY({Amount} * 2) THEN 'a' ELSE 'b' END",
         ],
     )
     def test_the_model_does_not_validate(self, expression: str) -> None:
@@ -497,8 +501,10 @@ class TestAggregateInComputedColumn:
             "CASE WHEN {Amount} > 250 THEN 'high' ELSE 'low' END",
             "NULLIF({Code}, 'x')",
             "BIT_LENGTH({Code})",
-            # A comparison quantifier, not an aggregate call.
+            # A comparison quantifier over a set, not an aggregate call.
             "CASE WHEN {Amount} = ANY(RANGE(50, 150)) THEN 'low' ELSE 'high' END",
+            "CASE WHEN {Amount} > ALL(RANGE(50, 150)) THEN 'high' ELSE 'low' END",
+            "CASE WHEN {Code} = SOME(STRING_SPLIT('a,b', ',')) THEN 'x' ELSE 'y' END",
             # A sketch's estimate reads one stored state per row.
             "APPROX_PERCENTILE_ESTIMATE(PARSE_JSON({Code}), 0.5)",
         ],
@@ -530,3 +536,18 @@ def test_an_aggregate_inside_a_quantifier_is_still_found() -> None:
     model = cls()._model("CASE WHEN {Amount} = ANY(SUM({Amount})) THEN 'a' ELSE 'b' END")
     codes = [e.code for e in SemanticValidator().validate(model)]
     assert "AGGREGATE_IN_COLUMN_EXPRESSION" in codes
+
+
+def test_any_is_a_quantifier_only_over_a_set() -> None:
+    """Told apart by the argument: a JSON column is a set a row carries, a
+    scalar column is one value per row, which ClickHouse's any() aggregates."""
+    from orionbelt.ast.nodes import ColumnRef, FunctionCall
+    from orionbelt.parser.validator import _is_quantifier
+
+    def any_of(abstract_type: str) -> FunctionCall:
+        return FunctionCall(
+            name="ANY", args=[ColumnRef(name="c", table="T", abstract_type=abstract_type)]
+        )
+
+    assert _is_quantifier(any_of("json"))
+    assert not _is_quantifier(any_of("float"))

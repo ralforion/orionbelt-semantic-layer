@@ -7,6 +7,7 @@ from collections.abc import Iterator
 
 import networkx as nx
 
+from orionbelt.ast.nodes import ColumnRef, FunctionCall, SubqueryExpr
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.expressions import (
     QUALIFIED_COLUMN_REF,
@@ -164,9 +165,47 @@ _AGGREGATE_PREFIXES = (
 )
 
 
-# A comparison's quantifier (``x = ANY(...)``), which is no aggregate call.
+# A comparison quantifier (``x = ANY(...)``) over a set, which is no aggregate
+# call. ``ANY`` is also ClickHouse's ``any()`` aggregate, and the two are told
+# apart by the argument, not by where the call stands (see :func:`_is_quantifier`).
 _QUANTIFIERS = frozenset({"ANY", "SOME", "ALL"})
-_COMPARISONS = frozenset({"=", "<>", "!=", "<", ">", "<=", ">="})
+# Functions that return a list or array: a set a quantifier compares with.
+_SET_VALUED = frozenset(
+    {
+        "RANGE",
+        "GENERATE_SERIES",
+        "ARRAY",
+        "ARRAY_CONSTRUCT",
+        "LIST_VALUE",
+        "STRING_SPLIT",
+        "STR_SPLIT",
+        "SPLIT",
+        "STRING_TO_ARRAY",
+        "REGEXP_SPLIT_TO_ARRAY",
+        "SEQUENCE",
+    }
+)
+
+
+def _is_quantifier(call: FunctionCall) -> bool:
+    """Whether *call* is ``ANY`` / ``SOME`` / ``ALL`` over a set, not an aggregate.
+
+    A quantifier compares with several values a row carries: a list or array
+    built by a function, a subquery, or a JSON column. ClickHouse's ``any()``
+    takes one value per row and aggregates over rows, so a scalar argument (a
+    column, arithmetic over one) is the aggregate, wherever the call stands
+    in a comparison.
+    """
+    if call.name.upper() not in _QUANTIFIERS or len(call.args) != 1:
+        return False
+    (arg,) = call.args
+    if isinstance(arg, SubqueryExpr):
+        return True
+    if isinstance(arg, FunctionCall):
+        return arg.name.upper() in _SET_VALUED
+    if isinstance(arg, ColumnRef):
+        return arg.abstract_type == DataType.JSON.value
+    return False
 
 
 def _is_aggregate_name(name: str) -> bool:
@@ -1426,7 +1465,7 @@ class SemanticValidator:
         Parsed with the compiler's own entry point, as the parse check is; a
         body that does not parse is that check's to report.
         """
-        from orionbelt.ast.nodes import BinaryOp, Expr, FunctionCall, WindowFunction
+        from orionbelt.ast.nodes import Expr, WindowFunction
         from orionbelt.compiler.expr_rewrite import map_nodes
         from orionbelt.compiler.resolution import parse_column_expression
 
@@ -1440,26 +1479,14 @@ class SemanticValidator:
                 except Exception:  # noqa: BLE001 - reported by the parse check
                     continue
                 found: list[str] = []
-                # ``x = ANY(...)`` compares with each element: a quantifier, not
-                # ClickHouse's ``any()`` aggregate. Its arguments are still read.
-                quantifiers: set[int] = set()
 
-                def note(
-                    node: Expr, found: list[str] = found, quantifiers: set[int] = quantifiers
-                ) -> Expr | None:
-                    if (
-                        isinstance(node, BinaryOp)
-                        and node.op.upper() in _COMPARISONS
-                        and isinstance(node.right, FunctionCall)
-                        and node.right.name.upper() in _QUANTIFIERS
-                    ):
-                        quantifiers.add(id(node.right))
+                def note(node: Expr, found: list[str] = found) -> Expr | None:
                     if isinstance(node, WindowFunction):
                         found.append(f"{node.func_name.upper()}() OVER")
                     elif (
                         isinstance(node, FunctionCall)
-                        and id(node) not in quantifiers
                         and _is_aggregate_name(node.name)
+                        and not _is_quantifier(node)
                     ):
                         found.append(node.name.upper())
                     return None
