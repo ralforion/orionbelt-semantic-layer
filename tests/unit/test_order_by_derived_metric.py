@@ -29,6 +29,7 @@ dataObjects:
     columns:
       Customer ID: {code: id, abstractType: int, primaryKey: true}
       Customer Name: {code: name, abstractType: string}
+      Credit: {code: credit, abstractType: float}
   Orders:
     code: orders
     schema: main
@@ -68,11 +69,28 @@ measures:
     columns: [{dataObject: Returns, column: Refund}]
     aggregation: sum
     resultType: float
+  Grand Total:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+    resultType: float
+    total: true
+  All Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+    resultType: float
+    filterContext: {mode: FIXED}
+  Total Credit:
+    columns: [{dataObject: Customers, column: Credit}]
+    aggregation: sum
+    resultType: float
 metrics:
   Average Order:
     expression: "{[Revenue]} / {[Order Count]}"
   Refund Rate:
     expression: "{[Refunds]} / {[Revenue]}"
+  Rounded Average:
+    expression: "{[Average Order]}"
+    dataType: integer
 """
 
 
@@ -125,3 +143,33 @@ def test_the_sort_key_is_the_metric_column(dialect: str) -> None:
     order_by = sql[sql.rindex("ORDER BY") :]
     assert "Average Order" in order_by
     assert "Revenue" not in order_by and "Order Count" not in order_by
+
+
+@pytest.mark.parametrize(
+    "companion",
+    ["Grand Total", "All Revenue", "Total Credit"],
+    ids=["total-wrap", "filter-context", "grain-dedup"],
+)
+def test_a_metric_over_the_sort_metric_does_not_take_its_place(companion: str) -> None:
+    """Rounded Average's expression is the bare alias "Average Order". A wrapper
+    rewriting the ORDER BY matched it, and sorted by the rounded column: 50.1,
+    50.2 and 50.3 all round to 50, so the tie broke on the customer instead."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE customers (id INTEGER, name VARCHAR, credit DOUBLE)")
+    con.execute("INSERT INTO customers VALUES (1, 'Alice', 1), (2, 'Bob', 2), (3, 'Carol', 3)")
+    con.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount DOUBLE)")
+    con.execute("INSERT INTO orders VALUES (1, 1, 50.1), (2, 2, 50.2), (3, 3, 50.3)")
+    sql = _sql(
+        {
+            "select": {
+                "dimensions": ["Customer"],
+                "measures": ["Average Order", "Rounded Average", companion],
+            },
+            "orderBy": [
+                {"field": "Average Order", "direction": "desc"},
+                {"field": "Customer", "direction": "asc"},
+            ],
+            "limit": 2,
+        }
+    )
+    assert [row[0] for row in con.execute(sql).fetchall()] == ["Carol", "Bob"]
