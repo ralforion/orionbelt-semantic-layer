@@ -440,3 +440,59 @@ dataObjects:
                 if e.code == "INVALID_COLUMN_EXPRESSION"
             )
         assert not noisy, "\n".join(noisy)
+
+
+class TestAggregateInComputedColumn:
+    """A computed column is row-level: an aggregate in its body is refused.
+
+    As a dimension, ``CASE WHEN SUM(amount) > 250 ...`` went into the SELECT
+    beside the measures, ``GROUP BY ALL`` took it for one of them, and the query
+    returned one row over the whole table without a word.
+    """
+
+    MODEL_YAML = TestUnparseableComputedColumn.MODEL_YAML
+
+    def _model(self, expression: str) -> SemanticModel:
+        raw, source_map = TrackedLoader().load_string(self.MODEL_YAML % expression)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return model
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "CASE WHEN SUM({Amount}) > 250 THEN 'high' ELSE 'low' END",
+            "COUNT({Code})",
+            "AVG({Amount}) * 2",
+            "COALESCE(MAX({Amount}), 0)",
+        ],
+    )
+    def test_the_model_does_not_validate(self, expression: str) -> None:
+        errors = [
+            e
+            for e in SemanticValidator().validate(self._model(expression))
+            if e.code == "AGGREGATE_IN_COLUMN_EXPRESSION"
+        ]
+        assert len(errors) == 1, errors
+        assert errors[0].path == "dataObjects.Event.columns.Tagged.expression"
+        assert "reaggregate" in (errors[0].hint or "")
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "UPPER({Code})",
+            "COALESCE({Code}, 'none')",
+            "CASE WHEN {Amount} > 250 THEN 'high' ELSE 'low' END",
+        ],
+    )
+    def test_a_row_level_body_still_validates(self, expression: str) -> None:
+        codes = {e.code for e in SemanticValidator().validate(self._model(expression))}
+        assert "AGGREGATE_IN_COLUMN_EXPRESSION" not in codes
+
+    def test_loading_the_model_is_refused(self) -> None:
+        from orionbelt.service.model_store import ModelStore, ModelValidationError
+
+        yaml_text = self.MODEL_YAML % "CASE WHEN SUM({Amount}) > 250 THEN 'high' ELSE 'low' END"
+        with pytest.raises(ModelValidationError) as excinfo:
+            ModelStore().load_model(yaml_text)
+        assert "AGGREGATE_IN_COLUMN_EXPRESSION" in [e.code for e in excinfo.value.errors]

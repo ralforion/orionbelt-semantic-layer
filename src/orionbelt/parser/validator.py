@@ -99,6 +99,23 @@ def _why_not_additive(measure: Measure) -> str | None:
     return None
 
 
+# Aggregate function names a row-level expression must not call: the model's
+# own aggregations (but the delegated ``measure``) and their common SQL forms.
+_AGGREGATES = frozenset(
+    {a.value.upper() for a in AggregationType if a is not AggregationType.MEASURE}
+    | {
+        "STRING_AGG",
+        "ARRAY_AGG",
+        "GROUP_CONCAT",
+        "STDDEV_SAMP",
+        "VAR_SAMP",
+        "APPROX_COUNT_DISTINCT",
+        "COUNTIF",
+        "SUMIF",
+    }
+)
+
+
 class SemanticValidator:
     """Validates semantic rules from spec §3.8."""
 
@@ -132,6 +149,7 @@ class SemanticValidator:
                 model, refused_columns, {e.path for e in reference_errors if e.path}
             )
         )
+        errors.extend(self._check_no_aggregates_in_computed_columns(model, set(refused_columns)))
         errors.extend(self._check_measure_expressions(model, set(refused_columns)))
         errors.extend(self._check_expression_functions(model))
         errors.extend(self._check_query_timezone_coverage(model))
@@ -1313,6 +1331,68 @@ class SemanticValidator:
                     context={"dataObject": obj_name, "column": col_name},
                 )
             )
+        return errors
+
+    def _check_no_aggregates_in_computed_columns(
+        self, model: SemanticModel, refused_columns: set[tuple[str, str]]
+    ) -> list[SemanticError]:
+        """A computed column is row-level: no aggregate, no window inside it.
+
+        A column is read once per row, and becomes a dimension, a filter or a
+        measure's argument. An aggregate in its body made the dimension an
+        aggregate too: ``CASE WHEN SUM(amount) > 250 ...`` as a dimension went
+        into the SELECT beside the measures, ``GROUP BY ALL`` took it for one
+        of them, and the query returned a single row over the whole table
+        without a word - on the engines that accept the SQL at all. A grouped
+        value belongs in a measure, a band over one in a ``reaggregate``
+        metric with ``having``.
+
+        Parsed with the compiler's own entry point, as the parse check is; a
+        body that does not parse is that check's to report.
+        """
+        from orionbelt.ast.nodes import Expr, FunctionCall, WindowFunction
+        from orionbelt.compiler.expr_rewrite import map_nodes
+        from orionbelt.compiler.resolution import parse_column_expression
+
+        errors: list[SemanticError] = []
+        for obj_name, obj in model.data_objects.items():
+            for col_name, column in obj.columns.items():
+                if not column.expression or (obj_name, col_name) in refused_columns:
+                    continue
+                try:
+                    body = parse_column_expression(column, obj, model)
+                except Exception:  # noqa: BLE001 - reported by the parse check
+                    continue
+                found: list[str] = []
+
+                def note(node: Expr, found: list[str] = found) -> Expr | None:
+                    if isinstance(node, WindowFunction):
+                        found.append(f"{node.func_name.upper()}() OVER")
+                    elif isinstance(node, FunctionCall) and node.name.upper() in _AGGREGATES:
+                        found.append(node.name.upper())
+                    return None
+
+                map_nodes(body, note)
+                if not found:
+                    continue
+                listed = ", ".join(sorted(set(found)))
+                errors.append(
+                    SemanticError(
+                        code="AGGREGATE_IN_COLUMN_EXPRESSION",
+                        message=(
+                            f"Computed column '{col_name}' in data object '{obj_name}' "
+                            f"aggregates ({listed}). A computed column is read once per "
+                            f"row; as a dimension its aggregate is taken for a measure, "
+                            f"and the query returns one row over everything."
+                        ),
+                        path=f"dataObjects.{obj_name}.columns.{col_name}.expression",
+                        hint=(
+                            "Aggregate in a measure instead. To band rows by a grouped "
+                            "value, use a reaggregate metric with 'having'."
+                        ),
+                        context={"dataObject": obj_name, "column": col_name},
+                    )
+                )
         return errors
 
     @staticmethod
