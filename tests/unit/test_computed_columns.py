@@ -474,6 +474,9 @@ class TestAggregateInComputedColumn:
             "SUMIF({Amount}, {Amount} > 1)",
             "STRING_AGG({Code}, ',')",
             "APPROX_COUNT_DISTINCT({Code})",
+            "APPROX_PERCENTILE({Amount}, 0.5)",
+            # ClickHouse's any(), called as a function rather than compared with.
+            "ANY({Code})",
         ],
     )
     def test_the_model_does_not_validate(self, expression: str) -> None:
@@ -494,6 +497,10 @@ class TestAggregateInComputedColumn:
             "CASE WHEN {Amount} > 250 THEN 'high' ELSE 'low' END",
             "NULLIF({Code}, 'x')",
             "BIT_LENGTH({Code})",
+            # A comparison quantifier, not an aggregate call.
+            "CASE WHEN {Amount} = ANY(RANGE(50, 150)) THEN 'low' ELSE 'high' END",
+            # A sketch's estimate reads one stored state per row.
+            "APPROX_PERCENTILE_ESTIMATE(PARSE_JSON({Code}), 0.5)",
         ],
     )
     def test_a_row_level_body_still_validates(self, expression: str) -> None:
@@ -515,3 +522,11 @@ def test_no_portable_function_is_taken_for_an_aggregate() -> None:
     from orionbelt.parser.validator import _is_aggregate_name
 
     assert [name for name in FUNCTION_CATALOG if _is_aggregate_name(name)] == []
+
+
+def test_an_aggregate_inside_a_quantifier_is_still_found() -> None:
+    """The quantifier is skipped, not what it is applied to."""
+    cls = TestAggregateInComputedColumn
+    model = cls()._model("CASE WHEN {Amount} = ANY(SUM({Amount})) THEN 'a' ELSE 'b' END")
+    codes = [e.code for e in SemanticValidator().validate(model)]
+    assert "AGGREGATE_IN_COLUMN_EXPRESSION" in codes

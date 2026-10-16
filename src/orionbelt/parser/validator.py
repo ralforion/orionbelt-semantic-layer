@@ -164,6 +164,11 @@ _AGGREGATE_PREFIXES = (
 )
 
 
+# A comparison's quantifier (``x = ANY(...)``), which is no aggregate call.
+_QUANTIFIERS = frozenset({"ANY", "SOME", "ALL"})
+_COMPARISONS = frozenset({"=", "<>", "!=", "<", ">", "<=", ">="})
+
+
 def _is_aggregate_name(name: str) -> bool:
     """Whether a function called *name* aggregates rows.
 
@@ -172,6 +177,10 @@ def _is_aggregate_name(name: str) -> bool:
     ``NULLIF`` and ``IF`` are scalar, and their stems are no aggregate.
     """
     upper = name.upper()
+    # A sketch's estimate reads one stored state per row (Snowflake
+    # ``APPROX_PERCENTILE_ESTIMATE``, ``APPROX_TOP_K_ESTIMATE``): scalar.
+    if upper.endswith("_ESTIMATE"):
+        return False
     if upper in _AGGREGATES or upper.endswith("_AGG"):
         return True
     if upper.startswith(_AGGREGATE_PREFIXES):
@@ -1417,7 +1426,7 @@ class SemanticValidator:
         Parsed with the compiler's own entry point, as the parse check is; a
         body that does not parse is that check's to report.
         """
-        from orionbelt.ast.nodes import Expr, FunctionCall, WindowFunction
+        from orionbelt.ast.nodes import BinaryOp, Expr, FunctionCall, WindowFunction
         from orionbelt.compiler.expr_rewrite import map_nodes
         from orionbelt.compiler.resolution import parse_column_expression
 
@@ -1431,11 +1440,27 @@ class SemanticValidator:
                 except Exception:  # noqa: BLE001 - reported by the parse check
                     continue
                 found: list[str] = []
+                # ``x = ANY(...)`` compares with each element: a quantifier, not
+                # ClickHouse's ``any()`` aggregate. Its arguments are still read.
+                quantifiers: set[int] = set()
 
-                def note(node: Expr, found: list[str] = found) -> Expr | None:
+                def note(
+                    node: Expr, found: list[str] = found, quantifiers: set[int] = quantifiers
+                ) -> Expr | None:
+                    if (
+                        isinstance(node, BinaryOp)
+                        and node.op.upper() in _COMPARISONS
+                        and isinstance(node.right, FunctionCall)
+                        and node.right.name.upper() in _QUANTIFIERS
+                    ):
+                        quantifiers.add(id(node.right))
                     if isinstance(node, WindowFunction):
                         found.append(f"{node.func_name.upper()}() OVER")
-                    elif isinstance(node, FunctionCall) and _is_aggregate_name(node.name):
+                    elif (
+                        isinstance(node, FunctionCall)
+                        and id(node) not in quantifiers
+                        and _is_aggregate_name(node.name)
+                    ):
                         found.append(node.name.upper())
                     return None
 
