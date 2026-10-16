@@ -206,10 +206,11 @@ def test_two_grains_of_the_date(run: Callable, commerce_db: duckdb.DuckDBPyConne
 
 def test_without_a_date_nothing_is_carried(run: Callable) -> None:
     """By country alone there is one period, the whole range: carrying is the
-    plain population."""
+    plain population. Compared to the cent: the two sum the same DOUBLE values
+    in different orders, which moves the last binary digits."""
     rows = run(["Country Name"], ["Closing Total", "Closing Total Uncarried"])
     assert rows
-    assert all(r[1] == r[2] for r in rows)
+    assert all(_close(r[1], r[2]) for r in rows)
 
 
 def test_two_dates_refused(model: SemanticModel) -> None:
