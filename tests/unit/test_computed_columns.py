@@ -482,6 +482,12 @@ class TestAggregateInComputedColumn:
             "CASE WHEN 250 < ANY({Amount}) THEN 'high' ELSE 'low' END",
             "CASE WHEN ANY(ARRAY({Amount})) > 250 THEN 'high' ELSE 'low' END",
             "CASE WHEN {Amount} = ANY(RANGE(50, 150)) THEN 'low' ELSE 'high' END",
+            # Databricks' some() / bool_or over a condition: an aggregate, alone or
+            # compared with.
+            "CASE WHEN SOME({Amount} > 250) THEN 'high' ELSE 'low' END",
+            "CASE WHEN SOME({Amount} > 250) = 1 THEN 'high' ELSE 'low' END",
+            "CASE WHEN 1 = SOME({Amount} > 250) THEN 'high' ELSE 'low' END",
+            "CASE WHEN ALL({Amount} > 0) THEN 'high' ELSE 'low' END",
         ],
     )
     def test_the_model_does_not_validate(self, expression: str) -> None:
@@ -550,3 +556,13 @@ def test_a_refused_any_points_to_some() -> None:
         e for e in SemanticValidator().validate(model) if e.code == "AGGREGATE_IN_COLUMN_EXPRESSION"
     ]
     assert "SOME(" in (error.hint or "")
+
+
+def test_a_refused_some_explains_the_two_meanings() -> None:
+    model = TestAggregateInComputedColumn()._model(
+        "CASE WHEN SOME({Amount} > 250) THEN 'high' ELSE 'low' END"
+    )
+    (error,) = [
+        e for e in SemanticValidator().validate(model) if e.code == "AGGREGATE_IN_COLUMN_EXPRESSION"
+    ]
+    assert "Databricks" in (error.hint or "")

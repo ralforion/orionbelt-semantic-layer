@@ -166,10 +166,17 @@ _AGGREGATE_PREFIXES = (
 
 # ``ANY(x)`` is ClickHouse's ``any()`` aggregate there, over a scalar or an
 # array alike, and a comparison quantifier (``x = ANY(list)``) on DuckDB and
-# Postgres. A model is checked without a dialect, so the spelling is refused:
-# ``SOME`` is the standard quantifier's other name, no engine aggregates by it,
-# and it reads the same everywhere (as does ``ALL``).
+# Postgres. A model is checked without a dialect and no form of the call tells
+# the two apart, so the spelling is refused: ``SOME`` is the standard
+# quantifier's other name.
 _AMBIGUOUS_ANY = "ANY"
+# ``SOME`` / ``ALL`` are the quantifier when compared with (``x = SOME(list)``).
+# Databricks also has ``some(condition)``, an aggregate like ``bool_or``: it
+# takes a condition and stands as a value of its own. So a call is the
+# quantifier only as the right operand of a comparison, over an argument that
+# is no condition (:func:`_is_condition`); any other is the aggregate.
+_QUANTIFIERS = frozenset({"SOME", "ALL"})
+_COMPARISONS = frozenset({"=", "<>", "!=", "<", ">", "<=", ">="})
 
 
 def _is_aggregate_name(name: str) -> bool:
@@ -193,6 +200,30 @@ def _is_aggregate_name(name: str) -> bool:
         if stem != upper and stem in _AGGREGATES:
             return True
     return False
+
+
+def _is_condition(expr: object) -> bool:
+    """Whether *expr* is a true / false condition: what an aggregate such as
+    Databricks' ``some()`` takes, and never the list a quantifier compares with."""
+    from orionbelt.ast.nodes import (
+        Between,
+        BinaryOp,
+        ColumnRef,
+        Exists,
+        InList,
+        IsNull,
+        LikeMatch,
+        RegexMatch,
+        UnaryOp,
+    )
+
+    if isinstance(expr, BinaryOp):
+        return expr.op.upper() in _COMPARISONS | {"AND", "OR", "LIKE", "ILIKE"}
+    if isinstance(expr, UnaryOp):
+        return expr.op.upper() == "NOT"
+    if isinstance(expr, ColumnRef):
+        return expr.abstract_type == DataType.BOOLEAN.value
+    return isinstance(expr, IsNull | InList | Between | LikeMatch | RegexMatch | Exists)
 
 
 class SemanticValidator:
@@ -1429,7 +1460,7 @@ class SemanticValidator:
         Parsed with the compiler's own entry point, as the parse check is; a
         body that does not parse is that check's to report.
         """
-        from orionbelt.ast.nodes import Expr, FunctionCall, WindowFunction
+        from orionbelt.ast.nodes import BinaryOp, Expr, FunctionCall, WindowFunction
         from orionbelt.compiler.expr_rewrite import map_nodes
         from orionbelt.compiler.resolution import parse_column_expression
 
@@ -1443,11 +1474,28 @@ class SemanticValidator:
                 except Exception:  # noqa: BLE001 - reported by the parse check
                     continue
                 found: list[str] = []
+                # Calls compared with as a quantifier (see ``_QUANTIFIERS``),
+                # seen at their comparison before the walk reaches them.
+                quantifiers: set[int] = set()
 
-                def note(node: Expr, found: list[str] = found) -> Expr | None:
+                def note(
+                    node: Expr, found: list[str] = found, quantifiers: set[int] = quantifiers
+                ) -> Expr | None:
+                    if (
+                        isinstance(node, BinaryOp)
+                        and node.op.upper() in _COMPARISONS
+                        and isinstance(node.right, FunctionCall)
+                        and node.right.name.upper() in _QUANTIFIERS
+                        and len(node.right.args) == 1
+                        and not _is_condition(node.right.args[0])
+                    ):
+                        quantifiers.add(id(node.right))
                     if isinstance(node, WindowFunction):
                         found.append(f"{node.func_name.upper()}() OVER")
-                    elif isinstance(node, FunctionCall) and _is_aggregate_name(node.name):
+                    elif isinstance(node, FunctionCall) and (
+                        _is_aggregate_name(node.name)
+                        or (node.name.upper() in _QUANTIFIERS and id(node) not in quantifiers)
+                    ):
                         found.append(node.name.upper())
                     return None
 
@@ -1473,6 +1521,13 @@ class SemanticValidator:
                                 "'= SOME(...)': 'ANY(...)' is ClickHouse's any() "
                                 "aggregate, and a model is read the same on every engine."
                                 if _AMBIGUOUS_ANY in found
+                                else ""
+                            )
+                            + (
+                                " 'SOME' / 'ALL' is a quantifier only compared with a "
+                                "list ('x = SOME(list)'); called on a condition, it is "
+                                "Databricks' some() aggregate."
+                                if _QUANTIFIERS & set(found)
                                 else ""
                             )
                         ),
