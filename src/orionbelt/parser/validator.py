@@ -99,6 +99,171 @@ def _why_not_additive(measure: Measure) -> str | None:
     return None
 
 
+# Aggregate function names a row-level expression must not call: the model's
+# own aggregations (but the delegated ``measure``) and the aggregates the eight
+# engines spell otherwise. A name list cannot be complete for every vendor
+# function, so families are matched too (:func:`_is_aggregate_name`); a scalar
+# that merely shares a prefix (``BIT_LENGTH``) is not caught by them.
+_AGGREGATES = frozenset(
+    {a.value.upper() for a in AggregationType if a is not AggregationType.MEASURE}
+    | {
+        "STRING_AGG",
+        "ARRAY_AGG",
+        "GROUP_CONCAT",
+        "LIST",
+        "HISTOGRAM",
+        "STDDEV_SAMP",
+        "VAR_SAMP",
+        "VARIANCE_SAMP",
+        "VARIANCE_POP",
+        "BOOL_AND",
+        "BOOL_OR",
+        "BOOLAND_AGG",
+        "BOOLOR_AGG",
+        "EVERY",
+        "LOGICAL_AND",
+        "LOGICAL_OR",
+        "BIT_AND",
+        "BIT_OR",
+        "BIT_XOR",
+        "BITAND_AGG",
+        "BITOR_AGG",
+        "BITXOR_AGG",
+        "ARG_MAX",
+        "ARG_MIN",
+        "ARGMAX",
+        "ARGMIN",
+        "MAX_BY",
+        "MIN_BY",
+        "PRODUCT",
+        "KURTOSIS",
+        "KURTOSIS_POP",
+        "SKEWNESS",
+        "ENTROPY",
+        "ANY",
+        "ANYLAST",
+        "ANYHEAVY",
+        "GROUPARRAY",
+        "GROUPUNIQARRAY",
+        "TOPK",
+        "MEDIANEXACT",
+    }
+)
+_AGGREGATE_PREFIXES = (
+    "APPROX_",
+    "QUANTILE",
+    "PERCENTILE",
+    "REGR_",
+    "COVAR",
+    "STDDEV",
+    "VAR_",
+    "COLLECT_",
+    "UNIQ",
+    "GROUPARRAY",
+    "GROUP_ARRAY",
+)
+
+
+# ``ANY(x)`` is ClickHouse's ``any()`` aggregate there, over a scalar or an
+# array alike, and a comparison quantifier (``x = ANY(list)``) on DuckDB and
+# Postgres. A model is checked without a dialect and no form of the call tells
+# the two apart, so the spelling is refused: ``SOME`` is the standard
+# quantifier's other name.
+_AMBIGUOUS_ANY = "ANY"
+# ``SOME`` / ``ALL`` are the quantifier when compared with a list
+# (``x = SOME(list)``). Databricks also has ``some(value)``, an aggregate like
+# ``bool_or``. So a call is the quantifier only as the right operand of a
+# comparison over an argument recognised as a list (:func:`_is_list_valued`);
+# any other call is the aggregate. Unrecognised is not a list: a list form the
+# check does not know is refused, with a hint, rather than an aggregate let in.
+_QUANTIFIERS = frozenset({"SOME", "ALL"})
+_COMPARISONS = frozenset({"=", "<>", "!=", "<", ">", "<=", ">="})
+# Functions that build a list or array.
+_LIST_BUILDERS = frozenset(
+    {
+        "RANGE",
+        "GENERATE_SERIES",
+        "ARRAY",
+        "ARRAY_CONSTRUCT",
+        "LIST_VALUE",
+        "STRING_SPLIT",
+        "STR_SPLIT",
+        "SPLIT",
+        "STRING_TO_ARRAY",
+        "REGEXP_SPLIT_TO_ARRAY",
+        "SEQUENCE",
+    }
+)
+# Functions whose result is a list when their first argument is one.
+_LIST_TRANSFORMS = frozenset(
+    {
+        "LIST_DISTINCT",
+        "LIST_SORT",
+        "LIST_REVERSE_SORT",
+        "LIST_SLICE",
+        "LIST_CONCAT",
+        "LIST_FILTER",
+        "ARRAY_DISTINCT",
+        "ARRAY_SORT",
+        "ARRAY_SLICE",
+        "ARRAY_CAT",
+        "ARRAY_CONCAT",
+        "ARRAY_COMPACT",
+        "ARRAY_REVERSE",
+    }
+)
+# Functions returning one of their arguments, so a list when one of them is.
+_LIST_PASSTHROUGH = frozenset({"COALESCE", "IFNULL", "NVL", "NULLIF"})
+
+
+def _is_aggregate_name(name: str) -> bool:
+    """Whether a function called *name* aggregates rows.
+
+    Besides the listed names and families: a conditional form of an aggregate
+    (``COUNT_IF``, ``SUMIF``, ClickHouse ``avgIf``), whose stem is one.
+    ``NULLIF`` and ``IF`` are scalar, and their stems are no aggregate.
+    """
+    upper = name.upper()
+    # A sketch's estimate reads one stored state per row (Snowflake
+    # ``APPROX_PERCENTILE_ESTIMATE``, ``APPROX_TOP_K_ESTIMATE``): scalar.
+    if upper.endswith("_ESTIMATE"):
+        return False
+    if upper in _AGGREGATES or upper.endswith("_AGG"):
+        return True
+    if upper.startswith(_AGGREGATE_PREFIXES):
+        return True
+    for suffix in ("_IF", "IF"):
+        stem = upper.removesuffix(suffix)
+        if stem != upper and stem in _AGGREGATES:
+            return True
+    return False
+
+
+def _is_list_valued(expr: object) -> bool:
+    """Whether *expr* is recognised as a list or array: what a quantifier
+    compares with. Anything not recognised is not taken for one."""
+    from orionbelt.ast.nodes import CaseExpr, ColumnRef, FunctionCall, SubqueryExpr
+
+    if isinstance(expr, SubqueryExpr):
+        return True
+    if isinstance(expr, ColumnRef):
+        return expr.abstract_type == DataType.JSON.value
+    if isinstance(expr, CaseExpr):
+        branches = [result for _, result in expr.when_clauses]
+        if expr.else_clause is not None:
+            branches.append(expr.else_clause)
+        return any(_is_list_valued(branch) for branch in branches)
+    if isinstance(expr, FunctionCall):
+        name = expr.name.upper()
+        if name in _LIST_BUILDERS:
+            return True
+        if name in _LIST_TRANSFORMS:
+            return bool(expr.args) and _is_list_valued(expr.args[0])
+        if name in _LIST_PASSTHROUGH:
+            return any(_is_list_valued(arg) for arg in expr.args)
+    return False
+
+
 class SemanticValidator:
     """Validates semantic rules from spec §3.8."""
 
@@ -132,6 +297,7 @@ class SemanticValidator:
                 model, refused_columns, {e.path for e in reference_errors if e.path}
             )
         )
+        errors.extend(self._check_no_aggregates_in_computed_columns(model, set(refused_columns)))
         errors.extend(self._check_measure_expressions(model, set(refused_columns)))
         errors.extend(self._check_expression_functions(model))
         errors.extend(self._check_query_timezone_coverage(model))
@@ -1313,6 +1479,99 @@ class SemanticValidator:
                     context={"dataObject": obj_name, "column": col_name},
                 )
             )
+        return errors
+
+    def _check_no_aggregates_in_computed_columns(
+        self, model: SemanticModel, refused_columns: set[tuple[str, str]]
+    ) -> list[SemanticError]:
+        """A computed column is row-level: no aggregate, no window inside it.
+
+        A column is read once per row, and becomes a dimension, a filter or a
+        measure's argument. An aggregate in its body made the dimension an
+        aggregate too: ``CASE WHEN SUM(amount) > 250 ...`` as a dimension went
+        into the SELECT beside the measures, ``GROUP BY ALL`` took it for one
+        of them, and the query returned a single row over the whole table
+        without a word - on the engines that accept the SQL at all. A grouped
+        value belongs in a measure, a band over one in a ``reaggregate``
+        metric with ``having``.
+
+        Parsed with the compiler's own entry point, as the parse check is; a
+        body that does not parse is that check's to report.
+        """
+        from orionbelt.ast.nodes import BinaryOp, Expr, FunctionCall, WindowFunction
+        from orionbelt.compiler.expr_rewrite import map_nodes
+        from orionbelt.compiler.resolution import parse_column_expression
+
+        errors: list[SemanticError] = []
+        for obj_name, obj in model.data_objects.items():
+            for col_name, column in obj.columns.items():
+                if not column.expression or (obj_name, col_name) in refused_columns:
+                    continue
+                try:
+                    body = parse_column_expression(column, obj, model)
+                except Exception:  # noqa: BLE001 - reported by the parse check
+                    continue
+                found: list[str] = []
+                # Calls compared with as a quantifier (see ``_QUANTIFIERS``),
+                # seen at their comparison before the walk reaches them.
+                quantifiers: set[int] = set()
+
+                def note(
+                    node: Expr, found: list[str] = found, quantifiers: set[int] = quantifiers
+                ) -> Expr | None:
+                    if (
+                        isinstance(node, BinaryOp)
+                        and node.op.upper() in _COMPARISONS
+                        and isinstance(node.right, FunctionCall)
+                        and node.right.name.upper() in _QUANTIFIERS
+                        and len(node.right.args) == 1
+                        and _is_list_valued(node.right.args[0])
+                    ):
+                        quantifiers.add(id(node.right))
+                    if isinstance(node, WindowFunction):
+                        found.append(f"{node.func_name.upper()}() OVER")
+                    elif isinstance(node, FunctionCall) and (
+                        _is_aggregate_name(node.name)
+                        or (node.name.upper() in _QUANTIFIERS and id(node) not in quantifiers)
+                    ):
+                        found.append(node.name.upper())
+                    return None
+
+                map_nodes(body, note)
+                if not found:
+                    continue
+                listed = ", ".join(sorted(set(found)))
+                errors.append(
+                    SemanticError(
+                        code="AGGREGATE_IN_COLUMN_EXPRESSION",
+                        message=(
+                            f"Computed column '{col_name}' in data object '{obj_name}' "
+                            f"aggregates ({listed}). A computed column is read once per "
+                            f"row; as a dimension its aggregate is taken for a measure, "
+                            f"and the query returns one row over everything."
+                        ),
+                        path=f"dataObjects.{obj_name}.columns.{col_name}.expression",
+                        hint=(
+                            "Aggregate in a measure instead. To band rows by a grouped "
+                            "value, use a reaggregate metric with 'having'."
+                            + (
+                                " To compare with each element of a list, write "
+                                "'= SOME(...)': 'ANY(...)' is ClickHouse's any() "
+                                "aggregate, and a model is read the same on every engine."
+                                if _AMBIGUOUS_ANY in found
+                                else ""
+                            )
+                            + (
+                                " 'SOME' / 'ALL' is a quantifier only compared with a "
+                                "list built by a list function ('x = SOME(RANGE(...))'); "
+                                "over anything else it is Databricks' some() aggregate."
+                                if _QUANTIFIERS & set(found)
+                                else ""
+                            )
+                        ),
+                        context={"dataObject": obj_name, "column": col_name},
+                    )
+                )
         return errors
 
     @staticmethod

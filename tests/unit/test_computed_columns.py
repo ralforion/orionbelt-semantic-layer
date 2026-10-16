@@ -440,3 +440,133 @@ dataObjects:
                 if e.code == "INVALID_COLUMN_EXPRESSION"
             )
         assert not noisy, "\n".join(noisy)
+
+
+class TestAggregateInComputedColumn:
+    """A computed column is row-level: an aggregate in its body is refused.
+
+    As a dimension, ``CASE WHEN SUM(amount) > 250 ...`` went into the SELECT
+    beside the measures, ``GROUP BY ALL`` took it for one of them, and the query
+    returned one row over the whole table without a word.
+    """
+
+    MODEL_YAML = TestUnparseableComputedColumn.MODEL_YAML
+
+    def _model(self, expression: str) -> SemanticModel:
+        raw, source_map = TrackedLoader().load_string(self.MODEL_YAML % expression)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return model
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "CASE WHEN SUM({Amount}) > 250 THEN 'high' ELSE 'low' END",
+            "COUNT({Code})",
+            "AVG({Amount}) * 2",
+            "COALESCE(MAX({Amount}), 0)",
+            # Engine-specific aggregates, which pass as non-portable functions.
+            "CASE WHEN BOOL_OR({Amount} > 250) THEN 'high' ELSE 'low' END",
+            "BOOL_AND({Amount} > 0)",
+            "QUANTILE_CONT({Amount}, 0.5)",
+            "ARG_MAX({Code}, {Amount})",
+            "COUNT_IF({Amount} > 1)",
+            "SUMIF({Amount}, {Amount} > 1)",
+            "STRING_AGG({Code}, ',')",
+            "APPROX_COUNT_DISTINCT({Code})",
+            "APPROX_PERCENTILE({Amount}, 0.5)",
+            # ClickHouse's any(), called as a function rather than compared with.
+            "ANY({Code})",
+            # ... and compared with, over a scalar or an array alike: ANY is
+            # ClickHouse's aggregate there, so the spelling is refused.
+            "CASE WHEN 250 < ANY({Amount}) THEN 'high' ELSE 'low' END",
+            "CASE WHEN ANY(ARRAY({Amount})) > 250 THEN 'high' ELSE 'low' END",
+            "CASE WHEN {Amount} = ANY(RANGE(50, 150)) THEN 'low' ELSE 'high' END",
+            # Databricks' some() / bool_or over a condition: an aggregate, alone or
+            # compared with.
+            "CASE WHEN SOME({Amount} > 250) THEN 'high' ELSE 'low' END",
+            "CASE WHEN SOME({Amount} > 250) = 1 THEN 'high' ELSE 'low' END",
+            "CASE WHEN 1 = SOME({Amount} > 250) THEN 'high' ELSE 'low' END",
+            "CASE WHEN ALL({Amount} > 0) THEN 'high' ELSE 'low' END",
+            # ... over anything not recognised as a list.
+            "CASE WHEN TRUE = SOME(COALESCE({Amount} > 250, FALSE)) THEN 'a' ELSE 'b' END",
+            "CASE WHEN TRUE = SOME(TRUE) THEN 'a' ELSE 'b' END",
+            "CASE WHEN 1 = SOME(CASE WHEN {Amount} > 1 THEN 1 ELSE 0 END) THEN 'a' END",
+        ],
+    )
+    def test_the_model_does_not_validate(self, expression: str) -> None:
+        errors = [
+            e
+            for e in SemanticValidator().validate(self._model(expression))
+            if e.code == "AGGREGATE_IN_COLUMN_EXPRESSION"
+        ]
+        assert len(errors) == 1, errors
+        assert errors[0].path == "dataObjects.Event.columns.Tagged.expression"
+        assert "reaggregate" in (errors[0].hint or "")
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "UPPER({Code})",
+            "COALESCE({Code}, 'none')",
+            "CASE WHEN {Amount} > 250 THEN 'high' ELSE 'low' END",
+            "NULLIF({Code}, 'x')",
+            "BIT_LENGTH({Code})",
+            # The quantifier spelled SOME (or ALL), which no engine aggregates by,
+            # over any list expression.
+            "CASE WHEN {Amount} = SOME(RANGE(50, 150)) THEN 'low' ELSE 'high' END",
+            "CASE WHEN {Amount} = SOME(COALESCE(RANGE(50, 150), RANGE(0, 0))) THEN 1 END",
+            "CASE WHEN {Amount} = SOME(LIST_DISTINCT(RANGE(50, 150))) THEN 'a' ELSE 'b' END",
+            "CASE WHEN {Amount} > ALL(RANGE(50, 150)) THEN 'high' ELSE 'low' END",
+            "CASE WHEN {Code} = SOME(STRING_SPLIT('a,b', ',')) THEN 'x' ELSE 'y' END",
+            # A sketch's estimate reads one stored state per row.
+            "APPROX_PERCENTILE_ESTIMATE(PARSE_JSON({Code}), 0.5)",
+        ],
+    )
+    def test_a_row_level_body_still_validates(self, expression: str) -> None:
+        codes = {e.code for e in SemanticValidator().validate(self._model(expression))}
+        assert "AGGREGATE_IN_COLUMN_EXPRESSION" not in codes
+
+    def test_loading_the_model_is_refused(self) -> None:
+        from orionbelt.service.model_store import ModelStore, ModelValidationError
+
+        yaml_text = self.MODEL_YAML % "CASE WHEN SUM({Amount}) > 250 THEN 'high' ELSE 'low' END"
+        with pytest.raises(ModelValidationError) as excinfo:
+            ModelStore().load_model(yaml_text)
+        assert "AGGREGATE_IN_COLUMN_EXPRESSION" in [e.code for e in excinfo.value.errors]
+
+
+def test_no_portable_function_is_taken_for_an_aggregate() -> None:
+    """The families match by name; none of the catalog's scalars may fall in one."""
+    from orionbelt.models.functions import FUNCTION_CATALOG
+    from orionbelt.parser.validator import _is_aggregate_name
+
+    assert [name for name in FUNCTION_CATALOG if _is_aggregate_name(name)] == []
+
+
+def test_an_aggregate_inside_a_quantifier_is_still_found() -> None:
+    """The quantifier is skipped, not what it is applied to."""
+    cls = TestAggregateInComputedColumn
+    model = cls()._model("CASE WHEN {Amount} = SOME(SUM({Amount})) THEN 'a' ELSE 'b' END")
+    codes = [e.code for e in SemanticValidator().validate(model)]
+    assert "AGGREGATE_IN_COLUMN_EXPRESSION" in codes
+
+
+def test_a_refused_any_points_to_some() -> None:
+    model = TestAggregateInComputedColumn()._model(
+        "CASE WHEN {Amount} = ANY(RANGE(50, 150)) THEN 'low' ELSE 'high' END"
+    )
+    (error,) = [
+        e for e in SemanticValidator().validate(model) if e.code == "AGGREGATE_IN_COLUMN_EXPRESSION"
+    ]
+    assert "SOME(" in (error.hint or "")
+
+
+def test_a_refused_some_explains_the_two_meanings() -> None:
+    model = TestAggregateInComputedColumn()._model(
+        "CASE WHEN SOME({Amount} > 250) THEN 'high' ELSE 'low' END"
+    )
+    (error,) = [
+        e for e in SemanticValidator().validate(model) if e.code == "AGGREGATE_IN_COLUMN_EXPRESSION"
+    ]
+    assert "Databricks" in (error.hint or "")
