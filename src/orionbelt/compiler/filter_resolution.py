@@ -483,7 +483,19 @@ def resolve_order_by_field(
             # the windowed output the user asked for. Same pattern as
             # coalesce_aliases above: emit a table-less ColumnRef so
             # both star and CFL outer SELECTs bind it correctly.
-            if meas.is_window or meas.is_cumulative or meas.is_pop or meas.is_reaggregate:
+            #
+            # A derived metric likewise: its expression is a formula over its
+            # components' aliases (``"revenue" / NULLIF("order_count", 0)``),
+            # which name nothing unless every component is selected too, and
+            # then bind only where an engine reads output aliases inside an
+            # ORDER BY expression. Its own alias is in every SELECT.
+            if (
+                meas.is_window
+                or meas.is_cumulative
+                or meas.is_pop
+                or meas.is_reaggregate
+                or meas.component_measures
+            ):
                 return ColumnRef(name=meas.name)
             return meas.expression
 
