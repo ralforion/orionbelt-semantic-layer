@@ -100,20 +100,87 @@ def _why_not_additive(measure: Measure) -> str | None:
 
 
 # Aggregate function names a row-level expression must not call: the model's
-# own aggregations (but the delegated ``measure``) and their common SQL forms.
+# own aggregations (but the delegated ``measure``) and the aggregates the eight
+# engines spell otherwise. A name list cannot be complete for every vendor
+# function, so families are matched too (:func:`_is_aggregate_name`); a scalar
+# that merely shares a prefix (``BIT_LENGTH``) is not caught by them.
 _AGGREGATES = frozenset(
     {a.value.upper() for a in AggregationType if a is not AggregationType.MEASURE}
     | {
         "STRING_AGG",
         "ARRAY_AGG",
         "GROUP_CONCAT",
+        "LIST",
+        "HISTOGRAM",
         "STDDEV_SAMP",
         "VAR_SAMP",
-        "APPROX_COUNT_DISTINCT",
-        "COUNTIF",
-        "SUMIF",
+        "VARIANCE_SAMP",
+        "VARIANCE_POP",
+        "BOOL_AND",
+        "BOOL_OR",
+        "BOOLAND_AGG",
+        "BOOLOR_AGG",
+        "EVERY",
+        "LOGICAL_AND",
+        "LOGICAL_OR",
+        "BIT_AND",
+        "BIT_OR",
+        "BIT_XOR",
+        "BITAND_AGG",
+        "BITOR_AGG",
+        "BITXOR_AGG",
+        "ARG_MAX",
+        "ARG_MIN",
+        "ARGMAX",
+        "ARGMIN",
+        "MAX_BY",
+        "MIN_BY",
+        "PRODUCT",
+        "KURTOSIS",
+        "KURTOSIS_POP",
+        "SKEWNESS",
+        "ENTROPY",
+        "ANY",
+        "ANYLAST",
+        "ANYHEAVY",
+        "GROUPARRAY",
+        "GROUPUNIQARRAY",
+        "TOPK",
+        "MEDIANEXACT",
     }
 )
+_AGGREGATE_PREFIXES = (
+    "APPROX_",
+    "QUANTILE",
+    "PERCENTILE",
+    "REGR_",
+    "COVAR",
+    "STDDEV",
+    "VAR_",
+    "COLLECT_",
+    "UNIQ",
+    "GROUPARRAY",
+    "GROUP_ARRAY",
+)
+
+
+def _is_aggregate_name(name: str) -> bool:
+    """Whether a function called *name* aggregates rows.
+
+    Besides the listed names and families: a conditional form of an aggregate
+    (``COUNT_IF``, ``SUMIF``, ClickHouse ``avgIf``), whose stem is one.
+    ``NULLIF`` and ``IF`` are scalar, and their stems are no aggregate.
+    """
+    upper = name.upper()
+    if upper in _AGGREGATES or upper.endswith("_AGG"):
+        return True
+    if upper.startswith(_AGGREGATE_PREFIXES):
+        return True
+    for suffix in ("_IF", "IF"):
+        stem = upper.removesuffix(suffix)
+        if stem != upper and stem in _AGGREGATES:
+            return True
+    return False
 
 
 class SemanticValidator:
@@ -1368,7 +1435,7 @@ class SemanticValidator:
                 def note(node: Expr, found: list[str] = found) -> Expr | None:
                     if isinstance(node, WindowFunction):
                         found.append(f"{node.func_name.upper()}() OVER")
-                    elif isinstance(node, FunctionCall) and node.name.upper() in _AGGREGATES:
+                    elif isinstance(node, FunctionCall) and _is_aggregate_name(node.name):
                         found.append(node.name.upper())
                     return None
 

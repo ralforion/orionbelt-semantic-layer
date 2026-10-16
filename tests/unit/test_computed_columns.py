@@ -465,6 +465,15 @@ class TestAggregateInComputedColumn:
             "COUNT({Code})",
             "AVG({Amount}) * 2",
             "COALESCE(MAX({Amount}), 0)",
+            # Engine-specific aggregates, which pass as non-portable functions.
+            "CASE WHEN BOOL_OR({Amount} > 250) THEN 'high' ELSE 'low' END",
+            "BOOL_AND({Amount} > 0)",
+            "QUANTILE_CONT({Amount}, 0.5)",
+            "ARG_MAX({Code}, {Amount})",
+            "COUNT_IF({Amount} > 1)",
+            "SUMIF({Amount}, {Amount} > 1)",
+            "STRING_AGG({Code}, ',')",
+            "APPROX_COUNT_DISTINCT({Code})",
         ],
     )
     def test_the_model_does_not_validate(self, expression: str) -> None:
@@ -483,6 +492,8 @@ class TestAggregateInComputedColumn:
             "UPPER({Code})",
             "COALESCE({Code}, 'none')",
             "CASE WHEN {Amount} > 250 THEN 'high' ELSE 'low' END",
+            "NULLIF({Code}, 'x')",
+            "BIT_LENGTH({Code})",
         ],
     )
     def test_a_row_level_body_still_validates(self, expression: str) -> None:
@@ -496,3 +507,11 @@ class TestAggregateInComputedColumn:
         with pytest.raises(ModelValidationError) as excinfo:
             ModelStore().load_model(yaml_text)
         assert "AGGREGATE_IN_COLUMN_EXPRESSION" in [e.code for e in excinfo.value.errors]
+
+
+def test_no_portable_function_is_taken_for_an_aggregate() -> None:
+    """The families match by name; none of the catalog's scalars may fall in one."""
+    from orionbelt.models.functions import FUNCTION_CATALOG
+    from orionbelt.parser.validator import _is_aggregate_name
+
+    assert [name for name in FUNCTION_CATALOG if _is_aggregate_name(name)] == []
