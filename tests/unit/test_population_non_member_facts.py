@@ -129,3 +129,77 @@ def test_an_orphan_fact_is_a_group_of_its_own(con: duckdb.DuckDBPyConnection) ->
     """Per customer, the order without a customer is the NULL customer."""
     rows = _rows(con, {"select": {"dimensions": ["Customer"], "measures": ["Customer Revenue"]}})
     assert rows == [("Alice", 100.0), ("Bob", 200.0), ("Eve", 40.0), (None, 5.0)]
+
+
+SNAPSHOT_YAML = """
+version: 1.0
+dataObjects:
+  Accounts:
+    code: accounts
+    schema: main
+    columns:
+      Account ID: {code: id, abstractType: int, primaryKey: true}
+      Account Name: {code: name, abstractType: string}
+  Snapshots:
+    code: snapshots
+    schema: main
+    columns:
+      Snapshot ID: {code: id, abstractType: int, primaryKey: true}
+      Snapshot Account ID: {code: account_id, abstractType: int}
+      Snapshot Date: {code: snap_date, abstractType: date}
+      Balance: {code: balance, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Accounts
+        columnsFrom: [Snapshot Account ID]
+        columnsTo: [Account ID]
+dimensions:
+  Account: {dataObject: Accounts, column: Account Name, resultType: string}
+  Snapshot Date: {dataObject: Snapshots, column: Snapshot Date, resultType: date}
+measures:
+  Last Balance:
+    columns: [{dataObject: Snapshots, column: Balance}]
+    aggregation: last
+    withinGroup:
+      column: {dataObject: Snapshots, column: Snapshot Date}
+metrics:
+  Closing Balance:
+    type: reaggregate
+    measure: Last Balance
+    per: [Account]
+    aggregation: sum
+    population: dimension
+    carryForward: true
+"""
+
+
+@pytest.mark.parametrize(
+    "where",
+    [[], [{"field": "Snapshot Date", "op": ">=", "value": "2026-02-01"}]],
+    ids=["unfiltered", "from-february"],
+)
+def test_a_carried_group_without_a_member_reads_past_the_date_filter(where: list[dict]) -> None:
+    """The orphan's January balance of 100 is carried into February beside the
+    account's 20. Its key was read from the filtered facts, which have no
+    January, so the filtered February lost it: 20 instead of 120."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE accounts (id INTEGER, name VARCHAR)")
+    con.execute("INSERT INTO accounts VALUES (1, 'A1')")
+    con.execute(
+        "CREATE TABLE snapshots (id INTEGER, account_id INTEGER, snap_date DATE, balance DOUBLE)"
+    )
+    con.execute(
+        "INSERT INTO snapshots VALUES (1, NULL, DATE '2026-01-15', 100),"
+        " (2, 1, DATE '2026-02-10', 20)"
+    )
+    raw = YAML(typ="safe").load(SNAPSHOT_YAML)
+    model: SemanticModel = ReferenceResolver().resolve(raw)[0]
+    query = QueryObject(
+        **{
+            "select": {"dimensions": ["Snapshot Date:month"], "measures": ["Closing Balance"]},
+            "where": where,
+        }
+    )
+    sql = CompilationPipeline().compile(query, model, "duckdb").sql
+    by_month = {str(row[0])[:7]: float(row[1]) for row in con.execute(sql).fetchall()}
+    assert by_month["2026-02"] == 120.0

@@ -479,7 +479,7 @@ def _with_population(
         ctes += [*history.ctes, CTE(name=_HISTORY, query=replace(history, ctes=[]))]
         source = _HISTORY
     member_keys = [k for k in keys if k not in periods]
-    ctes += _group_keys(member_keys)
+    ctes += _group_keys(member_keys, source)
     joins: list[Join | Unnest] = []
     if periods:
         ctes.append(CTE(name=_PERIODS, query=_distinct(source, periods)))
@@ -533,11 +533,14 @@ def _with_population(
     )
 
 
-def _group_keys(member_keys: list[str]) -> list[CTE]:
+def _group_keys(member_keys: list[str], facts: str) -> list[CTE]:
     """The stage-1 groups: every member's keys and every fact group's, once.
 
     A fact group that is a member repeats the member's keys and collapses into
     it; one that is no member (its region NULL) stays a group of its own.
+    *facts* is the source the values are read from: for a carried metric the
+    history past the date filter, so a group whose only snapshots precede the
+    filter still has the value it carries into the periods shown.
     """
     branches = [
         Select(
@@ -546,7 +549,7 @@ def _group_keys(member_keys: list[str]) -> list[CTE]:
             ],
             from_=From(source=source, alias=source),
         )
-        for source in (_MEMBERS, _FACTS)
+        for source in (_MEMBERS, facts)
     ]
     return [
         CTE(name=_KEYS_ALL, query=UnionAll(queries=branches)),
