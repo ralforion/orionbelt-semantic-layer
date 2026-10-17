@@ -57,6 +57,7 @@ The converter handles this decomposition automatically:
 | Multi-aggregation expression | Auto-generated measures + metric formula |
 | Aggregate nested in a larger expression (`ROUND(SUM(a.x), 2)`, `CASE WHEN SUM(a.x) > 0 THEN SUM(a.y) END`) | Auto-generated measures + metric formula |
 | Aggregate with `FILTER (WHERE ...)` or `OVER (...)` | Preserved verbatim: neither is part of the measure the aggregate would become |
+| Expression containing a query (`(SELECT ...)`, `UNION`) | Preserved verbatim: a metric formula is over measures, and the query's own tables and aliases are not datasets |
 
 The decomposition is driven by **sqlglot**: the resolved SQL is parsed under its source dialect grammar, the aggregate nodes are located in the AST, and each is lifted into an auto-measure with the surrounding expression becoming the metric formula. This is why an aggregate nested inside `ROUND(...)`, a `CASE` expression, or any other function decomposes rather than falling back to preserve-verbatim, and why a numeric or string literal containing a dot (`1.23`, `'north.1'`) is never mistaken for a `dataset.column` reference.
 
