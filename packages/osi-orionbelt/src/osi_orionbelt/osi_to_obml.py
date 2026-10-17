@@ -344,9 +344,10 @@ class OSItoOBML:
         """Rename columns from their OSI field name back to the OBML column name.
 
         Exports before 0.5.0 named each field by its physical code and kept
-        the OBML column name in ``obml_column_name``. Measure filters and model filters
-        refer to columns by that name, so every column key and every reference
-        the import built from field names is renamed to match.
+        the OBML column name in ``obml_column_name``. Measure filters and model
+        filters refer to columns by that name, so every column key and every
+        reference the import built from field names is renamed to match, and so
+        are the unique keys and unconverted metrics it keeps verbatim.
         """
         renames: dict[str, dict[str, str]] = {}
         for ds in datasets:
