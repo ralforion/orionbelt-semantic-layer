@@ -203,6 +203,12 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
     def _as_dict_list(value: Any) -> list[dict[str, Any]]:
         return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
+    # An identifier that is not a non-empty string is a schema error already;
+    # the checks below skip it rather than compare or hash it.
+    def _ident(obj: dict[str, Any], key: str = "name") -> str | None:
+        value = obj.get(key)
+        return value if isinstance(value, str) and value else None
+
     # A current document is one model at the root. The earlier
     # ``semantic_model`` array is a schema error, but its models are still
     # checked so a legacy document reports every problem at once.
@@ -213,13 +219,15 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
 
     # 2. Unique name checks
     for model in models:
-        model_name = model.get("name", "<unnamed>")
+        model_name = _ident(model) or "<unnamed>"
         datasets = _as_dict_list(model.get("datasets", []))
 
         # Unique dataset names
         dataset_names: list[str] = []
         for ds in datasets:
-            name = ds.get("name", "")
+            name = _ident(ds)
+            if name is None:
+                continue
             if name in dataset_names:
                 result.semantic_errors.append(
                     f"[DUPLICATE_DATASET] Duplicate dataset name '{name}' in model '{model_name}'"
@@ -228,10 +236,12 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
 
         # Unique field names within each dataset
         for ds in datasets:
-            ds_name = ds.get("name", "<unnamed>")
+            ds_name = _ident(ds) or "<unnamed>"
             field_names: list[str] = []
             for field in _as_dict_list(ds.get("fields", [])):
-                fname = field.get("name", "")
+                fname = _ident(field)
+                if fname is None:
+                    continue
                 if fname in field_names:
                     result.semantic_errors.append(
                         f"[DUPLICATE_FIELD] Duplicate field name '{fname}' in dataset '{ds_name}'"
@@ -241,7 +251,9 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
         # Unique metric names
         metric_names: list[str] = []
         for m in _as_dict_list(model.get("metrics", [])):
-            mname = m.get("name", "")
+            mname = _ident(m)
+            if mname is None:
+                continue
             if mname in metric_names:
                 result.semantic_errors.append(
                     f"[DUPLICATE_METRIC] Duplicate metric name '{mname}' in model '{model_name}'"
@@ -251,7 +263,9 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
         # Unique relationship names
         rel_names: list[str] = []
         for r in _as_dict_list(model.get("relationships", [])):
-            rname = r.get("name", "")
+            rname = _ident(r)
+            if rname is None:
+                continue
             if rname in rel_names:
                 result.semantic_errors.append(
                     f"[DUPLICATE_RELATIONSHIP] Duplicate relationship name "
@@ -262,11 +276,11 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
     # 3. Reference checks — relationships reference existing datasets
     for model in models:
         datasets = _as_dict_list(model.get("datasets", []))
-        ds_name_set = {ds.get("name") for ds in datasets if ds.get("name")}
+        ds_name_set = {name for ds in datasets if (name := _ident(ds)) is not None}
         for rel in _as_dict_list(model.get("relationships", [])):
-            rel_name = rel.get("name", "<unnamed>")
-            from_ds = rel.get("from")
-            to_ds = rel.get("to")
+            rel_name = _ident(rel) or "<unnamed>"
+            from_ds = _ident(rel, "from")
+            to_ds = _ident(rel, "to")
             if from_ds and from_ds not in ds_name_set:
                 result.semantic_errors.append(
                     f"[UNKNOWN_DATASET_REF] Relationship '{rel_name}' "

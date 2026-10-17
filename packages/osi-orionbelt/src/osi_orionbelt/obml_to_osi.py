@@ -25,7 +25,7 @@ from osi_orionbelt._field_names import (
     rename_keys,
     rename_metric,
 )
-from osi_orionbelt._portable import NotPortableError, PortableRenderer
+from osi_orionbelt._portable import NotPortableError, PortableRenderer, sql_ident
 
 
 def _stash_concept_links(
@@ -189,10 +189,7 @@ class OBMLtoOSI:
         self, do_name: str, do_obj: dict, obml_dimensions: dict
     ) -> tuple[dict, list]:
         """Convert an OBML dataObject to an OSI dataset + relationships."""
-        database = do_obj.get("database", "")
-        schema = do_obj.get("schema", "")
-        code = do_obj.get("code", "")
-        source = f"{database}.{schema}.{code}" if database else code
+        source = self._source(do_name)
 
         # Use the OBML display name as the OSI dataset name so that
         # relationship references (joinTo) stay consistent in roundtrips
@@ -307,6 +304,9 @@ class OBMLtoOSI:
         # object into a table with an empty name.
         if do_obj.get("nestedIn"):
             do_extras["obml_nested_in"] = do_obj["nestedIn"]
+            if not do_obj.get("code"):
+                # ``source`` is the unnest query (see _source), not a table.
+                do_extras["obml_source_unnest"] = True
         _stash_concept_links(do_obj, do_extras)
         if do_extras:
             ds_exts = dataset.setdefault("custom_extensions", [])
@@ -325,6 +325,48 @@ class OBMLtoOSI:
             del dataset["custom_extensions"]
 
         return dataset, relationships
+
+    def _source(self, do_name: str, seen: frozenset[str] = frozenset()) -> str:
+        """The dataset ``source``: the data object's table, or a query.
+
+        A ``nestedIn`` object without ``code`` has no table; its rows are the
+        elements of an array column on its parent. Ossie allows a query as the
+        source, so it becomes the unnest in the form OrionBelt's base dialect
+        emits, selecting each column's ``code`` from the element. Other engines
+        spell the unnest differently; the import restores ``nestedIn`` from the
+        extension, not from this text.
+        """
+        data_objects = self.obml.get("dataObjects", {}) or {}
+        do_obj = data_objects.get(do_name, {})
+        code = do_obj.get("code", "")
+        nested = do_obj.get("nestedIn") or {}
+        parent = nested.get("dataObject")
+        if code or not parent:
+            database = do_obj.get("database", "")
+            schema = do_obj.get("schema", "")
+            return f"{database}.{schema}.{code}" if database else code
+        if parent in seen or parent not in data_objects:
+            self.warnings.append(
+                f"Data object '{do_name}' is nested in '{parent}', which has no source; "
+                f"its dataset has an empty source."
+            )
+            return ""
+        parent_source = self._source(parent, seen | {do_name})
+        if not parent_source:
+            return ""
+        if not data_objects[parent].get("code"):
+            parent_source = f"({parent_source})"
+        alias = sql_ident(do_name)
+        path = ".".join(sql_ident(p) for p in [parent, *str(nested.get("column", "")).split(".")])
+        fields = [
+            f"{alias}.{sql_ident(col['code'])} AS {sql_ident(col['code'])}"
+            for col in (do_obj.get("columns") or {}).values()
+            if isinstance(col, dict) and col.get("code")
+        ]
+        return (
+            f"SELECT {', '.join(fields) or alias} "
+            f"FROM {parent_source} AS {sql_ident(parent)}, UNNEST({path}) AS {alias}"
+        )
 
     def _convert_column(
         self, col_name: str, col_obj: dict, do_name: str, obml_dimensions: dict

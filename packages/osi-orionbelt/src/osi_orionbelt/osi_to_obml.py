@@ -545,6 +545,11 @@ class OSItoOBML:
                         do["countLabel"] = ext_data["obml_count_label"]
                     if ext_data.get("obml_nested_in"):
                         do["nestedIn"] = ext_data["obml_nested_in"]
+                        if ext_data.get("obml_source_unnest"):
+                            # The source is the export's unnest query; the
+                            # object has no table of its own.
+                            for key in ("code", "database", "schema"):
+                                do.pop(key, None)
                     _restore_concept_links(ext_data, do)
                 except (json.JSONDecodeError, TypeError):
                     pass

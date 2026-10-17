@@ -103,3 +103,105 @@ class TestValidatorOnFlatDocuments:
         ]
         result = conv.validate_osi(osi)
         assert any("UNKNOWN_DATASET_REF" in e and "Nowhere" in e for e in result.semantic_errors)
+
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            {"datasets": [{"name": ["Orders"], "source": "orders"}]},
+            {
+                "datasets": [{"name": "Orders", "source": "orders"}],
+                "relationships": [
+                    {
+                        "name": "r",
+                        "from": ["Orders"],
+                        "to": {"x": 1},
+                        "from_columns": ["a"],
+                        "to_columns": ["b"],
+                    }
+                ],
+            },
+            {
+                "datasets": [
+                    {"name": "Orders", "source": "orders", "fields": [{"name": ["f"]}] * 2}
+                ],
+                "metrics": [{"name": {"a": 1}}],
+            },
+        ],
+    )
+    def test_malformed_identifiers_are_schema_errors_not_crashes(self, doc: dict[str, Any]) -> None:
+        pytest.importorskip("jsonschema")
+        result = conv.validate_osi({"version": "0.2.0.dev0", "name": "m", **doc})
+        assert result.schema_errors
+        assert result.semantic_errors == []
+
+
+_NESTED_OBML: dict[str, Any] = {
+    "version": 1.0,
+    "dataObjects": {
+        "Charges": {
+            "code": "charges",
+            "database": "WH",
+            "schema": "PUBLIC",
+            "columns": {"Charge ID": {"code": "id", "abstractType": "string"}},
+        },
+        "Charge Labels": {
+            "nestedIn": {"dataObject": "Charges", "column": "Labels"},
+            "columns": {
+                "Label Key": {"code": "Key", "abstractType": "string"},
+                "Label Value": {"code": "Value", "abstractType": "string"},
+            },
+        },
+        "Label Notes": {
+            "nestedIn": {"dataObject": "Charge Labels", "column": "x_Meta.Notes"},
+            "columns": {"Note": {"code": "Text", "abstractType": "string"}},
+        },
+    },
+}
+
+
+class TestNestedOnlyDataObject:
+    """A ``nestedIn`` object without ``code`` exports its unnest as the source."""
+
+    @staticmethod
+    def _sources() -> dict[str, str]:
+        osi = conv.OBMLtoOSI(_NESTED_OBML, "billing").convert()
+        return {d["name"]: d["source"] for d in osi["datasets"]}
+
+    def test_source_is_the_unnest_query(self) -> None:
+        assert self._sources()["Charge Labels"] == (
+            'SELECT "Charge Labels"."Key" AS "Key", "Charge Labels"."Value" AS "Value" '
+            'FROM WH.PUBLIC.charges AS "Charges", '
+            'UNNEST("Charges"."Labels") AS "Charge Labels"'
+        )
+
+    def test_nested_parent_is_a_derived_table_and_paths_split(self) -> None:
+        source = self._sources()["Label Notes"]
+        assert source.startswith('SELECT "Label Notes"."Text" AS "Text" FROM (SELECT ')
+        assert source.endswith(
+            ') AS "Charge Labels", UNNEST("Charge Labels"."x_Meta"."Notes") AS "Label Notes"'
+        )
+
+    def test_export_validates(self) -> None:
+        pytest.importorskip("jsonschema")
+        result = conv.validate_osi(conv.OBMLtoOSI(_NESTED_OBML, "billing").convert())
+        assert result.schema_errors == []
+
+    def test_round_trip_restores_the_object_without_a_table(self) -> None:
+        back = conv.OSItoOBML(conv.OBMLtoOSI(_NESTED_OBML, "billing").convert()).convert()
+        for name in ("Charge Labels", "Label Notes"):
+            obj = back["dataObjects"][name]
+            assert obj["nestedIn"] == _NESTED_OBML["dataObjects"][name]["nestedIn"]
+            assert not {"code", "database", "schema"} & set(obj)
+        assert back["dataObjects"]["Charges"]["code"] == "charges"
+
+    def test_nested_object_with_code_keeps_its_table(self) -> None:
+        obml = copy.deepcopy(_NESTED_OBML)
+        obml["dataObjects"]["Charge Labels"].update(
+            {"code": "charge_labels", "database": "WH", "schema": "PUBLIC"}
+        )
+        assert self._sources()["Charge Labels"].startswith("SELECT ")
+        osi = conv.OBMLtoOSI(obml, "billing").convert()
+        labels = next(d for d in osi["datasets"] if d["name"] == "Charge Labels")
+        assert labels["source"] == "WH.PUBLIC.charge_labels"
+        back = conv.OSItoOBML(osi).convert()
+        assert back["dataObjects"]["Charge Labels"]["code"] == "charge_labels"
