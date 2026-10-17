@@ -331,9 +331,11 @@ class OBMLtoOSI:
 
         A ``nestedIn`` object without ``code`` has no table; its rows are the
         elements of an array column on its parent. Ossie allows a query as the
-        source, so it becomes the unnest in the form OrionBelt's base dialect
-        emits, selecting each column's ``code`` from the element. Other engines
-        spell the unnest differently; the import restores ``nestedIn`` from the
+        source, so it becomes the unnest in the form Postgres reads, as
+        OrionBelt's Postgres dialect renders it: each column's ``code`` selected
+        from the element, plus the field each object nested in this one unnests
+        from, and a struct path reached through parentheses. Other engines spell
+        the unnest differently; the import restores ``nestedIn`` from the
         extension, not from this text.
         """
         data_objects = self.obml.get("dataObjects", {}) or {}
@@ -357,12 +359,24 @@ class OBMLtoOSI:
         if not data_objects[parent].get("code"):
             parent_source = f"({parent_source})"
         alias = sql_ident(do_name)
-        path = ".".join(sql_ident(p) for p in [parent, *str(nested.get("column", "")).split(".")])
-        fields = [
-            f"{alias}.{sql_ident(col['code'])} AS {sql_ident(col['code'])}"
+        segments = str(nested.get("column", "")).split(".")
+        # ``"C"."x_Meta"."Notes"`` reads as a three-part table name on Postgres;
+        # a composite's field is reached as ``("C"."x_Meta")."Notes"``.
+        path = f"{sql_ident(parent)}.{sql_ident(segments[0])}"
+        for segment in segments[1:]:
+            path = f"({path}).{sql_ident(segment)}"
+        selected = [
+            col["code"]
             for col in (do_obj.get("columns") or {}).values()
             if isinstance(col, dict) and col.get("code")
         ]
+        for child in data_objects.values():
+            child_nested = child.get("nestedIn") or {}
+            if child_nested.get("dataObject") == do_name and child_nested.get("column"):
+                head = str(child_nested["column"]).split(".")[0]
+                if head not in selected:
+                    selected.append(head)
+        fields = [f"{alias}.{sql_ident(c)} AS {sql_ident(c)}" for c in selected]
         return (
             f"SELECT {', '.join(fields) or alias} "
             f"FROM {parent_source} AS {sql_ident(parent)}, UNNEST({path}) AS {alias}"

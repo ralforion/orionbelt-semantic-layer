@@ -169,16 +169,24 @@ class TestNestedOnlyDataObject:
 
     def test_source_is_the_unnest_query(self) -> None:
         assert self._sources()["Charge Labels"] == (
-            'SELECT "Charge Labels"."Key" AS "Key", "Charge Labels"."Value" AS "Value" '
+            'SELECT "Charge Labels"."Key" AS "Key", "Charge Labels"."Value" AS "Value", '
+            '"Charge Labels"."x_Meta" AS "x_Meta" '
             'FROM WH.PUBLIC.charges AS "Charges", '
             'UNNEST("Charges"."Labels") AS "Charge Labels"'
         )
 
-    def test_nested_parent_is_a_derived_table_and_paths_split(self) -> None:
-        source = self._sources()["Label Notes"]
+    def test_nested_parent_is_a_derived_table_with_the_child_array(self) -> None:
+        # The middle query selects x_Meta, the field its child unnests from,
+        # and the struct path is composite field access, as Postgres reads it.
+        sources = self._sources()
+        assert sources["Charge Labels"].startswith(
+            'SELECT "Charge Labels"."Key" AS "Key", "Charge Labels"."Value" AS "Value", '
+            '"Charge Labels"."x_Meta" AS "x_Meta" FROM '
+        )
+        source = sources["Label Notes"]
         assert source.startswith('SELECT "Label Notes"."Text" AS "Text" FROM (SELECT ')
         assert source.endswith(
-            ') AS "Charge Labels", UNNEST("Charge Labels"."x_Meta"."Notes") AS "Label Notes"'
+            ') AS "Charge Labels", UNNEST(("Charge Labels"."x_Meta")."Notes") AS "Label Notes"'
         )
 
     def test_export_validates(self) -> None:
