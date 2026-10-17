@@ -2280,6 +2280,17 @@ class QueryResolver:
         source = next(iter(sources))
         return source if source in reached else None
 
+    @staticmethod
+    def _reads_beyond(ctx: _ResolutionContext, name: str) -> bool:
+        """Whether a measure's filter reads an object besides its source."""
+        measure = ctx.model.effective_measures.get(name)
+        if measure is None or not measure.filters:
+            return False
+        objects: set[str] = set()
+        for item in measure.filters:
+            collect_measure_filter_objects(item, objects)
+        return bool(objects - measure.source_objects)
+
     def _plan_parents_without_children(self, ctx: _ResolutionContext) -> None:
         """Add the parents without child rows when no WHERE asks for them.
 
@@ -2342,8 +2353,6 @@ class QueryResolver:
         reason: str | None = None
         if len(parents) > 1:
             reason = "the measures read several objects that cannot reach it"
-        elif ctx.result.grouping is not None:
-            reason = "the query uses ROLLUP / CUBE"
         elif ctx.result.has_pop:
             reason = "a period-over-period metric rebuilds the query from its own rows"
         elif any(
@@ -2365,6 +2374,20 @@ class QueryResolver:
             # Its rows are read as the joins replicate them, on purpose; the
             # leg is joined to deduplicated rows only.
             reason = "a measure on it sets allowFanOut"
+        if (
+            reason is None
+            and not admitting
+            and ctx.result.grouping is not None
+            and all(
+                self._reads_beyond(ctx, name)
+                for name in names
+                if self._parent_of(ctx, name, reached) == parents[0]
+            )
+        ):
+            # Under ROLLUP / CUBE the groups are read from the parent's
+            # unfiltered measures; a measure filtered on another object reads
+            # fewer rows and cannot list them.
+            reason = "every measure on it is filtered on another object"
         if reason is not None and not admitting:
             return
         if reason is None:
@@ -2448,8 +2471,6 @@ class QueryResolver:
         reason: str | None = None
         if parent is None:
             reason = "the measures read several objects that cannot reach it"
-        elif ctx.result.grouping is not None:
-            reason = "the query uses ROLLUP / CUBE"
         elif ctx.result.has_pop:
             reason = "a period-over-period metric rebuilds the query from its own rows"
         elif parent == base or parent not in ctx.graph.descendants(base):

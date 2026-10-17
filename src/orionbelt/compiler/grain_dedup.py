@@ -814,7 +814,7 @@ def wrap_with_grain_dedup(
     # gated by a measure filter, which reads fewer rows, nor one at another
     # grain; without such a CTE the groups are listed from all of them.
     driver_key: tuple[str, tuple[str, ...], str] | None = None
-    if split_groups and resolved.grouping is None and leg is not None:
+    if split_groups and leg is not None:
         driver_key = next(
             (
                 key
@@ -875,10 +875,25 @@ def wrap_with_grain_dedup(
             # set's grain, so a subtotal counts each object row once rather
             # than adding up the groups below it, which share object rows.
             query = _per_grouping_set(
-                rows, object_name, measure_names, columns, resolved, model, dialect, idx
+                rows,
+                object_name,
+                measure_names,
+                columns,
+                resolved,
+                model,
+                dialect,
+                idx,
+                childless=childless,
+                keep_keyless=group_key == driver_key,
             )
             rolled_up.add(cte_name)
-            marked.add(cte_name)
+            if group_key == driver_key:
+                driver_cte = cte_name
+            else:
+                marked.add(cte_name)
+            if childless is not None:
+                all_ctes.extend(childless.ctes)
+                childless.ctes.clear()
         else:
             query = _deduplicated_at(
                 rows,
@@ -904,6 +919,14 @@ def wrap_with_grain_dedup(
 
     if driver_cte is not None:
         dims_table = driver_cte
+        if driver_cte in rolled_up:
+            # ``main`` is matched on the GROUPING() flags too: a subtotal's NULL
+            # is not a detail row's NULL value.
+            rolled_up.add(_MAIN_CTE)
+    elif childless is not None and resolved.grouping is not None:
+        # Under ROLLUP / CUBE the groups can only be read from the CTE that
+        # has the parents without children at every grouping set.
+        raise _unsplittable(childless.leg, "every measure on it is filtered under ROLLUP / CUBE")
 
     # --- outer SELECT: main plus each dedup CTE, joined on the query grain ---
     def measure_ref(name: str) -> Expr:
@@ -967,7 +990,10 @@ def wrap_with_grain_dedup(
             )
             continue
         if alias not in computed_here:
-            if alias in dim_names:
+            if alias in dim_names or (
+                resolved.grouping is not None
+                and alias in {grouping_flag_alias(name) for name in dim_names}
+            ):
                 outer_columns.append(
                     AliasedExpr(expr=ColumnRef(name=alias, table=dims_table), alias=alias)
                 )
@@ -1601,6 +1627,9 @@ def _per_grouping_set(
     model: SemanticModel,
     dialect: Dialect,
     idx: int,
+    *,
+    childless: _ChildlessRows | None = None,
+    keep_keyless: bool = False,
 ) -> UnionAll:
     """One deduplicated aggregate per grouping set of the query's ROLLUP or
     CUBE, stacked: every dimension (NULL where the set rolls it up), its
@@ -1620,6 +1649,8 @@ def _per_grouping_set(
             model,
             dialect,
             f"{src_alias}_rows",
+            childless=childless,
+            keep_keyless=keep_keyless,
         )
         kept_names = {dim.name for dim in kept}
         columns: list[Expr] = []
