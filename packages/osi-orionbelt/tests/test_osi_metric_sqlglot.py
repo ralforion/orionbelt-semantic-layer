@@ -33,32 +33,24 @@ import osi_orionbelt.converter as conv
 def _model(expression: str, dialect: str = "ANSI_SQL") -> dict[str, Any]:
     return {
         "version": "0.2.0.dev0",
-        "semantic_model": [
+        "name": "sales",
+        "datasets": [
             {
-                "name": "sales",
-                "datasets": [
+                "name": "Orders",
+                "source": "A.P.ORDERS",
+                "fields": [
                     {
-                        "name": "Orders",
-                        "source": "A.P.ORDERS",
-                        "fields": [
-                            {
-                                "name": c,
-                                "expression": {
-                                    "dialects": [{"dialect": "ANSI_SQL", "expression": c}]
-                                },
-                            }
-                            for c in ("amount", "tax", "id", "region")
-                        ],
+                        "name": c,
+                        "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": c}]},
                     }
+                    for c in ("amount", "tax", "id", "region")
                 ],
-                "metrics": [
-                    {
-                        "name": "M",
-                        "expression": {
-                            "dialects": [{"dialect": dialect, "expression": expression}]
-                        },
-                    }
-                ],
+            }
+        ],
+        "metrics": [
+            {
+                "name": "M",
+                "expression": {"dialects": [{"dialect": dialect, "expression": expression}]},
             }
         ],
     }

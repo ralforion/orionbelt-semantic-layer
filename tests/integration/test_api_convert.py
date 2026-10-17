@@ -44,38 +44,30 @@ async def client(app):
 
 _OSI_V02_MINIMAL = {
     "version": "0.2.0.dev0",
-    "semantic_model": [
+    "name": "demo",
+    "datasets": [
         {
-            "name": "demo",
-            "datasets": [
+            "name": "Orders",
+            "source": "WAREHOUSE.PUBLIC.orders",
+            "primary_key": ["order_id"],
+            "fields": [
                 {
-                    "name": "Orders",
-                    "source": "WAREHOUSE.PUBLIC.orders",
-                    "primary_key": ["order_id"],
-                    "fields": [
-                        {
-                            "name": "order_id",
-                            "expression": {
-                                "dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]
-                            },
-                        },
-                        {
-                            "name": "amount",
-                            "expression": {
-                                "dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]
-                            },
-                        },
-                    ],
-                }
-            ],
-            "metrics": [
+                    "name": "order_id",
+                    "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]},
+                },
                 {
-                    "name": "total_revenue",
-                    "expression": {
-                        "dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(Orders.amount)"}]
-                    },
-                }
+                    "name": "amount",
+                    "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]},
+                },
             ],
+        }
+    ],
+    "metrics": [
+        {
+            "name": "total_revenue",
+            "expression": {
+                "dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(Orders.amount)"}]
+            },
         }
     ],
 }
@@ -86,12 +78,8 @@ _OSI_V02_MINIMAL = {
 # schema error rather than crashing.
 _OSI_MALFORMED = {
     "version": "0.2.0.dev0",
-    "semantic_model": [
-        {
-            "name": "broken",
-            "datasets": "not-an-array",
-        }
-    ],
+    "name": "broken",
+    "datasets": "not-an-array",
 }
 
 
@@ -99,27 +87,21 @@ _OSI_MALFORMED = {
 # but the legacy shim still produces a valid OBML on conversion.
 _OSI_V01_LEGACY = {
     "version": "0.1.1",
-    "semantic_model": [
+    "name": "legacy",
+    "datasets": [
         {
-            "name": "legacy",
-            "datasets": [
+            "name": "Orders",
+            "source": "WAREHOUSE.PUBLIC.orders",
+            "custom_extensions": [
                 {
-                    "name": "Orders",
-                    "source": "WAREHOUSE.PUBLIC.orders",
-                    "custom_extensions": [
-                        {
-                            "vendor_name": "COMMON",
-                            "data": json.dumps({"obml_primary_key": ["order_id"]}),
-                        }
-                    ],
-                    "fields": [
-                        {
-                            "name": "order_id",
-                            "expression": {
-                                "dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]
-                            },
-                        }
-                    ],
+                    "vendor_name": "COMMON",
+                    "data": json.dumps({"obml_primary_key": ["order_id"]}),
+                }
+            ],
+            "fields": [
+                {
+                    "name": "order_id",
+                    "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]},
                 }
             ],
         }

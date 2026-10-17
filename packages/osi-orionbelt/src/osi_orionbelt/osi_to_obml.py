@@ -154,8 +154,8 @@ class OSItoOBML:
         """The document's semantic models, in either document shape.
 
         A current Apache Ossie document is one model at the root. Earlier
-        documents, including what this converter writes, wrap models in a
-        ``semantic_model`` array.
+        documents, including this converter's output before 0.5.0, wrap models
+        in a ``semantic_model`` array, which is still read.
         """
         if "semantic_model" in self.osi:
             models = self.osi.get("semantic_model")
@@ -221,6 +221,12 @@ class OSItoOBML:
         if not models:
             raise ValueError("No semantic model found in OSI input")
 
+        if "semantic_model" in self.osi:
+            self.warnings.append(
+                "OSI input wraps its model in a 'semantic_model' array, which Apache "
+                "Ossie replaced with one model at the document root (apache/ossie#383); "
+                "read anyway."
+            )
         # Take the first semantic model (OBML is a single-model format)
         model = models[0]
         if len(models) > 1:

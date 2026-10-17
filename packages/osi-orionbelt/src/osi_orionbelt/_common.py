@@ -39,7 +39,9 @@ _OSI_DIALECT_TO_SQLGLOT: dict[str, str | None] = {
 # never be written into an OBML column ``code`` (a physical SQL column
 # reference) - doing so would emit broken SQL. Everything else in the enum
 # (ANSI_SQL, OSSIE_SQL_2026, SNOWFLAKE, DATABRICKS, BIGQUERY) is SQL.
-_NON_SQL_DIALECTS = frozenset({"MDX", "TABLEAU", "MAQL", "SIGMA", "THOUGHTSPOT", "DAX"})
+_NON_SQL_DIALECTS = frozenset(
+    {"MDX", "TABLEAU", "MAQL", "SIGMA", "THOUGHTSPOT", "DAX", "HOLISTICS_AQL"}
+)
 
 # Matches a ``dataset.column`` reference inside a SQL expression, where each
 # side is a bare identifier or a quoted identifier (double quotes, backticks, or

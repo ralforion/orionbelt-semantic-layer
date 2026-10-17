@@ -50,7 +50,7 @@ class TestMetricRoundTripCodeVsName:
         # Ossie resolves ``<dataset>.<field>``: the dataset and field are named
         # after the OBML data object and column, not their physical codes.
         osi = conv.OBMLtoOSI(self._OBML).convert()
-        sql = osi["semantic_model"][0]["metrics"][0]["expression"]["dialects"][0]["expression"]
+        sql = osi["metrics"][0]["expression"]["dialects"][0]["expression"]
         assert sql == 'SUM("Orders"."Amount")'
 
     def test_measure_survives_round_trip(self) -> None:
@@ -73,36 +73,30 @@ class TestMetricRoundTripCodeVsName:
         # the metric references the physical code. Must resolve, not drop.
         osi = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "sales",
+            "datasets": [
                 {
-                    "name": "sales",
-                    "datasets": [
+                    "name": "Orders",
+                    "source": "WH.PUBLIC.fact_orders",
+                    "fields": [
                         {
-                            "name": "Orders",
-                            "source": "WH.PUBLIC.fact_orders",
-                            "fields": [
-                                {
-                                    "name": "Amount",
-                                    "expression": {
-                                        "dialects": [
-                                            {"dialect": "ANSI_SQL", "expression": "amount"}
-                                        ]
-                                    },
-                                    "data_type": "number",
-                                }
-                            ],
-                        }
-                    ],
-                    "metrics": [
-                        {
-                            "name": "Revenue",
+                            "name": "Amount",
                             "expression": {
-                                "dialects": [
-                                    {"dialect": "ANSI_SQL", "expression": "SUM(fact_orders.amount)"}
-                                ]
+                                "dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]
                             },
+                            "data_type": "number",
                         }
                     ],
+                }
+            ],
+            "metrics": [
+                {
+                    "name": "Revenue",
+                    "expression": {
+                        "dialects": [
+                            {"dialect": "ANSI_SQL", "expression": "SUM(fact_orders.amount)"}
+                        ]
+                    },
                 }
             ],
         }
@@ -119,39 +113,33 @@ class TestMetricRoundTripCodeVsName:
         # fails query resolution.
         osi = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "sales",
+            "datasets": [
                 {
-                    "name": "sales",
-                    "datasets": [
+                    "name": "Orders",
+                    "source": "WH.PUBLIC.fact_orders",
+                    "fields": [
                         {
-                            "name": "Orders",
-                            "source": "WH.PUBLIC.fact_orders",
-                            "fields": [
-                                {
-                                    "name": "Net Amount",
-                                    "expression": {
-                                        "dialects": [
-                                            {"dialect": "ANSI_SQL", "expression": "net_amount"}
-                                        ]
-                                    },
-                                    "data_type": "number",
-                                }
-                            ],
-                        }
-                    ],
-                    "metrics": [
-                        {
-                            "name": "Net Revenue",
+                            "name": "Net Amount",
                             "expression": {
-                                "dialects": [
-                                    {
-                                        "dialect": "ANSI_SQL",
-                                        "expression": "SUM(fact_orders.net_amount)",
-                                    }
-                                ]
+                                "dialects": [{"dialect": "ANSI_SQL", "expression": "net_amount"}]
                             },
+                            "data_type": "number",
                         }
                     ],
+                }
+            ],
+            "metrics": [
+                {
+                    "name": "Net Revenue",
+                    "expression": {
+                        "dialects": [
+                            {
+                                "dialect": "ANSI_SQL",
+                                "expression": "SUM(fact_orders.net_amount)",
+                            }
+                        ]
+                    },
                 }
             ],
         }
@@ -169,39 +157,33 @@ class TestMetricRoundTripCodeVsName:
         # must still resolve to a queryable measure, not fall through to LOSSY.
         osi = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "sales",
+            "datasets": [
                 {
-                    "name": "sales",
-                    "datasets": [
+                    "name": "Orders",
+                    "source": 'WH.PUBLIC."fact_orders"',
+                    "fields": [
                         {
-                            "name": "Orders",
-                            "source": 'WH.PUBLIC."fact_orders"',
-                            "fields": [
-                                {
-                                    "name": "Amount",
-                                    "expression": {
-                                        "dialects": [
-                                            {"dialect": "ANSI_SQL", "expression": '"net_amount"'}
-                                        ]
-                                    },
-                                    "data_type": "number",
-                                }
-                            ],
-                        }
-                    ],
-                    "metrics": [
-                        {
-                            "name": "Revenue",
+                            "name": "Amount",
                             "expression": {
-                                "dialects": [
-                                    {
-                                        "dialect": "ANSI_SQL",
-                                        "expression": "SUM(fact_orders.net_amount)",
-                                    }
-                                ]
+                                "dialects": [{"dialect": "ANSI_SQL", "expression": '"net_amount"'}]
                             },
+                            "data_type": "number",
                         }
                     ],
+                }
+            ],
+            "metrics": [
+                {
+                    "name": "Revenue",
+                    "expression": {
+                        "dialects": [
+                            {
+                                "dialect": "ANSI_SQL",
+                                "expression": "SUM(fact_orders.net_amount)",
+                            }
+                        ]
+                    },
                 }
             ],
         }
@@ -236,14 +218,10 @@ class TestDimensionNameCollision:
     def test_both_dimensions_survive(self) -> None:
         osi = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
-                {
-                    "name": "sales",
-                    "datasets": [
-                        _dim_dataset("Orders", "WH.PUBLIC.orders"),
-                        _dim_dataset("Invoices", "WH.PUBLIC.invoices"),
-                    ],
-                }
+            "name": "sales",
+            "datasets": [
+                _dim_dataset("Orders", "WH.PUBLIC.orders"),
+                _dim_dataset("Invoices", "WH.PUBLIC.invoices"),
             ],
         }
         c = conv.OSItoOBML(osi)
@@ -369,26 +347,22 @@ class TestDimensionNameRoundTrip:
         # be ignored and fall back to the field name, never crash the converter.
         osi = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "s",
+            "datasets": [
                 {
-                    "name": "s",
-                    "datasets": [
+                    "name": "Orders",
+                    "source": "WH.PUBLIC.orders",
+                    "fields": [
                         {
-                            "name": "Orders",
-                            "source": "WH.PUBLIC.orders",
-                            "fields": [
+                            "name": "dt",
+                            "expression": {
+                                "dialects": [{"dialect": "ANSI_SQL", "expression": "dt"}]
+                            },
+                            "dimension": {},
+                            "custom_extensions": [
                                 {
-                                    "name": "dt",
-                                    "expression": {
-                                        "dialects": [{"dialect": "ANSI_SQL", "expression": "dt"}]
-                                    },
-                                    "dimension": {},
-                                    "custom_extensions": [
-                                        {
-                                            "vendor_name": "ORIONBELT",
-                                            "data": json.dumps({"obml_dimension_name": bad}),
-                                        }
-                                    ],
+                                    "vendor_name": "ORIONBELT",
+                                    "data": json.dumps({"obml_dimension_name": bad}),
                                 }
                             ],
                         }
@@ -525,26 +499,22 @@ class TestMultipleDimensionsPerColumn:
         # skipped, never crash the converter on an unhashable key.
         osi = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "s",
+            "datasets": [
                 {
-                    "name": "s",
-                    "datasets": [
+                    "name": "Orders",
+                    "source": "WH.PUBLIC.orders",
+                    "fields": [
                         {
-                            "name": "Orders",
-                            "source": "WH.PUBLIC.orders",
-                            "fields": [
+                            "name": "dt",
+                            "expression": {
+                                "dialects": [{"dialect": "ANSI_SQL", "expression": "dt"}]
+                            },
+                            "dimension": {},
+                            "custom_extensions": [
                                 {
-                                    "name": "dt",
-                                    "expression": {
-                                        "dialects": [{"dialect": "ANSI_SQL", "expression": "dt"}]
-                                    },
-                                    "dimension": {},
-                                    "custom_extensions": [
-                                        {
-                                            "vendor_name": "ORIONBELT",
-                                            "data": json.dumps({"obml_extra_dimensions": bad}),
-                                        }
-                                    ],
+                                    "vendor_name": "ORIONBELT",
+                                    "data": json.dumps({"obml_extra_dimensions": bad}),
                                 }
                             ],
                         }
@@ -588,14 +558,10 @@ class TestValidateOsiRobustness:
         r = conv.validate_osi(
             {
                 "version": "0.2.0.dev0",
-                "semantic_model": [
-                    {
-                        "name": "m",
-                        "datasets": [
-                            {"name": "D", "source": "a.b.d", "fields": []},
-                            {"name": "D", "source": "a.b.d2", "fields": []},
-                        ],
-                    }
+                "name": "m",
+                "datasets": [
+                    {"name": "D", "source": "a.b.d", "fields": []},
+                    {"name": "D", "source": "a.b.d2", "fields": []},
                 ],
             }
         )

@@ -213,7 +213,7 @@ def test_graph(model_file):
 def test_convert_obml_to_osi(model_file):
     result = runner.invoke(app, ["convert", "obml-to-osi", model_file])
     assert result.exit_code == 0
-    assert "semantic_model" in result.stdout
+    assert "datasets:" in result.stdout
 
 
 def test_convert_obml_to_osi_surfaces_authored_label(tmp_path):
@@ -231,7 +231,7 @@ def test_convert_obml_to_osi_surfaces_authored_label(tmp_path):
 
     result = runner.invoke(app, ["convert", "obml-to-osi", str(bad)])
     assert result.exit_code == 0  # advisory: conversion still succeeds
-    assert "semantic_model" in result.stdout  # output still produced
+    assert "datasets:" in result.stdout  # output still produced
     assert "label" in result.output.lower()  # the violation is surfaced
 
 
@@ -256,7 +256,7 @@ def test_convert_osi_to_obml_remote_surfaces_input_schema(monkeypatch, tmp_path)
             "warnings": [],
             "input_validation": {
                 "schema_valid": False,
-                "schema_errors": ["[semantic_model.0.datasets.0] bad OSI input"],
+                "schema_errors": ["[datasets.0] bad OSI input"],
             },
         }
 
@@ -276,7 +276,7 @@ def test_convert_obml_to_osi_remote_surfaces_input_schema(monkeypatch, tmp_path)
 
     def fake(self, input_yaml, *, model_name="semantic_model"):
         return {
-            "output_yaml": "semantic_model: []\n",
+            "output_yaml": "datasets: []\n",
             "warnings": [],
             "input_validation": {
                 "schema_valid": False,
@@ -289,7 +289,7 @@ def test_convert_obml_to_osi_remote_surfaces_input_schema(monkeypatch, tmp_path)
     obml_file.write_text("version: 1.0\n", encoding="utf-8")
     result = runner.invoke(app, ["convert", "obml-to-osi", str(obml_file), "-s", "http://example"])
     assert result.exit_code == 0
-    assert "semantic_model" in result.stdout
+    assert "datasets:" in result.stdout
     assert "label" in result.output.lower()
 
 
@@ -305,7 +305,7 @@ def test_convert_osi_to_obml_surfaces_input_schema_issue(model_file, tmp_path):
     osi = runner.invoke(app, ["convert", "obml-to-osi", model_file])
     assert osi.exit_code == 0
     doc = yaml.safe_load(osi.stdout)
-    doc["semantic_model"][0]["datasets"][0]["fields"][0]["bogusProp"] = "x"
+    doc["datasets"][0]["fields"][0]["bogusProp"] = "x"
     osi_file = tmp_path / "bad.osi.yaml"
     osi_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
 

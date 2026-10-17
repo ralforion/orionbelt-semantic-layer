@@ -43,38 +43,30 @@ async def client(app):
 # A minimal, valid OSI v0.2 model: one dataset, one metric.
 _OSI_V02_MINIMAL = {
     "version": "0.2.0.dev0",
-    "semantic_model": [
+    "name": "demo",
+    "datasets": [
         {
-            "name": "demo",
-            "datasets": [
+            "name": "Orders",
+            "source": "WAREHOUSE.PUBLIC.orders",
+            "primary_key": ["order_id"],
+            "fields": [
                 {
-                    "name": "Orders",
-                    "source": "WAREHOUSE.PUBLIC.orders",
-                    "primary_key": ["order_id"],
-                    "fields": [
-                        {
-                            "name": "order_id",
-                            "expression": {
-                                "dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]
-                            },
-                        },
-                        {
-                            "name": "amount",
-                            "expression": {
-                                "dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]
-                            },
-                        },
-                    ],
-                }
-            ],
-            "metrics": [
+                    "name": "order_id",
+                    "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]},
+                },
                 {
-                    "name": "total_revenue",
-                    "expression": {
-                        "dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(Orders.amount)"}]
-                    },
-                }
+                    "name": "amount",
+                    "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]},
+                },
             ],
+        }
+    ],
+    "metrics": [
+        {
+            "name": "total_revenue",
+            "expression": {
+                "dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(Orders.amount)"}]
+            },
         }
     ],
 }
@@ -144,7 +136,7 @@ class TestExportModelToOsi:
         # The exported text parses as YAML and looks like an OSI document.
         osi = yaml.safe_load(body["output_yaml"])
         assert isinstance(osi, dict)
-        assert "semantic_model" in osi
+        assert "datasets" in osi and "semantic_model" not in osi
         assert body["validation"]["schema_valid"] is True
 
     async def test_export_unknown_model_returns_404(self, client: AsyncClient) -> None:

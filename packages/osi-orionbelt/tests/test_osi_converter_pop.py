@@ -144,14 +144,14 @@ class TestOBMLtoOSIPoP:
 
     @staticmethod
     def _unexported(osi: dict) -> dict:
-        for ext in osi["semantic_model"][0]["custom_extensions"]:
+        for ext in osi["custom_extensions"]:
             if ext["vendor_name"] == "ORIONBELT":
                 return json.loads(ext["data"]).get("obml_unexported", {})
         return {}
 
     def test_pop_metrics_are_not_ossie_metrics(self) -> None:
         osi, _ = self._convert()
-        names = {m["name"] for m in osi["semantic_model"][0].get("metrics", [])}
+        names = {m["name"] for m in osi.get("metrics", [])}
         assert names.isdisjoint(self._POP_NAMES)
 
     def test_pop_definitions_kept_in_model_extension(self) -> None:
@@ -168,7 +168,7 @@ class TestOBMLtoOSIPoP:
     def test_derived_metric_still_exported(self) -> None:
         """Derived metrics are not affected by PoP handling."""
         osi, _ = self._convert()
-        m = next(m for m in osi["semantic_model"][0]["metrics"] if m["name"] == "Derived Metric")
+        m = next(m for m in osi["metrics"] if m["name"] == "Derived Metric")
         expr = m["expression"]["dialects"][0]["expression"]
         assert "{[" not in expr
 
@@ -210,7 +210,7 @@ class TestOSItoOBMLPoP:
             "obml_pop_comparison": "percentChange",
         }
         osi = conv.OBMLtoOSI(_OBML_WITH_POP).convert()
-        osi["semantic_model"][0]["metrics"].append(
+        osi["metrics"].append(
             {
                 "name": "Legacy YoY",
                 "expression": {
@@ -295,7 +295,7 @@ class TestPoPEdgeCases:
         }
         converter = conv.OBMLtoOSI(obml)
         osi = converter.convert()
-        metrics = osi["semantic_model"][0].get("metrics", [])
+        metrics = osi.get("metrics", [])
         assert all(m["name"] != "Bad PoP" for m in metrics)
         assert any("Bad PoP" in w for w in converter.warnings)
 
@@ -324,7 +324,7 @@ class TestPoPEdgeCases:
         }
         converter = conv.OBMLtoOSI(obml)
         osi = converter.convert()
-        metrics = osi["semantic_model"][0].get("metrics", [])
+        metrics = osi.get("metrics", [])
         assert all(m["name"] != "Bad PoP" for m in metrics)
         assert any("Bad PoP" in w for w in converter.warnings)
 
@@ -367,7 +367,7 @@ class TestPoPEdgeCases:
         osi = converter1.convert()
 
         # Left out of the Ossie metrics, so no ai_context to check
-        assert all(m["name"] != "YoY Growth" for m in osi["semantic_model"][0]["metrics"])
+        assert all(m["name"] != "YoY Growth" for m in osi["metrics"])
 
         # Roundtrip back
         converter2 = conv.OSItoOBML(osi)
@@ -380,7 +380,7 @@ class TestPoPEdgeCases:
         """Model with measures, derived, cumulative, and PoP metrics all convert."""
         converter = conv.OBMLtoOSI(_OBML_WITH_POP)
         osi = converter.convert()
-        metric_names = [m["name"] for m in osi["semantic_model"][0]["metrics"]]
+        metric_names = [m["name"] for m in osi["metrics"]]
 
         # Revenue (measure → OSI metric) plus the derived metric; PoP is left out
         assert "Revenue" in metric_names

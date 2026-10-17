@@ -40,19 +40,15 @@ def _import(
     metrics *before*."""
     osi = {
         "version": "0.2.0.dev0",
-        "semantic_model": [
+        "name": "sales",
+        "datasets": [
             {
-                "name": "sales",
-                "datasets": [
-                    {
-                        "name": "Orders",
-                        "source": "A.P.ORDERS",
-                        "fields": [_field("amount"), _field("cost")],
-                    }
-                ],
-                "metrics": [*(before or []), _metric("Probe", expression, dialect)],
+                "name": "Orders",
+                "source": "A.P.ORDERS",
+                "fields": [_field("amount"), _field("cost")],
             }
         ],
+        "metrics": [*(before or []), _metric("Probe", expression, dialect)],
     }
     return conv.OSItoOBML(osi).convert()
 
@@ -108,19 +104,15 @@ def test_imported_as_a_percentile_measure(
 def _converter(expression: str, dialect: str) -> conv.OSItoOBML:
     osi = {
         "version": "0.2.0.dev0",
-        "semantic_model": [
+        "name": "sales",
+        "datasets": [
             {
-                "name": "sales",
-                "datasets": [
-                    {
-                        "name": "Orders",
-                        "source": "A.P.ORDERS",
-                        "fields": [_field("amount"), _field("cost")],
-                    }
-                ],
-                "metrics": [_metric("Probe", expression, dialect)],
+                "name": "Orders",
+                "source": "A.P.ORDERS",
+                "fields": [_field("amount"), _field("cost")],
             }
         ],
+        "metrics": [_metric("Probe", expression, dialect)],
     }
     return conv.OSItoOBML(osi)
 
