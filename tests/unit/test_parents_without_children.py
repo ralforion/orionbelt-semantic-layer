@@ -73,6 +73,8 @@ measures:
 metrics:
   Credit And Orders:
     expression: '{[Total Credit]} + {[Orders Count]}'
+  Order Score:
+    expression: '{[Orders Count]} + 1'
 """
 
 
@@ -313,3 +315,27 @@ def test_a_metric_reads_a_missing_order_count_as_zero(
     rows = con.execute(_sql(query)).fetchall()
     carol = [r[1:4] for r in rows if r[0] is None and (not grouping or r[4] == 0)]
     assert [tuple(float(v) for v in r) for r in carol] == [(40.0, 0.0, 40.0)]
+
+
+@pytest.mark.parametrize("grouping", [None, "rollup", "cube"])
+def test_a_metric_over_order_values_only_is_rebuilt(
+    con: duckdb.DuckDBPyConnection, grouping: str | None
+) -> None:
+    """``{[Orders Count]} + 1`` reads no customer value, so it was computed
+    whole by the order-side query, which has no row for Carol: NULL, though
+    her order count is 0. It is rebuilt over that count: 1."""
+    query: dict = {
+        "select": {
+            "dimensions": ["Tier", "Category"],
+            "measures": ["Total Credit", "Orders Count", "Order Score"],
+        }
+    }
+    if grouping:
+        query["grouping"] = grouping
+    rows = con.execute(_sql(query)).fetchall()
+    carol = [
+        tuple(float(v) for v in r[2:5])
+        for r in rows
+        if r[0] == "gold" and r[1] is None and (not grouping or r[6] == 0)
+    ]
+    assert carol == [(40.0, 0.0, 1.0)]

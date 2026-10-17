@@ -90,6 +90,8 @@ metrics:
     expression: '{{[Total Credit]}} + {{[Orders Count]}}'
   Credit And Revenue:
     expression: '{{[Total Credit]}} + {{[Revenue]}}'
+  Order Score:
+    expression: '{{[Orders Count]}} + 1'
 """
 
 
@@ -232,7 +234,7 @@ def _assert_metrics_over_order_values(target: VendorTarget) -> None:
         query: dict = {
             "select": {
                 "dimensions": ["Customer ID"],
-                "measures": ["Credit And Orders", "Credit And Revenue"],
+                "measures": ["Credit And Orders", "Credit And Revenue", "Order Score"],
             }
         }
         if grouping:
@@ -240,8 +242,13 @@ def _assert_metrics_over_order_values(target: VendorTarget) -> None:
         rows = _run(target, model, QueryObject(**query))
         c3 = [row for row in rows if row["customer id"] == "c3"]
         assert [
-            (_number(r["credit and orders"]), _number(r["credit and revenue"])) for r in c3
-        ] == [(Decimal(40), None)], grouping
+            (
+                _number(r["credit and orders"]),
+                _number(r["credit and revenue"]),
+                _number(r["order score"]),
+            )
+            for r in c3
+        ] == [(Decimal(40), None, Decimal(1))], grouping
 
 
 def test_duckdb_parents_without_children(vendor_duckdb: VendorTarget) -> None:

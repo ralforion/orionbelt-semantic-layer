@@ -639,6 +639,27 @@ def wrap_with_grain_dedup(
         for m in resolved.measures
         if is_split_metric(m, resolved, resolved.dedup_grain_components)
     }
+    # With parents without children the groups can include ones the query as
+    # planned has no row for, where a metric computed inside it is NULL as a
+    # whole, whatever its components read there (an order count reads 0). A
+    # derived metric is then rebuilt over its components too. Not one the
+    # other passes compute (cumulative, period-over-period, window), nor one
+    # with a component a wrapper computes at another grain or scope.
+    if leg is not None and dim_names:
+        for m in resolved.measures:
+            components = leaf_components[m.name]
+            if (
+                m.name not in split_metrics
+                and m.component_measures
+                and not (m.is_cumulative or m.is_pop or m.is_window)
+                and not _ddm_window_components(m, resolved.metric_components)
+                and all(
+                    not (c.total or c.grain_override is not None or c.filter_context is not None)
+                    and not (c.is_cumulative or c.is_pop or c.is_window)
+                    for c in components
+                )
+            ):
+                split_metrics[m.name] = m
     window_inputs = _window_inputs(resolved)
     # A metric over a window metric is a placeholder column until the window
     # pass computes it: its base measure is a bare name nothing here binds.
