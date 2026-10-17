@@ -46,6 +46,11 @@ class _Projection:
     #: aggregate the planner emits inline.
     by_expr: list[tuple[Expr, str]]
 
+    #: Every output alias. An ordering key that already names one is kept: a
+    #: derived metric over another (``{[Average Order]}``) has that bare alias
+    #: as its expression, so matching it would sort by the wrong column.
+    aliases: frozenset[str]
+
 
 def outer_order_by(resolved: ResolvedQuery, model: SemanticModel | None) -> list[OrderByItem]:
     """The resolved ORDER BY, rewritten to name the wrapped projection."""
@@ -102,6 +107,9 @@ def _projection(resolved: ResolvedQuery, model: SemanticModel | None) -> _Projec
     return _Projection(
         by_column={(d.source_column, d.object_name): d.name for d in resolved.dimensions},
         by_expr=by_expr,
+        aliases=frozenset(
+            [*(d.name for d in resolved.dimensions), *(m.name for m in resolved.measures)]
+        ),
     )
 
 
@@ -110,6 +118,8 @@ def _outer_expr(expr: Expr, projection: _Projection) -> Expr:
     if isinstance(expr, Literal):
         # An ordinal position, which resolves against the outer projection
         # unchanged - and is the documented workaround for #358.
+        return expr
+    if isinstance(expr, ColumnRef) and expr.table is None and expr.name in projection.aliases:
         return expr
     for projected, name in projection.by_expr:
         if expr == projected:

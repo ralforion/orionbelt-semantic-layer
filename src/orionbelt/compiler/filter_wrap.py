@@ -699,6 +699,14 @@ def _remap_fc_order_expr(
     the anchor, a measure is in whichever CTE computed it. Ordering by the
     measure's aggregate as written would read the wrong scan.
     """
+    if isinstance(expr, ColumnRef) and expr.table is None:
+        # Already an output alias: kept to it. A derived metric over another
+        # (``{[Average Order]}``) has that bare alias as its expression, and
+        # matching it would sort by the wrong column.
+        if any(expr.name == name for _, name in measure_exprs):
+            return order_ref(expr.name)
+        if any(expr.name == name for _, name in dim_exprs) or expr.name in dim_map.values():
+            return dim_ref(expr.name)
     if isinstance(expr, ColumnRef) and expr.table is not None:
         key = (expr.name, expr.table)
         if key in dim_map:

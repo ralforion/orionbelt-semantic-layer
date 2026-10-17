@@ -1511,6 +1511,16 @@ def _order_expr_to_outer(
     which, and returns ``None`` for a metric this query rebuilds in its own
     projection — that one sorts by its output alias.
     """
+    # An ordering key that already names an output alias is kept to it: a
+    # derived metric over another (``{[Average Order]}``) has that bare alias as
+    # its expression, and matching it would sort by the wrong column.
+    if (
+        isinstance(expr, ColumnRef)
+        and expr.table is None
+        and any(expr.name == name for _, name in projected)
+    ):
+        return ColumnRef(name=expr.name, table=source_of(expr.name))
+
     for candidate, name in projected:
         if expr == candidate:
             return ColumnRef(name=name, table=source_of(name))
