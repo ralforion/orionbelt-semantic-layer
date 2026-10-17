@@ -70,6 +70,11 @@ measures:
     expression: 'COALESCE({[Customers].[Credit]}, 0) + 1'
     aggregation: sum
     resultType: float
+metrics:
+  Credit And Orders:
+    expression: '{[Total Credit]} + {[Orders Count]}'
+  Order Score:
+    expression: '{[Orders Count]} + 1'
 """
 
 
@@ -168,3 +173,169 @@ def test_an_expression_cannot_give_a_missing_customer_a_value(
     )
     assert alone == [(73.0,)]
     assert grouped == [("gold", 150.0, 52.0), ("silver", 70.0, 21.0), (None, 5.0, None)]
+
+
+# --- ROLLUP / CUBE ------------------------------------------------------------
+#
+# Each grouping set is deduplicated on its own rows, which now include the
+# customers without orders: the subtotals and the grand total count them, and
+# their detail rows are the NULL category, as in a plain GROUP BY.
+
+
+def test_rollup_totals_count_every_customer(con: duckdb.DuckDBPyConnection) -> None:
+    """The grand total read 30, every customer with an order; it is 70."""
+    sql = _sql(
+        {"select": {"dimensions": ["Category"], "measures": ["Total Credit"]}, "grouping": "rollup"}
+    )
+    rows = con.execute(sql).fetchall()
+    assert sorted(((r[0], float(r[1]), r[2]) for r in rows), key=str) == [
+        ("tools", 10.0, 0),
+        ("toys", 20.0, 0),
+        (None, 40.0, 0),
+        (None, 70.0, 1),
+    ]
+
+
+def test_rollup_subtotals_keep_both_null_groups(con: duckdb.DuckDBPyConnection) -> None:
+    """Gold's subtotal is 50 (Alice and Carol), Carol is a detail row of her
+    own, and the order without a customer keeps its revenue."""
+    sql = _sql(
+        {
+            "select": {"dimensions": ["Tier", "Category"], "measures": ["Revenue", "Total Credit"]},
+            "grouping": "rollup",
+        }
+    )
+    assert _rows(con, sql) == [
+        ("gold", "tools", 150.0, 10.0, 0.0, 0.0),
+        ("gold", None, 150.0, 50.0, 0.0, 1.0),
+        ("gold", None, None, 40.0, 0.0, 0.0),
+        ("silver", "toys", 70.0, 20.0, 0.0, 0.0),
+        ("silver", None, 70.0, 20.0, 0.0, 1.0),
+        (None, "tools", 5.0, None, 0.0, 0.0),
+        (None, None, 225.0, 70.0, 1.0, 1.0),
+        (None, None, 5.0, None, 0.0, 1.0),
+    ]
+
+
+def test_cube_column_subtotals_count_every_customer(con: duckdb.DuckDBPyConnection) -> None:
+    """The category subtotals over all tiers: tools has Alice's and the
+    orphan's revenue with one customer, and Carol is the NULL category's."""
+    sql = _sql(
+        {
+            "select": {
+                "dimensions": ["Tier", "Category"],
+                "measures": ["Revenue", "Total Credit", "Customers Count"],
+            },
+            "grouping": "cube",
+        }
+    )
+    by_category = {
+        r[1]: (r[2], r[3], r[4]) for r in con.execute(sql).fetchall() if r[5] == 1 and r[6] == 0
+    }
+    assert {
+        k: tuple(None if v is None else float(v) for v in vs) for k, vs in by_category.items()
+    } == {
+        "tools": (155.0, 10.0, 1.0),
+        "toys": (70.0, 20.0, 1.0),
+        None: (None, 40.0, 1.0),
+    }
+
+
+def test_rollup_with_a_where_carol_passes(con: duckdb.DuckDBPyConnection) -> None:
+    """``Category = tools OR Tier = gold`` holds for Carol: refused under
+    ROLLUP before, now she is counted."""
+    sql = _sql(
+        {
+            "select": {"dimensions": ["Category"], "measures": ["Total Credit"]},
+            "grouping": "rollup",
+            "where": [
+                {
+                    "logic": "or",
+                    "filters": [
+                        {"field": "Category", "op": "=", "value": "tools"},
+                        {"field": "Tier", "op": "=", "value": "gold"},
+                    ],
+                }
+            ],
+        }
+    )
+    rows = con.execute(sql).fetchall()
+    assert sorted(((r[0], float(r[1]), r[2]) for r in rows), key=str) == [
+        ("tools", 10.0, 0),
+        (None, 40.0, 0),
+        (None, 50.0, 1),
+    ]
+
+
+def test_rollup_over_only_filtered_customer_measures_still_compiles(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """With every customer measure filtered on the orders there is no CTE to
+    list the groups from. A filter no customer without orders passes adds
+    nothing for them, so the plan stays as it was rather than refusing."""
+    big_order_credit = """  Big Order Credit:
+    columns: [{dataObject: Customers, column: Credit}]
+    aggregation: sum
+    resultType: float
+    filters:
+      - column: {dataObject: Orders, column: Amount}
+        operator: gt
+        values: [{dataType: float, valueFloat: 90}]
+"""
+    yaml_text = MODEL_YAML.replace("metrics:\n", big_order_credit + "metrics:\n", 1)
+    raw = YAML(typ="safe").load(yaml_text)
+    model: SemanticModel = ReferenceResolver().resolve(raw)[0]
+    query = QueryObject(
+        **{
+            "select": {"dimensions": ["Tier"], "measures": ["Revenue", "Big Order Credit"]},
+            "grouping": "rollup",
+        }
+    )
+    sql = CompilationPipeline().compile(query, model, "duckdb").sql
+    by_set = {(r[0], r[3]): r[2] for r in con.execute(sql).fetchall()}
+    assert float(by_set[("gold", 0)]) == 10.0
+    assert by_set[("silver", 0)] is None
+    assert float(by_set[(None, 1)]) == 10.0
+
+
+@pytest.mark.parametrize("grouping", [None, "rollup"])
+def test_a_metric_reads_a_missing_order_count_as_zero(
+    con: duckdb.DuckDBPyConnection, grouping: str | None
+) -> None:
+    """Carol's group has no row of the order-side query: the order count she
+    reads selected is 0, and the metric over it read NULL instead of 40."""
+    query: dict = {
+        "select": {
+            "dimensions": ["Category"],
+            "measures": ["Total Credit", "Orders Count", "Credit And Orders"],
+        }
+    }
+    if grouping:
+        query["grouping"] = grouping
+    rows = con.execute(_sql(query)).fetchall()
+    carol = [r[1:4] for r in rows if r[0] is None and (not grouping or r[4] == 0)]
+    assert [tuple(float(v) for v in r) for r in carol] == [(40.0, 0.0, 40.0)]
+
+
+@pytest.mark.parametrize("grouping", [None, "rollup", "cube"])
+def test_a_metric_over_order_values_only_is_rebuilt(
+    con: duckdb.DuckDBPyConnection, grouping: str | None
+) -> None:
+    """``{[Orders Count]} + 1`` reads no customer value, so it was computed
+    whole by the order-side query, which has no row for Carol: NULL, though
+    her order count is 0. It is rebuilt over that count: 1."""
+    query: dict = {
+        "select": {
+            "dimensions": ["Tier", "Category"],
+            "measures": ["Total Credit", "Orders Count", "Order Score"],
+        }
+    }
+    if grouping:
+        query["grouping"] = grouping
+    rows = con.execute(_sql(query)).fetchall()
+    carol = [
+        tuple(float(v) for v in r[2:5])
+        for r in rows
+        if r[0] == "gold" and r[1] is None and (not grouping or r[6] == 0)
+    ]
+    assert carol == [(40.0, 0.0, 1.0)]

@@ -259,16 +259,8 @@ def test_a_predicate_no_childless_parent_satisfies_has_no_second_leg() -> None:
                 "  Total Credit:",
             ),
         ),
-        (
-            {
-                "select": {"dimensions": ["Tier"], "measures": ["Customer Count"]},
-                "grouping": "rollup",
-                "where": GOLD_OR_OK,
-            },
-            MODEL_YAML,
-        ),
     ],
-    ids=["allow-fan-out", "rollup"],
+    ids=["allow-fan-out"],
 )
 def test_a_shape_the_split_cannot_express_is_refused(query: dict, yaml_text: str) -> None:
     with pytest.raises(ResolutionError) as excinfo:
@@ -276,6 +268,23 @@ def test_a_shape_the_split_cannot_express_is_refused(query: dict, yaml_text: str
     errors = excinfo.value.errors
     assert [e.code for e in errors] == ["FILTER_ADMITS_ROWS_WITHOUT"]
     assert "exists" in (errors[0].hint or "")
+
+
+def test_rollup_counts_the_childless_parent_in_every_set(con: duckdb.DuckDBPyConnection) -> None:
+    """Refused under ROLLUP before: each grouping set is deduplicated on its
+    own rows, which now include the customers without orders."""
+    sql = _sql(
+        {
+            "select": {"dimensions": ["Tier"], "measures": ["Customer Count"]},
+            "grouping": "rollup",
+            "where": GOLD_OR_OK,
+        }
+    )
+    expected = (
+        "SELECT c.tier, COUNT(DISTINCT c.id), GROUPING(c.tier)"
+        f" {LEFT_JOIN} WHERE c.tier = 'gold' OR o.status = 'ok' GROUP BY ROLLUP (c.tier)"
+    )
+    assert _rows(con, sql) == _rows(con, expected)
 
 
 @pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
