@@ -2265,6 +2265,80 @@ class QueryResolver:
             return root
         return best
 
+    def _plan_parents_without_children(self, ctx: _ResolutionContext) -> None:
+        """Add the parents without child rows a measure filter accepts, or refuse.
+
+        A customer measure filtered on its orders, read through the orders, is
+        applied to the order rows before deduplicating (``grain_dedup``). A
+        customer without orders is in none of them: right for ``order_id set``,
+        which no such customer satisfies, and wrong for ``order_id notset``,
+        which only such customers do. When the filter can hold with every
+        order column NULL (:mod:`compiler.null_rejection`), the plan gets the
+        same leg as a WHERE that admits them, and the filter is evaluated there
+        with those columns NULL. A shape the leg cannot express is refused
+        (``FILTER_ADMITS_ROWS_WITHOUT``) rather than answered without them.
+        """
+        base = ctx.result.base_object
+        graph = ctx.graph
+        if graph is None or ctx.result.allow_fan_out:
+            return
+        reached = graph.descendants(base)
+        names = [m.name for m in ctx.result.measures] + list(ctx.result.metric_components)
+        admitting: dict[str, str] = {}
+        for name in names:
+            measure = ctx.model.effective_measures.get(name)
+            if measure is None or not measure.filters or measure.allow_fan_out:
+                continue
+            sourced = measure.source_objects & reached
+            if len(sourced) != 1:
+                continue
+            parent = next(iter(sourced))
+            filter_objects: set[str] = set()
+            for item in measure.filters:
+                collect_measure_filter_objects(item, filter_objects)
+            children = filter_objects - graph.descendants(parent) - {parent}
+            if not children:
+                continue
+            gate = build_measure_filter_condition(measure.filters, ctx.model, [])
+            if gate is not None and can_hold_without(gate, children):
+                admitting[name] = parent
+        if not admitting:
+            return
+
+        parents = sorted(set(admitting.values()))
+        reason: str | None = None
+        if len(parents) > 1:
+            reason = "the measures read several objects that cannot reach it"
+        elif ctx.result.grouping is not None:
+            reason = "the query uses ROLLUP / CUBE"
+        elif ctx.result.has_pop:
+            reason = "a period-over-period metric rebuilds the query from its own rows"
+        elif any(
+            (obj := ctx.model.data_objects.get(name)) is not None and obj.is_nested
+            for name in (parents[0], base)
+        ):
+            reason = "a nested data object is involved"
+        if reason is None:
+            parent = parents[0]
+            ctx.result.childless_leg = ChildlessLeg(
+                parent=parent,
+                child=base,
+                children=frozenset({base} | (reached - graph.descendants(parent) - {parent})),
+            )
+            return
+        measures = ", ".join(f"'{name}'" for name in sorted(admitting))
+        ctx.errors.append(
+            SemanticError(
+                code="FILTER_ADMITS_ROWS_WITHOUT",
+                message=(
+                    f"The filter of {measures} can hold for a row of '{parents[0]}' with no "
+                    f"'{base}' rows (an IS NULL, a NOT, or an OR with another condition), "
+                    f"and such rows cannot be added to this query: {reason}. Answered from "
+                    f"the '{base}' rows alone, they would be left out without a word."
+                ),
+            )
+        )
+
     def _plan_rows_without_children(self, ctx: _ResolutionContext) -> None:
         """Add the parents without child rows a WHERE accepts, or refuse.
 
@@ -2299,6 +2373,7 @@ class QueryResolver:
         unreached = {source: read - ctx.graph.descendants(source) - {source} for source in sources}
         children = set().union(*unreached.values())
         if not children:
+            self._plan_parents_without_children(ctx)
             return
         combined: Expr | None = None
         for wf in ctx.result.where_filters:

@@ -21,6 +21,7 @@ from ruamel.yaml import YAML
 
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.resolver import ReferenceResolver
@@ -102,6 +103,22 @@ measures:
       - column: {dataObject: Customers, column: Tier}
         operator: equals
         values: [{dataType: string, valueString: gold}]
+  Credit Without Orders:
+    columns: [{dataObject: Customers, column: Credit}]
+    aggregation: sum
+    resultType: float
+    filters:
+      - column: {dataObject: Orders, column: Order ID}
+        operator: notset
+  Tools Credit Or Zero:
+    columns: [{dataObject: Customers, column: Credit}]
+    aggregation: sum
+    resultType: float
+    defaultValue: 0
+    filters:
+      - column: {dataObject: Products, column: Category}
+        operator: equals
+        values: [{dataType: string, valueString: tools}]
   Tiers By Order Date:
     columns: [{dataObject: Customers, column: Tier}]
     aggregation: listagg
@@ -191,3 +208,32 @@ def test_a_sort_key_on_another_object_is_still_refused() -> None:
     """A sort key rides into the aggregate, so it cannot be applied before."""
     with pytest.raises(GrainDedupUnsupportedError, match="withinGroup"):
         _sql({"select": {"measures": ["Tiers By Order Date", "Gold Revenue"]}})
+
+
+def test_a_filter_only_parents_without_children_pass(con: duckdb.DuckDBPyConnection) -> None:
+    """``Order ID notset`` holds only for a customer with no order, who is in
+    none of the order rows: such customers are added as a leg of their own,
+    the filter read with every order column NULL. Carol's 40, not NULL."""
+    sql = _sql({"select": {"measures": ["Credit Without Orders"]}})
+    assert _rows(con, sql) == [(40.0,)]
+    sql = _sql({"select": {"dimensions": ["Tier"], "measures": ["Credit Without Orders"]}})
+    assert _rows(con, sql) == [("gold", 40.0), ("silver", None)]
+
+
+def test_a_shape_the_leg_cannot_take_is_refused() -> None:
+    """Under ROLLUP the leg is not built: refused, not answered without Carol."""
+    with pytest.raises(ResolutionError) as raised:
+        _sql(
+            {
+                "select": {"dimensions": ["Tier"], "measures": ["Credit Without Orders"]},
+                "grouping": "rollup",
+            }
+        )
+    assert [e.code for e in raised.value.errors] == ["FILTER_ADMITS_ROWS_WITHOUT"]
+
+
+def test_a_group_the_filter_empties_reads_the_default(con: duckdb.DuckDBPyConnection) -> None:
+    """Silver bought no tools: its rows are all filtered out before
+    deduplicating, so the group has no row where the default was applied."""
+    sql = _sql({"select": {"dimensions": ["Tier"], "measures": ["Tools Credit Or Zero"]}})
+    assert _rows(con, sql) == [("gold", 10.0), ("silver", 0.0)]

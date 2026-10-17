@@ -472,8 +472,19 @@ FROM (SELECT DISTINCT products.id, products.stock_on_hand
 
 Measures with the same filter share one deduplicating `SELECT`; a measure without
 it, or with another, gets its own, so a filter never narrows a measure that does
-not declare it. A product with no sale passing the filter is not counted, which
-is what the filter says.
+not declare it. A group the filter empties has no row there, and reads the
+measure's `defaultValue` (a count reads 0).
+
+A product with no sale is in none of the sale rows. That is right for
+`quantity > 1`, which no such product satisfies, and wrong for a filter that
+holds with every sale column `NULL` (`notset`, a `NOT`, an `OR` with a product
+condition). For such a filter the products without sales are added as rows of
+their own, read without joining the sales, with the filter evaluated for them
+over `NULL` sale columns: the same leg as a `WHERE` that admits them (see
+[Query Language](query-language.md)). Where that leg cannot be built (measures on
+several such objects, `ROLLUP` / `CUBE`, period-over-period, a nested object) the
+query is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than answered without
+them.
 
 ## Cross-fact measure expressions
 

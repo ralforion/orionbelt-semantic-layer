@@ -3,7 +3,9 @@
 A customer's credit read through Orders repeats per order and is deduplicated
 per customer. Its filter reads Products, two joins away, so it is the ``WHERE``
 of the deduplicating ``SELECT``: in the ``DISTINCT`` it would keep a row per
-order. A measure without the filter, beside it, is not narrowed.
+order. A measure without the filter, beside it, is not narrowed. A filter only
+customers without orders pass adds them as rows of their own, and a group the
+filter empties reads the measure's default.
 """
 
 from __future__ import annotations
@@ -83,6 +85,22 @@ measures:
     filters:
       - column: {{dataObject: Orders, column: Order ID}}
         operator: set
+  Credit Without Orders:
+    columns: [{{dataObject: Customers, column: Credit}}]
+    aggregation: sum
+    resultType: float
+    filters:
+      - column: {{dataObject: Orders, column: Order ID}}
+        operator: notset
+  Tools Credit Or Zero:
+    columns: [{{dataObject: Customers, column: Credit}}]
+    aggregation: sum
+    resultType: float
+    defaultValue: 0
+    filters:
+      - column: {{dataObject: Products, column: Category}}
+        operator: equals
+        values: [{{dataType: string, valueString: tools}}]
 """
 
 
@@ -122,6 +140,26 @@ def _assert_all(target: VendorTarget) -> None:
     }
     # gold: c1 once (10) for both; c3 has no orders. silver: c2 bought toys.
     assert by_tier == {"gold": (Decimal(10), Decimal(10)), "silver": (None, Decimal(20))}
+
+    # c3 is in no order row: added as a parent without children, for which
+    # "no order" holds. Silver bought no tools and reads the default.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            **{
+                "select": {
+                    "dimensions": ["Tier"],
+                    "measures": ["Credit Without Orders", "Tools Credit Or Zero"],
+                }
+            }
+        ),
+    )
+    by_tier = {
+        row["tier"]: (_number(row["credit without orders"]), _number(row["tools credit or zero"]))
+        for row in rows
+    }
+    assert by_tier == {"gold": (Decimal(40), Decimal(10)), "silver": (None, Decimal(0))}
 
 
 def test_duckdb_measure_filter_dedup(vendor_duckdb: VendorTarget) -> None:

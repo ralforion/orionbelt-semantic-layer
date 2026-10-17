@@ -878,9 +878,15 @@ def wrap_with_grain_dedup(
         # A group whose rows all miss the joined object contributes no row to the
         # dedup CTE, so the LEFT JOIN yields NULL. For a count that must read
         # zero, not "unknown" — COUNT over no rows is 0. Other aggregations keep
-        # NULL, which is what SQL returns for an empty input.
-        if name in cte_for_measure and _counts_rows(effective_measures.get(name)):
-            return FunctionCall(name="COALESCE", args=[ref, Literal.number(0)])
+        # NULL, which is what SQL returns for an empty input, unless they
+        # declare a default: inside the CTE it reaches no such group (a measure
+        # filter applied to the rows leaves none for a group it rejects).
+        if name in cte_for_measure:
+            if _counts_rows(effective_measures.get(name)):
+                return FunctionCall(name="COALESCE", args=[ref, Literal.number(0)])
+            measure = resolved_by_name.get(name)
+            if measure is not None and measure.default_value is not None:
+                return measure.with_default(ref)
         return _default_for_split_group(name, ref)
 
     def _default_for_split_group(name: str, ref: Expr) -> Expr:
