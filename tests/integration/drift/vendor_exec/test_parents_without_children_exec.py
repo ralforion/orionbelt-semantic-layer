@@ -69,11 +69,22 @@ measures:
     aggregation: sum
     resultType: float
     defaultValue: 99
+  Big Order Credit:
+    columns: [{{dataObject: Customers, column: Credit}}]
+    aggregation: sum
+    resultType: float
+    defaultValue: 99
+    filters:
+      - column: {{dataObject: Orders, column: Amount}}
+        operator: gt
+        values: [{{dataType: float, valueFloat: 90}}]
 metrics:
   Credit Score:
     expression: '{{[Total Credit]}} + 1'
   Defaulted Score:
     expression: '{{[Credit Or 99]}} + 1'
+  Big Order Score:
+    expression: '{{[Big Order Credit]}} + 1'
 """
 
 
@@ -139,6 +150,19 @@ def _assert_all(target: VendorTarget) -> None:
         "silver": (Decimal(21), Decimal(21)),
         None: (None, Decimal(100)),
     }
+
+    # Filtered on the orders, the credit has a CTE of its own, with no row for
+    # a group none of whose orders passes: silver (70), and the order without
+    # a customer. They read the default, 99, plus one; ClickHouse read 0 + 1.
+    rows = _run(
+        target,
+        _prepare(target),
+        QueryObject(
+            **{"select": {"dimensions": ["Tier"], "measures": ["Revenue", "Big Order Score"]}}
+        ),
+    )
+    big = {row["tier"]: _number(row["big order score"]) for row in rows}
+    assert big == {"gold": Decimal(11), "silver": Decimal(100), None: Decimal(100)}
 
 
 def test_duckdb_parents_without_children(vendor_duckdb: VendorTarget) -> None:

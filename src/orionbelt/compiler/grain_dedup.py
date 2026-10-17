@@ -829,6 +829,8 @@ def wrap_with_grain_dedup(
     grain_of_cte: dict[str, tuple[str, ...]] = {}
     # CTEs carrying a row per grouping set, matched on its GROUPING() flags too.
     rolled_up: set[str] = set()
+    # CTEs whose rows carry the ``_MATCHED`` marker.
+    marked: set[str] = set()
     for idx, group_key in enumerate(sorted(by_group)):
         object_name, grain, gate_key = group_key
         measure_names = by_group[group_key]
@@ -892,6 +894,8 @@ def wrap_with_grain_dedup(
             )
             if group_key == driver_key:
                 driver_cte = cte_name
+            elif group_dims:
+                marked.add(cte_name)
             if childless is not None:
                 all_ctes.extend(childless.ctes)
                 childless.ctes.clear()
@@ -903,7 +907,20 @@ def wrap_with_grain_dedup(
     # --- outer SELECT: main plus each dedup CTE, joined on the query grain ---
     def measure_ref(name: str) -> Expr:
         """One measure's value in the outer query, wherever it was computed."""
-        ref: Expr = ColumnRef(name=name, table=cte_for_measure.get(name, _MAIN_CTE))
+        cte = cte_for_measure.get(name, _MAIN_CTE)
+        ref: Expr = ColumnRef(name=name, table=cte)
+        if cte in marked:
+            # A group missing from the CTE reads NULL on every engine, before a
+            # count's 0, a default or a metric over it: ClickHouse would give a
+            # bare (non-Nullable) aggregate's column default, 0, instead.
+            ref = CaseExpr(
+                when_clauses=[
+                    (
+                        BinaryOp(ColumnRef(name=_MATCHED, table=cte), "=", Literal.number(1)),
+                        ref,
+                    )
+                ]
+            )
         # A group whose rows all miss the joined object contributes no row to the
         # dedup CTE, so the LEFT JOIN yields NULL. For a count that must read
         # zero, not "unknown" — COUNT over no rows is 0. Other aggregations keep
@@ -1246,8 +1263,10 @@ def _deduplicated_at(
         )
         key_present = not_null if key_present is None else BinaryOp(key_present, "AND", not_null)
     aggregated = Select(
+        # A group's row is marked, so a reader joining on the grain can tell a
+        # value from ClickHouse's default for an unmatched non-Nullable column.
         columns=[*cte_columns, AliasedExpr(expr=Literal.number(1), alias=_MATCHED)]
-        if keep_keyless and group_dims
+        if group_dims
         else cte_columns,
         from_=From(source=source, alias=src_alias),
         where=key_present,
