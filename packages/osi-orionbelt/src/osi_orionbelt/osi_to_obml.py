@@ -1817,13 +1817,18 @@ class OSItoOBML:
           ``("expr", agg, obml_expression, is_distinct, extra)``     -> expression measure
           ``("complex", obml_outer_formula, auto_measures)``  -> measures + metric
         or ``None`` when the expression has no aggregate, an unsupported or nested
-        aggregate, a reference that cannot be resolved, or one sqlglot cannot
-        parse - the caller preserves it verbatim. Reading with the source dialect
+        aggregate, a query inside it, a reference that cannot be resolved, or one
+        sqlglot cannot parse - the caller preserves it verbatim. Reading with the source dialect
         means a Snowflake/Databricks aggregation is parsed under the right grammar.
         """
         read = _OSI_DIALECT_TO_SQLGLOT.get(osi_dialect or "")
         tree = self._parse_metric_sql(expr_text, read)
         if tree is None or self._drops_percentile_arguments(expr_text, read):
+            return None
+        # A metric formula is over measures; a query inside it (a subquery, a
+        # UNION) has no OBML form, and its own tables and aliases are not
+        # datasets, so its aggregates must not be lifted into measures.
+        if tree.find(exp.Query) is not None:
             return None
         tree, self._approximated = self._exact_percentiles(tree, read)
 
