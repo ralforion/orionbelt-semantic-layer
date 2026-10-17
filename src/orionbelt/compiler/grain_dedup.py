@@ -878,6 +878,7 @@ def wrap_with_grain_dedup(
                 rows, object_name, measure_names, columns, resolved, model, dialect, idx
             )
             rolled_up.add(cte_name)
+            marked.add(cte_name)
         else:
             query = _deduplicated_at(
                 rows,
@@ -1603,7 +1604,8 @@ def _per_grouping_set(
 ) -> UnionAll:
     """One deduplicated aggregate per grouping set of the query's ROLLUP or
     CUBE, stacked: every dimension (NULL where the set rolls it up), its
-    ``GROUPING()`` flag as a constant, and the measures."""
+    ``GROUPING()`` flag as a constant, the measures, and the ``_MATCHED``
+    marker."""
     assert resolved.grouping is not None
     branches: list[Select] = []
     for set_idx, kept in enumerate(_grouping_sets(resolved.dimensions, resolved.grouping)):
@@ -1643,6 +1645,8 @@ def _per_grouping_set(
             AliasedExpr(expr=ColumnRef(name=name, table=src_alias), alias=name)
             for name in measure_names
         )
+        # Every row here is an aggregate's: marked, as a grouped CTE's are.
+        columns.append(AliasedExpr(expr=Literal.number(1), alias=_MATCHED))
         branches.append(Select(columns=columns, from_=From(source=inner, alias=src_alias)))
     return UnionAll(queries=branches)
 

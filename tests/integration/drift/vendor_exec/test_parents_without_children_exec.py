@@ -164,6 +164,24 @@ def _assert_all(target: VendorTarget) -> None:
     big = {row["tier"]: _number(row["big order score"]) for row in rows}
     assert big == {"gold": Decimal(11), "silver": Decimal(100), None: Decimal(100)}
 
+    # The same under ROLLUP / CUBE, whose CTE stacks one aggregate per
+    # grouping set. The grand total has a NULL tier too, so the tiers are read.
+    # MySQL has no CUBE, and the dialect refuses it.
+    groupings = ("rollup",) if target.dialect == "mysql" else ("rollup", "cube")
+    for grouping in groupings:
+        rows = _run(
+            target,
+            _prepare(target),
+            QueryObject(
+                **{
+                    "select": {"dimensions": ["Tier"], "measures": ["Revenue", "Big Order Score"]},
+                    "grouping": grouping,
+                }
+            ),
+        )
+        big = {row["tier"]: _number(row["big order score"]) for row in rows if row["tier"]}
+        assert big == {"gold": Decimal(11), "silver": Decimal(100)}, grouping
+
 
 def test_duckdb_parents_without_children(vendor_duckdb: VendorTarget) -> None:
     _assert_all(vendor_duckdb)
