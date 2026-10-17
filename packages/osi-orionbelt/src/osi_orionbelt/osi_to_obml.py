@@ -20,6 +20,7 @@ from osi_orionbelt._common import (
     _INTERNAL_VENDORS,
     _NON_SQL_DIALECTS,
     _OBML_VENDOR_READ,
+    _OSI_DIALECT_TO_SQLGLOT,
     _OSI_VERSION,
     _SQL_PARSEABLE_DIALECTS,
     _VENDOR_OSI,
@@ -27,17 +28,6 @@ from osi_orionbelt._common import (
     OSI_DATATYPE_TO_OBML_PHYSICAL,
     OSI_TO_OBML_TYPE,
 )
-
-# OSI SQL-dialect tag -> sqlglot ``read`` dialect for metric parsing. ANSI and
-# the portable OSSIE_SQL_2026 map to sqlglot's default (None). Reading with the
-# source dialect means a Snowflake/Databricks-authored aggregation is parsed
-# under the right grammar.
-_OSI_DIALECT_TO_SQLGLOT: dict[str, str | None] = {
-    "ANSI_SQL": None,
-    "OSSIE_SQL_2026": None,
-    "SNOWFLAKE": "snowflake",
-    "DATABRICKS": "databricks",
-}
 
 # sqlglot aggregate ``sql_name()`` -> OBML aggregation, for the aggregates OBML
 # models as a *single-column* measure. Multi-argument aggregates OBML also

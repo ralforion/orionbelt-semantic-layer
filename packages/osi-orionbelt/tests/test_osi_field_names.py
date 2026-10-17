@@ -124,3 +124,90 @@ class TestLegacyCodeNamedExport:
         assert set(columns) == {"Order ID"}
         assert columns["Order ID"]["code"] == "order_id"
         assert columns["Order ID"].get("primaryKey") is True
+
+
+def _legacy_field(code: str, column: str) -> dict[str, Any]:
+    """A field as exports before 0.5.0 wrote it: named by code, column stashed."""
+    return {
+        "name": code,
+        "expression": _expr(code),
+        "custom_extensions": [
+            {"vendor_name": "ORIONBELT", "data": json.dumps({"obml_column_name": column})}
+        ],
+    }
+
+
+def _legacy_export() -> dict[str, Any]:
+    return {
+        "version": "0.2.0",
+        "semantic_model": [
+            {
+                "name": "sales",
+                "datasets": [
+                    {
+                        "name": "Orders",
+                        "source": "WH.PUBLIC.orders",
+                        "primary_key": ["order_id"],
+                        "fields": [
+                            _legacy_field("order_id", "Order ID"),
+                            _legacy_field("customer_id", "Customer"),
+                            _legacy_field("amount", "Net Amount"),
+                        ],
+                    },
+                    {
+                        "name": "Customers",
+                        "source": "WH.PUBLIC.customers",
+                        "unique_keys": [["customer_id"]],
+                        "fields": [_legacy_field("customer_id", "Customer ID")],
+                    },
+                ],
+                "relationships": [
+                    {
+                        "name": "orders_to_customers",
+                        "from": "Orders",
+                        "to": "Customers",
+                        "from_columns": ["customer_id"],
+                        "to_columns": ["customer_id"],
+                    }
+                ],
+                "metrics": [
+                    {
+                        "name": "grand_total",
+                        "expression": _expr('SUM("Orders"."amount") OVER ()'),
+                    }
+                ],
+            }
+        ],
+    }
+
+
+class TestLegacyStashesFollowTheRename:
+    """What an older export left verbatim in the OBML refers to codes."""
+
+    def test_unique_keys_name_the_fields(self) -> None:
+        obml = conv.OSItoOBML(_legacy_export()).convert()
+        assert obml["dataObjects"]["Orders"]["joins"][0]["joinType"] == "many-to-one"
+        osi = conv.OBMLtoOSI(obml).convert()
+        customers = osi["semantic_model"][0]["datasets"][1]
+        assert customers["unique_keys"] == [["Customer ID"]]
+        back = conv.OSItoOBML(osi).convert()
+        assert back["dataObjects"]["Orders"]["joins"][0]["joinType"] == "many-to-one"
+
+    def test_preserved_metric_references_the_fields(self) -> None:
+        obml = conv.OSItoOBML(_legacy_export()).convert()
+        osi = conv.OBMLtoOSI(obml).convert()
+        metric = next(m for m in osi["semantic_model"][0]["metrics"] if m["name"] == "grand_total")
+        assert metric["expression"]["dialects"][0]["expression"] == (
+            'SUM("Orders"."Net Amount") OVER ()'
+        )
+
+    def test_unparseable_preserved_metric_is_kept_and_warned(self) -> None:
+        legacy = _legacy_export()
+        legacy["semantic_model"][0]["metrics"] = [
+            {"name": "broken", "expression": _expr('SUM("Orders"."amount" OVER (')}
+        ]
+        exporter = conv.OBMLtoOSI(conv.OSItoOBML(legacy).convert())
+        osi = exporter.convert()
+        metric = next(m for m in osi["semantic_model"][0]["metrics"] if m["name"] == "broken")
+        assert metric["expression"]["dialects"][0]["expression"] == 'SUM("Orders"."amount" OVER ('
+        assert any("broken" in w and "physical" in w for w in exporter.warnings)

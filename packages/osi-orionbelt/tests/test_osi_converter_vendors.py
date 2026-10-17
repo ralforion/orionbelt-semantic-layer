@@ -232,6 +232,6 @@ class TestLegacyBackCompat:
         }
         osi = conv.OBMLtoOSI(obml).convert()
         ds = osi["semantic_model"][0]["datasets"][0]
-        assert ds.get("unique_keys") == [["order_id"]]
+        assert ds.get("unique_keys") == [["Order ID"]]
         order_id = next(f for f in ds["fields"] if f["name"] == "Order ID")
         assert order_id.get("label") == "filter"
