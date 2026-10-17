@@ -760,7 +760,7 @@ Convert an OSI YAML model to OBML format. OBSL emits and validates against [OSI 
 
 ```json
 {
- "input_yaml": "version: \"0.2.0.dev0\"\nsemantic_model:\n - name: my_model\n ..."
+ "input_yaml": "version: \"0.2.0.dev0\"\nname: my_model\ndatasets:\n ..."
 }
 ```
 

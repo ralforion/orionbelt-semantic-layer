@@ -37,7 +37,7 @@ _OBML: dict[str, Any] = {
 def test_not_exported_as_an_ossie_metric() -> None:
     converter = conv.OBMLtoOSI(_OBML)
     osi = converter.convert()
-    assert "Close" not in {m["name"] for m in osi["semantic_model"][0].get("metrics", [])}
+    assert "Close" not in {m["name"] for m in osi.get("metrics", [])}
     assert any("Close" in w and "greatest key" in w for w in converter.warnings)
 
 

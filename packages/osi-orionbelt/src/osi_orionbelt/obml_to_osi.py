@@ -165,15 +165,12 @@ class OBMLtoOSI:
             self.obml.get("customExtensions"), sem_model["custom_extensions"]
         )
 
-        osi["semantic_model"] = [sem_model]
-
-        # The published OSI core schema forbids root-level ``dialects`` /
-        # ``vendors`` (root is additionalProperties:false, only ``version`` +
-        # ``semantic_model``). Dialects live per-expression in
-        # ``expression.dialects[]`` and vendors per-entity in
-        # ``custom_extensions[].vendor_name`` — the schema-valid homes — so the
-        # document stays fully conformant without root advertisement arrays.
-        # See OSI PR #148 (and the single-document-dialect direction in #52).
+        # One model per document, its properties at the root (apache/ossie#383).
+        # The root is additionalProperties:false, so there are no root-level
+        # ``dialects`` / ``vendors`` arrays: dialects live per expression in
+        # ``expression.dialects[]`` and vendors per entity in
+        # ``custom_extensions[].vendor_name``.
+        osi.update(sem_model)
         return osi
 
     def _emit_foreign_extensions(self, obml_exts: list[dict] | None, osi_exts: list[dict]) -> None:

@@ -42,14 +42,8 @@ def _osi_field(name: str, **extra: Any) -> dict[str, Any]:
 def _osi_model(fields: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "version": "0.2.0.dev0",
-        "semantic_model": [
-            {
-                "name": "sales",
-                "datasets": [
-                    {"name": "Orders", "source": "ANALYTICS.PUBLIC.ORDERS", "fields": fields}
-                ],
-            }
-        ],
+        "name": "sales",
+        "datasets": [{"name": "Orders", "source": "ANALYTICS.PUBLIC.ORDERS", "fields": fields}],
     }
 
 
@@ -60,7 +54,7 @@ def _obml_columns(obml: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def _osi_fields(osi: dict[str, Any]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
-    for ds in osi["semantic_model"][0]["datasets"]:
+    for ds in osi["datasets"]:
         for f in ds.get("fields", []):
             out[f["name"]] = f
     return out
@@ -168,27 +162,21 @@ class TestRoundtripLossless:
 def _osi_model_with_metric(datatype: str) -> dict[str, Any]:
     return {
         "version": "0.2.0.dev0",
-        "semantic_model": [
+        "name": "sales",
+        "datasets": [
             {
-                "name": "sales",
-                "datasets": [
-                    {
-                        "name": "Orders",
-                        "source": "A.P.ORDERS",
-                        "fields": [_osi_field("amount")],
-                    }
-                ],
-                "metrics": [
-                    {
-                        "name": "Total",
-                        "expression": {
-                            "dialects": [
-                                {"dialect": "ANSI_SQL", "expression": "SUM(Orders.amount)"}
-                            ]
-                        },
-                        "datatype": datatype,
-                    }
-                ],
+                "name": "Orders",
+                "source": "A.P.ORDERS",
+                "fields": [_osi_field("amount")],
+            }
+        ],
+        "metrics": [
+            {
+                "name": "Total",
+                "expression": {
+                    "dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(Orders.amount)"}]
+                },
+                "datatype": datatype,
             }
         ],
     }
@@ -212,7 +200,7 @@ class TestMetricDatatype:
         for osi_dt in ["Decimal", "Integer", "Float"]:
             osi = _osi_model_with_metric(osi_dt)
             back = conv.OBMLtoOSI(conv.OSItoOBML(osi).convert(), model_name="sales").convert()
-            metric = back["semantic_model"][0]["metrics"][0]
+            metric = back["metrics"][0]
             assert metric.get("datatype") == osi_dt
 
     def test_plain_measure_emits_no_datatype(self) -> None:
@@ -234,5 +222,5 @@ class TestMetricDatatype:
             },
         }
         osi = conv.OBMLtoOSI(obml, model_name="s").convert()
-        metric = osi["semantic_model"][0]["metrics"][0]
+        metric = osi["metrics"][0]
         assert "datatype" not in metric

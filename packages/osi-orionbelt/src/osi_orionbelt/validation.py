@@ -203,7 +203,13 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
     def _as_dict_list(value: Any) -> list[dict[str, Any]]:
         return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
-    models = _as_dict_list(osi_dict.get("semantic_model", []))
+    # A current document is one model at the root. The earlier
+    # ``semantic_model`` array is a schema error, but its models are still
+    # checked so a legacy document reports every problem at once.
+    if "semantic_model" in osi_dict:
+        models = _as_dict_list(osi_dict.get("semantic_model"))
+    else:
+        models = [osi_dict]
 
     # 2. Unique name checks
     for model in models:

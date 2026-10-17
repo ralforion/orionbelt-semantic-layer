@@ -27,7 +27,6 @@ What's new in v0.2 that OBSL now round-trips:
 | `unique_keys` | OBSL custom extension `obml_unique_keys: [[col], [col1, col2], ...]` | First-class `unique_keys: [[...], ...]` array |
 | Field `label` | OBSL custom extension `obml_field_label` | First-class `field.label` string |
 | `MAQL` dialect | n/a (we don't generate MAQL) | Accepted on read, surfaced via warning if it's the only available dialect |
-| Top-level informational arrays | n/a | `dialects: ["ANSI_SQL"]` + `vendors: [...]` |
 
 ## REST API
 
@@ -35,7 +34,7 @@ What's new in v0.2 that OBSL now round-trips:
 # Convert OSI -> OBML
 curl -X POST http://127.0.0.1:8000/v1/convert/osi-to-obml \
   -H "Content-Type: application/json" \
-  -d '{"input_yaml": "version: \"0.1.1\"\nsemantic_model:\n  ..."}' | jq
+  -d '{"input_yaml": "version: \"0.2.0.dev0\"\nname: my_model\ndatasets:\n  ..."}' | jq
 
 # Convert OBML -> OSI
 curl -X POST http://127.0.0.1:8000/v1/convert/obml-to-osi \
@@ -68,7 +67,7 @@ On import, an exact percentile written as `PERCENTILE_CONT(p) WITHIN GROUP (ORDE
 
 An approximate percentile imports as the exact one it estimates, with an `APPROXIMATE` warning: Snowflake's `APPROX_PERCENTILE(x, p)`, a t-digest estimate that interpolates, as `percentile_cont`, and Databricks' `approx_percentile(x, p[, accuracy])` / `percentile_approx`, which returns a value of the column, as `percentile_disc`. The exact value is what the approximation estimates, so the measure gets more accurate rather than less; the cost is that values can differ from the source tool's in the last digits, and the exact aggregate can be slower on large tables. An `ANSI_SQL` expression has no approximate percentile, and a list of fractions or a weighted one has no single measure: those are preserved verbatim.
 
-The import reads both document shapes: the current flat Apache Ossie document, with the model at the root, and the earlier `semantic_model` array, which the export still writes while `0.2.0` is unreleased.
+An Apache Ossie document holds one semantic model, its properties (`name`, `datasets`, `relationships`, `metrics`, ...) at the document root ([apache/ossie#383](https://github.com/apache/ossie/pull/383)). The export writes that shape. The import also reads the earlier `semantic_model` array, which osi-orionbelt wrote before 0.5.0, converting its first model with a warning; the input schema check reports the wrapper as an error, but the conversion still runs.
 
 ## Gradio UI
 

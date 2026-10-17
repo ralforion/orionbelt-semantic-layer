@@ -20,34 +20,30 @@ def _expr(sql: str) -> dict[str, Any]:
 def _ossie() -> dict[str, Any]:
     return {
         "version": "0.2.0",
-        "semantic_model": [
+        "name": "sales",
+        "datasets": [
             {
-                "name": "sales",
-                "datasets": [
-                    {
-                        "name": "orders",
-                        "source": "db.orders",
-                        "primary_key": ["id"],
-                        "fields": [
-                            {"name": "id", "expression": _expr("order_id")},
-                            {"name": "amount", "expression": _expr("amount")},
-                            {"name": "amount_with_tax", "expression": _expr("amount * 1.1")},
-                        ],
-                    }
+                "name": "orders",
+                "source": "db.orders",
+                "primary_key": ["id"],
+                "fields": [
+                    {"name": "id", "expression": _expr("order_id")},
+                    {"name": "amount", "expression": _expr("amount")},
+                    {"name": "amount_with_tax", "expression": _expr("amount * 1.1")},
                 ],
-                "metrics": [
-                    {
-                        "name": "taxed_revenue",
-                        "expression": _expr("SUM(orders.amount_with_tax)"),
-                    }
-                ],
+            }
+        ],
+        "metrics": [
+            {
+                "name": "taxed_revenue",
+                "expression": _expr("SUM(orders.amount_with_tax)"),
             }
         ],
     }
 
 
 def _dataset(osi: dict[str, Any]) -> dict[str, Any]:
-    return osi["semantic_model"][0]["datasets"][0]
+    return osi["datasets"][0]
 
 
 def _fields(osi: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -75,9 +71,7 @@ class TestOssieFirstRoundTrip:
 
     def test_metric_references_the_calculated_field(self) -> None:
         back = conv.OBMLtoOSI(conv.OSItoOBML(_ossie()).convert()).convert()
-        metric = next(
-            m for m in back["semantic_model"][0]["metrics"] if m["name"] == "taxed_revenue"
-        )
+        metric = next(m for m in back["metrics"] if m["name"] == "taxed_revenue")
         assert metric["expression"]["dialects"][0]["expression"] == (
             'SUM("orders"."amount_with_tax")'
         )
@@ -95,24 +89,20 @@ class TestLegacyCodeNamedExport:
     def test_column_name_and_primary_key_restored(self) -> None:
         legacy = {
             "version": "0.2.0",
-            "semantic_model": [
+            "name": "sales",
+            "datasets": [
                 {
-                    "name": "sales",
-                    "datasets": [
+                    "name": "Orders",
+                    "source": "WH.PUBLIC.orders",
+                    "primary_key": ["order_id"],
+                    "fields": [
                         {
-                            "name": "Orders",
-                            "source": "WH.PUBLIC.orders",
-                            "primary_key": ["order_id"],
-                            "fields": [
+                            "name": "order_id",
+                            "expression": _expr("order_id"),
+                            "custom_extensions": [
                                 {
-                                    "name": "order_id",
-                                    "expression": _expr("order_id"),
-                                    "custom_extensions": [
-                                        {
-                                            "vendor_name": "ORIONBELT",
-                                            "data": json.dumps({"obml_column_name": "Order ID"}),
-                                        }
-                                    ],
+                                    "vendor_name": "ORIONBELT",
+                                    "data": json.dumps({"obml_column_name": "Order ID"}),
                                 }
                             ],
                         }
@@ -140,42 +130,38 @@ def _legacy_field(code: str, column: str) -> dict[str, Any]:
 def _legacy_export() -> dict[str, Any]:
     return {
         "version": "0.2.0",
-        "semantic_model": [
+        "name": "sales",
+        "datasets": [
             {
-                "name": "sales",
-                "datasets": [
-                    {
-                        "name": "Orders",
-                        "source": "WH.PUBLIC.orders",
-                        "primary_key": ["order_id"],
-                        "fields": [
-                            _legacy_field("order_id", "Order ID"),
-                            _legacy_field("customer_id", "Customer"),
-                            _legacy_field("amount", "Net Amount"),
-                        ],
-                    },
-                    {
-                        "name": "Customers",
-                        "source": "WH.PUBLIC.customers",
-                        "unique_keys": [["customer_id"]],
-                        "fields": [_legacy_field("customer_id", "Customer ID")],
-                    },
+                "name": "Orders",
+                "source": "WH.PUBLIC.orders",
+                "primary_key": ["order_id"],
+                "fields": [
+                    _legacy_field("order_id", "Order ID"),
+                    _legacy_field("customer_id", "Customer"),
+                    _legacy_field("amount", "Net Amount"),
                 ],
-                "relationships": [
-                    {
-                        "name": "orders_to_customers",
-                        "from": "Orders",
-                        "to": "Customers",
-                        "from_columns": ["customer_id"],
-                        "to_columns": ["customer_id"],
-                    }
-                ],
-                "metrics": [
-                    {
-                        "name": "grand_total",
-                        "expression": _expr('SUM("Orders"."amount") OVER ()'),
-                    }
-                ],
+            },
+            {
+                "name": "Customers",
+                "source": "WH.PUBLIC.customers",
+                "unique_keys": [["customer_id"]],
+                "fields": [_legacy_field("customer_id", "Customer ID")],
+            },
+        ],
+        "relationships": [
+            {
+                "name": "orders_to_customers",
+                "from": "Orders",
+                "to": "Customers",
+                "from_columns": ["customer_id"],
+                "to_columns": ["customer_id"],
+            }
+        ],
+        "metrics": [
+            {
+                "name": "grand_total",
+                "expression": _expr('SUM("Orders"."amount") OVER ()'),
             }
         ],
     }
@@ -187,19 +173,19 @@ class TestLegacyStashesFollowTheRename:
     @staticmethod
     def _metric(sql: str, dialect: str = "ANSI_SQL") -> tuple[str, list[str]]:
         legacy = _legacy_export()
-        legacy["semantic_model"][0]["metrics"] = [
+        legacy["metrics"] = [
             {"name": "m", "expression": {"dialects": [{"dialect": dialect, "expression": sql}]}}
         ]
         importer = conv.OSItoOBML(legacy)
         osi = conv.OBMLtoOSI(importer.convert()).convert()
-        metric = next(m for m in osi["semantic_model"][0]["metrics"] if m["name"] == "m")
+        metric = next(m for m in osi["metrics"] if m["name"] == "m")
         return metric["expression"]["dialects"][0]["expression"], importer.warnings
 
     def test_unique_keys_name_the_fields(self) -> None:
         obml = conv.OSItoOBML(_legacy_export()).convert()
         assert obml["dataObjects"]["Orders"]["joins"][0]["joinType"] == "many-to-one"
         osi = conv.OBMLtoOSI(obml).convert()
-        customers = osi["semantic_model"][0]["datasets"][1]
+        customers = osi["datasets"][1]
         assert customers["unique_keys"] == [["Customer ID"]]
         back = conv.OSItoOBML(osi).convert()
         assert back["dataObjects"]["Orders"]["joins"][0]["joinType"] == "many-to-one"
@@ -222,7 +208,7 @@ class TestLegacyStashesFollowTheRename:
         # Column "Net Amount" has code amount, column "amount" has code
         # adjustment: field amount is "Net Amount", not the column amount.
         legacy = _legacy_export()
-        orders = legacy["semantic_model"][0]["datasets"][0]
+        orders = legacy["datasets"][0]
         orders["fields"] = [
             _legacy_field("order_id", "Order ID"),
             _legacy_field("customer_id", "Customer"),
@@ -230,16 +216,16 @@ class TestLegacyStashesFollowTheRename:
             _legacy_field("adjustment", "amount"),
         ]
         orders["unique_keys"] = [["amount"], ["adjustment"]]
-        legacy["semantic_model"][0]["metrics"] = [
+        legacy["metrics"] = [
             {
                 "name": "m",
                 "expression": _expr("SUM(Orders.amount) - SUM(Orders.adjustment) OVER ()"),
             }
         ]
         osi = conv.OBMLtoOSI(conv.OSItoOBML(legacy).convert()).convert()
-        dataset = osi["semantic_model"][0]["datasets"][0]
+        dataset = osi["datasets"][0]
         assert dataset["unique_keys"] == [["Net Amount"], ["amount"]]
-        metric = osi["semantic_model"][0]["metrics"][0]
+        metric = osi["metrics"][0]
         assert metric["expression"]["dialects"][0]["expression"] == (
             'SUM(Orders."Net Amount") - SUM(Orders."amount") OVER ()'
         )
@@ -318,7 +304,7 @@ class TestSavedByOlderVersion:
 
     def test_unique_keys_and_metric_name_the_fields(self) -> None:
         osi = conv.OBMLtoOSI(_saved_by_0_4()).convert()
-        model = osi["semantic_model"][0]
+        model = osi
         assert model["datasets"][1]["unique_keys"] == [["Customer ID"]]
         metric = next(m for m in model["metrics"] if m["name"] == "m")
         assert metric["expression"]["dialects"][0]["expression"] == (
@@ -333,12 +319,12 @@ class TestSavedByOlderVersion:
         customers["columns"]["customer_id"] = {"code": "legacy_id", "abstractType": "string"}
         exporter = conv.OBMLtoOSI(obml)
         osi = exporter.convert()
-        assert osi["semantic_model"][0]["datasets"][1]["unique_keys"] == [["customer_id"]]
+        assert osi["datasets"][1]["unique_keys"] == [["customer_id"]]
         assert any("'customer_id'" in w and "another column's code" in w for w in exporter.warnings)
 
     def test_marked_payload_is_emitted_as_is(self) -> None:
         obml = conv.OSItoOBML(conv.OBMLtoOSI(_saved_by_0_4()).convert()).convert()
         exporter = conv.OBMLtoOSI(obml)
         osi = exporter.convert()
-        assert osi["semantic_model"][0]["datasets"][1]["unique_keys"] == [["Customer ID"]]
+        assert osi["datasets"][1]["unique_keys"] == [["Customer ID"]]
         assert not any("unique key" in w for w in exporter.warnings)

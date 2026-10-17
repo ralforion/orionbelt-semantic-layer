@@ -60,19 +60,15 @@ def _model(
         orders["primary_key"] = from_primary_key
     return {
         "version": "0.2.0.dev0",
-        "semantic_model": [
+        "name": "sales",
+        "datasets": [orders, customers],
+        "relationships": [
             {
-                "name": "sales",
-                "datasets": [orders, customers],
-                "relationships": [
-                    {
-                        "name": "orders_customers",
-                        "from": "Orders",
-                        "to": "Customers",
-                        "from_columns": from_columns,
-                        "to_columns": to_columns,
-                    }
-                ],
+                "name": "orders_customers",
+                "from": "Orders",
+                "to": "Customers",
+                "from_columns": from_columns,
+                "to_columns": to_columns,
             }
         ],
     }

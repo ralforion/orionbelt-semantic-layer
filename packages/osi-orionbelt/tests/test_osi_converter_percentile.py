@@ -57,7 +57,7 @@ _OBML: dict[str, Any] = {
 
 
 def _expression(osi: dict[str, Any], name: str) -> str:
-    metric = next(m for m in osi["semantic_model"][0]["metrics"] if m["name"] == name)
+    metric = next(m for m in osi["metrics"] if m["name"] == name)
     return str(metric["expression"]["dialects"][0]["expression"])
 
 
