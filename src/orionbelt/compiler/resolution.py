@@ -2478,7 +2478,14 @@ class QueryResolver:
                 model_measure = ctx.model.effective_measures.get(resolved_measure.name)
                 if model_measure is None:
                     continue
-                objects = model_measure.source_objects
+                # A measure filter is evaluated on the same row as the value it
+                # gates (``CASE WHEN <filter> THEN value END``), so its objects
+                # have to be on that row too. Left out, a filter on Orders
+                # gating a Customers value based the query on Customers and
+                # named "orders" in a FROM that never joins it.
+                objects = set(model_measure.source_objects)
+                for item in model_measure.filters:
+                    collect_measure_filter_objects(item, objects)
                 if len(objects) > 1:
                     spanning |= objects
 
