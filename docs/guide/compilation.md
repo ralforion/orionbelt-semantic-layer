@@ -441,21 +441,39 @@ than return an inflated number:
 | `ROLLUP` / `CUBE` with a `total` or `grain` override on a deduplicated measure, or with any other wrapper | Each grouping set is deduplicated at its own grain (see above); an override's grain, or a wrapper reading the rows, would combine those again |
 | A deduplicated measure reached through a **cumulative** or **period-over-period** metric inside a derived one | Those wrappers rebuild their base measure from the fact tables, which a dedup CTE cannot serve (nesting them is refused at model load anyway). Window metrics, and nested *derived* metrics, are followed |
 | `total: true` or a `grain` override on a **filterContext** component of a split metric | That component comes from a scan of its own, which has not been composed with an override over a split metric. On a deduplicated or a fact-side component the dedup pass computes it instead (see above) |
-| A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
+| A measure `withinGroup:` column reaching outside the dedup object | See below |
 
 Anything an aggregate reads beyond its own value columns has to be projected
 into the deduplicating inner `SELECT` so the rendered aggregate can reference it:
-a `filters:` predicate becomes `CASE WHEN` inside the aggregate, and a
-`withinGroup:` column becomes its `ORDER BY`. Whatever is projected joins the
-`DISTINCT`.
+a `withinGroup:` column becomes the aggregate's `ORDER BY`. Whatever is projected
+joins the `DISTINCT`.
 
 A reference to the deduplicated object itself is harmless, because its columns
 are fixed by the key being deduplicated on. One that reaches any other object is
 not: the rows collapse to one per *(grain, product, referenced value)* instead of
-one per *(grain, product)*. A product with two sales at different quantities
-would be counted twice by a `filters:` predicate on `Sales.Quantity`, or listed
-twice by a `LISTAGG` ordered by it. Reference the deduplicated object instead, or
-query the measure at its own grain.
+one per *(grain, product)*, and a product with two sales on different dates would
+be listed twice by a `LISTAGG` ordered by the sale date. Reference the
+deduplicated object instead, or query the measure at its own grain.
+
+A `filters:` predicate is different, because it only decides which rows
+contribute: rendered as `CASE WHEN <filter> THEN value END`, it gives `NULL` to
+the others, and every aggregate skips `NULL`. A predicate on the deduplicated
+object stays inside the aggregate. One that reaches another object is applied to
+the rows *before* they are deduplicated, as the `WHERE` of that measure's
+deduplicating `SELECT`, so its columns never reach the `DISTINCT`:
+
+```sql
+-- Stock of the products with a sale of more than one unit, each product once
+SELECT SUM(stock_on_hand)
+FROM (SELECT DISTINCT products.id, products.stock_on_hand
+      FROM sales LEFT JOIN products ON sales.product_id = products.id
+      WHERE sales.quantity > 1)
+```
+
+Measures with the same filter share one deduplicating `SELECT`; a measure without
+it, or with another, gets its own, so a filter never narrows a measure that does
+not declare it. A product with no sale passing the filter is not counted, which
+is what the filter says.
 
 ## Cross-fact measure expressions
 

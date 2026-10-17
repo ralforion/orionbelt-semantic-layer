@@ -2495,7 +2495,15 @@ class QueryResolver:
                 graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
                 candidates = [
                     name for name in candidates if spanning <= (graph.descendants(name) | {name})
-                ] or sorted(sources)
+                ]
+                if not candidates:
+                    # No source reaches the rest, but an object beside them may:
+                    # a Customers value gated by a Products filter is on one row
+                    # only through the Orders that join both.
+                    root = graph.find_common_root(spanning)
+                    if root and spanning <= graph.descendants(root) | {root}:
+                        return root
+                    candidates = sorted(sources)
 
             best = ""
             best_joins = -1

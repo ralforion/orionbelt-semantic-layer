@@ -53,7 +53,7 @@ already one row per query grain, so filtering it there means the same thing.
 from __future__ import annotations
 
 from collections.abc import Callable, Container, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from typing import TYPE_CHECKING
 
@@ -61,6 +61,7 @@ from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
     BinaryOp,
+    CaseExpr,
     Cast,
     ColumnRef,
     Exists,
@@ -84,7 +85,11 @@ from orionbelt.compiler.expr_rewrite import (
     rewrite_column_refs,
 )
 from orionbelt.compiler.fanout import FanoutError
-from orionbelt.compiler.filters import build_exists_filter_expr, collect_measure_filter_objects
+from orionbelt.compiler.filters import (
+    build_exists_filter_expr,
+    build_measure_filter_condition,
+    collect_measure_filter_objects,
+)
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.having_hoist import dimensions_to_aliases, windowed_aliases
 from orionbelt.compiler.metric_expansion import (
@@ -414,7 +419,10 @@ def _dedup_target(
     # per distinct value of it.
     for clause, referenced in auxiliary_references(measure).items():
         outside = referenced - {target}
-        if not outside:
+        # A filter is applied to the rows before they are deduplicated
+        # (:func:`_cross_object_gate`), so its columns never reach the DISTINCT.
+        # A sort key has to ride along into the aggregate and cannot.
+        if not outside or clause == "filters":
             continue
         joined = ", ".join(f"'{s}'" for s in sorted(outside))
         msg = (
@@ -780,20 +788,37 @@ def wrap_with_grain_dedup(
         return tuple(dim_names)
 
     # Keyed by the object deduplicated, or by "" for a component computed at
-    # its grain over the plan's own rows, which need no deduplicating.
-    by_group: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+    # its grain over the plan's own rows, which need no deduplicating; and by
+    # the filter a measure's rows are gated with before deduplicating, which
+    # other measures of the object must not see.
+    by_group: dict[tuple[str, tuple[str, ...], str], list[str]] = {}
+    gates: dict[str, Expr] = {}
     for measure_name, object_name in dedup_targets.items():
-        by_group.setdefault((object_name, grain_of(measure_name)), []).append(measure_name)
+        gate = _cross_object_gate(measure_name, object_name, model)
+        gate_key = repr(gate) if gate is not None else ""
+        if gate is not None:
+            gates[gate_key] = gate
+            measure_columns[measure_name] = _ungated(measure_columns[measure_name], gate)
+        by_group.setdefault((object_name, grain_of(measure_name), gate_key), []).append(
+            measure_name
+        )
     for measure_name in resolved.dedup_grain_components:
-        by_group.setdefault(("", grain_of(measure_name)), []).append(measure_name)
+        by_group.setdefault(("", grain_of(measure_name), ""), []).append(measure_name)
 
     cte_for_measure: dict[str, str] = {}
     grain_of_cte: dict[str, tuple[str, ...]] = {}
     # CTEs carrying a row per grouping set, matched on its GROUPING() flags too.
     rolled_up: set[str] = set()
     for idx, group_key in enumerate(sorted(by_group)):
-        object_name, grain = group_key
+        object_name, grain, gate_key = group_key
         measure_names = by_group[group_key]
+        # The rows a gated group deduplicates are the ones its filter accepts.
+        rows = ast
+        if gate_key:
+            gate = gates[gate_key]
+            rows = replace(
+                ast, where=gate if ast.where is None else BinaryOp(ast.where, "AND", gate)
+            )
         group_dims = [d for d in resolved.dimensions if d.name in grain]
         if not object_name:
             cte_name = f"{_AT_GRAIN_CTE if grain else _AT_TOTAL_CTE}_{idx}"
@@ -825,12 +850,12 @@ def wrap_with_grain_dedup(
             # set's grain, so a subtotal counts each object row once rather
             # than adding up the groups below it, which share object rows.
             query = _per_grouping_set(
-                ast, object_name, measure_names, columns, resolved, model, dialect, idx
+                rows, object_name, measure_names, columns, resolved, model, dialect, idx
             )
             rolled_up.add(cte_name)
         else:
             query = _deduplicated_at(
-                ast,
+                rows,
                 object_name,
                 measure_names,
                 columns,
@@ -1054,6 +1079,49 @@ def _window_inputs(resolved: ResolvedQuery) -> list[str]:
             if name is not None and name not in names:
                 names.append(name)
     return names
+
+
+def _cross_object_gate(measure_name: str, object_name: str, model: SemanticModel) -> Expr | None:
+    """The filter of a measure that reads beyond *object_name*, if any.
+
+    Evaluated after deduplicating, as a ``CASE WHEN`` inside the aggregate, a
+    filter on another object puts that object's columns into the DISTINCT,
+    which then keeps a row per value of them rather than per object row. So
+    such a filter is applied to the rows *before* they are deduplicated: a
+    measure filter only decides which rows contribute (the gate gives NULL
+    otherwise, and every aggregate skips NULL), so dropping those rows first is
+    the same answer. A filter on the object's own columns stays where it is.
+    """
+    measure = model.effective_measures.get(measure_name)
+    if measure is None or not measure.filters:
+        return None
+    objects: set[str] = set()
+    for item in measure.filters:
+        collect_measure_filter_objects(item, objects)
+    if not objects - {object_name}:
+        return None
+    errors: list[SemanticError] = []
+    gate = build_measure_filter_condition(measure.filters, model, errors)
+    if gate is None:
+        raise ResolutionError(errors)
+    return gate
+
+
+def _ungated(column: Expr, gate: Expr) -> Expr:
+    """*column* with the ``CASE WHEN <gate> THEN arg END`` around each aggregate
+    argument taken off, the gate being applied to the rows instead."""
+
+    def strip(node: Expr) -> Expr | None:
+        if (
+            isinstance(node, CaseExpr)
+            and node.else_clause is None
+            and len(node.when_clauses) == 1
+            and node.when_clauses[0][0] == gate
+        ):
+            return node.when_clauses[0][1]
+        return None
+
+    return map_nodes(column, strip)
 
 
 def _deduplicated_at(

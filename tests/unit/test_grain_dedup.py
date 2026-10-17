@@ -1313,19 +1313,37 @@ measures:
 # --- Review findings on the first cut of this pass -----------------------
 
 
-def test_filter_reaching_outside_the_dedup_grain_is_refused() -> None:
-    """A measure filter compiles to CASE WHEN *inside* the aggregate.
+def test_filter_reaching_outside_the_dedup_grain_is_applied_before_deduplicating() -> None:
+    """A measure filter on another object gates the rows, not the aggregate.
 
-    Its predicate columns must be projected for the CASE to evaluate, which puts
-    them in the DISTINCT — so the rows collapse to one per (grain, product,
-    predicate value) rather than one per (grain, product). A product with two
-    qualifying sales at different quantities would be counted twice. Refuse
-    rather than return that number.
+    As ``CASE WHEN`` inside the aggregate, its predicate columns had to be
+    projected for the CASE to evaluate, which put them in the DISTINCT: the
+    rows collapsed to one per (grain, product, predicate value), and a product
+    with two qualifying sales at different quantities counted twice. So it was
+    refused. Applied to the rows before deduplicating, the DISTINCT stays one
+    row per (grain, product) and the answer is exact.
     """
-    with pytest.raises(GrainDedupUnsupportedError, match="filters clause references 'Sales'"):
-        _compile(
-            {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Big Sale Stock"]}}
-        )
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute("INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'), ('p2', 9.99, 7, 'parts')")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    # North: p1 sells twice above 1 (counted once), p2 only at 1 (not at all).
+    # South: p2 sells 5.
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',2), ('s2','p1','c1','north',3),"
+        " ('s3','p2','c1','north',1), ('s4','p2','c1','south',5)"
+    )
+    result = _compile(
+        {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Big Sale Stock"]}}
+    )
+    rows = sorted((r[0], int(r[1]), int(r[2])) for r in con.execute(result.sql).fetchall())
+    assert rows == [("north", 6, 100), ("south", 5, 7)]
 
 
 def test_filter_on_the_dedup_object_itself_still_deduplicates() -> None:
