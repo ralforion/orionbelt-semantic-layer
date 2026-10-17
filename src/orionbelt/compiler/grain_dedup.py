@@ -53,7 +53,7 @@ already one row per query grain, so filtering it there means the same thing.
 from __future__ import annotations
 
 from collections.abc import Callable, Container, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from typing import TYPE_CHECKING
 
@@ -61,6 +61,7 @@ from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
     BinaryOp,
+    CaseExpr,
     Cast,
     ColumnRef,
     Exists,
@@ -84,8 +85,12 @@ from orionbelt.compiler.expr_rewrite import (
     rewrite_column_refs,
 )
 from orionbelt.compiler.fanout import FanoutError
-from orionbelt.compiler.filters import build_exists_filter_expr, collect_measure_filter_objects
-from orionbelt.compiler.graph import JoinGraph
+from orionbelt.compiler.filters import (
+    build_exists_filter_expr,
+    build_measure_filter_condition,
+    collect_measure_filter_objects,
+)
+from orionbelt.compiler.graph import JoinGraph, joined_beneath
 from orionbelt.compiler.having_hoist import dimensions_to_aliases, windowed_aliases
 from orionbelt.compiler.metric_expansion import (
     metric_leaf_components,
@@ -144,6 +149,8 @@ _AT_TOTAL_CTE = "__ob_at_total"
 # The query's groups when parents without children add some ``main`` lacks.
 _GROUPS_ALL_CTE = "__ob_groups_all"
 _GROUPS_CTE = "__ob_groups"
+#: Marks a row of a deduplicated aggregate joined to its groups.
+_MATCHED = "__ob_matched"
 
 
 class GrainDedupUnsupportedError(FanoutError):
@@ -414,7 +421,10 @@ def _dedup_target(
     # per distinct value of it.
     for clause, referenced in auxiliary_references(measure).items():
         outside = referenced - {target}
-        if not outside:
+        # A filter is applied to the rows before they are deduplicated
+        # (:func:`_cross_object_gate`), so its columns never reach the DISTINCT.
+        # A sort key has to ride along into the aggregate and cannot.
+        if not outside or clause == "filters":
             continue
         joined = ", ".join(f"'{s}'" for s in sorted(outside))
         msg = (
@@ -780,21 +790,61 @@ def wrap_with_grain_dedup(
         return tuple(dim_names)
 
     # Keyed by the object deduplicated, or by "" for a component computed at
-    # its grain over the plan's own rows, which need no deduplicating.
-    by_group: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+    # its grain over the plan's own rows, which need no deduplicating; and by
+    # the filter a measure's rows are gated with before deduplicating, which
+    # other measures of the object must not see.
+    by_group: dict[tuple[str, tuple[str, ...], str], list[str]] = {}
+    gates: dict[str, Expr] = {}
     for measure_name, object_name in dedup_targets.items():
-        by_group.setdefault((object_name, grain_of(measure_name)), []).append(measure_name)
+        gate = _cross_object_gate(measure_name, object_name, model)
+        gate_key = repr(gate) if gate is not None else ""
+        if gate is not None:
+            gates[gate_key] = gate
+            measure_columns[measure_name] = _ungated(measure_columns[measure_name], gate)
+        by_group.setdefault((object_name, grain_of(measure_name), gate_key), []).append(
+            measure_name
+        )
     for measure_name in resolved.dedup_grain_components:
-        by_group.setdefault(("", grain_of(measure_name)), []).append(measure_name)
+        by_group.setdefault(("", grain_of(measure_name), ""), []).append(measure_name)
+
+    # With parents without children, the parent's own dedup CTE reads every
+    # row ``main`` does (the same FROM, joins and WHERE) plus those parents, so
+    # it has every group: it drives the outer query, keeping the rows with no
+    # parent (an order without a customer) as a group of their own. Not one
+    # gated by a measure filter, which reads fewer rows, nor one at another
+    # grain; without such a CTE the groups are listed from all of them.
+    driver_key: tuple[str, tuple[str, ...], str] | None = None
+    if split_groups and resolved.grouping is None and leg is not None:
+        driver_key = next(
+            (
+                key
+                for key in sorted(by_group)
+                if key[0] == leg.parent and key[1] == tuple(dim_names) and not key[2]
+            ),
+            None,
+        )
+    driver_cte: str | None = None
 
     cte_for_measure: dict[str, str] = {}
     grain_of_cte: dict[str, tuple[str, ...]] = {}
     # CTEs carrying a row per grouping set, matched on its GROUPING() flags too.
     rolled_up: set[str] = set()
+    # CTEs whose rows carry the ``_MATCHED`` marker.
+    marked: set[str] = set()
     for idx, group_key in enumerate(sorted(by_group)):
-        object_name, grain = group_key
+        object_name, grain, gate_key = group_key
         measure_names = by_group[group_key]
-        group_dims = [d for d in resolved.dimensions if d.name in grain]
+        # The rows a gated group deduplicates are the ones its filter accepts.
+        rows = ast
+        if gate_key:
+            gate = gates[gate_key]
+            rows = replace(
+                ast, where=gate if ast.where is None else BinaryOp(ast.where, "AND", gate)
+            )
+        # Once per name: a reaggregate's first stage can list a dimension both
+        # as the query's and as the metric's ``per``, and a union by name (the
+        # rows without children) refuses a column named twice.
+        group_dims = list({d.name: d for d in resolved.dimensions if d.name in grain}.values())
         if not object_name:
             cte_name = f"{_AT_GRAIN_CTE if grain else _AT_TOTAL_CTE}_{idx}"
             for measure_name in measure_names:
@@ -825,12 +875,13 @@ def wrap_with_grain_dedup(
             # set's grain, so a subtotal counts each object row once rather
             # than adding up the groups below it, which share object rows.
             query = _per_grouping_set(
-                ast, object_name, measure_names, columns, resolved, model, dialect, idx
+                rows, object_name, measure_names, columns, resolved, model, dialect, idx
             )
             rolled_up.add(cte_name)
+            marked.add(cte_name)
         else:
             query = _deduplicated_at(
-                ast,
+                rows,
                 object_name,
                 measure_names,
                 columns,
@@ -840,22 +891,49 @@ def wrap_with_grain_dedup(
                 dialect,
                 f"{_DEDUP_SRC}_{idx}",
                 childless=childless,
+                keep_keyless=group_key == driver_key,
             )
+            if group_key == driver_key:
+                driver_cte = cte_name
+            elif group_dims:
+                marked.add(cte_name)
             if childless is not None:
                 all_ctes.extend(childless.ctes)
                 childless.ctes.clear()
         all_ctes.append(CTE(name=cte_name, query=query))
 
+    if driver_cte is not None:
+        dims_table = driver_cte
+
     # --- outer SELECT: main plus each dedup CTE, joined on the query grain ---
     def measure_ref(name: str) -> Expr:
         """One measure's value in the outer query, wherever it was computed."""
-        ref: Expr = ColumnRef(name=name, table=cte_for_measure.get(name, _MAIN_CTE))
+        cte = cte_for_measure.get(name, _MAIN_CTE)
+        ref: Expr = ColumnRef(name=name, table=cte)
+        if cte in marked:
+            # A group missing from the CTE reads NULL on every engine, before a
+            # count's 0, a default or a metric over it: ClickHouse would give a
+            # bare (non-Nullable) aggregate's column default, 0, instead.
+            ref = CaseExpr(
+                when_clauses=[
+                    (
+                        BinaryOp(ColumnRef(name=_MATCHED, table=cte), "=", Literal.number(1)),
+                        ref,
+                    )
+                ]
+            )
         # A group whose rows all miss the joined object contributes no row to the
         # dedup CTE, so the LEFT JOIN yields NULL. For a count that must read
         # zero, not "unknown" — COUNT over no rows is 0. Other aggregations keep
-        # NULL, which is what SQL returns for an empty input.
-        if name in cte_for_measure and _counts_rows(effective_measures.get(name)):
-            return FunctionCall(name="COALESCE", args=[ref, Literal.number(0)])
+        # NULL, which is what SQL returns for an empty input, unless they
+        # declare a default: inside the CTE it reaches no such group (a measure
+        # filter applied to the rows leaves none for a group it rejects).
+        if name in cte_for_measure:
+            if _counts_rows(effective_measures.get(name)):
+                return FunctionCall(name="COALESCE", args=[ref, Literal.number(0)])
+            measure = resolved_by_name.get(name)
+            if measure is not None and measure.default_value is not None:
+                return measure.with_default(ref)
         return _default_for_split_group(name, ref)
 
     def _default_for_split_group(name: str, ref: Expr) -> Expr:
@@ -952,7 +1030,11 @@ def wrap_with_grain_dedup(
             ordered_ctes.append(name)
     outer_from = _MAIN_CTE if keep_main else ordered_ctes[0]
     joined_ctes = ordered_ctes if keep_main else ordered_ctes[1:]
-    if split_groups:
+    if driver_cte is not None:
+        grain_of_cte[_MAIN_CTE] = tuple(dim_names)
+        outer_from = driver_cte
+        joined_ctes = [_MAIN_CTE, *(name for name in ordered_ctes if name != driver_cte)]
+    elif split_groups:
         grain_of_cte[_MAIN_CTE] = tuple(dim_names)
         all_ctes.extend(_group_list(dim_names, [_MAIN_CTE, *ordered_ctes], grain_of_cte))
         outer_from = _GROUPS_CTE
@@ -1056,6 +1138,49 @@ def _window_inputs(resolved: ResolvedQuery) -> list[str]:
     return names
 
 
+def _cross_object_gate(measure_name: str, object_name: str, model: SemanticModel) -> Expr | None:
+    """The filter of a measure that reads beyond *object_name*, if any.
+
+    Evaluated after deduplicating, as a ``CASE WHEN`` inside the aggregate, a
+    filter on another object puts that object's columns into the DISTINCT,
+    which then keeps a row per value of them rather than per object row. So
+    such a filter is applied to the rows *before* they are deduplicated: a
+    measure filter only decides which rows contribute (the gate gives NULL
+    otherwise, and every aggregate skips NULL), so dropping those rows first is
+    the same answer. A filter on the object's own columns stays where it is.
+    """
+    measure = model.effective_measures.get(measure_name)
+    if measure is None or not measure.filters:
+        return None
+    objects: set[str] = set()
+    for item in measure.filters:
+        collect_measure_filter_objects(item, objects)
+    if not objects - {object_name}:
+        return None
+    errors: list[SemanticError] = []
+    gate = build_measure_filter_condition(measure.filters, model, errors)
+    if gate is None:
+        raise ResolutionError(errors)
+    return gate
+
+
+def _ungated(column: Expr, gate: Expr) -> Expr:
+    """*column* with the ``CASE WHEN <gate> THEN arg END`` around each aggregate
+    argument taken off, the gate being applied to the rows instead."""
+
+    def strip(node: Expr) -> Expr | None:
+        if (
+            isinstance(node, CaseExpr)
+            and node.else_clause is None
+            and len(node.when_clauses) == 1
+            and node.when_clauses[0][0] == gate
+        ):
+            return node.when_clauses[0][1]
+        return None
+
+    return map_nodes(column, strip)
+
+
 def _deduplicated_at(
     ast: Select,
     object_name: str,
@@ -1068,6 +1193,7 @@ def _deduplicated_at(
     src_alias: str,
     *,
     childless: _ChildlessRows | None = None,
+    keep_keyless: bool = False,
 ) -> Select:
     """*measure_columns* aggregated over the rows of *object_name*, each once
     per group of *group_dims*: the query's rows reduced by a DISTINCT over the
@@ -1075,6 +1201,10 @@ def _deduplicated_at(
 
     With *childless* for this object, its rows without child rows that the
     query's WHERE accepts are added beside them (:func:`_rows_without_children`).
+
+    With *keep_keyless*, a row with no *object_name* row (an order without a
+    customer) keeps its group, which reads NULL: this CTE then has every group
+    of the query and drives it.
     """
     inner_columns: list[Expr] = [
         AliasedExpr(expr=make_dimension_expr(model, dim, dialect), alias=dim.name)
@@ -1133,12 +1263,77 @@ def _deduplicated_at(
             expr=ColumnRef(name=f"{_KEY_PREFIX}{key_idx}", table=src_alias), negated=True
         )
         key_present = not_null if key_present is None else BinaryOp(key_present, "AND", not_null)
-
-    return Select(
-        columns=cte_columns,
+    aggregated = Select(
+        # A group's row is marked, so a reader joining on the grain can tell a
+        # value from ClickHouse's default for an unmatched non-Nullable column.
+        columns=[*cte_columns, AliasedExpr(expr=Literal.number(1), alias=_MATCHED)]
+        if group_dims
+        else cte_columns,
         from_=From(source=source, alias=src_alias),
         where=key_present,
         group_by=[ColumnRef(name=dim.name, table=src_alias) for dim in group_dims],
+    )
+    if not keep_keyless or not group_dims:
+        return aggregated
+
+    # The groups come from every row, the values from the object's rows only.
+    # A row with no object row (an order without a customer) keeps its group
+    # and adds nothing: the aggregate is the one above, over the rows that
+    # have the object, so no expression can turn its missing columns into a
+    # value (``COALESCE(credit, 0) + 1``), and ClickHouse's default for an
+    # unmatched non-Nullable column is never read. Such a group reads NULL;
+    # the outer query applies a count's 0 or a declared default.
+    groups_alias = f"{src_alias}_groups"
+    values_alias = f"{src_alias}_values"
+    groups = Select(
+        columns=[
+            AliasedExpr(expr=ColumnRef(name=dim.name, table=src_alias), alias=dim.name)
+            for dim in group_dims
+        ],
+        from_=From(source=source, alias=src_alias),
+        distinct=True,
+    )
+    on: Expr | None = None
+    for dim in group_dims:
+        condition = _null_safe_eq(
+            ColumnRef(name=dim.name, table=groups_alias),
+            ColumnRef(name=dim.name, table=values_alias),
+        )
+        on = condition if on is None else BinaryOp(on, "AND", condition)
+    measure_names_out = [
+        alias for column in cte_columns[len(group_dims) :] if (alias := _measure_alias(column))
+    ]
+    return Select(
+        columns=[
+            *(
+                AliasedExpr(expr=ColumnRef(name=dim.name, table=groups_alias), alias=dim.name)
+                for dim in group_dims
+            ),
+            # Read only where the group matched: ClickHouse fills an unmatched
+            # non-Nullable column (a metric component's bare aggregate) with
+            # its default, 0, and the marker with 0 too, so ``= 1`` fails there
+            # as it does on NULL elsewhere.
+            *(
+                AliasedExpr(
+                    expr=CaseExpr(
+                        when_clauses=[
+                            (
+                                BinaryOp(
+                                    ColumnRef(name=_MATCHED, table=values_alias),
+                                    "=",
+                                    Literal.number(1),
+                                ),
+                                ColumnRef(name=name, table=values_alias),
+                            )
+                        ]
+                    ),
+                    alias=name,
+                )
+                for name in measure_names_out
+            ),
+        ],
+        from_=From(source=groups, alias=groups_alias),
+        joins=[Join(join_type=JoinType.LEFT, source=aggregated, alias=values_alias, on=on)],
     )
 
 
@@ -1231,7 +1426,9 @@ def _rows_without_children(
     """
     leg = childless.leg
     graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
-    reachable = graph.descendants(leg.parent) | {leg.parent}
+    # What the query joins through the parent: an object it reaches through
+    # the child keeps that binding, and is NULL here like the child itself.
+    reachable = joined_beneath(resolved.join_steps, leg.parent)
 
     columns: list[Expr] = []
     needed: set[str] = set()
@@ -1407,7 +1604,8 @@ def _per_grouping_set(
 ) -> UnionAll:
     """One deduplicated aggregate per grouping set of the query's ROLLUP or
     CUBE, stacked: every dimension (NULL where the set rolls it up), its
-    ``GROUPING()`` flag as a constant, and the measures."""
+    ``GROUPING()`` flag as a constant, the measures, and the ``_MATCHED``
+    marker."""
     assert resolved.grouping is not None
     branches: list[Select] = []
     for set_idx, kept in enumerate(_grouping_sets(resolved.dimensions, resolved.grouping)):
@@ -1447,6 +1645,8 @@ def _per_grouping_set(
             AliasedExpr(expr=ColumnRef(name=name, table=src_alias), alias=name)
             for name in measure_names
         )
+        # Every row here is an aggregate's: marked, as a grouped CTE's are.
+        columns.append(AliasedExpr(expr=Literal.number(1), alias=_MATCHED))
         branches.append(Select(columns=columns, from_=From(source=inner, alias=src_alias)))
     return UnionAll(queries=branches)
 

@@ -659,9 +659,11 @@ class ComposabilityResolver:
             # Not replicated here, so the pass never runs on it.
             return None
 
-        # Several replicated sources, or a clause reaching outside the one being
-        # deduplicated: the rewrite cannot express either and raises.
-        if len(sources) > 1 or outside:
+        # Several replicated sources, or a sort key reaching outside the one
+        # being deduplicated: the rewrite cannot express either and raises. A
+        # filter reaching outside is applied to the rows before deduplicating.
+        within = auxiliary_references(measure).get("withinGroup", set()) - sources
+        if len(sources) > 1 or within:
             return "refused"
 
         # Deduplicating needs one row per row of the source, and only a declared

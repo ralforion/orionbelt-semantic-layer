@@ -472,18 +472,17 @@ def _dedup_guard_model() -> SemanticModel:
     return model
 
 
-def test_acr_excludes_measures_the_dedup_pass_would_refuse() -> None:
-    """ACR promises that whatever it lists compiles.
+def test_acr_advertises_a_measure_filtered_outside_the_dedup_grain() -> None:
+    """ACR promises that whatever it lists compiles, and lists what does.
 
     A measure sourced from a replicated object whose ``filters:`` reach outside
-    that object is refused by ``compiler.grain_dedup`` - its predicate columns
-    would land in the rewrite's DISTINCT and split one source row per predicate
-    value. ACR classified purely on join reachability and so advertised it.
+    that object is deduplicated with the filter applied to its rows first, so
+    the pass no longer refuses it and ACR must not hide it.
     """
     result = ComposabilityResolver(_dedup_guard_model()).resolve({"Sales"}, set())
     composable = set(result.measures) | set(result.cfl_measures)
 
-    assert "Stock Filtered Off Grain" not in composable
+    assert "Stock Filtered Off Grain" in composable
     # A predicate on the deduplicated object itself is fine - its columns are
     # fixed by the key being deduplicated on.
     assert "Stock Filtered In Grain" in composable
@@ -493,7 +492,7 @@ def test_acr_excludes_measures_the_dedup_pass_would_refuse() -> None:
 
 def test_acr_follows_a_reaggregate_metrics_having() -> None:
     """A ``having`` measure is computed in the metric's first stage, so the
-    metric is refused wherever that measure is."""
+    metric is offered wherever that measure compiles."""
     model = _dedup_guard_model()
     resolver = ComposabilityResolver(model)
     for anchor in ("Category", None):
@@ -502,7 +501,7 @@ def test_acr_follows_a_reaggregate_metrics_having() -> None:
         else:
             result = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
         advertised = set(result.metrics) | set(result.cfl_metrics)
-        assert "Avg Region Sales, Stock Filtered Off Grain" not in advertised
+        assert "Avg Region Sales, Stock Filtered Off Grain" in advertised
         assert "Avg Region Sales, Stock Filtered In Grain" in advertised
 
 
@@ -561,10 +560,12 @@ def test_guard_holds_for_anchors_that_do_not_reach_the_measure() -> None:
 
     Anchored on ``Category`` - a dimension on the deduplicated object itself -
     nothing in the anchor reaches ``Sales``. The compiler still joins it, to
-    evaluate the measure's filter, which replicates ``Products``. Judging
-    replication from the anchor alone missed this, and missed the empty anchor
-    entirely.
+    evaluate the measure's filter, which replicates ``Products``, and
+    deduplicates with the filter applied first: offered, and compiled, at every
+    anchor, the empty one included.
     """
+    from orionbelt.compiler.pipeline import CompilationPipeline
+
     model = _dedup_guard_model()
     resolver = ComposabilityResolver(model)
 
@@ -574,8 +575,13 @@ def test_guard_holds_for_anchors_that_do_not_reach_the_measure() -> None:
         else:
             result = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
         composable = set(result.measures) | set(result.cfl_measures)
-        assert "Stock Filtered Off Grain" not in composable
+        assert "Stock Filtered Off Grain" in composable
         assert "Stock Filtered In Grain" in composable
+        dimensions = [anchor] if anchor else []
+        query = QueryObject(
+            **{"select": {"dimensions": dimensions, "measures": ["Stock Filtered Off Grain"]}}
+        )
+        CompilationPipeline().compile(query, model, "duckdb")
 
 
 def test_acr_advertises_a_metric_over_a_deduplicated_component() -> None:

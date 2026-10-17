@@ -298,7 +298,9 @@ replicated object. A measure that mixes grains — `{[Sales].[Quantity]} *
 is left alone. `min`, `max`, `count_distinct`, and `any_value` return the same
 answer over duplicated rows and are also left alone, as is any measure with
 `distinct: true` — `AGG(DISTINCT x)` cannot see replication, and a `count` +
-`distinct` over the parent key is the most common one-side measure there is.
+`distinct` over the parent key is the most common one-side measure there is —
+unless the products without a sale are added (below), which join deduplicated
+rows only.
 
 A one-side measure queried *on its own* is handled too. Anchoring the base on
 that measure's own source would reach nothing, so resolution re-anchors on the
@@ -310,6 +312,57 @@ below) and the query plans as an ordinary star.
     in both, so the column does **not** add up to the product catalogue's grand
     total. Queries that trigger this rewrite carry a `FAN_TRAP_RISK` warning
     saying so. Query the measure at its own grain for a total that adds up.
+
+#### Parents without children
+
+Read from the sales, a product never sold is in no row. Left there, a product
+measure would depend on what else is selected: `Product Count` would count
+every product alone and only the sold ones beside `Sold Quantity`. So the
+products without a sale are added as rows of their own, read from `products`
+without joining `sales` (`NOT EXISTS` a sale), beside the deduplicated sale
+rows. The two sets do not overlap, and neither multiplies the other. Grouped
+by a sales column, those products are its `NULL` group, and a sale with no
+product stays a row too: every measure adds up to what it reads alone.
+
+The products' CTE then reads every row `main` does plus those products, so it
+has every group of the query and drives it. Its groups come from every row, a
+sale with no product included; its values come from the rows that have a
+product only, exactly as before, so no expression over a missing product's
+columns adds anything (`COALESCE(stock, 0) + 1` would add 1), and ClickHouse's
+default for an unmatched non-Nullable column is never read. A group without
+products reads `NULL`, a count 0, a measure with a `defaultValue` that default:
+
+```sql
+WITH __ob_main AS ( ...as above... ),
+__ob_dedup_src_0_rows AS (
+  SELECT DISTINCT s.region AS "Region", p.id AS __ob_k0, p.stock_on_hand AS __ob_c0
+  FROM sales s LEFT JOIN products p ON s.product_id = p.id
+  UNION ALL
+  SELECT DISTINCT NULL, p.id, p.stock_on_hand
+  FROM products p
+  WHERE NOT EXISTS (SELECT 1 FROM sales s WHERE p.id = s.product_id)
+),
+__ob_dedup_0 AS (                         -- groups from every row,
+  SELECT g."Region", v."Total Stock On Hand", v."Products Count"
+  FROM (SELECT DISTINCT "Region" FROM __ob_dedup_src_0_rows) g
+  LEFT JOIN (                               -- values from the product rows only
+    SELECT "Region", SUM(__ob_c0) AS "Total Stock On Hand", COUNT(1) AS "Products Count"
+    FROM __ob_dedup_src_0_rows WHERE __ob_k0 IS NOT NULL GROUP BY "Region"
+  ) v ON g."Region" IS NOT DISTINCT FROM v."Region"
+)
+SELECT d."Region", m."Sold Quantity", d."Total Stock On Hand", d."Products Count"
+FROM __ob_dedup_0 d LEFT JOIN __ob_main m ON d."Region" IS NOT DISTINCT FROM m."Region"
+```
+
+A `WHERE` the added rows cannot pass (`Region = 'north'`, which their `NULL`
+region fails) adds nothing, and the query plans as before. The rows are added
+only where one object's measures are read through the base: measures on several
+such objects, `ROLLUP` / `CUBE`, period-over-period, a nested object or a
+measure with `allowFanOut: true` keep the plan as it was. A measure `filters:`
+clause that only such rows can pass (`notset` on a sale column) is refused
+there instead (`FILTER_ADMITS_ROWS_WITHOUT`). A reaggregate over a sales
+dimension (`per: [Sale]`) sees those products as its `NULL` group; filter it
+out (`Sale` `set`) to average over the sales alone.
 
 !!! note "In a multi-fact plan"
     A multi-fact query is a `UNION ALL` whose legs *project* the values to
@@ -377,7 +430,8 @@ filterContext, cumulative, window), whatever they apply to.
 A deduplicated `count` reads `0`, not `NULL`, when a group has no matching
 rows on the joined object: that group contributes no row to the dedup CTE, so
 the join back would otherwise yield `NULL`. Other aggregations keep `NULL`,
-which is what SQL returns for an empty input.
+which is what SQL returns for an empty input, unless they declare a
+`defaultValue`, which is applied at that join.
 
 ### Metrics over a deduplicated component
 
@@ -441,21 +495,50 @@ than return an inflated number:
 | `ROLLUP` / `CUBE` with a `total` or `grain` override on a deduplicated measure, or with any other wrapper | Each grouping set is deduplicated at its own grain (see above); an override's grain, or a wrapper reading the rows, would combine those again |
 | A deduplicated measure reached through a **cumulative** or **period-over-period** metric inside a derived one | Those wrappers rebuild their base measure from the fact tables, which a dedup CTE cannot serve (nesting them is refused at model load anyway). Window metrics, and nested *derived* metrics, are followed |
 | `total: true` or a `grain` override on a **filterContext** component of a split metric | That component comes from a scan of its own, which has not been composed with an override over a split metric. On a deduplicated or a fact-side component the dedup pass computes it instead (see above) |
-| A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
+| A measure `withinGroup:` column reaching outside the dedup object | See below |
 
 Anything an aggregate reads beyond its own value columns has to be projected
 into the deduplicating inner `SELECT` so the rendered aggregate can reference it:
-a `filters:` predicate becomes `CASE WHEN` inside the aggregate, and a
-`withinGroup:` column becomes its `ORDER BY`. Whatever is projected joins the
-`DISTINCT`.
+a `withinGroup:` column becomes the aggregate's `ORDER BY`. Whatever is projected
+joins the `DISTINCT`.
 
 A reference to the deduplicated object itself is harmless, because its columns
 are fixed by the key being deduplicated on. One that reaches any other object is
 not: the rows collapse to one per *(grain, product, referenced value)* instead of
-one per *(grain, product)*. A product with two sales at different quantities
-would be counted twice by a `filters:` predicate on `Sales.Quantity`, or listed
-twice by a `LISTAGG` ordered by it. Reference the deduplicated object instead, or
-query the measure at its own grain.
+one per *(grain, product)*, and a product with two sales on different dates would
+be listed twice by a `LISTAGG` ordered by the sale date. Reference the
+deduplicated object instead, or query the measure at its own grain.
+
+A `filters:` predicate is different, because it only decides which rows
+contribute: rendered as `CASE WHEN <filter> THEN value END`, it gives `NULL` to
+the others, and every aggregate skips `NULL`. A predicate on the deduplicated
+object stays inside the aggregate. One that reaches another object is applied to
+the rows *before* they are deduplicated, as the `WHERE` of that measure's
+deduplicating `SELECT`, so its columns never reach the `DISTINCT`:
+
+```sql
+-- Stock of the products with a sale of more than one unit, each product once
+SELECT SUM(stock_on_hand)
+FROM (SELECT DISTINCT products.id, products.stock_on_hand
+      FROM sales LEFT JOIN products ON sales.product_id = products.id
+      WHERE sales.quantity > 1)
+```
+
+Measures with the same filter share one deduplicating `SELECT`; a measure without
+it, or with another, gets its own, so a filter never narrows a measure that does
+not declare it. A group the filter empties has no row there, and reads the
+measure's `defaultValue` (a count reads 0).
+
+A product with no sale is in none of the sale rows. That is right for
+`quantity > 1`, which no such product satisfies, and wrong for a filter that
+holds with every sale column `NULL` (`notset`, a `NOT`, an `OR` with a product
+condition). For such a filter the products without sales are added as rows of
+their own, read without joining the sales, with the filter evaluated for them
+over `NULL` sale columns: the same leg as a `WHERE` that admits them (see
+[Query Language](query-language.md)). Where that leg cannot be built (measures on
+several such objects, `ROLLUP` / `CUBE`, period-over-period, a nested object) the
+query is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than answered without
+them.
 
 ## Cross-fact measure expressions
 
