@@ -567,7 +567,7 @@ The two kinds of customer are planned as two sets that do not overlap: the order
 
 Without a filter the customers without orders are added the same way: a customer measure reads the same beside an order measure as alone, and an order without a customer stays a row too (its customer columns NULL), so the rows add up. See [Parents without children](compilation.md#parents-without-children).
 
-A shape that cannot carry the second set is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than leaving those customers out: measures on several one-side objects that cannot reach the filtered one, a period-over-period metric, a nested data object, or a measure with `allowFanOut: true` on that side. [`exists` / `nonexists`](#existence-operators) states the question directly:
+A shape that cannot carry the second set is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than leaving those customers out: a period-over-period metric, a nested data object, a measure with `allowFanOut: true` on that side, or measures on several one-side objects under `grouping: rollup` / `cube`. Measures on several one-side objects otherwise get a set each (customers without orders, products never ordered). [`exists` / `nonexists`](#existence-operators) states the question directly:
 
 ```yaml
 where:
@@ -832,7 +832,7 @@ Invalid queries return error responses:
 | `UNKNOWN_MEASURE` | 400 | Measure name not in model |
 | `UNKNOWN_FILTER_FIELD` | 400 | Filter field is not a dimension (WHERE) or measure (HAVING) |
 | `UNREACHABLE_FILTER_OBJECT` | 400 | WHERE filter names a data object the query cannot reach |
-| `FILTER_ADMITS_ROWS_WITHOUT` | 400 | WHERE on the many side of the measures' objects could hold for a row with no matching rows there, and the query's shape cannot add those rows (period-over-period, several one-side objects, `allowFanOut`); use `exists` / `nonexists` |
+| `FILTER_ADMITS_ROWS_WITHOUT` | 400 | WHERE on the many side of the measures' objects could hold for a row with no matching rows there, and the query's shape cannot add those rows (period-over-period, several one-side objects under ROLLUP / CUBE, `allowFanOut`); use `exists` / `nonexists` |
 | `FILTER_NOT_APPLICABLE_TO_MEASURE` | 400 | WHERE filter names a data object one selected measure's fact cannot reach (multi-fact query) |
 | `STATIC_FILTER_UNREACHABLE` | 400 | A static model filter declared `enforce: always` names a data object the query, or one measure's fact, cannot reach |
 | `UNKNOWN_ORDER_BY_FIELD` | 400 | ORDER BY field not in query's SELECT |
