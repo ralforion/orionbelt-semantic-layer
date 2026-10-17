@@ -225,7 +225,7 @@ class TestLegacyBackCompat:
                         }
                     },
                     "customExtensions": [
-                        {"vendor": "OBSL", "data": json.dumps({"obml_unique_keys": [["order_id"]]})}
+                        {"vendor": "OBSL", "data": json.dumps({"obml_unique_keys": [["Order ID"]]})}
                     ],
                 }
             },

@@ -182,7 +182,18 @@ def _legacy_export() -> dict[str, Any]:
 
 
 class TestLegacyStashesFollowTheRename:
-    """What an older export left verbatim in the OBML refers to codes."""
+    """What the import keeps verbatim from an older export is renamed with it."""
+
+    @staticmethod
+    def _metric(sql: str, dialect: str = "ANSI_SQL") -> tuple[str, list[str]]:
+        legacy = _legacy_export()
+        legacy["semantic_model"][0]["metrics"] = [
+            {"name": "m", "expression": {"dialects": [{"dialect": dialect, "expression": sql}]}}
+        ]
+        importer = conv.OSItoOBML(legacy)
+        osi = conv.OBMLtoOSI(importer.convert()).convert()
+        metric = next(m for m in osi["semantic_model"][0]["metrics"] if m["name"] == "m")
+        return metric["expression"]["dialects"][0]["expression"], importer.warnings
 
     def test_unique_keys_name_the_fields(self) -> None:
         obml = conv.OSItoOBML(_legacy_export()).convert()
@@ -194,20 +205,46 @@ class TestLegacyStashesFollowTheRename:
         assert back["dataObjects"]["Orders"]["joins"][0]["joinType"] == "many-to-one"
 
     def test_preserved_metric_references_the_fields(self) -> None:
-        obml = conv.OSItoOBML(_legacy_export()).convert()
-        osi = conv.OBMLtoOSI(obml).convert()
-        metric = next(m for m in osi["semantic_model"][0]["metrics"] if m["name"] == "grand_total")
+        sql, _ = self._metric('SUM("Orders"."amount") OVER ()')
+        assert sql == 'SUM("Orders"."Net Amount") OVER ()'
+
+    def test_unquoted_reference_matches_regardless_of_case(self) -> None:
+        sql, _ = self._metric("SUM(Orders.AMOUNT) OVER ()")
+        assert sql == 'SUM(Orders."Net Amount") OVER ()'
+
+    def test_only_the_field_tokens_change(self) -> None:
+        # sqlglot drops a weighted percentile's third argument when it
+        # regenerates SQL; the rename must not.
+        sql, _ = self._metric("percentile(Orders.amount, 0.5, Orders.customer_id)", "DATABRICKS")
+        assert sql == "percentile(Orders.`Net Amount`, 0.5, Orders.`Customer`)"
+
+    def test_swapped_names_follow_the_stashed_mapping(self) -> None:
+        # Column "Net Amount" has code amount, column "amount" has code
+        # adjustment: field amount is "Net Amount", not the column amount.
+        legacy = _legacy_export()
+        orders = legacy["semantic_model"][0]["datasets"][0]
+        orders["fields"] = [
+            _legacy_field("order_id", "Order ID"),
+            _legacy_field("customer_id", "Customer"),
+            _legacy_field("amount", "Net Amount"),
+            _legacy_field("adjustment", "amount"),
+        ]
+        orders["unique_keys"] = [["amount"], ["adjustment"]]
+        legacy["semantic_model"][0]["metrics"] = [
+            {
+                "name": "m",
+                "expression": _expr("SUM(Orders.amount) - SUM(Orders.adjustment) OVER ()"),
+            }
+        ]
+        osi = conv.OBMLtoOSI(conv.OSItoOBML(legacy).convert()).convert()
+        dataset = osi["semantic_model"][0]["datasets"][0]
+        assert dataset["unique_keys"] == [["Net Amount"], ["amount"]]
+        metric = osi["semantic_model"][0]["metrics"][0]
         assert metric["expression"]["dialects"][0]["expression"] == (
-            'SUM("Orders"."Net Amount") OVER ()'
+            'SUM(Orders."Net Amount") - SUM(Orders."amount") OVER ()'
         )
 
-    def test_unparseable_preserved_metric_is_kept_and_warned(self) -> None:
-        legacy = _legacy_export()
-        legacy["semantic_model"][0]["metrics"] = [
-            {"name": "broken", "expression": _expr('SUM("Orders"."amount" OVER (')}
-        ]
-        exporter = conv.OBMLtoOSI(conv.OSItoOBML(legacy).convert())
-        osi = exporter.convert()
-        metric = next(m for m in osi["semantic_model"][0]["metrics"] if m["name"] == "broken")
-        assert metric["expression"]["dialects"][0]["expression"] == 'SUM("Orders"."amount" OVER ('
-        assert any("broken" in w and "physical" in w for w in exporter.warnings)
+    def test_untokenizable_metric_is_kept_and_warned(self) -> None:
+        sql, warnings = self._metric('SUM("Orders"."amount") || \'unterminated')
+        assert sql == 'SUM("Orders"."amount") || \'unterminated'
+        assert any("'m'" in w and "not renamed" in w for w in warnings)

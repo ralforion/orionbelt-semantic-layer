@@ -88,7 +88,7 @@ _OBML_WITH_PK_AND_LABEL: dict[str, Any] = {
                 {
                     "vendor": "OBSL",
                     "data": json.dumps(
-                        {"obml_unique_keys": [["order_id"], ["order_id", "line_no"]]}
+                        {"obml_unique_keys": [["Order ID"], ["Order ID", "Line Number"]]}
                     ),
                 }
             ],
@@ -243,7 +243,6 @@ class TestUniqueKeys:
     def test_unique_keys_roundtrip(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
         ds = osi["semantic_model"][0]["datasets"][0]
-        # The stash lists codes; the export names the fields, as primary_key does.
         assert ds.get("unique_keys") == [["Order ID"], ["Order ID", "Line Number"]]
 
 

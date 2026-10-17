@@ -9,13 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import sqlglot
-from sqlglot import expressions as exp
-
 from osi_orionbelt._common import (
     _INTERNAL_VENDORS,
-    _NON_SQL_DIALECTS,
-    _OSI_DIALECT_TO_SQLGLOT,
     _OSI_VENDOR_READ,
     _OSI_VERSION,
     _VENDOR_OBML,
@@ -63,7 +58,6 @@ class OBMLtoOSI:
         # instance does not duplicate warnings or left-out entities.
         self.warnings = []
         self.unexported = {}
-        self._code_renames = self._collect_code_renames()
 
         osi: dict[str, Any] = {"version": _OSI_VERSION}
 
@@ -227,8 +221,7 @@ class OBMLtoOSI:
                 continue
             uk = data.get("obml_unique_keys")
             if isinstance(uk, list) and all(isinstance(g, list) for g in uk):
-                renames = self._code_renames.get(do_name, {})
-                unique_keys_extra = [[renames.get(c, c) for c in g] for g in uk]
+                unique_keys_extra = [list(g) for g in uk]
                 break
         if unique_keys_extra:
             dataset["unique_keys"] = unique_keys_extra
@@ -563,64 +556,6 @@ class OBMLtoOSI:
 
         return rel
 
-    def _collect_code_renames(self) -> dict[str, dict[str, str]]:
-        """Per data object, each column ``code`` that differs from its column name.
-
-        Ossie field names are the column names, but what the OBML carries
-        verbatim from an export before 0.5.0 (``obml_unique_keys``, preserved
-        metrics) names fields by code. A code that is also a column name of the
-        same data object is left alone.
-        """
-        renames: dict[str, dict[str, str]] = {}
-        for do_name, do_obj in (self.obml.get("dataObjects") or {}).items():
-            columns = do_obj.get("columns") or {}
-            mapping = {
-                col["code"]: col_name
-                for col_name, col in columns.items()
-                if isinstance(col.get("code"), str)
-                and col["code"] != col_name
-                and col["code"] not in columns
-            }
-            if mapping:
-                renames[do_name] = mapping
-        return renames
-
-    def _rename_preserved_fields(self, metric: dict) -> None:
-        """Rewrite ``<dataset>.<code>`` in a preserved metric to the field name.
-
-        Non-SQL dialects are left as they are. SQL that does not parse is kept
-        verbatim with a warning when it mentions a code that was renamed.
-        """
-        if not self._code_renames:
-            return
-        datasets = {name.lower(): name for name in self._code_renames}
-        for entry in (metric.get("expression") or {}).get("dialects") or []:
-            dialect = entry.get("dialect")
-            sql = entry.get("expression")
-            if dialect in _NON_SQL_DIALECTS or not isinstance(sql, str):
-                continue
-            read = _OSI_DIALECT_TO_SQLGLOT.get(dialect)
-            try:
-                tree = sqlglot.parse_one(sql, read=read)
-            except sqlglot.errors.SqlglotError:
-                codes = (c for m in self._code_renames.values() for c in m)
-                if any(code in sql for code in codes):
-                    self.warnings.append(
-                        f"Preserved OSI metric '{metric.get('name')}' ({dialect}) is "
-                        f"emitted unchanged: its SQL does not parse, so field "
-                        f"references by physical code were not renamed."
-                    )
-                continue
-            changed = False
-            for column in tree.find_all(exp.Column):
-                do_name = datasets.get(column.table.lower())
-                field = self._code_renames.get(do_name, {}).get(column.name) if do_name else None
-                if field:
-                    column.set("this", exp.to_identifier(field, quoted=True))
-                    changed = True
-            if changed:
-                entry["expression"] = tree.sql(dialect=read)
-
     def _restore_unconverted_metrics(self) -> list[dict]:
         """Recover OSI metrics preserved verbatim during OSI -> OBML import.
 
@@ -661,7 +596,6 @@ class OBMLtoOSI:
                 )
                 continue
             existing.add(name)
-            self._rename_preserved_fields(restored)
             osi_metrics.append(restored)
 
     def _convert_measures_and_metrics(self, obml_measures: dict, obml_metrics: dict) -> list:
