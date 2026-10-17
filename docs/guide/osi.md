@@ -53,7 +53,8 @@ Another OSI tool reads a metric's SQL expression, not OrionBelt's vendor extensi
 
 | OBML | Exported expression |
 |---|---|
-| Column reference | `"<dataset>"."<field>"`: the data object name and the column `code`, always quoted so a reserved word such as `Order` still parses |
+| Column | A field named by the column name, computed by the column `code`; `primary_key` and relationship columns list field names |
+| Column reference | `"<dataset>"."<field>"`: the data object and column names, always quoted so a reserved word such as `Order` still parses |
 | Measure `filters` | `SUM(CASE WHEN <condition> THEN <arg> END)`, the spec's portable filtered aggregation |
 | Measure `total: true` | The grand-total window, e.g. `SUM(SUM(x)) OVER ()` |
 | Measure `defaultValue` | `COALESCE(<aggregate>, <value>)` |

@@ -20,6 +20,7 @@ from osi_orionbelt._common import (
     _INTERNAL_VENDORS,
     _NON_SQL_DIALECTS,
     _OBML_VENDOR_READ,
+    _OSI_DIALECT_TO_SQLGLOT,
     _OSI_VERSION,
     _SQL_PARSEABLE_DIALECTS,
     _VENDOR_OSI,
@@ -27,17 +28,12 @@ from osi_orionbelt._common import (
     OSI_DATATYPE_TO_OBML_PHYSICAL,
     OSI_TO_OBML_TYPE,
 )
-
-# OSI SQL-dialect tag -> sqlglot ``read`` dialect for metric parsing. ANSI and
-# the portable OSSIE_SQL_2026 map to sqlglot's default (None). Reading with the
-# source dialect means a Snowflake/Databricks-authored aggregation is parsed
-# under the right grammar.
-_OSI_DIALECT_TO_SQLGLOT: dict[str, str | None] = {
-    "ANSI_SQL": None,
-    "OSSIE_SQL_2026": None,
-    "SNOWFLAKE": "snowflake",
-    "DATABRICKS": "databricks",
-}
+from osi_orionbelt._field_names import (
+    FIELD_NAMES_COLUMN,
+    FIELD_NAMES_KEY,
+    rename_keys,
+    rename_metric,
+)
 
 # sqlglot aggregate ``sql_name()`` -> OBML aggregation, for the aggregates OBML
 # models as a *single-column* measure. Multi-argument aggregates OBML also
@@ -291,7 +287,12 @@ class OSItoOBML:
             obml.setdefault("customExtensions", []).append(
                 {
                     "vendor": _VENDOR_OSI,
-                    "data": json.dumps({"obml_unconverted_metrics": self._unconverted_metrics}),
+                    "data": json.dumps(
+                        {
+                            "obml_unconverted_metrics": self._unconverted_metrics,
+                            FIELD_NAMES_KEY: FIELD_NAMES_COLUMN,
+                        }
+                    ),
                 }
             )
 
@@ -343,10 +344,11 @@ class OSItoOBML:
     def _restore_column_names(self, obml: dict[str, Any], datasets: list) -> None:
         """Rename columns from their OSI field name back to the OBML column name.
 
-        The export names each field by its physical code and keeps the OBML
-        column name in ``obml_column_name``. Measure filters and model filters
-        refer to columns by that name, so every column key and every reference
-        the import built from field names is renamed to match.
+        Exports before 0.5.0 named each field by its physical code and kept
+        the OBML column name in ``obml_column_name``. Measure filters and model
+        filters refer to columns by that name, so every column key and every
+        reference the import built from field names is renamed to match, and so
+        are the unique keys and unconverted metrics it keeps verbatim.
         """
         renames: dict[str, dict[str, str]] = {}
         for ds in datasets:
@@ -382,6 +384,37 @@ class OSItoOBML:
                     lambda m: "{[" + m.group(1) + "].[" + rename(m.group(1), m.group(2)) + "]}",
                     measure["expression"],
                 )
+        # What the import keeps verbatim names fields as the document did: the
+        # unique keys, and the metrics OBML cannot represent.
+        for do_name, do_obj in obml.get("dataObjects", {}).items():
+            for ext in do_obj.get("customExtensions", []) or []:
+                data = self._own_stash(ext, "obml_unique_keys")
+                if data is not None:
+                    data["obml_unique_keys"] = rename_keys(
+                        data["obml_unique_keys"],
+                        renames.get(do_name, {}),
+                        (),
+                        self.warnings.append,
+                        f"Dataset '{do_name}'",
+                    )
+                    ext["data"] = json.dumps(data)
+        for ext in obml.get("customExtensions", []) or []:
+            data = self._own_stash(ext, "obml_unconverted_metrics")
+            if data is not None:
+                for metric in data["obml_unconverted_metrics"]:
+                    rename_metric(metric, renames, {}, self.warnings.append)
+                ext["data"] = json.dumps(data)
+
+    @staticmethod
+    def _own_stash(ext: dict[str, Any], key: str) -> dict[str, Any] | None:
+        """The payload of an OSI-vendor extension this import wrote under *key*."""
+        if ext.get("vendor") != _VENDOR_OSI:
+            return None
+        try:
+            data = json.loads(ext.get("data", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return data if isinstance(data, dict) and isinstance(data.get(key), list) else None
 
     @staticmethod
     def _carry_foreign_extensions(osi_exts: list[dict] | None, obml_target: dict[str, Any]) -> None:
@@ -432,20 +465,20 @@ class OSItoOBML:
             columns[col_name] = col_obj
 
         # ── Primary key flag propagation (OSI v0.2 first-class) ──
-        # ``primary_key`` lists physical column codes; mark every matching
-        # column with ``primaryKey: true``. Unknown PK columns surface as
-        # a warning (the spec couples PK to relationship cardinality, so
-        # silently dropping is unsafe).
-        pk_codes = ds.get("primary_key") or []
-        if pk_codes:
-            code_to_col = {col.get("code"): (cname, col) for cname, col in columns.items()}
+        # ``primary_key`` lists field names, which are the column names; mark
+        # every matching column with ``primaryKey: true``. A physical code
+        # still matches, as exports before 0.5.0 listed codes. Unknown PK
+        # columns surface as a warning (the spec couples PK to relationship
+        # cardinality, so silently dropping is unsafe).
+        pk_names = ds.get("primary_key") or []
+        if pk_names:
+            code_to_col = {col.get("code"): col for col in columns.values()}
             unknown_pks: list[str] = []
-            for pk_code in pk_codes:
-                hit = code_to_col.get(pk_code)
-                if hit is None:
-                    unknown_pks.append(pk_code)
+            for pk_name in pk_names:
+                col = columns.get(pk_name) or code_to_col.get(pk_name)
+                if col is None:
+                    unknown_pks.append(pk_name)
                     continue
-                _, col = hit
                 col["primaryKey"] = True
             if unknown_pks:
                 self.warnings.append(
@@ -519,7 +552,12 @@ class OSItoOBML:
             do.setdefault("customExtensions", []).append(
                 {
                     "vendor": _VENDOR_OSI,
-                    "data": json.dumps({"obml_unique_keys": [list(g) for g in unique_keys]}),
+                    "data": json.dumps(
+                        {
+                            "obml_unique_keys": [list(g) for g in unique_keys],
+                            FIELD_NAMES_KEY: FIELD_NAMES_COLUMN,
+                        }
+                    ),
                 }
             )
 
@@ -882,9 +920,9 @@ class OSItoOBML:
                             pass
                         break
                 # Prefer the dimension's restored OBML name (export stashes it on
-                # the field). The OSI field name is the physical code, so this is
+                # the field). The OSI field name is the column name, so this is
                 # what keeps an OBML-origin round-trip from renaming dimensions to
-                # their code. Drop it from synonyms to avoid a self-referential
+                # their column. Drop it from synonyms to avoid a self-referential
                 # alias.
                 if restored_name and dim_def.get("synonyms"):
                     dim_def["synonyms"] = [s for s in dim_def["synonyms"] if s != restored_name]

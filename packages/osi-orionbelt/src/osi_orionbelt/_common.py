@@ -24,6 +24,17 @@ _OSI_VERSION = "0.2.0.dev0"
 # syntactically identical to ANSI. Non-SQL languages are never parsed as SQL.
 _SQL_PARSEABLE_DIALECTS = ("ANSI_SQL", "OSSIE_SQL_2026", "SNOWFLAKE", "DATABRICKS")
 
+# OSI SQL-dialect tag -> sqlglot ``read`` dialect for metric parsing. ANSI and
+# the portable OSSIE_SQL_2026 map to sqlglot's default (None). Reading with the
+# source dialect means a Snowflake/Databricks-authored aggregation is parsed
+# under the right grammar.
+_OSI_DIALECT_TO_SQLGLOT: dict[str, str | None] = {
+    "ANSI_SQL": None,
+    "OSSIE_SQL_2026": None,
+    "SNOWFLAKE": "snowflake",
+    "DATABRICKS": "databricks",
+}
+
 # Non-SQL expression languages of the OSI Dialect enum. Their expressions must
 # never be written into an OBML column ``code`` (a physical SQL column
 # reference) - doing so would emit broken SQL. Everything else in the enum

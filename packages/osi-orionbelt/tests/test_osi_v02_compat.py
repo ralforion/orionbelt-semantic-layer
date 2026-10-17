@@ -88,7 +88,7 @@ _OBML_WITH_PK_AND_LABEL: dict[str, Any] = {
                 {
                     "vendor": "OBSL",
                     "data": json.dumps(
-                        {"obml_unique_keys": [["order_id"], ["order_id", "line_no"]]}
+                        {"obml_unique_keys": [["Order ID"], ["Order ID", "Line Number"]]}
                     ),
                 }
             ],
@@ -193,13 +193,14 @@ class TestPrimaryKey:
     def test_composite_pk_emitted_in_declaration_order(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
         ds = osi["semantic_model"][0]["datasets"][0]
-        # Two columns flagged primaryKey: emit composite in declaration order
-        assert ds["primary_key"] == ["order_id", "line_no"]
+        # Two columns flagged primaryKey: emit composite in declaration order,
+        # by field name (the OBML column name), not by physical code.
+        assert ds["primary_key"] == ["Order ID", "Line Number"]
 
     def test_pk_roundtrip_restores_per_column_flag(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
         obml = conv.OSItoOBML(osi).convert()
-        # OSI fields are keyed by physical code; the OBML column names come back.
+        # OSI fields are named by the OBML column names, which come back.
         cols = obml["dataObjects"]["Orders"]["columns"]
         assert cols["Order ID"].get("primaryKey") is True
         assert cols["Line Number"].get("primaryKey") is True
@@ -242,7 +243,7 @@ class TestUniqueKeys:
     def test_unique_keys_roundtrip(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
         ds = osi["semantic_model"][0]["datasets"][0]
-        assert ds.get("unique_keys") == [["order_id"], ["order_id", "line_no"]]
+        assert ds.get("unique_keys") == [["Order ID"], ["Order ID", "Line Number"]]
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +255,7 @@ class TestFieldLabel:
     def test_label_emitted_from_custom_extensions(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
         fields = osi["semantic_model"][0]["datasets"][0]["fields"]
-        order_id_field = next(f for f in fields if f["name"] == "order_id")
+        order_id_field = next(f for f in fields if f["name"] == "Order ID")
         assert order_id_field["label"] == "filter"
 
     def test_label_roundtrip(self) -> None:

@@ -218,17 +218,18 @@ class TestReferencesResolve:
         obml["dimensions"] = {}
         obml["metrics"] = {}
         osi, _ = _export(obml)
-        assert _sql(osi)["Sales"] == 'SUM("Order"."AMT")'
+        assert _sql(osi)["Sales"] == 'SUM("Order"."Amount")'
         sqlglot.parse_one(_sql(osi)["Sales"])
 
 
-# Column references as the export writes them
+# Column references as the export writes them: Ossie dataset and field names,
+# which are the OBML data object and column names, not the physical codes.
 LINES = '"Order Lines"'
-AMT = f'{LINES}."AMT"'
-STATUS = f'{LINES}."STATUS"'
-COUNTRY = '"Customers"."COUNTRY"'
+AMT = f'{LINES}."Amount"'
+STATUS = f'{LINES}."Status"'
+COUNTRY = '"Customers"."Country"'
 # "Line Date" declares resultType: date, so the truncation is cast back to DATE.
-MONTH = f"CAST(DATE_TRUNC('month', {LINES}.\"LINE_DT\") AS DATE)"
+MONTH = f"CAST(DATE_TRUNC('month', {LINES}.\"Line Date\") AS DATE)"
 
 
 class TestSemanticsSpelledOut:
@@ -259,11 +260,11 @@ class TestSemanticsSpelledOut:
 
     def test_count_distinct(self) -> None:
         osi, _ = _export()
-        assert _sql(osi)["Customers Reached"] == f'COUNT(DISTINCT {LINES}."CUST_ID")'
+        assert _sql(osi)["Customers Reached"] == f'COUNT(DISTINCT {LINES}."Customer")'
 
     def test_synthesized_count_is_inlined(self) -> None:
         osi, _ = _export()
-        assert _sql(osi)["Sales per Line"] == f'SUM({AMT}) / COUNT({LINES}."LINE_ID")'
+        assert _sql(osi)["Sales per Line"] == f'SUM({AMT}) / COUNT({LINES}."Line ID")'
 
     def test_metric_on_metric_is_inlined(self) -> None:
         osi, _ = _export()
@@ -295,8 +296,9 @@ class TestSemanticsSpelledOut:
 class TestExportedSqlRuns:
     """Every exported metric runs in the query OrionBelt would group it by.
 
-    The datasets are aliased to their Ossie names, and the query groups by the
-    time dimension at its grain and the partition dimension, as OrionBelt does.
+    Each dataset is read as an Ossie consumer reads it: its fields, each computed
+    by its expression, under the dataset's name. The query groups by the time
+    dimension at its grain and the partition dimension, as OrionBelt does.
     """
 
     @staticmethod
@@ -315,15 +317,27 @@ class TestExportedSqlRuns:
         con.execute("INSERT INTO cust VALUES ('a', 'US'), ('b', 'DE')")
         return con
 
+    @staticmethod
+    def _dataset(osi: dict[str, Any], name: str, table: str) -> str:
+        """The dataset as a subquery projecting each field from its expression."""
+        ds = next(d for d in osi["semantic_model"][0]["datasets"] if d["name"] == name)
+        fields = ", ".join(
+            f"{f['expression']['dialects'][0]['expression']} AS {sql_ident(f['name'])}"
+            for f in ds["fields"]
+        )
+        return f"(SELECT {fields} FROM {table}) AS {sql_ident(name)}"
+
     def test_every_exported_metric_executes(self) -> None:
         con = self._connection()
         osi, _ = _export()
+        lines = self._dataset(osi, "Order Lines", "fct")
+        customers = self._dataset(osi, "Customers", "cust")
         for name, sql in _sql(osi).items():
             (
                 con.execute(
                     f"SELECT {MONTH}, {COUNTRY}, {sql} "
-                    f'FROM fct AS {LINES} LEFT JOIN cust AS "Customers" '
-                    f'ON {LINES}."CUST_ID" = "Customers"."ID" '
+                    f"FROM {lines} LEFT JOIN {customers} "
+                    f'ON {LINES}."Customer" = "Customers"."Customer ID" '
                     f"GROUP BY {MONTH}, {COUNTRY}"
                 ).fetchall(),
                 name,

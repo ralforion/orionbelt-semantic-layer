@@ -18,6 +18,13 @@ from osi_orionbelt._common import (
     OBML_TO_OSI_TYPE,
     obml_datatype_to_osi,
 )
+from osi_orionbelt._field_names import (
+    FIELD_NAMES_COLUMN,
+    FIELD_NAMES_KEY,
+    code_renames,
+    rename_keys,
+    rename_metric,
+)
 from osi_orionbelt._portable import NotPortableError, PortableRenderer
 
 
@@ -58,6 +65,11 @@ class OBMLtoOSI:
         # instance does not duplicate warnings or left-out entities.
         self.warnings = []
         self.unexported = {}
+        # For what OBML saved by a version before 0.5.0 keeps verbatim, which
+        # may name fields by code (see _field_names).
+        self._legacy_renames, self._legacy_ambiguous = code_renames(
+            self.obml.get("dataObjects", {}) or {}
+        )
 
         osi: dict[str, Any] = {"version": _OSI_VERSION}
 
@@ -203,13 +215,9 @@ class OBMLtoOSI:
             for col_name, col in (do_obj.get("columns", {}) or {}).items()
             if col.get("primaryKey")
         ]
-        # Use the physical ``code`` for each column when present — OSI
-        # field names mirror the physical column code (see _convert_column).
+        # OSI field names are the OBML column names (see _convert_column).
         if pk_columns:
-            columns_map = do_obj.get("columns", {}) or {}
-            dataset["primary_key"] = [
-                columns_map[c].get("code", c.lower().replace(" ", "_")) for c in pk_columns
-            ]
+            dataset["primary_key"] = pk_columns
 
         # ── Unique keys (v0.2 first-class, lossless roundtrip via OBSL) ──
         # OBML doesn't model unique keys natively today; round-trip via the
@@ -226,6 +234,14 @@ class OBMLtoOSI:
             uk = data.get("obml_unique_keys")
             if isinstance(uk, list) and all(isinstance(g, list) for g in uk):
                 unique_keys_extra = [list(g) for g in uk]
+                if data.get(FIELD_NAMES_KEY) != FIELD_NAMES_COLUMN:
+                    unique_keys_extra = rename_keys(
+                        unique_keys_extra,
+                        self._legacy_renames.get(do_name, {}),
+                        self._legacy_ambiguous.get(do_name, set()),
+                        self.warnings.append,
+                        f"Dataset '{do_name}'",
+                    )
                 break
         if unique_keys_extra:
             dataset["unique_keys"] = unique_keys_extra
@@ -268,7 +284,7 @@ class OBMLtoOSI:
         relationships = []
         joins = do_obj.get("joins", [])
         for i, join in enumerate(joins):
-            rel = self._convert_join_to_relationship(osi_name, do_name, do_obj, join, i)
+            rel = self._convert_join_to_relationship(osi_name, do_name, join, i)
             if rel:
                 relationships.append(rel)
 
@@ -316,11 +332,16 @@ class OBMLtoOSI:
     def _convert_column(
         self, col_name: str, col_obj: dict, do_name: str, obml_dimensions: dict
     ) -> dict:
-        """Convert an OBML column to an OSI field."""
+        """Convert an OBML column to an OSI field.
+
+        The field is named by the OBML column name and computed by the column
+        ``code``. The code can be a SQL expression (a calculated column from an
+        OSI import), which must never become the field name.
+        """
         code = col_obj.get("code", col_name.lower().replace(" ", "_"))
 
         field: dict[str, Any] = {
-            "name": code,
+            "name": col_name,
             "expression": {
                 "dialects": [
                     {
@@ -357,8 +378,6 @@ class OBMLtoOSI:
             field["description"] = col_obj["description"]
         elif col_obj.get("comment"):
             field["description"] = col_obj["comment"]
-        else:
-            field["description"] = col_name  # Use display name as description
 
         # ── Field label (OSI v0.2 first-class) ──
         # Surfaced from OBSL-vendor customExtensions ``obml_field_label`` —
@@ -393,11 +412,6 @@ class OBMLtoOSI:
             merged = list(existing) + [s for s in obml_col_synonyms if s not in existing]
             ai_ctx["synonyms"] = merged
 
-        # Build ai_context with synonyms from display name
-        display_synonym = col_name.lower()
-        code_clean = code.lower()
-        if display_synonym != code_clean:
-            synonyms.insert(0, col_name)
         if synonyms:
             ai_ctx.setdefault("synonyms", []).extend(
                 s for s in synonyms if s not in ai_ctx.get("synonyms", [])
@@ -416,11 +430,6 @@ class OBMLtoOSI:
             "data_type": osi_type,
             "obml_abstract_type": abstract_type,
         }
-        # The OSI field name is the physical code; keep the OBML column name so
-        # the reverse trip restores it (measure filters and model filters refer
-        # to columns by that name).
-        if col_name != code:
-            ext_data["obml_column_name"] = col_name
         # Preserve OBML-only column properties
         if col_obj.get("sqlType"):
             ext_data["obml_sql_type"] = col_obj["sqlType"]
@@ -448,8 +457,8 @@ class OBMLtoOSI:
             if matched_dim is None:
                 matched_dim = dim_obj
                 # Preserve the dimension's OBML name explicitly. The OSI field
-                # name is the physical code, so without this the round-trip
-                # would rename the dimension to its column code. Authoritative
+                # name is the column name, so without this the round-trip
+                # would rename the dimension to its column. Authoritative
                 # (do not rely on synonyms, which mix names and user aliases).
                 ext_data["obml_dimension_name"] = _dim_name
                 if dim_obj.get("timeGrain"):
@@ -527,21 +536,16 @@ class OBMLtoOSI:
         return field
 
     def _convert_join_to_relationship(
-        self, osi_from_name: str, _obml_from_name: str, from_do: dict, join: dict, index: int
+        self, osi_from_name: str, _obml_from_name: str, join: dict, index: int
     ) -> dict | None:
         """Convert an OBML join to an OSI relationship."""
         join_to_display = join.get("joinTo", "")
         # Use the OBML display name as the OSI target name (consistent with
         # _convert_data_object which uses display name as OSI dataset name)
         to_name = join_to_display
-        target_do = self.obml.get("dataObjects", {}).get(join_to_display, {})
-
-        # Map column display names to codes
-        from_columns_display = join.get("columnsFrom", [])
-        to_columns_display = join.get("columnsTo", [])
-
-        from_cols = self._resolve_column_codes(from_do, from_columns_display)
-        to_cols = self._resolve_column_codes(target_do, to_columns_display)
+        # OSI field names are the OBML column names (see _convert_column).
+        from_cols = list(join.get("columnsFrom", []))
+        to_cols = list(join.get("columnsTo", []))
 
         # Generate relationship name
         path_name = join.get("pathName", "")
@@ -572,21 +576,13 @@ class OBMLtoOSI:
 
         return rel
 
-    def _resolve_column_codes(self, do_obj: dict, col_display_names: list) -> list:
-        """Resolve OBML column display names to their code values."""
-        columns = do_obj.get("columns", {})
-        codes = []
-        for display in col_display_names:
-            col = columns.get(display, {})
-            codes.append(col.get("code", display.lower().replace(" ", "_")))
-        return codes
-
     def _restore_unconverted_metrics(self) -> list[dict]:
         """Recover OSI metrics preserved verbatim during OSI -> OBML import.
 
         The import path stashes metrics OBML can't represent under an OSI-vendor
         model-level customExtension (``obml_unconverted_metrics``). Re-emit them
-        unchanged so a full OSI -> OBML -> OSI roundtrip keeps them.
+        so a full OSI -> OBML -> OSI roundtrip keeps them, renaming the field
+        references of a payload saved before 0.5.0 (see _field_names).
         """
         restored: list[dict] = []
         for ext in self.obml.get("customExtensions", []) or []:
@@ -597,8 +593,15 @@ class OBMLtoOSI:
             except (json.JSONDecodeError, TypeError):
                 continue
             preserved = data.get("obml_unconverted_metrics")
-            if isinstance(preserved, list):
-                restored.extend(m for m in preserved if isinstance(m, dict))
+            if not isinstance(preserved, list):
+                continue
+            metrics = [m for m in preserved if isinstance(m, dict)]
+            if data.get(FIELD_NAMES_KEY) != FIELD_NAMES_COLUMN:
+                for metric in metrics:
+                    rename_metric(
+                        metric, self._legacy_renames, self._legacy_ambiguous, self.warnings.append
+                    )
+            restored.extend(metrics)
         return restored
 
     def _merge_restored_metrics(self, osi_metrics: list[dict]) -> None:

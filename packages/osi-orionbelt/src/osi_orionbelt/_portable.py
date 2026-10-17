@@ -5,8 +5,8 @@ has to compute what OrionBelt computes. OBML carries semantics in structure
 (measure ``filters``, ``total``, synthesized counts, metric-on-metric
 references) that the expression must spell out:
 
-* column references are ``<dataset>.<field>``: the OBML data object name and
-  the column's physical code, which are the Ossie dataset and field names;
+* column references are ``<dataset>.<field>``: the OBML data object and column
+  names, which are the Ossie dataset and field names;
 * measure ``filters`` become ``AGG(CASE WHEN <cond> THEN <arg> END)``, the
   spec's portable filtered aggregation, mirroring the compiler's own rendering;
 * ``total: true`` becomes the grand-total window the compiler emits, e.g.
@@ -179,9 +179,7 @@ class PortableRenderer:
         obj = self.data_objects.get(data_object)
         if obj is None:
             raise NotPortableError(f"references unknown data object '{data_object}'")
-        col = (obj.get("columns") or {}).get(column, {})
-        code = col.get("code", column.lower().replace(" ", "_"))
-        return f"{sql_ident(data_object)}.{sql_ident(code)}"
+        return f"{sql_ident(data_object)}.{sql_ident(column)}"
 
     def _column_ref(self, ref: dict[str, Any]) -> str:
         return self.column(ref.get("dataObject", ""), ref.get("column", ""))

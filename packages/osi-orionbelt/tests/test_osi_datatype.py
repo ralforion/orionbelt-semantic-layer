@@ -140,7 +140,7 @@ class TestExportDatatype:
             ("boolean", "Boolean"),
         ]:
             osi = conv.OBMLtoOSI(self._obml(abstract_type), model_name="s").convert()
-            assert _osi_fields(osi)["val"]["datatype"] == expected
+            assert _osi_fields(osi)["Val"]["datatype"] == expected
 
 
 class TestRoundtripLossless:

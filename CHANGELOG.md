@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An Ossie field keeps its name through the converter.** The export named each field by its column `code`, so a calculated field imported from Ossie (`amount_with_tax`, `amount * 1.1`) came back as a field called `amount * 1.1`, and a metric over it referenced that expression as a field. The export now names each field by its OBML column name, with the `code` as its expression, and `primary_key`, relationship columns and metric expressions use the same names; the import matches `primary_key` by field name. Exports from older versions still import, and the unique keys and unconverted metrics they left behind are renamed along with the fields: on import, from the names the older export recorded, and on export of OBML saved by an older version, from the column codes. Only the field references in a metric's SQL change; a table or alias the SQL declares itself is left alone, and what cannot be renamed safely is kept and warned about. Ships in osi-orionbelt 0.5.0 (a minor bump: an OBML-first export names its fields `Customer Name` instead of `NAME`). Reported as apache/ossie#601.
+
 ## [2.34.0] - 2026-10-08
 
 ### Added
