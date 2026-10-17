@@ -74,7 +74,6 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
     Select,
-    Star,
     UnionAll,
     Unnest,
 )
@@ -1184,9 +1183,8 @@ def _deduplicated_at(
     query's WHERE accepts are added beside them (:func:`_rows_without_children`).
 
     With *keep_keyless*, a row with no *object_name* row (an order without a
-    customer) stays, so its group does too: this CTE then has every group of
-    the query and drives it. Its values are NULL, which every aggregate skips;
-    a row count counts the key instead of the row.
+    customer) keeps its group, which reads NULL: this CTE then has every group
+    of the query and drives it.
     """
     inner_columns: list[Expr] = [
         AliasedExpr(expr=make_dimension_expr(model, dim, dialect), alias=dim.name)
@@ -1245,48 +1243,56 @@ def _deduplicated_at(
             expr=ColumnRef(name=f"{_KEY_PREFIX}{key_idx}", table=src_alias), negated=True
         )
         key_present = not_null if key_present is None else BinaryOp(key_present, "AND", not_null)
-    if keep_keyless and key_present is not None:
-        present = key_present
-
-        def gated(node: Expr) -> Expr | None:
-            # A value is read only from a row the object has: ClickHouse fills an
-            # unmatched non-Nullable column with its default (0, ''), not NULL.
-            if (
-                isinstance(node, ColumnRef)
-                and node.table == src_alias
-                and node.name.startswith(_COL_PREFIX)
-            ):
-                return CaseExpr(when_clauses=[(present, node)])
-            return _count_present(node, present)
-
-        cte_columns = [
-            cte_columns[i] if i < len(group_dims) else map_nodes(column, gated)
-            for i, column in enumerate(cte_columns)
-        ]
-        key_present = None
-
-    return Select(
+    aggregated = Select(
         columns=cte_columns,
         from_=From(source=source, alias=src_alias),
         where=key_present,
         group_by=[ColumnRef(name=dim.name, table=src_alias) for dim in group_dims],
     )
+    if not keep_keyless or not group_dims:
+        return aggregated
 
-
-def _count_present(node: Expr, present: Expr) -> Expr | None:
-    """``COUNT(*)`` / ``COUNT(1)`` counting only the rows where *present* holds.
-
-    ``COUNT(column)`` and every other aggregate already skip the NULL values
-    of a row with no object row; a count of rows does not."""
-    if (
-        isinstance(node, FunctionCall)
-        and node.name.upper() == "COUNT"
-        and not node.distinct
-        and len(node.args) == 1
-        and isinstance(node.args[0], Star | Literal)
-    ):
-        return replace(node, args=[CaseExpr(when_clauses=[(present, Literal.number(1))])])
-    return None
+    # The groups come from every row, the values from the object's rows only.
+    # A row with no object row (an order without a customer) keeps its group
+    # and adds nothing: the aggregate is the one above, over the rows that
+    # have the object, so no expression can turn its missing columns into a
+    # value (``COALESCE(credit, 0) + 1``), and ClickHouse's default for an
+    # unmatched non-Nullable column is never read. Such a group reads NULL;
+    # the outer query applies a count's 0 or a declared default.
+    groups_alias = f"{src_alias}_groups"
+    values_alias = f"{src_alias}_values"
+    groups = Select(
+        columns=[
+            AliasedExpr(expr=ColumnRef(name=dim.name, table=src_alias), alias=dim.name)
+            for dim in group_dims
+        ],
+        from_=From(source=source, alias=src_alias),
+        distinct=True,
+    )
+    on: Expr | None = None
+    for dim in group_dims:
+        condition = _null_safe_eq(
+            ColumnRef(name=dim.name, table=groups_alias),
+            ColumnRef(name=dim.name, table=values_alias),
+        )
+        on = condition if on is None else BinaryOp(on, "AND", condition)
+    measure_names_out = [
+        alias for column in cte_columns[len(group_dims) :] if (alias := _measure_alias(column))
+    ]
+    return Select(
+        columns=[
+            *(
+                AliasedExpr(expr=ColumnRef(name=dim.name, table=groups_alias), alias=dim.name)
+                for dim in group_dims
+            ),
+            *(
+                AliasedExpr(expr=ColumnRef(name=name, table=values_alias), alias=name)
+                for name in measure_names_out
+            ),
+        ],
+        from_=From(source=groups, alias=groups_alias),
+        joins=[Join(join_type=JoinType.LEFT, source=aggregated, alias=values_alias, on=on)],
+    )
 
 
 @dataclass

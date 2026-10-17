@@ -325,9 +325,12 @@ by a sales column, those products are its `NULL` group, and a sale with no
 product stays a row too: every measure adds up to what it reads alone.
 
 The products' CTE then reads every row `main` does plus those products, so it
-has every group of the query and drives it; it keeps the rows with no product,
-each value read only where the product key is present (an unmatched column is
-not `NULL` everywhere: ClickHouse fills a non-Nullable one with its default):
+has every group of the query and drives it. Its groups come from every row, a
+sale with no product included; its values come from the rows that have a
+product only, exactly as before, so no expression over a missing product's
+columns adds anything (`COALESCE(stock, 0) + 1` would add 1), and ClickHouse's
+default for an unmatched non-Nullable column is never read. A group without
+products reads `NULL`, a count 0, a measure with a `defaultValue` that default:
 
 ```sql
 WITH __ob_main AS ( ...as above... ),
@@ -339,11 +342,13 @@ __ob_dedup_src_0_rows AS (
   FROM products p
   WHERE NOT EXISTS (SELECT 1 FROM sales s WHERE p.id = s.product_id)
 ),
-__ob_dedup_0 AS (
-  SELECT "Region",
-         SUM(CASE WHEN __ob_k0 IS NOT NULL THEN __ob_c0 END) AS "Total Stock On Hand",
-         COUNT(CASE WHEN __ob_k0 IS NOT NULL THEN 1 END) AS "Products Count"
-  FROM __ob_dedup_src_0_rows GROUP BY "Region"
+__ob_dedup_0 AS (                         -- groups from every row,
+  SELECT g."Region", v."Total Stock On Hand", v."Products Count"
+  FROM (SELECT DISTINCT "Region" FROM __ob_dedup_src_0_rows) g
+  LEFT JOIN (                               -- values from the product rows only
+    SELECT "Region", SUM(__ob_c0) AS "Total Stock On Hand", COUNT(1) AS "Products Count"
+    FROM __ob_dedup_src_0_rows WHERE __ob_k0 IS NOT NULL GROUP BY "Region"
+  ) v ON g."Region" IS NOT DISTINCT FROM v."Region"
 )
 SELECT d."Region", m."Sold Quantity", d."Total Stock On Hand", d."Products Count"
 FROM __ob_dedup_0 d LEFT JOIN __ob_main m ON d."Region" IS NOT DISTINCT FROM m."Region"

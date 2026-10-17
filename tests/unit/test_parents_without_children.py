@@ -66,6 +66,10 @@ measures:
     columns: [{dataObject: Customers, column: Credit}]
     aggregation: sum
     resultType: float
+  Credit Plus One:
+    expression: 'COALESCE({[Customers].[Credit]}, 0) + 1'
+    aggregation: sum
+    resultType: float
 """
 
 
@@ -149,3 +153,18 @@ def test_one_cte_has_every_group() -> None:
     sql = _sql({"select": {"dimensions": ["Tier"], "measures": ["Revenue", "Total Credit"]}})
     assert "__ob_groups" not in sql
     assert 'FROM "__ob_dedup_0" AS "__ob_dedup_0"\nLEFT JOIN "__ob_main"' in sql
+
+
+def test_an_expression_cannot_give_a_missing_customer_a_value(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """``COALESCE(credit, 0) + 1`` is 1 over a NULL credit. Gating the column
+    inside the aggregate still added that 1 for the order without a customer:
+    the groups totalled 74 against 73 alone. The aggregate reads the rows that
+    have a customer only; the order's group comes from the rows, valueless."""
+    alone = _rows(con, _sql({"select": {"measures": ["Credit Plus One"]}}))
+    grouped = _rows(
+        con, _sql({"select": {"dimensions": ["Tier"], "measures": ["Revenue", "Credit Plus One"]}})
+    )
+    assert alone == [(73.0,)]
+    assert grouped == [("gold", 150.0, 52.0), ("silver", 70.0, 21.0), (None, 5.0, None)]

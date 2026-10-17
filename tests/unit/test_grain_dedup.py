@@ -626,7 +626,7 @@ def test_a_component_also_selected_on_its_own_is_computed_once() -> None:
         }
     )
     # One aggregate each, read twice: once for the measure, once by the metric.
-    assert result.sql.count('"__ob_dedup_src_0"."__ob_c0" END)') == 1
+    assert result.sql.count('SUM("__ob_dedup_src_0"."__ob_c0")') == 1
     assert result.sql.count('SUM("Sales"."quantity")') == 1
 
     rows = [
