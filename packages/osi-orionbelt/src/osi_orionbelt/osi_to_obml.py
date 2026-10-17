@@ -343,8 +343,8 @@ class OSItoOBML:
     def _restore_column_names(self, obml: dict[str, Any], datasets: list) -> None:
         """Rename columns from their OSI field name back to the OBML column name.
 
-        The export names each field by its physical code and keeps the OBML
-        column name in ``obml_column_name``. Measure filters and model filters
+        Exports before 0.5.0 named each field by its physical code and kept
+        the OBML column name in ``obml_column_name``. Measure filters and model filters
         refer to columns by that name, so every column key and every reference
         the import built from field names is renamed to match.
         """
@@ -432,20 +432,20 @@ class OSItoOBML:
             columns[col_name] = col_obj
 
         # ── Primary key flag propagation (OSI v0.2 first-class) ──
-        # ``primary_key`` lists physical column codes; mark every matching
-        # column with ``primaryKey: true``. Unknown PK columns surface as
-        # a warning (the spec couples PK to relationship cardinality, so
-        # silently dropping is unsafe).
-        pk_codes = ds.get("primary_key") or []
-        if pk_codes:
-            code_to_col = {col.get("code"): (cname, col) for cname, col in columns.items()}
+        # ``primary_key`` lists field names, which are the column names; mark
+        # every matching column with ``primaryKey: true``. A physical code
+        # still matches, as exports before 0.5.0 listed codes. Unknown PK
+        # columns surface as a warning (the spec couples PK to relationship
+        # cardinality, so silently dropping is unsafe).
+        pk_names = ds.get("primary_key") or []
+        if pk_names:
+            code_to_col = {col.get("code"): col for col in columns.values()}
             unknown_pks: list[str] = []
-            for pk_code in pk_codes:
-                hit = code_to_col.get(pk_code)
-                if hit is None:
-                    unknown_pks.append(pk_code)
+            for pk_name in pk_names:
+                col = columns.get(pk_name) or code_to_col.get(pk_name)
+                if col is None:
+                    unknown_pks.append(pk_name)
                     continue
-                _, col = hit
                 col["primaryKey"] = True
             if unknown_pks:
                 self.warnings.append(
@@ -882,9 +882,9 @@ class OSItoOBML:
                             pass
                         break
                 # Prefer the dimension's restored OBML name (export stashes it on
-                # the field). The OSI field name is the physical code, so this is
+                # the field). The OSI field name is the column name, so this is
                 # what keeps an OBML-origin round-trip from renaming dimensions to
-                # their code. Drop it from synonyms to avoid a self-referential
+                # their column. Drop it from synonyms to avoid a self-referential
                 # alias.
                 if restored_name and dim_def.get("synonyms"):
                     dim_def["synonyms"] = [s for s in dim_def["synonyms"] if s != restored_name]

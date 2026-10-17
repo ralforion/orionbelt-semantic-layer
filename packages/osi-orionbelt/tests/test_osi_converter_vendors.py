@@ -196,7 +196,7 @@ class TestForeignVendorRoundtrip:
         }
         osi = conv.OBMLtoOSI(obml).convert()
         field = next(
-            f for f in osi["semantic_model"][0]["datasets"][0]["fields"] if f["name"] == "status"
+            f for f in osi["semantic_model"][0]["datasets"][0]["fields"] if f["name"] == "Status"
         )
         assert any(e["vendor_name"] == "TABLEAU" for e in field["custom_extensions"])
 
@@ -233,5 +233,5 @@ class TestLegacyBackCompat:
         osi = conv.OBMLtoOSI(obml).convert()
         ds = osi["semantic_model"][0]["datasets"][0]
         assert ds.get("unique_keys") == [["order_id"]]
-        order_id = next(f for f in ds["fields"] if f["name"] == "order_id")
+        order_id = next(f for f in ds["fields"] if f["name"] == "Order ID")
         assert order_id.get("label") == "filter"
