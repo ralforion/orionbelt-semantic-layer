@@ -335,10 +335,34 @@ def test_multiplicity_safe_aggregations_are_untouched(measure: str) -> None:
     common one-side measure there is. Keying the safe-list on the
     ``aggregation`` string alone would wrongly rewrite it.
     """
+    # ``Region set`` admits no product without a sale (its region is NULL),
+    # so none is added, and nothing makes the aggregate read deduplicated rows.
+    result = _compile(
+        {
+            "select": {"dimensions": ["Region"], "measures": ["Sold Quantity", measure]},
+            "where": [{"field": "Region", "op": "set"}],
+        }
+    )
+    assert "__ob_dedup_0" not in result.sql
+
+
+@pytest.mark.parametrize(
+    ("measure", "unsold"),
+    [("Highest List Price", 30.0), ("Distinct Prices", 1), ("Product Count", 1)],
+)
+def test_products_without_a_sale_are_their_own_group(measure: str, unsold: float) -> None:
+    """Read from the sales, a product never sold is in no row; it is added as
+    one of its own, its region NULL, so the product measures add up to what
+    they read alone. Even a MAX or a DISTINCT count, which replication does not
+    change, is read over the deduplicated rows that leg joins."""
+    con = _sales_db()
+    con.execute("INSERT INTO products VALUES ('p4', 30.0, 7, 'parts')")
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", measure]}}
     )
-    assert "__ob_dedup_0" not in result.sql
+    rows = {r[0]: (r[1], float(r[2])) for r in con.execute(result.sql).fetchall()}
+    assert rows[None] == (None, float(unsold))
+    assert set(rows) == {"north", "south", None}
 
 
 def test_allow_fan_out_opts_out() -> None:
@@ -371,8 +395,9 @@ def test_dedup_joins_back_on_every_query_dimension() -> None:
             }
         }
     )
-    assert '"__ob_main"."Region" = "__ob_dedup_0"."Region"' in result.sql
-    assert '"__ob_main"."Category" = "__ob_dedup_0"."Category"' in result.sql
+    # The products' own CTE has every group (see the B25 tests below) and drives.
+    assert '"__ob_dedup_0"."Region" = "__ob_main"."Region"' in result.sql
+    assert '"__ob_dedup_0"."Category" = "__ob_main"."Category"' in result.sql
 
 
 def test_dedup_cross_joins_when_the_query_has_no_dimensions() -> None:
@@ -410,7 +435,8 @@ def test_order_by_a_dimension_targets_main() -> None:
             "orderBy": [{"field": "Region"}],
         }
     )
-    assert '"__ob_main"."Region" ASC' in result.sql
+    # Read from the CTE that drives the query, which has every group.
+    assert 'ORDER BY "__ob_dedup_0"."Region" ASC' in result.sql
 
 
 @pytest.mark.parametrize(
@@ -600,7 +626,7 @@ def test_a_component_also_selected_on_its_own_is_computed_once() -> None:
         }
     )
     # One aggregate each, read twice: once for the measure, once by the metric.
-    assert result.sql.count('SUM("__ob_dedup_src_0"."__ob_c0")') == 1
+    assert result.sql.count('"__ob_dedup_src_0"."__ob_c0" END)') == 1
     assert result.sql.count('SUM("Sales"."quantity")') == 1
 
     rows = [
@@ -997,7 +1023,8 @@ def test_having_only_deduplicated_measure_stays_out_of_the_projection() -> None:
 
 
 def test_having_splits_between_the_grouped_query_and_the_wrapper() -> None:
-    """A base-grain predicate stays a HAVING; the deduplicated one moves out."""
+    """Both predicates filter the finished rows: a HAVING inside ``main`` would
+    drop a group there only, and the driving CTE would bring it back."""
     result = _compile(
         {
             "select": {
@@ -1010,8 +1037,11 @@ def test_having_splits_between_the_grouped_query_and_the_wrapper() -> None:
             ],
         }
     )
-    assert 'HAVING CAST(SUM("Sales"."quantity") AS BIGINT) > 5' in result.sql
-    assert 'WHERE "__ob_dedup_0"."Total Stock On Hand" > 250' in result.sql
+    assert "HAVING" not in result.sql
+    assert (
+        'WHERE "__ob_main"."Sold Quantity" > 5 AND "__ob_dedup_0"."Total Stock On Hand" > 250'
+        in result.sql
+    )
 
     rows = [(r[0], int(r[1]), int(r[2])) for r in _sales_db().execute(result.sql).fetchall()]
     assert rows == [("south", 8, 300)]
@@ -1050,7 +1080,7 @@ def test_having_mixing_a_selected_dimension_with_a_deduplicated_measure() -> Non
             ],
         }
     )
-    assert '"__ob_main"."Region" = \'north\'' in result.sql
+    assert '"__ob_dedup_0"."Region" = \'north\'' in result.sql
     rows = sorted(r[0] for r in _sales_db().execute(result.sql).fetchall())
     assert rows == ["north", "south"]
 
@@ -1127,10 +1157,10 @@ measures:
 
 
 def test_distinct_aggregate_over_the_one_side_stays_correct() -> None:
-    """A DISTINCT aggregate is unaffected by replication, so it is not rewritten.
+    """Two sales of ``p1`` in one region still count one product.
 
-    Executed rather than asserted on the SQL: two sales of ``p1`` in one region
-    must still count one product.
+    Executed rather than asserted on the SQL: the aggregate is read over the
+    deduplicated rows the products without a sale are added to (none here).
     """
     con = duckdb.connect()
     con.execute(
@@ -1147,7 +1177,6 @@ def test_distinct_aggregate_over_the_one_side_stays_correct() -> None:
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Product Count"]}}
     )
-    assert "__ob_dedup_0" not in result.sql
     assert [(r[0], int(r[1]), int(r[2])) for r in con.execute(result.sql).fetchall()] == [
         ("north", 3, 1)
     ]
@@ -1161,13 +1190,14 @@ def test_having_on_a_distinct_one_side_measure_is_allowed() -> None:
             "having": [{"field": "Product Count", "op": "gt", "value": 1}],
         }
     )
-    assert "HAVING" in result.sql
-    assert "__ob_dedup_0" not in result.sql
+    rows = [(r[0], int(r[1]), int(r[2])) for r in _sales_db().execute(result.sql).fetchall()]
+    assert rows == [("north", 7, 2)]
 
 
 def test_metric_over_a_distinct_one_side_measure_is_allowed() -> None:
     result = _compile({"select": {"dimensions": ["Region"], "measures": ["Quantity per Product"]}})
-    assert "__ob_dedup_0" not in result.sql
+    rows = {r[0]: float(r[1]) for r in _sales_db().execute(result.sql).fetchall()}
+    assert rows == {"north": 3.5, "south": 8.0}
 
 
 def test_average_over_the_one_side_is_unweighted_by_sale_count() -> None:
@@ -1374,9 +1404,10 @@ def test_filter_on_the_dedup_object_itself_still_deduplicates() -> None:
 
 
 def test_count_reads_zero_when_no_rows_match() -> None:
-    """A group whose rows all miss the joined object contributes no dedup row.
+    """A group whose rows all miss the joined object has no product in it.
 
-    The LEFT JOIN then yields NULL, but COUNT over no rows is 0, not unknown.
+    COUNT over no rows is 0, not unknown. ``p1`` is never sold (both sales
+    point at products that do not exist), so it is the NULL region's product.
     """
     con = duckdb.connect()
     con.execute(
@@ -1396,8 +1427,10 @@ def test_count_reads_zero_when_no_rows_match() -> None:
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Products Count"]}}
     )
-    assert "COALESCE" in result.sql
-    assert [(r[0], int(r[2])) for r in con.execute(result.sql).fetchall()] == [("north", 0)]
+    assert sorted(((r[0], int(r[2])) for r in con.execute(result.sql).fetchall()), key=str) == [
+        ("north", 0),
+        (None, 1),
+    ]
 
 
 def test_sum_stays_null_when_no_rows_match() -> None:
@@ -1423,7 +1456,7 @@ def test_order_by_a_computed_dimension_targets_main() -> None:
             "orderBy": [{"field": "Bumped"}],
         }
     )
-    assert 'ORDER BY "__ob_main"."Bumped" ASC' in result.sql
+    assert 'ORDER BY "__ob_dedup_0"."Bumped" ASC' in result.sql
     assert '"Sales"."quantity" + 1 ASC' not in result.sql
 
 

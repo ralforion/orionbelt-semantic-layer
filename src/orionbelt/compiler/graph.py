@@ -669,3 +669,20 @@ class JoinGraph:
                     )
                 )
         return errors
+
+
+def joined_beneath(steps: list[JoinStep], root: str) -> set[str]:
+    """*root* and every object the query's join tree reaches through it.
+
+    Not every object *root* could reach: a role the query bound elsewhere
+    (``Dates`` through the sale date, not the return date) is not beneath it.
+    """
+    beneath = {root}
+    grew = True
+    while grew:
+        grew = False
+        for step in steps:
+            if step.from_object in beneath and step.to_object not in beneath:
+                beneath.add(step.to_object)
+                grew = True
+    return beneath

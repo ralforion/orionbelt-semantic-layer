@@ -35,7 +35,7 @@ from orionbelt.compiler.filters import (
     build_measure_filter_condition,
     collect_measure_filter_objects,
 )
-from orionbelt.compiler.graph import JoinGraph, JoinStep, path_overrides
+from orionbelt.compiler.graph import JoinGraph, JoinStep, joined_beneath, path_overrides
 from orionbelt.compiler.null_rejection import can_hold_without
 from orionbelt.compiler.type_resolver import resolve_measure_data_type
 from orionbelt.models.errors import SemanticError
@@ -2265,18 +2265,39 @@ class QueryResolver:
             return root
         return best
 
-    def _plan_parents_without_children(self, ctx: _ResolutionContext) -> None:
-        """Add the parents without child rows a measure filter accepts, or refuse.
+    @staticmethod
+    def _parent_of(ctx: _ResolutionContext, name: str, reached: set[str]) -> str | None:
+        """The object a measure's values come from, when that is one object the
+        base reaches: a measure read through the base's rows. Not a measure
+        that reads the base itself (``Orders.Amount * Customers.Credit`` is
+        evaluated per order row), and not the objects only its filter reads."""
+        measure = ctx.model.effective_measures.get(name)
+        if measure is None:
+            return None
+        sources = measure.source_objects
+        if len(sources) != 1:
+            return None
+        source = next(iter(sources))
+        return source if source in reached else None
 
-        A customer measure filtered on its orders, read through the orders, is
-        applied to the order rows before deduplicating (``grain_dedup``). A
-        customer without orders is in none of them: right for ``order_id set``,
-        which no such customer satisfies, and wrong for ``order_id notset``,
-        which only such customers do. When the filter can hold with every
-        order column NULL (:mod:`compiler.null_rejection`), the plan gets the
-        same leg as a WHERE that admits them, and the filter is evaluated there
-        with those columns NULL. A shape the leg cannot express is refused
-        (``FILTER_ADMITS_ROWS_WITHOUT``) rather than answered without them.
+    def _plan_parents_without_children(self, ctx: _ResolutionContext) -> None:
+        """Add the parents without child rows when no WHERE asks for them.
+
+        A query based on the orders reads the customers through their orders,
+        so a customer measure beside an order measure lost every customer
+        without one: ``Customers Count`` was 3 alone and 2 beside ``Revenue``.
+        A measure's value must not depend on what else is selected, so those
+        customers are added as a leg of their own, as for a WHERE that admits
+        them; grouped by an order column, they are its NULL group.
+
+        A measure filter on the orders is evaluated for them with every order
+        column NULL: ``order_id notset`` holds, ``order_id set`` does not. A
+        shape the leg cannot express (measures on several such objects,
+        ``ROLLUP`` / ``CUBE``, period-over-period, a nested object) keeps the
+        plan as it was, unless such a filter can hold for them
+        (:mod:`compiler.null_rejection`): that measure would then be answered
+        without the only rows it accepts, and is refused
+        (``FILTER_ADMITS_ROWS_WITHOUT``) instead.
         """
         base = ctx.result.base_object
         graph = ctx.graph
@@ -2289,10 +2310,9 @@ class QueryResolver:
             measure = ctx.model.effective_measures.get(name)
             if measure is None or not measure.filters or measure.allow_fan_out:
                 continue
-            sourced = measure.source_objects & reached
-            if len(sourced) != 1:
+            parent = self._parent_of(ctx, name, reached)
+            if parent is None:
                 continue
-            parent = next(iter(sourced))
             filter_objects: set[str] = set()
             for item in measure.filters:
                 collect_measure_filter_objects(item, filter_objects)
@@ -2302,10 +2322,23 @@ class QueryResolver:
             gate = build_measure_filter_condition(measure.filters, ctx.model, [])
             if gate is not None and can_hold_without(gate, children):
                 admitting[name] = parent
-        if not admitting:
-            return
 
-        parents = sorted(set(admitting.values()))
+        parents = (
+            sorted(set(admitting.values()))
+            if admitting
+            else sorted(
+                {parent for name in names if (parent := self._parent_of(ctx, name, reached))}
+            )
+        )
+        if not parents:
+            return
+        # A WHERE on what the query joins outside the parent (the sale year)
+        # holds for none of these rows, which read it NULL: nothing to add.
+        joined = {base} | {step.to_object for step in ctx.result.join_steps}
+        outside = joined - joined_beneath(ctx.result.join_steps, parents[0])
+        for wf in ctx.result.where_filters:
+            if not can_hold_without(wf.expression, outside):
+                return
         reason: str | None = None
         if len(parents) > 1:
             reason = "the measures read several objects that cannot reach it"
@@ -2314,10 +2347,26 @@ class QueryResolver:
         elif ctx.result.has_pop:
             reason = "a period-over-period metric rebuilds the query from its own rows"
         elif any(
-            (obj := ctx.model.data_objects.get(name)) is not None and obj.is_nested
+            ((obj := ctx.model.data_objects.get(name)) is not None and obj.is_nested)
+            or ctx.model.unnest_root(name) != name
             for name in (parents[0], base)
+        ) or any(
+            # Reached through an array: no table to correlate a NOT EXISTS on.
+            ctx.model.unnest_root(name) != name and parents[0] in graph.descendants(name)
+            for name in reached
         ):
             reason = "a nested data object is involved"
+        elif not admitting and any(
+            (measure := ctx.model.effective_measures.get(name)) is not None
+            and measure.allow_fan_out
+            and parents[0] in measure.source_objects
+            for name in names
+        ):
+            # Its rows are read as the joins replicate them, on purpose; the
+            # leg is joined to deduplicated rows only.
+            reason = "a measure on it sets allowFanOut"
+        if reason is not None and not admitting:
+            return
         if reason is None:
             parent = parents[0]
             ctx.result.childless_leg = ChildlessLeg(
@@ -2364,17 +2413,22 @@ class QueryResolver:
         objects, ``ROLLUP`` / ``CUBE``, a period-over-period metric, or a nested
         object on either side.
         """
-        sources = ctx.result.measure_source_objects
-        if not sources or ctx.result.requires_cfl or ctx.graph is None:
+        if ctx.result.requires_cfl or ctx.graph is None:
+            return
+        # The objects the measures' values come from: one only a measure filter
+        # reads is no source of a row, and is handled with that filter.
+        sources: set[str] = set()
+        for name in [m.name for m in ctx.result.measures] + list(ctx.result.metric_components):
+            measure = ctx.model.effective_measures.get(name)
+            if measure is not None:
+                sources |= measure.source_objects
+        if not sources:
             return
         read: set[str] = set()
         for wf in ctx.result.where_filters:
             collect_referenced_tables(wf.expression, read)
         unreached = {source: read - ctx.graph.descendants(source) - {source} for source in sources}
         children = set().union(*unreached.values())
-        if not children:
-            self._plan_parents_without_children(ctx)
-            return
         combined: Expr | None = None
         for wf in ctx.result.where_filters:
             combined = (
@@ -2382,7 +2436,10 @@ class QueryResolver:
                 if combined is None
                 else BinaryOp(left=combined, op="AND", right=wf.expression)
             )
-        if combined is None or not can_hold_without(combined, children):
+        if not children or combined is None or not can_hold_without(combined, children):
+            # No WHERE asks for parents without children; a measure, or its
+            # filter, still may.
+            self._plan_parents_without_children(ctx)
             return
 
         parents = sorted(source for source, missing in unreached.items() if missing)

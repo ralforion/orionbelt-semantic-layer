@@ -119,6 +119,18 @@ measures:
       - column: {dataObject: Products, column: Category}
         operator: equals
         values: [{dataType: string, valueString: tools}]
+  Weighted Credit:
+    expression: '{[Orders].[Amount]} * {[Customers].[Credit]}'
+    aggregation: sum
+    resultType: float
+    filters:
+      - logic: or
+        filters:
+          - column: {dataObject: Orders, column: Order ID}
+            operator: notset
+          - column: {dataObject: Customers, column: Tier}
+            operator: equals
+            values: [{dataType: string, valueString: gold}]
   Tiers By Order Date:
     columns: [{dataObject: Customers, column: Tier}]
     aggregation: listagg
@@ -162,8 +174,11 @@ def _sql(query: dict) -> str:
 
 def _rows(con: duckdb.DuckDBPyConnection, sql: str) -> list[tuple[object, ...]]:
     return sorted(
-        (tuple(float(v) if isinstance(v, int | float) else v for v in row))
-        for row in con.execute(sql).fetchall()
+        (
+            tuple(float(v) if isinstance(v, int | float) else v for v in row)
+            for row in con.execute(sql).fetchall()
+        ),
+        key=str,
     )
 
 
@@ -190,10 +205,10 @@ def test_a_filter_two_joins_away(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def test_a_measure_without_the_filter_is_not_gated(con: duckdb.DuckDBPyConnection) -> None:
-    """Gated rows are the gated measure's own: Total Credit beside it reads the
-    customers with orders (the query is read through Orders), unfiltered."""
+    """Gated rows are the gated measure's own: Total Credit beside it reads
+    every customer, unfiltered, as it does alone."""
     sql = _sql({"select": {"measures": ["Credit Buying Tools", "Total Credit"]}})
-    assert _rows(con, sql) == [(10.0, 30.0)]
+    assert _rows(con, sql) == [(10.0, 70.0)]
 
 
 def test_a_filter_the_measure_reaches_still_joins(con: duckdb.DuckDBPyConnection) -> None:
@@ -237,3 +252,38 @@ def test_a_group_the_filter_empties_reads_the_default(con: duckdb.DuckDBPyConnec
     deduplicating, so the group has no row where the default was applied."""
     sql = _sql({"select": {"dimensions": ["Tier"], "measures": ["Tools Credit Or Zero"]}})
     assert _rows(con, sql) == [("gold", 10.0), ("silver", 0.0)]
+
+
+def test_a_count_beside_a_gated_order_measure(con: duckdb.DuckDBPyConnection) -> None:
+    """Carol has no orders and is still a customer: 3, not 2."""
+    sql = _sql({"select": {"measures": ["Gold Revenue", "Customers Count"]}})
+    assert _rows(con, sql) == [(150.0, 3.0)]
+
+
+def test_a_where_on_the_parent_keeps_the_filter_leg(con: duckdb.DuckDBPyConnection) -> None:
+    """``Tier = gold`` reads the customers only, so Carol passes it. Products,
+    which only the other measure's filter reads, made the WHERE look like one
+    on the many side and skip the customers without orders: 40 became NULL."""
+    sql = _sql(
+        {
+            "select": {
+                "dimensions": ["Tier"],
+                "measures": ["Credit Without Orders", "Tools Credit Or Zero"],
+            },
+            "where": [{"field": "Tier", "op": "=", "value": "gold"}],
+        }
+    )
+    assert _rows(con, sql) == [("gold", 40.0, 10.0)]
+
+
+def test_a_measure_reading_the_base_needs_no_parent_rows(con: duckdb.DuckDBPyConnection) -> None:
+    """``Amount * Credit`` is evaluated per order row: a customer without
+    orders contributes NULL, so nothing is added and ROLLUP is not refused."""
+    sql = _sql(
+        {"select": {"dimensions": ["Tier"], "measures": ["Weighted Credit"]}, "grouping": "rollup"}
+    )
+    assert [row[:2] for row in _rows(con, sql)] == [
+        ("gold", 1500.0),
+        ("silver", None),
+        (None, 1500.0),
+    ]

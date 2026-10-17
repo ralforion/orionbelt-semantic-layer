@@ -74,6 +74,7 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
     Select,
+    Star,
     UnionAll,
     Unnest,
 )
@@ -90,7 +91,7 @@ from orionbelt.compiler.filters import (
     build_measure_filter_condition,
     collect_measure_filter_objects,
 )
-from orionbelt.compiler.graph import JoinGraph
+from orionbelt.compiler.graph import JoinGraph, joined_beneath
 from orionbelt.compiler.having_hoist import dimensions_to_aliases, windowed_aliases
 from orionbelt.compiler.metric_expansion import (
     metric_leaf_components,
@@ -805,6 +806,24 @@ def wrap_with_grain_dedup(
     for measure_name in resolved.dedup_grain_components:
         by_group.setdefault(("", grain_of(measure_name), ""), []).append(measure_name)
 
+    # With parents without children, the parent's own dedup CTE reads every
+    # row ``main`` does (the same FROM, joins and WHERE) plus those parents, so
+    # it has every group: it drives the outer query, keeping the rows with no
+    # parent (an order without a customer) as a group of their own. Not one
+    # gated by a measure filter, which reads fewer rows, nor one at another
+    # grain; without such a CTE the groups are listed from all of them.
+    driver_key: tuple[str, tuple[str, ...], str] | None = None
+    if split_groups and resolved.grouping is None and leg is not None:
+        driver_key = next(
+            (
+                key
+                for key in sorted(by_group)
+                if key[0] == leg.parent and key[1] == tuple(dim_names) and not key[2]
+            ),
+            None,
+        )
+    driver_cte: str | None = None
+
     cte_for_measure: dict[str, str] = {}
     grain_of_cte: dict[str, tuple[str, ...]] = {}
     # CTEs carrying a row per grouping set, matched on its GROUPING() flags too.
@@ -819,7 +838,10 @@ def wrap_with_grain_dedup(
             rows = replace(
                 ast, where=gate if ast.where is None else BinaryOp(ast.where, "AND", gate)
             )
-        group_dims = [d for d in resolved.dimensions if d.name in grain]
+        # Once per name: a reaggregate's first stage can list a dimension both
+        # as the query's and as the metric's ``per``, and a union by name (the
+        # rows without children) refuses a column named twice.
+        group_dims = list({d.name: d for d in resolved.dimensions if d.name in grain}.values())
         if not object_name:
             cte_name = f"{_AT_GRAIN_CTE if grain else _AT_TOTAL_CTE}_{idx}"
             for measure_name in measure_names:
@@ -865,11 +887,17 @@ def wrap_with_grain_dedup(
                 dialect,
                 f"{_DEDUP_SRC}_{idx}",
                 childless=childless,
+                keep_keyless=group_key == driver_key,
             )
+            if group_key == driver_key:
+                driver_cte = cte_name
             if childless is not None:
                 all_ctes.extend(childless.ctes)
                 childless.ctes.clear()
         all_ctes.append(CTE(name=cte_name, query=query))
+
+    if driver_cte is not None:
+        dims_table = driver_cte
 
     # --- outer SELECT: main plus each dedup CTE, joined on the query grain ---
     def measure_ref(name: str) -> Expr:
@@ -983,7 +1011,11 @@ def wrap_with_grain_dedup(
             ordered_ctes.append(name)
     outer_from = _MAIN_CTE if keep_main else ordered_ctes[0]
     joined_ctes = ordered_ctes if keep_main else ordered_ctes[1:]
-    if split_groups:
+    if driver_cte is not None:
+        grain_of_cte[_MAIN_CTE] = tuple(dim_names)
+        outer_from = driver_cte
+        joined_ctes = [_MAIN_CTE, *(name for name in ordered_ctes if name != driver_cte)]
+    elif split_groups:
         grain_of_cte[_MAIN_CTE] = tuple(dim_names)
         all_ctes.extend(_group_list(dim_names, [_MAIN_CTE, *ordered_ctes], grain_of_cte))
         outer_from = _GROUPS_CTE
@@ -1142,6 +1174,7 @@ def _deduplicated_at(
     src_alias: str,
     *,
     childless: _ChildlessRows | None = None,
+    keep_keyless: bool = False,
 ) -> Select:
     """*measure_columns* aggregated over the rows of *object_name*, each once
     per group of *group_dims*: the query's rows reduced by a DISTINCT over the
@@ -1149,6 +1182,11 @@ def _deduplicated_at(
 
     With *childless* for this object, its rows without child rows that the
     query's WHERE accepts are added beside them (:func:`_rows_without_children`).
+
+    With *keep_keyless*, a row with no *object_name* row (an order without a
+    customer) stays, so its group does too: this CTE then has every group of
+    the query and drives it. Its values are NULL, which every aggregate skips;
+    a row count counts the key instead of the row.
     """
     inner_columns: list[Expr] = [
         AliasedExpr(expr=make_dimension_expr(model, dim, dialect), alias=dim.name)
@@ -1207,6 +1245,25 @@ def _deduplicated_at(
             expr=ColumnRef(name=f"{_KEY_PREFIX}{key_idx}", table=src_alias), negated=True
         )
         key_present = not_null if key_present is None else BinaryOp(key_present, "AND", not_null)
+    if keep_keyless and key_present is not None:
+        present = key_present
+
+        def gated(node: Expr) -> Expr | None:
+            # A value is read only from a row the object has: ClickHouse fills an
+            # unmatched non-Nullable column with its default (0, ''), not NULL.
+            if (
+                isinstance(node, ColumnRef)
+                and node.table == src_alias
+                and node.name.startswith(_COL_PREFIX)
+            ):
+                return CaseExpr(when_clauses=[(present, node)])
+            return _count_present(node, present)
+
+        cte_columns = [
+            cte_columns[i] if i < len(group_dims) else map_nodes(column, gated)
+            for i, column in enumerate(cte_columns)
+        ]
+        key_present = None
 
     return Select(
         columns=cte_columns,
@@ -1214,6 +1271,22 @@ def _deduplicated_at(
         where=key_present,
         group_by=[ColumnRef(name=dim.name, table=src_alias) for dim in group_dims],
     )
+
+
+def _count_present(node: Expr, present: Expr) -> Expr | None:
+    """``COUNT(*)`` / ``COUNT(1)`` counting only the rows where *present* holds.
+
+    ``COUNT(column)`` and every other aggregate already skip the NULL values
+    of a row with no object row; a count of rows does not."""
+    if (
+        isinstance(node, FunctionCall)
+        and node.name.upper() == "COUNT"
+        and not node.distinct
+        and len(node.args) == 1
+        and isinstance(node.args[0], Star | Literal)
+    ):
+        return replace(node, args=[CaseExpr(when_clauses=[(present, Literal.number(1))])])
+    return None
 
 
 @dataclass
@@ -1305,7 +1378,9 @@ def _rows_without_children(
     """
     leg = childless.leg
     graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
-    reachable = graph.descendants(leg.parent) | {leg.parent}
+    # What the query joins through the parent: an object it reaches through
+    # the child keeps that binding, and is NULL here like the child itself.
+    reachable = joined_beneath(resolved.join_steps, leg.parent)
 
     columns: list[Expr] = []
     needed: set[str] = set()

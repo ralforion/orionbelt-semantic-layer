@@ -565,6 +565,8 @@ A WHERE filter on a data object on the *many* side of the measures' objects (an 
 
 The two kinds of customer are planned as two sets that do not overlap: the order rows the filter accepts, each customer deduplicated, and the customers with no order at all, read without joining the orders. Neither multiplies the other. The second set is added only when the filter can accept such a customer, so `Status = ok` plans exactly as before.
 
+Without a filter the customers without orders are added the same way: a customer measure reads the same beside an order measure as alone, and an order without a customer stays a row too (its customer columns NULL), so the rows add up. See [Parents without children](compilation.md#parents-without-children).
+
 A shape that cannot carry the second set is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than leaving those customers out: measures on several one-side objects that cannot reach the filtered one, `grouping: rollup` / `cube`, a period-over-period metric, a nested data object, or a measure with `allowFanOut: true` on that side. [`exists` / `nonexists`](#existence-operators) states the question directly:
 
 ```yaml

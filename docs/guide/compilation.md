@@ -298,7 +298,9 @@ replicated object. A measure that mixes grains — `{[Sales].[Quantity]} *
 is left alone. `min`, `max`, `count_distinct`, and `any_value` return the same
 answer over duplicated rows and are also left alone, as is any measure with
 `distinct: true` — `AGG(DISTINCT x)` cannot see replication, and a `count` +
-`distinct` over the parent key is the most common one-side measure there is.
+`distinct` over the parent key is the most common one-side measure there is —
+unless the products without a sale are added (below), which join deduplicated
+rows only.
 
 A one-side measure queried *on its own* is handled too. Anchoring the base on
 that measure's own source would reach nothing, so resolution re-anchors on the
@@ -310,6 +312,52 @@ below) and the query plans as an ordinary star.
     in both, so the column does **not** add up to the product catalogue's grand
     total. Queries that trigger this rewrite carry a `FAN_TRAP_RISK` warning
     saying so. Query the measure at its own grain for a total that adds up.
+
+#### Parents without children
+
+Read from the sales, a product never sold is in no row. Left there, a product
+measure would depend on what else is selected: `Product Count` would count
+every product alone and only the sold ones beside `Sold Quantity`. So the
+products without a sale are added as rows of their own, read from `products`
+without joining `sales` (`NOT EXISTS` a sale), beside the deduplicated sale
+rows. The two sets do not overlap, and neither multiplies the other. Grouped
+by a sales column, those products are its `NULL` group, and a sale with no
+product stays a row too: every measure adds up to what it reads alone.
+
+The products' CTE then reads every row `main` does plus those products, so it
+has every group of the query and drives it; it keeps the rows with no product,
+each value read only where the product key is present (an unmatched column is
+not `NULL` everywhere: ClickHouse fills a non-Nullable one with its default):
+
+```sql
+WITH __ob_main AS ( ...as above... ),
+__ob_dedup_src_0_rows AS (
+  SELECT DISTINCT s.region AS "Region", p.id AS __ob_k0, p.stock_on_hand AS __ob_c0
+  FROM sales s LEFT JOIN products p ON s.product_id = p.id
+  UNION ALL
+  SELECT DISTINCT NULL, p.id, p.stock_on_hand
+  FROM products p
+  WHERE NOT EXISTS (SELECT 1 FROM sales s WHERE p.id = s.product_id)
+),
+__ob_dedup_0 AS (
+  SELECT "Region",
+         SUM(CASE WHEN __ob_k0 IS NOT NULL THEN __ob_c0 END) AS "Total Stock On Hand",
+         COUNT(CASE WHEN __ob_k0 IS NOT NULL THEN 1 END) AS "Products Count"
+  FROM __ob_dedup_src_0_rows GROUP BY "Region"
+)
+SELECT d."Region", m."Sold Quantity", d."Total Stock On Hand", d."Products Count"
+FROM __ob_dedup_0 d LEFT JOIN __ob_main m ON d."Region" IS NOT DISTINCT FROM m."Region"
+```
+
+A `WHERE` the added rows cannot pass (`Region = 'north'`, which their `NULL`
+region fails) adds nothing, and the query plans as before. The rows are added
+only where one object's measures are read through the base: measures on several
+such objects, `ROLLUP` / `CUBE`, period-over-period, a nested object or a
+measure with `allowFanOut: true` keep the plan as it was. A measure `filters:`
+clause that only such rows can pass (`notset` on a sale column) is refused
+there instead (`FILTER_ADMITS_ROWS_WITHOUT`). A reaggregate over a sales
+dimension (`per: [Sale]`) sees those products as its `NULL` group; filter it
+out (`Sale` `set`) to average over the sales alone.
 
 !!! note "In a multi-fact plan"
     A multi-fact query is a `UNION ALL` whose legs *project* the values to
@@ -377,7 +425,8 @@ filterContext, cumulative, window), whatever they apply to.
 A deduplicated `count` reads `0`, not `NULL`, when a group has no matching
 rows on the joined object: that group contributes no row to the dedup CTE, so
 the join back would otherwise yield `NULL`. Other aggregations keep `NULL`,
-which is what SQL returns for an empty input.
+which is what SQL returns for an empty input, unless they declare a
+`defaultValue`, which is applied at that join.
 
 ### Metrics over a deduplicated component
 
