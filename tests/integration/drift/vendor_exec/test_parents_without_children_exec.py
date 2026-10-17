@@ -3,7 +3,8 @@
 A customer measure beside an order measure is read through the orders; the
 customers without orders are added as rows of their own, and an order without
 a customer stays a row. The customers' CTE reads both and drives the query, so
-both NULL groups have to survive each engine's union and outer join.
+both NULL groups have to survive each engine's union and outer join, and the
+order's group has no customer value, not ClickHouse's default for one.
 """
 
 from __future__ import annotations
@@ -63,6 +64,16 @@ measures:
     columns: [{{dataObject: Customers, column: Credit}}]
     aggregation: sum
     resultType: float
+  Credit Or 99:
+    columns: [{{dataObject: Customers, column: Credit}}]
+    aggregation: sum
+    resultType: float
+    defaultValue: 99
+metrics:
+  Credit Score:
+    expression: '{{[Total Credit]}} + 1'
+  Defaulted Score:
+    expression: '{{[Credit Or 99]}} + 1'
 """
 
 
@@ -103,6 +114,30 @@ def _assert_all(target: VendorTarget) -> None:
         "gold": (Decimal(150), Decimal(2), Decimal(50)),
         "silver": (Decimal(70), Decimal(1), Decimal(20)),
         None: (Decimal(5), Decimal(0), None),
+    }
+
+    # A metric's components are bare aggregates, not Nullable on ClickHouse:
+    # the order without a customer read 0 there, so 1 and 1 instead of NULL
+    # and 100 (the default, 99, plus one).
+    rows = _run(
+        target,
+        _prepare(target),
+        QueryObject(
+            **{
+                "select": {
+                    "dimensions": ["Tier"],
+                    "measures": ["Revenue", "Credit Score", "Defaulted Score"],
+                }
+            }
+        ),
+    )
+    scores = {
+        row["tier"]: (_number(row["credit score"]), _number(row["defaulted score"])) for row in rows
+    }
+    assert scores == {
+        "gold": (Decimal(51), Decimal(51)),
+        "silver": (Decimal(21), Decimal(21)),
+        None: (None, Decimal(100)),
     }
 
 

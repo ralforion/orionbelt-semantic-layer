@@ -149,6 +149,8 @@ _AT_TOTAL_CTE = "__ob_at_total"
 # The query's groups when parents without children add some ``main`` lacks.
 _GROUPS_ALL_CTE = "__ob_groups_all"
 _GROUPS_CTE = "__ob_groups"
+#: Marks a row of a deduplicated aggregate joined to its groups.
+_MATCHED = "__ob_matched"
 
 
 class GrainDedupUnsupportedError(FanoutError):
@@ -1244,7 +1246,9 @@ def _deduplicated_at(
         )
         key_present = not_null if key_present is None else BinaryOp(key_present, "AND", not_null)
     aggregated = Select(
-        columns=cte_columns,
+        columns=[*cte_columns, AliasedExpr(expr=Literal.number(1), alias=_MATCHED)]
+        if keep_keyless and group_dims
+        else cte_columns,
         from_=From(source=source, alias=src_alias),
         where=key_present,
         group_by=[ColumnRef(name=dim.name, table=src_alias) for dim in group_dims],
@@ -1285,8 +1289,26 @@ def _deduplicated_at(
                 AliasedExpr(expr=ColumnRef(name=dim.name, table=groups_alias), alias=dim.name)
                 for dim in group_dims
             ),
+            # Read only where the group matched: ClickHouse fills an unmatched
+            # non-Nullable column (a metric component's bare aggregate) with
+            # its default, 0, and the marker with 0 too, so ``= 1`` fails there
+            # as it does on NULL elsewhere.
             *(
-                AliasedExpr(expr=ColumnRef(name=name, table=values_alias), alias=name)
+                AliasedExpr(
+                    expr=CaseExpr(
+                        when_clauses=[
+                            (
+                                BinaryOp(
+                                    ColumnRef(name=_MATCHED, table=values_alias),
+                                    "=",
+                                    Literal.number(1),
+                                ),
+                                ColumnRef(name=name, table=values_alias),
+                            )
+                        ]
+                    ),
+                    alias=name,
+                )
                 for name in measure_names_out
             ),
         ],
