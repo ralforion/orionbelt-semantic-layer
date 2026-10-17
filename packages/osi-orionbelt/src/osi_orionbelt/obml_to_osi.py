@@ -18,6 +18,13 @@ from osi_orionbelt._common import (
     OBML_TO_OSI_TYPE,
     obml_datatype_to_osi,
 )
+from osi_orionbelt._field_names import (
+    FIELD_NAMES_COLUMN,
+    FIELD_NAMES_KEY,
+    code_renames,
+    rename_keys,
+    rename_metric,
+)
 from osi_orionbelt._portable import NotPortableError, PortableRenderer
 
 
@@ -58,6 +65,11 @@ class OBMLtoOSI:
         # instance does not duplicate warnings or left-out entities.
         self.warnings = []
         self.unexported = {}
+        # For what OBML saved by a version before 0.5.0 keeps verbatim, which
+        # may name fields by code (see _field_names).
+        self._legacy_renames, self._legacy_ambiguous = code_renames(
+            self.obml.get("dataObjects", {}) or {}
+        )
 
         osi: dict[str, Any] = {"version": _OSI_VERSION}
 
@@ -222,6 +234,14 @@ class OBMLtoOSI:
             uk = data.get("obml_unique_keys")
             if isinstance(uk, list) and all(isinstance(g, list) for g in uk):
                 unique_keys_extra = [list(g) for g in uk]
+                if data.get(FIELD_NAMES_KEY) != FIELD_NAMES_COLUMN:
+                    unique_keys_extra = rename_keys(
+                        unique_keys_extra,
+                        self._legacy_renames.get(do_name, {}),
+                        self._legacy_ambiguous.get(do_name, set()),
+                        self.warnings.append,
+                        f"Dataset '{do_name}'",
+                    )
                 break
         if unique_keys_extra:
             dataset["unique_keys"] = unique_keys_extra
@@ -561,7 +581,8 @@ class OBMLtoOSI:
 
         The import path stashes metrics OBML can't represent under an OSI-vendor
         model-level customExtension (``obml_unconverted_metrics``). Re-emit them
-        unchanged so a full OSI -> OBML -> OSI roundtrip keeps them.
+        so a full OSI -> OBML -> OSI roundtrip keeps them, renaming the field
+        references of a payload saved before 0.5.0 (see _field_names).
         """
         restored: list[dict] = []
         for ext in self.obml.get("customExtensions", []) or []:
@@ -572,8 +593,15 @@ class OBMLtoOSI:
             except (json.JSONDecodeError, TypeError):
                 continue
             preserved = data.get("obml_unconverted_metrics")
-            if isinstance(preserved, list):
-                restored.extend(m for m in preserved if isinstance(m, dict))
+            if not isinstance(preserved, list):
+                continue
+            metrics = [m for m in preserved if isinstance(m, dict)]
+            if data.get(FIELD_NAMES_KEY) != FIELD_NAMES_COLUMN:
+                for metric in metrics:
+                    rename_metric(
+                        metric, self._legacy_renames, self._legacy_ambiguous, self.warnings.append
+                    )
+            restored.extend(metrics)
         return restored
 
     def _merge_restored_metrics(self, osi_metrics: list[dict]) -> None:

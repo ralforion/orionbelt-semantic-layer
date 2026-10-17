@@ -248,3 +248,97 @@ class TestLegacyStashesFollowTheRename:
         sql, warnings = self._metric('SUM("Orders"."amount") || \'unterminated')
         assert sql == 'SUM("Orders"."amount") || \'unterminated'
         assert any("'m'" in w and "not renamed" in w for w in warnings)
+
+    def test_alias_declared_in_the_sql_is_not_the_dataset(self) -> None:
+        # The window keeps the metric out of OBML, so it is preserved verbatim.
+        sql, _ = self._metric(
+            'SUM("Orders"."amount") OVER () + '
+            '(SELECT MAX("Orders"."amount") FROM adjustments AS "Orders")'
+        )
+        assert sql == (
+            'SUM("Orders"."Net Amount") OVER () + '
+            '(SELECT MAX("Orders"."amount") FROM adjustments AS "Orders")'
+        )
+
+    def test_bracket_quoted_reference(self) -> None:
+        sql, _ = self._metric("SUM([Orders].[amount]) OVER ()")
+        assert sql == "SUM([Orders].[Net Amount]) OVER ()"
+
+
+def _saved_by_0_4() -> dict[str, Any]:
+    """OBML an older import saved: its verbatim payloads name fields by code."""
+    return {
+        "version": 1.0,
+        "dataObjects": {
+            "Orders": {
+                "code": "orders",
+                "database": "WH",
+                "schema": "PUBLIC",
+                "columns": {
+                    "Order ID": {"code": "order_id", "abstractType": "string"},
+                    "Customer": {"code": "customer_id", "abstractType": "string"},
+                    "Net Amount": {"code": "amount", "abstractType": "float"},
+                },
+                "joins": [
+                    {
+                        "joinType": "many-to-one",
+                        "joinTo": "Customers",
+                        "columnsFrom": ["Customer"],
+                        "columnsTo": ["Customer ID"],
+                    }
+                ],
+            },
+            "Customers": {
+                "code": "customers",
+                "database": "WH",
+                "schema": "PUBLIC",
+                "columns": {"Customer ID": {"code": "customer_id", "abstractType": "string"}},
+                "customExtensions": [
+                    {"vendor": "OSI", "data": json.dumps({"obml_unique_keys": [["customer_id"]]})}
+                ],
+            },
+        },
+        "customExtensions": [
+            {
+                "vendor": "OSI",
+                "data": json.dumps(
+                    {
+                        "obml_unconverted_metrics": [
+                            {"name": "m", "expression": _expr('SUM("Orders"."amount") OVER ()')}
+                        ]
+                    }
+                ),
+            }
+        ],
+    }
+
+
+class TestSavedByOlderVersion:
+    """OBML saved before 0.5.0 is renamed on export, from the column codes."""
+
+    def test_unique_keys_and_metric_name_the_fields(self) -> None:
+        osi = conv.OBMLtoOSI(_saved_by_0_4()).convert()
+        model = osi["semantic_model"][0]
+        assert model["datasets"][1]["unique_keys"] == [["Customer ID"]]
+        metric = next(m for m in model["metrics"] if m["name"] == "m")
+        assert metric["expression"]["dialects"][0]["expression"] == (
+            'SUM("Orders"."Net Amount") OVER ()'
+        )
+        back = conv.OSItoOBML(osi).convert()
+        assert back["dataObjects"]["Orders"]["joins"][0]["joinType"] == "many-to-one"
+
+    def test_code_that_is_another_column_name_is_kept_and_warned(self) -> None:
+        obml = _saved_by_0_4()
+        customers = obml["dataObjects"]["Customers"]
+        customers["columns"]["customer_id"] = {"code": "legacy_id", "abstractType": "string"}
+        exporter = conv.OBMLtoOSI(obml)
+        osi = exporter.convert()
+        assert osi["semantic_model"][0]["datasets"][1]["unique_keys"] == [["customer_id"]]
+        assert any("'customer_id'" in w and "another column's code" in w for w in exporter.warnings)
+
+    def test_marked_payload_is_emitted_as_is(self) -> None:
+        obml = conv.OSItoOBML(conv.OBMLtoOSI(_saved_by_0_4()).convert()).convert()
+        exporter = conv.OBMLtoOSI(obml)
+        osi = exporter.convert()
+        assert osi["semantic_model"][0]["datasets"][1]["unique_keys"] == [["Customer ID"]]
+        assert not any("unique key" in w for w in exporter.warnings)

@@ -20,6 +20,7 @@ from osi_orionbelt._common import (
     _INTERNAL_VENDORS,
     _NON_SQL_DIALECTS,
     _OBML_VENDOR_READ,
+    _OSI_DIALECT_TO_SQLGLOT,
     _OSI_VERSION,
     _SQL_PARSEABLE_DIALECTS,
     _VENDOR_OSI,
@@ -27,17 +28,12 @@ from osi_orionbelt._common import (
     OSI_DATATYPE_TO_OBML_PHYSICAL,
     OSI_TO_OBML_TYPE,
 )
-
-# OSI SQL-dialect tag -> sqlglot ``read`` dialect for metric parsing. ANSI and
-# the portable OSSIE_SQL_2026 map to sqlglot's default (None). Reading with the
-# source dialect means a Snowflake/Databricks-authored aggregation is parsed
-# under the right grammar.
-_OSI_DIALECT_TO_SQLGLOT: dict[str, str | None] = {
-    "ANSI_SQL": None,
-    "OSSIE_SQL_2026": None,
-    "SNOWFLAKE": "snowflake",
-    "DATABRICKS": "databricks",
-}
+from osi_orionbelt._field_names import (
+    FIELD_NAMES_COLUMN,
+    FIELD_NAMES_KEY,
+    rename_keys,
+    rename_metric,
+)
 
 # sqlglot aggregate ``sql_name()`` -> OBML aggregation, for the aggregates OBML
 # models as a *single-column* measure. Multi-argument aggregates OBML also
@@ -291,7 +287,12 @@ class OSItoOBML:
             obml.setdefault("customExtensions", []).append(
                 {
                     "vendor": _VENDOR_OSI,
-                    "data": json.dumps({"obml_unconverted_metrics": self._unconverted_metrics}),
+                    "data": json.dumps(
+                        {
+                            "obml_unconverted_metrics": self._unconverted_metrics,
+                            FIELD_NAMES_KEY: FIELD_NAMES_COLUMN,
+                        }
+                    ),
                 }
             )
 
@@ -389,15 +390,19 @@ class OSItoOBML:
             for ext in do_obj.get("customExtensions", []) or []:
                 data = self._own_stash(ext, "obml_unique_keys")
                 if data is not None:
-                    data["obml_unique_keys"] = [
-                        [rename(do_name, c) for c in group] for group in data["obml_unique_keys"]
-                    ]
+                    data["obml_unique_keys"] = rename_keys(
+                        data["obml_unique_keys"],
+                        renames.get(do_name, {}),
+                        (),
+                        self.warnings.append,
+                        f"Dataset '{do_name}'",
+                    )
                     ext["data"] = json.dumps(data)
         for ext in obml.get("customExtensions", []) or []:
             data = self._own_stash(ext, "obml_unconverted_metrics")
             if data is not None:
                 for metric in data["obml_unconverted_metrics"]:
-                    self._rename_metric_fields(metric, renames)
+                    rename_metric(metric, renames, {}, self.warnings.append)
                 ext["data"] = json.dumps(data)
 
     @staticmethod
@@ -410,69 +415,6 @@ class OSItoOBML:
         except (json.JSONDecodeError, TypeError):
             return None
         return data if isinstance(data, dict) and isinstance(data.get(key), list) else None
-
-    def _rename_metric_fields(
-        self, metric: dict[str, Any], renames: dict[str, dict[str, str]]
-    ) -> None:
-        """Rename ``<dataset>.<field>`` references in each SQL expression of *metric*."""
-        for entry in (metric.get("expression") or {}).get("dialects") or []:
-            dialect = entry.get("dialect")
-            sql = entry.get("expression")
-            if dialect in _NON_SQL_DIALECTS or not isinstance(sql, str):
-                continue
-            entry["expression"] = self._rename_sql_fields(metric.get("name"), dialect, sql, renames)
-
-    def _rename_sql_fields(
-        self, metric_name: object, dialect: str, sql: str, renames: dict[str, dict[str, str]]
-    ) -> str:
-        """*sql* with each ``<dataset>.<field>`` in *renames* renamed.
-
-        Only the field tokens are replaced, so the rest of the text stays as
-        written: regenerating it from a parsed tree would drop what sqlglot
-        does not keep, such as a weighted percentile's third argument. A quoted
-        name matches exactly, an unquoted one regardless of case, as the import
-        resolves metric references. Text that does not tokenize, or an unquoted
-        name that matches more than one field, is kept with a warning.
-        """
-        read = _OSI_DIALECT_TO_SQLGLOT.get(dialect)
-        try:
-            tokens = sqlglot.tokenize(sql, read=read)
-        except sqlglot.errors.TokenError:
-            self.warnings.append(
-                f"Preserved metric '{metric_name}' ({dialect}) does not tokenize; its "
-                f"field references were not renamed to the OBML column names."
-            )
-            return sql
-
-        def resolve(token: Any, names: dict[str, Any]) -> Any:
-            if token.token_type is TokenType.IDENTIFIER:
-                return names.get(token.text)
-            hits = [v for k, v in names.items() if k.lower() == token.text.lower()]
-            if len(hits) > 1:
-                self.warnings.append(
-                    f"Preserved metric '{metric_name}' ({dialect}): unquoted '{token.text}' "
-                    f"matches more than one name and was not renamed."
-                )
-            return hits[0] if len(hits) == 1 else None
-
-        edits: list[tuple[int, int, str]] = []
-        for i in range(len(tokens) - 2):
-            dataset, dot, field = tokens[i : i + 3]
-            if dot.token_type is not TokenType.DOT:
-                continue
-            # Only a two-part reference: ``a.b.c`` is not ``<dataset>.<field>``.
-            if i > 0 and tokens[i - 1].token_type is TokenType.DOT:
-                continue
-            if i + 3 < len(tokens) and tokens[i + 3].token_type is TokenType.DOT:
-                continue
-            fields = resolve(dataset, renames)
-            column = resolve(field, fields) if fields else None
-            if column:
-                edits.append((field.start, field.end, column))
-        for start, end, column in reversed(edits):
-            quoted = exp.to_identifier(column, quoted=True).sql(dialect=read)
-            sql = sql[:start] + quoted + sql[end + 1 :]
-        return sql
 
     @staticmethod
     def _carry_foreign_extensions(osi_exts: list[dict] | None, obml_target: dict[str, Any]) -> None:
@@ -610,7 +552,12 @@ class OSItoOBML:
             do.setdefault("customExtensions", []).append(
                 {
                     "vendor": _VENDOR_OSI,
-                    "data": json.dumps({"obml_unique_keys": [list(g) for g in unique_keys]}),
+                    "data": json.dumps(
+                        {
+                            "obml_unique_keys": [list(g) for g in unique_keys],
+                            FIELD_NAMES_KEY: FIELD_NAMES_COLUMN,
+                        }
+                    ),
                 }
             )
 
