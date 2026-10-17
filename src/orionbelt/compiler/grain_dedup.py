@@ -759,7 +759,11 @@ def wrap_with_grain_dedup(
             CTE(
                 name=_MAIN_CTE,
                 query=Select(
-                    columns=main_columns,
+                    # Joined rather than read from when parents without children
+                    # add groups it does not have: marked like a dedup CTE.
+                    columns=[*main_columns, AliasedExpr(expr=Literal.number(1), alias=_MATCHED)]
+                    if split_groups
+                    else main_columns,
                     from_=ast.from_,
                     joins=ast.joins,
                     where=ast.where,
@@ -930,10 +934,17 @@ def wrap_with_grain_dedup(
 
     # --- outer SELECT: main plus each dedup CTE, joined on the query grain ---
     def measure_ref(name: str) -> Expr:
-        """One measure's value in the outer query, wherever it was computed."""
+        """One measure's value in the outer query, wherever it was computed.
+
+        Read from a CTE that can miss a group: a dedup CTE, or ``main`` when
+        parents without children add groups it does not have. Such a group
+        reads NULL, then a count's 0 or a declared default, before a metric is
+        rebuilt over it.
+        """
         cte = cte_for_measure.get(name, _MAIN_CTE)
         ref: Expr = ColumnRef(name=name, table=cte)
-        if cte in marked:
+        can_miss = cte in marked or (cte == _MAIN_CTE and split_groups)
+        if can_miss:
             # A group missing from the CTE reads NULL on every engine, before a
             # count's 0, a default or a metric over it: ClickHouse would give a
             # bare (non-Nullable) aggregate's column default, 0, instead.
@@ -951,21 +962,13 @@ def wrap_with_grain_dedup(
         # NULL, which is what SQL returns for an empty input, unless they
         # declare a default: inside the CTE it reaches no such group (a measure
         # filter applied to the rows leaves none for a group it rejects).
-        if name in cte_for_measure:
+        if can_miss or name in cte_for_measure:
             if _counts_rows(effective_measures.get(name)):
                 return FunctionCall(name="COALESCE", args=[ref, Literal.number(0)])
             measure = resolved_by_name.get(name)
             if measure is not None and measure.default_value is not None:
                 return measure.with_default(ref)
-        return _default_for_split_group(name, ref)
-
-    def _default_for_split_group(name: str, ref: Expr) -> Expr:
-        """A group only parents without children have is no row of ``main``: a
-        measure read there takes its declared default, as one over no rows does."""
-        measure = resolved_by_name.get(name)
-        if not split_groups or measure is None or measure.default_value is None:
-            return ref
-        return measure.with_default(ref)
+        return ref
 
     outer_columns: list[Expr] = []
     for col in ast.columns:
@@ -998,13 +1001,7 @@ def wrap_with_grain_dedup(
                     AliasedExpr(expr=ColumnRef(name=alias, table=dims_table), alias=alias)
                 )
                 continue
-            main_ref: Expr = ColumnRef(name=alias, table=_MAIN_CTE)
-            # A group of only parents without children has no row in ``main``.
-            if split_groups and _counts_rows(effective_measures.get(alias)):
-                main_ref = FunctionCall(name="COALESCE", args=[main_ref, Literal.number(0)])
-            else:
-                main_ref = _default_for_split_group(alias, main_ref)
-            outer_columns.append(AliasedExpr(expr=main_ref, alias=alias))
+            outer_columns.append(AliasedExpr(expr=measure_ref(alias), alias=alias))
             continue
         outer_columns.append(AliasedExpr(expr=measure_ref(alias), alias=alias))
 

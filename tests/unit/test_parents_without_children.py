@@ -70,6 +70,9 @@ measures:
     expression: 'COALESCE({[Customers].[Credit]}, 0) + 1'
     aggregation: sum
     resultType: float
+metrics:
+  Credit And Orders:
+    expression: '{[Total Credit]} + {[Orders Count]}'
 """
 
 
@@ -268,9 +271,7 @@ def test_rollup_over_only_filtered_customer_measures_still_compiles(
     """With every customer measure filtered on the orders there is no CTE to
     list the groups from. A filter no customer without orders passes adds
     nothing for them, so the plan stays as it was rather than refusing."""
-    yaml_text = (
-        MODEL_YAML
-        + """  Big Order Credit:
+    big_order_credit = """  Big Order Credit:
     columns: [{dataObject: Customers, column: Credit}]
     aggregation: sum
     resultType: float
@@ -279,7 +280,7 @@ def test_rollup_over_only_filtered_customer_measures_still_compiles(
         operator: gt
         values: [{dataType: float, valueFloat: 90}]
 """
-    )
+    yaml_text = MODEL_YAML.replace("metrics:\n", big_order_credit + "metrics:\n", 1)
     raw = YAML(typ="safe").load(yaml_text)
     model: SemanticModel = ReferenceResolver().resolve(raw)[0]
     query = QueryObject(
@@ -293,3 +294,22 @@ def test_rollup_over_only_filtered_customer_measures_still_compiles(
     assert float(by_set[("gold", 0)]) == 10.0
     assert by_set[("silver", 0)] is None
     assert float(by_set[(None, 1)]) == 10.0
+
+
+@pytest.mark.parametrize("grouping", [None, "rollup"])
+def test_a_metric_reads_a_missing_order_count_as_zero(
+    con: duckdb.DuckDBPyConnection, grouping: str | None
+) -> None:
+    """Carol's group has no row of the order-side query: the order count she
+    reads selected is 0, and the metric over it read NULL instead of 40."""
+    query: dict = {
+        "select": {
+            "dimensions": ["Category"],
+            "measures": ["Total Credit", "Orders Count", "Credit And Orders"],
+        }
+    }
+    if grouping:
+        query["grouping"] = grouping
+    rows = con.execute(_sql(query)).fetchall()
+    carol = [r[1:4] for r in rows if r[0] is None and (not grouping or r[4] == 0)]
+    assert [tuple(float(v) for v in r) for r in carol] == [(40.0, 0.0, 40.0)]
