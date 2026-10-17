@@ -357,8 +357,10 @@ FROM __ob_dedup_0 d LEFT JOIN __ob_main m ON d."Region" IS NOT DISTINCT FROM m."
 A `WHERE` the added rows cannot pass (`Region = 'north'`, which their `NULL`
 region fails) adds nothing, and the query plans as before. The rows are added
 only where one object's measures are read through the base: measures on several
-such objects, `ROLLUP` / `CUBE`, period-over-period, a nested object or a
-measure with `allowFanOut: true` keep the plan as it was. A measure `filters:`
+such objects, period-over-period, a nested object or a measure with
+`allowFanOut: true` keep the plan as it was. Under `ROLLUP` / `CUBE` every
+grouping set is deduplicated on its own rows (below), and those rows include the
+products without a sale too, so the subtotals and the grand total count them. A measure `filters:`
 clause that only such rows can pass (`notset` on a sale column) is refused
 there instead (`FILTER_ADMITS_ROWS_WITHOUT`). A reaggregate over a sales
 dimension (`per: [Sale]`) sees those products as its `NULL` group; filter it
@@ -414,7 +416,9 @@ per grouping set, deduplicated at that set's grain, the dimensions it rolls
 up `NULL` and their `GROUPING()` flags constant, and the sets are stacked with
 `UNION ALL`. It joins back on the dimensions and the flags, which tell a
 subtotal's `NULL` from a `NULL` value. The grand total then counts each product
-once (510), not the regions' sum (610).
+once (510), not the regions' sum (610). With products without a sale added
+(above), each set's rows include them, so this CTE has every group of every set
+and drives the query, `main` matched on the flags as well.
 
 A **period-over-period** query is rebuilt from its source rows onto a date
 spine (see below), so it deduplicates them itself rather than through these
@@ -536,8 +540,8 @@ condition). For such a filter the products without sales are added as rows of
 their own, read without joining the sales, with the filter evaluated for them
 over `NULL` sale columns: the same leg as a `WHERE` that admits them (see
 [Query Language](query-language.md)). Where that leg cannot be built (measures on
-several such objects, `ROLLUP` / `CUBE`, period-over-period, a nested object) the
-query is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than answered without
+several such objects, period-over-period, a nested object, or under `ROLLUP` /
+`CUBE` every measure on that object filtered so) the query is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than answered without
 them.
 
 ## Cross-fact measure expressions

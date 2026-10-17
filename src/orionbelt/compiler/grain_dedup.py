@@ -639,6 +639,27 @@ def wrap_with_grain_dedup(
         for m in resolved.measures
         if is_split_metric(m, resolved, resolved.dedup_grain_components)
     }
+    # With parents without children the groups can include ones the query as
+    # planned has no row for, where a metric computed inside it is NULL as a
+    # whole, whatever its components read there (an order count reads 0). A
+    # derived metric is then rebuilt over its components too. Not one the
+    # other passes compute (cumulative, period-over-period, window), nor one
+    # with a component a wrapper computes at another grain or scope.
+    if leg is not None and dim_names:
+        for m in resolved.measures:
+            components = leaf_components[m.name]
+            if (
+                m.name not in split_metrics
+                and m.component_measures
+                and not (m.is_cumulative or m.is_pop or m.is_window)
+                and not _ddm_window_components(m, resolved.metric_components)
+                and all(
+                    not (c.total or c.grain_override is not None or c.filter_context is not None)
+                    and not (c.is_cumulative or c.is_pop or c.is_window)
+                    for c in components
+                )
+            ):
+                split_metrics[m.name] = m
     window_inputs = _window_inputs(resolved)
     # A metric over a window metric is a placeholder column until the window
     # pass computes it: its base measure is a bare name nothing here binds.
@@ -759,7 +780,11 @@ def wrap_with_grain_dedup(
             CTE(
                 name=_MAIN_CTE,
                 query=Select(
-                    columns=main_columns,
+                    # Joined rather than read from when parents without children
+                    # add groups it does not have: marked like a dedup CTE.
+                    columns=[*main_columns, AliasedExpr(expr=Literal.number(1), alias=_MATCHED)]
+                    if split_groups
+                    else main_columns,
                     from_=ast.from_,
                     joins=ast.joins,
                     where=ast.where,
@@ -814,7 +839,7 @@ def wrap_with_grain_dedup(
     # gated by a measure filter, which reads fewer rows, nor one at another
     # grain; without such a CTE the groups are listed from all of them.
     driver_key: tuple[str, tuple[str, ...], str] | None = None
-    if split_groups and resolved.grouping is None and leg is not None:
+    if split_groups and leg is not None:
         driver_key = next(
             (
                 key
@@ -875,10 +900,25 @@ def wrap_with_grain_dedup(
             # set's grain, so a subtotal counts each object row once rather
             # than adding up the groups below it, which share object rows.
             query = _per_grouping_set(
-                rows, object_name, measure_names, columns, resolved, model, dialect, idx
+                rows,
+                object_name,
+                measure_names,
+                columns,
+                resolved,
+                model,
+                dialect,
+                idx,
+                childless=childless,
+                keep_keyless=group_key == driver_key,
             )
             rolled_up.add(cte_name)
-            marked.add(cte_name)
+            if group_key == driver_key:
+                driver_cte = cte_name
+            else:
+                marked.add(cte_name)
+            if childless is not None:
+                all_ctes.extend(childless.ctes)
+                childless.ctes.clear()
         else:
             query = _deduplicated_at(
                 rows,
@@ -904,13 +944,28 @@ def wrap_with_grain_dedup(
 
     if driver_cte is not None:
         dims_table = driver_cte
+        if driver_cte in rolled_up:
+            # ``main`` is matched on the GROUPING() flags too: a subtotal's NULL
+            # is not a detail row's NULL value.
+            rolled_up.add(_MAIN_CTE)
+    elif childless is not None and resolved.grouping is not None:
+        # Under ROLLUP / CUBE the groups can only be read from the CTE that
+        # has the parents without children at every grouping set.
+        raise _unsplittable(childless.leg, "every measure on it is filtered under ROLLUP / CUBE")
 
     # --- outer SELECT: main plus each dedup CTE, joined on the query grain ---
     def measure_ref(name: str) -> Expr:
-        """One measure's value in the outer query, wherever it was computed."""
+        """One measure's value in the outer query, wherever it was computed.
+
+        Read from a CTE that can miss a group: a dedup CTE, or ``main`` when
+        parents without children add groups it does not have. Such a group
+        reads NULL, then a count's 0 or a declared default, before a metric is
+        rebuilt over it.
+        """
         cte = cte_for_measure.get(name, _MAIN_CTE)
         ref: Expr = ColumnRef(name=name, table=cte)
-        if cte in marked:
+        can_miss = cte in marked or (cte == _MAIN_CTE and split_groups)
+        if can_miss:
             # A group missing from the CTE reads NULL on every engine, before a
             # count's 0, a default or a metric over it: ClickHouse would give a
             # bare (non-Nullable) aggregate's column default, 0, instead.
@@ -928,21 +983,13 @@ def wrap_with_grain_dedup(
         # NULL, which is what SQL returns for an empty input, unless they
         # declare a default: inside the CTE it reaches no such group (a measure
         # filter applied to the rows leaves none for a group it rejects).
-        if name in cte_for_measure:
+        if can_miss or name in cte_for_measure:
             if _counts_rows(effective_measures.get(name)):
                 return FunctionCall(name="COALESCE", args=[ref, Literal.number(0)])
             measure = resolved_by_name.get(name)
             if measure is not None and measure.default_value is not None:
                 return measure.with_default(ref)
-        return _default_for_split_group(name, ref)
-
-    def _default_for_split_group(name: str, ref: Expr) -> Expr:
-        """A group only parents without children have is no row of ``main``: a
-        measure read there takes its declared default, as one over no rows does."""
-        measure = resolved_by_name.get(name)
-        if not split_groups or measure is None or measure.default_value is None:
-            return ref
-        return measure.with_default(ref)
+        return ref
 
     outer_columns: list[Expr] = []
     for col in ast.columns:
@@ -967,18 +1014,15 @@ def wrap_with_grain_dedup(
             )
             continue
         if alias not in computed_here:
-            if alias in dim_names:
+            if alias in dim_names or (
+                resolved.grouping is not None
+                and alias in {grouping_flag_alias(name) for name in dim_names}
+            ):
                 outer_columns.append(
                     AliasedExpr(expr=ColumnRef(name=alias, table=dims_table), alias=alias)
                 )
                 continue
-            main_ref: Expr = ColumnRef(name=alias, table=_MAIN_CTE)
-            # A group of only parents without children has no row in ``main``.
-            if split_groups and _counts_rows(effective_measures.get(alias)):
-                main_ref = FunctionCall(name="COALESCE", args=[main_ref, Literal.number(0)])
-            else:
-                main_ref = _default_for_split_group(alias, main_ref)
-            outer_columns.append(AliasedExpr(expr=main_ref, alias=alias))
+            outer_columns.append(AliasedExpr(expr=measure_ref(alias), alias=alias))
             continue
         outer_columns.append(AliasedExpr(expr=measure_ref(alias), alias=alias))
 
@@ -1601,6 +1645,9 @@ def _per_grouping_set(
     model: SemanticModel,
     dialect: Dialect,
     idx: int,
+    *,
+    childless: _ChildlessRows | None = None,
+    keep_keyless: bool = False,
 ) -> UnionAll:
     """One deduplicated aggregate per grouping set of the query's ROLLUP or
     CUBE, stacked: every dimension (NULL where the set rolls it up), its
@@ -1620,6 +1667,8 @@ def _per_grouping_set(
             model,
             dialect,
             f"{src_alias}_rows",
+            childless=childless,
+            keep_keyless=keep_keyless,
         )
         kept_names = {dim.name for dim in kept}
         columns: list[Expr] = []
