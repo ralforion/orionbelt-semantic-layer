@@ -2291,7 +2291,9 @@ class QueryResolver:
             collect_measure_filter_objects(item, objects)
         return bool(objects - measure.source_objects)
 
-    def _plan_parents_without_children(self, ctx: _ResolutionContext) -> None:
+    def _plan_parents_without_children(
+        self, ctx: _ResolutionContext, required: frozenset[str] = frozenset()
+    ) -> None:
         """Add the parents without child rows when no WHERE asks for them.
 
         A query based on the orders reads the customers through their orders,
@@ -2312,7 +2314,7 @@ class QueryResolver:
         """
         base = ctx.result.base_object
         graph = ctx.graph
-        if graph is None or ctx.result.allow_fan_out:
+        if graph is None or (ctx.result.allow_fan_out and not required):
             return
         reached = graph.descendants(base)
         names = [m.name for m in ctx.result.measures] + list(ctx.result.metric_components)
@@ -2335,7 +2337,7 @@ class QueryResolver:
                 admitting[name] = parent
 
         parents = sorted(
-            {parent for name in names if (parent := self._parent_of(ctx, name, reached))}
+            {parent for name in names if (parent := self._parent_of(ctx, name, reached))} | required
         )
         joined = {base} | {step.to_object for step in ctx.result.join_steps}
         legs: list[ChildlessLeg] = []
@@ -2347,7 +2349,9 @@ class QueryResolver:
             outside = joined - joined_beneath(ctx.result.join_steps, parent)
             if any(not can_hold_without(wf.expression, outside) for wf in ctx.result.where_filters):
                 continue
-            reason = self._childless_obstacle(ctx, parent, parents, names, reached, bool(needed))
+            reason = self._childless_obstacle(
+                ctx, parent, parents, names, reached, bool(needed) or parent in required
+            )
             if reason is None:
                 legs.append(
                     ChildlessLeg(
@@ -2498,7 +2502,6 @@ class QueryResolver:
             self._plan_parents_without_children(ctx)
             return
         reason: str | None = None
-        legs: list[ChildlessLeg] = []
         for parent in parents:
             if ctx.result.has_pop:
                 reason = "a period-over-period metric rebuilds the query from its own rows"
@@ -2513,11 +2516,10 @@ class QueryResolver:
                 reason = "a nested data object is involved"
             if reason is not None:
                 break
-            legs.append(
-                ChildlessLeg(parent=parent, child=base, children=frozenset(unreached[parent]))
-            )
         if reason is None:
-            ctx.result.childless_legs = legs
+            # These parents need their rows; every other one the measures read
+            # through the base keeps them too, as without a WHERE.
+            self._plan_parents_without_children(ctx, required=frozenset(parents))
             return
 
         objects = ", ".join(f"'{name}'" for name in sorted(children))

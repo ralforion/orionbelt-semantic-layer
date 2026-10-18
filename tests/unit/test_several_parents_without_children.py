@@ -120,3 +120,22 @@ def test_under_rollup_several_parents_keep_the_plan() -> None:
             }
         )
     assert [e.code for e in raised.value.errors] == ["FILTER_ADMITS_ROWS_WITHOUT"]
+
+
+@pytest.mark.parametrize("dimension", ["Tier", "Category"])
+def test_a_where_on_one_parent_keeps_the_other(
+    con: duckdb.DuckDBPyConnection, dimension: str
+) -> None:
+    """An always-true WHERE on one parent's column asks for that parent's rows
+    without children; the other parent's are kept as without a WHERE. Only
+    the asked-for set was added: with ``Tier`` Carol was lost (credit 30)."""
+    always = [
+        {
+            "logic": "or",
+            "filters": [
+                {"field": dimension, "op": "set"},
+                {"field": dimension, "op": "notset"},
+            ],
+        }
+    ]
+    assert _rows(con, {"select": {"measures": ALL}, "where": always}) == [(225.0, 70.0, 15.0)]
