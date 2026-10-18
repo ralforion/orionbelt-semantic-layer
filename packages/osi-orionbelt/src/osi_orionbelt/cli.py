@@ -58,7 +58,10 @@ def _report_validation(label: str, result: dict[str, Any], validate_fn: Any) -> 
     for line in vr.summary_lines():
         print(line, file=sys.stderr)
     if vr.valid:
-        print(f"{label} is valid", file=sys.stderr)
+        if vr.schema_validation_performed:
+            print(f"{label} is valid", file=sys.stderr)
+        else:
+            print(f"{label} passed the available checks (JSON Schema skipped)", file=sys.stderr)
         return False
     print(f"{label} has validation errors", file=sys.stderr)
     return True

@@ -62,10 +62,18 @@ from osi_orionbelt import OBMLtoOSI, OSItoOBML, validate_osi
 obml = yaml.safe_load(open("model.obml.yaml"))
 osi = OBMLtoOSI(obml, "sales", "Sales model").convert()
 result = validate_osi(osi)
-assert result.valid
+assert result.schema_validation_performed and result.valid
 
 obml_again = OSItoOBML(osi).convert()
 ```
+
+`validate_osi` checks the document against the Apache Ossie JSON Schema, then
+checks unique names and relationship references. If `jsonschema` or the schema
+file is unavailable, the schema check is skipped with a warning, the summary
+reports `JSON Schema: skipped`, and `schema_validation_performed` is `False`.
+The other checks still run, but they do not check required fields or types, so
+`valid` then means only that those checks found nothing. Require both, as above,
+when the document must be structurally valid.
 
 ## Vendor extensions
 

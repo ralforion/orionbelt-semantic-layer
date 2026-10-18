@@ -7,6 +7,8 @@ package under ``schemas/``.
 from __future__ import annotations
 
 import json
+from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -53,12 +55,16 @@ class ValidationResult:
 
     def __init__(self, format_name: str = "OBML") -> None:
         self.format_name = format_name
+        # False when jsonschema or the schema file is unavailable: ``valid`` then
+        # covers only the semantic checks, not required fields or types.
+        self.schema_validation_performed = False
         self.schema_errors: list[str] = []
         self.semantic_errors: list[str] = []
         self.semantic_warnings: list[str] = []
 
     @property
     def valid(self) -> bool:
+        """Whether the checks that ran found no errors; a skipped schema check is not a pass."""
         return not self.schema_errors and not self.semantic_errors
 
     def summary_lines(self) -> list[str]:
@@ -67,8 +73,10 @@ class ValidationResult:
             lines.append(f"  JSON Schema: {len(self.schema_errors)} error(s)")
             for e in self.schema_errors:
                 lines.append(f"    - {e}")
-        else:
+        elif self.schema_validation_performed:
             lines.append("  JSON Schema: ✓ valid")
+        else:
+            lines.append("  JSON Schema: skipped")
         if self.semantic_errors:
             lines.append(f"  Semantic:    {len(self.semantic_errors)} error(s)")
             for e in self.semantic_errors:
@@ -118,6 +126,7 @@ def _validate_json_schema(
     for error in sorted(validator.iter_errors(data), key=lambda e: list(e.absolute_path)):
         path = ".".join(str(p) for p in error.absolute_path) or "(root)"
         result.schema_errors.append(f"[{path}] {error.message}")
+    result.schema_validation_performed = True
 
 
 # ── OBML Validation ──────────────────────────────────────────────────────
@@ -183,6 +192,16 @@ def validate_obml(obml_dict: dict[str, Any], schema_path: Path | None = None) ->
 # ── OSI Validation ───────────────────────────────────────────────────────
 
 
+def _duplicates(names: Iterable[str | None]) -> list[str]:
+    """The names that occur more than once, each once, in first-appearance order.
+
+    A name repeated three times is one problem, not two. ``None`` stands for a
+    missing or non-string name, which is a schema error, and is skipped.
+    """
+    counts = Counter(name for name in names if name is not None)
+    return [name for name, count in counts.items() if count > 1]
+
+
 def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> ValidationResult:
     """Validate an OSI dict against JSON Schema and semantic rules.
 
@@ -191,15 +210,24 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
        (Draft 2020-12)
     2. **Unique names** — datasets, fields, metrics, relationships
     3. **References** — relationship from/to reference existing datasets
+
+    Without ``jsonschema`` or the schema file the schema layer is skipped with
+    a warning and ``schema_validation_performed`` is False; the semantic checks
+    still run but do not check required fields or types, so require both that
+    flag and ``valid`` for structural validity.
     """
     result = ValidationResult("OSI")
 
     # 1. JSON Schema validation (OSI uses Draft 2020-12)
     _validate_json_schema(osi_dict, schema_path or _OSI_SCHEMA_PATH, result, draft="draft2020")
 
+    if not isinstance(osi_dict, dict):
+        result.semantic_errors.append("[INVALID_DOCUMENT] An OSI document must be an object")
+        return result
+
     # The semantic checks below assume a well-formed structure (lists of dicts).
-    # JSON Schema validation above already reports structural errors, so guard
-    # every level here rather than raising on malformed input.
+    # Guard every level rather than raising on malformed input, even when the
+    # schema layer was skipped.
     def _as_dict_list(value: Any) -> list[dict[str, Any]]:
         return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
@@ -213,6 +241,11 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
     # ``semantic_model`` array is a schema error, but its models are still
     # checked so a legacy document reports every problem at once.
     if "semantic_model" in osi_dict:
+        if not result.schema_validation_performed:
+            result.semantic_warnings.append(
+                "[LEGACY_WRAPPER] The model is wrapped in a 'semantic_model' array; "
+                "Apache Ossie puts the model properties at the document root"
+            )
         models = _as_dict_list(osi_dict.get("semantic_model"))
     else:
         models = [osi_dict]
@@ -223,60 +256,39 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
         datasets = _as_dict_list(model.get("datasets", []))
 
         # Unique dataset names
-        dataset_names: list[str] = []
-        for ds in datasets:
-            name = _ident(ds)
-            if name is None:
-                continue
-            if name in dataset_names:
-                result.semantic_errors.append(
-                    f"[DUPLICATE_DATASET] Duplicate dataset name '{name}' in model '{model_name}'"
-                )
-            dataset_names.append(name)
+        for name in _duplicates(_ident(ds) for ds in datasets):
+            result.semantic_errors.append(
+                f"[DUPLICATE_DATASET] Duplicate dataset name '{name}' in model '{model_name}'"
+            )
 
         # Unique field names within each dataset
         for ds in datasets:
             ds_name = _ident(ds) or "<unnamed>"
-            field_names: list[str] = []
-            for field in _as_dict_list(ds.get("fields", [])):
-                fname = _ident(field)
-                if fname is None:
-                    continue
-                if fname in field_names:
-                    result.semantic_errors.append(
-                        f"[DUPLICATE_FIELD] Duplicate field name '{fname}' in dataset '{ds_name}'"
-                    )
-                field_names.append(fname)
+            fields = _as_dict_list(ds.get("fields", []))
+            for fname in _duplicates(_ident(field) for field in fields):
+                result.semantic_errors.append(
+                    f"[DUPLICATE_FIELD] Duplicate field name '{fname}' in dataset '{ds_name}'"
+                )
 
         # Unique metric names
-        metric_names: list[str] = []
-        for m in _as_dict_list(model.get("metrics", [])):
-            mname = _ident(m)
-            if mname is None:
-                continue
-            if mname in metric_names:
-                result.semantic_errors.append(
-                    f"[DUPLICATE_METRIC] Duplicate metric name '{mname}' in model '{model_name}'"
-                )
-            metric_names.append(mname)
+        metrics = _as_dict_list(model.get("metrics", []))
+        for mname in _duplicates(_ident(m) for m in metrics):
+            result.semantic_errors.append(
+                f"[DUPLICATE_METRIC] Duplicate metric name '{mname}' in model '{model_name}'"
+            )
 
         # Unique relationship names
-        rel_names: list[str] = []
-        for r in _as_dict_list(model.get("relationships", [])):
-            rname = _ident(r)
-            if rname is None:
-                continue
-            if rname in rel_names:
-                result.semantic_errors.append(
-                    f"[DUPLICATE_RELATIONSHIP] Duplicate relationship name "
-                    f"'{rname}' in model '{model_name}'"
-                )
-            rel_names.append(rname)
+        relationships = _as_dict_list(model.get("relationships", []))
+        for rname in _duplicates(_ident(r) for r in relationships):
+            result.semantic_errors.append(
+                f"[DUPLICATE_RELATIONSHIP] Duplicate relationship name "
+                f"'{rname}' in model '{model_name}'"
+            )
 
     # 3. Reference checks — relationships reference existing datasets
     for model in models:
         datasets = _as_dict_list(model.get("datasets", []))
-        ds_name_set = {name for ds in datasets if (name := _ident(ds)) is not None}
+        ds_name_set = {ident for ds in datasets if (ident := _ident(ds)) is not None}
         for rel in _as_dict_list(model.get("relationships", [])):
             rel_name = _ident(rel) or "<unnamed>"
             from_ds = _ident(rel, "from")
