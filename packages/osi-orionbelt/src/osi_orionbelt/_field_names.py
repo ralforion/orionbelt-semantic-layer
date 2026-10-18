@@ -28,6 +28,7 @@ from sqlglot import expressions as exp
 from sqlglot.tokens import Token, TokenType
 
 from osi_orionbelt._common import _NON_SQL_DIALECTS, _OSI_DIALECT_TO_SQLGLOT
+from osi_orionbelt._portable import needs_quoting
 
 # Marks a payload whose field references are column names.
 FIELD_NAMES_KEY = "obml_field_names"
@@ -152,7 +153,9 @@ def rename_sql(
             continue
         edits.append((field.start, field.end, renames[do_name][old]))
     for start, end, name in sorted(edits, reverse=True):
-        if sql[start] == "[":
+        if not needs_quoting(name):
+            quoted = name
+        elif sql[start] == "[":
             quoted = f"[{name}]"
         else:
             quoted = exp.to_identifier(name, quoted=True).sql(dialect=read)

@@ -20,7 +20,7 @@ import sqlglot
 from sqlglot import expressions as exp
 
 import osi_orionbelt.converter as conv
-from osi_orionbelt._portable import sql_ident
+from osi_orionbelt._portable import ossie_ident, sql_ident
 
 _MODEL: dict[str, Any] = {
     "version": 1.0,
@@ -202,6 +202,52 @@ class TestReferencesResolve:
         assert sql_ident("Order Lines") == '"Order Lines"'
         assert sql_ident('a"b') == '"a""b"'
 
+    @pytest.mark.parametrize(
+        ("name", "rendered"),
+        [
+            ("amount", "amount"),
+            ("Amount", "Amount"),
+            ("_net_2", "_net_2"),
+            ("Order Lines", '"Order Lines"'),
+            ("2nd", '"2nd"'),
+            ("Order", '"Order"'),
+            ("date", '"date"'),
+            ("value", '"value"'),
+            ('a"b', '"a""b"'),
+            ("Größe", '"Größe"'),
+        ],
+    )
+    def test_ossie_ident_quotes_only_what_cannot_be_regular(self, name: str, rendered: str) -> None:
+        # The Ossie expression language follows ANSI SQL: a quoted "amount"
+        # would match a field declared amount only by exact case, so a regular
+        # name is bare; a space, a leading digit or a reserved word is quoted.
+        assert ossie_ident(name) == rendered
+
+    def test_reserved_and_mixed_case_names_round_trip(self) -> None:
+        obml = copy.deepcopy(_MODEL)
+        lines = obml["dataObjects"]["Order Lines"]["columns"]
+        lines["value"] = lines.pop("Amount")
+        obml["measures"] = {
+            "Sales": {
+                "columns": [{"dataObject": "Order Lines", "column": "value"}],
+                "resultType": "float",
+                "aggregation": "sum",
+            },
+            "Statuses": {
+                "columns": [{"dataObject": "Order Lines", "column": "Status"}],
+                "resultType": "int",
+                "aggregation": "count",
+                "distinct": True,
+            },
+        }
+        obml["dimensions"], obml["metrics"] = {}, {}
+        osi, _ = _export(obml)
+        assert _sql(osi)["Sales"] == 'SUM("Order Lines"."value")'
+        assert _sql(osi)["Statuses"] == 'COUNT(DISTINCT "Order Lines".Status)'
+        back = conv.OSItoOBML(osi).convert()
+        assert back["measures"]["Sales"]["columns"][0]["column"] == "value"
+        assert back["measures"]["Statuses"]["columns"][0]["column"] == "Status"
+
     def test_reserved_word_data_object_parses(self) -> None:
         obml = copy.deepcopy(_MODEL)
         obml["dataObjects"]["Order"] = obml["dataObjects"].pop("Order Lines")
@@ -215,16 +261,17 @@ class TestReferencesResolve:
         obml["dimensions"] = {}
         obml["metrics"] = {}
         osi, _ = _export(obml)
-        assert _sql(osi)["Sales"] == 'SUM("Order"."Amount")'
+        assert _sql(osi)["Sales"] == 'SUM("Order".Amount)'
         sqlglot.parse_one(_sql(osi)["Sales"])
 
 
 # Column references as the export writes them: Ossie dataset and field names,
 # which are the OBML data object and column names, not the physical codes.
+# A name that can be a regular identifier is bare; "Order Lines" cannot.
 LINES = '"Order Lines"'
-AMT = f'{LINES}."Amount"'
-STATUS = f'{LINES}."Status"'
-COUNTRY = '"Customers"."Country"'
+AMT = f"{LINES}.Amount"
+STATUS = f"{LINES}.Status"
+COUNTRY = "Customers.Country"
 # "Line Date" declares resultType: date, so the truncation is cast back to DATE.
 MONTH = f"CAST(DATE_TRUNC('month', {LINES}.\"Line Date\") AS DATE)"
 
@@ -257,7 +304,7 @@ class TestSemanticsSpelledOut:
 
     def test_count_distinct(self) -> None:
         osi, _ = _export()
-        assert _sql(osi)["Customers Reached"] == f'COUNT(DISTINCT {LINES}."Customer")'
+        assert _sql(osi)["Customers Reached"] == f"COUNT(DISTINCT {LINES}.Customer)"
 
     def test_synthesized_count_is_inlined(self) -> None:
         osi, _ = _export()

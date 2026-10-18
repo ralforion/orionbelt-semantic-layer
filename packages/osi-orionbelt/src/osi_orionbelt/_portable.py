@@ -24,6 +24,8 @@ import re
 from decimal import Decimal
 from typing import Any
 
+from osi_orionbelt._sql_reserved import SQL_RESERVED_WORDS
+
 _MEASURE_REF = re.compile(r"\{\[([^\]]+)\]\}")
 _COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
 
@@ -76,11 +78,31 @@ class NotPortableError(Exception):
 def sql_ident(name: str) -> str:
     """Render *name* as a double-quoted identifier.
 
-    Always quoted: a plain-looking name can still be a reserved word (a data
-    object called ``Order``), and a quoted identifier matches the Ossie dataset
-    or field name exactly, case included.
+    For physical SQL, such as a nested object's source query, where the exact
+    case of a table or column name matters: Postgres folds a bare ``Key`` to
+    ``key``. A reference to an Ossie dataset or field uses :func:`ossie_ident`.
     """
     return '"' + name.replace('"', '""') + '"'
+
+
+_REGULAR_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def needs_quoting(name: str) -> bool:
+    """Whether *name* cannot be a regular (unquoted) SQL identifier."""
+    return not _REGULAR_IDENTIFIER.fullmatch(name) or name.lower() in SQL_RESERVED_WORDS
+
+
+def ossie_ident(name: str) -> str:
+    """*name* as an identifier in an Apache Ossie expression: bare when it can be.
+
+    The expression language follows ANSI SQL: a regular identifier matches
+    regardless of case, a quoted one exactly. A field declared ``amount`` is
+    regular, so ``"amount"`` would not match it; the reference is written bare.
+    A name that cannot be regular (a space, a leading digit, a reserved word
+    such as ``Order``) is quoted, and matches the declared name exactly.
+    """
+    return sql_ident(name) if needs_quoting(name) else name
 
 
 def _string_literal(value: str) -> str:
@@ -179,7 +201,7 @@ class PortableRenderer:
         obj = self.data_objects.get(data_object)
         if obj is None:
             raise NotPortableError(f"references unknown data object '{data_object}'")
-        return f"{sql_ident(data_object)}.{sql_ident(column)}"
+        return f"{ossie_ident(data_object)}.{ossie_ident(column)}"
 
     def _column_ref(self, ref: dict[str, Any]) -> str:
         return self.column(ref.get("dataObject", ""), ref.get("column", ""))

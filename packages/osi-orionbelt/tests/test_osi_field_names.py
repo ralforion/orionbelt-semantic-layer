@@ -72,9 +72,7 @@ class TestOssieFirstRoundTrip:
     def test_metric_references_the_calculated_field(self) -> None:
         back = conv.OBMLtoOSI(conv.OSItoOBML(_ossie()).convert()).convert()
         metric = next(m for m in back["metrics"] if m["name"] == "taxed_revenue")
-        assert metric["expression"]["dialects"][0]["expression"] == (
-            'SUM("orders"."amount_with_tax")'
-        )
+        assert metric["expression"]["dialects"][0]["expression"] == ("SUM(orders.amount_with_tax)")
 
     def test_no_column_name_stash(self) -> None:
         back = conv.OBMLtoOSI(conv.OSItoOBML(_ossie()).convert()).convert()
@@ -202,7 +200,7 @@ class TestLegacyStashesFollowTheRename:
         # sqlglot drops a weighted percentile's third argument when it
         # regenerates SQL; the rename must not.
         sql, _ = self._metric("percentile(Orders.amount, 0.5, Orders.customer_id)", "DATABRICKS")
-        assert sql == "percentile(Orders.`Net Amount`, 0.5, Orders.`Customer`)"
+        assert sql == "percentile(Orders.`Net Amount`, 0.5, Orders.Customer)"
 
     def test_swapped_names_follow_the_stashed_mapping(self) -> None:
         # Column "Net Amount" has code amount, column "amount" has code
@@ -227,7 +225,7 @@ class TestLegacyStashesFollowTheRename:
         assert dataset["unique_keys"] == [["Net Amount"], ["amount"]]
         metric = osi["metrics"][0]
         assert metric["expression"]["dialects"][0]["expression"] == (
-            'SUM(Orders."Net Amount") - SUM(Orders."amount") OVER ()'
+            'SUM(Orders."Net Amount") - SUM(Orders.amount) OVER ()'
         )
 
     def test_untokenizable_metric_is_kept_and_warned(self) -> None:
