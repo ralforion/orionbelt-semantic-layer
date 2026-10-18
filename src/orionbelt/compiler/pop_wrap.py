@@ -525,6 +525,13 @@ _BUCKET_COLUMN = "__ob_bucket"
 #: Prefix of the column flagging the first source row of each row of a
 #: replicated object, per period and group; see ``_build_pop_base_sql``.
 _FIRST_FLAG = "__ob_first_"
+#: The source rows' part of the union: 0 for the join tree's rows, ``n`` for
+#: the rows of the n-th parent without children; see ``_source_tree_sql``.
+_BRANCH_COLUMN = "__ob_branch"
+#: The rows the first-row flags are computed over, and the prefix of the
+#: columns carrying their partition keys out of the union to them.
+_ROWS_ALIAS = "__ob_pop_rows"
+_FLAG_KEY = "__ob_flag_key_"
 
 
 def _flat_alias(table: str | None, name: str, taken: dict[str, tuple[str | None, str]]) -> str:
@@ -559,6 +566,7 @@ def _source_tree_sql(
     qualify_table: Callable[[DataObject], str],
     projections: list[str],
     without: list[Expr] | None = None,
+    branch_column: str | None = None,
 ) -> str:
     """The query's own join tree, as a subquery projecting *projections*.
 
@@ -580,7 +588,8 @@ def _source_tree_sql(
     that reads the prior periods past them.
 
     With ``childless_legs`` each parent's rows without child rows follow, one
-    ``UNION ALL`` branch each (:func:`_childless_branch_sql`).
+    ``UNION ALL`` branch each (:func:`_childless_branch_sql`). *branch_column*
+    names a column numbering the branches, 0 for the tree's own rows.
     """
     root = resolved.base_object or next(iter(resolved.required_objects), "")
     root_obj = model.data_objects[root]
@@ -598,11 +607,18 @@ def _source_tree_sql(
     if kept:
         clauses.append(f"  WHERE {_conjunction(dialect.compile_expr(e) for e in kept)}")
 
-    select_clause = ",\n       ".join(projections)
-    branches = ["SELECT " + select_clause + "\n" + "\n".join(clauses)]
+    def select_clause(branch: int) -> str:
+        numbered = (
+            [f"{branch} AS {dialect.quote_identifier(branch_column)}"] if branch_column else []
+        )
+        return ",\n       ".join([*projections, *numbered])
+
+    branches = ["SELECT " + select_clause(0) + "\n" + "\n".join(clauses)]
     branches.extend(
-        _childless_branch_sql(leg, resolved, model, dialect, qualify_table, select_clause, kept)
-        for leg in resolved.childless_legs
+        _childless_branch_sql(
+            leg, resolved, model, dialect, qualify_table, select_clause(number), kept
+        )
+        for number, leg in enumerate(resolved.childless_legs, 1)
     )
     return "\nUNION ALL\n".join(branches)
 
@@ -781,31 +797,51 @@ def _build_pop_base_sql(
         dim_expr: Expr = make_dimension_expr(model, dim, dialect)
         dim_entries.append((dim.name, dim_expr))
 
+    # A measure reads its input only on the source rows that are rows of its
+    # objects, the rest reading NULL, which every aggregate skips. The whole
+    # input, as a measure filter wraps it, not the object's columns:
+    # ``COUNT(1)`` reads none, and ``COALESCE(x, 0) + 1`` is not NULL where
+    # they are.
+    #
     # A measure sourced from an object the query's joins replicate counts each
-    # row of that object once per period and group: its aggregate reads its
-    # input only on the first source row of each (period, dimensions, object
-    # row), the rest reading NULL, which every aggregate skips. The same rows
-    # the grain dedup pass keeps with a DISTINCT, without leaving this one
-    # GROUP BY. The whole input, as a measure filter wraps it, not the
-    # object's columns: ``COUNT(1)`` reads none, and ``COALESCE(x, 0) + 1``
-    # is not NULL where they are.
+    # row of that object once per period and group: it reads the first source
+    # row of each (period, dimensions, object row). The same rows the grain
+    # dedup pass keeps with a DISTINCT, without leaving this one GROUP BY.
+    #
+    # A parent's rows without children carry no row of the child, nor of what
+    # the query reaches through it: a measure on those reads none of them.
     first_flags: dict[str, str] = {}
+    beneath = [joined_beneath(resolved.join_steps, leg.parent) for leg in resolved.childless_legs]
+    branch = ColumnRef(name=_BRANCH_COLUMN, table=_SRC_ALIAS)
 
     def _deduplicated(name: str, expr: Expr) -> Expr:
+        conditions: list[Expr] = []
         object_name = resolved.dedup_targets.get(name)
-        if object_name is None:
+        if object_name is not None:
+            flag = first_flags.setdefault(object_name, f"{_FIRST_FLAG}{len(first_flags)}")
+            conditions.append(
+                BinaryOp(ColumnRef(name=flag, table=_SRC_ALIAS), "=", Literal.number(1))
+            )
+        measure = model.effective_measures.get(name)
+        sources = set(measure.source_objects) if measure is not None else set()
+        conditions.extend(
+            BinaryOp(branch, "<>", Literal.number(number))
+            for number, reached in enumerate(beneath, 1)
+            if not sources or not sources <= reached
+        )
+        if not conditions:
             return expr
         aggregate, rewrap = unwrap_default(expr)
         if not isinstance(aggregate, FunctionCall):
             raise GrainDedupUnsupportedError(
-                f"Measure '{name}' is sourced from '{object_name}', whose rows this "
-                f"query's joins replicate, but is not a single aggregate that a "
-                f"period-over-period query can deduplicate. Query it without the "
-                f"period-over-period metric, or set allowFanOut: true."
+                f"Measure '{name}' is not a single aggregate that a period-over-period "
+                f"query can restrict to the rows of its own data objects. Query it "
+                f"without the period-over-period metric."
             )
-        flag = first_flags.setdefault(object_name, f"{_FIRST_FLAG}{len(first_flags)}")
-        first = BinaryOp(ColumnRef(name=flag, table=_SRC_ALIAS), "=", Literal.number(1))
-        args: list[Expr] = [CaseExpr(when_clauses=[(first, arg)]) for arg in aggregate.args]
+        condition = conditions[0]
+        for more in conditions[1:]:
+            condition = BinaryOp(condition, "AND", more)
+        args: list[Expr] = [CaseExpr(when_clauses=[(condition, arg)]) for arg in aggregate.args]
         return rewrap(replace(aggregate, args=args))
 
     measure_entries: list[tuple[str, Expr]] = []
@@ -900,20 +936,37 @@ def _build_pop_base_sql(
         )
         projections.append(f"{dialect.compile_expr(ref)} AS {dialect.quote_identifier(alias)}")
 
+    # The flags are numbered over every part of the union at once: a region
+    # reached through a customer with orders and through one without is one
+    # region, first in one part only. Their partition keys ride out of the
+    # parts as columns of their own.
+    rows_q = dialect.quote_identifier(_ROWS_ALIAS)
+    key_alias: dict[str, str] = {}
+
+    def _key(sql: str) -> str:
+        alias = key_alias.get(sql)
+        if alias is None:
+            alias = key_alias[sql] = f"{_FLAG_KEY}{len(key_alias)}"
+            projections.append(f"{sql} AS {dialect.quote_identifier(alias)}")
+        return f"{rows_q}.{dialect.quote_identifier(alias)}"
+
+    flags: list[str] = []
     for object_name, flag in first_flags.items():
         names = [n for n, o in resolved.dedup_targets.items() if o == object_name]
         identity = [
-            dialect.compile_expr(make_column_expr(model, object_name, key))
+            _key(dialect.compile_expr(make_column_expr(model, object_name, key)))
             for key in dedup_identity(object_name, names, resolved, model)
         ]
-        partition = [_bucket_sql(time_dim, model, dialect, grain)]
-        partition.extend(dialect.compile_expr(expr) for _, expr in dim_entries if expr is not None)
+        partition = [f"{rows_q}.{dialect.quote_identifier(_BUCKET_COLUMN)}"]
+        partition.extend(
+            _key(dialect.compile_expr(expr)) for _, expr in dim_entries if expr is not None
+        )
         partition.extend(identity)
         # A base row the join found no object row for carries a NULL identity:
         # it is not one of the object's rows, so it is never the first of one,
         # or a count of the object would count a phantom.
         present = " AND ".join(f"{key} IS NOT NULL" for key in identity)
-        projections.append(
+        flags.append(
             f"CASE WHEN {present} THEN ROW_NUMBER() OVER (PARTITION BY {', '.join(partition)} "
             f"ORDER BY {', '.join(identity)}) END AS {dialect.quote_identifier(flag)}"
         )
@@ -946,7 +999,21 @@ def _build_pop_base_sql(
             )
         return "SELECT " + ",\n       ".join(selects) + "\n"
 
-    source = _source_tree_sql(resolved, model, dialect, qualify_table, projections, variant.without)
+    source = _source_tree_sql(
+        resolved,
+        model,
+        dialect,
+        qualify_table,
+        projections,
+        variant.without,
+        _BRANCH_COLUMN if resolved.childless_legs else None,
+    )
+    if flags:
+        flag_list = ",\n       ".join(flags)
+        source = (
+            f"SELECT {rows_q}.*,\n       {flag_list}\n"
+            f"  FROM (\n{indent(source, '    ')}\n  ) AS {rows_q}"
+        )
     from_source = f"  FROM (\n{indent(source, '    ')}\n  ) AS {src_q}\n"
     # The rows without a period (an order without a date, a customer without
     # orders) are the NULL period, as in a plain query. A part of their own

@@ -206,3 +206,140 @@ def test_an_or_group_beside_another_filter_keeps_its_parentheses(
         ],
     }
     assert _rows(con, query) == []
+
+
+SHARED_YAML = """
+version: 1.0
+dataObjects:
+  Regions:
+    code: regions
+    schema: main
+    columns:
+      Region ID: {code: id, abstractType: int, primaryKey: true}
+      Population: {code: population, abstractType: float}
+  Customers:
+    code: customers
+    schema: main
+    columns:
+      Customer ID: {code: id, abstractType: int, primaryKey: true}
+      Customer Region ID: {code: region_id, abstractType: int}
+      Credit: {code: credit, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Regions
+        columnsFrom: [Customer Region ID]
+        columnsTo: [Region ID]
+  Channels:
+    code: channels
+    schema: main
+    columns:
+      Channel ID: {code: id, abstractType: int, primaryKey: true}
+  # Orders has two joins, so it outranks Customers as the query's base.
+  Orders:
+    code: orders
+    schema: main
+    columns:
+      Order ID: {code: id, abstractType: int, primaryKey: true}
+      Order Customer ID: {code: customer_id, abstractType: int}
+      Order Channel ID: {code: channel_id, abstractType: int}
+      Order Date: {code: order_date, abstractType: date}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer ID]
+        columnsTo: [Customer ID]
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Order Channel ID]
+        columnsTo: [Channel ID]
+dimensions:
+  Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}
+measures:
+  Total Credit:
+    columns: [{dataObject: Customers, column: Credit}]
+    aggregation: sum
+    resultType: float
+  Total Population:
+    columns: [{dataObject: Regions, column: Population}]
+    aggregation: sum
+    resultType: float
+  Order Lines:
+    expression: 'COALESCE({[Orders].[Amount]}, 0) + 1'
+    aggregation: sum
+    resultType: float
+metrics:
+  Prior Credit:
+    type: period_over_period
+    expression: '{[Total Credit]}'
+    periodOverPeriod:
+      timeDimension: Order Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: previousValue
+"""
+
+
+@pytest.fixture
+def shared() -> duckdb.DuckDBPyConnection:
+    con = duckdb.connect()
+    con.execute("CREATE TABLE regions (id INTEGER, population DOUBLE)")
+    con.execute("INSERT INTO regions VALUES (1, 100)")
+    con.execute("CREATE TABLE customers (id INTEGER, region_id INTEGER, credit DOUBLE)")
+    # Carol (3) has no orders; all three live in region 1.
+    con.execute("INSERT INTO customers VALUES (1, 1, 10), (2, 1, 20), (3, 1, 40)")
+    con.execute("CREATE TABLE channels (id INTEGER)")
+    con.execute(
+        "CREATE TABLE orders (id INTEGER, customer_id INTEGER, channel_id INTEGER,"
+        " order_date DATE, amount DOUBLE)"
+    )
+    # Bob's order 3 has no date: Bob and Carol are both the NULL month.
+    con.execute(
+        "INSERT INTO orders VALUES (1, 1, NULL, DATE '2026-01-05', 100),"
+        " (2, 2, NULL, DATE '2026-02-07', 70), (3, 2, NULL, NULL, 9)"
+    )
+    return con
+
+
+def _shared_rows(con: duckdb.DuckDBPyConnection, measures: list[str]) -> list[tuple[object, ...]]:
+    raw = YAML(typ="safe").load(SHARED_YAML)
+    model: SemanticModel = ReferenceResolver().resolve(raw)[0]
+    query = QueryObject(**{"select": {"dimensions": ["Order Month"], "measures": measures}})
+    sql = CompilationPipeline().compile(query, model, "duckdb").sql
+    return sorted(
+        (
+            tuple(
+                float(v)
+                if isinstance(v, int | float)
+                else (str(v)[:7] if hasattr(v, "year") else v)
+                for v in row
+            )
+            for row in con.execute(sql).fetchall()
+        ),
+        key=str,
+    )
+
+
+def test_a_child_measure_reads_nothing_on_a_parent_row(shared: duckdb.DuckDBPyConnection) -> None:
+    """``COALESCE(amount, 0) + 1`` is not NULL where the order columns are:
+    Carol, a customer without orders, added 1 to the NULL month's 10."""
+    plain = _shared_rows(shared, ["Order Lines", "Total Credit"])
+    pop = _shared_rows(shared, ["Order Lines", "Total Credit", "Prior Credit"])
+    assert plain == [("2026-01", 101.0, 10.0), ("2026-02", 71.0, 20.0), (None, 10.0, 60.0)]
+    assert [row[:3] for row in pop] == plain
+
+
+def test_an_ancestor_shared_by_both_rows_counts_once(shared: duckdb.DuckDBPyConnection) -> None:
+    """Region 1 is reached through Bob's undated order and through Carol. Each
+    part of the union flagged its own first row of the region, so the NULL
+    month summed its population twice: 200 instead of 100."""
+    measures = ["Total Population", "Total Credit", "Order Lines"]
+    plain = _shared_rows(shared, measures)
+    pop = _shared_rows(shared, [*measures, "Prior Credit"])
+    assert plain == [
+        ("2026-01", 100.0, 10.0, 101.0),
+        ("2026-02", 100.0, 20.0, 71.0),
+        (None, 100.0, 60.0, 10.0),
+    ]
+    assert [row[:4] for row in pop] == plain
