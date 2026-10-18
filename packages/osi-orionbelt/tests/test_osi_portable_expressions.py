@@ -519,3 +519,83 @@ class TestFlatDocument:
     def test_document_without_a_model_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="No semantic model"):
             conv.OSItoOBML({"version": "0.2.0.dev0", "name": "x"}).convert()
+
+
+def _one_object_model(object_name: str, columns: dict[str, str]) -> dict[str, Any]:
+    """One data object with a SUM measure per column, column name -> code."""
+    return {
+        "version": 1.0,
+        "dataObjects": {
+            object_name: {
+                "code": "fct",
+                "columns": {
+                    name: {"code": code, "abstractType": "float"} for name, code in columns.items()
+                },
+            }
+        },
+        "measures": {
+            f"Total {name}": {
+                "columns": [{"dataObject": object_name, "column": name}],
+                "resultType": "float",
+                "aggregation": "sum",
+            }
+            for name in columns
+        },
+    }
+
+
+def _run_on_duckdb(osi: dict[str, Any]) -> dict[str, Any]:
+    """Each exported metric over its dataset read as its fields, as a consumer does."""
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect()
+    con.execute("CREATE TABLE fct (A DOUBLE, B DOUBLE)")
+    con.execute("INSERT INTO fct VALUES (1, 10), (2, 20)")
+    ds = osi["datasets"][0]
+    fields = ", ".join(
+        f"{f['expression']['dialects'][0]['expression']} AS {sql_ident(f['name'])}"
+        for f in ds["fields"]
+    )
+    source = f"(SELECT {fields} FROM fct) AS {sql_ident(ds['name'])}"
+    return {
+        name: con.execute(f"SELECT {sql} FROM {source}").fetchone()[0]
+        for name, sql in _sql(osi).items()
+    }
+
+
+class TestParserKeywordsStayQuoted:
+    @pytest.mark.parametrize("name", ["Qualify", "Limit", "Pivot", "Left"])
+    def test_keyword_data_object_is_quoted_and_runs(self, name: str) -> None:
+        osi, _ = _export(_one_object_model(name, {"Amount": "A"}))
+        sql = _sql(osi)["Total Amount"]
+        assert sql == f'SUM("{name}".Amount)'
+        sqlglot.parse_one(sql)
+        assert _run_on_duckdb(osi) == {"Total Amount": 3}
+
+
+class TestNamesDifferingOnlyByCase:
+    def test_both_are_quoted_and_stay_distinct(self) -> None:
+        osi, _ = _export(_one_object_model("Orders", {"Amount": "A", "amount": "B", "Qty": "B"}))
+        assert _sql(osi)["Total Amount"] == 'SUM(Orders."Amount")'
+        assert _sql(osi)["Total amount"] == 'SUM(Orders."amount")'
+        assert _sql(osi)["Total Qty"] == "SUM(Orders.Qty)"
+        # Not run on DuckDB: it matches even quoted identifiers regardless of
+        # case, so no DuckDB relation can carry both fields.
+
+    def test_round_trip_keeps_each_column(self) -> None:
+        osi, _ = _export(_one_object_model("Orders", {"Amount": "A", "amount": "B"}))
+        back = conv.OSItoOBML(osi).convert()
+        assert back["measures"]["Total Amount"]["columns"][0]["column"] == "Amount"
+        assert back["measures"]["Total amount"]["columns"][0]["column"] == "amount"
+
+    def test_data_objects_differing_by_case_are_quoted(self) -> None:
+        obml = _one_object_model("Orders", {"Amount": "A"})
+        other = _one_object_model("ORDERS", {"Amount": "B"})
+        obml["dataObjects"].update(other["dataObjects"])
+        obml["measures"]["Upper Total"] = {
+            "columns": [{"dataObject": "ORDERS", "column": "Amount"}],
+            "resultType": "float",
+            "aggregation": "sum",
+        }
+        osi, _ = _export(obml)
+        assert _sql(osi)["Total Amount"] == 'SUM("Orders".Amount)'
+        assert _sql(osi)["Upper Total"] == 'SUM("ORDERS".Amount)'
