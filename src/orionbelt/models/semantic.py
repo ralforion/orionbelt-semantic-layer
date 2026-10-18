@@ -256,23 +256,32 @@ _TRUNCATION = re.compile(r"\s*date_trunc\s*\(\s*'(\w+)'\s*,", re.IGNORECASE)
 
 
 def _closing_parenthesis(expression: str, opening: int) -> int | None:
-    """The index of the parenthesis closing the one at *opening*, string
-    literals skipped; ``None`` when it never closes."""
+    """The index of the parenthesis closing the one at *opening*, ``None`` when
+    it never closes. String literals and ``{Column}`` / ``{[Object].[Column]}``
+    references are skipped whole, as ``find_function_calls`` skips them: a
+    column named ``Order Date)`` is a name, not a parenthesis."""
     depth = 0
     quote: str | None = None
-    for position in range(opening, len(expression)):
+    position = opening
+    while position < len(expression):
         char = expression[position]
         if quote is not None:
             if char == quote:
                 quote = None
         elif char in "'\"":
             quote = char
+        elif char == "{":
+            end = expression.find("}", position)
+            if end == -1:
+                return None
+            position = end
         elif char == "(":
             depth += 1
         elif char == ")":
             depth -= 1
             if depth == 0:
                 return position
+        position += 1
     return None
 
 

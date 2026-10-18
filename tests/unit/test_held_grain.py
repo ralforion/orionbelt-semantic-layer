@@ -181,6 +181,9 @@ def test_a_grain_needs_a_date_bearing_column() -> None:
         ("date_trunc('month', coalesce({d}, ')'))", TimeGrain.MONTH),
         ("(date_trunc('month', {d}))", TimeGrain.MONTH),
         (" (( date_trunc('month', {d}) )) ", TimeGrain.MONTH),
+        ("date_trunc('month', {Order Date)})", TimeGrain.MONTH),
+        ("(date_trunc('month', {[Orders].[Order Date)]}))", TimeGrain.MONTH),
+        ("date_trunc('month', {Order (Date})", TimeGrain.MONTH),
         ("(date_trunc('month', {d})) + INTERVAL 1 DAY", None),
         ("(date_trunc('month', {d})) - (date_trunc('day', {d}))", None),
         ("date_trunc('month', {d}) + INTERVAL 1 DAY", None),
@@ -234,6 +237,26 @@ def test_a_parenthesised_truncation_is_refused_finer() -> None:
     )
     model, errors = _model(yaml_text)
     assert errors == []
+    query = QueryObject(**{"select": {"dimensions": ["Order Month:day"], "measures": ["Revenue"]}})
+    with pytest.raises(ResolutionError) as raised:
+        CompilationPipeline().compile(query, model, "duckdb")
+    assert [e.code for e in raised.value.errors] == ["GRAIN_FINER_THAN_DECLARED"]
+
+
+def test_a_column_name_with_a_parenthesis_is_a_name() -> None:
+    """A placeholder ``{Order Date)}`` was scanned as closing the call, so the
+    column held no grain and its day was answered with the month starts."""
+    yaml_text = MODEL_YAML.replace(
+        "Order Date: {code: order_date, abstractType: date}\n      Order Month:",
+        "Order Date: {code: order_date, abstractType: date}\n"
+        "      Order Date): {code: order_date, abstractType: date}\n"
+        "      Order Month:",
+    ).replace('{Order Date})"', '{Order Date)})"')
+    model, errors = _model(yaml_text)
+    assert errors == []
+    assert model.data_objects["Orders"].columns["Order Month"].expression == (
+        "date_trunc('month', {Order Date)})"
+    )
     query = QueryObject(**{"select": {"dimensions": ["Order Month:day"], "measures": ["Revenue"]}})
     with pytest.raises(ResolutionError) as raised:
         CompilationPipeline().compile(query, model, "duckdb")
