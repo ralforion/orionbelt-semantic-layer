@@ -255,20 +255,12 @@ def held_grain_cost(grain: TimeGrain, held: TimeGrain) -> str:
 _TRUNCATION = re.compile(r"\s*date_trunc\s*\(\s*'(\w+)'\s*,", re.IGNORECASE)
 
 
-def truncation_grain(expression: str) -> TimeGrain | None:
-    """The grain of an expression that is one ``date_trunc('<grain>', ...)`` call.
-
-    Only the whole expression counts: ``date_trunc('month', d) + INTERVAL 1 DAY``
-    is no month start, so its call has to close at the expression's end. String
-    literals are skipped while matching the parentheses.
-    """
-    match = _TRUNCATION.match(expression)
-    if match is None or match.group(1).lower() not in TimeGrain:
-        return None
+def _closing_parenthesis(expression: str, opening: int) -> int | None:
+    """The index of the parenthesis closing the one at *opening*, string
+    literals skipped; ``None`` when it never closes."""
     depth = 0
     quote: str | None = None
-    # The match starts the expression, so its first parenthesis is the call's.
-    for position in range(expression.index("("), len(expression)):
+    for position in range(opening, len(expression)):
         char = expression[position]
         if quote is not None:
             if char == quote:
@@ -280,9 +272,28 @@ def truncation_grain(expression: str) -> TimeGrain | None:
         elif char == ")":
             depth -= 1
             if depth == 0:
-                rest = expression[position + 1 :]
-                return TimeGrain(match.group(1).lower()) if not rest.strip() else None
+                return position
     return None
+
+
+def truncation_grain(expression: str) -> TimeGrain | None:
+    """The grain of an expression that is one ``date_trunc('<grain>', ...)`` call.
+
+    Only the whole expression counts: ``date_trunc('month', d) + INTERVAL 1 DAY``
+    is no month start, so its call has to close at the expression's end.
+    Parentheses around the whole expression change nothing and are looked
+    through: ``(date_trunc('month', d))`` holds months as well.
+    """
+    text = expression.strip()
+    while text.startswith("(") and _closing_parenthesis(text, 0) == len(text) - 1:
+        text = text[1:-1].strip()
+    match = _TRUNCATION.match(text)
+    if match is None or match.group(1).lower() not in TimeGrain:
+        return None
+    # The match starts the expression, so its first parenthesis is the call's.
+    if _closing_parenthesis(text, text.index("(")) != len(text) - 1:
+        return None
+    return TimeGrain(match.group(1).lower())
 
 
 class ExpressionMode(StrEnum):

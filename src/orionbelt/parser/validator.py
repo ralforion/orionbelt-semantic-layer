@@ -1000,8 +1000,9 @@ class SemanticValidator:
         starts, one row per month under a label that says day. Nothing about
         it is a SQL error, so it is refused here, for every grain the model
         names over such a column: a dimension's ``timeGrain``, a reaggregate
-        metric's ``per`` grain, and a period-over-period metric's grain. A
-        query's own ``dimension:grain`` is held to it by the resolver.
+        metric's ``per`` grain, a period-over-period metric's grain and a
+        cumulative metric's ``grainToDate``. A query's own ``dimension:grain``
+        is held to it by the resolver.
 
         A declared ``grain`` also needs a date-bearing column, as a
         ``timeGrain`` does.
@@ -1063,6 +1064,16 @@ class SemanticValidator:
                     pop.grain,
                     f"Period-over-period metric '{name}'",
                     f"metrics.{name}.periodOverPeriod",
+                )
+            elif met.type is MetricType.CUMULATIVE and met.time_dimension and met.grain_to_date:
+                # The running total restarts per grainToDate bucket of the time
+                # dimension: weeks of month starts put each month in the week
+                # its first day falls in.
+                check(
+                    met.time_dimension,
+                    TimeGrain(met.grain_to_date.value),
+                    f"Cumulative metric '{name}'",
+                    f"metrics.{name}.grainToDate",
                 )
         return errors
 

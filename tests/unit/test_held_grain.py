@@ -143,8 +143,17 @@ def test_a_time_grain_over_days_stays_a_default(con: duckdb.DuckDBPyConnection) 
             "      comparison: previousValue\n",
             "metrics.Prior Day.periodOverPeriod",
         ),
+        (
+            "metrics:\n"
+            "  Week To Date:\n"
+            "    type: cumulative\n"
+            "    measure: Revenue\n"
+            "    timeDimension: Order Month\n"
+            "    grainToDate: week\n",
+            "metrics.Week To Date.grainToDate",
+        ),
     ],
-    ids=["dimension-time-grain", "reaggregate-per", "period-over-period"],
+    ids=["dimension-time-grain", "reaggregate-per", "period-over-period", "cumulative-to-date"],
 )
 def test_a_model_naming_a_finer_grain_is_refused_at_load(addition: str, path: str) -> None:
     if addition.startswith("metrics:"):
@@ -170,6 +179,10 @@ def test_a_grain_needs_a_date_bearing_column() -> None:
         ("date_trunc('month', {d})", TimeGrain.MONTH),
         (" DATE_TRUNC( 'Week' , {d}) ", TimeGrain.WEEK),
         ("date_trunc('month', coalesce({d}, ')'))", TimeGrain.MONTH),
+        ("(date_trunc('month', {d}))", TimeGrain.MONTH),
+        (" (( date_trunc('month', {d}) )) ", TimeGrain.MONTH),
+        ("(date_trunc('month', {d})) + INTERVAL 1 DAY", None),
+        ("(date_trunc('month', {d})) - (date_trunc('day', {d}))", None),
         ("date_trunc('month', {d}) + INTERVAL 1 DAY", None),
         ("cast(date_trunc('month', {d}) as date)", None),
         ("date_trunc('fortnight', {d})", None),
@@ -197,3 +210,31 @@ def test_the_grain_read_from_an_expression(expression: str, grain: TimeGrain | N
 )
 def test_which_grains_derive(requested: TimeGrain, held: TimeGrain, derives: bool) -> None:
     assert grain_derives(requested, held) is derives
+
+
+def test_a_year_to_date_over_months_loads() -> None:
+    """``grainToDate: year`` over a month column restarts per year: whole months."""
+    yaml_text = MODEL_YAML + (
+        "metrics:\n"
+        "  Month To Date:\n"
+        "    type: cumulative\n"
+        "    measure: Revenue\n"
+        "    timeDimension: Order Month\n"
+        "    grainToDate: year\n"
+    )
+    assert _model(yaml_text)[1] == []
+
+
+def test_a_parenthesised_truncation_is_refused_finer() -> None:
+    """``(date_trunc('month', ...))`` holds months as well: its day was
+    answered with the month starts."""
+    yaml_text = MODEL_YAML.replace(
+        "expression: \"date_trunc('month', {Order Date})\"",
+        "expression: \"(date_trunc('month', {Order Date}))\"",
+    )
+    model, errors = _model(yaml_text)
+    assert errors == []
+    query = QueryObject(**{"select": {"dimensions": ["Order Month:day"], "measures": ["Revenue"]}})
+    with pytest.raises(ResolutionError) as raised:
+        CompilationPipeline().compile(query, model, "duckdb")
+    assert [e.code for e in raised.value.errors] == ["GRAIN_FINER_THAN_DECLARED"]

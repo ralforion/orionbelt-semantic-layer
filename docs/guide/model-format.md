@@ -308,8 +308,9 @@ A week column answers only `week`. A computed column whose whole expression is
 one `date_trunc('<grain>', ...)` call needs no declaration; a physical column of
 month starts, or an expression of another shape, declares `grain`. The declared
 value wins. The rule holds every grain a model or query names over the column:
-a dimension's `timeGrain`, a reaggregate metric's `per` grain and a
-period-over-period metric's `grain` are refused at load, a query's
+a dimension's `timeGrain`, a reaggregate metric's `per` grain, a
+period-over-period metric's `grain` and a cumulative metric's `grainToDate` are
+refused at load, a query's
 `"dimension:grain"` when it is compiled.
 
 A dimension's `timeGrain` over a column of days is a default bucket, not a
