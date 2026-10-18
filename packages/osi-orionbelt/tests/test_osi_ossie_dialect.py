@@ -123,6 +123,20 @@ class TestAnsiOnly:
     def test_no_ossie_form_keeps_ansi_only(self, name: str) -> None:
         assert list(_dialects()[name]) == ["ANSI_SQL"]
 
+    def test_untokenizable_expression_keeps_ansi_only(self) -> None:
+        # An unterminated string does not tokenize; the export must not fail.
+        obml = copy.deepcopy(_OBML)
+        obml["measures"] = {
+            "Broken": {
+                "expression": "{[Orders].[Status]} || 'x",
+                "resultType": "int",
+                "aggregation": "count",
+            }
+        }
+        obml["metrics"] = {}
+        osi = conv.OBMLtoOSI(obml, "sales").convert()
+        assert [d["dialect"] for d in osi["metrics"][0]["expression"]["dialects"]] == ["ANSI_SQL"]
+
 
 def _hello_world(metric_sql: str) -> dict[str, Any]:
     """The hello-world model of apache/ossie#576, tagged OSSIE_SQL_2026."""
