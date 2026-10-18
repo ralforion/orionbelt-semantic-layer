@@ -25,7 +25,7 @@ from osi_orionbelt._field_names import (
     rename_keys,
     rename_metric,
 )
-from osi_orionbelt._portable import NotPortableError, PortableRenderer
+from osi_orionbelt._portable import NotPortableError, PortableRenderer, sql_ident
 
 
 def _stash_concept_links(
@@ -165,15 +165,12 @@ class OBMLtoOSI:
             self.obml.get("customExtensions"), sem_model["custom_extensions"]
         )
 
-        osi["semantic_model"] = [sem_model]
-
-        # The published OSI core schema forbids root-level ``dialects`` /
-        # ``vendors`` (root is additionalProperties:false, only ``version`` +
-        # ``semantic_model``). Dialects live per-expression in
-        # ``expression.dialects[]`` and vendors per-entity in
-        # ``custom_extensions[].vendor_name`` — the schema-valid homes — so the
-        # document stays fully conformant without root advertisement arrays.
-        # See OSI PR #148 (and the single-document-dialect direction in #52).
+        # One model per document, its properties at the root (apache/ossie#383).
+        # The root is additionalProperties:false, so there are no root-level
+        # ``dialects`` / ``vendors`` arrays: dialects live per expression in
+        # ``expression.dialects[]`` and vendors per entity in
+        # ``custom_extensions[].vendor_name``.
+        osi.update(sem_model)
         return osi
 
     def _emit_foreign_extensions(self, obml_exts: list[dict] | None, osi_exts: list[dict]) -> None:
@@ -192,10 +189,7 @@ class OBMLtoOSI:
         self, do_name: str, do_obj: dict, obml_dimensions: dict
     ) -> tuple[dict, list]:
         """Convert an OBML dataObject to an OSI dataset + relationships."""
-        database = do_obj.get("database", "")
-        schema = do_obj.get("schema", "")
-        code = do_obj.get("code", "")
-        source = f"{database}.{schema}.{code}" if database else code
+        source = self._source(do_name)
 
         # Use the OBML display name as the OSI dataset name so that
         # relationship references (joinTo) stay consistent in roundtrips
@@ -310,6 +304,9 @@ class OBMLtoOSI:
         # object into a table with an empty name.
         if do_obj.get("nestedIn"):
             do_extras["obml_nested_in"] = do_obj["nestedIn"]
+            if not do_obj.get("code"):
+                # ``source`` is the unnest query (see _source), not a table.
+                do_extras["obml_source_unnest"] = True
         _stash_concept_links(do_obj, do_extras)
         if do_extras:
             ds_exts = dataset.setdefault("custom_extensions", [])
@@ -328,6 +325,66 @@ class OBMLtoOSI:
             del dataset["custom_extensions"]
 
         return dataset, relationships
+
+    def _source(self, do_name: str, seen: frozenset[str] = frozenset()) -> str:
+        """The dataset ``source``: the data object's table, or a query.
+
+        A ``nestedIn`` object without ``code`` has no table; its rows are the
+        elements of an array column on its parent. Ossie allows a query as the
+        source, so it becomes the unnest in the form Postgres reads, as
+        OrionBelt's Postgres dialect renders it: each column's ``code`` selected
+        from the element, plus the field each object nested in this one unnests
+        from, and a struct path reached through parentheses. Other engines spell
+        the unnest differently; the import restores ``nestedIn`` from the
+        extension, not from this text.
+        """
+        data_objects = self.obml.get("dataObjects", {}) or {}
+        do_obj = data_objects.get(do_name, {})
+        code = do_obj.get("code", "")
+        nested = do_obj.get("nestedIn") or {}
+        parent = nested.get("dataObject")
+        if code or not parent:
+            database = do_obj.get("database", "")
+            schema = do_obj.get("schema", "")
+            return f"{database}.{schema}.{code}" if database else code
+        if parent in seen or parent not in data_objects:
+            self.warnings.append(
+                f"Data object '{do_name}' is nested in '{parent}', which has no source; "
+                f"its dataset has an empty source."
+            )
+            return ""
+        parent_source = self._source(parent, seen | {do_name})
+        if not parent_source:
+            return ""
+        if not data_objects[parent].get("code"):
+            parent_source = f"({parent_source})"
+        alias = sql_ident(do_name)
+        segments = str(nested.get("column", "")).split(".")
+        # ``"C"."x_Meta"."Notes"`` reads as a three-part table name on Postgres;
+        # a composite's field is reached as ``("C"."x_Meta")."Notes"``.
+        path = f"{sql_ident(parent)}.{sql_ident(segments[0])}"
+        for segment in segments[1:]:
+            path = f"({path}).{sql_ident(segment)}"
+        # Each physical field once: two columns may share a code, and a
+        # repeated output name is ambiguous to read.
+        selected = list(
+            dict.fromkeys(
+                col["code"]
+                for col in (do_obj.get("columns") or {}).values()
+                if isinstance(col, dict) and col.get("code")
+            )
+        )
+        for child in data_objects.values():
+            child_nested = child.get("nestedIn") or {}
+            if child_nested.get("dataObject") == do_name and child_nested.get("column"):
+                head = str(child_nested["column"]).split(".")[0]
+                if head not in selected:
+                    selected.append(head)
+        fields = [f"{alias}.{sql_ident(c)} AS {sql_ident(c)}" for c in selected]
+        return (
+            f"SELECT {', '.join(fields) or alias} "
+            f"FROM {parent_source} AS {sql_ident(parent)}, UNNEST({path}) AS {alias}"
+        )
 
     def _convert_column(
         self, col_name: str, col_obj: dict, do_name: str, obml_dimensions: dict

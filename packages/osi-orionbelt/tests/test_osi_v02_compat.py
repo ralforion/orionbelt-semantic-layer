@@ -106,42 +106,34 @@ _OBML_WITH_PK_AND_LABEL: dict[str, Any] = {
 
 _OSI_V01_INPUT: dict[str, Any] = {
     "version": "0.1.1",
-    "semantic_model": [
+    "name": "ecommerce",
+    "datasets": [
         {
-            "name": "ecommerce",
-            "datasets": [
+            "name": "Orders",
+            "source": "WAREHOUSE.PUBLIC.orders",
+            # Legacy: PK stashed in custom_extensions (pre-v0.2 shape)
+            "custom_extensions": [
                 {
-                    "name": "Orders",
-                    "source": "WAREHOUSE.PUBLIC.orders",
-                    # Legacy: PK stashed in custom_extensions (pre-v0.2 shape)
-                    "custom_extensions": [
+                    "vendor_name": "COMMON",
+                    "data": json.dumps(
                         {
-                            "vendor_name": "COMMON",
-                            "data": json.dumps(
-                                {
-                                    "obml_primary_key": ["order_id"],
-                                    "obml_unique_keys": [["order_id"], ["order_number"]],
-                                }
-                            ),
+                            "obml_primary_key": ["order_id"],
+                            "obml_unique_keys": [["order_id"], ["order_number"]],
                         }
-                    ],
-                    "fields": [
-                        {
-                            "name": "order_id",
-                            "expression": {
-                                "dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]
-                            },
-                            "data_type": "string",
-                        },
-                        {
-                            "name": "amount",
-                            "expression": {
-                                "dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]
-                            },
-                            "data_type": "number",
-                        },
-                    ],
+                    ),
                 }
+            ],
+            "fields": [
+                {
+                    "name": "order_id",
+                    "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]},
+                    "data_type": "string",
+                },
+                {
+                    "name": "amount",
+                    "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]},
+                    "data_type": "number",
+                },
             ],
         }
     ],
@@ -160,17 +152,26 @@ class TestEmittedVersion:
         assert osi["version"].startswith("0.2")
 
     def test_no_root_dialects_or_vendors(self) -> None:
-        # The published OSI core schema forbids root-level dialects/vendors
-        # (root is additionalProperties:false). See OSI PR #148.
+        # The root is the one model, additionalProperties:false: no root-level
+        # dialects/vendors and no semantic_model wrapper (apache/ossie#383).
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
         assert "dialects" not in osi
         assert "vendors" not in osi
-        assert set(osi.keys()) <= {"version", "semantic_model"}
+        assert set(osi) <= {
+            "version",
+            "name",
+            "description",
+            "ai_context",
+            "datasets",
+            "relationships",
+            "metrics",
+            "custom_extensions",
+        }
 
     def test_dialect_tagged_per_expression(self) -> None:
         # Dialects live on each expression, the schema-valid home.
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
-        for metric in osi["semantic_model"][0].get("metrics", []):
+        for metric in osi.get("metrics", []):
             tags = [d["dialect"] for d in metric["expression"]["dialects"]]
             assert "ANSI_SQL" in tags
 
@@ -180,7 +181,7 @@ class TestEmittedVersion:
         # field label (no vendor tag needed).
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
         assert "ORIONBELT" in _collect_vendor_names(osi)
-        fields = osi["semantic_model"][0]["datasets"][0]["fields"]
+        fields = osi["datasets"][0]["fields"]
         assert any(f.get("label") for f in fields), "expected a native OSI field label"
 
 
@@ -192,7 +193,7 @@ class TestEmittedVersion:
 class TestPrimaryKey:
     def test_composite_pk_emitted_in_declaration_order(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
-        ds = osi["semantic_model"][0]["datasets"][0]
+        ds = osi["datasets"][0]
         # Two columns flagged primaryKey: emit composite in declaration order,
         # by field name (the OBML column name), not by physical code.
         assert ds["primary_key"] == ["Order ID", "Line Number"]
@@ -209,26 +210,20 @@ class TestPrimaryKey:
     def test_unknown_pk_column_emits_warning(self) -> None:
         bad = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "x",
+            "datasets": [
                 {
-                    "name": "x",
-                    "datasets": [
+                    "name": "Orders",
+                    "source": "a.b.c",
+                    "primary_key": ["no_such_column"],
+                    "fields": [
                         {
-                            "name": "Orders",
-                            "source": "a.b.c",
-                            "primary_key": ["no_such_column"],
-                            "fields": [
-                                {
-                                    "name": "amount",
-                                    "expression": {
-                                        "dialects": [
-                                            {"dialect": "ANSI_SQL", "expression": "amount"}
-                                        ]
-                                    },
-                                    "data_type": "number",
-                                },
-                            ],
-                        }
+                            "name": "amount",
+                            "expression": {
+                                "dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]
+                            },
+                            "data_type": "number",
+                        },
                     ],
                 }
             ],
@@ -242,7 +237,7 @@ class TestPrimaryKey:
 class TestUniqueKeys:
     def test_unique_keys_roundtrip(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
-        ds = osi["semantic_model"][0]["datasets"][0]
+        ds = osi["datasets"][0]
         assert ds.get("unique_keys") == [["Order ID"], ["Order ID", "Line Number"]]
 
 
@@ -254,7 +249,7 @@ class TestUniqueKeys:
 class TestFieldLabel:
     def test_label_emitted_from_custom_extensions(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
-        fields = osi["semantic_model"][0]["datasets"][0]["fields"]
+        fields = osi["datasets"][0]["fields"]
         order_id_field = next(f for f in fields if f["name"] == "Order ID")
         assert order_id_field["label"] == "filter"
 
@@ -285,7 +280,7 @@ class TestLegacyShim:
         # Manually invoke the shim
         converter.osi = json.loads(json.dumps(_OSI_V01_INPUT))  # deep copy
         converter._normalize_legacy_v01()
-        ds = converter.osi["semantic_model"][0]["datasets"][0]
+        ds = converter.osi["datasets"][0]
         assert ds["primary_key"] == ["order_id"]
         assert ds["unique_keys"] == [["order_id"], ["order_number"]]
 
@@ -299,25 +294,19 @@ class TestLegacyShim:
         # v0.2 input declaring primary_key directly — shim must be a no-op
         v02 = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "x",
+            "datasets": [
                 {
-                    "name": "x",
-                    "datasets": [
+                    "name": "Orders",
+                    "source": "a.b.c",
+                    "primary_key": ["order_id"],
+                    "fields": [
                         {
-                            "name": "Orders",
-                            "source": "a.b.c",
-                            "primary_key": ["order_id"],
-                            "fields": [
-                                {
-                                    "name": "order_id",
-                                    "expression": {
-                                        "dialects": [
-                                            {"dialect": "ANSI_SQL", "expression": "order_id"}
-                                        ]
-                                    },
-                                    "data_type": "string",
-                                }
-                            ],
+                            "name": "order_id",
+                            "expression": {
+                                "dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]
+                            },
+                            "data_type": "string",
                         }
                     ],
                 }
@@ -376,36 +365,30 @@ class TestMAQLDialect:
     def test_maql_only_metric_does_not_raise(self) -> None:
         osi_in: dict[str, Any] = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "gd",
+            "datasets": [
                 {
-                    "name": "gd",
-                    "datasets": [
+                    "name": "Sales",
+                    "source": "a.b.sales",
+                    "fields": [
                         {
-                            "name": "Sales",
-                            "source": "a.b.sales",
-                            "fields": [
-                                {
-                                    "name": "amount",
-                                    "expression": {
-                                        "dialects": [
-                                            {"dialect": "ANSI_SQL", "expression": "amount"}
-                                        ]
-                                    },
-                                    "data_type": "number",
-                                }
-                            ],
-                        }
-                    ],
-                    "metrics": [
-                        {
-                            "name": "total_revenue_maql",
+                            "name": "amount",
                             "expression": {
-                                "dialects": [
-                                    {"dialect": "MAQL", "expression": "SELECT SUM(amount)"},
-                                ]
+                                "dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]
                             },
+                            "data_type": "number",
                         }
                     ],
+                }
+            ],
+            "metrics": [
+                {
+                    "name": "total_revenue_maql",
+                    "expression": {
+                        "dialects": [
+                            {"dialect": "MAQL", "expression": "SELECT SUM(amount)"},
+                        ]
+                    },
                 }
             ],
         }

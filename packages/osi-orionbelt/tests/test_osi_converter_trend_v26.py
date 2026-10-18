@@ -104,7 +104,7 @@ _OBML_V26: dict[str, Any] = {
 
 
 def _osi_metric(osi: dict, name: str) -> dict:
-    for m in osi["semantic_model"][0].get("metrics", []):
+    for m in osi.get("metrics", []):
         if m["name"] == name:
             return m
     raise AssertionError(f"missing OSI metric {name!r}")

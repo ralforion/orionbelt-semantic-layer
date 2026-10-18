@@ -257,7 +257,7 @@ class TestMeasureAggregationRoundtrip:
 
     @staticmethod
     def _osi_metrics(osi: dict[str, Any]) -> list[dict[str, Any]]:
-        return osi["semantic_model"][0].get("metrics", [])
+        return osi.get("metrics", [])
 
     def test_obml_to_osi_emits_measure_placeholder(self):
         obml = self._delegated_obml()
@@ -314,7 +314,7 @@ class TestAnchorRoundtrip:
     def test_anchored_measure_is_left_out_of_the_metrics(self):
         converter = conv.OBMLtoOSI(_with_measure({"anchor": "Orders"}))
         osi = converter.convert()
-        model = osi["semantic_model"][0]
+        model = osi
         assert all(m["name"] != "Revenue" for m in model.get("metrics", []))
         assert any("Revenue" in w and "anchor" in w for w in converter.warnings)
 

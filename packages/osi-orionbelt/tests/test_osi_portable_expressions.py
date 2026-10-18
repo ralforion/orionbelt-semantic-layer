@@ -179,16 +179,13 @@ def _export(obml: dict[str, Any] = _MODEL) -> tuple[dict[str, Any], list[str]]:
 
 
 def _sql(osi: dict[str, Any]) -> dict[str, str]:
-    return {
-        m["name"]: m["expression"]["dialects"][0]["expression"]
-        for m in osi["semantic_model"][0].get("metrics", [])
-    }
+    return {m["name"]: m["expression"]["dialects"][0]["expression"] for m in osi.get("metrics", [])}
 
 
 class TestReferencesResolve:
     def test_every_column_reference_is_a_dataset_field(self) -> None:
         osi, _ = _export()
-        model = osi["semantic_model"][0]
+        model = osi
         fields = {ds["name"]: {f["name"] for f in ds["fields"]} for ds in model["datasets"]}
         for name, sql in _sql(osi).items():
             assert "{[" not in sql, name
@@ -289,7 +286,7 @@ class TestSemanticsSpelledOut:
         obml["measures"] = {"Delegated": {"aggregation": "measure"}}
         obml["metrics"] = {}
         osi, _ = _export(obml)
-        dialect = osi["semantic_model"][0]["metrics"][0]["expression"]["dialects"][0]
+        dialect = osi["metrics"][0]["expression"]["dialects"][0]
         assert dialect == {"dialect": "DATABRICKS", "expression": 'MEASURE("Delegated")'}
 
 
@@ -320,7 +317,7 @@ class TestExportedSqlRuns:
     @staticmethod
     def _dataset(osi: dict[str, Any], name: str, table: str) -> str:
         """The dataset as a subquery projecting each field from its expression."""
-        ds = next(d for d in osi["semantic_model"][0]["datasets"] if d["name"] == name)
+        ds = next(d for d in osi["datasets"] if d["name"] == name)
         fields = ", ".join(
             f"{f['expression']['dialects'][0]['expression']} AS {sql_ident(f['name'])}"
             for f in ds["fields"]
@@ -425,11 +422,7 @@ class TestRoundTrip:
 
     def test_left_out_entities_ride_in_the_model_extension(self) -> None:
         osi, _ = _export()
-        ext = next(
-            e
-            for e in osi["semantic_model"][0]["custom_extensions"]
-            if e["vendor_name"] == "ORIONBELT"
-        )
+        ext = next(e for e in osi["custom_extensions"] if e["vendor_name"] == "ORIONBELT")
         kept = json.loads(ext["data"])["obml_unexported"]
         assert set(kept["metrics"]) == {"Sales MoM", "Fixed Grain Share"}
         assert set(kept["measures"]) == {"Sales At Fixed Grain"}

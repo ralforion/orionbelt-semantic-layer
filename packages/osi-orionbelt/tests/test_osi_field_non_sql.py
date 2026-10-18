@@ -38,16 +38,12 @@ def _dialect(dialect: str, expression: str) -> dict[str, Any]:
 def _convert_field(name: str, dialects: list[dict[str, Any]]) -> tuple[str, list[str]]:
     osi = {
         "version": "0.2.0.dev0",
-        "semantic_model": [
+        "name": "s",
+        "datasets": [
             {
-                "name": "s",
-                "datasets": [
-                    {
-                        "name": "Orders",
-                        "source": "A.P.ORDERS",
-                        "fields": [{"name": name, "expression": {"dialects": dialects}}],
-                    }
-                ],
+                "name": "Orders",
+                "source": "A.P.ORDERS",
+                "fields": [{"name": name, "expression": {"dialects": dialects}}],
             }
         ],
     }
@@ -86,7 +82,7 @@ class TestNonSqlDialectFallback:
         assert any("non-SQL" in w and "sales" in w for w in warnings)
 
     def test_non_sql_only_falls_back(self) -> None:
-        for dialect in ("TABLEAU", "MAQL", "SIGMA", "THOUGHTSPOT", "DAX"):
+        for dialect in ("TABLEAU", "MAQL", "SIGMA", "THOUGHTSPOT", "DAX", "HOLISTICS_AQL"):
             code, warnings = _convert_field("calc", [_dialect(dialect, "SUM([Sales])")])
             assert code == "calc", dialect
             assert any("non-SQL" in w for w in warnings), dialect
@@ -112,34 +108,28 @@ class TestResolutionIndexMatchesCode:
         # SUM(Orders.amount) becomes a measure rather than a LOSSY metric.
         osi = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "s",
+            "datasets": [
                 {
-                    "name": "s",
-                    "datasets": [
+                    "name": "Orders",
+                    "source": "A.P.ORDERS",
+                    "fields": [
                         {
-                            "name": "Orders",
-                            "source": "A.P.ORDERS",
-                            "fields": [
-                                {
-                                    "name": "revenue",
-                                    "expression": {
-                                        "dialects": [
-                                            _dialect("MDX", "cube_revenue"),
-                                            _dialect("SNOWFLAKE", "amount"),
-                                        ]
-                                    },
-                                }
-                            ],
-                        }
-                    ],
-                    "metrics": [
-                        {
-                            "name": "Total",
+                            "name": "revenue",
                             "expression": {
-                                "dialects": [_dialect("ANSI_SQL", "SUM(Orders.amount)")]
+                                "dialects": [
+                                    _dialect("MDX", "cube_revenue"),
+                                    _dialect("SNOWFLAKE", "amount"),
+                                ]
                             },
                         }
                     ],
+                }
+            ],
+            "metrics": [
+                {
+                    "name": "Total",
+                    "expression": {"dialects": [_dialect("ANSI_SQL", "SUM(Orders.amount)")]},
                 }
             ],
         }

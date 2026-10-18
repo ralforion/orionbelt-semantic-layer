@@ -40,23 +40,19 @@ class TestOwnVendorTags:
             },
         }
         osi = conv.OBMLtoOSI(obml).convert()
-        ce = osi["semantic_model"][0]["custom_extensions"]
+        ce = osi["custom_extensions"]
         assert all(e["vendor_name"] == "ORIONBELT" for e in ce)
 
     def test_osi_to_obml_native_stash_uses_osi_vendor(self) -> None:
         osi = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "m",
+            "datasets": [
                 {
-                    "name": "m",
-                    "datasets": [
-                        {
-                            "name": "Customers",
-                            "source": "WH.PUB.customers",
-                            "unique_keys": [["customer_id"]],
-                            "fields": [_osi_field("customer_id")],
-                        }
-                    ],
+                    "name": "Customers",
+                    "source": "WH.PUB.customers",
+                    "unique_keys": [["customer_id"]],
+                    "fields": [_osi_field("customer_id")],
                 }
             ],
         }
@@ -71,34 +67,28 @@ class TestForeignVendorRoundtrip:
     def _osi_with_foreign(self) -> dict[str, Any]:
         return {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "demo",
+            "custom_extensions": [{"vendor_name": "DBT", "data": json.dumps({"model": "mart_x"})}],
+            "datasets": [
                 {
-                    "name": "demo",
+                    "name": "Customers",
+                    "source": "WH.PUB.customers",
                     "custom_extensions": [
-                        {"vendor_name": "DBT", "data": json.dumps({"model": "mart_x"})}
-                    ],
-                    "datasets": [
                         {
-                            "name": "Customers",
-                            "source": "WH.PUB.customers",
-                            "custom_extensions": [
+                            "vendor_name": "SALESFORCE",
+                            "data": json.dumps({"object": "Account"}),
+                        }
+                    ],
+                    "fields": [
+                        _osi_field(
+                            "customer_id",
+                            custom_extensions=[
                                 {
-                                    "vendor_name": "SALESFORCE",
-                                    "data": json.dumps({"object": "Account"}),
+                                    "vendor_name": "GOODDATA",
+                                    "data": json.dumps({"ldm": "a"}),
                                 }
                             ],
-                            "fields": [
-                                _osi_field(
-                                    "customer_id",
-                                    custom_extensions=[
-                                        {
-                                            "vendor_name": "GOODDATA",
-                                            "data": json.dumps({"ldm": "a"}),
-                                        }
-                                    ],
-                                )
-                            ],
-                        }
+                        )
                     ],
                 }
             ],
@@ -119,7 +109,7 @@ class TestForeignVendorRoundtrip:
     def test_foreign_reemitted_to_osi(self) -> None:
         obml = conv.OSItoOBML(self._osi_with_foreign()).convert()
         osi = conv.OBMLtoOSI(obml, "demo").convert()
-        sm = osi["semantic_model"][0]
+        sm = osi
         model_vendors = {e["vendor_name"] for e in sm["custom_extensions"]}
         ds_vendors = {e["vendor_name"] for e in sm["datasets"][0]["custom_extensions"]}
         field_vendors = {
@@ -132,31 +122,25 @@ class TestForeignVendorRoundtrip:
     def test_foreign_metric_roundtrip(self) -> None:
         osi_in = {
             "version": "0.2.0.dev0",
-            "semantic_model": [
+            "name": "demo",
+            "datasets": [
                 {
-                    "name": "demo",
-                    "datasets": [
-                        {
-                            "name": "Sales",
-                            "source": "WH.PUB.sales",
-                            "fields": [_osi_field("amount")],
-                        }
+                    "name": "Sales",
+                    "source": "WH.PUB.sales",
+                    "fields": [_osi_field("amount")],
+                }
+            ],
+            "metrics": [
+                {
+                    "name": "Total",
+                    "data_type": "number",
+                    "description": "d",
+                    "custom_extensions": [
+                        {"vendor_name": "LOOKER", "data": json.dumps({"view": "sales"})}
                     ],
-                    "metrics": [
-                        {
-                            "name": "Total",
-                            "data_type": "number",
-                            "description": "d",
-                            "custom_extensions": [
-                                {"vendor_name": "LOOKER", "data": json.dumps({"view": "sales"})}
-                            ],
-                            "expression": {
-                                "dialects": [
-                                    {"dialect": "ANSI_SQL", "expression": "SUM(sales.amount)"}
-                                ]
-                            },
-                        }
-                    ],
+                    "expression": {
+                        "dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(sales.amount)"}]
+                    },
                 }
             ],
         }
@@ -168,7 +152,7 @@ class TestForeignVendorRoundtrip:
             "customExtensions"
         ]
         osi_out = conv.OBMLtoOSI(obml, "demo").convert()
-        metric = osi_out["semantic_model"][0]["metrics"][0]
+        metric = osi_out["metrics"][0]
         assert any(e["vendor_name"] == "LOOKER" for e in metric["custom_extensions"])
 
     def test_foreign_dimension_emitted_to_field(self) -> None:
@@ -195,9 +179,7 @@ class TestForeignVendorRoundtrip:
             },
         }
         osi = conv.OBMLtoOSI(obml).convert()
-        field = next(
-            f for f in osi["semantic_model"][0]["datasets"][0]["fields"] if f["name"] == "Status"
-        )
+        field = next(f for f in osi["datasets"][0]["fields"] if f["name"] == "Status")
         assert any(e["vendor_name"] == "TABLEAU" for e in field["custom_extensions"])
 
 
@@ -231,7 +213,7 @@ class TestLegacyBackCompat:
             },
         }
         osi = conv.OBMLtoOSI(obml).convert()
-        ds = osi["semantic_model"][0]["datasets"][0]
+        ds = osi["datasets"][0]
         assert ds.get("unique_keys") == [["Order ID"]]
         order_id = next(f for f in ds["fields"] if f["name"] == "Order ID")
         assert order_id.get("label") == "filter"

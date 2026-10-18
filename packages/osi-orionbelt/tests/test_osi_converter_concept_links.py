@@ -177,7 +177,7 @@ class TestRoundTrip:
 
     def test_links_ride_in_the_obsl_vendor_extension(self) -> None:
         osi = conv.OBMLtoOSI(copy.deepcopy(_OBML)).convert()
-        metric = next(m for m in osi["semantic_model"][0]["metrics"] if m["name"] == "Revenue")
+        metric = next(m for m in osi["metrics"] if m["name"] == "Revenue")
         obsl_exts = [e for e in metric["custom_extensions"] if e["vendor_name"] == "ORIONBELT"]
         assert len(obsl_exts) == 1, "links merge into the single ORIONBELT payload"
         assert (
@@ -187,7 +187,7 @@ class TestRoundTrip:
 
     def test_foreign_garbage_under_the_key_is_ignored(self) -> None:
         osi = conv.OBMLtoOSI(copy.deepcopy(_OBML)).convert()
-        model = osi["semantic_model"][0]
+        model = osi
         ext = next(e for e in model["custom_extensions"] if e["vendor_name"] == "ORIONBELT")
         data = json.loads(ext["data"])
         data["obml_external_concept_mappings"] = "not a list"

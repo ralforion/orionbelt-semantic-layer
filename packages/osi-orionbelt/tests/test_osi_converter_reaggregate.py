@@ -51,7 +51,7 @@ _OBML: dict[str, Any] = {
 def test_not_exported_as_an_ossie_metric() -> None:
     converter = conv.OBMLtoOSI(_OBML)
     osi = converter.convert()
-    names = {m["name"] for m in osi["semantic_model"][0].get("metrics", [])}
+    names = {m["name"] for m in osi.get("metrics", [])}
     assert "Avg Revenue per Customer" not in names
     assert any(
         "Avg Revenue per Customer" in w and "second query layer" in w for w in converter.warnings
