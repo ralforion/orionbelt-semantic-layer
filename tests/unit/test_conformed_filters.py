@@ -136,6 +136,11 @@ measures:
     resultType: float
     aggregation: sum
     expression: '{[Returns].[Return Qty]}'
+  Relative Sales Qty:
+    resultType: float
+    aggregation: sum
+    expression: '{[Sales].[Sale Qty]}'
+    filterContext: {mode: RELATIVE, exclude: [Sale Status]}
 metrics:
   Daily Cross:
     type: reaggregate
@@ -449,3 +454,44 @@ def test_a_reaggregate_beside_a_union_leg(con: duckdb.DuckDBPyConnection, metric
 
 def test_a_nested_reaggregate_alone(con: duckdb.DuckDBPyConnection) -> None:
     assert _rows(con, _by_year(["Peak Daily Cross"], [KEEP])) == [(2024.0, 31.0)]
+
+
+KEEP_IN = {"field": "Return Status", "op": "in", "value": ["keep"]}
+DAMAGE_NONEXISTS = {
+    "field": "Returns.Return ID",
+    "op": "nonexists",
+    "subquery": {
+        "dataObject": "Reasons",
+        "filter": [{"field": "Category", "op": "equals", "value": "damage"}],
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("measures", "where", "expected"),
+    [
+        (
+            ["Relative Sales Qty"],
+            [{"field": "Year", "op": "in", "value": [2024]}],
+            {"Relative Sales Qty": 11.0},
+        ),
+        (
+            ["Relative Cross", "Returned Qty"],
+            [KEEP_IN],
+            {"Relative Cross": 62.0, "Returned Qty": 11.0},
+        ),
+        (
+            ["Relative Cross", "Returned Qty"],
+            [DAMAGE_NONEXISTS],
+            {"Relative Cross": 67.0, "Returned Qty": 12.0},
+        ),
+    ],
+    ids=["in-without-conformed-facts", "pushed-in", "pushed-nonexists"],
+)
+def test_a_context_scan_with_list_bearing_filters(
+    con: duckdb.DuckDBPyConnection, measures: list[str], where: list[dict], expected: dict
+) -> None:
+    """An IN holds its values in a list, an EXISTS its body: the scan put
+    filter expressions in a set and failed with "unhashable type: 'list'",
+    with or without a conformed fact."""
+    assert _row(con, _by_year(measures, where)) == expected
