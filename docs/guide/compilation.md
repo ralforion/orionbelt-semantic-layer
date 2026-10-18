@@ -621,6 +621,38 @@ cannot tell you which rule is in effect.
 Facts sharing *several* dimensions raise `ANCHOR_REQUIRED_AMBIGUOUS_KEY` rather
 than picking one, because conforming at each gives a different answer.
 
+### Filters on a conformed fact
+
+A filter on a fact the anchor conforms chooses that fact's rows, so it is
+applied inside the conformed subquery, before they are aggregated to the shared
+key. This holds for a query `where`, a static model filter and the measure's own
+`filters:`. An object reached only through the conformed fact is joined inside
+the subquery:
+
+```sql
+-- Anchored Cross by year, WHERE Reason Category = 'damage'
+FROM "sales" AS "Sales"
+LEFT JOIN (
+  SELECT "Returns"."datekey" AS "__ob_ak0", SUM("Returns"."qty") AS "__ob_av0"
+  FROM "returns" AS "Returns"
+  LEFT JOIN "reasons" AS "Reasons" ON "Returns"."reason_id" = "Reasons"."id"
+  WHERE "Reasons"."category" = 'damage'
+  GROUP BY "Returns"."datekey"
+) AS "__ob_conf_0" ON "Sales"."datekey" = "__ob_conf_0"."__ob_ak0"
+```
+
+The anchor's rows are not restricted by it: a sale on a date without a damaged
+return reads `NULL` for the conformed value. A filter on the anchor's own side
+restricts the anchor's rows in the ordinary `WHERE`.
+
+Every measure in the query has to apply the filter. In a union of facts, a leg
+whose own fact reaches it applies it in its `WHERE`; a measure that can do
+neither, such as one on the anchor's rows, refuses the query
+(`FILTER_NOT_APPLICABLE_TO_MEASURE`), and a static filter skips it with
+`STATIC_FILTER_NOT_APPLIED`. A predicate reading both sides, an `OR` across a
+conformed fact and the anchor's side, has no place to be applied and is refused
+(`FILTER_ON_CONFORMED_OBJECT`; for a measure filter, an anchored-filter error).
+
 ### Which aggregates the choice affects
 
 | Aggregate | Sensitive to the anchor? |

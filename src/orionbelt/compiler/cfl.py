@@ -40,6 +40,7 @@ from orionbelt.compiler.resolution import (
     ResolvedFilter,
     ResolvedMeasure,
     ResolvedQuery,
+    computed_measures,
     make_column_expr,
     make_dimension_expr,
 )
@@ -803,7 +804,14 @@ class CFLPlanner:
             # ignore it. Any other static filter applies where relevant, so the
             # leg skips it and says so.
             leg_objects = leg_required | {lead}
+            # The leg's measures as the base measures they compute, for a
+            # filter its anchored measures read in their conformed subqueries.
+            leg_bases = computed_measures(
+                model, (name for m in measures for name in (m.component_measures or [m.name]))
+            )
             for wf in resolved.where_filters:
+                if leg_bases and leg_bases <= wf.conformed_for:
+                    continue
                 wf_objects: set[str] = set()
                 self._collect_table_refs(wf.expression, wf_objects)
                 cfl_projection.collect_correlated_tables(wf.expression, wf_objects)

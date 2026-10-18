@@ -840,7 +840,8 @@ Invalid queries return error responses:
 | `UNKNOWN_FILTER_FIELD` | 400 | Filter field is not a dimension (WHERE) or measure (HAVING) |
 | `UNREACHABLE_FILTER_OBJECT` | 400 | WHERE filter names a data object the query cannot reach |
 | `FILTER_ADMITS_ROWS_WITHOUT` | 400 | WHERE on the many side of the measures' objects could hold for a row with no matching rows there, and the query's shape cannot add those rows (several one-side objects under ROLLUP / CUBE, a nested object, `allowFanOut`); use `exists` / `nonexists` |
-| `FILTER_NOT_APPLICABLE_TO_MEASURE` | 400 | WHERE filter names a data object one selected measure's fact cannot reach (multi-fact query) |
+| `FILTER_NOT_APPLICABLE_TO_MEASURE` | 400 | WHERE filter names a data object one selected measure's fact cannot reach (multi-fact query), or that an anchored measure applies in its conformed subquery and another selected measure cannot |
+| `FILTER_ON_CONFORMED_OBJECT` | 400 | WHERE filter reads a fact an anchored measure conforms together with the anchor's side (an `OR` across both); see [Filters on a conformed fact](compilation.md#filters-on-a-conformed-fact) |
 | `STATIC_FILTER_UNREACHABLE` | 400 | A static model filter declared `enforce: always` names a data object the query, or one measure's fact, cannot reach |
 | `UNKNOWN_ORDER_BY_FIELD` | 400 | ORDER BY field not in query's SELECT |
 | `INVALID_ORDER_BY_POSITION` | 400 | Numeric ORDER BY position out of range |

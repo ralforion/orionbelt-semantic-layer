@@ -181,6 +181,11 @@ def resolve_filter_object(
     """
     if obj_name in ctx.joined_objects:
         return True
+    # Read only through a fact an anchored measure conforms: the filter is
+    # applied inside that fact's subquery, which joins what it reads
+    # (``QueryResolver._push_filters_into_conformed_facts``).
+    if any(obj_name in objs for facts in ctx.conformed_reach.values() for objs in facts.values()):
+        return True
     if ctx.graph is None:
         return False
     reachable = any(obj_name in ctx.graph.descendants(j) for j in list(ctx.joined_objects))

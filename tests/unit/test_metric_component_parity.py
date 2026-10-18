@@ -398,15 +398,14 @@ def test_a_computed_column_on_a_conformed_fact_stays_one_aggregate() -> None:
     assert float(con.execute(sql).fetchall()[0][1]) == pytest.approx(700.0)
 
 
-def test_a_measure_filter_on_a_conformed_fact_is_refused() -> None:
+def test_a_measure_filter_on_a_conformed_fact_chooses_its_rows() -> None:
     """A predicate cannot be aggregated to the shared key.
 
-    Restricting the foreign fact has to happen before it is conformed. Treated
-    as a value it became ``SUM("Returns"."status")``, rejected outright for text
-    and answering the wrong question for a number.
+    Treated as a value it became ``SUM("Returns"."status")``, rejected outright
+    for text and answering the wrong question for a number. It restricts the
+    foreign fact before it is conformed: a WHERE inside the conformed subquery
+    (values: ``test_conformed_filters.py``).
     """
-    from orionbelt.compiler.anchored import AnchoredFilterNotSupportedError
-
     yaml_text = _BASE.replace(
         """      Return Date Key: {code: datekey, abstractType: string}
       Qty: {code: qty, abstractType: float}""",
@@ -419,8 +418,10 @@ def test_a_measure_filter_on_a_conformed_fact_is_refused() -> None:
         "    filters:\n      - column: {dataObject: Returns, column: Status}\n"
         "        operator: equals\n        values: [{dataType: string, valueString: keep}]",
     )
-    with pytest.raises(AnchoredFilterNotSupportedError, match="Returns"):
-        _compile(yaml_text, ["Anchored Cross"])
+    sql = _compile(yaml_text, ["Anchored Cross"]).sql
+    conformed = sql[sql.index("LEFT JOIN (") : sql.index(') AS "__ob_conf_0"')]
+    assert '"Returns"."status" = ' in conformed
+    assert 'SUM("Returns"."status")' not in sql
 
 
 def test_a_measure_filter_on_the_anchor_itself_still_works() -> None:
@@ -477,16 +478,18 @@ def _filtered(field: str):
     return CompilationPipeline().compile(query, _model(_status_model()), "duckdb")
 
 
-def test_a_query_filter_on_a_conformed_fact_is_refused_not_dropped() -> None:
+def test_a_query_filter_on_a_conformed_fact_is_applied_not_dropped() -> None:
     """Silently returning unfiltered totals is the worst available outcome.
 
     An anchored measure pins the base object, which bypasses the re-anchoring
     that normally makes a filter's data object reachable. The predicate then
     resolved to nothing and was skipped, so the query answered 70 where the
-    filter asked for 20, with no WHERE clause and no warning.
+    filter asked for 20, with no WHERE clause and no warning. It was refused
+    since; it is now applied inside the conformed subquery.
     """
-    with pytest.raises(ResolutionError, match="Returns"):
-        _filtered("Return Status")
+    sql = _filtered("Return Status").sql
+    conformed = sql[sql.index("LEFT JOIN (") : sql.index(') AS "__ob_conf_0"')]
+    assert '"Returns"."status" = ' in conformed
 
 
 def test_a_query_filter_on_the_anchors_own_fact_still_applies() -> None:
@@ -505,16 +508,17 @@ def _static_filtered(data_object: str):
     return CompilationPipeline().compile(query, _model(yaml_text), "duckdb")
 
 
-def test_a_static_model_filter_on_a_conformed_fact_is_refused_not_dropped() -> None:
+def test_a_static_model_filter_on_a_conformed_fact_is_applied_not_dropped() -> None:
     """A model filter is applied to *every* query, so dropping one is worse still.
 
-    The refusal added for query filters checked only the query's own ``where``.
-    A static ``filters:`` entry resolved later, found its data object
-    unreachable, and was skipped: the model's standing restriction silently did
-    not apply, widening every result rather than one query's.
+    A static ``filters:`` entry resolved, found its data object unreachable,
+    and was skipped: the model's standing restriction silently did not apply,
+    widening every result rather than one query's. It is applied inside the
+    conformed subquery, like a query filter.
     """
-    with pytest.raises(ResolutionError, match="Returns"):
-        _static_filtered("Returns")
+    sql = _static_filtered("Returns").sql
+    conformed = sql[sql.index("LEFT JOIN (") : sql.index(') AS "__ob_conf_0"')]
+    assert '"Returns"."status" = ' in conformed
 
 
 def test_a_static_model_filter_on_the_anchors_own_fact_still_applies() -> None:
