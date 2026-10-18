@@ -2410,8 +2410,6 @@ class QueryResolver:
         base = ctx.result.base_object
         graph = ctx.graph
         assert graph is not None
-        if ctx.result.has_pop:
-            return "a period-over-period metric rebuilds the query from its own rows"
         if len(parents) > 1 and ctx.result.grouping is not None:
             return "measures on several such objects under ROLLUP / CUBE"
         if any(
@@ -2521,9 +2519,7 @@ class QueryResolver:
             return
         reason: str | None = None
         for parent in parents:
-            if ctx.result.has_pop:
-                reason = "a period-over-period metric rebuilds the query from its own rows"
-            elif len(parents) > 1 and ctx.result.grouping is not None:
+            if len(parents) > 1 and ctx.result.grouping is not None:
                 reason = "measures on several such objects under ROLLUP / CUBE"
             elif parent == base or parent not in graph.descendants(base):
                 reason = f"'{parent}' is not reached from '{base}'"

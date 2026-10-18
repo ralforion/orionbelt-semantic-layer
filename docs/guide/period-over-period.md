@@ -149,6 +149,13 @@ February reads a count of 0 there. A prior period before the date range is
 unknown and stays `NULL`. A `NULL` group (a sale without a region) is a group of
 its own and compares with its own prior period.
 
+A row without a period is the `NULL` period, as in the same query without the
+PoP metric: an order without a date, and, beside a measure on the customers, a
+customer without orders (added as in a plain query, see
+[Parents without children](compilation.md#parents-without-children)). It has
+no prior period, so its comparisons are `NULL`. `pop_base` and `pop_compare` each
+read it in a part of their own, beside the dated periods.
+
 ### Filter Push-Down
 
 !!! important
