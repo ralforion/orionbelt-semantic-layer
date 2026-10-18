@@ -647,9 +647,8 @@ restricts the anchor's rows in the ordinary `WHERE`.
 
 Every measure in the query has to apply the filter. In a union of facts, a leg
 whose own fact reaches it applies it in its `WHERE`; a measure that can do
-neither, such as one on the anchor's rows, refuses the query
-(`FILTER_NOT_APPLICABLE_TO_MEASURE`), and a static filter skips it with
-`STATIC_FILTER_NOT_APPLIED`. A predicate reading both sides, an `OR` across a
+neither, such as one on the anchor's rows, is computed without it and named in
+a `FILTER_NOT_APPLIED` warning (a static filter: `STATIC_FILTER_NOT_APPLIED`). A predicate reading both sides, an `OR` across a
 conformed fact and the anchor's side, has no place to be applied and is refused
 (`FILTER_ON_CONFORMED_OBJECT`; for a measure filter, an anchored-filter error).
 

@@ -253,11 +253,13 @@ def test_a_union_leg_that_reaches_it_filters_natively(con: duckdb.DuckDBPyConnec
     ]
 
 
-def test_a_measure_that_cannot_apply_it_is_refused() -> None:
-    """Sales Qty reads the anchor's own rows, which no return filter chooses."""
-    with pytest.raises(ResolutionError) as raised:
-        _compile(_by_year(["Anchored Cross", "Sales Qty"], [KEEP]))
-    assert [e.code for e in raised.value.errors] == ["FILTER_NOT_APPLICABLE_TO_MEASURE"]
+def test_a_measure_that_cannot_apply_it_is_named(con: duckdb.DuckDBPyConnection) -> None:
+    """Sales Qty reads the anchor's own rows, which no return filter chooses:
+    computed without it (every sale, 11), and the query says so."""
+    compiled = _compile(_by_year(["Anchored Cross", "Sales Qty"], [KEEP]))
+    skipped = [w for w in compiled.warnings if w.code == "FILTER_NOT_APPLIED"]
+    assert len(skipped) == 1 and "'Sales Qty'" in skipped[0].message
+    assert _rows(con, _by_year(["Anchored Cross", "Sales Qty"], [KEEP])) == [(2024.0, 62.0, 11.0)]
 
 
 def test_a_static_filter_skips_a_measure_that_cannot_apply_it(

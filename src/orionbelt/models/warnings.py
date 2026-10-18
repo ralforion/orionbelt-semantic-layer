@@ -69,6 +69,10 @@ class WarningCode:
     # query, or one leg of a multi-fact union, cannot reach its data object
     STATIC_FILTER_NOT_APPLIED = "STATIC_FILTER_NOT_APPLIED"
 
+    # A query WHERE filter one leg of a multi-fact union cannot reach: that
+    # leg's measures (or raw rows) are computed without it, and named
+    FILTER_NOT_APPLIED = "FILTER_NOT_APPLIED"
+
     # Generic merge-time warning (extends/inherits)
     MERGE_WARNING = "MERGE_WARNING"
 

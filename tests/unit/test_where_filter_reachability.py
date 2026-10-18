@@ -1,4 +1,4 @@
-"""A WHERE filter the caller wrote is applied or refused, never dropped.
+"""A WHERE filter the caller wrote is applied, or skipped by name, never dropped.
 
 A query filter on an object the plan does not reach used to be skipped as
 "irrelevant to the current query". With measures on two objects the skip fired
@@ -8,6 +8,10 @@ from there, and dropped the status filter from every leg of the union, so
 every count and sum came back unfiltered. Across two independent facts the
 opposite happened: the predicate was copied into a leg that never joins its
 table.
+
+A leg of a multi-fact union that cannot reach a query filter computes its
+measures without it, and the query names them (``FILTER_NOT_APPLIED``):
+refusing it hid values the filter has no bearing on (decided 2026-10-17).
 
 Static model filters keep their contract: they apply where relevant.
 """
@@ -162,20 +166,22 @@ def test_one_side_filter_still_applies_to_every_leg(con: duckdb.DuckDBPyConnecti
     assert _rows(con, sql) == [(157.0, 10.0)]
 
 
-def test_filter_one_fact_cannot_reach_is_refused() -> None:
-    """Returns never joins Orders. Refunds computed without the filter would
-    answer a different question, and emitting the predicate there names a
-    table the leg never joins."""
-    with pytest.raises(ResolutionError) as excinfo:
-        _sql(
-            {
-                "select": {"measures": ["Revenue", "Refunds"]},
-                "where": [{"field": "Status", "op": "=", "value": "ok"}],
-            }
-        )
-    errors = excinfo.value.errors
-    assert [e.code for e in errors] == ["FILTER_NOT_APPLICABLE_TO_MEASURE"]
-    assert "'Refunds'" in errors[0].message
+def test_filter_one_fact_cannot_reach_is_skipped_by_name(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Returns never joins Orders. Emitting the predicate there names a table
+    the leg never joins; Refunds is computed without it, all refunds (15),
+    and the warning says so. It was refused."""
+    result = _compile(
+        {
+            "select": {"measures": ["Revenue", "Refunds"]},
+            "where": [{"field": "Status", "op": "=", "value": "ok"}],
+        }
+    )
+    assert _rows(con, result.sql) == [(150.0, 15.0)]
+    skipped = [w for w in result.warnings if w.code == "FILTER_NOT_APPLIED"]
+    assert len(skipped) == 1
+    assert "'Refunds'" in skipped[0].message
 
 
 def test_static_filter_one_fact_cannot_reach_applies_where_relevant(
@@ -258,19 +264,19 @@ def test_filter_on_a_disconnected_object_is_refused() -> None:
 def test_query_filter_duplicating_a_static_one_keeps_its_demand() -> None:
     """Written in the query, the predicate is the caller's, even when the
     model declares the same one statically. Deduplicated to the static copy,
-    it was skipped on the Refunds leg, which then came back unfiltered."""
+    it was skipped on the Refunds leg as a static filter. The skip is now the
+    query filter's: named as such, not as the model's."""
     yaml_text = MODEL_YAML + (
         "filters:\n  - {dataObject: Orders, column: Status, operator: equals, value: ok}\n"
     )
-    with pytest.raises(ResolutionError) as excinfo:
-        _sql(
-            {
-                "select": {"measures": ["Revenue", "Refunds"]},
-                "where": [{"field": "Status", "op": "=", "value": "ok"}],
-            },
-            yaml_text,
-        )
-    assert [e.code for e in excinfo.value.errors] == ["FILTER_NOT_APPLICABLE_TO_MEASURE"]
+    result = _compile(
+        {
+            "select": {"measures": ["Revenue", "Refunds"]},
+            "where": [{"field": "Status", "op": "=", "value": "ok"}],
+        },
+        yaml_text,
+    )
+    assert [w.code for w in result.warnings] == ["FILTER_NOT_APPLIED"]
 
 
 @pytest.mark.parametrize(
@@ -303,3 +309,19 @@ def test_filter_context_that_drops_the_filter_never_resolves_it(
         yaml_text,
     )
     assert _rows(con, sql) == [(150.0, 15.0)]
+
+
+def test_raw_rows_one_fact_cannot_filter_are_named(con: duckdb.DuckDBPyConnection) -> None:
+    """A raw listing across Orders and Returns: the Returns leg cannot reach
+    the order status, so it lists every return, as before, and the query now
+    says so. The skip was silent."""
+    result = _compile(
+        {
+            "select": {"fields": ["Orders.Amount", "Returns.Refund"]},
+            "where": [{"field": "Status", "op": "=", "value": "ok"}],
+        }
+    )
+    rows = sorted((tuple(row) for row in con.execute(result.sql).fetchall()), key=str)
+    assert rows == [(100.0, None), (50.0, None), (None, 10.0), (None, 5.0)]
+    skipped = [w for w in result.warnings if w.code == "FILTER_NOT_APPLIED"]
+    assert len(skipped) == 1 and "'Returns'" in skipped[0].message
