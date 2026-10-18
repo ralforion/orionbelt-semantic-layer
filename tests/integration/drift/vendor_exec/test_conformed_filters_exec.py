@@ -86,6 +86,7 @@ dataObjects:
         columnsTo: [Reason ID]
 dimensions:
   Year: {{dataObject: Calendar, column: Year, resultType: int}}
+  Day: {{dataObject: Calendar, column: Date Key, resultType: string}}
   Return Status: {{dataObject: Returns, column: Return Status, resultType: string}}
   Reason Category: {{dataObject: Reasons, column: Category, resultType: string}}
 measures:
@@ -107,6 +108,12 @@ measures:
     resultType: float
     aggregation: sum
     expression: '{{[Returns].[Return Qty]}}'
+metrics:
+  Daily Cross:
+    type: reaggregate
+    measure: Anchored Cross
+    per: [Day]
+    aggregation: avg
 """
 
 
@@ -158,6 +165,21 @@ def _assert_all(target: VendorTarget) -> None:
     ]
     # Reasons joined inside the subquery: only d1's damaged 4.
     assert _values(target, model, ["Anchored Cross"], damage) == [Decimal(20)]
+    # An EXISTS correlated to Returns, inside its subquery: r2, r3 have no
+    # damage reason, d1 5 * 5 + d2 6 * 7.
+    nonexists = [
+        {
+            "field": "Returns.Return ID",
+            "op": "nonexists",
+            "subquery": {
+                "dataObject": "Reasons",
+                "filter": [{"field": "Category", "op": "equals", "value": "damage"}],
+            },
+        }
+    ]
+    assert _values(target, model, ["Anchored Cross"], nonexists) == [Decimal(67)]
+    # Per day, then averaged: (20 + 42) / 2.
+    assert _values(target, model, ["Daily Cross"], keep) == [Decimal(31)]
     # A union leg on Returns applies the filter in its own WHERE: 4 + 7.
     assert _values(target, model, ["Anchored Cross", "Returned Qty"], keep) == [
         Decimal(62),

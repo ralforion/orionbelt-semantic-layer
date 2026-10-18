@@ -70,6 +70,7 @@ dataObjects:
         columnsTo: [Reason ID]
 dimensions:
   Year: {dataObject: Calendar, column: Year, resultType: int}
+  Day: {dataObject: Calendar, column: Date Key, resultType: string}
   Return Status: {dataObject: Returns, column: Return Status, resultType: string}
   Reason Category: {dataObject: Reasons, column: Category, resultType: string}
   Sale Status: {dataObject: Sales, column: Sale Status, resultType: string}
@@ -115,6 +116,12 @@ measures:
     resultType: float
     aggregation: sum
     expression: '{[Sales].[Sale Qty]} * {[Returns].[Return Qty]}'
+  Fixed Cross:
+    resultType: float
+    aggregation: sum
+    anchor: Sales
+    expression: '{[Sales].[Sale Qty]} * {[Returns].[Return Qty]}'
+    filterContext: {mode: FIXED}
   Sales Qty:
     resultType: float
     aggregation: sum
@@ -123,6 +130,12 @@ measures:
     resultType: float
     aggregation: sum
     expression: '{[Returns].[Return Qty]}'
+metrics:
+  Daily Cross:
+    type: reaggregate
+    measure: Anchored Cross
+    per: [Day]
+    aggregation: avg
 """
 
 
@@ -264,3 +277,99 @@ def test_a_filter_across_both_sides_is_refused() -> None:
 def test_a_measure_filter_across_both_sides_is_refused() -> None:
     with pytest.raises(AnchoredFilterNotSupportedError, match="Returns"):
         _compile(_by_year(["Either Cross"]))
+
+
+STATIC_KEEP = (
+    "filters:\n  - dataObject: Returns\n    column: Return Status\n"
+    "    operator: equals\n    value: keep\n"
+)
+
+
+def _both_reach_reasons(sales: str) -> str:
+    """Sales (named *sales*) joins Reasons too, and the measure, anchored on
+    the calendar, conforms both facts: a reason filter restricts both."""
+    return (
+        MODEL_YAML.replace(
+            "      Sale Status: {code: status, abstractType: string}\n",
+            "      Sale Status: {code: status, abstractType: string}\n"
+            "      Sale Reason ID: {code: reason_id, abstractType: string}\n",
+        )
+        .replace(
+            """        columnsFrom: [Sale Date Key]
+        columnsTo: [Date Key]
+""",
+            """        columnsFrom: [Sale Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Reasons
+        columnsFrom: [Sale Reason ID]
+        columnsTo: [Reason ID]
+""",
+        )
+        .replace("  Sales:\n", f"  {sales}:\n")
+        .replace("dataObject: Sales,", f"dataObject: {sales},")
+        .replace("{[Sales].", f"{{[{sales}].")
+        .replace("anchor: Sales", f"anchor: {sales}")
+        .replace(
+            "  Shared Key Cross:\n    resultType: float\n    aggregation: sum\n",
+            "  Shared Key Cross:\n    resultType: float\n    aggregation: sum\n"
+            "    anchor: Calendar\n",
+        )
+    )
+
+
+@pytest.mark.parametrize("sales", ["Sales", "ASales"])
+def test_every_conformed_fact_reaching_the_filter_applies_it(
+    con: duckdb.DuckDBPyConnection, sales: str
+) -> None:
+    """Damaged sales s1 (2, d1) and s3 (6, d2), damaged return r1 (4, d1):
+    d1 2 * 4, d2 6 * NULL. Only the first fact by name was filtered, so the
+    answer changed with the name: 20 for Sales, 60 for ASales."""
+    con.execute("ALTER TABLE main.sales ADD COLUMN reason_id VARCHAR")
+    con.execute("UPDATE main.sales SET reason_id = CASE id WHEN 's2' THEN 'R2' ELSE 'R1' END")
+    where = [{"field": "Reason Category", "op": "equals", "value": "damage"}]
+    query = _by_year(["Shared Key Cross"], where)
+    assert _rows(con, query, _both_reach_reasons(sales)) == [(2024.0, 8.0)]
+
+
+def test_a_fixed_context_drops_a_pushed_static_filter(con: duckdb.DuckDBPyConnection) -> None:
+    """FIXED drops the non-enforced static filter, in the subquery too: 87,
+    beside the filtered 62. The pushed copy bypassed the context: 62."""
+    sql = _compile(_by_year(["Fixed Cross", "Anchored Cross"]), MODEL_YAML + STATIC_KEEP).sql
+    cursor = con.execute(sql)
+    row = dict(zip([d[0] for d in cursor.description], cursor.fetchone(), strict=True))
+    assert (float(row["Fixed Cross"]), float(row["Anchored Cross"])) == (87.0, 62.0)
+
+
+@pytest.mark.parametrize(("op", "total"), [("exists", 20.0), ("nonexists", 67.0)])
+def test_an_exists_on_the_conformed_fact(
+    con: duckdb.DuckDBPyConnection, op: str, total: float
+) -> None:
+    """Returns with a damage reason: r1 (d1 5 * 4); without: r2 and r3
+    (d1 5 * 5, d2 6 * 7). The correlation to Returns was left outside its
+    subquery: "Referenced table Returns not found"."""
+    where = [
+        {
+            "field": "Returns.Return ID",
+            "op": op,
+            "subquery": {
+                "dataObject": "Reasons",
+                "filter": [{"field": "Category", "op": "equals", "value": "damage"}],
+            },
+        }
+    ]
+    assert _rows(con, _by_year(["Anchored Cross"], where)) == [(2024.0, total)]
+
+
+def test_the_cache_depends_on_the_subquery_tables() -> None:
+    """Returns and Reasons are read only in the conformed subquery; an update
+    to either has to invalidate the cached result."""
+    where = [{"field": "Reason Category", "op": "equals", "value": "damage"}]
+    tables = _compile(_by_year(["Anchored Cross"], where)).physical_tables
+    assert {"main.returns", "main.reasons"} <= set(tables)
+
+
+def test_a_reaggregate_over_an_anchored_measure(con: duckdb.DuckDBPyConnection) -> None:
+    """Per day, then averaged: d1 5 * 4, d2 6 * 7 -> 31. The applicability
+    check read the metric's placeholder as a measure and refused."""
+    assert _rows(con, _by_year(["Daily Cross"], [KEEP])) == [(2024.0, 31.0)]

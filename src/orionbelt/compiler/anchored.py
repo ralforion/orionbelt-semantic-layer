@@ -49,7 +49,6 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.expr_rewrite import (
     collect_column_refs,
-    collect_referenced_tables,
     map_nodes,
 )
 from orionbelt.compiler.fanout import FanoutError
@@ -59,6 +58,7 @@ from orionbelt.compiler.nested import emit_join_step
 from orionbelt.compiler.resolution import (
     ResolvedQuery,
     conformed_reach,
+    filter_tables,
     make_column_expr,
     split_conformed_filters,
 )
@@ -233,7 +233,7 @@ def _conform_one(
     builder.from_(qualify_object(foreign_obj), alias=foreign)
     read: set[str] = set()
     for condition in filters:
-        collect_referenced_tables(condition, read)
+        read |= filter_tables(condition)
     joined = {foreign}
     for step in graph.find_join_path({foreign}, read | {foreign}):
         new_object = step.to_object
@@ -334,7 +334,15 @@ def plan_conformed_facts(
                 f"{_CONFORM_ALIAS}{len(conformed)}",
                 qualify,
                 overrides,
-                resolved.conformed_filters.get((resolved_measure.name, foreign), []),
+                [
+                    *(
+                        wf.expression
+                        for wf in resolved.conformed_filters.get(
+                            (resolved_measure.name, foreign), []
+                        )
+                    ),
+                    *resolved.conformed_measure_filters.get((resolved_measure.name, foreign), []),
+                ],
                 graph,
             )
             conformed.append(fact)

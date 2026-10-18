@@ -321,6 +321,13 @@ def _plan_isolated_scan(
 
     def prepare(sub_resolved: ResolvedQuery) -> None:
         sub_resolved.where_filters = list(filters)
+        # Filters applied inside a conformed subquery are WHERE filters all the
+        # same: the context drops them as it drops the others. The sub-query
+        # was resolved with the model's static filters, which it pushed there.
+        sub_resolved.conformed_filters = {
+            key: _compute_effective_filters(context, pushed)
+            for key, pushed in sub_resolved.conformed_filters.items()
+        }
         # The context is this scan's own, not something to apply again inside it.
         sub_resolved.measures = [replace(m, filter_context=None) for m in sub_resolved.measures]
 
