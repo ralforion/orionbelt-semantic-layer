@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 import osi_orionbelt.converter as conv
-from osi_orionbelt._ossie_sql import subset_violations
+from osi_orionbelt._ossie_sql import _FUNCTIONS, subset_violations
 
 
 def _filter(operator: str, value: Any, data_type: str = "string") -> dict[str, Any]:
@@ -124,6 +124,28 @@ class TestAnsiOnly:
         assert list(_dialects()[name]) == ["ANSI_SQL"]
 
 
+def _hello_world(metric_sql: str) -> dict[str, Any]:
+    """The hello-world model of apache/ossie#576, tagged OSSIE_SQL_2026."""
+
+    def expr(sql: str) -> dict[str, Any]:
+        return {"dialects": [{"dialect": "OSSIE_SQL_2026", "expression": sql}]}
+
+    return {
+        "version": "0.2.0.dev0",
+        "name": "hello_world",
+        "datasets": [
+            {
+                "name": "sales",
+                "source": "hello.public.sales",
+                "fields": [{"name": "amount", "datatype": "Decimal", "expression": expr("amount")}],
+            }
+        ],
+        "metrics": [
+            {"name": "total_amount", "datatype": "Decimal", "expression": expr(metric_sql)}
+        ],
+    }
+
+
 class TestRoundTrip:
     def test_import_reads_the_ansi_form(self) -> None:
         osi = conv.OBMLtoOSI(copy.deepcopy(_OBML), "sales").convert()
@@ -132,29 +154,21 @@ class TestRoundTrip:
             back["measures"]["Discounted"]["filters"] == _OBML["measures"]["Discounted"]["filters"]
         )
 
-    def test_ossie_first_metric_keeps_its_tag(self) -> None:
-        # The hello-world model of apache/ossie#576, tagged OSSIE_SQL_2026.
-        expr = lambda sql: {"dialects": [{"dialect": "OSSIE_SQL_2026", "expression": sql}]}  # noqa: E731
-        doc = {
-            "version": "0.2.0.dev0",
-            "name": "hello_world",
-            "datasets": [
-                {
-                    "name": "sales",
-                    "source": "hello.public.sales",
-                    "fields": [
-                        {"name": "amount", "datatype": "Decimal", "expression": expr("amount")}
-                    ],
-                }
-            ],
-            "metrics": [
-                {
-                    "name": "total_amount",
-                    "datatype": "Decimal",
-                    "expression": expr("SUM(sales.amount)"),
-                }
-            ],
+    def test_ossie_first_scalar_function_keeps_its_tag(self) -> None:
+        # ROUND is REQUIRED by the spec; dropping the tag would retag it again.
+        doc = _hello_world("ROUND(SUM(sales.amount), 2)")
+        back = conv.OBMLtoOSI(conv.OSItoOBML(doc).convert()).convert()
+        dialects = {
+            d["dialect"]: d["expression"]
+            for d in next(m for m in back["metrics"] if m["name"] == "total_amount")["expression"][
+                "dialects"
+            ]
         }
+        assert subset_violations(dialects["OSSIE_SQL_2026"]) == []
+        assert "ROUND(" in dialects["OSSIE_SQL_2026"]
+
+    def test_ossie_first_metric_keeps_its_tag(self) -> None:
+        doc = _hello_world("SUM(sales.amount)")
         back = conv.OBMLtoOSI(conv.OSItoOBML(doc).convert()).convert()
         dialects = {
             d["dialect"]: d["expression"] for d in back["metrics"][0]["expression"]["dialects"]
@@ -181,6 +195,26 @@ class TestSubsetChecker:
     def test_allowed(self, sql: str) -> None:
         assert subset_violations(sql) == []
 
+    @pytest.mark.parametrize("name", sorted(_FUNCTIONS))
+    def test_every_spec_function_sample_is_allowed(self, name: str) -> None:
+        # The samples define both the names and the node types; each must pass.
+        assert subset_violations(_FUNCTIONS[name]) == []
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "ROUND(SUM(t.x), 2) + ABS(t.y) + CEIL(t.z) + TRUNCATE(t.x, 1) + LOG10(t.x)",
+            "DATEADD(day, 7, t.d) + DATEDIFF(month, t.a, t.b) + EXTRACT(YEAR FROM t.d)",
+            "IFF(t.c, 1, 0) + ZEROIFNULL(t.x) + NVL2(t.a, 1, 2) + CHARINDEX('a', t.s)",
+            "CAST(t.x AS STRING) + TRY_CAST(t.y AS DECIMAL(10, 2)) + TIMESTAMP_NTZ '2024-01-01'",
+            "t.a || t.b",
+            "t.a IS NOT DISTINCT FROM t.b",
+            "CASE WHEN t.a LIKE 'x%' THEN 'y' ELSE 'z' END",
+        ],
+    )
+    def test_required_scalar_functions_and_syntax(self, sql: str) -> None:
+        assert subset_violations(sql) == []
+
     @pytest.mark.parametrize(
         ("sql", "reason"),
         [
@@ -190,7 +224,19 @@ class TestSubsetChecker:
             ("t.a LIKE 'x' ESCAPE '\\'", "Escape"),
             ("AVG(DISTINCT t.x)", "DISTINCT"),
             ("SUM(t.x) + (SELECT 1)", "Subquery"),
-            ("CAST(t.x AS INTERVAL)", "CAST"),
+            ("CAST(t.x AS INTERVAL)", "INTERVAL"),
+            # Written forms sqlglot would normalize into allowed nodes.
+            ("SUM(SAFE_CAST(t.x AS INT))", "SAFE_CAST"),
+            ("CAST(t.x AS INT64)", "INT64"),
+            ("STR_POSITION(t.s, 'a')", "STR_POSITION"),
+            # Constructs the spec does not list.
+            ("TIMESTAMP '2024-01-01'", "TIMESTAMP"),
+            ("INTERVAL '1' DAY", "INTERVAL"),
+            ("t.a::int", "::"),
+            ("t.a[1]", "["),
+            ("CURRENT_USER", "CurrentUser"),
+            ("TO_DATE(t.s, 'YYYY')", "EXPERIMENTAL"),
+            ("EXTRACT(DECADE FROM t.d)", "EXTRACT"),
             ("DATE_TRUNC('decade', t.d)", "DATE_TRUNC"),
             ("SUM(", "does not parse"),
         ],
