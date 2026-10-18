@@ -48,6 +48,8 @@ The converter targets the OSI **core-spec** semantic model (datasets, fields, re
 
 ## What other OSI tools read
 
+Each exported measure or metric carries its expression in `ANSI_SQL` and, where it has a form in Apache Ossie's own expression language, also in `OSSIE_SQL_2026`. That form uses the language's functions where they differ from ANSI: `CONTAINS`, `STARTSWITH` and `ENDSWITH` instead of `LIKE ... ESCAPE`, native `ILIKE`, and a `CAST` for a timestamp literal. It is checked node by node against the subset `core-spec/expression_language.md` defines; a measure using `MODE`, `ANY_VALUE` or `LISTAGG`, a pattern that needs `ESCAPE`, or an authored expression outside the subset keeps `ANSI_SQL` only.
+
 Another OSI tool reads a metric's SQL expression, not OrionBelt's vendor extension, so the export writes expressions that compute what OrionBelt computes:
 
 | OBML | Exported expression |
