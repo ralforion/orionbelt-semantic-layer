@@ -365,11 +365,15 @@ class OBMLtoOSI:
         path = f"{sql_ident(parent)}.{sql_ident(segments[0])}"
         for segment in segments[1:]:
             path = f"({path}).{sql_ident(segment)}"
-        selected = [
-            col["code"]
-            for col in (do_obj.get("columns") or {}).values()
-            if isinstance(col, dict) and col.get("code")
-        ]
+        # Each physical field once: two columns may share a code, and a
+        # repeated output name is ambiguous to read.
+        selected = list(
+            dict.fromkeys(
+                col["code"]
+                for col in (do_obj.get("columns") or {}).values()
+                if isinstance(col, dict) and col.get("code")
+            )
+        )
         for child in data_objects.values():
             child_nested = child.get("nestedIn") or {}
             if child_nested.get("dataObject") == do_name and child_nested.get("column"):

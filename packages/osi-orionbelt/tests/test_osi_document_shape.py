@@ -213,3 +213,16 @@ class TestNestedOnlyDataObject:
         assert labels["source"] == "WH.PUBLIC.charge_labels"
         back = conv.OSItoOBML(osi).convert()
         assert back["dataObjects"]["Charge Labels"]["code"] == "charge_labels"
+
+    def test_shared_code_is_selected_once(self) -> None:
+        # Two columns over one physical field: both fields export, and the
+        # query names the field once so reading it is not ambiguous.
+        obml = copy.deepcopy(_NESTED_OBML)
+        obml["dataObjects"]["Charge Labels"]["columns"]["Label Code"] = {
+            "code": "Key",
+            "abstractType": "string",
+        }
+        osi = conv.OBMLtoOSI(obml, "billing").convert()
+        labels = next(d for d in osi["datasets"] if d["name"] == "Charge Labels")
+        assert labels["source"].count('AS "Key"') == 1
+        assert {"Label Key", "Label Code"} <= {f["name"] for f in labels["fields"]}
