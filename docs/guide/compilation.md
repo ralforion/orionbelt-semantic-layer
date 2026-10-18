@@ -356,9 +356,11 @@ FROM __ob_dedup_0 d LEFT JOIN __ob_main m ON d."Region" IS NOT DISTINCT FROM m."
 
 A `WHERE` the added rows cannot pass (`Region = 'north'`, which their `NULL`
 region fails) adds nothing, and the query plans as before. The rows are added
-only where one object's measures are read through the base: measures on several
-such objects, period-over-period, a nested object or a measure with
-`allowFanOut: true` keep the plan as it was. Under `ROLLUP` / `CUBE` every
+for each object whose measures are read through the base, a set of their own
+(customers without orders and products never ordered, beside the order rows);
+with several, the query's groups are listed from every CTE. Period-over-period,
+a nested object, a measure with `allowFanOut: true`, or several such objects
+under `ROLLUP` / `CUBE` keep the plan as it was. Under `ROLLUP` / `CUBE` every
 grouping set is deduplicated on its own rows (below), and those rows include the
 products without a sale too, so the subtotals and the grand total count them. A measure `filters:`
 clause that only such rows can pass (`notset` on a sale column) is refused
@@ -539,9 +541,9 @@ holds with every sale column `NULL` (`notset`, a `NOT`, an `OR` with a product
 condition). For such a filter the products without sales are added as rows of
 their own, read without joining the sales, with the filter evaluated for them
 over `NULL` sale columns: the same leg as a `WHERE` that admits them (see
-[Query Language](query-language.md)). Where that leg cannot be built (measures on
-several such objects, period-over-period, a nested object, or under `ROLLUP` /
-`CUBE` every measure on that object filtered so) the query is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than answered without
+[Query Language](query-language.md)). Where that leg cannot be built
+(period-over-period, a nested object, several such objects under `ROLLUP` /
+`CUBE`, or under `ROLLUP` / `CUBE` every measure on that object filtered so) the query is refused with `FILTER_ADMITS_ROWS_WITHOUT` rather than answered without
 them.
 
 ## Cross-fact measure expressions

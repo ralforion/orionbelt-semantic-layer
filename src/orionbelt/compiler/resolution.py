@@ -756,7 +756,7 @@ class ResolvedQuery:
     a measure mixing base-grain and replicated columns."""
     coalesce_aliases: set[str] = field(default_factory=set)
     grouping: Grouping | None = None
-    childless_leg: ChildlessLeg | None = None
+    childless_legs: list[ChildlessLeg] = field(default_factory=list)
     """Parent rows without child rows that the WHERE accepts, added by the
     ``grain_dedup`` pass beside the plan's own (``LEFT JOIN`` semantics)."""
     dedup_measures: dict[str, str] = field(default_factory=dict)
@@ -2291,7 +2291,9 @@ class QueryResolver:
             collect_measure_filter_objects(item, objects)
         return bool(objects - measure.source_objects)
 
-    def _plan_parents_without_children(self, ctx: _ResolutionContext) -> None:
+    def _plan_parents_without_children(
+        self, ctx: _ResolutionContext, required: frozenset[str] = frozenset()
+    ) -> None:
         """Add the parents without child rows when no WHERE asks for them.
 
         A query based on the orders reads the customers through their orders,
@@ -2312,7 +2314,7 @@ class QueryResolver:
         """
         base = ctx.result.base_object
         graph = ctx.graph
-        if graph is None or ctx.result.allow_fan_out:
+        if graph is None or (ctx.result.allow_fan_out and not required):
             return
         reached = graph.descendants(base)
         names = [m.name for m in ctx.result.measures] + list(ctx.result.metric_components)
@@ -2334,82 +2336,117 @@ class QueryResolver:
             if gate is not None and can_hold_without(gate, children):
                 admitting[name] = parent
 
-        parents = (
-            sorted(set(admitting.values()))
-            if admitting
-            else sorted(
-                {parent for name in names if (parent := self._parent_of(ctx, name, reached))}
-            )
+        parents = sorted(
+            {parent for name in names if (parent := self._parent_of(ctx, name, reached))} | required
         )
-        if not parents:
-            return
-        # A WHERE on what the query joins outside the parent (the sale year)
-        # holds for none of these rows, which read it NULL: nothing to add.
         joined = {base} | {step.to_object for step in ctx.result.join_steps}
-        outside = joined - joined_beneath(ctx.result.join_steps, parents[0])
-        for wf in ctx.result.where_filters:
-            if not can_hold_without(wf.expression, outside):
-                return
-        reason: str | None = None
-        if len(parents) > 1:
-            reason = "the measures read several objects that cannot reach it"
-        elif ctx.result.has_pop:
-            reason = "a period-over-period metric rebuilds the query from its own rows"
-        elif any(
+        legs: list[ChildlessLeg] = []
+        for parent in parents:
+            needed = sorted(name for name, owner in admitting.items() if owner == parent)
+            # A WHERE on what the query joins outside the parent (the sale
+            # year) holds for none of these rows, which read it NULL: nothing
+            # to add.
+            outside = joined - joined_beneath(ctx.result.join_steps, parent)
+            if any(not can_hold_without(wf.expression, outside) for wf in ctx.result.where_filters):
+                continue
+            reason = self._childless_obstacle(
+                ctx, parent, parents, names, reached, bool(needed) or parent in required
+            )
+            if reason is None:
+                legs.append(
+                    ChildlessLeg(
+                        parent=parent,
+                        child=base,
+                        children=frozenset(
+                            {base} | (reached - graph.descendants(parent) - {parent})
+                        ),
+                    )
+                )
+            elif parent in required:
+                ctx.errors.append(
+                    SemanticError(
+                        code="FILTER_ADMITS_ROWS_WITHOUT",
+                        message=(
+                            f"The WHERE can hold for a row of '{parent}' with no '{base}' "
+                            f"rows (an OR with another condition, a NOT, or an IS NULL), and "
+                            f"such rows cannot be added to this query: {reason}. Answered "
+                            f"from the '{base}' rows alone, they would be left out without "
+                            f"a word."
+                        ),
+                        path="where",
+                        hint=(
+                            "Write the condition as 'exists' / 'nonexists', which tests for "
+                            "a matching row and keeps the ones without any."
+                        ),
+                    )
+                )
+            elif needed:
+                measures = ", ".join(f"'{name}'" for name in needed)
+                ctx.errors.append(
+                    SemanticError(
+                        code="FILTER_ADMITS_ROWS_WITHOUT",
+                        message=(
+                            f"The filter of {measures} can hold for a row of '{parent}' with "
+                            f"no '{base}' rows (an IS NULL, a NOT, or an OR with another "
+                            f"condition), and such rows cannot be added to this query: "
+                            f"{reason}. Answered from the '{base}' rows alone, they would be "
+                            f"left out without a word."
+                        ),
+                    )
+                )
+            # Otherwise the plan stays as it was for this parent.
+        ctx.result.childless_legs = legs
+
+    def _childless_obstacle(
+        self,
+        ctx: _ResolutionContext,
+        parent: str,
+        parents: list[str],
+        names: list[str],
+        reached: set[str],
+        needed: bool,
+    ) -> str | None:
+        """Why *parent*'s rows without children cannot be added, if they cannot."""
+        base = ctx.result.base_object
+        graph = ctx.graph
+        assert graph is not None
+        if ctx.result.has_pop:
+            return "a period-over-period metric rebuilds the query from its own rows"
+        if len(parents) > 1 and ctx.result.grouping is not None:
+            return "measures on several such objects under ROLLUP / CUBE"
+        if any(
             ((obj := ctx.model.data_objects.get(name)) is not None and obj.is_nested)
             or ctx.model.unnest_root(name) != name
-            for name in (parents[0], base)
+            for name in (parent, base)
         ) or any(
             # Reached through an array: no table to correlate a NOT EXISTS on.
-            ctx.model.unnest_root(name) != name and parents[0] in graph.descendants(name)
+            ctx.model.unnest_root(name) != name and parent in graph.descendants(name)
             for name in reached
         ):
-            reason = "a nested data object is involved"
-        elif not admitting and any(
+            return "a nested data object is involved"
+        if not needed and any(
             (measure := ctx.model.effective_measures.get(name)) is not None
             and measure.allow_fan_out
-            and parents[0] in measure.source_objects
+            and parent in measure.source_objects
             for name in names
         ):
             # Its rows are read as the joins replicate them, on purpose; the
             # leg is joined to deduplicated rows only.
-            reason = "a measure on it sets allowFanOut"
+            return "a measure on it sets allowFanOut"
         if (
-            reason is None
-            and not admitting
+            not needed
             and ctx.result.grouping is not None
             and all(
                 self._reads_beyond(ctx, name)
                 for name in names
-                if self._parent_of(ctx, name, reached) == parents[0]
+                if self._parent_of(ctx, name, reached) == parent
             )
         ):
             # Under ROLLUP / CUBE the groups are read from the parent's
             # unfiltered measures; a measure filtered on another object reads
             # fewer rows and cannot list them.
-            reason = "every measure on it is filtered on another object"
-        if reason is not None and not admitting:
-            return
-        if reason is None:
-            parent = parents[0]
-            ctx.result.childless_leg = ChildlessLeg(
-                parent=parent,
-                child=base,
-                children=frozenset({base} | (reached - graph.descendants(parent) - {parent})),
-            )
-            return
-        measures = ", ".join(f"'{name}'" for name in sorted(admitting))
-        ctx.errors.append(
-            SemanticError(
-                code="FILTER_ADMITS_ROWS_WITHOUT",
-                message=(
-                    f"The filter of {measures} can hold for a row of '{parents[0]}' with no "
-                    f"'{base}' rows (an IS NULL, a NOT, or an OR with another condition), "
-                    f"and such rows cannot be added to this query: {reason}. Answered from "
-                    f"the '{base}' rows alone, they would be left out without a word."
-                ),
-            )
-        )
+            return "every measure on it is filtered on another object"
+        return None
 
     def _plan_rows_without_children(self, ctx: _ResolutionContext) -> None:
         """Add the parents without child rows a WHERE accepts, or refuse.
@@ -2427,14 +2464,15 @@ class QueryResolver:
         predicate accepts - the plan as it stands - and the ones without orders
         for which the predicate holds with every order column NULL. When that
         second set can be non-empty (:mod:`compiler.null_rejection`), the plan
-        gets a leg for it (:attr:`ResolvedQuery.childless_leg`, built by
+        gets a leg for it (:attr:`ResolvedQuery.childless_legs`, one per such
+        object, built by
         ``grain_dedup``): the two sets do not overlap, and the new leg never
         joins the orders, so neither multiplies the other.
 
         A shape the leg cannot express is refused instead
-        (``FILTER_ADMITS_ROWS_WITHOUT``): measures on several one-side
-        objects, ``ROLLUP`` / ``CUBE``, a period-over-period metric, or a nested
-        object on either side.
+        (``FILTER_ADMITS_ROWS_WITHOUT``): a period-over-period metric, a nested
+        object on either side, or measures on several such objects under
+        ``ROLLUP`` / ``CUBE``.
         """
         if ctx.result.requires_cfl or ctx.graph is None:
             return
@@ -2459,31 +2497,47 @@ class QueryResolver:
                 if combined is None
                 else BinaryOp(left=combined, op="AND", right=wf.expression)
             )
-        if not children or combined is None or not can_hold_without(combined, children):
+        if not children or combined is None:
             # No WHERE asks for parents without children; a measure, or its
             # filter, still may.
             self._plan_parents_without_children(ctx)
             return
 
-        parents = sorted(source for source, missing in unreached.items() if missing)
         base = ctx.result.base_object
-        parent = parents[0] if len(parents) == 1 else None
+        graph = ctx.graph
+        where = combined
+        # One leg per object the measures read that cannot reach what the WHERE
+        # reads, for which the WHERE can hold with those columns NULL: each on
+        # its own, since ``Category = games OR Tier = gold`` holds for a
+        # customer without orders and for a product never ordered, but not
+        # with both sides NULL at once.
+        parents = sorted(
+            source
+            for source, missing in unreached.items()
+            if missing and can_hold_without(where, missing)
+        )
+        if not parents:
+            self._plan_parents_without_children(ctx)
+            return
         reason: str | None = None
-        if parent is None:
-            reason = "the measures read several objects that cannot reach it"
-        elif ctx.result.has_pop:
-            reason = "a period-over-period metric rebuilds the query from its own rows"
-        elif parent == base or parent not in ctx.graph.descendants(base):
-            reason = f"'{parent}' is not reached from '{base}'"
-        elif any(
-            (obj := ctx.model.data_objects.get(name)) is not None and obj.is_nested
-            for name in (parent, base)
-        ):
-            reason = "a nested data object is involved"
-        if parent is not None and reason is None:
-            ctx.result.childless_leg = ChildlessLeg(
-                parent=parent, child=base, children=frozenset(children)
-            )
+        for parent in parents:
+            if ctx.result.has_pop:
+                reason = "a period-over-period metric rebuilds the query from its own rows"
+            elif len(parents) > 1 and ctx.result.grouping is not None:
+                reason = "measures on several such objects under ROLLUP / CUBE"
+            elif parent == base or parent not in graph.descendants(base):
+                reason = f"'{parent}' is not reached from '{base}'"
+            elif any(
+                (obj := ctx.model.data_objects.get(name)) is not None and obj.is_nested
+                for name in (parent, base)
+            ):
+                reason = "a nested data object is involved"
+            if reason is not None:
+                break
+        if reason is None:
+            # These parents need their rows; every other one the measures read
+            # through the base keeps them too, as without a WHERE.
+            self._plan_parents_without_children(ctx, required=frozenset(parents))
             return
 
         objects = ", ".join(f"'{name}'" for name in sorted(children))

@@ -249,7 +249,7 @@ def detect_dedup_measures(resolved: ResolvedQuery, model: SemanticModel) -> Dedu
     components: dict[str, str] = {}
     # Rows without children join the deduplicated rows of their object, so every
     # measure on it is deduplicated, even one duplication would not change.
-    force = resolved.childless_leg is not None
+    force = bool(resolved.childless_legs)
 
     for resolved_measure in resolved.measures:
         if resolved_measure.component_measures:
@@ -606,20 +606,23 @@ def wrap_with_grain_dedup(
 ) -> Select:
     """Wrap the planner AST so one-side measures aggregate over deduplicated rows.
 
-    With a ``childless_leg`` (see ``QueryResolver._plan_rows_without_children``)
+    With ``childless_legs`` (see ``QueryResolver._plan_rows_without_children``)
     the parent's rows without child rows that the WHERE accepts join its
     deduplicated rows, and the query's groups are read from both.
 
     Returns *ast* unchanged when no measure needs dedup.
     """
     dedup_targets = resolved.dedup_targets
-    leg = resolved.childless_leg
-    childless: _ChildlessRows | None = None
-    if leg is not None:
+    legs = resolved.childless_legs
+    # Each parent's rows without children join that parent's deduplicated rows.
+    childless_of: dict[str, _ChildlessRows] = {}
+    for leg in legs:
         _require_parent_dedup(leg, resolved, model)
-        childless = _ChildlessRows(
+        childless_of[leg.parent] = _ChildlessRows(
             leg=leg, qualify_table=qualify_table or (lambda obj: obj.qualified_code)
         )
+    # One parent's CTE has every group and drives; with several, none does.
+    sole_leg = legs[0] if len(legs) == 1 else None
     if not dedup_targets:
         return ast
 
@@ -645,7 +648,7 @@ def wrap_with_grain_dedup(
     # derived metric is then rebuilt over its components too. Not one the
     # other passes compute (cumulative, period-over-period, window), nor one
     # with a component a wrapper computes at another grain or scope.
-    if leg is not None and dim_names:
+    if legs and dim_names:
         for m in resolved.measures:
             components = leaf_components[m.name]
             if (
@@ -721,7 +724,7 @@ def wrap_with_grain_dedup(
     # A group of only parents without children is in no row of ``main``, which
     # reads the child rows: the groups are then read from every CTE at the
     # query grain, and the dimensions from that list.
-    split_groups = childless is not None and keep_main and bool(dim_names)
+    split_groups = bool(legs) and keep_main and bool(dim_names)
     dims_table = _GROUPS_CTE if split_groups else _MAIN_CTE
 
     # HAVING is evaluated inside ``main``, where a deduplicated measure does not
@@ -839,12 +842,12 @@ def wrap_with_grain_dedup(
     # gated by a measure filter, which reads fewer rows, nor one at another
     # grain; without such a CTE the groups are listed from all of them.
     driver_key: tuple[str, tuple[str, ...], str] | None = None
-    if split_groups and leg is not None:
+    if split_groups and sole_leg is not None:
         driver_key = next(
             (
                 key
                 for key in sorted(by_group)
-                if key[0] == leg.parent and key[1] == tuple(dim_names) and not key[2]
+                if key[0] == sole_leg.parent and key[1] == tuple(dim_names) and not key[2]
             ),
             None,
         )
@@ -894,6 +897,7 @@ def wrap_with_grain_dedup(
             cte_for_measure[measure_name] = cte_name
         grain_of_cte[cte_name] = grain
         columns = [measure_columns[n] for n in measure_names]
+        childless = childless_of.get(object_name)
         query: Select | UnionAll
         if resolved.grouping is not None and grain:
             # ROLLUP / CUBE: one deduplication per grouping set, each at that
@@ -948,10 +952,10 @@ def wrap_with_grain_dedup(
             # ``main`` is matched on the GROUPING() flags too: a subtotal's NULL
             # is not a detail row's NULL value.
             rolled_up.add(_MAIN_CTE)
-    elif childless is not None and resolved.grouping is not None:
+    elif legs and resolved.grouping is not None:
         # Under ROLLUP / CUBE the groups can only be read from the CTE that
         # has the parents without children at every grouping set.
-        raise _unsplittable(childless.leg, "every measure on it is filtered under ROLLUP / CUBE")
+        raise _unsplittable(legs[0], "every measure on it is filtered under ROLLUP / CUBE")
 
     # --- outer SELECT: main plus each dedup CTE, joined on the query grain ---
     def measure_ref(name: str) -> Expr:

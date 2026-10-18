@@ -171,7 +171,7 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
             # ``wrap_with_pop``, which deduplicates them itself. A planned leg
             # of rows without children runs it even with nothing to deduplicate,
             # so it can refuse a measure the leg cannot reach.
-            applies=lambda r: bool(r.dedup_targets or r.childless_leg) and not r.has_pop,
+            applies=lambda r: bool(r.dedup_targets or r.childless_legs) and not r.has_pop,
             run=lambda ast, ctx: wrap_with_grain_dedup(
                 ast, ctx.resolved, ctx.model, ctx.dialect, ctx.qualify_table
             ),
