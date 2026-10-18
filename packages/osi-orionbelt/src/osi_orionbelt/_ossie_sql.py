@@ -224,7 +224,7 @@ def ossie_sql(sql: str) -> str:
     """
     try:
         node = _parse(sql)
-    except sqlglot.errors.ParseError:
+    except sqlglot.errors.SqlglotError:
         return sql
 
     def spell(n: exp.Expr) -> exp.Expr:
