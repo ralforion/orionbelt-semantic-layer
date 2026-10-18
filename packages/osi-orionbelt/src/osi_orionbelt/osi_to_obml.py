@@ -35,6 +35,7 @@ from osi_orionbelt._field_names import (
     rename_keys,
     rename_metric,
 )
+from osi_orionbelt._portable import matching_names
 
 # sqlglot aggregate ``sql_name()`` -> OBML aggregation, for the aggregates OBML
 # models as a *single-column* measure. Multi-argument aggregates OBML also
@@ -128,6 +129,50 @@ def _restore_concept_links(
         clean = [entry for entry in links if isinstance(entry, dict)]
         if clean:
             target["externalConceptMappings"] = clean
+
+
+class _NameIndex:
+    """The datasets and fields a metric's ``<dataset>.<field>`` references name.
+
+    A name matches as the expression language resolves identifiers (see
+    :func:`matching_names`): a quoted identifier exactly, else by its
+    normalized form; a bare one regardless of case. Databricks compares even
+    quoted identifiers regardless of case, so there each is read as bare. One
+    that names nothing may name a physical code, regardless of case.
+    """
+
+    def __init__(
+        self,
+        datasets: list[str],
+        dataset_codes: dict[str, list[str]],
+        fields: dict[str, list[str]],
+        field_codes: dict[str, dict[str, list[str]]],
+    ) -> None:
+        self.datasets = datasets
+        self.dataset_codes = dataset_codes
+        self.fields = fields
+        self.field_codes = field_codes
+
+    @staticmethod
+    def _matching(
+        ident: exp.Expr, read: str | None, names: list[str], codes: dict[str, list[str]]
+    ) -> list[str]:
+        quoted = bool(ident.args.get("quoted")) and read != "databricks"
+        return matching_names(ident.name, quoted, names) or codes.get(ident.name.lower(), [])
+
+    def resolve(self, column: exp.Column, read: str | None) -> tuple[str, str] | str:
+        """The (dataset, field) *column* names, or why it names none: an
+        empty string when nothing matches, a message when several do."""
+        ds_hits = self._matching(column.args["table"], read, self.datasets, self.dataset_codes)
+        if len(ds_hits) > 1:
+            return f"is ambiguous: datasets {sorted(ds_hits)}"
+        if not ds_hits:
+            return ""
+        ds = ds_hits[0]
+        col_hits = self._matching(column.this, read, self.fields[ds], self.field_codes[ds])
+        if len(col_hits) > 1:
+            return f"is ambiguous: fields {sorted(col_hits)}"
+        return (ds, col_hits[0]) if col_hits else ""
 
 
 class OSItoOBML:
@@ -410,7 +455,8 @@ class OSItoOBML:
             if data is not None:
                 collisions = field_collisions(obml.get("dataObjects", {}))
                 for metric in data["obml_unconverted_metrics"]:
-                    rename_metric(metric, renames, {}, collisions, self.warnings.append)
+                    if isinstance(metric, dict):
+                        rename_metric(metric, renames, {}, collisions, self.warnings.append)
                 ext["data"] = json.dumps(data)
 
     @staticmethod
@@ -614,19 +660,10 @@ class OSItoOBML:
                     f"code (a non-SQL expression is not valid SQL)."
                 )
 
-        # Determine abstract type. Precedence: Apache Ossie's first-class
-        # `datatype` (v0.2+, capitalised `DataType` enum) > legacy lowercase
-        # `data_type` > name heuristic. An OBML-origin field additionally
-        # restores its exact `abstractType` from the stashed extension below
-        # (highest precedence), keeping OBML -> OSI -> OBML lossless.
-        osi_datatype = field.get("datatype", "")
-        legacy_type = field.get("data_type", "")
-        if osi_datatype in OSI_DATATYPE_TO_OBML_ABSTRACT:
-            abstract_type = OSI_DATATYPE_TO_OBML_ABSTRACT[osi_datatype]
-        elif legacy_type and legacy_type in OSI_TO_OBML_TYPE:
-            abstract_type = OSI_TO_OBML_TYPE[legacy_type]
-        else:
-            abstract_type = self._infer_obml_type(field)
+        # An OBML-origin field additionally restores its exact `abstractType`
+        # from the stashed extension below (highest precedence), keeping
+        # OBML -> OSI -> OBML lossless.
+        abstract_type = self._field_abstract_type(field)
 
         col: dict[str, Any] = {
             "code": code,
@@ -696,6 +733,20 @@ class OSItoOBML:
         self._carry_foreign_extensions(field.get("custom_extensions"), col)
 
         return name, col
+
+    def _field_abstract_type(self, field: dict) -> str:
+        """OBML abstractType of an OSI field.
+
+        Precedence: Apache Ossie's first-class `datatype` (v0.2+, capitalised
+        `DataType` enum) > legacy lowercase `data_type` > name heuristic.
+        """
+        osi_datatype = field.get("datatype")
+        if isinstance(osi_datatype, str) and osi_datatype in OSI_DATATYPE_TO_OBML_ABSTRACT:
+            return OSI_DATATYPE_TO_OBML_ABSTRACT[osi_datatype]
+        legacy_type = field.get("data_type")
+        if isinstance(legacy_type, str) and legacy_type in OSI_TO_OBML_TYPE:
+            return OSI_TO_OBML_TYPE[legacy_type]
+        return self._infer_obml_type(field)
 
     def _infer_obml_type(self, field: dict) -> str:
         """Infer OBML abstractType from OSI field metadata."""
@@ -871,7 +922,16 @@ class OSItoOBML:
                 # Skip join key columns — they are FK/PK, not analytical dims
                 if (ds_name, field_name) in self._join_key_columns:
                     continue
-                abstract_type = self._infer_obml_type(field)
+                abstract_type = self._field_abstract_type(field)
+                # OBML marks a time dimension by its temporal result type, so a
+                # time dimension over a non-temporal field (an Integer year)
+                # stays a date dimension.
+                if (
+                    isinstance(dim, dict)
+                    and dim.get("is_time")
+                    and abstract_type not in ("date", "time", "timestamp", "timestamp_tz")
+                ):
+                    abstract_type = "date"
                 dim_def: dict[str, Any] = {
                     "dataObject": ds_name,
                     "column": field_name,
@@ -1030,37 +1090,32 @@ class OSItoOBML:
         measures: dict[str, Any] = {}
         metrics: dict[str, Any] = {}
 
-        # Case-insensitive dataset/field index for resolving SQL identifiers
-        # back to their canonical OSI names (Snowflake/Databricks expressions
-        # commonly upper-case or quote them). Identifiers resolve by BOTH the
-        # OSI name and the physical code (source-table code / bare-identifier
-        # field expression): our own OBML -> OSI emitter writes metric SQL
-        # against the physical code (e.g. SUM(fact_orders.amount)), so resolving
-        # names only would drop such metrics on the return trip. Names take
-        # precedence over codes on any collision.
-        ds_lc: dict[str, str] = {}
-        for ds_name in ds_map:
-            ds_lc.setdefault(ds_name.lower(), ds_name)
+        # Dataset/field index for resolving SQL identifiers back to their
+        # canonical OSI names. Identifiers resolve by the OSI name and, failing
+        # that, by the physical code (source-table code / bare-identifier field
+        # expression), regardless of case: Snowflake/Databricks expressions
+        # commonly upper-case or quote them, and older exports wrote metric SQL
+        # against the physical code (e.g. SUM(fact_orders.amount)).
+        dataset_codes: dict[str, list[str]] = {}
+        fields: dict[str, list[str]] = {}
+        field_codes: dict[str, dict[str, list[str]]] = {}
         for ds_name, ds in ds_map.items():
             # Unquote so a quoted source table (Snowflake/Databricks style,
             # e.g. WH.PUBLIC."fact_orders") is indexed by its bare code.
             table_code = self._unquote_identifier(self._parse_source(ds.get("source", ds_name))[2])
             if table_code:
-                ds_lc.setdefault(table_code.lower(), ds_name)
-
-        fields_lc: dict[str, dict[str, str]] = {}
-        for ds_name, ds in ds_map.items():
-            fmap: dict[str, str] = {}
-            osi_fields = ds.get("fields", []) or []
-            for f in osi_fields:
-                if isinstance(f, dict) and f.get("name"):
-                    fmap.setdefault(f["name"].lower(), f["name"])
-            for f in osi_fields:
-                if isinstance(f, dict) and f.get("name"):
+                dataset_codes.setdefault(table_code.lower(), []).append(ds_name)
+            names: list[str] = []
+            codes: dict[str, list[str]] = {}
+            for f in ds.get("fields", []) or []:
+                if isinstance(f, dict) and isinstance(f.get("name"), str) and f["name"]:
+                    names.append(f["name"])
                     code = self._field_expr_identifier(f)
                     if code:
-                        fmap.setdefault(code.lower(), f["name"])
-            fields_lc[ds_name] = fmap
+                        codes.setdefault(code.lower(), []).append(f["name"])
+            fields[ds_name] = names
+            field_codes[ds_name] = codes
+        index = _NameIndex(list(ds_map), dataset_codes, fields, field_codes)
 
         for m in osi_metrics:
             name = m["name"]
@@ -1153,7 +1208,7 @@ class OSItoOBML:
             # for a reference. Anything with no aggregate, an unsupported or
             # nested aggregate, an unresolvable reference, or that sqlglot cannot
             # parse is preserved verbatim. The source dialect drives the grammar.
-            decomposed = self._decompose_metric(expr_text, _expr_dialect, ds_lc, fields_lc)
+            decomposed = self._decompose_metric(expr_text, _expr_dialect, index)
             if decomposed is None:
                 self._preserve_unconverted_metric(
                     m, f"expression not decomposable into OBML measures/metrics: {expr_text!r}"
@@ -1822,8 +1877,7 @@ class OSItoOBML:
         self,
         expr_text: str,
         osi_dialect: str | None,
-        ds_lc: dict[str, str],
-        fields_lc: dict[str, dict[str, str]],
+        index: _NameIndex,
     ) -> tuple | None:
         """Classify/decompose a metric SQL expression using sqlglot.
 
@@ -1848,21 +1902,23 @@ class OSItoOBML:
         tree, self._approximated = self._exact_percentiles(tree, read)
 
         # Resolve qualified column refs on the parsed AST, canonicalising each
-        # dataset/column to its model name (case-insensitively). Working on the
+        # dataset/column to its model name (see ``_NameIndex``). Working on the
         # tree rather than the raw text means a dotted string literal
         # (``'north.us'``) is an ``exp.Literal``, never mistaken for a
-        # ``dataset.column`` reference. Preserve if any qualified ref is unknown.
+        # ``dataset.column`` reference. Preserve if any qualified ref matches no
+        # field or more than one.
         unresolved = False
 
         def _resolve(n: exp.Expr) -> exp.Expr:
             nonlocal unresolved
             if isinstance(n, exp.Column) and n.table:
-                ds_real = ds_lc.get(n.table.lower())
-                col_real = fields_lc.get(ds_real, {}).get(n.name.lower()) if ds_real else None
-                if not ds_real or not col_real:
+                resolved = index.resolve(n, read)
+                if isinstance(resolved, str):
+                    if resolved:
+                        self.warnings.append(f"Metric reference {n.sql()} {resolved}.")
                     unresolved = True
                     return n
-                return exp.column(col_real, table=ds_real)
+                return exp.column(resolved[1], table=resolved[0])
             return n
 
         tree = tree.transform(_resolve)

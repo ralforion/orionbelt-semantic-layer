@@ -224,3 +224,38 @@ class TestMetricDatatype:
         osi = conv.OBMLtoOSI(obml, model_name="s").convert()
         metric = osi["metrics"][0]
         assert "datatype" not in metric
+
+
+def test_dimension_type_follows_the_field_datatype() -> None:
+    # A dimension without a resultType takes its field's datatype on import,
+    # as the column does, not a guess from its name ("Unit Price" names no type).
+    obml = {
+        "version": 1.0,
+        "dataObjects": {
+            "Items": {
+                "code": "items",
+                "columns": {
+                    "Unit Price": {"code": "unit_price", "abstractType": "float"},
+                    "Item Count": {"code": "item_count", "abstractType": "int"},
+                },
+            }
+        },
+        "dimensions": {
+            "Unit Price": {"dataObject": "Items", "column": "Unit Price"},
+            "Item Count": {"dataObject": "Items", "column": "Item Count"},
+        },
+    }
+    back = conv.OSItoOBML(conv.OBMLtoOSI(obml).convert()).convert()
+    assert back["dimensions"]["Unit Price"]["resultType"] == "float"
+    assert back["dimensions"]["Item Count"]["resultType"] == "int"
+
+
+def test_time_dimension_over_an_integer_field_stays_a_time_dimension() -> None:
+    osi = _osi_model([_osi_field("d_year", datatype="Integer", dimension={"is_time": True})])
+    obml = conv.OSItoOBML(osi).convert()
+    (dim,) = obml["dimensions"].values()
+    assert dim["resultType"] == "date"
+    back = conv.OBMLtoOSI(obml).convert()
+    (field,) = back["datasets"][0]["fields"]
+    assert field["dimension"] == {"is_time": True}
+    assert field["datatype"] == "Integer"
