@@ -22,7 +22,7 @@ than an expression over tables it has not joined yet.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from textwrap import indent
 from typing import TYPE_CHECKING
@@ -41,11 +41,14 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler.expr_rewrite import collect_column_refs, map_column_refs
+from orionbelt.compiler.filters import build_exists_filter_expr
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError, dedup_identity
+from orionbelt.compiler.graph import JoinStep, joined_beneath
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import (
+    ChildlessLeg,
     ResolutionError,
     ResolvedDimension,
     ResolvedMeasure,
@@ -62,6 +65,7 @@ from orionbelt.compiler.type_resolver import (
     unwrap_default,
 )
 from orionbelt.models.errors import SemanticError
+from orionbelt.models.query import FilterOperator, QueryFilter, Subquery
 from orionbelt.models.semantic import PeriodOverPeriodComparison, SemanticModel
 
 if TYPE_CHECKING:
@@ -574,6 +578,9 @@ def _source_tree_sql(
 
     *without* drops filters from the tree: the time filters, for the look-back
     that reads the prior periods past them.
+
+    With ``childless_legs`` each parent's rows without child rows follow, one
+    ``UNION ALL`` branch each (:func:`_childless_branch_sql`).
     """
     root = resolved.base_object or next(iter(resolved.required_objects), "")
     root_obj = model.data_objects[root]
@@ -584,26 +591,104 @@ def _source_tree_sql(
         to_obj = model.data_objects.get(step.to_object)
         if to_obj is None or step.to_object in joined:
             continue
-        to_alias = dialect.quote_identifier(step.to_object)
-        from_alias = dialect.quote_identifier(step.from_object)
-        on_parts = []
-        for fc, tc in zip(step.from_columns, step.to_columns, strict=True):
-            fc_code = _resolve_col_code(model, step.from_object, fc)
-            tc_code = _resolve_col_code(model, step.to_object, tc)
-            on_parts.append(
-                f"{from_alias}.{dialect.quote_identifier(fc_code)}"
-                f" = {to_alias}.{dialect.quote_identifier(tc_code)}"
-            )
-        clauses.append(
-            f"  LEFT JOIN {qualify_table(to_obj)} AS {to_alias} ON {' AND '.join(on_parts)}"
-        )
+        clauses.append(_join_clause(step, to_obj, model, dialect, qualify_table))
         joined.add(step.to_object)
 
     kept = [rf.expression for rf in resolved.where_filters if rf.expression not in (without or [])]
     if kept:
-        clauses.append(f"  WHERE {' AND '.join(dialect.compile_expr(e) for e in kept)}")
+        clauses.append(f"  WHERE {_conjunction(dialect.compile_expr(e) for e in kept)}")
 
     select_clause = ",\n       ".join(projections)
+    branches = ["SELECT " + select_clause + "\n" + "\n".join(clauses)]
+    branches.extend(
+        _childless_branch_sql(leg, resolved, model, dialect, qualify_table, select_clause, kept)
+        for leg in resolved.childless_legs
+    )
+    return "\nUNION ALL\n".join(branches)
+
+
+def _conjunction(conditions: Iterable[str]) -> str:
+    """*conditions* joined with AND, each parenthesised: a filter group renders
+    ``a OR b`` bare, and next to another condition AND binds tighter."""
+    return " AND ".join(f"({condition})" for condition in conditions)
+
+
+def _join_clause(
+    step: JoinStep,
+    to_obj: DataObject,
+    model: SemanticModel,
+    dialect: Dialect,
+    qualify_table: Callable[[DataObject], str],
+) -> str:
+    to_alias = dialect.quote_identifier(step.to_object)
+    from_alias = dialect.quote_identifier(step.from_object)
+    on_parts = []
+    for fc, tc in zip(step.from_columns, step.to_columns, strict=True):
+        fc_code = _resolve_col_code(model, step.from_object, fc)
+        tc_code = _resolve_col_code(model, step.to_object, tc)
+        on_parts.append(
+            f"{from_alias}.{dialect.quote_identifier(fc_code)}"
+            f" = {to_alias}.{dialect.quote_identifier(tc_code)}"
+        )
+    return f"  LEFT JOIN {qualify_table(to_obj)} AS {to_alias} ON {' AND '.join(on_parts)}"
+
+
+def _childless_branch_sql(
+    leg: ChildlessLeg,
+    resolved: ResolvedQuery,
+    model: SemanticModel,
+    dialect: Dialect,
+    qualify_table: Callable[[DataObject], str],
+    select_clause: str,
+    kept: list[Expr],
+) -> str:
+    """The rows of *leg*'s parent with no child row, shaped like the tree's.
+
+    Rooted at the parent, with the joins the query makes beneath it. Every other
+    object of the tree - the child, and what the query reaches through it - is
+    joined on ``1 = 0``: its columns are NULL, typed as in the tree, so the same
+    projections compile and the union lines up on every engine. The query's
+    WHERE is evaluated as it reads for such a row, beside ``NOT EXISTS`` a
+    child row, so the two branches do not overlap.
+    """
+    beneath = joined_beneath(resolved.join_steps, leg.parent)
+    parent_obj = model.data_objects[leg.parent]
+    clauses = [f"  FROM {qualify_table(parent_obj)} AS {dialect.quote_identifier(leg.parent)}"]
+    joined = {leg.parent}
+    for step in resolved.join_steps:
+        to_obj = model.data_objects.get(step.to_object)
+        if to_obj is None or step.to_object in joined or step.from_object not in beneath:
+            continue
+        if step.to_object in beneath:
+            clauses.append(_join_clause(step, to_obj, model, dialect, qualify_table))
+            joined.add(step.to_object)
+    root = resolved.base_object or next(iter(resolved.required_objects), "")
+    for name in [root, *(step.to_object for step in resolved.join_steps)]:
+        obj = model.data_objects.get(name)
+        if obj is None or name in joined:
+            continue
+        clauses.append(
+            f"  LEFT JOIN {qualify_table(obj)} AS {dialect.quote_identifier(name)} ON 1 = 0"
+        )
+        joined.add(name)
+
+    errors: list[SemanticError] = []
+    no_child = build_exists_filter_expr(
+        QueryFilter(
+            field=leg.parent,
+            op=FilterOperator.NONEXISTS,
+            subquery=Subquery(data_object=leg.child),
+        ),
+        model,
+        leg.parent,
+        qualify_table,
+        errors,
+        use_path_names=resolved.use_path_names or None,
+    )
+    if no_child is None:
+        raise ResolutionError(errors)
+    conditions = [dialect.compile_expr(no_child), *(dialect.compile_expr(e) for e in kept)]
+    clauses.append(f"  WHERE {_conjunction(conditions)}")
     return "SELECT " + select_clause + "\n" + "\n".join(clauses)
 
 
@@ -843,28 +928,48 @@ def _build_pop_base_sql(
         return map_column_refs(expr, _one)
 
     # 3. The CTE, reading its rows through one derived table.
-    selects: list[str] = []
     bucket_ref = f"{src_q}.{dialect.quote_identifier(_BUCKET_COLUMN)}"
-    for alias, dim_projection in dim_entries:
-        if dim_projection is None:
-            selects.append(f"{spine_cte}.spine_date AS {dialect.quote_identifier(alias)}")
-        else:
+
+    def _selects(period: str) -> str:
+        selects: list[str] = []
+        for alias, dim_projection in dim_entries:
+            if dim_projection is None:
+                selects.append(f"{period} AS {dialect.quote_identifier(alias)}")
+            else:
+                selects.append(
+                    f"{dialect.compile_expr(_repoint(dim_projection))} AS "
+                    f"{dialect.quote_identifier(alias)}"
+                )
+        for alias, expr in measure_entries:
             selects.append(
-                f"{dialect.compile_expr(_repoint(dim_projection))} AS "
-                f"{dialect.quote_identifier(alias)}"
+                f"{dialect.compile_expr(_repoint(expr))} AS {dialect.quote_identifier(alias)}"
             )
-    for alias, expr in measure_entries:
-        selects.append(
-            f"{dialect.compile_expr(_repoint(expr))} AS {dialect.quote_identifier(alias)}"
-        )
+        return "SELECT " + ",\n       ".join(selects) + "\n"
 
     source = _source_tree_sql(resolved, model, dialect, qualify_table, projections, variant.without)
+    from_source = f"  FROM (\n{indent(source, '    ')}\n  ) AS {src_q}\n"
+    # The rows without a period (an order without a date, a customer without
+    # orders) are the NULL period, as in a plain query. A part of their own
+    # rather than a LEFT JOIN onto the spine: Dremio returns garbage dates for
+    # a NULL key there. Its period is the spine's column read from no row, a
+    # NULL of the spine's type on every engine, and HAVING keeps the part from
+    # yielding a row of its own when there are no such rows.
+    other_groups = [
+        str(position)
+        for position, (_, projection) in enumerate(dim_entries, 1)
+        if projection is not None
+    ]
+    undated_group = f"  GROUP BY {', '.join(other_groups)}\n" if other_groups else ""
     return (
-        "SELECT " + ",\n       ".join(selects) + "\n"
-        f"  FROM {spine_cte}\n"
-        f"  JOIN (\n{indent(source, '    ')}\n  ) AS {src_q}\n"
+        _selects(f"{spine_cte}.spine_date") + from_source + f"  JOIN {spine_cte}\n"
         f"    ON {bucket_ref} = {spine_cte}.spine_date\n"
-        f"  GROUP BY {', '.join(dim_groups)}"
+        f"  GROUP BY {', '.join(dim_groups)}\n"
+        "UNION ALL\n"
+        + _selects(f"(SELECT spine_date FROM {spine_cte} WHERE 1 = 0)")
+        + from_source
+        + f"  WHERE {bucket_ref} IS NULL\n"
+        + undated_group
+        + "  HAVING COUNT(*) > 0"
     )
 
 
@@ -951,7 +1056,16 @@ def _build_pop_compare_sql(
     # via ``spine_date_prev``; others use ``pop_prev_N`` with an inline offset.
     spine_key = (pop_measures[0].pop_offset, pop_measures[0].pop_offset_grain)
     alias_by_key: dict[tuple[int | None, object], str] = {}
+    # Each join twice: for the dated rows, and for the NULL period, which has no
+    # prior period and joins every source on ``1 = 0``, so the comparisons
+    # compile unchanged and read NULL, typed as in the dated part.
     join_clauses: list[str] = []
+    undated_joins: list[str] = [
+        f"  LEFT JOIN (SELECT * FROM {spine_cte} WHERE 1 = 0) AS {spine_cte} ON 1 = 0"
+    ]
+    # Dated rows only on either side of a prior-period join: Dremio returns
+    # garbage dates for a NULL key in it.
+    dated_prior = f"(SELECT * FROM {prior_q} WHERE {time_q} IS NOT NULL)"
     for m in pop_measures:
         key = (m.pop_offset, m.pop_offset_grain)
         if key in alias_by_key:
@@ -965,7 +1079,7 @@ def _build_pop_compare_sql(
             # NB: alias is ``pop_prev`` (not ``prev``) — ``prev`` is a reserved
             # word in Dremio and rejects as an unquoted table alias.
             join_clauses.append(
-                f"  LEFT JOIN {prior_q} AS {alias}\n"
+                f"  LEFT JOIN {dated_prior} AS {alias}\n"
                 f"    ON {spine_cte}.spine_date_prev = {alias}.{time_q}{_dim_match(alias)}"
             )
         else:
@@ -974,9 +1088,12 @@ def _build_pop_compare_sql(
             prev_date = dialect.date_add_sql(f"{base_cte}.{time_q}", grain_val, m.pop_offset or 0)
             prior_date_of[alias] = prev_date
             join_clauses.append(
-                f"  LEFT JOIN {prior_q} AS {alias}\n"
+                f"  LEFT JOIN {dated_prior} AS {alias}\n"
                 f"    ON {alias}.{time_q} = {prev_date}{_dim_match(alias)}"
             )
+        undated_joins.append(
+            f"  LEFT JOIN (SELECT * FROM {prior_q} WHERE 1 = 0) AS {alias} ON 1 = 0"
+        )
         alias_by_key[key] = alias
 
     # Projections: dimensions, pass-through measures, then PoP comparisons.
@@ -1034,4 +1151,14 @@ def _build_pop_compare_sql(
         selects.append(f"{expr} AS {q_metric}")
 
     select_clause = ",\n       ".join(selects)
-    return f"SELECT {select_clause}\n  FROM {base_cte}\n" + "\n".join(join_clauses)
+    dated = (
+        f"SELECT {select_clause}\n"
+        f"  FROM (SELECT * FROM {base_cte} WHERE {time_q} IS NOT NULL) AS {base_cte}\n"
+        + "\n".join(join_clauses)
+    )
+    undated = (
+        f"SELECT {select_clause}\n"
+        f"  FROM (SELECT * FROM {base_cte} WHERE {time_q} IS NULL) AS {base_cte}\n"
+        + "\n".join(undated_joins)
+    )
+    return f"{dated}\nUNION ALL\n{undated}"
