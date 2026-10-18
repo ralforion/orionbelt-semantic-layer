@@ -48,7 +48,34 @@ measures:
     aggregation: sum
     resultType: float
     defaultValue: 0
+  Big Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    defaultValue: 1.234
+    filters:
+      - column: {dataObject: Orders, column: Amount}
+        operator: gt
+        values: [{dataType: float, valueFloat: 100}]
 metrics:
+  Big Revenue Ratio:
+    type: period_over_period
+    expression: '{[Big Revenue]}'
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: ratio
+  Next Orders Count Change:
+    type: period_over_period
+    expression: '{[Orders Count]}'
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: month
+      offset: 1
+      offsetGrain: month
+      comparison: difference
   Prior Revenue:
     type: period_over_period
     expression: '{[Revenue]}'
@@ -173,3 +200,23 @@ def test_a_time_filter_reads_empty_priors_from_the_look_back(
         },
     )
     assert rows == [("2026-03", 3.0), ("2026-04", -2.0)]
+
+
+def test_a_later_period_past_the_range_is_unknown(con: duckdb.DuckDBPyConnection) -> None:
+    """With a positive offset each month compares with the next. January's
+    next is February, inside the range and empty: 2 - 0. April's is May, past
+    the data: unknown, not empty (it read 1 - 0)."""
+    rows = _rows(
+        con, {"select": {"dimensions": ["Order Date"], "measures": ["Next Orders Count Change"]}}
+    )
+    assert rows == [("2026-01", 2.0), ("2026-03", 2.0), ("2026-04", None)]
+
+
+def test_an_empty_prior_reads_the_default_typed_like_the_measure(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """No order passes the filter, so every month reads the default, cast to
+    decimal(18, 2): 1.23. March's prior, February, has no rows: its default
+    has to be cast the same, or the ratio reads 1.23 / 1.234 instead of 1."""
+    rows = _rows(con, {"select": {"dimensions": ["Order Date"], "measures": ["Big Revenue Ratio"]}})
+    assert rows == [("2026-01", None), ("2026-03", 1.0), ("2026-04", 1.0)]

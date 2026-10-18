@@ -341,7 +341,7 @@ def wrap_with_pop(
         CTE(
             name=shown.compare,
             query=RawSQL(
-                sql=_build_pop_compare_sql(resolved, dialect, pop_measures, shown, against)
+                sql=_build_pop_compare_sql(resolved, model, dialect, pop_measures, shown, against)
             ),
         )
         for shown, against in compared
@@ -868,17 +868,28 @@ def _build_pop_base_sql(
     )
 
 
-def _prior_value(prev: str, in_range: str, base: ResolvedMeasure | None, dialect: Dialect) -> str:
+def _prior_value(
+    prev: str,
+    in_range: str,
+    base: ResolvedMeasure | None,
+    model: SemanticModel,
+    dialect: Dialect,
+) -> str:
     """The base measure's prior value, read as empty where the prior period has
     no rows: a count is 0 and a measure with a ``defaultValue`` reads it, as
-    each does over no rows in a plain query. Only within the range the query
-    reads; a prior period before it is unknown and stays NULL."""
+    each does over no rows in a plain query, typed like the measure. Only
+    within the range the query reads; a prior period outside it is unknown and
+    stays NULL."""
     if base is None:
         return prev
     if base.aggregation.lower() in ("count", "count_distinct"):
         empty: str | None = "0"
     elif base.default_value is not None:
-        empty = dialect.compile_expr(Literal(value=base.default_value))
+        # Typed like the measure's own column, which casts it: a default of
+        # 1.234 on a decimal(18, 2) measure reads 1.23 in a month with rows.
+        empty = dialect.compile_expr(
+            _apply_measure_cast(Literal(value=base.default_value), base.name, model, dialect)
+        )
     else:
         empty = None
     if empty is None:
@@ -888,6 +899,7 @@ def _prior_value(prev: str, in_range: str, base: ResolvedMeasure | None, dialect
 
 def _build_pop_compare_sql(
     resolved: ResolvedQuery,
+    model: SemanticModel,
     dialect: Dialect,
     pop_measures: list[ResolvedMeasure],
     shown: _PopVariant,
@@ -927,9 +939,11 @@ def _build_pop_compare_sql(
             parts.append(f"({here} = {there} OR ({here} IS NULL AND {there} IS NULL))")
         return (" AND " + " AND ".join(parts)) if parts else ""
 
-    # The first period the comparison can read: a prior period before it is
-    # unknown (NULL), one from it on without rows is empty.
+    # The periods the comparison can read: a prior period outside them is
+    # unknown (NULL), one inside without rows is empty. Both ends, since a
+    # positive offset compares with a later period.
     range_start = f"(SELECT MIN(spine_date) FROM {spine_cte})"
+    range_end = f"(SELECT MAX(spine_date) FROM {spine_cte})"
     prior_date_of: dict[str, str] = {}
 
     # Assign one self-join alias per distinct (offset, offset_grain). The
@@ -992,9 +1006,10 @@ def _build_pop_compare_sql(
         current = f"{base_cte}.{q_base}"
         prev = _prior_value(
             f"{alias}.{q_base}",
-            f"{prior_date_of[alias]} >= {range_start}",
+            f"{prior_date_of[alias]} BETWEEN {range_start} AND {range_end}",
             resolved.metric_components.get(base_name)
             or next((x for x in resolved.measures if x.name == base_name), None),
+            model,
             dialect,
         )
 

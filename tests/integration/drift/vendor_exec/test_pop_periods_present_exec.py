@@ -54,7 +54,34 @@ measures:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
     resultType: float
+  Big Revenue:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    defaultValue: 1.234
+    filters:
+      - column: {{dataObject: Orders, column: Amount}}
+        operator: gt
+        values: [{{dataType: float, valueFloat: 100}}]
 metrics:
+  Big Revenue Ratio:
+    type: period_over_period
+    expression: '{{[Big Revenue]}}'
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: ratio
+  Next Orders Count Change:
+    type: period_over_period
+    expression: '{{[Orders Count]}}'
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: month
+      offset: 1
+      offsetGrain: month
+      comparison: difference
   Prior Revenue:
     type: period_over_period
     expression: '{{[Revenue]}}'
@@ -140,6 +167,33 @@ def _assert_all(target: VendorTarget) -> None:
     assert sorted((_month(r["order date"]), _number(r["orders count change"])) for r in rows) == [
         ("2026-03", Decimal(3)),
         ("2026-04", Decimal(-2)),
+    ]
+
+    # A later period past the data is unknown; an empty prior reads the
+    # default cast like the measure (1.23 / 1.23, not 1.23 / 1.234).
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            **{
+                "select": {
+                    "dimensions": ["Order Date"],
+                    "measures": ["Next Orders Count Change", "Big Revenue Ratio"],
+                }
+            }
+        ),
+    )
+    assert sorted(
+        (
+            _month(r["order date"]),
+            _number(r["next orders count change"]),
+            _number(r["big revenue ratio"]),
+        )
+        for r in rows
+    ) == [
+        ("2026-01", Decimal(2), None),
+        ("2026-03", Decimal(2), Decimal(1)),
+        ("2026-04", None, Decimal(1)),
     ]
 
 
