@@ -341,7 +341,7 @@ def wrap_with_pop(
         CTE(
             name=shown.compare,
             query=RawSQL(
-                sql=_build_pop_compare_sql(resolved, dialect, pop_measures, shown, against)
+                sql=_build_pop_compare_sql(resolved, model, dialect, pop_measures, shown, against)
             ),
         )
         for shown, against in compared
@@ -657,9 +657,12 @@ def _build_pop_base_sql(
 ) -> str:
     """Build the raw SQL body for the pop_base CTE.
 
-    Every period the spine carries, with the query's dimensions and measures
-    aggregated onto it - including the periods with no rows, which is the whole
-    point of the spine and why the join runs this way round.
+    Every period with rows, with the query's dimensions and measures aggregated
+    onto it, its date read from the spine. A period without rows is no row of
+    the result (a plain query has none either); the comparison reads such a
+    prior period as empty itself (``_build_pop_compare_sql``). Keeping the
+    spine's empty periods here put a row with every dimension NULL in the
+    result, indistinguishable from a real NULL group.
 
     The source rows arrive through one derived table rather than a chain of
     joins hung off the spine. That is what makes the bucket a plain column in
@@ -681,9 +684,8 @@ def _build_pop_base_sql(
     for d_idx, dim in enumerate(resolved.dimensions, 1):
         dim_groups.append(str(d_idx))
         if dim.name == time_dim_name:
-            # ``None`` marks the spine's own column: a period with no rows has
-            # to keep its date, which is the whole point of joining this way
-            # round.
+            # ``None`` marks the spine's own column: the period's date at the
+            # spine's grain and type.
             dim_entries.append((dim.name, None))
             continue
         # Through ``make_column_expr``, because a dimension is not always a
@@ -860,14 +862,44 @@ def _build_pop_base_sql(
     return (
         "SELECT " + ",\n       ".join(selects) + "\n"
         f"  FROM {spine_cte}\n"
-        f"  LEFT JOIN (\n{indent(source, '    ')}\n  ) AS {src_q}\n"
+        f"  JOIN (\n{indent(source, '    ')}\n  ) AS {src_q}\n"
         f"    ON {bucket_ref} = {spine_cte}.spine_date\n"
         f"  GROUP BY {', '.join(dim_groups)}"
     )
 
 
+def _prior_value(
+    prev: str,
+    in_range: str,
+    base: ResolvedMeasure | None,
+    model: SemanticModel,
+    dialect: Dialect,
+) -> str:
+    """The base measure's prior value, read as empty where the prior period has
+    no rows: a count is 0 and a measure with a ``defaultValue`` reads it, as
+    each does over no rows in a plain query, typed like the measure. Only
+    within the range the query reads; a prior period outside it is unknown and
+    stays NULL."""
+    if base is None:
+        return prev
+    if base.aggregation.lower() in ("count", "count_distinct"):
+        empty: str | None = "0"
+    elif base.default_value is not None:
+        # Typed like the measure's own column, which casts it: a default of
+        # 1.234 on a decimal(18, 2) measure reads 1.23 in a month with rows.
+        empty = dialect.compile_expr(
+            _apply_measure_cast(Literal(value=base.default_value), base.name, model, dialect)
+        )
+    else:
+        empty = None
+    if empty is None:
+        return prev
+    return f"(CASE WHEN {in_range} THEN COALESCE({prev}, {empty}) ELSE {prev} END)"
+
+
 def _build_pop_compare_sql(
     resolved: ResolvedQuery,
+    model: SemanticModel,
     dialect: Dialect,
     pop_measures: list[ResolvedMeasure],
     shown: _PopVariant,
@@ -898,12 +930,21 @@ def _build_pop_compare_sql(
     spine_cte = dialect.quote_identifier(prior.date_spine)
 
     def _dim_match(alias: str) -> str:
-        parts = [
-            f"{base_cte}.{dialect.quote_identifier(d.name)} = "
-            f"{alias}.{dialect.quote_identifier(d.name)}"
-            for d in non_time_dims
-        ]
+        # NULL-safe: a NULL group (a sale without a region) is a group, and its
+        # prior period is its own NULL group's.
+        parts = []
+        for d in non_time_dims:
+            here = f"{base_cte}.{dialect.quote_identifier(d.name)}"
+            there = f"{alias}.{dialect.quote_identifier(d.name)}"
+            parts.append(f"({here} = {there} OR ({here} IS NULL AND {there} IS NULL))")
         return (" AND " + " AND ".join(parts)) if parts else ""
+
+    # The periods the comparison can read: a prior period outside them is
+    # unknown (NULL), one inside without rows is empty. Both ends, since a
+    # positive offset compares with a later period.
+    range_start = f"(SELECT MIN(spine_date) FROM {spine_cte})"
+    range_end = f"(SELECT MAX(spine_date) FROM {spine_cte})"
+    prior_date_of: dict[str, str] = {}
 
     # Assign one self-join alias per distinct (offset, offset_grain). The
     # offset matching the spine (the first PoP measure's) reuses ``pop_prev``
@@ -917,6 +958,7 @@ def _build_pop_compare_sql(
             continue
         if key == spine_key and "pop_prev" not in alias_by_key.values():
             alias = "pop_prev"
+            prior_date_of[alias] = f"{spine_cte}.spine_date_prev"
             join_clauses.append(
                 f"  LEFT JOIN {spine_cte} ON {base_cte}.{time_q} = {spine_cte}.spine_date"
             )
@@ -930,6 +972,7 @@ def _build_pop_compare_sql(
             alias = f"pop_prev_{len(alias_by_key)}"
             grain_val = m.pop_offset_grain.value if m.pop_offset_grain else "month"
             prev_date = dialect.date_add_sql(f"{base_cte}.{time_q}", grain_val, m.pop_offset or 0)
+            prior_date_of[alias] = prev_date
             join_clauses.append(
                 f"  LEFT JOIN {prior_q} AS {alias}\n"
                 f"    ON {alias}.{time_q} = {prev_date}{_dim_match(alias)}"
@@ -961,7 +1004,14 @@ def _build_pop_compare_sql(
         q_metric = dialect.quote_identifier(m.name)
         alias = alias_by_key[(m.pop_offset, m.pop_offset_grain)]
         current = f"{base_cte}.{q_base}"
-        prev = f"{alias}.{q_base}"
+        prev = _prior_value(
+            f"{alias}.{q_base}",
+            f"{prior_date_of[alias]} BETWEEN {range_start} AND {range_end}",
+            resolved.metric_components.get(base_name)
+            or next((x for x in resolved.measures if x.name == base_name), None),
+            model,
+            dialect,
+        )
 
         if m.pop_comparison == PeriodOverPeriodComparison.RATIO:
             expr = dialect.render_decimal_division_sql(current, prev)

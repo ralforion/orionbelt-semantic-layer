@@ -25,7 +25,7 @@ FROM (
 SELECT "date_spine".spine_date AS "Sales Month",
        CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
   FROM "date_spine"
-  LEFT JOIN (
+  JOIN (
     SELECT DATE_TRUNC('month', "Sales"."salesdate") AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
       FROM "orionbelt_1"."sales" AS "Sales"

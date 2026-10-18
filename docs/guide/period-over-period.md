@@ -10,8 +10,8 @@ OrionBelt implements PoP using a **synthetical date pattern** -- a 4-CTE archite
 
 - Auto-discovers the date range from actual data (no hardcoded date range in OBML)
 - Generates a date spine with previous-period lookup
-- LEFT JOINs facts onto the spine
-- Self-joins for period comparison
+- Aggregates the facts onto the periods of the spine that have rows
+- Self-joins for period comparison, reading a prior period without rows as empty
 
 This approach works across all eight supported dialects with no additional configuration beyond the metric definition itself.
 
@@ -132,9 +132,22 @@ OrionBelt compiles PoP metrics into a 4-CTE structure. Each CTE builds on the pr
 |-----|---------|
 | `date_range` | Discover `MIN`/`MAX` date from fact tables with ALL query filters pushed down |
 | `date_spine` | Generate date series with `spine_date` and `spine_date_prev` columns |
-| `pop_base` | Aggregate measures using the spine as `FROM`, with facts LEFT JOINed |
+| `pop_base` | Aggregate measures onto the spine's periods that have rows (the facts joined to the spine) |
 | `date_range_lookback`, `date_spine_lookback`, `pop_lookback` | Only when the query filters its time dimension: the three CTEs above without the time filter, so the prior periods (empty ones included) are there to compare with |
-| `pop_compare` | Join `pop_base` to the prior period via `spine_date_prev`, from `pop_lookback` when there is one |
+| `pop_compare` | Join `pop_base` to the prior period via `spine_date_prev` (NULL-safe on the other dimensions), from `pop_lookback` when there is one |
+
+### Rows returned and empty prior periods
+
+A PoP query returns the periods that have rows, as the same query without the
+PoP metric does: a month without orders is no row. The spine is only how each
+period finds its prior one.
+
+A prior period without rows, inside the date range, reads as the measure does
+over no rows: a count is 0, a measure with a `defaultValue` reads it, and any
+other measure is `NULL`. The same holds per group: a region without orders in
+February reads a count of 0 there. A prior period before the date range is
+unknown and stays `NULL`. A `NULL` group (a sale without a region) is a group of
+its own and compares with its own prior period.
 
 ### Filter Push-Down
 
@@ -190,7 +203,7 @@ The following shows the compiled Postgres SQL for a YoY growth query selecting `
       SELECT date_spine.spine_date AS "Order Date",
              SUM("Orders"."AMOUNT") AS "Revenue"
       FROM date_spine
-      LEFT JOIN PUBLIC.ORDERS AS "Orders"
+      JOIN PUBLIC.ORDERS AS "Orders"
         ON date_trunc('month', "Orders"."ORDER_DATE") = date_spine.spine_date
       GROUP BY 1
     ),
@@ -234,7 +247,7 @@ The following shows the compiled Postgres SQL for a YoY growth query selecting `
       SELECT date_spine.spine_date AS "Order Date",
              SUM("Orders"."AMOUNT") AS "Revenue"
       FROM date_spine
-      LEFT JOIN WAREHOUSE.PUBLIC.ORDERS AS "Orders"
+      JOIN WAREHOUSE.PUBLIC.ORDERS AS "Orders"
         ON DATE_TRUNC('month', "Orders"."ORDER_DATE") = date_spine.spine_date
       GROUP BY 1
     ),
@@ -274,7 +287,7 @@ The following shows the compiled Postgres SQL for a YoY growth query selecting `
       SELECT date_spine.spine_date AS `Order Date`,
              SUM(`Orders`.`AMOUNT`) AS `Revenue`
       FROM date_spine
-      LEFT JOIN `PROJECT.DATASET.ORDERS` AS `Orders`
+      JOIN `PROJECT.DATASET.ORDERS` AS `Orders`
         ON DATE_TRUNC(`Orders`.`ORDER_DATE`, MONTH) = date_spine.spine_date
       GROUP BY 1
     ),
