@@ -326,3 +326,60 @@ class TestSavedByOlderVersion:
         osi = exporter.convert()
         assert osi["datasets"][1]["unique_keys"] == [["Customer ID"]]
         assert not any("unique key" in w for w in exporter.warnings)
+
+
+class TestRenamedFieldsDifferingOnlyByCase:
+    """A preserved metric renamed to Amount and amount keeps two references."""
+
+    @staticmethod
+    def _legacy() -> dict[str, Any]:
+        return {
+            "version": "0.2.0",
+            "name": "sales",
+            "datasets": [
+                {
+                    "name": "Orders",
+                    "source": "WH.PUBLIC.orders",
+                    "fields": [_legacy_field("a", "Amount"), _legacy_field("b", "amount")],
+                }
+            ],
+            "metrics": [
+                {"name": "upper", "expression": _expr("SUM(Orders.a) OVER ()")},
+                {"name": "lower", "expression": _expr("SUM(Orders.b) OVER ()")},
+            ],
+        }
+
+    @staticmethod
+    def _sql(osi: dict[str, Any]) -> dict[str, str]:
+        return {m["name"]: m["expression"]["dialects"][0]["expression"] for m in osi["metrics"]}
+
+    def test_import_of_an_older_export(self) -> None:
+        osi = conv.OBMLtoOSI(conv.OSItoOBML(self._legacy()).convert()).convert()
+        assert self._sql(osi) == {
+            "upper": 'SUM(Orders."Amount") OVER ()',
+            "lower": 'SUM(Orders."amount") OVER ()',
+        }
+
+    def test_export_of_obml_saved_by_an_older_version(self) -> None:
+        obml = {
+            "version": 1.0,
+            "dataObjects": {
+                "Orders": {
+                    "code": "orders",
+                    "columns": {
+                        "Amount": {"code": "a", "abstractType": "float"},
+                        "amount": {"code": "b", "abstractType": "float"},
+                    },
+                }
+            },
+            "customExtensions": [
+                {
+                    "vendor": "OSI",
+                    "data": json.dumps({"obml_unconverted_metrics": self._legacy()["metrics"]}),
+                }
+            ],
+        }
+        assert self._sql(conv.OBMLtoOSI(obml).convert()) == {
+            "upper": 'SUM(Orders."Amount") OVER ()',
+            "lower": 'SUM(Orders."amount") OVER ()',
+        }

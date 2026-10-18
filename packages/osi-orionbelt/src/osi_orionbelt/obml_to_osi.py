@@ -22,6 +22,7 @@ from osi_orionbelt._field_names import (
     FIELD_NAMES_COLUMN,
     FIELD_NAMES_KEY,
     code_renames,
+    field_collisions,
     rename_keys,
     rename_metric,
 )
@@ -654,9 +655,14 @@ class OBMLtoOSI:
                 continue
             metrics = [m for m in preserved if isinstance(m, dict)]
             if data.get(FIELD_NAMES_KEY) != FIELD_NAMES_COLUMN:
+                collisions = field_collisions(self.obml.get("dataObjects", {}) or {})
                 for metric in metrics:
                     rename_metric(
-                        metric, self._legacy_renames, self._legacy_ambiguous, self.warnings.append
+                        metric,
+                        self._legacy_renames,
+                        self._legacy_ambiguous,
+                        collisions,
+                        self.warnings.append,
                     )
             restored.extend(metrics)
         return restored

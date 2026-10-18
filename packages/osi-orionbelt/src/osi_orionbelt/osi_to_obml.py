@@ -31,6 +31,7 @@ from osi_orionbelt._common import (
 from osi_orionbelt._field_names import (
     FIELD_NAMES_COLUMN,
     FIELD_NAMES_KEY,
+    field_collisions,
     rename_keys,
     rename_metric,
 )
@@ -407,8 +408,9 @@ class OSItoOBML:
         for ext in obml.get("customExtensions", []) or []:
             data = self._own_stash(ext, "obml_unconverted_metrics")
             if data is not None:
+                collisions = field_collisions(obml.get("dataObjects", {}))
                 for metric in data["obml_unconverted_metrics"]:
-                    rename_metric(metric, renames, {}, self.warnings.append)
+                    rename_metric(metric, renames, {}, collisions, self.warnings.append)
                 ext["data"] = json.dumps(data)
 
     @staticmethod
