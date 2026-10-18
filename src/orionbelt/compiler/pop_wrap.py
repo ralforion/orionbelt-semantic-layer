@@ -820,8 +820,12 @@ def _build_pop_base_sql(
     # row of each (period, dimensions, object row). The same rows the grain
     # dedup pass keeps with a DISTINCT, without leaving this one GROUP BY.
     #
-    # A parent's rows without children carry no row of the child, nor of what
-    # the query reaches through it: a measure on those reads none of them.
+    # A parent's rows without children feed that parent's own measures only,
+    # as its leg feeds only its dedup in a plain query. Not the child's, which
+    # has no row there, and not an ancestor's either: a region reached only
+    # through a customer without orders is the regions' own row without
+    # children, under no customer; read through the customer too, it counted
+    # under the customer's tier as well.
     #
     # Where the input can be NULL on some of an object row's copies and not
     # others - a filter reading another object, or a part of the union it
@@ -829,7 +833,6 @@ def _build_pop_base_sql(
     # without orders, failing an "has an order" filter must not take the
     # region's flag from Bob's order. Such a measure gets a flag of its own.
     first_flags: dict[tuple[str, str], _FirstFlag] = {}
-    beneath = [joined_beneath(resolved.join_steps, leg.parent) for leg in resolved.childless_legs]
     branch = ColumnRef(name=_BRANCH_COLUMN, table=_SRC_ALIAS)
 
     def _deduplicated(name: str, expr: Expr) -> Expr:
@@ -837,8 +840,8 @@ def _build_pop_base_sql(
         sources = set(measure.source_objects) if measure is not None else set()
         skipped = [
             number
-            for number, reached in enumerate(beneath, 1)
-            if not sources or not sources <= reached
+            for number, leg in enumerate(resolved.childless_legs, 1)
+            if sources != {leg.parent}
         ]
         object_name = resolved.dedup_targets.get(name)
         if object_name is None and not skipped:

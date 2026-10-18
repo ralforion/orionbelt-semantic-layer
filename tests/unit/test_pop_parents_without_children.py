@@ -223,6 +223,7 @@ dataObjects:
     columns:
       Customer ID: {code: id, abstractType: int, primaryKey: true}
       Customer Region ID: {code: region_id, abstractType: int}
+      Customer Tier: {code: tier, abstractType: string}
       Credit: {code: credit, abstractType: float}
     joins:
       - joinType: many-to-one
@@ -255,6 +256,7 @@ dataObjects:
         columnsTo: [Channel ID]
 dimensions:
   Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}
+  Customer Tier: {dataObject: Customers, column: Customer Tier, resultType: string}
 measures:
   Total Credit:
     columns: [{dataObject: Customers, column: Credit}]
@@ -301,9 +303,13 @@ def shared() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect()
     con.execute("CREATE TABLE regions (id INTEGER, population DOUBLE)")
     con.execute("INSERT INTO regions VALUES (1, 100)")
-    con.execute("CREATE TABLE customers (id INTEGER, region_id INTEGER, credit DOUBLE)")
+    con.execute(
+        "CREATE TABLE customers (id INTEGER, region_id INTEGER, tier VARCHAR, credit DOUBLE)"
+    )
     # Carol (3) has no orders; all three live in region 1.
-    con.execute("INSERT INTO customers VALUES (1, 1, 10), (2, 1, 20), (3, 1, 40)")
+    con.execute(
+        "INSERT INTO customers VALUES (1, 1, 'gold', 10), (2, 1, 'silver', 20), (3, 1, 'gold', 40)"
+    )
     con.execute("CREATE TABLE channels (id INTEGER)")
     con.execute(
         "CREATE TABLE orders (id INTEGER, customer_id INTEGER, channel_id INTEGER,"
@@ -317,10 +323,14 @@ def shared() -> duckdb.DuckDBPyConnection:
     return con
 
 
-def _shared_rows(con: duckdb.DuckDBPyConnection, measures: list[str]) -> list[tuple[object, ...]]:
+def _shared_rows(
+    con: duckdb.DuckDBPyConnection,
+    measures: list[str],
+    dimensions: tuple[str, ...] = ("Order Month",),
+) -> list[tuple[object, ...]]:
     raw = YAML(typ="safe").load(SHARED_YAML)
     model: SemanticModel = ReferenceResolver().resolve(raw)[0]
-    query = QueryObject(**{"select": {"dimensions": ["Order Month"], "measures": measures}})
+    query = QueryObject(**{"select": {"dimensions": list(dimensions), "measures": measures}})
     sql = CompilationPipeline().compile(query, model, "duckdb").sql
     return sorted(
         (
@@ -379,3 +389,26 @@ def test_a_filtered_ancestor_measure_reads_a_row_its_filter_keeps(
         (None, 100.0, 100.0, 100.0),
     ]
     assert [row[:4] for row in pop] == plain
+
+
+def test_an_ancestor_measure_reads_only_its_own_parent_rows(
+    shared: duckdb.DuckDBPyConnection,
+) -> None:
+    """Carol, without orders, lives alone in region 2. Region 2 has no
+    customer with orders, so its population is the regions' own row without
+    children: NULL tier, as in the plain query. It was also read through
+    Carol's row, under gold, so it counted twice: (NULL, gold) read 300."""
+    shared.execute("INSERT INTO regions VALUES (2, 200)")
+    shared.execute("UPDATE customers SET region_id = 2 WHERE id = 3")
+    measures = ["Total Population", "Total Credit", "Order Lines"]
+    dimensions = ("Order Month", "Customer Tier")
+    plain = _shared_rows(shared, measures, dimensions)
+    pop = _shared_rows(shared, [*measures, "Prior Credit"], dimensions)
+    assert plain == [
+        ("2026-01", "gold", 100.0, 10.0, 101.0),
+        ("2026-02", "silver", 100.0, 20.0, 71.0),
+        (None, "gold", None, 40.0, None),
+        (None, "silver", 100.0, 20.0, 10.0),
+        (None, None, 200.0, None, None),
+    ]
+    assert [row[:5] for row in pop] == plain

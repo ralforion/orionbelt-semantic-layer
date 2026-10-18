@@ -28,12 +28,13 @@ CUSTOMERS = "pop_pwc_customers"
 CHANNELS = "pop_pwc_channels"
 ORDERS = "pop_pwc_orders"
 
-REGION_ROWS = [("r1", 100.0)]
-# c3 has no orders; o4 has no date. Every customer is in r1.
+REGION_ROWS = [("r1", 100.0), ("r2", 200.0)]
+# c3 and c4 have no orders; o4 has no date. c4, with no credit, is alone in r2.
 CUSTOMER_ROWS = [
     ("c1", "r1", "gold", 10.0),
     ("c2", "r1", "silver", 20.0),
     ("c3", "r1", "gold", 40.0),
+    ("c4", "r2", "gold", 0.0),
 ]
 CHANNEL_ROWS = [("h1",)]
 ORDER_ROWS = [
@@ -275,7 +276,48 @@ def _assert_all(target: VendorTarget) -> None:
     assert got == [
         ("2026-01", Decimal(100), Decimal(10), Decimal(101), Decimal(100)),
         ("2026-02", Decimal(100), Decimal(30), Decimal(122), Decimal(100)),
-        (None, Decimal(100), Decimal(60), Decimal(10), Decimal(100)),
+        (None, Decimal(300), Decimal(60), Decimal(10), Decimal(100)),
+    ]
+
+    # r2 is reached only through c4, who has no orders: its population is the
+    # regions' own row without children, under no tier, not c4's gold too.
+    rows = _run(
+        target,
+        model,
+        QueryObject(
+            **{
+                "select": {
+                    "dimensions": ["Order Month", "Tier"],
+                    "measures": [
+                        "Total Population",
+                        "Total Credit",
+                        "Order Lines",
+                        "Prior Revenue",
+                    ],
+                }
+            }
+        ),
+    )
+    got = sorted(
+        (
+            (
+                _month(r["order month"]),
+                r["tier"],
+                _number(r["total population"]),
+                _number(r["total credit"]),
+                _number(r["order lines"]),
+            )
+            for r in rows
+        ),
+        key=str,
+    )
+    assert got == [
+        ("2026-01", "gold", Decimal(100), Decimal(10), Decimal(101)),
+        ("2026-02", "gold", Decimal(100), Decimal(10), Decimal(51)),
+        ("2026-02", "silver", Decimal(100), Decimal(20), Decimal(71)),
+        (None, "gold", None, Decimal(40), None),
+        (None, "silver", Decimal(100), Decimal(20), Decimal(10)),
+        (None, None, Decimal(200), None, None),
     ]
 
 
