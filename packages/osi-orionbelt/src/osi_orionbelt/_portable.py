@@ -67,6 +67,18 @@ _WINDOW_FUNCS = {
     "last_value",
 }
 
+# Filter operators whose OSSIE_SQL_2026 form differs from the ANSI one.
+_PATTERN_OPERATORS = {
+    "contains",
+    "notcontains",
+    "starts_with",
+    "ends_with",
+    "like",
+    "notlike",
+    "ilike",
+    "notilike",
+}
+
 _COMPARISONS = {
     "equals": "=",
     "notequals": "<>",
@@ -151,8 +163,12 @@ def _scalar_literal(value: Any) -> str:
     return _string_literal(str(value))
 
 
-def _filter_literal(fv: dict[str, Any]) -> str:
-    """Render a typed OBML ``FilterValue`` as the literal the compiler compares against."""
+def _filter_literal(fv: dict[str, Any], ossie: bool = False) -> str:
+    """Render a typed OBML ``FilterValue`` as the literal the compiler compares against.
+
+    ``OSSIE_SQL_2026`` has no plain ``TIMESTAMP '...'`` literal, so with *ossie*
+    a timestamp is a ``CAST``.
+    """
     if fv.get("isNull"):
         return "NULL"
     data_type = fv.get("dataType")
@@ -165,7 +181,8 @@ def _filter_literal(fv: dict[str, Any]) -> str:
     if data_type == "date" and fv.get("valueDate") is not None:
         return f"DATE {_string_literal(str(fv['valueDate']))}"
     if data_type == "timestamp" and fv.get("valueDate") is not None:
-        return f"TIMESTAMP {_string_literal(str(fv['valueDate']))}"
+        text = _string_literal(str(fv["valueDate"]))
+        return f"CAST({text} AS TIMESTAMP)" if ossie else f"TIMESTAMP {text}"
     return _scalar_literal(fv.get("valueString"))
 
 
@@ -216,9 +233,17 @@ def synthesized_counts(obml: dict[str, Any]) -> dict[str, str]:
 
 
 class PortableRenderer:
-    """Render OBML measures and metrics as portable Ossie SQL expressions."""
+    """Render OBML measures and metrics as portable Ossie SQL expressions.
 
-    def __init__(self, obml: dict[str, Any]) -> None:
+    By default the expressions are ANSI SQL. With *ossie* they use the forms of
+    Apache Ossie's ``OSSIE_SQL_2026`` language where the two differ: ``CONTAINS``,
+    ``STARTSWITH`` and ``ENDSWITH`` instead of ``LIKE ... ESCAPE``, ``ILIKE``,
+    and a ``CAST`` for a timestamp literal. A filter that needs ``ESCAPE`` has
+    no such form and raises :class:`NotPortableError`.
+    """
+
+    def __init__(self, obml: dict[str, Any], *, ossie: bool = False) -> None:
+        self.ossie = ossie
         self.data_objects: dict[str, Any] = obml.get("dataObjects") or {}
         self.dimensions: dict[str, Any] = obml.get("dimensions") or {}
         self.measures: dict[str, Any] = obml.get("measures") or {}
@@ -358,17 +383,20 @@ class PortableRenderer:
         col = self._column_ref(f.get("column") or {})
         op = str(f.get("operator", "")).lower()
         values = f.get("values") or []
-        first = _filter_literal(values[0]) if values else "NULL"
+        first = _filter_literal(values[0], self.ossie) if values else "NULL"
         if op in _COMPARISONS:
             return f"{col} {_COMPARISONS[op]} {first}"
         if op in ("inlist", "notinlist"):
             keyword = "NOT IN" if op == "notinlist" else "IN"
-            return f"{col} {keyword} ({', '.join(_filter_literal(v) for v in values)})"
+            literals = ", ".join(_filter_literal(v, self.ossie) for v in values)
+            return f"{col} {keyword} ({literals})"
         if op == "set":
             return f"{col} IS NOT NULL"
         if op == "notset":
             return f"{col} IS NULL"
         text = _filter_text(values[0]) if values else ""
+        if self.ossie and op in _PATTERN_OPERATORS:
+            return self._ossie_pattern(col, op, text)
         if op in ("contains", "notcontains"):
             return _like(col, ("%", "%"), text, negated=op == "notcontains")
         if op == "starts_with":
@@ -386,8 +414,31 @@ class PortableRenderer:
             if len(values) < 2:
                 return f"{col} {'<>' if op == 'notbetween' else '='} {first}"
             keyword = "NOT BETWEEN" if op == "notbetween" else "BETWEEN"
-            return f"{col} {keyword} {first} AND {_filter_literal(values[1])}"
+            return f"{col} {keyword} {first} AND {_filter_literal(values[1], self.ossie)}"
         raise NotPortableError(f"measure filter operator '{op}' has no portable form")
+
+    @staticmethod
+    def _ossie_pattern(col: str, op: str, text: str) -> str:
+        """A pattern filter in its ``OSSIE_SQL_2026`` form.
+
+        The substring operators match *text* literally, so they need no escaping;
+        a ``LIKE`` pattern that relies on OBML's backslash escape has no form,
+        because the language has no ``ESCAPE`` clause.
+        """
+        literal = _string_literal(text)
+        if op in ("contains", "notcontains"):
+            negation = "NOT " if op == "notcontains" else ""
+            return f"{negation}CONTAINS({col}, {literal})"
+        if op == "starts_with":
+            return f"STARTSWITH({col}, {literal})"
+        if op == "ends_with":
+            return f"ENDSWITH({col}, {literal})"
+        if "\\" in text:
+            raise NotPortableError(
+                f"pattern {literal} needs an ESCAPE clause, which OSSIE_SQL_2026 does not have"
+            )
+        keyword = op.removeprefix("not").upper()
+        return f"{col} {'NOT ' if op.startswith('not') else ''}{keyword} {literal}"
 
     # ── metrics ───────────────────────────────────────────────────────
 

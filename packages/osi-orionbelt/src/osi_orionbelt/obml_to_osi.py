@@ -7,6 +7,8 @@ docstring and the shared constants in :mod:`osi_orionbelt._common`.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from osi_orionbelt._common import (
@@ -26,6 +28,7 @@ from osi_orionbelt._field_names import (
     rename_keys,
     rename_metric,
 )
+from osi_orionbelt._ossie_sql import ossie_sql, subset_violations
 from osi_orionbelt._portable import NotPortableError, PortableRenderer, sql_ident
 
 
@@ -696,9 +699,12 @@ class OBMLtoOSI:
         :class:`PortableRenderer` and computes what OrionBelt computes. A measure
         or metric with no faithful expression is left out of the document and
         kept whole in ``self.unexported`` for the model-level extension; the
-        reverse conversion restores it from there.
+        reverse conversion restores it from there. Each expression is
+        ``ANSI_SQL``, and also ``OSSIE_SQL_2026`` where it has a form inside
+        that language (see :meth:`_add_ossie_dialect`).
         """
         renderer = PortableRenderer(self.obml)
+        ossie_renderer = PortableRenderer(self.obml, ossie=True)
         osi_metrics = []
 
         for name, measure in obml_measures.items():
@@ -711,6 +717,7 @@ class OBMLtoOSI:
                     self._leave_out("measures", name, measure, str(exc))
                     continue
                 osi_metric = self._convert_measure(name, measure, sql)
+                self._add_ossie_dialect(osi_metric, partial(ossie_renderer.measure, name))
             self._finish_osi_metric("measure", measure, osi_metric)
             osi_metrics.append(osi_metric)
 
@@ -721,10 +728,33 @@ class OBMLtoOSI:
                 self._leave_out("metrics", name, metric, str(exc))
                 continue
             osi_metric = self._convert_metric(name, metric, sql)
+            self._add_ossie_dialect(osi_metric, partial(ossie_renderer.metric, name))
             self._finish_osi_metric("metric", metric, osi_metric)
             osi_metrics.append(osi_metric)
 
         return osi_metrics
+
+    @staticmethod
+    def _add_ossie_dialect(osi_metric: dict, render: Callable[[], str]) -> None:
+        """Add the expression in ``OSSIE_SQL_2026`` when it has a form in that language.
+
+        Rendered in the language's own forms, then checked node by node against
+        the subset the spec defines, so the tag is a claim another tool can rely
+        on. A measure using ``MODE``, ``LISTAGG``, an escaped pattern, or an
+        authored expression outside the subset keeps its ``ANSI_SQL`` form only.
+        """
+        try:
+            sql = render()
+        except NotPortableError:
+            return
+        if subset_violations(sql):
+            # An imported formula keeps sqlglot's spelling (STARTS_WITH); the
+            # language's own may differ (STARTSWITH).
+            sql = ossie_sql(sql)
+        if not subset_violations(sql):
+            osi_metric["expression"]["dialects"].append(
+                {"dialect": "OSSIE_SQL_2026", "expression": sql}
+            )
 
     def _leave_out(self, kind: str, name: str, definition: dict, reason: str) -> None:
         """Keep a non-portable measure or metric for the model-level extension."""
