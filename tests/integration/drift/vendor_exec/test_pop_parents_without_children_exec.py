@@ -109,6 +109,13 @@ measures:
     expression: 'COALESCE({{[Orders].[Amount]}}, 0) + 1'
     aggregation: sum
     resultType: float
+  Population With Orders:
+    columns: [{{dataObject: Regions, column: Population}}]
+    aggregation: sum
+    resultType: float
+    filters:
+      - column: {{dataObject: Orders, column: Order ID}}
+        operator: set
 metrics:
   Prior Revenue:
     type: period_over_period
@@ -232,7 +239,8 @@ def _assert_all(target: VendorTarget) -> None:
 
     # Region r1 is reached through Bob's order without a date and through
     # Carol: one region, its population once. Carol has no order, so
-    # ``COALESCE(amount, 0) + 1`` reads nothing for her.
+    # ``COALESCE(amount, 0) + 1`` reads nothing for her, and the region's
+    # population filtered on ``Order ID set`` is read from Bob's order.
     rows = _run(
         target,
         model,
@@ -244,6 +252,7 @@ def _assert_all(target: VendorTarget) -> None:
                         "Total Population",
                         "Total Credit",
                         "Order Lines",
+                        "Population With Orders",
                         "Prior Revenue",
                     ],
                 }
@@ -257,15 +266,16 @@ def _assert_all(target: VendorTarget) -> None:
                 _number(r["total population"]),
                 _number(r["total credit"]),
                 _number(r["order lines"]),
+                _number(r["population with orders"]),
             )
             for r in rows
         ),
         key=str,
     )
     assert got == [
-        ("2026-01", Decimal(100), Decimal(10), Decimal(101)),
-        ("2026-02", Decimal(100), Decimal(30), Decimal(122)),
-        (None, Decimal(100), Decimal(60), Decimal(10)),
+        ("2026-01", Decimal(100), Decimal(10), Decimal(101), Decimal(100)),
+        ("2026-02", Decimal(100), Decimal(30), Decimal(122), Decimal(100)),
+        (None, Decimal(100), Decimal(60), Decimal(10), Decimal(100)),
     ]
 
 

@@ -534,6 +534,18 @@ _ROWS_ALIAS = "__ob_pop_rows"
 _FLAG_KEY = "__ob_flag_key_"
 
 
+@dataclass(frozen=True)
+class _FirstFlag:
+    """A first-row flag: *name*, over the rows of *object_name*, preferring a
+    row where *input_expr* is not NULL and the union part is none of
+    *skipped*, when the measure's input can differ between a row's copies."""
+
+    name: str
+    object_name: str
+    input_expr: Expr | None
+    skipped: list[int]
+
+
 def _flat_alias(table: str | None, name: str, taken: dict[str, tuple[str | None, str]]) -> str:
     """A name for ``table.name`` that survives being projected through a subquery.
 
@@ -810,26 +822,26 @@ def _build_pop_base_sql(
     #
     # A parent's rows without children carry no row of the child, nor of what
     # the query reaches through it: a measure on those reads none of them.
-    first_flags: dict[str, str] = {}
+    #
+    # Where the input can be NULL on some of an object row's copies and not
+    # others - a filter reading another object, or a part of the union it
+    # reads nothing in - the first row is the first where it is not: Carol,
+    # without orders, failing an "has an order" filter must not take the
+    # region's flag from Bob's order. Such a measure gets a flag of its own.
+    first_flags: dict[tuple[str, str], _FirstFlag] = {}
     beneath = [joined_beneath(resolved.join_steps, leg.parent) for leg in resolved.childless_legs]
     branch = ColumnRef(name=_BRANCH_COLUMN, table=_SRC_ALIAS)
 
     def _deduplicated(name: str, expr: Expr) -> Expr:
-        conditions: list[Expr] = []
-        object_name = resolved.dedup_targets.get(name)
-        if object_name is not None:
-            flag = first_flags.setdefault(object_name, f"{_FIRST_FLAG}{len(first_flags)}")
-            conditions.append(
-                BinaryOp(ColumnRef(name=flag, table=_SRC_ALIAS), "=", Literal.number(1))
-            )
         measure = model.effective_measures.get(name)
         sources = set(measure.source_objects) if measure is not None else set()
-        conditions.extend(
-            BinaryOp(branch, "<>", Literal.number(number))
+        skipped = [
+            number
             for number, reached in enumerate(beneath, 1)
             if not sources or not sources <= reached
-        )
-        if not conditions:
+        ]
+        object_name = resolved.dedup_targets.get(name)
+        if object_name is None and not skipped:
             return expr
         aggregate, rewrap = unwrap_default(expr)
         if not isinstance(aggregate, FunctionCall):
@@ -838,6 +850,20 @@ def _build_pop_base_sql(
                 f"query can restrict to the rows of its own data objects. Query it "
                 f"without the period-over-period metric."
             )
+        conditions: list[Expr] = []
+        if object_name is not None:
+            varies = bool(skipped or (measure is not None and measure.filters))
+            input_expr = aggregate.args[0] if varies and aggregate.args else None
+            key = (object_name, dialect.compile_expr(input_expr) if input_expr else "")
+            flag = first_flags.get(key)
+            if flag is None:
+                flag = first_flags[key] = _FirstFlag(
+                    f"{_FIRST_FLAG}{len(first_flags)}", object_name, input_expr, skipped
+                )
+            conditions.append(
+                BinaryOp(ColumnRef(name=flag.name, table=_SRC_ALIAS), "=", Literal.number(1))
+            )
+        conditions.extend(BinaryOp(branch, "<>", Literal.number(n)) for n in skipped)
         condition = conditions[0]
         for more in conditions[1:]:
             condition = BinaryOp(condition, "AND", more)
@@ -951,7 +977,8 @@ def _build_pop_base_sql(
         return f"{rows_q}.{dialect.quote_identifier(alias)}"
 
     flags: list[str] = []
-    for object_name, flag in first_flags.items():
+    for flag in first_flags.values():
+        object_name = flag.object_name
         names = [n for n, o in resolved.dedup_targets.items() if o == object_name]
         identity = [
             _key(dialect.compile_expr(make_column_expr(model, object_name, key)))
@@ -966,9 +993,15 @@ def _build_pop_base_sql(
         # it is not one of the object's rows, so it is never the first of one,
         # or a count of the object would count a phantom.
         present = " AND ".join(f"{key} IS NOT NULL" for key in identity)
+        order = list(identity)
+        if flag.input_expr is not None:
+            branch_ref = f"{rows_q}.{dialect.quote_identifier(_BRANCH_COLUMN)}"
+            reads = [f"{_key(dialect.compile_expr(flag.input_expr))} IS NOT NULL"]
+            reads.extend(f"{branch_ref} <> {n}" for n in flag.skipped)
+            order.insert(0, f"CASE WHEN {' AND '.join(reads)} THEN 0 ELSE 1 END")
         flags.append(
             f"CASE WHEN {present} THEN ROW_NUMBER() OVER (PARTITION BY {', '.join(partition)} "
-            f"ORDER BY {', '.join(identity)}) END AS {dialect.quote_identifier(flag)}"
+            f"ORDER BY {', '.join(order)}) END AS {dialect.quote_identifier(flag.name)}"
         )
 
     def _repoint(expr: Expr) -> Expr:

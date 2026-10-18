@@ -268,6 +268,21 @@ measures:
     expression: 'COALESCE({[Orders].[Amount]}, 0) + 1'
     aggregation: sum
     resultType: float
+  Population With Orders:
+    columns: [{dataObject: Regions, column: Population}]
+    aggregation: sum
+    resultType: float
+    filters:
+      - column: {dataObject: Orders, column: Order ID}
+        operator: set
+  Population With Big Orders:
+    columns: [{dataObject: Regions, column: Population}]
+    aggregation: sum
+    resultType: float
+    filters:
+      - column: {dataObject: Orders, column: Amount}
+        operator: gt
+        values: [{dataType: float, valueFloat: 50}]
 metrics:
   Prior Credit:
     type: period_over_period
@@ -341,5 +356,26 @@ def test_an_ancestor_shared_by_both_rows_counts_once(shared: duckdb.DuckDBPyConn
         ("2026-01", 100.0, 10.0, 101.0),
         ("2026-02", 100.0, 20.0, 71.0),
         (None, 100.0, 60.0, 10.0),
+    ]
+    assert [row[:4] for row in pop] == plain
+
+
+def test_a_filtered_ancestor_measure_reads_a_row_its_filter_keeps(
+    shared: duckdb.DuckDBPyConnection,
+) -> None:
+    """The region's first row in a month was chosen before the measure's
+    filter was read: a first row failing it left the region reading nothing.
+    200 small undated orders fail ``Amount > 50``, the 60 inserted after them
+    passes; the NULL month read NULL instead of 100. A first row of Carol's,
+    without orders, fails ``Order ID set`` the same way."""
+    shared.execute("INSERT INTO orders SELECT 10 + i, 2, NULL, NULL, 9 FROM range(200) t(i)")
+    shared.execute("INSERT INTO orders VALUES (4, 1, NULL, NULL, 60)")
+    measures = ["Population With Big Orders", "Population With Orders", "Total Population"]
+    plain = _shared_rows(shared, measures)
+    pop = _shared_rows(shared, [*measures, "Prior Credit"])
+    assert plain == [
+        ("2026-01", 100.0, 100.0, 100.0),
+        ("2026-02", 100.0, 100.0, 100.0),
+        (None, 100.0, 100.0, 100.0),
     ]
     assert [row[:4] for row in pop] == plain
