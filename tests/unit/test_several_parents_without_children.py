@@ -139,3 +139,19 @@ def test_a_where_on_one_parent_keeps_the_other(
         }
     ]
     assert _rows(con, {"select": {"measures": ALL}, "where": always}) == [(225.0, 70.0, 15.0)]
+
+
+@pytest.mark.parametrize("grouping", ["rollup", "cube"])
+def test_under_rollup_a_where_on_one_parent_is_refused(grouping: str) -> None:
+    """``Tier notset`` holds for the never-ordered product. Under ROLLUP /
+    CUBE with two parents its set cannot be added, and the WHERE needs it:
+    refused, where Total Price read 3 instead of 11 without a word."""
+    with pytest.raises(ResolutionError) as raised:
+        _sql(
+            {
+                "select": {"dimensions": ["Tier"], "measures": ALL},
+                "grouping": grouping,
+                "where": [{"field": "Tier", "op": "notset"}],
+            }
+        )
+    assert [e.code for e in raised.value.errors] == ["FILTER_ADMITS_ROWS_WITHOUT"]

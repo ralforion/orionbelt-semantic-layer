@@ -2362,6 +2362,24 @@ class QueryResolver:
                         ),
                     )
                 )
+            elif parent in required:
+                ctx.errors.append(
+                    SemanticError(
+                        code="FILTER_ADMITS_ROWS_WITHOUT",
+                        message=(
+                            f"The WHERE can hold for a row of '{parent}' with no '{base}' "
+                            f"rows (an OR with another condition, a NOT, or an IS NULL), and "
+                            f"such rows cannot be added to this query: {reason}. Answered "
+                            f"from the '{base}' rows alone, they would be left out without "
+                            f"a word."
+                        ),
+                        path="where",
+                        hint=(
+                            "Write the condition as 'exists' / 'nonexists', which tests for "
+                            "a matching row and keeps the ones without any."
+                        ),
+                    )
+                )
             elif needed:
                 measures = ", ".join(f"'{name}'" for name in needed)
                 ctx.errors.append(
