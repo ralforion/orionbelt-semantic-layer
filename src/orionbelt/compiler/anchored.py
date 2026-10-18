@@ -47,14 +47,20 @@ from orionbelt.ast.nodes import (
     JoinType,
     Select,
 )
-from orionbelt.compiler.expr_rewrite import collect_column_refs, map_nodes
+from orionbelt.compiler.expr_rewrite import (
+    collect_column_refs,
+    collect_referenced_tables,
+    map_nodes,
+)
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.filters import collect_measure_filter_objects
-from orionbelt.compiler.graph import path_overrides
+from orionbelt.compiler.graph import JoinGraph, path_overrides
+from orionbelt.compiler.nested import emit_join_step
 from orionbelt.compiler.resolution import (
     ResolvedQuery,
-    anchored_conformed_objects,
+    conformed_reach,
     make_column_expr,
+    split_conformed_filters,
 )
 from orionbelt.models.semantic import DataObject, SemanticModel
 
@@ -88,18 +94,14 @@ class AnchorNotConformableError(FanoutError):
 
 
 class AnchoredFilterNotSupportedError(FanoutError):
-    """A measure's ``filters:`` constrain a fact the anchor conforms.
+    """A measure filter reads a conformed fact together with the anchor's side.
 
-    A measure filter becomes a ``CASE`` around the aggregate's argument, and by
-    the time the planner sees it the predicate is inlined into the expression.
-    Conforming cannot aggregate a predicate: restricting the foreign fact has to
-    happen *before* it is aggregated to the shared key, as a ``WHERE`` inside the
-    conformed subquery, or the filter compares a per-key total instead of
-    choosing rows. Aggregating it anyway produced ``SUM("Returns"."status")``,
-    which the database rejects outright when the column is text and answers the
-    wrong question when it is numeric.
-
-    Pushing the predicate down is a coherent extension and is not built.
+    A filter reading only what one conformed fact reaches is applied inside
+    that fact's subquery, before the rows are aggregated to the shared key
+    (``split_conformed_filters``). One that also reads the anchor's side, an
+    OR across both, has no such place: inlined as a ``CASE`` around the
+    conformed aggregate it would compare a per-key total rather than choose
+    rows. Aggregating it anyway produced ``SUM("Returns"."status")``.
 
     Subclasses :class:`~orionbelt.compiler.fanout.FanoutError` so callers that
     already surface fanout as a 422 surface this the same way.
@@ -108,12 +110,11 @@ class AnchoredFilterNotSupportedError(FanoutError):
     def __init__(self, measure_name: str, objects: list[str]) -> None:
         listed = ", ".join(f"'{name}'" for name in objects)
         super().__init__(
-            f"Measure '{measure_name}' filters on {listed}, which its anchor reaches "
-            f"only by conforming: those facts are aggregated to a shared key before "
-            f"the expression is evaluated, so the filter would compare a per-key "
-            f"total rather than choose rows. Filter on the anchor's own data "
-            f"objects, or move the restriction into a filtered measure on "
-            f"{listed} and combine the two with a metric."
+            f"Measure '{measure_name}' has a filter reading {listed}, which its anchor "
+            f"reaches only by conforming, together with the anchor's own side. A "
+            f"filter on {listed} alone is applied before they are aggregated to the "
+            f"shared key; one reading both sides has no such place. Split it into a "
+            f"condition on {listed} and one on the anchor's data objects."
         )
 
 
@@ -187,8 +188,14 @@ def _conform_one(
     alias: str,
     qualify: Callable[[DataObject], str] | None,
     overrides: dict[tuple[str, str], str],
+    filters: list[Expr],
+    graph: JoinGraph,
 ) -> ConformedFact:
-    """Aggregate *foreign* to the key it shares with *anchor*."""
+    """Aggregate *foreign* to the key it shares with *anchor*.
+
+    *filters* choose the foreign rows first: a WHERE inside the subquery,
+    joining from *foreign* whatever they read beyond it.
+    """
     shared = _shared_key(model, anchor, foreign, overrides)
     if shared is None:
         raise AnchorNotConformableError(measure_name, anchor, foreign)
@@ -220,8 +227,30 @@ def _conform_one(
         value_aliases.append((part, value_alias))
         builder.select(AliasedExpr(expr=FunctionCall(name="SUM", args=[part]), alias=value_alias))
 
-    qualified = qualify(foreign_obj) if qualify else foreign_obj.qualified_code
-    builder.from_(qualified, alias=foreign)
+    def qualify_object(obj: DataObject) -> str:
+        return qualify(obj) if qualify else obj.qualified_code
+
+    builder.from_(qualify_object(foreign_obj), alias=foreign)
+    read: set[str] = set()
+    for condition in filters:
+        collect_referenced_tables(condition, read)
+    joined = {foreign}
+    for step in graph.find_join_path({foreign}, read | {foreign}):
+        new_object = step.to_object
+        obj = model.data_objects.get(new_object)
+        if new_object in joined or obj is None:
+            continue
+        emit_join_step(
+            builder=builder,
+            step=step,
+            new_object=new_object,
+            obj=obj,
+            graph=graph,
+            qualify=qualify_object,
+        )
+        joined.add(new_object)
+    for condition in filters:
+        builder.where(condition)
 
     on: Expr | None = None
     for label, key_alias in zip(anchor_columns, key_aliases, strict=True):
@@ -264,6 +293,7 @@ def plan_conformed_facts(
     # secondary path selected by usePathNames replaces its pair's primary, and
     # grouping by the primary's column instead answers at a different date.
     overrides = path_overrides(resolved.use_path_names)
+    graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
 
     # Metric components count. A metric is planned by inlining its components'
     # expressions, so a metric over an anchored measure reaches the projection
@@ -282,11 +312,15 @@ def plan_conformed_facts(
         model_measure = model.effective_measures.get(resolved_measure.name)
         if model_measure is None:  # pragma: no cover - resolution guarantees this
             continue
-        foreign_objects = anchored_conformed_objects(model, model_measure, resolved.use_path_names)
+        reach = conformed_reach(model, model_measure, resolved.use_path_names)
+        foreign_objects = set(reach)
+        # A filter on what one conformed fact reaches is applied in its
+        # subquery; one also reading the anchor's side is not placeable.
+        _, kept = split_conformed_filters(model, model_measure, resolved.use_path_names)
         filtered: set[str] = set()
-        for measure_filter in model_measure.filters:
+        for measure_filter in kept:
             collect_measure_filter_objects(measure_filter, filtered)
-        constrained = sorted(filtered & foreign_objects)
+        constrained = sorted(filtered & {name for reached in reach.values() for name in reached})
         if constrained:
             raise AnchoredFilterNotSupportedError(resolved_measure.name, constrained)
         expression = resolved_measure.expression
@@ -300,6 +334,8 @@ def plan_conformed_facts(
                 f"{_CONFORM_ALIAS}{len(conformed)}",
                 qualify,
                 overrides,
+                resolved.conformed_filters.get((resolved_measure.name, foreign), []),
+                graph,
             )
             conformed.append(fact)
             expression = _point_at_conformed(expression, fact)

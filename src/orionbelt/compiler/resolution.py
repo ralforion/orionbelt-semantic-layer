@@ -66,6 +66,7 @@ from orionbelt.models.semantic import (
     GrainOverride,
     GrainToDate,
     Measure,
+    MeasureFilterItem,
     Metric,
     MetricType,
     ModelFilter,
@@ -398,6 +399,54 @@ def anchored_conformed_objects(
     return measure.source_objects - reachable
 
 
+def conformed_reach(
+    model: SemanticModel,
+    measure: Measure,
+    use_path_names: list[UsePathName] | None = None,
+) -> dict[str, set[str]]:
+    """Per fact an anchored measure conforms, what is reached only through it.
+
+    A filter on those objects chooses the fact's rows, so it is applied inside
+    the fact's conformed subquery, before the rows are aggregated to the key
+    they share with the anchor: ``Sales.Channel = 'web'`` conforms the web
+    sales per date. Objects the anchor reaches itself are left out - a filter
+    on them restricts the anchor's rows in the ordinary WHERE.
+    """
+    conformed = anchored_conformed_objects(model, measure, use_path_names)
+    if not conformed:
+        return {}
+    anchor = effective_anchor(model, measure, use_path_names) or shared_key_anchor(
+        model, measure, use_path_names
+    )
+    graph = JoinGraph.of(model, use_path_names=use_path_names or None)
+    anchored = graph.descendants(anchor) | {anchor} if anchor else set()
+    return {
+        fact: (graph.descendants_without_unnest(fact) | {fact}) - anchored
+        for fact in sorted(conformed)
+    }
+
+
+def split_conformed_filters(
+    model: SemanticModel,
+    measure: Measure,
+    use_path_names: list[UsePathName] | None = None,
+) -> tuple[dict[str, list[MeasureFilterItem]], list[MeasureFilterItem]]:
+    """A measure's ``filters:`` that read only what one conformed fact reaches,
+    by fact, and the rest. The first are applied in that fact's subquery."""
+    reach = conformed_reach(model, measure, use_path_names)
+    pushed: dict[str, list[MeasureFilterItem]] = {}
+    kept: list[MeasureFilterItem] = []
+    for item in measure.filters:
+        objects: set[str] = set()
+        collect_measure_filter_objects(item, objects)
+        fact = next((f for f, reached in reach.items() if objects and objects <= reached), None)
+        if fact is None:
+            kept.append(item)
+        else:
+            pushed.setdefault(fact, []).append(item)
+    return pushed, kept
+
+
 def make_column_expr(
     model: SemanticModel,
     object_name: str,
@@ -711,6 +760,9 @@ class ResolvedFilter:
     #: dropped by a ``filterContext``; a query or leg that cannot apply it is
     #: refused.
     enforced: bool = False
+    #: The anchored measures that read this filter inside a conformed fact's
+    #: subquery (``conformed_filters``) rather than in the leg's WHERE.
+    conformed_for: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -852,6 +904,12 @@ class ResolvedQuery:
     they are subquery sources, not join requirements, and counting them would
     flip the query into a CFL plan whose ``UNION ALL`` is exactly what the
     anchor exists to avoid."""
+
+    conformed_filters: dict[tuple[str, str], list[Expr]] = field(default_factory=dict)
+    """Predicates applied inside a conformed subquery, keyed by (anchored
+    measure, conformed fact): a WHERE or measure filter on that fact, or on
+    what only it reaches, chooses the fact's rows before they are aggregated
+    to the shared key. See :func:`conformed_reach`."""
 
     subquery_objects: set[str] = field(default_factory=set)
     """Data objects read outside the outer FROM/JOIN chain.
@@ -1001,6 +1059,9 @@ class _ResolutionContext:
     # (e.g. DuckDB) — production code paths thread the dialect's
     # ``format_table_ref``.
     qualify_table: Callable[[DataObject], str] | None = None
+    #: Per anchored measure, :func:`conformed_reach`: the objects a filter may
+    #: read to be applied inside that measure's conformed subqueries.
+    conformed_reach: dict[str, dict[str, set[str]]] = field(default_factory=dict)
 
 
 def _resolve_effective_grain(
@@ -1125,25 +1186,17 @@ class QueryResolver:
 
         # An anchored measure pins the base, which bypasses the re-anchoring that
         # normally makes a filter's data object reachable. A predicate on a fact
-        # the anchor only reaches by conforming cannot be honoured where it
-        # stands: the fact is aggregated to the shared key before the expression
-        # is evaluated, so the predicate would compare a per-key total rather
-        # than choose rows. Restricting it properly means a WHERE inside the
-        # conformed subquery, which is not built.
-        #
-        # Refused rather than dropped. Filters on an unreachable object are
-        # skipped silently elsewhere, which is tolerable when the object is
-        # merely absent - here the query names a real fact the plan does read,
-        # and skipping returned unfiltered totals with nothing to say so.
-        # Static model filters count, and count for more: they are documented
-        # as applied to every query, so dropping one silently widens every
-        # result the model ever returns. Collected here rather than in
-        # ``_collect_where_filter_objects`` so base-object selection keeps the
-        # behaviour it has for models with no anchored measure.
-        self._reject_filters_on_conformed_objects(
-            ctx,
-            where_filter_objects | {mf.data_object for mf in model.filters},
-        )
+        # the anchor only reaches by conforming chooses that fact's rows, so it
+        # is applied inside the fact's conformed subquery, before the rows are
+        # aggregated to the shared key (``_push_filters_into_conformed_facts``).
+        # Recorded here, before the filters are resolved, so resolving one does
+        # not try to join such an object from the base.
+        for name in ctx.result.anchored_measures:
+            anchored = model.effective_measures.get(name)
+            if anchored is not None:
+                ctx.conformed_reach[name] = conformed_reach(
+                    model, anchored, ctx.result.use_path_names
+                )
 
         # Detect multi-fact: CFL is needed only when measure source objects
         # span multiple independent fact tables.
@@ -1325,6 +1378,7 @@ class QueryResolver:
             if resolved_filter:
                 ctx.result.having_filters.append(resolved_filter)
 
+        self._push_filters_into_conformed_facts(ctx)
         self._plan_rows_without_children(ctx)
 
         # 7. Resolve order by — must reference a dimension or measure in SELECT
@@ -1915,10 +1969,22 @@ class QueryResolver:
     def _apply_measure_filters(
         ctx: _ResolutionContext, measure: Measure, func: FunctionCall
     ) -> FunctionCall:
-        """Wrap aggregate args with CASE WHEN if the measure has filters."""
+        """Wrap aggregate args with CASE WHEN if the measure has filters.
+
+        A filter on a fact the measure's anchor conforms is not wrapped: it is
+        applied inside that fact's conformed subquery (``conformed_filters``).
+        """
         if not measure.filters:
             return func
-        condition = build_measure_filter_condition(measure.filters, ctx.model, ctx.errors)
+        pushed, kept = split_conformed_filters(ctx.model, measure, ctx.result.use_path_names)
+        for fact, items in pushed.items():
+            pushed_condition = build_measure_filter_condition(items, ctx.model, ctx.errors)
+            bucket = ctx.result.conformed_filters.setdefault((measure.name, fact), [])
+            if pushed_condition is not None and pushed_condition not in bucket:
+                bucket.append(pushed_condition)
+        if not kept:
+            return func
+        condition = build_measure_filter_condition(kept, ctx.model, ctx.errors)
         if condition is None:
             return func
         wrapped_args: list[Expr] = [CaseExpr(when_clauses=[(condition, arg)]) for arg in func.args]
@@ -2031,42 +2097,119 @@ class QueryResolver:
                     result.update(self._get_measure_join_objects(ctx, ref_name))
         return result
 
-    def _reject_filters_on_conformed_objects(
-        self, ctx: _ResolutionContext, filter_objects: set[str]
-    ) -> None:
-        """Refuse a WHERE predicate on a fact an anchored measure only conforms.
+    def _push_filters_into_conformed_facts(self, ctx: _ResolutionContext) -> None:
+        """Apply a WHERE on a conformed fact inside its conformed subqueries.
 
-        Covers both the query's ``where`` and the model's static ``filters:``.
-        Either one resolves against an object the plan reads only as an
-        aggregate, so neither can choose rows, and both were being skipped.
+        A predicate reading only what one conformed fact reaches
+        (``conformed_reach``) chooses that fact's rows: it is moved from the
+        WHERE to ``conformed_filters`` for every anchored measure conforming
+        the fact, and applied before the rows are aggregated to the shared key.
+        In the WHERE it would name a table the plan reads only as a per-key
+        total.
+
+        Every measure the query computes has to apply it: an anchored measure
+        conforming the fact, or, in a union of facts, one whose own fact
+        reaches it (the filter then stays in the WHERE for that leg). A
+        measure that can do neither would be computed without it, so a query
+        filter is refused (``FILTER_NOT_APPLICABLE_TO_MEASURE``); a static one
+        applies where relevant, unless ``enforce: always``. A predicate that
+        also reads what the anchor reaches - an OR across both sides - has no
+        single place to be applied and is refused (``FILTER_ON_CONFORMED_OBJECT``).
         """
-        if not ctx.result.anchored_measures or not filter_objects:
+        reach = ctx.conformed_reach
+        pushable = {name for facts in reach.values() for objs in facts.values() for name in objs}
+        if not pushable:
             return
-        conformed: set[str] = set()
-        for name in ctx.result.anchored_measures:
-            measure = ctx.model.effective_measures.get(name)
-            if measure is not None:
-                conformed |= anchored_conformed_objects(
-                    ctx.model, measure, ctx.result.use_path_names
+        components = ctx.result.metric_components
+        computed = sorted(
+            {m.name for m in ctx.result.measures if not m.component_measures}
+            | {name for name, c in components.items() if not c.component_measures}
+        )
+        graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
+        kept: list[ResolvedFilter] = []
+        for wf in ctx.result.where_filters:
+            tables: set[str] = set()
+            collect_referenced_tables(wf.expression, tables)
+            if not tables & pushable:
+                kept.append(wf)
+                continue
+            facts: dict[str, str] = {}
+            missing: list[str] = []
+            for name in computed:
+                fact = next((f for f, objs in reach.get(name, {}).items() if tables <= objs), None)
+                if fact is not None:
+                    facts[name] = fact
+                    continue
+                measure = ctx.model.effective_measures.get(name)
+                sources = measure.source_objects if measure is not None else set()
+                reaches = ctx.result.requires_cfl and any(
+                    tables <= graph.descendants_without_unnest(src) | {src} for src in sources
                 )
-        constrained = sorted(filter_objects & conformed)
-        if not constrained:
-            return
-        listed = ", ".join(f"'{name}'" for name in constrained)
+                if not reaches:
+                    missing.append(name)
+            read = ", ".join(sorted(tables & pushable))
+            if not facts:
+                if not wf.static or wf.enforced:
+                    self._refuse_filter_on_conformed_object(ctx, tables & pushable)
+                else:
+                    filter_resolution.report_unapplied_static_filter(
+                        [], ctx.result.warnings, None, read
+                    )
+                continue
+            if missing:
+                if not wf.static or wf.enforced:
+                    self._refuse_filter_not_applicable(ctx, tables & pushable, missing)
+                    continue
+                names = ", ".join(f"'{name}'" for name in missing)
+                filter_resolution.report_unapplied_static_filter(
+                    [], ctx.result.warnings, None, read, names
+                )
+            for name, fact in facts.items():
+                bucket = ctx.result.conformed_filters.setdefault((name, fact), [])
+                if wf.expression not in bucket:
+                    bucket.append(wf.expression)
+            if len(facts) + len(missing) < len(computed):
+                # Measures on a union leg that reaches the filter natively.
+                kept.append(replace(wf, conformed_for=frozenset(facts)))
+        ctx.result.where_filters = kept
+
+    @staticmethod
+    def _refuse_filter_on_conformed_object(ctx: _ResolutionContext, objects: set[str]) -> None:
+        listed = ", ".join(f"'{name}'" for name in sorted(objects))
         ctx.errors.append(
             SemanticError(
                 code="FILTER_ON_CONFORMED_OBJECT",
                 message=(
-                    f"A filter constrains {listed}, which an anchored measure reaches "
-                    f"only by aggregating it to a shared key. The filter would compare a "
-                    f"per-key total rather than choose rows, so it cannot be applied "
-                    f"where it stands. This covers the query's own filters and the "
+                    f"A filter reads {listed}, which an anchored measure reaches only "
+                    f"by aggregating it to a shared key, together with data objects "
+                    f"outside it. Such a filter is applied before the aggregation, "
+                    f"inside the conformed subquery, so it can read only what that "
+                    f"subquery reads. This covers the query's own filters and the "
                     f"model's static ones alike."
                 ),
                 path="where",
+                hint=(f"Split the condition: one on {listed} alone, and one on the anchor's side."),
+            )
+        )
+
+    @staticmethod
+    def _refuse_filter_not_applicable(
+        ctx: _ResolutionContext, objects: set[str], measures: list[str]
+    ) -> None:
+        listed = ", ".join(f"'{name}'" for name in sorted(objects))
+        names = ", ".join(f"'{name}'" for name in measures)
+        ctx.errors.append(
+            SemanticError(
+                code="FILTER_NOT_APPLICABLE_TO_MEASURE",
+                message=(
+                    f"A WHERE filter reads {listed}, which an anchored measure applies "
+                    f"inside its conformed subquery, but {names} cannot apply it: "
+                    f"those measures would be computed without the filter."
+                ),
+                path="where",
                 hint=(
-                    "Filter on a data object the anchor reaches directly, or query the "
-                    f"anchored measure separately from the restriction on {listed}."
+                    "Query the measures that cannot apply it separately, or filter on "
+                    "a dimension every selected measure reaches."
                 ),
             )
         )
@@ -2140,6 +2283,12 @@ class QueryResolver:
         # longer joined - visible only when nothing else in the query happened
         # to require it.
         result -= anchored_conformed_objects(ctx.model, measure, ctx.result.use_path_names)
+        # So are the objects its pushed filters read: they are joined inside
+        # the conformed subquery.
+        pushed, _ = split_conformed_filters(ctx.model, measure, ctx.result.use_path_names)
+        reach = conformed_reach(ctx.model, measure, ctx.result.use_path_names)
+        for fact in pushed:
+            result -= reach[fact]
         result.add(anchor)
 
     def _get_measure_source_objects(self, ctx: _ResolutionContext, name: str) -> set[str]:
