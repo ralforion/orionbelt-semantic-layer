@@ -51,7 +51,7 @@ class TestMetricRoundTripCodeVsName:
         # after the OBML data object and column, not their physical codes.
         osi = conv.OBMLtoOSI(self._OBML).convert()
         sql = osi["metrics"][0]["expression"]["dialects"][0]["expression"]
-        assert sql == 'SUM("Orders"."Amount")'
+        assert sql == "SUM(Orders.Amount)"
 
     def test_measure_survives_round_trip(self) -> None:
         osi = conv.OBMLtoOSI(self._OBML).convert()

@@ -64,7 +64,7 @@ def _expression(osi: dict[str, Any], name: str) -> str:
 def test_exported_as_the_ordered_set_aggregate() -> None:
     osi = conv.OBMLtoOSI(_OBML).convert()
     assert _expression(osi, "P90 Amount") == (
-        'PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY "Orders"."Amount")'
+        "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY Orders.Amount)"
     )
     # Plain notation: 1e-05 is not a SQL literal everywhere.
     assert _expression(osi, "Tiny Amount").startswith("PERCENTILE_DISC(0.00001) WITHIN GROUP")

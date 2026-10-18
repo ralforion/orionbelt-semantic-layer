@@ -53,7 +53,7 @@ Another OSI tool reads a metric's SQL expression, not OrionBelt's vendor extensi
 | OBML | Exported expression |
 |---|---|
 | Column | A field named by the column name, computed by the column `code`; `primary_key` and relationship columns list field names |
-| Column reference | `"<dataset>"."<field>"`: the data object and column names, always quoted so a reserved word such as `Order` still parses |
+| Column reference | `<dataset>.<field>`: the OBML data object and column names, bare where they can be regular SQL identifiers and double-quoted otherwise (a space, a leading digit, a SQL:2023 reserved word such as `Order` or `value`, a word DuckDB or sqlglot will not read bare such as `Qualify`, or a name that equals another dataset's, or another field's in the same dataset, regardless of case, such as `Amount` beside `amount`). The Ossie expression language follows ANSI SQL, where a bare name matches regardless of case and a quoted one only exactly, so a quoted `"amount"` would not match a field declared `amount` |
 | Measure `filters` | `SUM(CASE WHEN <condition> THEN <arg> END)`, the spec's portable filtered aggregation |
 | Measure `total: true` | The grand-total window, e.g. `SUM(SUM(x)) OVER ()` |
 | Measure `defaultValue` | `COALESCE(<aggregate>, <value>)` |

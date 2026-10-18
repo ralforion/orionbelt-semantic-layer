@@ -21,8 +21,16 @@ caller can leave it out of the Ossie document instead of guessing.
 from __future__ import annotations
 
 import re
+from collections import Counter
+from collections.abc import Iterable
 from decimal import Decimal
+from functools import cache
 from typing import Any
+
+import sqlglot
+from sqlglot import expressions as exp
+
+from osi_orionbelt._sql_reserved import DUCKDB_REJECTED_WORDS, SQL_RESERVED_WORDS
 
 _MEASURE_REF = re.compile(r"\{\[([^\]]+)\]\}")
 _COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
@@ -76,11 +84,57 @@ class NotPortableError(Exception):
 def sql_ident(name: str) -> str:
     """Render *name* as a double-quoted identifier.
 
-    Always quoted: a plain-looking name can still be a reserved word (a data
-    object called ``Order``), and a quoted identifier matches the Ossie dataset
-    or field name exactly, case included.
+    For physical SQL, such as a nested object's source query, where the exact
+    case of a table or column name matters: Postgres folds a bare ``Key`` to
+    ``key``. A reference to an Ossie dataset or field uses :func:`ossie_ident`.
     """
     return '"' + name.replace('"', '""') + '"'
+
+
+_REGULAR_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+@cache
+def needs_quoting(name: str) -> bool:
+    """Whether *name* cannot be a regular (unquoted) identifier in an export.
+
+    Not identifier-shaped, a SQL:2023 reserved word, a word DuckDB refuses
+    bare, or one sqlglot does not read as ``<name>.<name>``: what runs and
+    validates these exports must parse the reference too.
+    """
+    if not _REGULAR_IDENTIFIER.fullmatch(name):
+        return True
+    if name.lower() in SQL_RESERVED_WORDS | DUCKDB_REJECTED_WORDS:
+        return True
+    try:
+        node = sqlglot.parse_one(f"{name}.{name}")
+    except sqlglot.errors.SqlglotError:
+        return True
+    return not (isinstance(node, exp.Column) and node.table == name and node.name == name)
+
+
+def case_collisions(names: Iterable[str]) -> frozenset[str]:
+    """The names that equal another one regardless of case.
+
+    A bare identifier matches regardless of case, so ``Amount`` and ``amount``
+    would be one reference; quoted, each matches only itself.
+    """
+    names = list(dict.fromkeys(names))
+    folded = Counter(name.upper() for name in names)
+    return frozenset(name for name in names if folded[name.upper()] > 1)
+
+
+def ossie_ident(name: str, collisions: frozenset[str] = frozenset()) -> str:
+    """*name* as an identifier in an Apache Ossie expression: bare when it can be.
+
+    The expression language follows ANSI SQL: a regular identifier matches
+    regardless of case, a quoted one exactly. A field declared ``amount`` is
+    regular, so ``"amount"`` would not match it; the reference is written bare.
+    A name that cannot be regular (a space, a leading digit, a reserved word
+    such as ``Order``) is quoted, and matches the declared name exactly, as is
+    a name in *collisions*, which bare would match another one.
+    """
+    return sql_ident(name) if name in collisions or needs_quoting(name) else name
 
 
 def _string_literal(value: str) -> str:
@@ -171,6 +225,13 @@ class PortableRenderer:
         self.metrics: dict[str, Any] = obml.get("metrics") or {}
         self.counts = synthesized_counts(obml)
         self._resolving: set[str] = set()
+        # Names a bare reference could not tell apart: dataset names across the
+        # model, field names within each data object.
+        self._dataset_collisions = case_collisions(self.data_objects)
+        self._field_collisions = {
+            name: case_collisions(obj.get("columns") or {})
+            for name, obj in self.data_objects.items()
+        }
 
     # ── references ────────────────────────────────────────────────────
 
@@ -179,7 +240,9 @@ class PortableRenderer:
         obj = self.data_objects.get(data_object)
         if obj is None:
             raise NotPortableError(f"references unknown data object '{data_object}'")
-        return f"{sql_ident(data_object)}.{sql_ident(column)}"
+        dataset = ossie_ident(data_object, self._dataset_collisions)
+        field = ossie_ident(column, self._field_collisions.get(data_object, frozenset()))
+        return f"{dataset}.{field}"
 
     def _column_ref(self, ref: dict[str, Any]) -> str:
         return self.column(ref.get("dataObject", ""), ref.get("column", ""))
