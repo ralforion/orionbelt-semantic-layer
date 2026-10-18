@@ -1,0 +1,54 @@
+"""The UI page stays small enough to serve to every visitor.
+
+The deployed ``/ui/`` page was 16 MB of HTML, uncompressed: Gradio inlined a
+10 MB client-API schema (every event, with generated code snippets) and the
+vendored mermaid/ACE bundles travel in the page head. Scanners replaying
+domain lists against the load balancer's IP fetched it in full each time.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+pytest.importorskip("gradio", reason="gradio required by the UI")
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+
+from orionbelt.ui import app as ui_app  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def demo() -> object:
+    with (
+        patch.object(ui_app, "_fetch_settings", return_value={"_unreachable": True}),
+        patch.object(ui_app, "_fetch_dialects", return_value=["postgres", "duckdb"]),
+    ):
+        return ui_app.create_blocks(default_api_url="http://example.invalid")
+
+
+def test_no_event_is_documented_as_client_api(demo: object) -> None:
+    assert demo.get_api_info()["named_endpoints"] == {}  # type: ignore[attr-defined]
+
+
+def test_events_stay_callable(demo: object) -> None:
+    """Undocumented, not private: the browser still has to call every handler."""
+    visibilities = {fn.api_visibility for fn in demo.fns.values()}  # type: ignore[attr-defined]
+    assert "public" not in visibilities
+    assert any(
+        dep["api_visibility"] == "undocumented"
+        for dep in demo.config["dependencies"]  # type: ignore[attr-defined]
+    )
+
+
+async def test_proxied_page_is_compressed(demo: object, tmp_path: Path) -> None:
+    favicon = tmp_path / "favicon.png"
+    favicon.write_bytes(b"\x89PNG")
+    app = ui_app._proxied_app(demo, "/ui", favicon)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/ui/", headers={"Accept-Encoding": "gzip"})
+        favicon_resp = await client.get("/ui/favicon.png")
+    assert resp.status_code == 200
+    assert resp.headers["content-encoding"] == "gzip"
+    assert favicon_resp.status_code == 200

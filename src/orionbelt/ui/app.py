@@ -80,6 +80,8 @@ from orionbelt.ui.rendering import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from fastapi import FastAPI, Request
 
 __all__ = [
@@ -3308,6 +3310,15 @@ def create_blocks(
     # being restated at each site, where forgetting one is silent.
     demo.ob_frontend = frontend_assets(head_html)
 
+    # Gradio documents every public event as a client API and inlines that
+    # schema, code snippets included, into each page load: 10 MB for this app.
+    # Nobody drives the playground through the Gradio client (the REST API is
+    # the programmatic surface), so the events stay callable but undocumented.
+    for fn in demo.fns.values():
+        if fn.api_visibility == "public":
+            fn.api_visibility = "undocumented"
+    demo.config = demo.get_config_file()
+
     return demo
 
 
@@ -3329,6 +3340,40 @@ def _reject_unknown_pages(app: FastAPI, root_path: str, pages: set[str]) -> None
         if page is not None and page not in pages and request.url.path.rstrip("/") == root:
             return PlainTextResponse("Not Found", status_code=404)
         return await call_next(request)
+
+
+def _proxied_app(demo: Any, root_path: str, favicon_file: Path) -> FastAPI:
+    """Wrap ``demo`` in a FastAPI app that mounts it under ``root_path``.
+
+    Gradio ignores ``favicon_path`` here (its default head template uses
+    absolute "/favicon.ico"), so the favicon is served by the wrapper and
+    linked from the head ``create_blocks`` was given.
+    """
+    from fastapi import FastAPI
+    from fastapi.middleware.gzip import GZipMiddleware
+    from fastapi.responses import FileResponse, PlainTextResponse
+
+    app = FastAPI()
+
+    @app.get(f"{root_path.rstrip('/')}/favicon.png", include_in_schema=False)
+    async def _favicon() -> FileResponse:
+        return FileResponse(favicon_file, media_type="image/png")
+
+    @app.get("/robots.txt", include_in_schema=False)
+    async def _robots() -> PlainTextResponse:
+        # The UI is an interactive app, not indexable content. When this
+        # service is fronted on its own host (rather than under /ui on the
+        # API host), serve a disallow-all so crawlers skip it.
+        return PlainTextResponse("User-agent: *\nDisallow: /\n")
+
+    # The page inlines the vendored mermaid and ACE bundles; uncompressed it
+    # is several MB per load. Starlette skips text/event-stream, so the
+    # Gradio queue's SSE stream is left alone.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+    _reject_unknown_pages(app, root_path, set(demo.config.get("page", {})))
+    mounted: FastAPI = gr.mount_gradio_app(app, demo, path=root_path, **demo.ob_frontend)
+    return mounted
 
 
 def create_ui() -> None:
@@ -3362,32 +3407,11 @@ def create_ui() -> None:
 
     if root_path:
         # Behind a reverse proxy / load balancer mounting Gradio under
-        # ``root_path``. Gradio ignores ``favicon_path`` here (its default
-        # head template uses absolute "/favicon.ico"), so we serve the
-        # favicon ourselves and inject a <link> tag into the head.
-        import gradio as gr
-        from fastapi import FastAPI
-        from fastapi.responses import FileResponse, PlainTextResponse
-
+        # ``root_path``; the wrapper serves the favicon this <link> points at.
         favicon_url = f"{root_path.rstrip('/')}/favicon.png"
         head_html = f'<link rel="icon" type="image/png" href="{favicon_url}">'
         demo = create_blocks(default_api_url=api_url, head_html=head_html)
-
-        app = FastAPI()
-
-        @app.get(favicon_url, include_in_schema=False)
-        async def _favicon() -> FileResponse:
-            return FileResponse(favicon_file, media_type="image/png")
-
-        @app.get("/robots.txt", include_in_schema=False)
-        async def _robots() -> PlainTextResponse:
-            # The UI is an interactive app, not indexable content. When this
-            # service is fronted on its own host (rather than under /ui on the
-            # API host), serve a disallow-all so crawlers skip it.
-            return PlainTextResponse("User-agent: *\nDisallow: /\n")
-
-        _reject_unknown_pages(app, root_path, set(demo.config.get("page", {})))
-        app = gr.mount_gradio_app(app, demo, path=root_path, **demo.ob_frontend)
+        app = _proxied_app(demo, root_path, favicon_file)
         uvicorn.run(
             app,
             host="0.0.0.0",
