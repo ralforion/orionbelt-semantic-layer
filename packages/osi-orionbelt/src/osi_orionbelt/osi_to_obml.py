@@ -671,6 +671,8 @@ class OSItoOBML:
                         col["sqlScale"] = ext_data["obml_sql_scale"]
                     if ext_data.get("obml_num_class"):
                         col["numClass"] = ext_data["obml_num_class"]
+                    if ext_data.get("obml_grain"):
+                        col["grain"] = ext_data["obml_grain"]
                     if ext_data.get("obml_comment"):
                         col["comment"] = ext_data["obml_comment"]
                     if ext_data.get("obml_owner"):

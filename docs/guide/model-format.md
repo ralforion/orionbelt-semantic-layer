@@ -254,6 +254,7 @@ Project.Ancestors` addresses the array without any further declaration.
 | `sqlPrecision` | int | No | Informational: numeric precision |
 | `sqlScale` | int | No | Informational: numeric scale |
 | `numClass` | enum | No | Classification of numeric columns to control aggregation behavior. `categorical` (IDs/codes), `additive` (sum-safe), `non-additive` (rates/ratios) |
+| `grain` | enum | No | The time grain the column's values already hold, e.g. `month` for a column of month starts. A finer grain asked of it is refused with `GRAIN_FINER_THAN_DECLARED`; see [Columns that hold a grain](#columns-that-hold-a-grain). Requires a date-bearing `abstractType` |
 | `primaryKey` | bool | No | Marks the column as part of the data object's primary key. Informational only — set on multiple columns for composite keys. Rendered as `PK` in the ER diagram and emitted as `obsl:primaryKey` in the OBSL graph. |
 | `comment` | string | No | Documentation |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
@@ -278,6 +279,43 @@ different zone on a different ClickHouse.
 
 To move a reading into a zone deliberately, set `defaultTimezone` and
 `queryTimezone` in model settings rather than relying on a cast.
+
+#### Columns that hold a grain
+
+A column of month starts holds months. Truncated to a day, a month start is
+itself, so `"Order Month:day"` would return one row per month under a label
+that says day, with nothing to show the rows are not days. Such a request is
+refused with `GRAIN_FINER_THAN_DECLARED`:
+
+```yaml
+columns:
+  Order Month:
+    expression: "date_trunc('month', {Order Date})"   # holds month: read from the call
+    abstractType: date
+  Month Key:
+    code: month_start
+    abstractType: date
+    grain: month                                      # holds month: declared
+```
+
+| Asked of a month column | Result |
+|---|---|
+| `month`, `quarter`, `year` | Answered: each is a set of whole months |
+| `day`, `hour`, ... | Refused: the month starts would be labelled as days |
+| `week` | Refused: a week is no set of whole months, nor a month of whole weeks |
+
+A week column answers only `week`. A computed column whose whole expression is
+one `date_trunc('<grain>', ...)` call needs no declaration; a physical column of
+month starts, or an expression of another shape, declares `grain`. The declared
+value wins. The rule holds every grain a model or query names over the column:
+a dimension's `timeGrain`, a reaggregate metric's `per` grain, a
+period-over-period metric's `grain` and a cumulative metric's `grainToDate` are
+refused at load, a query's
+`"dimension:grain"` when it is compiled.
+
+A dimension's `timeGrain` over a column of days is a default bucket, not a
+grain the values hold: `"Order Date:day"` over a `timeGrain: month` dimension
+still returns days.
 
 #### Computed Columns
 

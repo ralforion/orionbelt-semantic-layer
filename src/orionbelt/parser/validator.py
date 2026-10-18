@@ -33,6 +33,8 @@ from orionbelt.models.semantic import (
     MetricType,
     SemanticModel,
     TimeGrain,
+    grain_derives,
+    held_grain_cost,
     result_type_holds_grain,
 )
 from orionbelt.models.synthesis import count_label, model_count_pattern
@@ -281,6 +283,7 @@ class SemanticValidator:
         errors.extend(self._check_time_grain_on_temporal_columns(model))
         errors.extend(self._check_result_type_holds_the_grain(model))
         errors.extend(self._check_reaggregate_per_grains(model))
+        errors.extend(self._check_held_grains(model))
         errors.extend(self._check_measure_filter_refs(model))
         errors.extend(self._check_within_group_refs(model))
         # An expression whose references do not resolve is reported once, by the
@@ -987,6 +990,91 @@ class SemanticValidator:
                     path=f"dimensions.{name}",
                 )
             )
+        return errors
+
+    def _check_held_grains(self, model: SemanticModel) -> list[SemanticError]:
+        """Refuse a grain finer than the one a column's values already hold.
+
+        A column of month starts - declared ``grain: month``, or a computed
+        ``date_trunc('month', ...)`` - truncated to a day returns the month
+        starts, one row per month under a label that says day. Nothing about
+        it is a SQL error, so it is refused here, for every grain the model
+        names over such a column: a dimension's ``timeGrain``, a reaggregate
+        metric's ``per`` grain, a period-over-period metric's grain and a
+        cumulative metric's ``grainToDate``. A query's own ``dimension:grain``
+        is held to it by the resolver.
+
+        A declared ``grain`` also needs a date-bearing column, as a
+        ``timeGrain`` does.
+        """
+        errors: list[SemanticError] = []
+        for obj_name, obj in model.data_objects.items():
+            for col_name, col in obj.columns.items():
+                if col.grain is not None and col.abstract_type not in DATE_BEARING_TYPES:
+                    errors.append(
+                        SemanticError(
+                            code="TIME_GRAIN_ON_NON_TEMPORAL",
+                            message=(
+                                f"Column '{obj_name}.{col_name}' declares grain "
+                                f"'{col.grain.value}' but has abstractType "
+                                f"'{col.abstract_type.value}'. A grain requires the "
+                                f"column to be date, timestamp, or timestamp_tz."
+                            ),
+                            path=f"dataObjects.{obj_name}.columns.{col_name}",
+                        )
+                    )
+
+        def check(dim_name: str, grain: TimeGrain, what: str, path: str) -> None:
+            dim = model.dimensions.get(dim_name)
+            obj = model.data_objects.get(dim.view) if dim and dim.view else None
+            column = obj.columns.get(dim.column) if obj and dim else None
+            held = column.held_grain if column else None
+            if held is None or dim is None or grain_derives(grain, held):
+                return
+            errors.append(
+                SemanticError(
+                    code="GRAIN_FINER_THAN_DECLARED",
+                    message=(
+                        f"{what} asks for grain '{grain.value}' of dimension "
+                        f"'{dim_name}', but column '{dim.view}.{dim.column}' holds "
+                        f"'{held.value}' values: {held_grain_cost(grain, held)}"
+                    ),
+                    path=path,
+                )
+            )
+
+        for name, dim in model.dimensions.items():
+            if dim.time_grain is not None:
+                check(name, dim.time_grain, f"Dimension '{name}'", f"dimensions.{name}")
+        for name, met in model.metrics.items():
+            if met.type is MetricType.REAGGREGATE:
+                for entry in met.per:
+                    dim_name, _, grain_text = entry.rpartition(":")
+                    if entry not in model.dimensions and dim_name and grain_text in TimeGrain:
+                        check(
+                            dim_name,
+                            TimeGrain(grain_text),
+                            f"Reaggregate metric '{name}'",
+                            f"metrics.{name}.per",
+                        )
+            elif met.type is MetricType.PERIOD_OVER_PERIOD and met.period_over_period:
+                pop = met.period_over_period
+                check(
+                    pop.time_dimension,
+                    pop.grain,
+                    f"Period-over-period metric '{name}'",
+                    f"metrics.{name}.periodOverPeriod",
+                )
+            elif met.type is MetricType.CUMULATIVE and met.time_dimension and met.grain_to_date:
+                # The running total restarts per grainToDate bucket of the time
+                # dimension: weeks of month starts put each month in the week
+                # its first day falls in.
+                check(
+                    met.time_dimension,
+                    TimeGrain(met.grain_to_date.value),
+                    f"Cumulative metric '{name}'",
+                    f"metrics.{name}.grainToDate",
+                )
         return errors
 
     def _check_reaggregate_per_grains(self, model: SemanticModel) -> list[SemanticError]:

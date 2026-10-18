@@ -48,6 +48,10 @@ dataObjects:
         code: AMT
         abstractType: float
         numClass: additive
+      Order Month:
+        code: ORDER_MONTH
+        abstractType: date
+        grain: month
     customExtensions:
       - vendor: osi
         data: '{"ai_context": "order facts"}'
@@ -127,6 +131,16 @@ def _has_class_instance(g, class_local_name: str) -> bool:
 
 def test_emits_numclass(graph) -> None:
     assert _has_predicate(graph, "numClass"), "Column.num_class not emitted as obsl:numClass"
+
+
+def test_emits_column_grain(graph) -> None:
+    from rdflib import Literal, URIRef
+
+    obsl = "https://ralforion.com/ns/obsl#"
+    columns = set(graph.subjects(URIRef(f"{obsl}timeGrain"), Literal("month")))
+    assert columns & set(graph.subjects(None, URIRef(f"{obsl}Column"))), (
+        "Column.grain not emitted as obsl:timeGrain on the column"
+    )
 
 
 def test_emits_primarykey(graph) -> None:

@@ -102,6 +102,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
                 code=col.code,
                 abstract_type=col.abstract_type.value,
                 num_class=col.num_class.value if col.num_class else None,
+                grain=col.held_grain.value if col.held_grain else None,
                 description=col.description,
                 comment=col.comment,
                 owner=col.owner,

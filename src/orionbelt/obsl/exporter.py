@@ -530,6 +530,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
                 g.add((col_uri, OBSL.primaryKey, Literal(True)))
             if col.num_class is not None:
                 g.add((col_uri, OBSL.numClass, Literal(col.num_class.value)))
+            if col.grain is not None:
+                g.add((col_uri, OBSL.timeGrain, Literal(col.grain.value)))
 
             # A computed column carries its formula and the columns that formula
             # reads, the same pair an expression measure carries. The qualified

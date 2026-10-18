@@ -652,6 +652,7 @@ class ReferenceResolver:
                         comment=fdata.get("comment"),
                         owner=fdata.get("owner"),
                         expression=fdata.get("expression"),
+                        grain=fdata.get("grain"),
                         synonyms=fdata.get("synonyms", []),
                         custom_extensions=_parse_extensions(fdata),
                     )

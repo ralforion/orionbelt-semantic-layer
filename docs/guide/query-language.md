@@ -109,6 +109,13 @@ than answered - `hour`, `minute` and `second` need `timestamp`, and neither
 `time` nor `time_tz` takes a grain at all, because a grain always carries a
 date. A non-temporal `resultType` is not cast and takes any grain.
 
+A grain must also be one the column's values can answer. A column of month
+starts (a `date_trunc('month', ...)` computed column, or one declaring
+`grain: month`) answers `month`, `quarter` and `year`; `day` or `week` of it
+would return the month starts labelled as days, and is rejected with
+`GRAIN_FINER_THAN_DECLARED`. See
+[Columns that hold a grain](model-format.md#columns-that-hold-a-grain).
+
 ### Coalesce (Merging Role-Playing Dimensions)
 
 Role-playing dimensions (e.g. `Sales Employee` and `Purchase Employee`, both pointing to `Employees.Employee Name` via different facts) appear as separate columns in CFL output — one row per role per person. To collapse them into a single output column, use a coalesce group inside `dimensions`:

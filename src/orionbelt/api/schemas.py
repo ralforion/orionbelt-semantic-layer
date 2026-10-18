@@ -1215,6 +1215,7 @@ class ColumnDetail(BaseModel):
     code: str
     abstract_type: str
     num_class: str | None = None
+    grain: str | None = None
     description: str | None = None
     comment: str | None = None
     owner: str | None = None
