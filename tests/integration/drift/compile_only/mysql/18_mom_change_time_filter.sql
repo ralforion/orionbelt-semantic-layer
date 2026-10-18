@@ -25,7 +25,7 @@ FROM (
 SELECT `date_spine`.spine_date AS `Sales Month`,
        CAST(SUM(`__ob_pop_src`.`Sales__salesamount`) AS DECIMAL(38, 2)) AS `Total Sales`
   FROM `date_spine`
-  LEFT JOIN (
+  JOIN (
     SELECT CAST(DATE_FORMAT(`Sales`.`salesdate`, '%Y-%m-01') AS DATE) AS `__ob_bucket`,
            `Sales`.`salesamount` AS `Sales__salesamount`
       FROM `orionbelt_1`.`sales` AS `Sales`
@@ -60,7 +60,7 @@ FROM (
 SELECT `date_spine_lookback`.spine_date AS `Sales Month`,
        CAST(SUM(`__ob_pop_src`.`Sales__salesamount`) AS DECIMAL(38, 2)) AS `Total Sales`
   FROM `date_spine_lookback`
-  LEFT JOIN (
+  JOIN (
     SELECT CAST(DATE_FORMAT(`Sales`.`salesdate`, '%Y-%m-01') AS DATE) AS `__ob_bucket`,
            `Sales`.`salesamount` AS `Sales__salesamount`
       FROM `orionbelt_1`.`sales` AS `Sales`

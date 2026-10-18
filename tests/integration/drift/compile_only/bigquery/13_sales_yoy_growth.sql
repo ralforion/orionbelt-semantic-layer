@@ -16,7 +16,7 @@ FROM UNNEST(GENERATE_DATE_ARRAY((SELECT min_date FROM `date_range`), (SELECT max
 SELECT `date_spine`.spine_date AS `Sales Month`,
        ROUND(CAST(SUM(`__ob_pop_src`.`Sales__salesamount`) AS NUMERIC), 2) AS `Total Sales`
   FROM `date_spine`
-  LEFT JOIN (
+  JOIN (
     SELECT DATE_TRUNC(`Sales`.`salesdate`, MONTH) AS `__ob_bucket`,
            `Sales`.`salesamount` AS `Sales__salesamount`
       FROM `orionbelt_1`.`sales` AS `Sales`

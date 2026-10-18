@@ -17,7 +17,7 @@ FROM generate_series((SELECT min_date FROM "date_range")::timestamp, (SELECT max
 SELECT "date_spine".spine_date AS "Sales Month",
        CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
   FROM "date_spine"
-  LEFT JOIN (
+  JOIN (
     SELECT date_trunc('month', "Sales"."salesdate") AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
       FROM "orionbelt_1"."sales" AS "Sales"
@@ -44,7 +44,7 @@ FROM generate_series((SELECT min_date FROM "date_range_lookback")::timestamp, (S
 SELECT "date_spine_lookback".spine_date AS "Sales Month",
        CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
   FROM "date_spine_lookback"
-  LEFT JOIN (
+  JOIN (
     SELECT date_trunc('month', "Sales"."salesdate") AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
       FROM "orionbelt_1"."sales" AS "Sales"
