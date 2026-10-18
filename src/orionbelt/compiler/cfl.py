@@ -40,6 +40,7 @@ from orionbelt.compiler.resolution import (
     ResolvedFilter,
     ResolvedMeasure,
     ResolvedQuery,
+    computed_measures,
     make_column_expr,
     make_dimension_expr,
 )
@@ -805,7 +806,9 @@ class CFLPlanner:
             leg_objects = leg_required | {lead}
             # The leg's measures as the base measures they compute, for a
             # filter its anchored measures read in their conformed subqueries.
-            leg_bases = {name for m in measures for name in (m.component_measures or [m.name])}
+            leg_bases = computed_measures(
+                model, (name for m in measures for name in (m.component_measures or [m.name]))
+            )
             for wf in resolved.where_filters:
                 if leg_bases and leg_bases <= wf.conformed_for:
                     continue

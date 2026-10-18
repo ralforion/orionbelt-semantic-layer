@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -424,6 +424,33 @@ def conformed_reach(
         fact: (graph.descendants_without_unnest(fact) | {fact}) - anchored
         for fact in sorted(conformed)
     }
+
+
+def computed_measures(model: SemanticModel, names: Iterable[str]) -> set[str]:
+    """The model measures behind *names*: a measure is itself, a metric the
+    measures it aggregates, through nested metrics (a reaggregate over a
+    reaggregate included)."""
+    from orionbelt.compiler.composability import metric_leaf_measures
+
+    found: set[str] = set()
+    for name in names:
+        found |= metric_leaf_measures(model, name) if name in model.metrics else {name}
+    return found
+
+
+def conformed_join_objects(
+    model: SemanticModel,
+    fact: str,
+    tables: set[str],
+    use_path_names: list[UsePathName] | None = None,
+) -> set[str]:
+    """Every object a conformed subquery on *fact* joins to read *tables*,
+    the hops between included: they are tables the result depends on."""
+    graph = JoinGraph.of(model, use_path_names=use_path_names or None)
+    joined = {fact} | tables
+    for step in graph.find_join_path({fact}, joined):
+        joined |= {step.from_object, step.to_object}
+    return joined
 
 
 def filter_tables(expression: Expr) -> set[str]:
@@ -2185,7 +2212,11 @@ class QueryResolver:
                     bucket = ctx.result.conformed_filters.setdefault((name, fact), [])
                     if wf not in bucket:
                         bucket.append(wf)
-            ctx.result.subquery_objects.update(tables)
+            for fitting in facts.values():
+                for fact in fitting:
+                    ctx.result.subquery_objects.update(
+                        conformed_join_objects(ctx.model, fact, tables, ctx.result.use_path_names)
+                    )
             if len(facts) + len(missing) < len(computed):
                 # Measures on a union leg that reaches the filter natively.
                 kept.append(replace(wf, conformed_for=frozenset(facts)))
@@ -2193,16 +2224,14 @@ class QueryResolver:
 
     @staticmethod
     def _computed_measure_names(ctx: _ResolutionContext) -> list[str]:
-        """The model measures the query aggregates: a metric's components, and
-        the measure under a reaggregate, cumulative or window metric rather
-        than the metric's placeholder."""
-        names: set[str] = set()
-        for m in (*ctx.result.measures, *ctx.result.metric_components.values()):
-            if m.component_measures:
-                continue
-            under = m.reaggregate_measure or m.cumulative_measure or m.window_base_measure
-            names.add(under or m.name)
-        return sorted(names)
+        """The model measures the query aggregates, a metric's placeholder
+        (reaggregate, cumulative, window, nested) read as the measures under it."""
+        names = {
+            m.name
+            for m in (*ctx.result.measures, *ctx.result.metric_components.values())
+            if not m.component_measures
+        }
+        return sorted(computed_measures(ctx.model, names))
 
     @staticmethod
     def _refuse_filter_on_conformed_object(ctx: _ResolutionContext, objects: set[str]) -> None:
@@ -2324,8 +2353,12 @@ class QueryResolver:
         reach = conformed_reach(ctx.model, measure, ctx.result.use_path_names)
         for fact, items in pushed.items():
             result -= reach[fact]
+            read: set[str] = set()
             for item in items:
-                collect_measure_filter_objects(item, ctx.result.subquery_objects)
+                collect_measure_filter_objects(item, read)
+            ctx.result.subquery_objects.update(
+                conformed_join_objects(ctx.model, fact, read, ctx.result.use_path_names)
+            )
         result.add(anchor)
 
     def _get_measure_source_objects(self, ctx: _ResolutionContext, name: str) -> set[str]:

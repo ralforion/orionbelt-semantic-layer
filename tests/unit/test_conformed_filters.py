@@ -122,6 +122,12 @@ measures:
     anchor: Sales
     expression: '{[Sales].[Sale Qty]} * {[Returns].[Return Qty]}'
     filterContext: {mode: FIXED}
+  Relative Cross:
+    resultType: float
+    aggregation: sum
+    anchor: Sales
+    expression: '{[Sales].[Sale Qty]} * {[Returns].[Return Qty]}'
+    filterContext: {mode: RELATIVE, exclude: [Sale Status]}
   Sales Qty:
     resultType: float
     aggregation: sum
@@ -136,6 +142,11 @@ metrics:
     measure: Anchored Cross
     per: [Day]
     aggregation: avg
+  Peak Daily Cross:
+    type: reaggregate
+    measure: Daily Cross
+    per: [Year]
+    aggregation: max
 """
 
 
@@ -373,3 +384,68 @@ def test_a_reaggregate_over_an_anchored_measure(con: duckdb.DuckDBPyConnection) 
     """Per day, then averaged: d1 5 * 4, d2 6 * 7 -> 31. The applicability
     check read the metric's placeholder as a measure and refused."""
     assert _rows(con, _by_year(["Daily Cross"], [KEEP])) == [(2024.0, 31.0)]
+
+
+def _row(con: duckdb.DuckDBPyConnection, query: dict) -> dict[str, float]:
+    cursor = con.execute(_compile(query).sql)
+    names = [d[0] for d in cursor.description]
+    return {n: float(v) for n, v in zip(names, cursor.fetchone(), strict=True) if n != "Year"}
+
+
+def test_a_context_scan_keeps_a_pushed_filter_out_of_its_where(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Returned Qty's leg keeps the filter in the WHERE; the context's scan of
+    the anchored measure took it back from there and named Returns outside
+    its subquery: "Referenced table Returns not found"."""
+    assert _row(con, _by_year(["Relative Cross", "Returned Qty"], [KEEP])) == {
+        "Relative Cross": 62.0,
+        "Returned Qty": 11.0,
+    }
+
+
+def test_the_cache_depends_on_the_hops_inside_the_subquery() -> None:
+    """Returns reaches Reasons through a bridge: the bridge's mappings change
+    the result as much as the reasons do."""
+    yaml_text = MODEL_YAML.replace(
+        """      - joinType: many-to-one
+        joinTo: Reasons
+        columnsFrom: [Return Reason ID]
+        columnsTo: [Reason ID]
+""",
+        """      - joinType: many-to-one
+        joinTo: Reason Bridge
+        columnsFrom: [Return Reason ID]
+        columnsTo: [Bridge ID]
+  Reason Bridge:
+    code: reason_bridge
+    schema: main
+    columns:
+      Bridge ID: {code: id, abstractType: string, primaryKey: true}
+      Bridge Reason ID: {code: reason_id, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Reasons
+        columnsFrom: [Bridge Reason ID]
+        columnsTo: [Reason ID]
+""",
+    )
+    where = [{"field": "Reason Category", "op": "equals", "value": "damage"}]
+    tables = _compile(_by_year(["Anchored Cross"], where), yaml_text).physical_tables
+    assert {"main.returns", "main.reason_bridge", "main.reasons"} <= set(tables)
+
+
+@pytest.mark.parametrize(
+    "metric", ["Daily Cross", "Peak Daily Cross"], ids=["reaggregate", "nested-reaggregate"]
+)
+def test_a_reaggregate_beside_a_union_leg(con: duckdb.DuckDBPyConnection, metric: str) -> None:
+    """The leg read the metric's name, the filter its measure's: refused. A
+    reaggregate over a reaggregate was unwrapped once: refused too."""
+    assert _row(con, _by_year([metric, "Returned Qty"], [KEEP])) == {
+        metric: 31.0,
+        "Returned Qty": 11.0,
+    }
+
+
+def test_a_nested_reaggregate_alone(con: duckdb.DuckDBPyConnection) -> None:
+    assert _rows(con, _by_year(["Peak Daily Cross"], [KEEP])) == [(2024.0, 31.0)]

@@ -104,6 +104,12 @@ measures:
       - column: {{dataObject: Returns, column: Return Status}}
         operator: equals
         values: [{{dataType: string, valueString: keep}}]
+  Relative Cross:
+    resultType: float
+    aggregation: sum
+    anchor: Sales
+    expression: '{{[Sales].[Sale Qty]}} * {{[Returns].[Return Qty]}}'
+    filterContext: {{mode: RELATIVE, exclude: [Day]}}
   Returned Qty:
     resultType: float
     aggregation: sum
@@ -180,6 +186,16 @@ def _assert_all(target: VendorTarget) -> None:
     assert _values(target, model, ["Anchored Cross"], nonexists) == [Decimal(67)]
     # Per day, then averaged: (20 + 42) / 2.
     assert _values(target, model, ["Daily Cross"], keep) == [Decimal(31)]
+    # Beside a union leg on Returns: the reaggregate, and a filter context's
+    # scan, keep the filter in their subqueries.
+    assert _values(target, model, ["Daily Cross", "Returned Qty"], keep) == [
+        Decimal(31),
+        Decimal(11),
+    ]
+    assert _values(target, model, ["Relative Cross", "Returned Qty"], keep) == [
+        Decimal(62),
+        Decimal(11),
+    ]
     # A union leg on Returns applies the filter in its own WHERE: 4 + 7.
     assert _values(target, model, ["Anchored Cross", "Returned Qty"], keep) == [
         Decimal(62),

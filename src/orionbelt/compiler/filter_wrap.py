@@ -320,7 +320,14 @@ def _plan_isolated_scan(
     from orionbelt.compiler.pipeline import plan_in_own_right
 
     def prepare(sub_resolved: ResolvedQuery) -> None:
-        sub_resolved.where_filters = list(filters)
+        # A filter this scan applies inside a conformed subquery stays out of
+        # its WHERE, which does not join the conformed fact; the outer plan
+        # kept it there only for another leg that reads it natively.
+        pushed = {wf.expression for kept in sub_resolved.conformed_filters.values() for wf in kept}
+        native = {wf.expression for wf in sub_resolved.where_filters}
+        sub_resolved.where_filters = [
+            f for f in filters if f.expression not in pushed or f.expression in native
+        ]
         # Filters applied inside a conformed subquery are WHERE filters all the
         # same: the context drops them as it drops the others. The sub-query
         # was resolved with the model's static filters, which it pushed there.
