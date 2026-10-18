@@ -52,3 +52,19 @@ async def test_proxied_page_is_compressed(demo: object, tmp_path: Path) -> None:
     assert resp.status_code == 200
     assert resp.headers["content-encoding"] == "gzip"
     assert favicon_resp.status_code == 200
+
+
+def test_vendored_bundles_are_not_inlined() -> None:
+    head = ui_app.frontend_assets()["head"]
+    assert len(head) < 50_000
+    assert "atob(" not in head
+
+
+@pytest.mark.parametrize("name", ["mermaid.min.js", "ace-sparql.min.js"])
+async def test_vendored_bundles_are_served(demo: object, tmp_path: Path, name: str) -> None:
+    """The head points at Gradio's file route; the allow-list must let it through."""
+    app = ui_app._proxied_app(demo, "/ui", tmp_path / "favicon.png")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(f"/ui/{ui_app._vendored_src(name)}")
+    assert resp.status_code == 200
+    assert len(resp.content) == ui_app._VENDORED_JS[name].stat().st_size

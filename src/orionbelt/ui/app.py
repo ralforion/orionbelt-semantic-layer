@@ -12,6 +12,7 @@ from __future__ import annotations
 # ``time`` is kept imported so tests can patch ``ui_app.time.sleep`` for the
 # re-exported ``_fetch_settings`` retry loop.
 import time  # noqa: F401
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import gradio as gr
@@ -80,8 +81,6 @@ from orionbelt.ui.rendering import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from fastapi import FastAPI, Request
 
 __all__ = [
@@ -1364,23 +1363,39 @@ _IMPORT_OSI_JS = """
 #: The bundle is vendored under ``ui/static`` and inlined, exactly as
 #: vis-network is for the ontology graph: the UI loads no external asset, so an
 #: air-gapped deployment needs nothing it does not already have in the wheel.
+#: The vendored bundles the page head loads. They are fetched as files through
+#: Gradio's file route (``frontend_assets`` allow-lists them) rather than
+#: inlined: inlined as base64 they were 5.4 MB of every page load, uncacheable.
+_VENDORED_JS = {
+    name: Path(__file__).resolve().parent / "static" / name
+    for name in ("mermaid.min.js", "ace-sparql.min.js")
+}
+
+
+def _vendored_src(name: str) -> str:
+    """The page-relative URL of a vendored bundle (the page sets ``<base>``)."""
+    from urllib.parse import quote
+
+    return "gradio_api/file=" + quote(_VENDORED_JS[name].as_posix())
+
+
 def _mermaid_head() -> str:
     """A ``<head>`` fragment that installs mermaid and a render hook."""
-    from orionbelt.ui.rendering import _get_mermaid_b64
-
     return f"""
 <script>
 (function () {{
-  // atob yields a binary string; the bundle is UTF-8, so decode it as such
-  // rather than letting the bytes be read as Latin-1.
-  var bytes = Uint8Array.from(atob("{_get_mermaid_b64()}"), function (c) {{
-    return c.charCodeAt(0);
+  var ready = new Promise(function (resolve, reject) {{
+    var el = document.createElement("script");
+    el.src = "{_vendored_src("mermaid.min.js")}";
+    el.onload = function () {{
+      window.mermaid.initialize({{ startOnLoad: false }});
+      resolve();
+    }};
+    el.onerror = reject;
+    document.head.appendChild(el);
   }});
-  var el = document.createElement("script");
-  el.textContent = new TextDecoder("utf-8").decode(bytes);
-  document.head.appendChild(el);
-  window.mermaid.initialize({{ startOnLoad: false }});
   window.__obRenderMermaid = async function () {{
+    await ready;
     var nodes = document.querySelectorAll(
       "#er-diagram .mermaid:not([data-processed]), #lineage-diagram .mermaid:not([data-processed])"
     );
@@ -1395,20 +1410,18 @@ def _mermaid_head() -> str:
 #: The SPARQL editor. Gradio's Code component is CodeMirror with a fixed set of
 #: languages and no way to add one, so the SPARQL tab hosts an ACE editor (the
 #: one the ontology builder uses) in a plain div and bridges its text into a
-#: hidden Gradio textbox that the Run button reads. Everything ACE needs is
-#: inlined from the vendored bundle, the same way mermaid is.
+#: hidden Gradio textbox that the Run button reads. ACE comes from the
+#: vendored bundle, loaded the same way mermaid is.
 def _ace_head() -> str:
     """A ``<head>`` fragment that installs ACE and the SPARQL editor glue."""
-    from orionbelt.ui.rendering import _get_ace_b64
-
     return f"""
 <script>
 (function () {{
-  var bytes = Uint8Array.from(atob("{_get_ace_b64()}"), function (c) {{
-    return c.charCodeAt(0);
-  }});
   var el = document.createElement("script");
-  el.textContent = new TextDecoder("utf-8").decode(bytes);
+  el.src = "{_vendored_src("ace-sparql.min.js")}";
+  // A tab opened before the bundle arrived found no window.ace; seed the
+  // editor now so it does not wait for the next tab switch.
+  el.onload = function () {{ window.__obSparql.pull(); }};
   document.head.appendChild(el);
 
   var editor = null;
@@ -1582,19 +1595,23 @@ def _fit_head() -> str:
     return _FIT_JS
 
 
-def frontend_assets(head_html: str | None = None) -> dict[str, str]:
+def frontend_assets(head_html: str | None = None) -> dict[str, Any]:
     """The css/js/head every way of serving this app has to pass along.
 
     Gradio 6 takes these on ``launch()`` and ``mount_gradio_app()`` rather than
     on the ``Blocks`` constructor, so this is the single place all three
     serving modes agree on: standalone ``launch``, the standalone mount, and
     the API's ``/ui``. The mermaid loader belongs here for that reason - put on
-    the constructor it reaches only whichever mode happens to look there.
+    the constructor it reaches only whichever mode happens to look there - and
+    so does the allow-list that lets Gradio's file route serve the bundles.
     """
-    assets = {"css": _CSS, "js": _DARK_MODE_INIT_JS}
     vendored = _mermaid_head() + _ace_head() + _fit_head()
-    assets["head"] = f"{head_html}\n{vendored}" if head_html else vendored
-    return assets
+    return {
+        "css": _CSS,
+        "js": _DARK_MODE_INIT_JS,
+        "head": f"{head_html}\n{vendored}" if head_html else vendored,
+        "allowed_paths": [str(path) for path in _VENDORED_JS.values()],
+    }
 
 
 def create_blocks(
@@ -3400,8 +3417,6 @@ def create_ui() -> None:
     api_key_header = os.environ.get("API_KEY_HEADER", _DEFAULT_API_KEY_HEADER)
     set_api_credentials(api_key, api_key_header)
     _warn_if_auth_required_without_key(api_url or _DEFAULT_API_URL, api_key)
-
-    from pathlib import Path
 
     favicon_file = Path(__file__).resolve().parent / "favicon.png"
 

@@ -27,48 +27,6 @@ def _get_vis_network_b64() -> str:
     return _VIS_NETWORK_B64
 
 
-_ACE_B64: str | None = None
-
-
-def _get_ace_b64() -> str:
-    """Return base64-encoded ace-sparql.min.js (cached).
-
-    ACE (src-min-noconflict) with its SPARQL mode and two themes, vendored
-    like vis-network and mermaid so the UI loads no external asset. Gradio's
-    own code editor cannot take a custom grammar, and SPARQL is not among
-    the languages it ships, so the SPARQL tab embeds ACE instead.
-    """
-    import base64
-    from pathlib import Path
-
-    global _ACE_B64  # noqa: PLW0603
-    if _ACE_B64 is None:
-        js_path = Path(__file__).parent / "static" / "ace-sparql.min.js"
-        _ACE_B64 = base64.b64encode(js_path.read_bytes()).decode("ascii")
-    return _ACE_B64
-
-
-_MERMAID_B64: str | None = None
-
-
-def _get_mermaid_b64() -> str:
-    """Return base64-encoded mermaid.min.js (cached).
-
-    The UMD build, not ``mermaid.esm.min.mjs``: the ESM entry is 30 KB and
-    imports ``./chunks/mermaid.esm.min/*.mjs`` at runtime, so vendoring it
-    alone would send the browser looking for files we do not ship. The UMD
-    bundle is self-contained and defines ``window.mermaid``.
-    """
-    import base64
-    from pathlib import Path
-
-    global _MERMAID_B64  # noqa: PLW0603
-    if _MERMAID_B64 is None:
-        js_path = Path(__file__).parent / "static" / "mermaid.min.js"
-        _MERMAID_B64 = base64.b64encode(js_path.read_bytes()).decode("ascii")
-    return _MERMAID_B64
-
-
 def _format_convert_status(
     direction: str,
     warnings: list[str],
