@@ -186,18 +186,68 @@ _EXTRACT_PARTS = _DATE_TRUNC_PARTS | {"dayofweek", "dayofyear", "millisecond"}
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
+# Nodes sqlglot writes under a name the spec does not have, and the spec's name.
+_SPEC_NAMES: dict[type[exp.Expr], str] = {
+    exp.VariancePop: "VAR_POP",
+    exp.ApproxDistinct: "APPROX_COUNT_DISTINCT",
+    exp.DayOfYear: "DAYOFYEAR",
+    exp.StartsWith: "STARTSWITH",
+    exp.EndsWith: "ENDSWITH",
+}
+_SPEC_TYPES = {exp.DataType.Type.TEXT: "STRING", exp.DataType.Type.TIMESTAMPNTZ: "TIMESTAMP_NTZ"}
+
+
+def _parse(sql: str) -> exp.Expr:
+    """*sql* as one expression, parsed where a SELECT list item stands.
+
+    A leading ``TRUNCATE(`` would otherwise read as a TRUNCATE statement. Any
+    clause besides the one expression is refused, so ``SUM(x) FROM t`` fails.
+    """
+    select = sqlglot.parse_one(f"SELECT {sql}")
+    clauses = {key for key, value in select.args.items() if value}
+    if not isinstance(select, exp.Select) or clauses != {"expressions"}:
+        raise sqlglot.errors.ParseError("not a single expression")
+    if len(select.expressions) != 1:
+        raise sqlglot.errors.ParseError("not a single expression")
+    return select.expressions[0]
+
+
+def ossie_sql(node: exp.Expr) -> str:
+    """*node* as SQL with the spec's spelling where sqlglot's differs.
+
+    sqlglot writes ``VAR_POP`` as ``VARIANCE_POP``, ``CHARINDEX`` and
+    ``POSITION`` as ``STR_POSITION``, ``STARTSWITH`` as ``STARTS_WITH`` and
+    ``CAST(x AS STRING)`` as ``TEXT``; none of those is in the language, so an
+    imported metric would lose its ``OSSIE_SQL_2026`` form on the way back.
+    """
+
+    def spell(n: exp.Expr) -> exp.Expr:
+        name = _SPEC_NAMES.get(type(n))
+        if name is not None:
+            args = [a for a in (n.this, n.args.get("expression")) if a is not None]
+            return exp.Anonymous(this=name, expressions=args)
+        if isinstance(n, exp.StrPosition) and not n.args.get("position"):
+            # CHARINDEX(substr, str) is the spec's alias for POSITION.
+            return exp.Anonymous(this="CHARINDEX", expressions=[n.args["substr"], n.this])
+        if isinstance(n, exp.DataType) and n.this in _SPEC_TYPES:
+            return exp.DataType(this=exp.DataType.Type.USERDEFINED, kind=_SPEC_TYPES[n.this])
+        return n
+
+    return node.copy().transform(spell).sql()
+
+
 @cache
 def _allowed_nodes() -> frozenset[type[exp.Expr]]:
     """The sqlglot node types the spec's functions and constructs parse into."""
     samples = [*_FUNCTIONS.values(), _CONSTRUCTS]
-    return frozenset(type(node) for s in samples for node in sqlglot.parse_one(s).walk())
+    return frozenset(type(node) for s in samples for node in _parse(s).walk())
 
 
 def subset_violations(sql: str) -> list[str]:
     """What in *sql* falls outside ``OSSIE_SQL_2026``; empty when nothing does."""
     try:
         tokens = sqlglot.tokenize(sql)
-        tree = sqlglot.parse_one(sql)
+        tree = _parse(sql)
     except sqlglot.errors.SqlglotError:
         return ["the expression does not parse"]
     return _written_violations(tokens) + _parsed_violations(tree)
@@ -209,23 +259,26 @@ def _written_violations(tokens: list[Token]) -> list[str]:
         nxt = tokens[i + 1] if i + 1 < len(tokens) else None
         prev = tokens[i - 1] if i else None
         name = token.text.upper()
+        # Only a bare word is a keyword: a string 'AS' or a quoted "Escape" is not.
+        bare = token.token_type not in (TokenType.STRING, TokenType.IDENTIFIER)
         if token.token_type in _FOREIGN_OPERATORS:
-            found.append(
-                f"operator {_FOREIGN_OPERATORS[token.token_type]} is not in OSSIE_SQL_2026"
-            )
-        elif name == "ESCAPE" and token.token_type is not TokenType.STRING:
+            operator = _FOREIGN_OPERATORS[token.token_type]
+            found.append(f"operator {operator} is not in OSSIE_SQL_2026")
+        elif token.token_type is TokenType.ESCAPE:
             found.append("LIKE ... ESCAPE is not in OSSIE_SQL_2026")
-        elif prev is not None and prev.text.upper() == "AS":
-            if name not in _CAST_TYPES:
+        elif prev is not None and prev.token_type is TokenType.ALIAS:
+            if not bare or name not in _CAST_TYPES:
                 found.append(f"type {token.text} is not in OSSIE_SQL_2026")
         elif nxt is not None and nxt.token_type is TokenType.L_PAREN:
-            is_name = token.token_type is TokenType.IDENTIFIER or _NAME.fullmatch(token.text)
-            if is_name and name not in _NOT_CALLS and name not in _FUNCTIONS:
+            quoted_call = token.token_type is TokenType.IDENTIFIER
+            bare_call = bare and _NAME.fullmatch(token.text) and name not in _NOT_CALLS
+            if quoted_call or (bare_call and name not in _FUNCTIONS):
                 found.append(f"function {token.text} is not in OSSIE_SQL_2026")
             elif name in ("TO_DATE", "TO_TIMESTAMP") and _argument_count(tokens, i + 1) != 1:
                 found.append(f"{name} with a format is EXPERIMENTAL, not in OSSIE_SQL_2026")
         elif (
-            nxt is not None
+            bare
+            and nxt is not None
             and nxt.token_type is TokenType.STRING
             and _NAME.fullmatch(token.text)
             and name not in _TYPED_LITERALS | _NOT_CALLS
@@ -236,17 +289,17 @@ def _written_violations(tokens: list[Token]) -> list[str]:
 
 def _argument_count(tokens: list[Token], open_paren: int) -> int:
     """The number of arguments in the call whose "(" is at *open_paren*."""
-    depth, commas, empty = 0, 0, True
-    for token in tokens[open_paren:]:
+    depth, commas, empty = 1, 0, True
+    for token in tokens[open_paren + 1 :]:
+        if token.token_type is TokenType.R_PAREN and depth == 1:
+            break
+        empty = False
         if token.token_type is TokenType.L_PAREN:
             depth += 1
         elif token.token_type is TokenType.R_PAREN:
             depth -= 1
-            if depth == 0:
-                break
-        elif depth == 1:
-            empty = False
-            commas += token.token_type is TokenType.COMMA
+        elif token.token_type is TokenType.COMMA and depth == 1:
+            commas += 1
     return 0 if empty else commas + 1
 
 

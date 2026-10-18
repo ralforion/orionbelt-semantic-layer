@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 import osi_orionbelt.converter as conv
-from osi_orionbelt._ossie_sql import _FUNCTIONS, subset_violations
+from osi_orionbelt._ossie_sql import _FUNCTIONS, _parse, ossie_sql, subset_violations
 
 
 def _filter(operator: str, value: Any, data_type: str = "string") -> dict[str, Any]:
@@ -167,6 +167,22 @@ class TestRoundTrip:
         assert subset_violations(dialects["OSSIE_SQL_2026"]) == []
         assert "ROUND(" in dialects["OSSIE_SQL_2026"]
 
+    @pytest.mark.parametrize(
+        ("written", "exported"),
+        [
+            ("SUM(CHARINDEX('a', sales.amount))", "SUM(CHARINDEX('a', sales.amount))"),
+            # POSITION(a IN s) comes back as CHARINDEX(a, s), its spec alias.
+            ("SUM(POSITION('a' IN sales.amount))", "SUM(CHARINDEX('a', sales.amount))"),
+            ("VAR_POP(sales.amount)", "VAR_POP(sales.amount)"),
+            ("SUM(CAST(sales.amount AS STRING))", "SUM(CAST(sales.amount AS STRING))"),
+        ],
+    )
+    def test_imported_function_aliases_keep_the_tag(self, written: str, exported: str) -> None:
+        back = conv.OBMLtoOSI(conv.OSItoOBML(_hello_world(written)).convert()).convert()
+        metric = next(m for m in back["metrics"] if m["name"] == "total_amount")
+        dialects = {d["dialect"]: d["expression"] for d in metric["expression"]["dialects"]}
+        assert dialects["OSSIE_SQL_2026"] == exported
+
     def test_ossie_first_metric_keeps_its_tag(self) -> None:
         doc = _hello_world("SUM(sales.amount)")
         back = conv.OBMLtoOSI(conv.OSItoOBML(doc).convert()).convert()
@@ -214,6 +230,32 @@ class TestSubsetChecker:
     )
     def test_required_scalar_functions_and_syntax(self, sql: str) -> None:
         assert subset_violations(sql) == []
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            # A string or a quoted name is not a keyword.
+            "SUM(CASE WHEN t.status = 'AS' THEN t.amount END)",
+            "SUM(CASE WHEN t.status = 'ESCAPE' THEN t.amount END)",
+            'SUM(t."AS") + SUM(t."Escape") + SUM(t."Date")',
+            # A parenthesized argument is still one argument.
+            "TO_DATE((MAX(t.s)))",
+            # A leading TRUNCATE is a function, not a statement.
+            "TRUNCATE(t.x, 2) + CEILING(t.x)",
+        ],
+    )
+    def test_no_false_violations(self, sql: str) -> None:
+        assert subset_violations(sql) == []
+
+    def test_a_clause_after_the_expression_is_refused(self) -> None:
+        assert subset_violations("SUM(t.x) FROM t") == ["the expression does not parse"]
+
+    @pytest.mark.parametrize("name", sorted(_FUNCTIONS))
+    def test_written_back_samples_stay_in_the_language(self, name: str) -> None:
+        # The import writes metric SQL through ossie_sql; a function sqlglot
+        # would re-spell (VAR_POP as VARIANCE_POP) must come back in the spec's
+        # spelling, or an imported metric loses its OSSIE_SQL_2026 form.
+        assert subset_violations(ossie_sql(_parse(_FUNCTIONS[name]))) == []
 
     @pytest.mark.parametrize(
         ("sql", "reason"),
