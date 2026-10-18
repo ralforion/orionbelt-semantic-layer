@@ -28,7 +28,7 @@ from osi_orionbelt._field_names import (
     rename_keys,
     rename_metric,
 )
-from osi_orionbelt._ossie_sql import subset_violations
+from osi_orionbelt._ossie_sql import ossie_sql, subset_violations
 from osi_orionbelt._portable import NotPortableError, PortableRenderer, sql_ident
 
 
@@ -747,6 +747,10 @@ class OBMLtoOSI:
             sql = render()
         except NotPortableError:
             return
+        if subset_violations(sql):
+            # An imported formula keeps sqlglot's spelling (STARTS_WITH); the
+            # language's own may differ (STARTSWITH).
+            sql = ossie_sql(sql)
         if not subset_violations(sql):
             osi_metric["expression"]["dialects"].append(
                 {"dialect": "OSSIE_SQL_2026", "expression": sql}

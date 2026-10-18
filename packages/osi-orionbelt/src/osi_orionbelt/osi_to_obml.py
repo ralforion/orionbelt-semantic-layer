@@ -35,7 +35,6 @@ from osi_orionbelt._field_names import (
     rename_keys,
     rename_metric,
 )
-from osi_orionbelt._ossie_sql import ossie_sql
 
 # sqlglot aggregate ``sql_name()`` -> OBML aggregation, for the aggregates OBML
 # models as a *single-column* measure. Multi-argument aggregates OBML also
@@ -1815,7 +1814,7 @@ class OSItoOBML:
                 return exp.var("{[" + n.table + "].[" + n.name + "]}")
             return n
 
-        return ossie_sql(node.transform(_rewrite))
+        return node.transform(_rewrite).sql()
 
     def _decompose_metric(
         self,
@@ -1933,4 +1932,4 @@ class OSItoOBML:
             auto_measures[key] = measure_def
             a.replace(exp.var("{[" + key + "]}"))
 
-        return ("complex", ossie_sql(tree), auto_measures)
+        return ("complex", tree.sql(), auto_measures)

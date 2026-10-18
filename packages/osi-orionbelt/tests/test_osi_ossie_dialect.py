@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 import osi_orionbelt.converter as conv
-from osi_orionbelt._ossie_sql import _FUNCTIONS, _parse, ossie_sql, subset_violations
+from osi_orionbelt._ossie_sql import _FUNCTIONS, ossie_sql, subset_violations
 
 
 def _filter(operator: str, value: Any, data_type: str = "string") -> dict[str, Any]:
@@ -137,7 +137,10 @@ def _hello_world(metric_sql: str) -> dict[str, Any]:
             {
                 "name": "sales",
                 "source": "hello.public.sales",
-                "fields": [{"name": "amount", "datatype": "Decimal", "expression": expr("amount")}],
+                "fields": [
+                    {"name": "amount", "datatype": "Decimal", "expression": expr("amount")},
+                    {"name": "status", "datatype": "String", "expression": expr("status")},
+                ],
             }
         ],
         "metrics": [
@@ -182,6 +185,44 @@ class TestRoundTrip:
         metric = next(m for m in back["metrics"] if m["name"] == "total_amount")
         dialects = {d["dialect"]: d["expression"] for d in metric["expression"]["dialects"]}
         assert dialects["OSSIE_SQL_2026"] == exported
+
+    @pytest.mark.parametrize(
+        ("written", "obml", "exported"),
+        [
+            # OBML keeps the portable name OrionBelt executes on every engine.
+            (
+                "SUM(CASE WHEN STARTSWITH(sales.status, 'w') THEN sales.amount END)",
+                "STARTS_WITH(",
+                "SUM(CASE WHEN STARTSWITH(sales.status, 'w') THEN sales.amount END)",
+            ),
+            (
+                "SUM(CASE WHEN ENDSWITH(sales.status, 'w') THEN sales.amount END)",
+                "ENDS_WITH(",
+                "SUM(CASE WHEN ENDSWITH(sales.status, 'w') THEN sales.amount END)",
+            ),
+        ],
+    )
+    def test_import_keeps_portable_names_export_respells(
+        self, written: str, obml: str, exported: str
+    ) -> None:
+        imported = conv.OSItoOBML(_hello_world(written)).convert()
+        formulas = str([imported.get("measures"), imported.get("metrics")])
+        assert obml in formulas and "STARTSWITH(" not in formulas
+        back = conv.OBMLtoOSI(imported).convert()
+        metric = next(m for m in back["metrics"] if m["name"] == "total_amount")
+        dialects = {d["dialect"]: d["expression"] for d in metric["expression"]["dialects"]}
+        assert dialects["OSSIE_SQL_2026"] == exported
+
+    @pytest.mark.parametrize(
+        ("sql", "respelled"),
+        [
+            ("CAST(t.x AS TIMESTAMPNTZ(3))", "CAST(t.x AS TIMESTAMP_NTZ(3))"),
+            ("CAST(t.x AS TEXT(2))", "CAST(t.x AS STRING(2))"),
+            ("CAST(t.x AS TEXT)", "CAST(t.x AS STRING)"),
+        ],
+    )
+    def test_respelled_types_keep_their_parameters(self, sql: str, respelled: str) -> None:
+        assert ossie_sql(sql) == respelled
 
     def test_ossie_first_metric_keeps_its_tag(self) -> None:
         doc = _hello_world("SUM(sales.amount)")
@@ -252,10 +293,13 @@ class TestSubsetChecker:
 
     @pytest.mark.parametrize("name", sorted(_FUNCTIONS))
     def test_written_back_samples_stay_in_the_language(self, name: str) -> None:
-        # The import writes metric SQL through ossie_sql; a function sqlglot
-        # would re-spell (VAR_POP as VARIANCE_POP) must come back in the spec's
-        # spelling, or an imported metric loses its OSSIE_SQL_2026 form.
-        assert subset_violations(ossie_sql(_parse(_FUNCTIONS[name]))) == []
+        # The import keeps sqlglot's spelling (VAR_POP as VARIANCE_POP); the
+        # export respells it through ossie_sql, or an imported metric loses its
+        # OSSIE_SQL_2026 form.
+        import sqlglot
+
+        written = sqlglot.parse_one(f"SELECT {_FUNCTIONS[name]}").expressions[0].sql()
+        assert subset_violations(ossie_sql(written)) == []
 
     @pytest.mark.parametrize(
         ("sql", "reason"),

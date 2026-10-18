@@ -212,14 +212,20 @@ def _parse(sql: str) -> exp.Expr:
     return select.expressions[0]
 
 
-def ossie_sql(node: exp.Expr) -> str:
-    """*node* as SQL with the spec's spelling where sqlglot's differs.
+def ossie_sql(sql: str) -> str:
+    """*sql* with the spec's spelling where sqlglot's portable one differs.
 
-    sqlglot writes ``VAR_POP`` as ``VARIANCE_POP``, ``CHARINDEX`` and
-    ``POSITION`` as ``STR_POSITION``, ``STARTSWITH`` as ``STARTS_WITH`` and
-    ``CAST(x AS STRING)`` as ``TEXT``; none of those is in the language, so an
-    imported metric would lose its ``OSSIE_SQL_2026`` form on the way back.
+    An imported formula is kept in sqlglot's spelling, which OrionBelt executes
+    (``STARTS_WITH``, ``VARIANCE_POP``, ``STR_POSITION``, ``CAST(x AS TEXT)``);
+    none of those is in the language, so the export respells them
+    (``STARTSWITH``, ``VAR_POP``, ``CHARINDEX``, ``STRING``). A type keeps its
+    parameters, so ``TIMESTAMP_NTZ(3)`` keeps its precision. *sql* that does
+    not parse is returned as it is.
     """
+    try:
+        node = _parse(sql)
+    except sqlglot.errors.ParseError:
+        return sql
 
     def spell(n: exp.Expr) -> exp.Expr:
         name = _SPEC_NAMES.get(type(n))
@@ -230,10 +236,15 @@ def ossie_sql(node: exp.Expr) -> str:
             # CHARINDEX(substr, str) is the spec's alias for POSITION.
             return exp.Anonymous(this="CHARINDEX", expressions=[n.args["substr"], n.this])
         if isinstance(n, exp.DataType) and n.this in _SPEC_TYPES:
-            return exp.DataType(this=exp.DataType.Type.USERDEFINED, kind=_SPEC_TYPES[n.this])
+            return exp.DataType(
+                this=exp.DataType.Type.USERDEFINED,
+                kind=_SPEC_TYPES[n.this],
+                expressions=n.expressions,
+                nested=n.args.get("nested"),
+            )
         return n
 
-    return node.copy().transform(spell).sql()
+    return node.transform(spell).sql()
 
 
 @cache
