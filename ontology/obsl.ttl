@@ -314,7 +314,7 @@ obsl:cardinality a owl:DatatypeProperty ;
 
 obsl:timeGrain a owl:DatatypeProperty ;
     rdfs:label "time grain" ;
-    rdfs:comment "Time granularity.  On dimensions: default grain.  On period-over-period metrics: comparison grain." ;
+    rdfs:comment "Time granularity.  On dimensions: default grain.  On period-over-period metrics: comparison grain.  On columns: the grain the column's values already hold (a column of month starts holds month); a finer grain asked of it is refused." ;
     rdfs:range xsd:string .
 
 obsl:expressionSource a owl:DatatypeProperty ;

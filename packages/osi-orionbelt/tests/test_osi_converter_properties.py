@@ -46,6 +46,11 @@ _OBML_FULL: dict[str, Any] = {
                     "code": "ORDER_DATE",
                     "abstractType": "date",
                 },
+                "Order Month": {
+                    "code": "ORDER_MONTH",
+                    "abstractType": "date",
+                    "grain": "month",
+                },
             },
         },
     },
@@ -227,6 +232,11 @@ class TestColumnProperties:
         result = _roundtrip(_OBML_FULL)
         amount = result["dataObjects"]["Orders"]["columns"]["Amount"]
         assert amount.get("numClass") == "decimal"
+
+    def test_grain_roundtrip(self):
+        result = _roundtrip(_OBML_FULL)
+        month = result["dataObjects"]["Orders"]["columns"]["Order Month"]
+        assert month.get("grain") == "month"
 
     def test_column_owner_roundtrip(self):
         result = _roundtrip(_OBML_FULL)

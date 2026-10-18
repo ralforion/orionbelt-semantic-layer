@@ -75,6 +75,17 @@ dataObjects:
         code: AMOUNT
         abstractType: float
         numClass: additive        # categorical | additive | non-additive
+      Order Month:
+        expression: "date_trunc('month', {Order Date})"  # holds month starts: grain inferred
+        abstractType: date
+      Month Key:
+        code: MONTH_START
+        abstractType: date
+        grain: month              # optional: the grain the values already hold. A finer
+                                  # grain asked of the column ("Month Key:day", a dimension
+                                  # timeGrain: week) is refused (GRAIN_FINER_THAN_DECLARED);
+                                  # quarter and year derive. A computed column that is one
+                                  # date_trunc('<grain>', ...) call is read without it.
     joins:                        # optional — defined on fact tables
       - joinType: many-to-one     # many-to-one | one-to-one
         joinTo: Customers         # target data object name

@@ -75,6 +75,8 @@ from orionbelt.models.semantic import (
     SemanticModel,
     TimeGrain,
     WindowFunctionKind,
+    grain_derives,
+    held_grain_cost,
     result_type_holds_grain,
 )
 from orionbelt.models.types import DecimalType, parse_data_type
@@ -1551,6 +1553,8 @@ class QueryResolver:
             return None
         if grain is not None and not self._grain_survives_the_cast(ctx, ref, dim, grain):
             return None
+        if grain is not None and not self._grain_fits_the_values(ctx, ref, dim, vf, grain):
+            return None
 
         return ResolvedDimension(
             name=ref.name,
@@ -1594,6 +1598,38 @@ class QueryResolver:
                     f"requires the column to be date, timestamp, or timestamp_tz. "
                     f"Ask for the dimension without a grain, fix the column's "
                     f"abstractType, or define a computed column with to_date()."
+                ),
+                path="select.dimensions",
+            )
+        )
+        return False
+
+    @staticmethod
+    def _grain_fits_the_values(
+        ctx: _ResolutionContext,
+        ref: DimensionRef,
+        dim: Dimension,
+        column: DataObjectColumn | None,
+        grain: TimeGrain,
+    ) -> bool:
+        """Refuse a grain finer than the one the column's values already hold.
+
+        ``date_trunc('day', <month start>)`` is the month start: over a column
+        of month starts, ``Order Month:day`` answered one row per month under
+        a label that says day, without an error. The model validator holds the
+        grains a model names to the same rule (``grain_derives``); a query
+        names its own.
+        """
+        held = column.held_grain if column is not None else None
+        if held is None or grain_derives(grain, held):
+            return True
+        ctx.errors.append(
+            SemanticError(
+                code="GRAIN_FINER_THAN_DECLARED",
+                message=(
+                    f"Dimension '{ref.name}' is asked for at grain '{grain.value}' "
+                    f"but column '{dim.view}.{dim.column}' holds '{held.value}' "
+                    f"values: {held_grain_cost(grain, held)}"
                 ),
                 path="select.dimensions",
             )

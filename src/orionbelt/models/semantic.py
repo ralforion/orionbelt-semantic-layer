@@ -201,6 +201,90 @@ def result_type_holds_grain(grain: TimeGrain, declared: DataType) -> bool:
     return declared in allowed
 
 
+#: Grains from finest to coarsest. A week sits between day and month, but it
+#: nests in neither month nor quarter nor year.
+_GRAIN_ORDER = (
+    TimeGrain.SECOND,
+    TimeGrain.MINUTE,
+    TimeGrain.HOUR,
+    TimeGrain.DAY,
+    TimeGrain.WEEK,
+    TimeGrain.MONTH,
+    TimeGrain.QUARTER,
+    TimeGrain.YEAR,
+)
+
+
+def grain_derives(requested: TimeGrain, held: TimeGrain) -> bool:
+    """Whether buckets of *requested* can be read from values that hold *held*.
+
+    A column of month starts answers a quarter or a year: each is a set of
+    whole months. It cannot answer a day or a week: truncating a month start
+    to a day returns the month start, under a label that says day, one row
+    per month where the query asked for one per day. A week is no set of whole
+    months either, and a month is no set of whole weeks (a week spans two), so
+    weeks derive only weeks, and a week bucket only from a grain finer than it.
+    """
+    if TimeGrain.WEEK in (requested, held):
+        return requested == held or (
+            requested is TimeGrain.WEEK and _GRAIN_ORDER.index(held) < _GRAIN_ORDER.index(requested)
+        )
+    return _GRAIN_ORDER.index(requested) >= _GRAIN_ORDER.index(held)
+
+
+def held_grain_cost(grain: TimeGrain, held: TimeGrain) -> str:
+    """Why *grain* cannot be read from values holding *held*, and what to ask
+    for instead: the tail of a ``GRAIN_FINER_THAN_DECLARED`` message."""
+    if TimeGrain.WEEK in (grain, held):
+        why = (
+            f"a {grain.value} is no set of whole {held.value}s, so a '{held.value}' "
+            f"value would land in one '{grain.value}' bucket it only partly belongs to."
+        )
+    else:
+        why = (
+            f"truncating a '{held.value}' value to a {grain.value} returns it "
+            f"unchanged, one row per {held.value} labelled as a {grain.value}."
+        )
+    return (
+        f"{why} Ask for '{held.value}' or a grain it divides into, or use the "
+        f"column the values were truncated from."
+    )
+
+
+#: ``date_trunc('<grain>', ...)`` at the start of an expression.
+_TRUNCATION = re.compile(r"\s*date_trunc\s*\(\s*'(\w+)'\s*,", re.IGNORECASE)
+
+
+def truncation_grain(expression: str) -> TimeGrain | None:
+    """The grain of an expression that is one ``date_trunc('<grain>', ...)`` call.
+
+    Only the whole expression counts: ``date_trunc('month', d) + INTERVAL 1 DAY``
+    is no month start, so its call has to close at the expression's end. String
+    literals are skipped while matching the parentheses.
+    """
+    match = _TRUNCATION.match(expression)
+    if match is None or match.group(1).lower() not in TimeGrain:
+        return None
+    depth = 0
+    quote: str | None = None
+    # The match starts the expression, so its first parenthesis is the call's.
+    for position in range(expression.index("("), len(expression)):
+        char = expression[position]
+        if quote is not None:
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                rest = expression[position + 1 :]
+                return TimeGrain(match.group(1).lower()) if not rest.strip() else None
+    return None
+
+
 class ExpressionMode(StrEnum):
     """How strictly an expression's function calls are held to the catalog.
 
@@ -636,6 +720,12 @@ class DataObjectColumn(BaseModel):
     comment: str | None = None
     owner: str | None = None
     expression: str | None = None
+    grain: TimeGrain | None = None
+    """The time grain the column's values already hold: a column of month
+    starts declares ``month``. A finer grain asked of it is refused
+    (``GRAIN_FINER_THAN_DECLARED``) rather than answered with month starts
+    labelled as days. A computed column that is one ``date_trunc`` call needs
+    no declaration; see :attr:`held_grain`."""
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
@@ -645,6 +735,14 @@ class DataObjectColumn(BaseModel):
     def is_computed(self) -> bool:
         """True when the column is defined by an inline SQL expression."""
         return self.expression is not None
+
+    @property
+    def held_grain(self) -> TimeGrain | None:
+        """The declared ``grain``, else the one a ``date_trunc('<grain>', ...)``
+        expression truncates to, else ``None`` (any grain)."""
+        if self.grain is not None:
+            return self.grain
+        return truncation_grain(self.expression) if self.expression else None
 
 
 class DataObjectJoin(BaseModel):
