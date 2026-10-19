@@ -113,13 +113,23 @@ def test_the_clickhouse_settings_suffix_validates_and_formats(body: str) -> None
     assert format_sql(sql, "clickhouse").endswith(f"\n{STATEMENT_SETTINGS}")
 
 
-def test_every_clickhouse_statement_reads_null_for_an_unmatched_join() -> None:
+def test_a_clickhouse_statement_with_a_left_join_reads_null_for_an_unmatched_row() -> None:
     query = QueryObject(
         select=QuerySelect(dimensions=["Customer Country"], measures=["Total Revenue"])
     )
     result = CompilationPipeline().compile(query, _load_model(), "clickhouse")
+    assert "LEFT JOIN" in result.sql
     assert result.sql.endswith(f"\n{STATEMENT_SETTINGS}")
     assert result.sql_valid
+
+
+def test_a_clickhouse_statement_without_a_join_sets_nothing() -> None:
+    """A ``readonly = 1`` user may not change a setting, and without an outer
+    join the setting changes nothing: such a statement goes without it."""
+    query = QueryObject(select=QuerySelect(measures=["Total Revenue"]))
+    result = CompilationPipeline().compile(query, _load_model(), "clickhouse")
+    assert "JOIN" not in result.sql
+    assert "SETTINGS" not in result.sql
 
 
 _PARITY_SQL = [

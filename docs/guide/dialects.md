@@ -314,15 +314,31 @@ A row whose join finds nothing (an order whose customer is missing) reads
 NULL for the joined object's columns on every engine. ClickHouse does not by
 default: with `join_use_nulls = 0` it fills a column that is not `Nullable`
 with its type's default, so the order would sit in region `''` with a credit
-of `0`, and a `Region is_null` filter would drop it. Every ClickHouse
-statement therefore ends with
+of `0`, and a `Region is_null` filter would drop it. A ClickHouse statement
+with an outer join therefore ends with
 
 ```sql
 SETTINGS join_use_nulls = 1
 ```
 
 which holds for every join in the statement, the ones inside CTEs included,
-and travels with the SQL wherever it is run.
+and travels with the SQL wherever it is run. A statement without one, which
+the setting would not change, goes without it.
+
+!!! note "Read-only users"
+    A user with `readonly = 1` may not change any setting, so ClickHouse
+    refuses such a statement (`READONLY: Cannot modify 'join_use_nulls'
+    setting in readonly mode`), and the error OBSL returns says so. Set
+    `join_use_nulls = 1` in the user's settings profile, which the clause then
+    restates and ClickHouse accepts, or use `readonly = 2`, which still forbids
+    writes but allows settings:
+
+    ```sql
+    ALTER USER bi_reader SETTINGS readonly = 1, join_use_nulls = 1;
+    ```
+
+    Running the query without the clause is not offered: its LEFT JOINs would
+    read defaults again.
 
 ## Aggregation Functions
 

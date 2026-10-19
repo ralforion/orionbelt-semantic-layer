@@ -7,4 +7,3 @@ FROM "orionbelt_1"."sales" AS "Sales"
 )
 SELECT CAST(round(toDecimal256(toString(toFloat64(SUM("composite_01"."Total Returns")) / NULLIF(NULLIF(SUM("composite_01"."Total Sales"), 0), 0)), 5), 4) AS Nullable(Decimal(18, 4))) AS "Return Rate"
 FROM "composite_01" AS "composite_01"
-SETTINGS join_use_nulls = 1
