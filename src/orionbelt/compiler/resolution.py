@@ -2210,11 +2210,14 @@ class QueryResolver:
                         )
                     )
                     continue
-                if wf.static:
+                # Kept for a union leg that reads it natively, the filter
+                # reaches the planner, whose legs name what they skip.
+                native = len(facts) + len(missing) < len(computed)
+                if not native and wf.static:
                     filter_resolution.report_unapplied_static_filter(
                         [], ctx.result.warnings, None, read, names
                     )
-                else:
+                elif not native:
                     filter_resolution.report_unapplied_query_filter(
                         ctx.result.warnings, read, names
                     )

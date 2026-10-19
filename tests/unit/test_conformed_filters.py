@@ -497,3 +497,14 @@ def test_a_context_scan_with_list_bearing_filters(
     filter expressions in a set and failed with "unhashable type: 'list'",
     with or without a conformed fact."""
     assert _row(con, _by_year(measures, where)) == expected
+
+
+def test_a_warning_names_only_the_unfiltered_measures(con: duckdb.DuckDBPyConnection) -> None:
+    """Anchored Cross reads the filter in its subquery; Sales Qty, on the same
+    leg, cannot. The leg's warning named both."""
+    query = _by_year(["Anchored Cross", "Sales Qty", "Returned Qty"], [KEEP])
+    skipped = [w for w in _compile(query).warnings if w.code == "FILTER_NOT_APPLIED"]
+    assert len(skipped) == 1
+    assert "'Sales Qty'" in skipped[0].message
+    assert "'Anchored Cross'" not in skipped[0].message
+    assert _row(con, query) == {"Anchored Cross": 62.0, "Sales Qty": 11.0, "Returned Qty": 11.0}

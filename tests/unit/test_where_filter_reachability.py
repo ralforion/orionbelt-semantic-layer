@@ -325,3 +325,53 @@ def test_raw_rows_one_fact_cannot_filter_are_named(con: duckdb.DuckDBPyConnectio
     assert rows == [(100.0, None), (50.0, None), (None, 10.0), (None, 5.0)]
     skipped = [w for w in result.warnings if w.code == "FILTER_NOT_APPLIED"]
     assert len(skipped) == 1 and "'Returns'" in skipped[0].message
+
+
+ENFORCED_OK = (
+    "filters:\n  - {dataObject: Orders, column: Status, operator: equals, value: ok,"
+    " enforce: always}\n"
+)
+
+
+@pytest.mark.parametrize(
+    "select",
+    [{"measures": ["Revenue", "Refunds"]}, {"fields": ["Orders.Amount", "Returns.Refund"]}],
+    ids=["aggregate", "raw"],
+)
+def test_repeating_an_enforced_filter_keeps_it_enforced(select: dict) -> None:
+    """Written in the query too, the enforced filter became the query's, and
+    the leg that cannot reach it skipped it with a warning: the Returns rows
+    came back unfiltered where the model refuses them."""
+    with pytest.raises(ResolutionError) as excinfo:
+        _sql(
+            {"select": select, "where": [{"field": "Status", "op": "=", "value": "ok"}]},
+            MODEL_YAML + ENFORCED_OK,
+        )
+    assert [e.code for e in excinfo.value.errors] == ["STATIC_FILTER_UNREACHABLE"]
+
+
+def test_an_and_group_applies_what_each_leg_reaches(con: duckdb.DuckDBPyConnection) -> None:
+    """``Status = ok AND Refund > 5`` restricts orders by status and returns
+    by refund, as the two filters written apart do: 150 / 10. Each leg
+    skipped the whole group for the half it cannot reach: 187 / 15."""
+    status = {"field": "Status", "op": "=", "value": "ok"}
+    refund = {"field": "Returns.Refund", "op": ">", "value": 5}
+    measures = {"measures": ["Revenue", "Refunds"]}
+    apart = _compile({"select": measures, "where": [status, refund]})
+    grouped = _compile(
+        {"select": measures, "where": [{"logic": "and", "filters": [status, refund]}]}
+    )
+    assert _rows(con, apart.sql) == _rows(con, grouped.sql) == [(150.0, 10.0)]
+
+
+def test_a_raw_and_group_applies_what_each_leg_reaches(con: duckdb.DuckDBPyConnection) -> None:
+    status = {"field": "Status", "op": "=", "value": "ok"}
+    refund = {"field": "Returns.Refund", "op": ">", "value": 5}
+    sql = _sql(
+        {
+            "select": {"fields": ["Orders.Amount", "Returns.Refund"]},
+            "where": [{"logic": "and", "filters": [status, refund]}],
+        }
+    )
+    rows = sorted((tuple(row) for row in con.execute(sql).fetchall()), key=str)
+    assert rows == [(100.0, None), (50.0, None), (None, 10.0)]

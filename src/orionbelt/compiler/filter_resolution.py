@@ -150,6 +150,18 @@ def report_unapplied_static_filter(
     )
 
 
+def conjuncts(expression: Expr) -> list[Expr]:
+    """The conditions *expression* ANDs together, an AND group's flattened.
+
+    Each restricts rows on its own, so a union leg applies the ones it can
+    reach: skipping the whole group for one condition it cannot left the
+    leg without the others too. A negated group is one condition.
+    """
+    if isinstance(expression, BinaryOp) and expression.op.upper() == "AND":
+        return [*conjuncts(expression.left), *conjuncts(expression.right)]
+    return [expression]
+
+
 def report_unapplied_query_filter(
     warnings: list[SemanticError], unreachable: str, measures: str
 ) -> None:

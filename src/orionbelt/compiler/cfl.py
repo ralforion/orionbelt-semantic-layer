@@ -31,6 +31,7 @@ from orionbelt.compiler.anchored import (
 from orionbelt.compiler.expr_rewrite import inline_measure_aliases
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.filter_resolution import (
+    conjuncts,
     report_unapplied_query_filter,
     report_unapplied_static_filter,
 )
@@ -804,16 +805,32 @@ class CFLPlanner:
             for wf in resolved.where_filters:
                 if leg_bases and leg_bases <= wf.conformed_for:
                     continue
-                wf_objects: set[str] = set()
-                self._collect_table_refs(wf.expression, wf_objects)
-                cfl_projection.collect_correlated_tables(wf.expression, wf_objects)
-                missing = wf_objects - leg_objects
+                missing: set[str] = set()
+                for condition in conjuncts(wf.expression):
+                    condition_objects: set[str] = set()
+                    self._collect_table_refs(condition, condition_objects)
+                    cfl_projection.collect_correlated_tables(condition, condition_objects)
+                    if condition_objects <= leg_objects:
+                        leg_builder.where(condition)
+                    else:
+                        missing |= condition_objects - leg_objects
                 if not missing:
-                    leg_builder.where(wf.expression)
-                elif not wf.static:
-                    self._skip_filter_outside_leg(missing, measures, resolved)
-                else:
+                    continue
+                # Enforcement first: a query repeating an enforced static
+                # filter makes it the query's, and it stays enforced.
+                if wf.static or wf.enforced:
                     self._skip_static_filter_outside_leg(wf, missing, measures, resolved)
+                    continue
+                # An anchored measure reading the filter in its conformed
+                # subquery is filtered; only the others are named.
+                unfiltered = [
+                    m
+                    for m in measures
+                    if not computed_measures(model, m.component_measures or [m.name])
+                    <= wf.conformed_for
+                ]
+                if unfiltered:
+                    self._skip_filter_outside_leg(missing, unfiltered, resolved)
 
             union_legs.append(leg_builder.build())
 

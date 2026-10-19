@@ -27,6 +27,7 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.expr_rewrite import collect_referenced_tables
 from orionbelt.compiler.filter_resolution import (
+    conjuncts,
     report_unapplied_query_filter,
     report_unapplied_static_filter,
 )
@@ -338,22 +339,26 @@ class RawPlanner:
         # leg's rows without it is what it exists to prevent, so the query is
         # refused.
         for wf in resolved.where_filters:
-            ref_objects: set[str] = set()
-            self._collect_table_refs(wf.expression, ref_objects)
-            if ref_objects.issubset(leg_objects):
-                builder.where(wf.expression)
-            elif not wf.static:
+            missing: set[str] = set()
+            for condition in conjuncts(wf.expression):
+                ref_objects: set[str] = set()
+                self._collect_table_refs(condition, ref_objects)
+                if ref_objects <= leg_objects:
+                    builder.where(condition)
+                else:
+                    missing |= ref_objects - leg_objects
+            if not missing:
+                continue
+            unreachable = ", ".join(sorted(missing))
+            # Enforcement first: a query repeating an enforced static filter
+            # makes it the query's, and it stays enforced.
+            if not wf.enforced and not wf.static:
                 report_unapplied_query_filter(
-                    resolved.warnings,
-                    ", ".join(sorted(ref_objects - leg_objects)),
-                    f"the rows of '{root}'",
+                    resolved.warnings, unreachable, f"the rows of '{root}'"
                 )
             elif not wf.enforced:
-                report_unapplied_static_filter(
-                    [], resolved.warnings, None, ", ".join(sorted(ref_objects - leg_objects))
-                )
-            elif wf.enforced:
-                unreachable = ", ".join(sorted(ref_objects - leg_objects))
+                report_unapplied_static_filter([], resolved.warnings, None, unreachable)
+            else:
                 raise ResolutionError(
                     [
                         static_filter_unreachable_error(
