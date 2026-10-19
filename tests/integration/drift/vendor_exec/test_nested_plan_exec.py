@@ -347,8 +347,15 @@ def _assert_exists(target: VendorTarget) -> None:
         value = _number(next(iter(rows[0].values())), target.dialect)
         assert value == total, f"{target.name} {op} {inner}: {value}"
     # Owners named by some charge's label, the labels-to-owners join walked
-    # from the owners: the body reads the charges and unnests their labels.
-    for op, owner in [("exists", "Ann"), ("nonexists", "Bob")]:
+    # from the owners: the body reads the charges and unnests their labels,
+    # filters on the charges, and goes on from them. No 50 charge has a label.
+    cheap = [{"field": "Charges.Cost", "op": "equals", "value": 50}]
+    for op, subject, inner, owners in [
+        ("exists", "Charge Labels", [], ["Ann"]),
+        ("nonexists", "Charge Labels", [], ["Bob"]),
+        ("nonexists", "Charge Labels", cheap, ["Ann", "Bob"]),
+        ("exists", "Charges", [], ["Ann"]),
+    ]:
         query = QueryObject(
             **{
                 "select": {"dimensions": ["Owner Name"]},
@@ -356,14 +363,15 @@ def _assert_exists(target: VendorTarget) -> None:
                     {
                         "field": "Owners.Owner Key",
                         "op": op,
-                        "subquery": {"dataObject": "Charge Labels"},
+                        "subquery": {"dataObject": subject, "filter": inner},
                     }
                 ],
+                "orderBy": [{"field": "Owner Name"}],
             }
         )
         sql = CompilationPipeline().compile(query, model, target.dialect).sql
         names = [next(iter(row.values())) for row in target.execute(sql)]
-        assert names == [owner], f"{target.name} {op}: {names}"
+        assert names == owners, f"{target.name} {op} {subject} {inner}: {names}"
 
 
 def _assert_all(target: VendorTarget) -> None:

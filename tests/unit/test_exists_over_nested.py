@@ -221,6 +221,53 @@ def test_a_nested_object_reached_by_a_join_walked_backwards(
     assert con.execute(_sql(query)).fetchall() == [(owner,)]
 
 
+CHEAP = {"field": "Charges.Cost", "op": "equals", "value": 50}
+
+
+@pytest.mark.parametrize(
+    ("inner", "owners"),
+    [([], [("Bob",)]), ([CHEAP], [("Ann",), ("Bob",)])],
+    ids=["any-charge", "a-50-charge"],
+)
+def test_an_inner_filter_on_the_parent_of_a_backwards_target(
+    con: duckdb.DuckDBPyConnection, inner: list[dict], owners: list[tuple[str]]
+) -> None:
+    """Owners no label names, among the charges costing 50: the body reads
+    the labels' charges, so their cost is in scope. No 50 charge carries a
+    label, so both owners qualify. It was refused as unreachable, and the
+    charges were missing from the tables the cached result depends on."""
+    query = {
+        "select": {"dimensions": ["Owner Name"]},
+        "where": [_exists("nonexists", "Owners.Owner Key", "Charge Labels", inner)],
+        "orderBy": [{"field": "Owner Name"}],
+    }
+    assert con.execute(_sql(query)).fetchall() == owners
+    compiled = CompilationPipeline().compile(QueryObject(**query), _model(), "duckdb")
+    assert compiled.physical_tables == ["charges", "owners"]
+
+
+@pytest.mark.parametrize(
+    ("op", "target", "owner"),
+    [
+        ("exists", "Charges", "Ann"),
+        ("nonexists", "Charges", "Bob"),
+        ("exists", "Accounts", "Ann"),
+        ("nonexists", "Accounts", "Bob"),
+    ],
+)
+def test_a_backwards_path_on_past_the_parent(
+    con: duckdb.DuckDBPyConnection, op: str, target: str, owner: str
+) -> None:
+    """Owners to charges goes through the labels and up to their charge,
+    which the body already reads: joining it again through the keyless
+    containment edge raised a ValueError."""
+    query = {
+        "select": {"dimensions": ["Owner Name"]},
+        "where": [_exists(op, "Owners.Owner Key", target)],
+    }
+    assert con.execute(_sql(query)).fetchall() == [(owner,)]
+
+
 def test_a_timestamp_key_is_matched_as_stored() -> None:
     """Two charges an hour apart in UTC, 05:30 and 06:30 on 2024-11-03: both
     01:30 in New York, where the clocks fall back. Read in the query's zone

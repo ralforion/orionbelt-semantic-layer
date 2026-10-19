@@ -931,6 +931,8 @@ def build_exists_filter_expr(
     first_step = path[0]
     joins: list[Join | Unnest] = []
     correlation: list[Expr]
+    # Objects the body reads besides the path's own: a nested target's parent.
+    body_objects: set[str] = set()
     first_target_obj = model.data_objects.get(first_step.to_object)
     if first_target_obj is None:
         return None  # graph would not yield it otherwise
@@ -994,6 +996,7 @@ def build_exists_filter_expr(
         assert unnest is not None  # a containment step's far end is the nested object
         joins.append(unnest)
         correlation = [graph.build_join_condition(first_step)]
+        body_objects.add(parent)
     else:
         from_node = From(source=qualify_table(first_target_obj), alias=first_step.to_object)
         correlation = [graph.build_join_condition(first_step)]
@@ -1002,6 +1005,8 @@ def build_exists_filter_expr(
     # ``to_object``.
     for step in path[1:]:
         joined_object = step.to_object
+        if joined_object in body_objects:
+            continue  # the nested target's parent, already in FROM
         hop = _body_hop(step, joined_object, model, graph, qualify_table)
         if hop is None:
             errors.append(_nested_subquery_error(joined_object, model.data_objects[joined_object]))
@@ -1013,7 +1018,7 @@ def build_exists_filter_expr(
     # Aliases the subquery body owns: its target plus every hop the
     # correlation path walked through. The subject stays outside — it is
     # referenced by the correlation predicate, not joined.
-    scope = {step.to_object for step in path}
+    scope = {step.to_object for step in path} | body_objects
 
     nested_seen = False
     for sub_qf in sub.filter:
