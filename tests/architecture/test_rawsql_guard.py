@@ -25,6 +25,9 @@ APPROVED_RAWSQL: dict[str, int] = {
     # Period-over-period CTEs: date_range, date_spine, pop_base, pop_compare —
     # dialect-specific date-spine SQL the typed AST does not model.
     "src/orionbelt/compiler/pop_wrap.py": 4,
+    # fill: true reuses the same date spine, and shifts a strict upper bound
+    # back a day with the dialect's date arithmetic (a constant, not user SQL).
+    "src/orionbelt/compiler/fill_wrap.py": 2,
     # MySQL quarter truncation (nested DATE_ADD/MAKEDATE/QUARTER).
     "src/orionbelt/dialect/mysql.py": 1,
     # BigQuery DATE_TRUNC date-part keyword (MONTH/ISOWEEK, not a quoted string).

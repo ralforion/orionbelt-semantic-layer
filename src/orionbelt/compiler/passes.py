@@ -32,6 +32,7 @@ from dataclasses import dataclass, field, replace
 
 from orionbelt.ast.nodes import AliasedExpr, Select
 from orionbelt.compiler.cumulative_wrap import wrap_with_cumulative
+from orionbelt.compiler.fill_wrap import wrap_with_fill
 from orionbelt.compiler.filter_wrap import wrap_with_filter_context
 from orionbelt.compiler.grain_dedup import (
     GrainDedupUnsupportedError,
@@ -77,6 +78,7 @@ PASS_PERIOD_OVER_PERIOD = "period_over_period"
 PASS_TOTALS = "totals"
 PASS_CUMULATIVE = "cumulative"
 PASS_WINDOW = "window"
+PASS_FILL = "fill"
 PASS_HAVING_WINDOW = "having_over_window"
 PASS_HAVING_CLEANUP = "having_projection_cleanup"
 
@@ -254,6 +256,14 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
             run=lambda ast, ctx: wrap_with_late_window(
                 ast, ctx.resolved, ctx.model, ctx.dialect, ctx.query, ctx.qualify_table
             ),
+        ),
+        CompilerPass(
+            name=PASS_FILL,
+            # Last of the wrappers: the empty periods are added to the rows the
+            # query computed. Resolution refuses the features that read those
+            # rows past this point (totals, cumulative, window, PoP, HAVING).
+            applies=lambda r: r.fill,
+            run=lambda ast, ctx: wrap_with_fill(ast, ctx.resolved, ctx.model, ctx.dialect),
         ),
         CompilerPass(
             name=PASS_HAVING_WINDOW,
