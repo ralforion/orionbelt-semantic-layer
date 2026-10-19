@@ -93,6 +93,28 @@ async def test_vendored_bundles_are_served(demo: object, tmp_path: Path, name: s
     assert str(ui_app._STATIC_DIR) not in ui_app._vendored_src(name)
 
 
+@pytest.mark.parametrize("mode", ["api", "proxied"])
+async def test_vendored_bundles_are_compressed(demo: object, tmp_path: Path, mode: str) -> None:
+    """Compressed by the route itself, so also where no wrapper compresses (the
+    API's /ui), and encoded once under the proxied wrapper's gzip."""
+    if mode == "api":
+        from orionbelt.api.app import create_app
+
+        app = create_app()
+    else:
+        app = ui_app._proxied_app(demo, "/ui", tmp_path / "favicon.png")
+    name = "mermaid.min.js"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            f"/ui/{ui_app._vendored_src(name)}", headers={"Accept-Encoding": "gzip"}
+        )
+    assert resp.status_code == 200
+    assert resp.headers["content-encoding"] == "gzip"
+    assert resp.num_bytes_downloaded < ui_app._VENDORED_JS[name].stat().st_size / 2
+    # httpx decodes once: a second encoding would not come back as the file.
+    assert resp.content == ui_app._VENDORED_JS[name].read_bytes()
+
+
 @pytest.mark.parametrize("name", ["mermaid.min.js", "ace-sparql.min.js"])
 @pytest.mark.parametrize(
     ("validator", "condition"),

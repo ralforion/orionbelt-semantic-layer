@@ -1384,11 +1384,18 @@ def _vendor_routes() -> list[Any]:
     app's own routes, it is under the app's path in every serving mode
     (``/vendor`` standalone, ``/ui/vendor`` mounted), and the URL does not
     reveal where the package is installed.
+
+    The route compresses its own responses: the API's ``/ui`` and the plain
+    standalone launch have no compressing wrapper, and adding one to the API
+    would compress every API response. Under the proxied wrapper's gzip the
+    response is already encoded, which Starlette passes through as it is.
     """
+    from starlette.middleware.gzip import GZipMiddleware
     from starlette.routing import Mount
     from starlette.staticfiles import StaticFiles
 
-    return [Mount("/vendor", app=StaticFiles(directory=_STATIC_DIR), name="ob-vendor")]
+    static = GZipMiddleware(StaticFiles(directory=_STATIC_DIR), minimum_size=1024)
+    return [Mount("/vendor", app=static, name="ob-vendor")]
 
 
 def _mermaid_head() -> str:
