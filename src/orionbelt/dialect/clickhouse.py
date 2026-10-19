@@ -40,6 +40,18 @@ STATEMENT_SETTINGS = "SETTINGS join_use_nulls = 1"
 # ``LEFT ARRAY JOIN`` (an outer unnest) is not one: the setting leaves it be.
 _OUTER_JOIN = re.compile(r"\b(?:LEFT|RIGHT|FULL)\s+(?:OUTER\s+)?JOIN\b", re.IGNORECASE)
 
+# What the join words may appear in without being a join: a string (quotes
+# doubled or backslash-escaped), a quoted name, a comment. Matched left to
+# right, so a quote inside one of them does not start another.
+_NOT_SQL = re.compile(
+    r"'(?:[^'\\]|\\.|'')*'"
+    r'|"(?:[^"]|"")*"'
+    r"|`(?:[^`]|``)*`"
+    r"|--[^\n]*"
+    r"|/\*.*?\*/",
+    re.DOTALL,
+)
+
 _GRAIN_FUNCTIONS: dict[TimeGrain, str] = {
     TimeGrain.YEAR: "toStartOfYear",
     TimeGrain.QUARTER: "toStartOfQuarter",
@@ -423,7 +435,7 @@ class ClickHouseDialect(Dialect):
         refusing is right there, as the join would read defaults otherwise.
         """
         sql = super().compile(ast)
-        if not _OUTER_JOIN.search(sql):
+        if not _OUTER_JOIN.search(_NOT_SQL.sub(" ", sql)):
             return sql
         return f"{sql}\n{STATEMENT_SETTINGS}"
 
