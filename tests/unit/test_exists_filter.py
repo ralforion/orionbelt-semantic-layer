@@ -1004,9 +1004,11 @@ measures:
             "NO_JOIN_PATH_TO_SUBQUERY",
         )
 
-    def test_nested_exists_rejected(self) -> None:
+    def test_nested_exists_compiles(self) -> None:
+        """An inner ``exists`` correlates to the object its field is on, in
+        the body around it (executed in ``test_exists_inside_exists``)."""
         model = _load_model(BASE_MODEL)
-        self._expect(
+        sql = PIPELINE.compile(
             QueryObject(
                 select=QuerySelect(dimensions=["Customer Country"], measures=["Order Count"]),
                 where=[
@@ -1027,8 +1029,9 @@ measures:
                 ],
             ),
             model,
-            "NESTED_SUBQUERY_NOT_SUPPORTED",
-        )
+            "postgres",
+        ).sql
+        assert sql.count("EXISTS (") == 2
 
     def test_exists_in_having_rejected(self) -> None:
         """v2.7 restricts EXISTS / NONEXISTS to WHERE only. HAVING is evaluated

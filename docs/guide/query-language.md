@@ -759,7 +759,7 @@ where:
 
 **Subquery filter rules**
 
-`subquery.filter` accepts the same operator vocabulary as the outer filter, with one exception: nested `exists` / `nonexists` are rejected (`NESTED_SUBQUERY_NOT_SUPPORTED`) — that keeps the planner simple.
+`subquery.filter` accepts the same operator vocabulary as the outer filter, including another `exists` / `nonexists`. An inner one correlates to the data object its `field` is on, inside the subquery around it: that object is joined into the body when the path did not already read it, and it cannot be the outer subject (filter that in the outer `where`).
 
 Its `field` resolves like an outer `where` field, minus measure names — a correlated subquery filters rows, not aggregates:
 
@@ -851,7 +851,6 @@ Invalid queries return error responses:
 | `UNKNOWN_SUBQUERY_FILTER_COLUMN` | 400 | `subquery.filter` field is neither a column of the target, a dimension, nor a valid `DataObject.Column` |
 | `UNREACHABLE_SUBQUERY_FILTER_OBJECT` | 400 | `subquery.filter` names a data object not reachable from the target |
 | `SUBQUERY_FILTER_OBJECT_NOT_JOINABLE` | 400 | `subquery.filter` resolves to (or only through) the correlation subject |
-| `NESTED_SUBQUERY_NOT_SUPPORTED` | 400 | `subquery.filter` cannot contain another `exists` / `nonexists` |
 | `UNKNOWN_PATH_NAME` | 400 | `subquery.pathName` does not match any declared secondary join |
 | `AMBIGUOUS_JOIN` | 422 | Multiple join paths possible |
 | `DIMENSIONS_EXCLUDE_WITH_MEASURES` | 400 | `dimensionsExclude` used with measures |

@@ -539,6 +539,8 @@ class LineageBuilder:
             source = self._subquery_field(item.field, sub.data_object)
             if source:
                 self._edge(source, node, op)
+            if item.subquery is not None:
+                self._subquery(item.subquery, str(item.op), node)
 
     def _union(self, legs: list[tuple[str, list[str]]]) -> None:
         """Route each leg's measures through the ``UNION ALL`` that combines the legs.

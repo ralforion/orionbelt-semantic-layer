@@ -1576,8 +1576,8 @@ def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> Que
 
     ``field`` is interpreted as a bare column name on the target data
     object — no model lookup, no canonical mapping. Supports the same
-    operator surface as outer predicates minus nested EXISTS (rejected
-    by the planner with ``NESTED_SUBQUERY_NOT_SUPPORTED``).
+    operator surface as outer predicates minus nested EXISTS, which a
+    bare column name cannot correlate to the body around it.
     """
     if isinstance(atom, exp.Exists) or (
         isinstance(atom, exp.Not) and isinstance(atom.this, exp.Exists)
