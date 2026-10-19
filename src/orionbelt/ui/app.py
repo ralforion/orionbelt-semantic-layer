@@ -1362,20 +1362,33 @@ _IMPORT_OSI_JS = """
 #:
 #: The vendored bundles the page head loads. They ship under ``ui/static``, so
 #: the UI loads no external asset and an air-gapped deployment needs nothing it
-#: does not already have in the wheel. They are fetched as files through
-#: Gradio's file route (``frontend_assets`` allow-lists them) rather than
-#: inlined: inlined as base64 they were 5.4 MB of every page load, uncacheable.
-_VENDORED_JS = {
-    name: Path(__file__).resolve().parent / "static" / name
-    for name in ("mermaid.min.js", "ace-sparql.min.js")
-}
+#: does not already have in the wheel. They are fetched as files from the
+#: app's own ``vendor/`` route (see ``_vendor_routes``) rather than inlined:
+#: inlined as base64 they were 5.4 MB of every page load, uncacheable.
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+_VENDORED_JS = {name: _STATIC_DIR / name for name in ("mermaid.min.js", "ace-sparql.min.js")}
 
 
 def _vendored_src(name: str) -> str:
     """The page-relative URL of a vendored bundle (the page sets ``<base>``)."""
-    from urllib.parse import quote
+    return f"vendor/{name}"
 
-    return "gradio_api/file=" + quote(_VENDORED_JS[name].as_posix())
+
+def _vendor_routes() -> list[Any]:
+    """The route serving ``ui/static`` at ``vendor/`` inside the Gradio app.
+
+    Starlette's ``StaticFiles`` answers a conditional request (``If-None-Match``,
+    ``If-Modified-Since``) with 304, so a reload that revalidates does not
+    fetch the bundles again; Gradio's file route sends the validators but
+    ignores them, answering 200 with the whole file. Passed as the Gradio
+    app's own routes, it is under the app's path in every serving mode
+    (``/vendor`` standalone, ``/ui/vendor`` mounted), and the URL does not
+    reveal where the package is installed.
+    """
+    from starlette.routing import Mount
+    from starlette.staticfiles import StaticFiles
+
+    return [Mount("/vendor", app=StaticFiles(directory=_STATIC_DIR), name="ob-vendor")]
 
 
 def _mermaid_head() -> str:
@@ -1635,14 +1648,15 @@ def frontend_assets(head_html: str | None = None) -> dict[str, Any]:
     serving modes agree on: standalone ``launch``, the standalone mount, and
     the API's ``/ui``. The mermaid loader belongs here for that reason - put on
     the constructor it reaches only whichever mode happens to look there - and
-    so does the allow-list that lets Gradio's file route serve the bundles.
+    so does the route that serves the bundles, passed as the Gradio app's own
+    routes (``app_kwargs``), which both ``launch`` and ``mount_gradio_app`` take.
     """
     vendored = _mermaid_head() + _ace_head() + _fit_head()
     return {
         "css": _CSS,
         "js": _DARK_MODE_INIT_JS,
         "head": f"{head_html}\n{vendored}" if head_html else vendored,
-        "allowed_paths": [str(path) for path in _VENDORED_JS.values()],
+        "app_kwargs": {"routes": _vendor_routes()},
     }
 
 

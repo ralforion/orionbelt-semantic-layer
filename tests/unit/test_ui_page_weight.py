@@ -83,9 +83,29 @@ def test_vendored_bundles_are_not_inlined() -> None:
 
 @pytest.mark.parametrize("name", ["mermaid.min.js", "ace-sparql.min.js"])
 async def test_vendored_bundles_are_served(demo: object, tmp_path: Path, name: str) -> None:
-    """The head points at Gradio's file route; the allow-list must let it through."""
+    """The head points at the app's vendor route, under the mount path."""
     app = ui_app._proxied_app(demo, "/ui", tmp_path / "favicon.png")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(f"/ui/{ui_app._vendored_src(name)}")
     assert resp.status_code == 200
     assert len(resp.content) == ui_app._VENDORED_JS[name].stat().st_size
+    # The URL names the bundle, not where the package is installed.
+    assert str(ui_app._STATIC_DIR) not in ui_app._vendored_src(name)
+
+
+@pytest.mark.parametrize("name", ["mermaid.min.js", "ace-sparql.min.js"])
+@pytest.mark.parametrize(
+    ("validator", "condition"),
+    [("etag", "If-None-Match"), ("last-modified", "If-Modified-Since")],
+)
+async def test_a_revalidated_bundle_is_not_sent_again(
+    demo: object, tmp_path: Path, name: str, validator: str, condition: str
+) -> None:
+    """A reload that revalidates gets 304, not the multi-MB bundle again."""
+    app = ui_app._proxied_app(demo, "/ui", tmp_path / "favicon.png")
+    url = f"/ui/{ui_app._vendored_src(name)}"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.get(url)
+        again = await client.get(url, headers={condition: first.headers[validator]})
+    assert again.status_code == 304
+    assert again.content == b""
