@@ -628,8 +628,9 @@ join to, and `CONFORMED_GRAIN_ASSUMED` records the choice.
 That reading is the default because it is the only symmetric one. `a * b` and
 `b * a` are the same product, so they must return the same number; anchoring on
 whichever operand is written first does not (`AVG` 22 against 29.33 on the same
-rows). Note that `SUM` is invariant across every reading, so a `SUM` example
-cannot tell you which rule is in effect.
+rows). A `SUM` of a product is the same under every reading, so such an
+example cannot tell you which rule is in effect; a `SUM` with a term reading one
+fact alone is not (see below).
 
 Facts sharing *several* dimensions raise `ANCHOR_REQUIRED_AMBIGUOUS_KEY` rather
 than picking one, because conforming at each gives a different answer.
@@ -669,8 +670,29 @@ conformed fact and the anchor's side, has no place to be applied and is refused
 
 | Aggregate | Sensitive to the anchor? |
 |---|---|
-| `SUM` | No. Every reading totals to the same value |
+| `SUM` of a product, such as `{[Returns].[Qty]} * {[Sales].[Qty]}` | No. Every reading totals to the same value |
+| `SUM` with a term reading a conformed fact alone, such as `{[Returns].[Qty]} - {[Sales].[Qty]}` | Yes, see below |
 | `AVG`, `MIN`, `MAX` | Yes. They depend on the row population, which the anchor sets |
+
+Anchored on a fact, a conformed value is its key's total, read once per row of
+the anchor. Multiplied by an anchor column, it is summed once per key:
+`SUM(r * S)` is `R * S` for each date. A term without an anchor column is added
+once per anchor row instead: anchored on `Returns`, `SUM(r - S)` is
+`R - n * S` for a date with `n` returns, and a date without returns loses its
+sales. The query carries a `FAN_TRAP_RISK` warning naming the measure. Without
+`anchor:` both facts are conformed to the date, one row per key, and the
+difference is `R - S` for each date that has returns (the conformed sales of a
+date without returns read `NULL` in the difference).
+
+```sql
+-- Anchored on Returns: 3 returns (1 + 2 + 3) and 10 sales on d1 give -24, not -4
+SELECT SUM("Returns"."qty" - "__ob_conf_0"."__ob_av0") AS "Net"
+FROM "returns" AS "Returns"
+LEFT JOIN (
+  SELECT "Sales"."date_id" AS "__ob_ak0", SUM("Sales"."qty") AS "__ob_av0"
+  FROM "sales" AS "Sales" GROUP BY "Sales"."date_id"
+) AS "__ob_conf_0" ON "Returns"."date_id" = "__ob_conf_0"."__ob_ak0"
+```
 
 ## Fan-out warning for mixed-grain measures
 
