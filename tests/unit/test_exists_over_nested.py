@@ -68,6 +68,7 @@ dataObjects:
       Owner Name: {code: name, abstractType: string}
 dimensions:
   Account Name: {dataObject: Accounts, column: Account Name, resultType: string}
+  Owner Name: {dataObject: Owners, column: Owner Name, resultType: string}
 measures:
   Total Cost:
     columns: [{dataObject: Charges, column: Cost}]
@@ -92,7 +93,8 @@ def con() -> duckdb.DuckDBPyConnection:
         " ('c3', 'a2', 50, [])"
     )
     con.execute("CREATE TABLE owners (owner_key VARCHAR, name VARCHAR)")
-    con.execute("INSERT INTO owners VALUES ('prod', 'Ann')")
+    # Bob's key names no label.
+    con.execute("INSERT INTO owners VALUES ('prod', 'Ann'), ('dev', 'Bob')")
     return con
 
 
@@ -203,3 +205,58 @@ def test_from_a_nested_subject_up_to_its_parent_is_refused() -> None:
     with pytest.raises(ResolutionError) as raised:
         _sql(query)
     assert [e.code for e in raised.value.errors] == ["NESTED_OBJECT_IN_SUBQUERY"]
+
+
+@pytest.mark.parametrize(("op", "owner"), [("exists", "Ann"), ("nonexists", "Bob")])
+def test_a_nested_object_reached_by_a_join_walked_backwards(
+    con: duckdb.DuckDBPyConnection, op: str, owner: str
+) -> None:
+    """Owners named by some charge's label: Ann. The labels-to-owners join is
+    walked from the owners, so the body reads the charges and unnests their
+    labels. It asked for the labels' table, which they have none of: a 500."""
+    query = {
+        "select": {"dimensions": ["Owner Name"]},
+        "where": [_exists(op, "Owners.Owner Key", "Charge Labels")],
+    }
+    assert con.execute(_sql(query)).fetchall() == [(owner,)]
+
+
+def test_a_timestamp_key_is_matched_as_stored() -> None:
+    """Two charges an hour apart in UTC, 05:30 and 06:30 on 2024-11-03: both
+    01:30 in New York, where the clocks fall back. Read in the query's zone
+    the keys were equal, and c1's empty array matched c2's label: 150."""
+    con = duckdb.connect()
+    con.execute("SET TimeZone = 'UTC'")
+    con.execute(
+        'CREATE TABLE charges (ts TIMESTAMPTZ, cost DOUBLE, Labels STRUCT("Key" VARCHAR)[])'
+    )
+    con.execute(
+        "INSERT INTO charges VALUES (TIMESTAMPTZ '2024-11-03 05:30:00+00', 50, []),"
+        " (TIMESTAMPTZ '2024-11-03 06:30:00+00', 100, [{'Key': 'team'}])"
+    )
+    yaml_text = """
+version: "1.0"
+name: nested_exists_tz
+settings:
+  queryTimezone: America/New_York
+dataObjects:
+  Charges:
+    code: charges
+    columns:
+      Charge Time: {code: ts, abstractType: timestamp_tz, primaryKey: true}
+      Cost: {code: cost, abstractType: float}
+  Charge Labels:
+    nestedIn: {dataObject: Charges, column: Labels}
+    columns:
+      Label Key: {code: Key, abstractType: string}
+measures:
+  Total Cost:
+    columns: [{dataObject: Charges, column: Cost}]
+    resultType: float
+    aggregation: sum
+"""
+    query = {
+        "select": {"measures": ["Total Cost"]},
+        "where": [_exists("exists", "Charges.Charge Time", "Charge Labels")],
+    }
+    assert con.execute(_sql(query, yaml_text=yaml_text)).fetchall() == [(100.0,)]

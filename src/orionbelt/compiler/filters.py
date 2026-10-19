@@ -965,14 +965,35 @@ def build_exists_filter_expr(
         )
         assert unnest is not None  # a nested step's far end is the nested object
         joins.append(unnest)
+        # The stored values, as a join compares them: read in the query's
+        # timezone, two instants an hour apart in a DST fall-back are equal.
         correlation = [
             BinaryOp(
-                left=_realiased(make_column_expr(model, subject_object, key), self_alias),
+                left=_realiased(
+                    make_column_expr(model, subject_object, key, in_query_timezone=False),
+                    self_alias,
+                ),
                 op="=",
-                right=make_column_expr(model, subject_object, key),
+                right=make_column_expr(model, subject_object, key, in_query_timezone=False),
             )
             for key in keys
         ]
+    elif first_target_obj.is_nested:
+        # Reached by an ordinary join walked backwards (owners to the labels
+        # naming them): the body reads the labels' parent and unnests it, and
+        # the join is the correlation.
+        assert first_target_obj.nested_in is not None
+        parent = first_target_obj.nested_in.data_object
+        parent_obj = model.data_objects.get(parent)
+        containment = graph.find_join_path({parent}, {parent, first_step.to_object})
+        if parent_obj is None or parent_obj.is_nested or len(containment) != 1:
+            errors.append(_nested_subquery_error(first_step.to_object, first_target_obj))
+            return None
+        from_node = From(source=qualify_table(parent_obj), alias=parent)
+        unnest = _body_hop(containment[0], first_step.to_object, model, graph, qualify_table)
+        assert unnest is not None  # a containment step's far end is the nested object
+        joins.append(unnest)
+        correlation = [graph.build_join_condition(first_step)]
     else:
         from_node = From(source=qualify_table(first_target_obj), alias=first_step.to_object)
         correlation = [graph.build_join_condition(first_step)]

@@ -150,6 +150,48 @@ DDL: dict[str, list[str]] = {
     ],
 }
 
+OWNERS = "nested_owners"
+
+#: Owners named by a label's value: Ann's key ``prod`` is on c1 and c2, Bob's
+#: on none. A plain table, created the way each engine's seeded tables are.
+OWNERS_DDL: dict[str, list[str]] = {
+    "duckdb": [
+        f"DROP TABLE IF EXISTS {OWNERS}",
+        f"CREATE TABLE {OWNERS} AS SELECT 'prod' AS owner_key, 'Ann' AS name"
+        " UNION ALL SELECT 'dev', 'Bob'",
+    ],
+    "postgres": [
+        f"DROP TABLE IF EXISTS {OWNERS}",
+        f"CREATE TABLE {OWNERS} AS SELECT 'prod'::text AS owner_key, 'Ann'::text AS name"
+        " UNION ALL SELECT 'dev', 'Bob'",
+    ],
+    "mysql": [
+        f"DROP TABLE IF EXISTS {OWNERS}",
+        f"CREATE TABLE {OWNERS} AS SELECT 'prod' AS owner_key, 'Ann' AS name"
+        " UNION ALL SELECT 'dev', 'Bob'",
+    ],
+    "clickhouse": [
+        f"DROP TABLE IF EXISTS {OWNERS}",
+        f"CREATE TABLE {OWNERS} ENGINE = Memory AS SELECT 'prod' AS owner_key, 'Ann' AS name"
+        " UNION ALL SELECT 'dev', 'Bob'",
+    ],
+    "bigquery": [
+        f"DROP TABLE IF EXISTS `{SEED_SCHEMA}`.`{OWNERS}`",
+        f"CREATE TABLE `{SEED_SCHEMA}`.`{OWNERS}` AS SELECT 'prod' AS owner_key, 'Ann' AS name"
+        " UNION ALL SELECT 'dev', 'Bob'",
+    ],
+    "snowflake": [
+        f'DROP TABLE IF EXISTS "{SEED_SCHEMA}"."{OWNERS}"',
+        f'CREATE TABLE "{SEED_SCHEMA}"."{OWNERS}" AS'
+        " SELECT 'prod' AS \"owner_key\", 'Ann' AS \"name\" UNION ALL SELECT 'dev', 'Bob'",
+    ],
+    "databricks": [
+        f"DROP TABLE IF EXISTS `{SEED_SCHEMA}`.`{OWNERS}`",
+        f"CREATE TABLE `{SEED_SCHEMA}`.`{OWNERS}` AS SELECT 'prod' AS owner_key, 'Ann' AS name"
+        " UNION ALL SELECT 'dev', 'Bob'",
+    ],
+}
+
 MODEL_YAML = """
 version: "1.0"
 name: nested_vendor
@@ -165,6 +207,17 @@ dataObjects:
     columns:
       Label Key: {{code: Key, abstractType: string}}
       Label Value: {{code: Value, abstractType: string}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Owners
+        columnsFrom: [Label Value]
+        columnsTo: [Owner Key]
+  Owners:
+    code: {owners}
+    schema: {schema}
+    columns:
+      Owner Key: {{code: owner_key, abstractType: string, primaryKey: true}}
+      Owner Name: {{code: name, abstractType: string}}
   Charge Credits:
     nestedIn: {{dataObject: Charges, column: Credits}}
     columns:
@@ -173,6 +226,7 @@ dataObjects:
 dimensions:
   Label Value: {{dataObject: Charge Labels, column: Label Value}}
   Credit Type: {{dataObject: Charge Credits, column: Credit Type}}
+  Owner Name: {{dataObject: Owners, column: Owner Name}}
 measures:
   Total Cost:
     columns: [{{dataObject: Charges, column: Cost}}]
@@ -187,14 +241,16 @@ measures:
 
 def _model(target: VendorTarget) -> SemanticModel:
     schema = SEED_SCHEMA if target.dialect in QUALIFIED else '""'
-    raw, source_map = TrackedLoader().load_string(MODEL_YAML.format(table=TABLE, schema=schema))
+    raw, source_map = TrackedLoader().load_string(
+        MODEL_YAML.format(table=TABLE, owners=OWNERS, schema=schema)
+    )
     model, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     return model
 
 
 def _prepare(target: VendorTarget) -> None:
-    for statement in DDL[target.dialect]:
+    for statement in [*DDL[target.dialect], *OWNERS_DDL[target.dialect]]:
         # DDL returns no cursor description for the fixture to read.
         with contextlib.suppress(TypeError):
             target.execute(statement)
@@ -290,6 +346,24 @@ def _assert_exists(target: VendorTarget) -> None:
         rows = target.execute(sql)
         value = _number(next(iter(rows[0].values())), target.dialect)
         assert value == total, f"{target.name} {op} {inner}: {value}"
+    # Owners named by some charge's label, the labels-to-owners join walked
+    # from the owners: the body reads the charges and unnests their labels.
+    for op, owner in [("exists", "Ann"), ("nonexists", "Bob")]:
+        query = QueryObject(
+            **{
+                "select": {"dimensions": ["Owner Name"]},
+                "where": [
+                    {
+                        "field": "Owners.Owner Key",
+                        "op": op,
+                        "subquery": {"dataObject": "Charge Labels"},
+                    }
+                ],
+            }
+        )
+        sql = CompilationPipeline().compile(query, model, target.dialect).sql
+        names = [next(iter(row.values())) for row in target.execute(sql)]
+        assert names == [owner], f"{target.name} {op}: {names}"
 
 
 def _assert_all(target: VendorTarget) -> None:
