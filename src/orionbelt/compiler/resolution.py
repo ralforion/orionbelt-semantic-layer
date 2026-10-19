@@ -893,6 +893,8 @@ class ResolvedQuery:
     a measure mixing base-grain and replicated columns."""
     coalesce_aliases: set[str] = field(default_factory=set)
     grouping: Grouping | None = None
+    fill: bool = False
+    """Every period of the time-grained dimension is returned (``fill_wrap``)."""
     childless_legs: list[ChildlessLeg] = field(default_factory=list)
     """Parent rows without child rows that the WHERE accepts, added by the
     ``grain_dedup`` pass beside the plan's own (``LEFT JOIN`` semantics)."""
@@ -1198,6 +1200,7 @@ class QueryResolver:
                 is_raw=query.select.is_raw,
                 distinct=query.select.distinct,
                 grouping=query.grouping,
+                fill=query.fill,
             ),
             qualify_table=qualify_table,
         )
@@ -1510,6 +1513,9 @@ class QueryResolver:
                     ctx.result.order_by_exprs.append(
                         (ColumnRef(name=dim.name), False, nulls_default)
                     )
+
+        if query.fill:
+            self._check_fill(ctx, query)
 
         if ctx.errors:
             raise ResolutionError(ctx.errors)
@@ -2307,6 +2313,73 @@ class QueryResolver:
                 hint=(f"Split the condition: one on {listed} alone, and one on the anchor's side."),
             )
         )
+
+    @staticmethod
+    def _check_fill(ctx: _ResolutionContext, query: QueryObject) -> None:
+        """Refuse ``fill`` where it has no single axis, or a feature reads the
+        rows before the empty periods are added.
+
+        A window, cumulative or period-over-period metric and a total are
+        computed over the rows the query returns, so an empty period added
+        afterwards would show none of their values; ROLLUP / CUBE subtotals
+        and a HAVING would have to be evaluated again over it.
+        """
+        result = ctx.result
+        grains = [(d.name, d.grain) for d in result.dimensions if d.grain is not None]
+        declared = [ctx.model.dimensions.get(d.dimension) for d in result.dimensions if d.grain]
+        if len(grains) != 1 or any(
+            dim is None or dim.result_type not in (DataType.DATE, DataType.TIMESTAMP)
+            for dim in declared
+        ):
+            ctx.errors.append(
+                SemanticError(
+                    code="FILL_REQUIRES_ONE_TIME_DIMENSION",
+                    message=(
+                        f"fill returns every period of the query's time dimension, so the "
+                        f"query has to select exactly one dimension at a time grain, with "
+                        f"resultType date or timestamp; it selects {len(grains)} at a grain."
+                    ),
+                    path="fill",
+                    hint="Select one time dimension at a grain, such as 'Order Date:month'.",
+                )
+            )
+            return
+        name, grain = grains[0]
+        if grain in SUB_DAY_GRAINS:
+            ctx.errors.append(
+                SemanticError(
+                    code="FILL_GRAIN_NOT_SUPPORTED",
+                    message=(
+                        f"fill generates periods of a day or longer; '{name}' is at "
+                        f"{grain.value} grain."
+                    ),
+                    path="fill",
+                )
+            )
+        combined = [
+            label
+            for label, present in (
+                ("ROLLUP / CUBE", result.grouping is not None),
+                ("having", bool(query.having)),
+                ("a total", result.has_totals),
+                ("a cumulative metric", result.has_cumulative),
+                ("a period-over-period metric", result.has_pop),
+                ("a window metric", result.has_window),
+            )
+            if present
+        ]
+        if combined:
+            ctx.errors.append(
+                SemanticError(
+                    code="FILL_COMBINATION_NOT_SUPPORTED",
+                    message=(
+                        f"fill adds the empty periods after the query's rows are computed, "
+                        f"which {', '.join(combined)} would have to read: it is not supported "
+                        f"together with them."
+                    ),
+                    path="fill",
+                )
+            )
 
     @staticmethod
     def _warn_repeated_conformed_terms(ctx: _ResolutionContext) -> None:

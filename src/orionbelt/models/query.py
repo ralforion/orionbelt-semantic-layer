@@ -347,6 +347,17 @@ class QueryObject(BaseModel):
             "whose timeDimension is selected."
         ),
     )
+    fill: bool = Field(
+        default=False,
+        description=(
+            "Return every period of the query's time-grained dimension, also those "
+            "without rows. The range runs from the where filter's bounds on that "
+            "dimension, or else from the first and last period with data. Other "
+            "dimensions are crossed with the periods, member by member as the query "
+            "returns them. An empty period counts 0, reads a measure's defaultValue, "
+            "and is NULL otherwise."
+        ),
+    )
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 

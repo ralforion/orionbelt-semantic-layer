@@ -417,6 +417,34 @@ and a query that sets it with no such metric compiles with a
 the Postgres wire) have no `asOf`; a time filter's upper bound picks the
 period there.
 
+## Filling Empty Periods (`fill`)
+
+A query returns the periods that have rows. `fill: true` returns every period
+of its time dimension, also those without:
+
+```json
+{
+  "select": { "dimensions": ["Region", "Order Month"], "measures": ["Revenue", "Order Count"] },
+  "where": [{ "field": "Order Month", "op": "between", "value": ["2024-01-01", "2024-06-30"] }],
+  "fill": true
+}
+```
+
+| | |
+|---|---|
+| **Time dimension** | Exactly one selected dimension at a time grain of a day or longer, with `resultType` `date` or `timestamp` |
+| **Range** | From the `where` bounds on that dimension's column (`gte`, `gt`, `lte`, `lt`, `between`): `gte 2023-12-15` starts in December, `lt 2024-05-01` ends in April. A side without a single constant bound runs to the first or last period with data. The range never cuts the data off |
+| **Other dimensions** | Crossed with the periods: every member the query returns, a NULL member included, gets every period |
+| **Empty values** | A count is `0`, a measure with a `defaultValue` reads it, anything else is `NULL`, a derived metric included |
+| **Rows without a period** | A row whose time is NULL (an order without a date) stays a row of its own |
+| **ORDER BY, LIMIT** | Apply to the filled rows |
+
+The empty periods are added to the rows the query computed, so a feature that
+reads those rows is refused with it: `grouping: rollup/cube`, `having`, a
+`total: true` measure, and cumulative, window and period-over-period metrics
+(`FILL_COMBINATION_NOT_SUPPORTED`). The SQL surfaces (OBSQL, Flight SQL, the
+Postgres wire) have no `fill`.
+
 ## Filters
 
 Filters restrict the result set. **Dimension filters** go in `where` (become SQL `WHERE`), and **measure filters** go in `having` (become SQL `HAVING`).
@@ -855,6 +883,9 @@ Invalid queries return error responses:
 | `AMBIGUOUS_JOIN` | 422 | Multiple join paths possible |
 | `DIMENSIONS_EXCLUDE_WITH_MEASURES` | 400 | `dimensionsExclude` used with measures |
 | `DIMENSIONS_EXCLUDE_INSUFFICIENT` | 400 | `dimensionsExclude` with fewer than 2 dimensions |
+| `FILL_REQUIRES_ONE_TIME_DIMENSION` | 400 | `fill` without exactly one time-grained dimension typed `date` or `timestamp` |
+| `FILL_GRAIN_NOT_SUPPORTED` | 400 | `fill` over an hour, minute or second grain |
+| `FILL_COMBINATION_NOT_SUPPORTED` | 400 | `fill` with ROLLUP / CUBE, `having`, a total, or a cumulative, window or period-over-period metric |
 
 ## Semantics Summary
 

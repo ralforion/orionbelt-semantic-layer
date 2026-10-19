@@ -17,6 +17,7 @@ import pytest
 
 from orionbelt.compiler.passes import (
     PASS_CUMULATIVE,
+    PASS_FILL,
     PASS_FILTER_CONTEXT,
     PASS_GRAIN_DEDUP,
     PASS_HAVING_CLEANUP,
@@ -101,6 +102,8 @@ def test_pass_order_is_declared_once() -> None:
         PASS_REAGGREGATE,
         # Windows over a reaggregate metric, over the rows it finished.
         PASS_LATE_WINDOW,
+        # Adds the empty periods to the rows the query computed.
+        PASS_FILL,
         # Runs after every wrapper: the filtering query it adds needs all of
         # their aliases in scope at once.
         PASS_HAVING_WINDOW,
