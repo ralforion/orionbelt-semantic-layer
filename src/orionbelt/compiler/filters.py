@@ -1020,22 +1020,7 @@ def build_exists_filter_expr(
     # referenced by the correlation predicate, not joined.
     scope = {step.to_object for step in path} | body_objects
 
-    nested_seen = False
     for sub_qf in sub.filter:
-        if sub_qf.op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
-            if not nested_seen:
-                errors.append(
-                    SemanticError(
-                        code="NESTED_SUBQUERY_NOT_SUPPORTED",
-                        message=(
-                            f"Nested '{sub_qf.op}' inside a subquery filter is "
-                            "not supported in v2.7.0"
-                        ),
-                        path="filters",
-                    )
-                )
-                nested_seen = True
-            continue
         ref = _resolve_subquery_filter_field(sub_qf.field, model, sub.data_object, errors)
         if ref is None:
             continue
@@ -1046,6 +1031,10 @@ def build_exists_filter_expr(
         needed = [(ref_object, False)] + [
             (dep, True) for dep in sorted(model.column_reference_objects(ref_object, ref_column))
         ]
+        if sub_qf.op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
+            # An EXISTS inside the body correlates to the object its field is
+            # on, which the body joins: only the object is the subject.
+            needed = needed[:1]
         if not all(
             _join_filter_object_into_subquery(
                 obj,
@@ -1063,8 +1052,19 @@ def build_exists_filter_expr(
             for obj, through_expression in needed
         ):
             continue
-        col_expr = make_column_expr(model, ref_object, ref_column)
-        sub_expr = build_filter_expr(col_expr, sub_qf, errors)
+        if sub_qf.op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
+            sub_expr = build_exists_filter_expr(
+                sub_qf,
+                model,
+                ref_object,
+                qualify_table,
+                errors,
+                touched_objects,
+                use_path_names=use_path_names,
+            )
+        else:
+            col_expr = make_column_expr(model, ref_object, ref_column)
+            sub_expr = build_filter_expr(col_expr, sub_qf, errors)
         if sub_expr is not None:
             where_parts.append(sub_expr)
 
