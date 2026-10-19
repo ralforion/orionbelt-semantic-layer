@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, TypedDict
 
 from orionbelt.ast.nodes import (
@@ -24,6 +25,7 @@ from orionbelt.ast.nodes import (
     UnaryOp,
     Unnest,
 )
+from orionbelt.compiler.expr_rewrite import map_column_refs
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import FilterOperator, QueryFilter, UsePathName
 from orionbelt.models.semantic import (
@@ -40,7 +42,7 @@ from orionbelt.models.semantic import (
 )
 
 if TYPE_CHECKING:
-    from orionbelt.compiler.graph import JoinGraph
+    from orionbelt.compiler.graph import JoinGraph, JoinStep
 
 
 def _escape_like(val: str) -> str:
@@ -539,6 +541,52 @@ def _nested_subquery_error(name: str, obj: DataObject) -> SemanticError:
     )
 
 
+#: Alias prefix of the subject's own row, re-read inside an ``EXISTS`` body to
+#: unnest its array (see ``build_exists_filter_expr``).
+_SELF_ALIAS = "__ob_self_"
+
+
+def _realiased(expr: Expr, alias: str) -> Expr:
+    """*expr* reading its table's columns under *alias* instead."""
+    return map_column_refs(
+        expr, lambda ref: replace(ref, table=alias) if ref.table is not None else ref
+    )
+
+
+def _body_hop(
+    step: JoinStep,
+    joined_object: str,
+    model: SemanticModel,
+    graph: JoinGraph,
+    qualify_table: Callable[[DataObject], str],
+    parent_alias: str | None = None,
+) -> Join | Unnest | None:
+    """The clause that brings *joined_object* into an ``EXISTS`` body.
+
+    A table is an INNER JOIN. A nested object is an unnest of its parent's
+    array column - the parent is in the body already, since the step walks
+    from it - and an inner one: an element that is not there is no row to
+    find. ``None`` for a hop out of a nested object back to its parent,
+    which has no key to join on.
+    """
+    obj = model.data_objects.get(joined_object)
+    if obj is None:
+        return None
+    if obj.is_nested:
+        if not step.nested or joined_object != step.to_object:
+            return None
+        from orionbelt.compiler.nested import build_unnest
+
+        unnest = build_unnest(step, obj)
+        return replace(unnest, parent_alias=parent_alias or step.from_object, outer=False)
+    return Join(
+        join_type=JoinType.INNER,
+        source=qualify_table(obj),
+        alias=joined_object,
+        on=graph.build_join_condition(step),
+    )
+
+
 def _resolve_subquery_filter_field(
     field: str,
     model: SemanticModel,
@@ -664,20 +712,6 @@ def _join_filter_object_into_subquery(
     # a step actually brings into the body is the far end of its *traversal*.
     joined_objects = [step.from_object if step.reversed else step.to_object for step in steps]
 
-    # The third road into the same wall as the subquery's target and its
-    # correlation path: an inner filter can name a nested object, or one only
-    # reachable through it, and the loop below would ask ``qualify_table`` for a
-    # table that does not exist. A subquery body is joins only - there is no
-    # unnest in it - so anything behind a containment edge is out of reach here.
-    nested_hops = [
-        name
-        for name in joined_objects
-        if (o := model.data_objects.get(name)) is not None and o.is_nested
-    ]
-    if nested_hops:
-        errors.append(_nested_subquery_error(nested_hops[0], model.data_objects[nested_hops[0]]))
-        return False
-
     if subject_object in joined_objects:
         errors.append(
             SemanticError(
@@ -692,21 +726,18 @@ def _join_filter_object_into_subquery(
         )
         return False
 
+    hops: list[Join | Unnest] = []
     for step, joined_object in zip(steps, joined_objects, strict=True):
-        if joined_object in scope:
+        if joined_object in scope or joined_object not in model.data_objects:
             continue
-        step_obj = model.data_objects.get(joined_object)
-        if step_obj is None:
-            continue
-        joins.append(
-            Join(
-                join_type=JoinType.INNER,
-                source=qualify_table(step_obj),
-                alias=joined_object,
-                on=graph.build_join_condition(step),
-            )
-        )
+        # A nested object, or one behind it, is unnested from its parent.
+        hop = _body_hop(step, joined_object, model, graph, qualify_table)
+        if hop is None:
+            errors.append(_nested_subquery_error(joined_object, model.data_objects[joined_object]))
+            return False
+        hops.append(hop)
         scope.add(joined_object)
+    joins.extend(hops)
     return True
 
 
@@ -829,18 +860,6 @@ def build_exists_filter_expr(
         )
         return None
 
-    # A nested object has no table, so ``SELECT 1 FROM <it>`` cannot be written,
-    # and no key to correlate on either - its rows exist only inside its
-    # parent's. Refused here rather than at the FROM clause below, where
-    # ``qualify_table`` raises an exception routed as a 500 instead of the
-    # structured error every other subquery mistake gets. The containment edge
-    # is what made this reachable: before it there was no path to walk, so the
-    # query failed with NO_JOIN_PATH_TO_SUBQUERY by accident rather than on
-    # purpose.
-    if target_obj.is_nested:
-        errors.append(_nested_subquery_error(sub.data_object, target_obj))
-        return None
-
     subject_obj = model.data_objects.get(subject_object)
     if subject_obj is None:
         errors.append(
@@ -907,43 +926,68 @@ def build_exists_filter_expr(
         )
         return None
 
-    # A hop *through* a nested object is the same problem one step further in:
-    # the subquery body would join a table that does not exist. Reachable when a
-    # nested object declares a join onward to a third one, which is legal and is
-    # how a nested fact reaches its dimensions.
-    for step in path:
-        hop = model.data_objects.get(step.to_object)
-        if hop is not None and hop.is_nested:
-            errors.append(_nested_subquery_error(step.to_object, hop))
-            return None
-
-    # First step bridges outer scope → subquery scope (correlation).
+    # First step bridges outer scope -> subquery scope (correlation).
     # Remaining steps live entirely inside the subquery (INNER JOIN chain).
     first_step = path[0]
+    joins: list[Join | Unnest] = []
+    correlation: list[Expr]
     first_target_obj = model.data_objects.get(first_step.to_object)
     if first_target_obj is None:
         return None  # graph would not yield it otherwise
-
-    from_node = From(
-        source=qualify_table(first_target_obj),
-        alias=first_step.to_object,
-    )
-
-    joins: list[Join | Unnest] = []
-    for step in path[1:]:
-        step_target_obj = model.data_objects.get(step.to_object)
-        if step_target_obj is None:
-            continue
-        joins.append(
-            Join(
-                join_type=JoinType.INNER,
-                source=qualify_table(step_target_obj),
-                alias=step.to_object,
-                on=graph.build_join_condition(step),
+    if first_step.nested and not first_target_obj.is_nested:
+        # From a nested subject up to its parent: no key to correlate on.
+        errors.append(_nested_subquery_error(subject_object, subject_obj))
+        return None
+    if first_step.nested:
+        # The subject's own array: the body re-reads the subject's row, under
+        # an alias of its own, and unnests it there. The row is matched on the
+        # subject's key - an alias equal to the outer one would rebind the
+        # correlation to the body's rows.
+        keys = [name for name, column in subject_obj.columns.items() if column.primary_key]
+        if not keys:
+            errors.append(
+                SemanticError(
+                    code="NESTED_OBJECT_IN_SUBQUERY",
+                    message=(
+                        f"EXISTS over '{first_step.to_object}' reads the array of each "
+                        f"'{subject_object}' row, and matches the row on its primary "
+                        f"key; '{subject_object}' declares none."
+                    ),
+                    path="filters",
+                    hint=f"Declare 'primaryKey: true' on the key columns of '{subject_object}'.",
+                )
             )
+            return None
+        self_alias = f"{_SELF_ALIAS}{subject_object}"
+        from_node = From(source=qualify_table(subject_obj), alias=self_alias)
+        unnest = _body_hop(
+            first_step, first_step.to_object, model, graph, qualify_table, self_alias
         )
+        assert unnest is not None  # a nested step's far end is the nested object
+        joins.append(unnest)
+        correlation = [
+            BinaryOp(
+                left=_realiased(make_column_expr(model, subject_object, key), self_alias),
+                op="=",
+                right=make_column_expr(model, subject_object, key),
+            )
+            for key in keys
+        ]
+    else:
+        from_node = From(source=qualify_table(first_target_obj), alias=first_step.to_object)
+        correlation = [graph.build_join_condition(first_step)]
 
-    where_parts: list[Expr] = [graph.build_join_condition(first_step)]
+    # The undirected walk orients each step along the path: its far end is
+    # ``to_object``.
+    for step in path[1:]:
+        joined_object = step.to_object
+        hop = _body_hop(step, joined_object, model, graph, qualify_table)
+        if hop is None:
+            errors.append(_nested_subquery_error(joined_object, model.data_objects[joined_object]))
+            return None
+        joins.append(hop)
+
+    where_parts: list[Expr] = list(correlation)
 
     # Aliases the subquery body owns: its target plus every hop the
     # correlation path walked through. The subject stays outside — it is

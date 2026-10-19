@@ -163,6 +163,7 @@ dataObjects:
   Charge Labels:
     nestedIn: {{dataObject: Charges, column: Labels}}
     columns:
+      Label Key: {{code: Key, abstractType: string}}
       Label Value: {{code: Value, abstractType: string}}
   Charge Credits:
     nestedIn: {{dataObject: Charges, column: Credits}}
@@ -261,10 +262,41 @@ def _assert_mixed(target: VendorTarget) -> None:
     assert grouped.get("SUD") == (-1.0, 100.0), f"{target.name}: {grouped}"
 
 
+def _assert_exists(target: VendorTarget) -> None:
+    """EXISTS over each charge's own labels: the body re-reads the charge by
+    its key and unnests the array there. c3's array is empty."""
+    _prepare(target)
+    model = _model(target)
+    env = [{"field": "Label Key", "op": "equals", "value": "env"}]
+    for op, inner, total in [
+        ("exists", [], 200.0),
+        ("nonexists", [], 50.0),
+        ("exists", env, 100.0),
+        ("nonexists", env, 150.0),
+    ]:
+        query = QueryObject(
+            **{
+                "select": {"measures": ["Total Cost"]},
+                "where": [
+                    {
+                        "field": "Charges.Charge Id",
+                        "op": op,
+                        "subquery": {"dataObject": "Charge Labels", "filter": inner},
+                    }
+                ],
+            }
+        )
+        sql = CompilationPipeline().compile(query, model, target.dialect).sql
+        rows = target.execute(sql)
+        value = _number(next(iter(rows[0].values())), target.dialect)
+        assert value == total, f"{target.name} {op} {inner}: {value}"
+
+
 def _assert_all(target: VendorTarget) -> None:
     _assert_parent_measure(target)
     _assert_nested_measure(target)
     _assert_mixed(target)
+    _assert_exists(target)
 
 
 def test_duckdb_nested_plan(vendor_duckdb: VendorTarget) -> None:

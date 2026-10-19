@@ -30,7 +30,6 @@ from orionbelt.models.query import (
     QueryFilter,
     QueryObject,
     QuerySelect,
-    Subquery,
 )
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.models.warnings import WarningCode
@@ -420,62 +419,6 @@ class TestWhatIsRefused:
             _compile(model, ["Part Name"], ["Total Cost"], dialect)
         assert any(e.code == "NESTED_WITHIN_NESTED_UNSUPPORTED" for e in excinfo.value.errors)
 
-    def test_an_exists_subquery_whose_inner_filter_names_one(self) -> None:
-        """The third road to the same wall, after the target and the path.
-
-        A subquery's own ``filter`` joins whatever objects it references into
-        the body, and that loop asked ``qualify_table`` for a table a nested
-        object does not have.
-        """
-        model = _load(_with_a_dimension_behind_the_array(MODEL_YAML))
-        with pytest.raises(ResolutionError) as excinfo:
-            CompilationPipeline().compile(
-                QueryObject(
-                    select=QuerySelect(dimensions=["Account Name"], measures=[]),
-                    where=[
-                        QueryFilter(
-                            field="Accounts.Account Id",
-                            op=FilterOperator.EXISTS,
-                            subquery=Subquery(
-                                data_object="Charges",
-                                filter=[
-                                    QueryFilter(
-                                        field="Charge Labels.Label Key",
-                                        op=FilterOperator.EQUALS,
-                                        value="team",
-                                    )
-                                ],
-                            ),
-                        )
-                    ],
-                ),
-                model,
-                "duckdb",
-            )
-        assert any(e.code == "NESTED_OBJECT_IN_SUBQUERY" for e in excinfo.value.errors)
-
-    def test_an_exists_subquery_targeting_something_behind_one(self) -> None:
-        """A subquery body is joins only, so anything behind a containment edge
-        is out of its reach too - not only the nested object itself.
-        """
-        model = _load(_with_a_dimension_behind_the_array(MODEL_YAML))
-        with pytest.raises(ResolutionError) as excinfo:
-            CompilationPipeline().compile(
-                QueryObject(
-                    select=QuerySelect(dimensions=[], measures=["Total Cost"]),
-                    where=[
-                        QueryFilter(
-                            field="Charges.Cost",
-                            op=FilterOperator.EXISTS,
-                            subquery=Subquery(data_object="Owners"),
-                        )
-                    ],
-                ),
-                model,
-                "duckdb",
-            )
-        assert any(e.code == "NESTED_OBJECT_IN_SUBQUERY" for e in excinfo.value.errors)
-
     def test_a_union_leg_cannot_route_through_one(self) -> None:
         """A dimension reachable only *through* a nested object is out of every
         leg's reach, because a leg is a star built out of tables.
@@ -526,33 +469,6 @@ class TestWhatIsRefused:
         sql = _compile(model, ["Owner Name"], ["Total Cost"]).sql
         assert "UNNEST" in sql.upper()
         assert '"owners"' in sql
-
-    def test_an_exists_subquery_targeting_one(self, model: SemanticModel) -> None:
-        """A correlated subquery has nowhere to select from and nothing to
-        correlate on: the rows exist only inside their parent's, which is what
-        makes the ordinary join work without either.
-
-        Structured rather than raised. Before the containment edge there was no
-        path to walk, so this failed as NO_JOIN_PATH_TO_SUBQUERY by accident;
-        with the edge it walked on and hit ``qualify_table``, whose
-        ``UnrenderableDataObjectError`` routers hand back as a 500.
-        """
-        with pytest.raises(ResolutionError) as excinfo:
-            CompilationPipeline().compile(
-                QueryObject(
-                    select=QuerySelect(dimensions=[], measures=["Total Cost"]),
-                    where=[
-                        QueryFilter(
-                            field="Charges.Cost",
-                            op=FilterOperator.EXISTS,
-                            subquery=Subquery(data_object="Charge Labels"),
-                        )
-                    ],
-                ),
-                model,
-                "duckdb",
-            )
-        assert any(e.code == "NESTED_OBJECT_IN_SUBQUERY" for e in excinfo.value.errors)
 
     def test_a_static_filter_on_one_does_not_refuse_unrelated_queries(self) -> None:
         """A static model filter is a property of the model, not of the query.
@@ -797,4 +713,4 @@ def _probe(model: SemanticModel, dialect: str):
 
     graph = JoinGraph(model)
     step = graph.find_join_path({"Charges"}, {"Charges", "Charge Labels"})[0]
-    return build_unnest(step, model.data_objects["Charge Labels"], DialectRegistry.get(dialect))
+    return build_unnest(step, model.data_objects["Charge Labels"])

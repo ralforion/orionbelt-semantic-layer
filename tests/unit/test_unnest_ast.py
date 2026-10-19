@@ -44,7 +44,7 @@ def _ast(outer: bool = True, dialect: str = "duckdb"):
                 parent_alias="C",
                 column="x_Labels",
                 alias="L",
-                columns=(("Key", "VARCHAR(64)"),),
+                columns=(("Key", "string"),),
                 outer=outer,
             )
         )
@@ -126,7 +126,7 @@ class TestMySQLJsonPaths:
     @pytest.mark.parametrize("code", ["Label Key", "a.b", "plain"])
     def test_the_member_is_quoted(self, code: str) -> None:  # noqa: D102
         node = Unnest(
-            parent_alias="C", column="x", alias="L", columns=((code, "VARCHAR(64)"),), outer=True
+            parent_alias="C", column="x", alias="L", columns=((code, "string"),), outer=True
         )
         assert f"""PATH '$."{code}"'""" in DialectRegistry.get("mysql").render_unnest(node)
 
@@ -153,7 +153,7 @@ class TestMySQLJsonPaths:
         review of #344, after the first fix covered only spaces and dots.
         """
         node = Unnest(
-            parent_alias="C", column="x", alias="L", columns=((code, "VARCHAR(64)"),), outer=True
+            parent_alias="C", column="x", alias="L", columns=((code, "string"),), outer=True
         )
         assert f"PATH {expected}" in DialectRegistry.get("mysql").render_unnest(node)
 
@@ -200,7 +200,7 @@ class TestADottedColumnAddressesAnArrayInsideAStruct:
             parent_alias="C",
             column="x_Project.Ancestors",
             alias="L",
-            columns=(("DisplayName", "VARCHAR(64)"),),
+            columns=(("DisplayName", "string"),),
         )
         sql = DialectRegistry.get("mysql").render_unnest(node)
         assert "JSON_TABLE(`C`.`x_Project`, '$.\"Ancestors\"[*]'" in sql, sql
