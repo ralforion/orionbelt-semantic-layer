@@ -37,10 +37,9 @@ def test_events_stay_callable(demo: object) -> None:
     """Undocumented, not private: the browser still has to call every handler."""
     visibilities = {fn.api_visibility for fn in demo.fns.values()}  # type: ignore[attr-defined]
     assert "public" not in visibilities
-    assert any(
-        dep["api_visibility"] == "undocumented"
-        for dep in demo.config["dependencies"]  # type: ignore[attr-defined]
-    )
+    # The config the page is served with, as mounting or launching builds it.
+    served = demo.get_config_file()  # type: ignore[attr-defined]
+    assert any(dep["api_visibility"] == "undocumented" for dep in served["dependencies"])
 
 
 async def test_proxied_page_is_compressed(demo: object, tmp_path: Path) -> None:

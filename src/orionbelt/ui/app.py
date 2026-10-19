@@ -1360,10 +1360,9 @@ _IMPORT_OSI_JS = """
 #: the ER diagram rendered as its own source text, and the zoom control was
 #: silently dead with it, polling for an ``svg`` nothing would ever produce.
 #:
-#: The bundle is vendored under ``ui/static`` and inlined, exactly as
-#: vis-network is for the ontology graph: the UI loads no external asset, so an
-#: air-gapped deployment needs nothing it does not already have in the wheel.
-#: The vendored bundles the page head loads. They are fetched as files through
+#: The vendored bundles the page head loads. They ship under ``ui/static``, so
+#: the UI loads no external asset and an air-gapped deployment needs nothing it
+#: does not already have in the wheel. They are fetched as files through
 #: Gradio's file route (``frontend_assets`` allow-lists them) rather than
 #: inlined: inlined as base64 they were 5.4 MB of every page load, uncacheable.
 _VENDORED_JS = {
@@ -1384,23 +1383,53 @@ def _mermaid_head() -> str:
     return f"""
 <script>
 (function () {{
-  var ready = new Promise(function (resolve, reject) {{
+  var PENDING = "#er-diagram .mermaid:not([data-processed]), "
+    + "#lineage-diagram .mermaid:not([data-processed])";
+  var src = "{_vendored_src("mermaid.min.js")}";
+  // Resolves true once mermaid is installed, false if the bundle failed to load.
+  var ready = new Promise(function (resolve) {{
     var el = document.createElement("script");
-    el.src = "{_vendored_src("mermaid.min.js")}";
+    el.src = src;
     el.onload = function () {{
       window.mermaid.initialize({{ startOnLoad: false }});
-      resolve();
+      resolve(true);
     }};
-    el.onerror = reject;
+    el.onerror = function () {{
+      console.error("Diagram renderer could not be loaded from " + src);
+      resolve(false);
+    }};
     document.head.appendChild(el);
   }});
-  window.__obRenderMermaid = async function () {{
-    await ready;
-    var nodes = document.querySelectorAll(
-      "#er-diagram .mermaid:not([data-processed]), #lineage-diagram .mermaid:not([data-processed])"
-    );
-    if (nodes.length) {{ await window.mermaid.run({{ nodes: nodes }}); }}
-    return document.querySelectorAll("#er-diagram svg, #lineage-diagram svg").length;
+  // Without the renderer a diagram stays as its source: say why, once per
+  // diagram, and mark it processed so later calls leave it alone. Returns
+  // whether there was a diagram to explain (its markup may not be there yet).
+  function explainFailure() {{
+    var nodes = document.querySelectorAll(PENDING);
+    nodes.forEach(function (node) {{
+      var note = document.createElement("p");
+      note.textContent = "The diagram renderer could not be loaded; showing the diagram source.";
+      node.parentNode.insertBefore(note, node);
+      node.setAttribute("data-processed", "failed");
+    }});
+    return nodes.length > 0;
+  }}
+  // The tabs poll this until their diagram is an svg. Polls that arrive while
+  // a render is running (or while the bundle is still downloading) share it,
+  // so one diagram is rendered once. Returns the number of rendered diagrams,
+  // or -1 once a diagram was explained as unrenderable and polling can stop.
+  var running = null;
+  window.__obRenderMermaid = function () {{
+    if (!running) {{
+      running = ready.then(function (loaded) {{
+        if (!loaded) return explainFailure() ? -1 : 0;
+        var nodes = document.querySelectorAll(PENDING);
+        return (nodes.length ? window.mermaid.run({{ nodes: nodes }}) : Promise.resolve())
+          .then(function () {{
+            return document.querySelectorAll("#er-diagram svg, #lineage-diagram svg").length;
+          }});
+      }}).finally(function () {{ running = null; }});
+    }}
+    return running;
   }};
 }})();
 </script>
@@ -1420,7 +1449,8 @@ def _ace_head() -> str:
   var el = document.createElement("script");
   el.src = "{_vendored_src("ace-sparql.min.js")}";
   // A tab opened before the bundle arrived found no window.ace; seed the
-  // editor now so it does not wait for the next tab switch.
+  // editor now so it does not wait for the next tab switch (``ensure`` leaves
+  // a hidden tab for its select event).
   el.onload = function () {{ window.__obSparql.pull(); }};
   document.head.appendChild(el);
 
@@ -1450,6 +1480,8 @@ def _ace_head() -> str:
     ensure: function () {{
       var container = document.getElementById("ob-sparql-ace");
       if (!container || !window.ace) return false;
+      // A hidden tab's container measures 0x0; wait for the tab to be shown.
+      if (!editor && !container.getClientRects().length) return false;
       if (!editor) {{
         editor = window.ace.edit(container, {{
           mode: "ace/mode/sparql",
@@ -2494,7 +2526,10 @@ def create_blocks(
                 _apply_zoom_deferred_js = """(zoom) => {
                     let tries = 0;
                     const t = setInterval(async () => {
-                        if (window.__obRenderMermaid) { await window.__obRenderMermaid(); }
+                        if (window.__obRenderMermaid && await window.__obRenderMermaid() < 0) {
+                            clearInterval(t);
+                            return;
+                        }
                         const el = document.querySelector('#er-diagram svg');
                         if (el) {
                             el.style.transform = 'scale(' + (zoom / 100) + ')';
@@ -2740,7 +2775,10 @@ def create_blocks(
                     + """;
                     let tries = 0;
                     const t = setInterval(async () => {
-                        if (window.__obRenderMermaid) { await window.__obRenderMermaid(); }
+                        if (window.__obRenderMermaid && await window.__obRenderMermaid() < 0) {
+                            clearInterval(t);
+                            return;
+                        }
                         if (document.querySelector('#lineage-diagram svg')) {
                             size(zoom);
                             clearInterval(t);
@@ -3334,7 +3372,6 @@ def create_blocks(
     for fn in demo.fns.values():
         if fn.api_visibility == "public":
             fn.api_visibility = "undocumented"
-    demo.config = demo.get_config_file()
 
     return demo
 
