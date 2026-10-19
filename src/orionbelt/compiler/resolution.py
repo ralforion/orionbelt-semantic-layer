@@ -20,6 +20,7 @@ from orionbelt.ast.nodes import (
     NestedField,
     OrderByItem,
     Select,
+    UnaryOp,
 )
 from orionbelt.compiler import (
     filter_resolution,
@@ -398,6 +399,46 @@ def anchored_conformed_objects(
     # facts conform. Anchored on the shared key, *every* fact conforms - the key
     # object has none of their columns, which is what makes it symmetric.
     return measure.source_objects - reachable
+
+
+def _has_term_without_anchor(expression: Expr, conformed: set[str]) -> tuple[bool, bool]:
+    """Whether *expression*, multiplied out into terms, has one that reads
+    *conformed* and nothing else, and whether it has one reading no other
+    object at all (a literal counts).
+
+    ``r - S`` has (``S``); ``r * S`` has not; ``(r - S) * 2`` has. A ``CASE``
+    has what any of its results has, whatever its conditions read: a measure
+    filter gates the term per anchor row, and it still repeats on each one
+    passing. A function is one factor, read whole.
+    """
+    if isinstance(expression, Literal) and expression.value is None:
+        return False, False  # adds nothing, however often it is read
+    if isinstance(expression, UnaryOp) and expression.op == "-":
+        return _has_term_without_anchor(expression.operand, conformed)
+    if isinstance(expression, CaseExpr):
+        results = [then for _, then in expression.when_clauses]
+        if expression.else_clause is not None:
+            results.append(expression.else_clause)
+        found = [_has_term_without_anchor(result, conformed) for result in results]
+        return any(f[0] for f in found), any(f[1] for f in found)
+    if isinstance(expression, BinaryOp) and expression.op in ("+", "-", "*"):
+        left = _has_term_without_anchor(expression.left, conformed)
+        right = _has_term_without_anchor(expression.right, conformed)
+        if expression.op == "*":
+            return (left[0] and right[1]) or (left[1] and right[0]), left[1] and right[1]
+        return left[0] or right[0], left[1] or right[1]
+    if isinstance(expression, BinaryOp) and expression.op == "/":
+        left = _has_term_without_anchor(expression.left, conformed)
+        divisor: set[str] = set()
+        collect_referenced_tables(expression.right, divisor)
+        if divisor - conformed:
+            return False, False
+        return left[0] or (left[1] and bool(divisor)), left[1]
+    tables: set[str] = set()
+    collect_referenced_tables(expression, tables)
+    if tables - conformed:
+        return False, False
+    return bool(tables), True
 
 
 def conformed_reach(
@@ -1244,6 +1285,7 @@ class QueryResolver:
                 ctx.conformed_reach[name] = conformed_reach(
                     model, anchored, ctx.result.use_path_names
                 )
+        self._warn_repeated_conformed_terms(ctx)
 
         # Detect multi-fact: CFL is needed only when measure source objects
         # span multiple independent fact tables.
@@ -2266,6 +2308,57 @@ class QueryResolver:
             )
         )
 
+    @staticmethod
+    def _warn_repeated_conformed_terms(ctx: _ResolutionContext) -> None:
+        """Warn where a summed term reads only a fact conformed to a peer anchor.
+
+        Anchored on a fact, a conformed value is its key's total, read once per
+        anchor row. In a product with an anchor column that is right:
+        ``SUM(r * S)`` is ``R * S`` per key. A term without one is added once
+        per anchor row: ``SUM(r - S)`` is ``R - n * S``, and a key without
+        anchor rows loses it. Anchored on the shared key itself there is one
+        row per key, so nothing repeats.
+        """
+        overrides = path_overrides(ctx.result.use_path_names)
+        resolved = {
+            m.name: m for m in (*ctx.result.measures, *ctx.result.metric_components.values())
+        }
+        for name, anchor in ctx.result.anchored_measures.items():
+            measure = ctx.model.effective_measures.get(name)
+            resolved_measure = resolved.get(name)
+            if measure is None or resolved_measure is None or measure.aggregation != "sum":
+                continue
+            repeated = [
+                fact
+                for fact in ctx.conformed_reach.get(name, {})
+                if all(j.join_to != anchor for j in ctx.model.effective_joins(fact, overrides))
+            ]
+            conformed = {obj for fact in repeated for obj in ctx.conformed_reach[name][fact]}
+            expression = resolved_measure.expression
+            if isinstance(expression, FunctionCall) and expression.name == "SUM":
+                expression = expression.args[0]
+            if not conformed or not _has_term_without_anchor(expression, conformed)[0]:
+                continue
+            facts = ", ".join(f"'{fact}'" for fact in repeated)
+            ctx.result.warnings.append(
+                warning(
+                    code=WarningCode.FAN_TRAP_RISK,
+                    message=(
+                        f"Measure '{name}' sums a term that reads only {facts}, conformed "
+                        f"to the key it shares with its anchor '{anchor}'. That term is "
+                        f"the key's total and is added once per '{anchor}' row: counted "
+                        f"several times for a key with several, and not at all for a key "
+                        f"with none."
+                    ),
+                    hint=(
+                        f"Remove anchor: to conform both facts to the data object they "
+                        f"share, or compute the term in a measure of its own on {facts} "
+                        f"and combine the two with a metric."
+                    ),
+                    context={"measure": name, "anchor": anchor, "conformed": repeated},
+                )
+            )
+
     def _record_anchor(
         self,
         ctx: _ResolutionContext,
@@ -2322,7 +2415,7 @@ class QueryResolver:
                     ),
                     hint=(
                         "Set anchor: to evaluate per row of one of the facts instead, which "
-                        "changes AVG / MIN / MAX (though not SUM)."
+                        "changes AVG / MIN / MAX, and a SUM with a term reading one fact alone."
                     ),
                     context={"measure": name, "conformedAt": anchor},
                 )
