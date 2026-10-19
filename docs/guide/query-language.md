@@ -242,7 +242,7 @@ SELECT DISTINCT * FROM composite_raw_01
 
 A "leg root" is a fact data object referenced by some field that is not reachable from another field's source via directed joins — i.e. it is maximal under reachability. Each leg root yields one `UNION ALL` leg. Conformed dim columns (those reachable from every leg) project the same value across legs and line up; fact-specific columns are typed `CAST(NULL AS …)` in legs that don't cover them. `distinct: true` is applied once at the outer query — the most portable place.
 
-WHERE filters are applied to legs whose joined objects contain all the filter's referenced data objects; ORDER BY is remapped to the field aliases at the outer level. A static model filter a leg cannot reach is skipped with a `STATIC_FILTER_NOT_APPLIED` warning, or, declared `enforce: always`, refuses the query (`STATIC_FILTER_UNREACHABLE`).
+WHERE filters are applied to legs whose joined objects contain all the filter's referenced data objects; a leg that cannot reach a query filter lists its rows without it, with a `FILTER_NOT_APPLIED` warning naming the leg's fact. ORDER BY is remapped to the field aliases at the outer level. A static model filter a leg cannot reach is skipped with a `STATIC_FILTER_NOT_APPLIED` warning, or, declared `enforce: always`, refuses the query (`STATIC_FILTER_UNREACHABLE`).
 
 #### `UNION ALL BY NAME` optimization (DuckDB, Snowflake)
 
@@ -560,7 +560,7 @@ The referenced data object must be reachable from the query's join graph:
 
 If the data object is reachable but not yet in the join path, it is **auto-joined** automatically. If the data object is not reachable at all, the query is **refused** with `UNREACHABLE_FILTER_OBJECT`: answering it without the filter would return rows the filter excludes.
 
-When the measures span independent facts (a [CFL](compilation.md) union), each leg applies the filter if its fact reaches the filter's data object. If one leg cannot, the query is refused with `FILTER_NOT_APPLICABLE_TO_MEASURE` rather than computing that leg's measures unfiltered. Static model `filters:` are different: they are declared once for every query and, by default, apply where relevant, so a query or leg that cannot reach one skips it with a `STATIC_FILTER_NOT_APPLIED` warning. A static filter declared `enforce: always` refuses such a query instead (`STATIC_FILTER_UNREACHABLE`); see [Static Filters](model-format.md#filters-the-query-cannot-reach).
+When the measures span independent facts (a [CFL](compilation.md) union), each leg applies the filter if its fact reaches the filter's data object. If one leg cannot, that leg's measures are computed without the filter, and the query returns a `FILTER_NOT_APPLIED` warning naming them: they are what that fact holds, and the filter has no bearing on them. Static model `filters:` are different: they are declared once for every query and, by default, apply where relevant, so a query or leg that cannot reach one skips it with a `STATIC_FILTER_NOT_APPLIED` warning. A static filter declared `enforce: always` refuses such a query instead (`STATIC_FILTER_UNREACHABLE`); see [Static Filters](model-format.md#filters-the-query-cannot-reach).
 
 #### Filters on the many side of a join
 
@@ -840,7 +840,6 @@ Invalid queries return error responses:
 | `UNKNOWN_FILTER_FIELD` | 400 | Filter field is not a dimension (WHERE) or measure (HAVING) |
 | `UNREACHABLE_FILTER_OBJECT` | 400 | WHERE filter names a data object the query cannot reach |
 | `FILTER_ADMITS_ROWS_WITHOUT` | 400 | WHERE on the many side of the measures' objects could hold for a row with no matching rows there, and the query's shape cannot add those rows (several one-side objects under ROLLUP / CUBE, a nested object, `allowFanOut`); use `exists` / `nonexists` |
-| `FILTER_NOT_APPLICABLE_TO_MEASURE` | 400 | WHERE filter names a data object one selected measure's fact cannot reach (multi-fact query), or that an anchored measure applies in its conformed subquery and another selected measure cannot |
 | `FILTER_ON_CONFORMED_OBJECT` | 400 | WHERE filter reads a fact an anchored measure conforms together with the anchor's side (an `OR` across both); see [Filters on a conformed fact](compilation.md#filters-on-a-conformed-fact) |
 | `STATIC_FILTER_UNREACHABLE` | 400 | A static model filter declared `enforce: always` names a data object the query, or one measure's fact, cannot reach |
 | `UNKNOWN_ORDER_BY_FIELD` | 400 | ORDER BY field not in query's SELECT |

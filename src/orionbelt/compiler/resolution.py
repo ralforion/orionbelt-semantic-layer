@@ -34,6 +34,7 @@ from orionbelt.compiler.expr_rewrite import collect_referenced_tables, map_nodes
 from orionbelt.compiler.filters import (
     build_measure_filter_condition,
     collect_measure_filter_objects,
+    static_filter_unreachable_error,
 )
 from orionbelt.compiler.graph import JoinGraph, JoinStep, joined_beneath, path_overrides
 from orionbelt.compiler.null_rejection import can_hold_without
@@ -2156,9 +2157,10 @@ class QueryResolver:
         Every measure the query computes has to apply it: an anchored measure
         conforming the fact, or, in a union of facts, one whose own fact
         reaches it (the filter then stays in the WHERE for that leg). A
-        measure that can do neither would be computed without it, so a query
-        filter is refused (``FILTER_NOT_APPLICABLE_TO_MEASURE``); a static one
-        applies where relevant, unless ``enforce: always``. A predicate that
+        measure that can do neither is computed without it, and the query
+        names it (``FILTER_NOT_APPLIED``; a static filter
+        ``STATIC_FILTER_NOT_APPLIED``, or refused under ``enforce: always``). A
+        predicate that
         also reads what the anchor reaches - an OR across both sides - has no
         single place to be applied and is refused (``FILTER_ON_CONFORMED_OBJECT``).
         """
@@ -2200,13 +2202,25 @@ class QueryResolver:
                     )
                 continue
             if missing:
-                if not wf.static or wf.enforced:
-                    self._refuse_filter_not_applicable(ctx, tables & pushable, missing)
-                    continue
                 names = ", ".join(f"'{name}'" for name in missing)
-                filter_resolution.report_unapplied_static_filter(
-                    [], ctx.result.warnings, None, read, names
-                )
+                if wf.enforced:
+                    ctx.errors.append(
+                        static_filter_unreachable_error(
+                            f"static filter on '{read}'", read, f"the fact behind {names}"
+                        )
+                    )
+                    continue
+                # Kept for a union leg that reads it natively, the filter
+                # reaches the planner, whose legs name what they skip.
+                native = len(facts) + len(missing) < len(computed)
+                if not native and wf.static:
+                    filter_resolution.report_unapplied_static_filter(
+                        [], ctx.result.warnings, None, read, names
+                    )
+                elif not native:
+                    filter_resolution.report_unapplied_query_filter(
+                        ctx.result.warnings, read, names
+                    )
             for name, fitting in facts.items():
                 for fact in fitting:
                     bucket = ctx.result.conformed_filters.setdefault((name, fact), [])
@@ -2249,28 +2263,6 @@ class QueryResolver:
                 ),
                 path="where",
                 hint=(f"Split the condition: one on {listed} alone, and one on the anchor's side."),
-            )
-        )
-
-    @staticmethod
-    def _refuse_filter_not_applicable(
-        ctx: _ResolutionContext, objects: set[str], measures: list[str]
-    ) -> None:
-        listed = ", ".join(f"'{name}'" for name in sorted(objects))
-        names = ", ".join(f"'{name}'" for name in measures)
-        ctx.errors.append(
-            SemanticError(
-                code="FILTER_NOT_APPLICABLE_TO_MEASURE",
-                message=(
-                    f"A WHERE filter reads {listed}, which an anchored measure applies "
-                    f"inside its conformed subquery, but {names} cannot apply it: "
-                    f"those measures would be computed without the filter."
-                ),
-                path="where",
-                hint=(
-                    "Query the measures that cannot apply it separately, or filter on "
-                    "a dimension every selected measure reaches."
-                ),
             )
         )
 

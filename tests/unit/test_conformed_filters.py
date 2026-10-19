@@ -253,11 +253,13 @@ def test_a_union_leg_that_reaches_it_filters_natively(con: duckdb.DuckDBPyConnec
     ]
 
 
-def test_a_measure_that_cannot_apply_it_is_refused() -> None:
-    """Sales Qty reads the anchor's own rows, which no return filter chooses."""
-    with pytest.raises(ResolutionError) as raised:
-        _compile(_by_year(["Anchored Cross", "Sales Qty"], [KEEP]))
-    assert [e.code for e in raised.value.errors] == ["FILTER_NOT_APPLICABLE_TO_MEASURE"]
+def test_a_measure_that_cannot_apply_it_is_named(con: duckdb.DuckDBPyConnection) -> None:
+    """Sales Qty reads the anchor's own rows, which no return filter chooses:
+    computed without it (every sale, 11), and the query says so."""
+    compiled = _compile(_by_year(["Anchored Cross", "Sales Qty"], [KEEP]))
+    skipped = [w for w in compiled.warnings if w.code == "FILTER_NOT_APPLIED"]
+    assert len(skipped) == 1 and "'Sales Qty'" in skipped[0].message
+    assert _rows(con, _by_year(["Anchored Cross", "Sales Qty"], [KEEP])) == [(2024.0, 62.0, 11.0)]
 
 
 def test_a_static_filter_skips_a_measure_that_cannot_apply_it(
@@ -495,3 +497,14 @@ def test_a_context_scan_with_list_bearing_filters(
     filter expressions in a set and failed with "unhashable type: 'list'",
     with or without a conformed fact."""
     assert _row(con, _by_year(measures, where)) == expected
+
+
+def test_a_warning_names_only_the_unfiltered_measures(con: duckdb.DuckDBPyConnection) -> None:
+    """Anchored Cross reads the filter in its subquery; Sales Qty, on the same
+    leg, cannot. The leg's warning named both."""
+    query = _by_year(["Anchored Cross", "Sales Qty", "Returned Qty"], [KEEP])
+    skipped = [w for w in _compile(query).warnings if w.code == "FILTER_NOT_APPLIED"]
+    assert len(skipped) == 1
+    assert "'Sales Qty'" in skipped[0].message
+    assert "'Anchored Cross'" not in skipped[0].message
+    assert _row(con, query) == {"Anchored Cross": 62.0, "Sales Qty": 11.0, "Returned Qty": 11.0}

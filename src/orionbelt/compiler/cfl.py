@@ -30,7 +30,11 @@ from orionbelt.compiler.anchored import (
 )
 from orionbelt.compiler.expr_rewrite import inline_measure_aliases
 from orionbelt.compiler.fanout import FanoutError
-from orionbelt.compiler.filter_resolution import report_unapplied_static_filter
+from orionbelt.compiler.filter_resolution import (
+    conjuncts,
+    report_unapplied_query_filter,
+    report_unapplied_static_filter,
+)
 from orionbelt.compiler.filters import static_filter_unreachable_error
 from orionbelt.compiler.grain_dedup import dedup_identity, detect_dedup_measures
 from orionbelt.compiler.graph import JoinGraph, JoinStep
@@ -361,27 +365,16 @@ class CFLPlanner:
         report_unapplied_static_filter([], resolved.warnings, None, unreachable, names)
 
     @staticmethod
-    def _reject_filter_outside_leg(missing: set[str], measures: list[ResolvedMeasure]) -> None:
-        """Refuse a query filter one union leg cannot restrict."""
-        objects = ", ".join(f"'{name}'" for name in sorted(missing))
+    def _skip_filter_outside_leg(
+        missing: set[str], measures: list[ResolvedMeasure], resolved: ResolvedQuery
+    ) -> None:
+        """Compute a leg without a query filter it cannot reach, and say so.
+
+        Its measures are what that fact holds: refusing the query, or blanking
+        them, would hide values the other legs' filter has no bearing on.
+        """
         names = ", ".join(f"'{m.name}'" for m in measures)
-        raise ResolutionError(
-            [
-                SemanticError(
-                    code="FILTER_NOT_APPLICABLE_TO_MEASURE",
-                    message=(
-                        f"A WHERE filter reads {objects}, which the fact behind {names} "
-                        f"cannot reach. This query is answered as a union of independent "
-                        f"facts, and that leg's measures would be computed without the filter."
-                    ),
-                    path="where",
-                    hint=(
-                        "Filter on a dimension every selected measure's fact reaches, or "
-                        "query the measures that cannot reach it separately."
-                    ),
-                )
-            ]
-        )
+        report_unapplied_query_filter(resolved.warnings, ", ".join(sorted(missing)), names)
 
     @staticmethod
     def _group_dimensions_into_legs(
@@ -798,11 +791,11 @@ class CFLPlanner:
             )
 
             # Apply WHERE filters to each leg that reaches what they read. A
-            # query filter, or a static one declared ``enforce: always``, that
-            # the leg cannot reach refuses the query: emitted, the predicate
-            # names a table the leg never joins; left out, the leg's measures
-            # ignore it. Any other static filter applies where relevant, so the
-            # leg skips it and says so.
+            # leg that cannot reach a query filter computes its measures
+            # without it and the query names them (``FILTER_NOT_APPLIED``):
+            # they are what that fact holds. A static filter applies where
+            # relevant, so the leg skips it and says so; one declared
+            # ``enforce: always`` refuses the query.
             leg_objects = leg_required | {lead}
             # The leg's measures as the base measures they compute, for a
             # filter its anchored measures read in their conformed subqueries.
@@ -812,16 +805,32 @@ class CFLPlanner:
             for wf in resolved.where_filters:
                 if leg_bases and leg_bases <= wf.conformed_for:
                     continue
-                wf_objects: set[str] = set()
-                self._collect_table_refs(wf.expression, wf_objects)
-                cfl_projection.collect_correlated_tables(wf.expression, wf_objects)
-                missing = wf_objects - leg_objects
+                missing: set[str] = set()
+                for condition in conjuncts(wf.expression):
+                    condition_objects: set[str] = set()
+                    self._collect_table_refs(condition, condition_objects)
+                    cfl_projection.collect_correlated_tables(condition, condition_objects)
+                    if condition_objects <= leg_objects:
+                        leg_builder.where(condition)
+                    else:
+                        missing |= condition_objects - leg_objects
                 if not missing:
-                    leg_builder.where(wf.expression)
-                elif not wf.static:
-                    self._reject_filter_outside_leg(missing, measures)
-                else:
+                    continue
+                # Enforcement first: a query repeating an enforced static
+                # filter makes it the query's, and it stays enforced.
+                if wf.static or wf.enforced:
                     self._skip_static_filter_outside_leg(wf, missing, measures, resolved)
+                    continue
+                # An anchored measure reading the filter in its conformed
+                # subquery is filtered; only the others are named.
+                unfiltered = [
+                    m
+                    for m in measures
+                    if not computed_measures(model, m.component_measures or [m.name])
+                    <= wf.conformed_for
+                ]
+                if unfiltered:
+                    self._skip_filter_outside_leg(missing, unfiltered, resolved)
 
             union_legs.append(leg_builder.build())
 

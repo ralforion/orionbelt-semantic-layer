@@ -150,6 +150,44 @@ def report_unapplied_static_filter(
     )
 
 
+def conjuncts(expression: Expr) -> list[Expr]:
+    """The conditions *expression* ANDs together, an AND group's flattened.
+
+    Each restricts rows on its own, so a union leg applies the ones it can
+    reach: skipping the whole group for one condition it cannot left the
+    leg without the others too. A negated group is one condition.
+    """
+    if isinstance(expression, BinaryOp) and expression.op.upper() == "AND":
+        return [*conjuncts(expression.left), *conjuncts(expression.right)]
+    return [expression]
+
+
+def report_unapplied_query_filter(
+    warnings: list[SemanticError], unreachable: str, measures: str
+) -> None:
+    """Record a query filter one union leg cannot reach.
+
+    The leg's values are computed without it rather than refused or blanked:
+    they are what that fact holds, and the warning says which of the query's
+    columns the filter does not restrict (decided for multi-fact queries).
+    """
+    warnings.append(
+        warning(
+            code=WarningCode.FILTER_NOT_APPLIED,
+            message=(
+                f"The filter on '{unreachable}' was not applied to {measures}: "
+                f"their fact cannot reach '{unreachable}', so they are computed "
+                f"without that restriction. The query's other columns are filtered."
+            ),
+            path="where",
+            hint=(
+                "Query those columns separately, or filter on a data object every "
+                "selected fact reaches."
+            ),
+        )
+    )
+
+
 def resolve_filter_object(
     resolver: QueryResolver,
     ctx: _ResolutionContext,
