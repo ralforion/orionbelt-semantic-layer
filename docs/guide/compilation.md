@@ -89,7 +89,15 @@ The output of resolution contains everything the planner needs:
 
 The base object is the query's `FROM` table, and every join path hangs off it.
 It is normally the measure's own source object, which is right whenever that
-object is the fact table.
+object is the fact table. With several measure sources it is the one with the
+most joins; between sources with as many joins, the one that reaches more of
+the query's objects (its dimensions, measures and filters) without a
+many-to-many join, so that one join tree is not planned as independent facts.
+A source counts only if it reaches every other measure source that way: one
+that reaches a measure source only through a many-to-many join would multiply
+that measure's rows. Under `ROLLUP` / `CUBE` that preference applies only where at most one other
+measure source is left: the star cannot add back the rows without children of
+several of them, and a union of independent facts keeps them.
 
 It is wrong when the measure lives on a *dimension* table. `Avg Customer Age`
 grouped by `Category` would anchor on `Customers`, and because joins are
@@ -106,7 +114,12 @@ ordinary star, with the measure deduplicated on the replicated side (see
 The fallback is narrow by design, so it can only turn an error into a result and
 never re-plan a query that already works:
 
-- Only when there is exactly **one** measure source object. Multi-fact queries
+- Only when there is exactly **one** measure source object, or several that the
+  chosen base reaches: `Total Credit` on `Customers` and `Total Population` on
+  the `Regions` it joins are one fact, and grouped by `Order Month` they
+  re-anchor on `Orders` as a single source would. Reaching them through a
+  many-to-many join does not count, and neither does it under `ROLLUP` / `CUBE`,
+  where the star would lose their rows without children. Independent facts
   keep their original base, so CFL detection — which runs on the base object
   immediately afterwards — is untouched.
 - Only when that base genuinely cannot reach the rest, the case that errors today.

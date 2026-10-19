@@ -269,6 +269,29 @@ class JoinGraph:
             return set()
         return nx.descendants(self._directed, node)
 
+    def descendants_without_fanout(self, node: str) -> set[str]:
+        """Reachable from *node* along joins that keep its rows one each.
+
+        Many-to-one and one-to-one joins: each row of *node* meets at most one
+        row of what they reach. A many-to-many join is directed in the graph
+        too, but it multiplies the rows it is walked from.
+        """
+        if node not in self._directed:
+            return set()
+        reached: set[str] = set()
+        frontier = [node]
+        while frontier:
+            current = frontier.pop()
+            for successor in self._directed.successors(current):
+                if successor in reached:
+                    continue
+                cardinality = self._directed.edges[current, successor].get("cardinality")
+                if cardinality == Cardinality.MANY_TO_MANY:
+                    continue
+                reached.add(successor)
+                frontier.append(successor)
+        return reached
+
     def descendants_without_unnest(self, node: str) -> set[str]:
         """Reachable from *node* without crossing a containment edge.
 
