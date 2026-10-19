@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
 
 
-def build_unnest(step: JoinStep, obj: DataObject, dialect: Dialect | None) -> Unnest:
+def build_unnest(step: JoinStep, obj: DataObject) -> Unnest:
     """The AST fragment that unnests *obj* out of its parent's array column.
 
     ``columns`` carries the child's declared shape because MySQL's
@@ -54,16 +54,12 @@ def build_unnest(step: JoinStep, obj: DataObject, dialect: Dialect | None) -> Un
     A computed column has no physical field to extract and is left out.
     """
     assert obj.nested_in is not None
-
-    def sql_type(abstract: str | None) -> str:
-        return dialect.nested_column_type(abstract) if dialect else (abstract or "string")
-
     return Unnest(
         parent_alias=step.from_object,
         column=obj.nested_in.column,
         alias=step.to_object,
         columns=tuple(
-            (column.code, sql_type(column.abstract_type))
+            (column.code, column.abstract_type.value)
             for column in obj.columns.values()
             if column.code
         ),
@@ -88,7 +84,7 @@ def emit_join_step(
     """Add *new_object* to the FROM clause, as an unnest or an ordinary join."""
     if step.nested and new_object == step.to_object and obj.nested_in is not None:
         if dialect is None or dialect.capabilities.supports_from_unnest:
-            builder.unnest(build_unnest(step, obj, dialect))
+            builder.unnest(build_unnest(step, obj))
             return
         _warn_fallback(warnings, dialect, new_object, obj)
 

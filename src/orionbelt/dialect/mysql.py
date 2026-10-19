@@ -306,8 +306,9 @@ class MySQLDialect(Dialect):
         """
         cols = (
             ", ".join(
-                f"{self.quote_identifier(code)} {sql_type} PATH {_json_path_literal(code)}"
-                for code, sql_type in node.columns
+                f"{self.quote_identifier(code)} {self.nested_column_type(abstract)}"
+                f" PATH {_json_path_literal(code)}"
+                for code, abstract in node.columns
             )
             or "value VARCHAR(1024) PATH '$'"
         )

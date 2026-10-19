@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`exists` / `nonexists` over nested data objects.** A filter whose subquery reached a nested data object (`nestedIn`) was refused (`NESTED_OBJECT_IN_SUBQUERY`): as its target, on its path, or in its inner filter. The subquery now unnests the object from its parent. Over the subject's own array, it re-reads the subject's row under an alias of its own, matched on the primary key, and unnests there; a subject without a key is still refused, and so is a subquery from a nested object up to its parent, which has no key to correlate on. An empty array is no row. Executed on the seven engines that unnest; Dremio, which has no `FROM`-clause unnest, refuses with a 422 "Unsupported nested access". `Unnest` nodes now carry each column's abstract type, mapped to MySQL's `JSON_TABLE` types when rendering.
+
 ### Changed
 
 - **A filter one fact cannot reach is skipped by name, not refused.** In a query over independent facts, a leg whose fact cannot reach a WHERE filter refused the whole query (`FILTER_NOT_APPLICABLE_TO_MEASURE`). That leg's measures are now computed without the filter, and the query returns a `FILTER_NOT_APPLIED` warning naming them: they are what that fact holds, and the filter has no bearing on them. The same holds for a measure that cannot apply a filter an anchored measure applies in its conformed subquery. Raw multi-fact queries (`select.fields`) already listed such a leg's rows unfiltered, silently; they now return the same warning. A static filter keeps its own rules (`STATIC_FILTER_NOT_APPLIED`, or `STATIC_FILTER_UNREACHABLE` under `enforce: always`), and a filter no selected fact reaches is still refused (`UNREACHABLE_FILTER_OBJECT`).

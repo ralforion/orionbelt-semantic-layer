@@ -226,8 +226,11 @@ class Unnest:
     alias: str
     """Alias the unnested element is addressed by."""
     columns: tuple[tuple[str, str], ...] = ()
-    """``(code, sql_type)`` per child column. Only MySQL needs them: its
-    ``JSON_TABLE`` declares the shape it is extracting rather than inferring it.
+    """``(code, abstract_type)`` per child column. Only MySQL needs them: its
+    ``JSON_TABLE`` declares the shape it is extracting rather than inferring it,
+    and maps each abstract type to its SQL type when rendering. Abstract rather
+    than SQL so a fragment built without a dialect - an ``EXISTS`` body,
+    resolved before one is chosen - is still complete.
     """
     outer: bool = True
     """Keep a parent row whose array is empty. The default, because a charge

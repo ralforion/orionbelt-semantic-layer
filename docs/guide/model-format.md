@@ -213,6 +213,15 @@ a nested object, it cannot be a query's base object, and it cannot appear in a
 multi-fact union — its rows exist only inside its parent's. OBSL refuses each of
 those with an error saying so, rather than emitting SQL that cannot run.
 
+An `exists` / `nonexists` filter reaches it the same way: the subquery unnests
+it from its parent. Over a charge's own labels (`Charges.Charge Id` exists in
+`Charge Labels`), the subquery re-reads the charge under an alias of its own,
+matched on the parent's primary key, and unnests its array there; a parent
+without a key is refused (`NESTED_OBJECT_IN_SUBQUERY`). An empty array is no
+row, so it does not satisfy `exists`. A subquery that walks through the nested
+object, or filters on it, unnests it from the parent already in the subquery.
+Dremio, which has no `FROM`-clause unnest, refuses such a filter.
+
 #### Dialect support
 
 Seven of the eight dialects unnest in the `FROM` clause, each in its own way —
