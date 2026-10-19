@@ -2978,15 +2978,19 @@ class QueryResolver:
             # on Orders: Customers, first by name, cannot reach Orders, and the
             # one join tree was planned as independent facts. Reached without
             # multiplying the candidate's rows, and only where its star keeps
-            # the other sources' rows without children.
+            # the other sources' rows without children. A candidate that
+            # reaches some measure source only by multiplying its rows has no
+            # reach at all: a star on it fans that measure out, where CFL
+            # keeps it whole.
             wanted = ctx.result.required_objects | sources | (filter_objects or set())
             best = ""
             best_rank = (-1, -1)
             for obj_name in candidates:
                 obj = ctx.model.data_objects.get(obj_name)
+                safe = graph.descendants_without_fanout(obj_name) | {obj_name}
                 reach = (
-                    len(wanted & (graph.descendants_without_fanout(obj_name) | {obj_name}))
-                    if self._keeps_childless_parents(ctx, obj_name)
+                    len(wanted & safe)
+                    if sources <= safe and self._keeps_childless_parents(ctx, obj_name)
                     else 0
                 )
                 rank = (len(obj.joins) if obj else 0, reach)

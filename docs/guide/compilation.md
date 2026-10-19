@@ -93,7 +93,9 @@ object is the fact table. With several measure sources it is the one with the
 most joins; between sources with as many joins, the one that reaches more of
 the query's objects (its dimensions, measures and filters) without a
 many-to-many join, so that one join tree is not planned as independent facts.
-Under `ROLLUP` / `CUBE` that preference applies only where at most one other
+A source counts only if it reaches every other measure source that way: one
+that reaches a measure source only through a many-to-many join would multiply
+that measure's rows. Under `ROLLUP` / `CUBE` that preference applies only where at most one other
 measure source is left: the star cannot add back the rows without children of
 several of them, and a union of independent facts keeps them.
 

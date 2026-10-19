@@ -251,3 +251,94 @@ def test_a_many_to_many_join_does_not_count_as_reach(con: duckdb.DuckDBPyConnect
     planner, rows = _rows(con, ["Total Credit", "Total Amount"], yaml_text=yaml_text)
     assert planner == "CFL"
     assert rows == [_d(70, 7)]
+
+
+PARTIAL_REACH_YAML = """
+version: "1.0"
+name: partial_reach
+dataObjects:
+  Regions:
+    code: regions
+    columns:
+      Region Id: {code: id, abstractType: string, primaryKey: true}
+  Countries:
+    code: countries
+    columns:
+      Country Id: {code: id, abstractType: string, primaryKey: true}
+  Stores:
+    code: stores
+    columns:
+      Store Id: {code: id, abstractType: string, primaryKey: true}
+      Capacity: {code: capacity, abstractType: float}
+  Customers:
+    code: customers
+    columns:
+      Customer Id: {code: id, abstractType: string, primaryKey: true}
+      Customer Region Id: {code: region_id, abstractType: string}
+      Customer Country Id: {code: country_id, abstractType: string}
+      Credit: {code: credit, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Regions
+        columnsFrom: [Customer Region Id]
+        columnsTo: [Region Id]
+      - joinType: many-to-one
+        joinTo: Countries
+        columnsFrom: [Customer Country Id]
+        columnsTo: [Country Id]
+  Orders:
+    code: orders
+    columns:
+      Order Id: {code: id, abstractType: string, primaryKey: true}
+      Order Customer Id: {code: customer_id, abstractType: string}
+      Order Store Id: {code: store_id, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-many
+        joinTo: Customers
+        columnsFrom: [Order Customer Id]
+        columnsTo: [Customer Id]
+      - joinType: many-to-one
+        joinTo: Stores
+        columnsFrom: [Order Store Id]
+        columnsTo: [Store Id]
+measures:
+  Total Credit:
+    columns: [{dataObject: Customers, column: Credit}]
+    aggregation: sum
+    resultType: float
+  Total Amount:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+    resultType: float
+  Total Capacity:
+    columns: [{dataObject: Stores, column: Capacity}]
+    aggregation: sum
+    resultType: float
+"""
+
+
+def test_reaching_one_source_by_fanout_is_no_reach() -> None:
+    """Customers and Orders have two joins each. Orders reaches Stores safely
+    but Customers only through a many-to-many join, so it does not win the
+    tie: based on Orders, the query raised a fanout error."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE regions AS SELECT 'r1' AS id")
+    con.execute("CREATE TABLE countries AS SELECT 'c1' AS id")
+    con.execute("CREATE TABLE stores AS SELECT 's1' AS id, 100.0 AS capacity")
+    con.execute(
+        "CREATE TABLE customers AS SELECT * FROM (VALUES"
+        " ('k1', 'r1', 'c1', 10.0), ('k2', 'r1', 'c1', 20.0)) t(id, region_id, country_id, credit)"
+    )
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES"
+        " ('o1', 'k1', 's1', 1.0), ('o2', 'k1', 's1', 2.0), ('o3', 'k2', 's1', 4.0))"
+        " t(id, customer_id, store_id, amount)"
+    )
+    planner, rows = _rows(
+        con,
+        ["Total Credit", "Total Amount", "Total Capacity"],
+        yaml_text=PARTIAL_REACH_YAML,
+    )
+    assert planner == "CFL"
+    assert rows == [_d(30, 7, 100)]
