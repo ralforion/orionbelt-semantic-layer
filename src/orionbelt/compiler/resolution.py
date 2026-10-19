@@ -2493,7 +2493,12 @@ class QueryResolver:
         graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
         sources = ctx.result.measure_source_objects
         reached = graph.descendants(best)
-        one_fact = sources - {best} <= reached
+        # Measure sources the base reaches without multiplying its rows are one
+        # fact, as a single source is, unless the star on the root they are
+        # re-anchored on would lose their rows without children.
+        one_fact = sources - {best} <= graph.descendants_without_fanout(
+            best
+        ) and QueryResolver._keeps_childless_parents(ctx, None)
         if not one_fact and filter_objects - {best} <= reached:
             return best
 
@@ -2515,6 +2520,15 @@ class QueryResolver:
         if wanted <= graph.descendants(root) | {root}:
             return root
         return best
+
+    @staticmethod
+    def _keeps_childless_parents(ctx: _ResolutionContext, base: str | None) -> bool:
+        """Whether a star on *base* keeps the other measure sources' rows
+        without children: under ROLLUP / CUBE, for one such source only (see
+        :meth:`_childless_obstacle`). *base* ``None`` is an object that is no
+        measure source."""
+        others = ctx.result.measure_source_objects - {base}
+        return ctx.result.grouping is None or len(others) <= 1
 
     @staticmethod
     def _parent_of(ctx: _ResolutionContext, name: str, reached: set[str]) -> str | None:
@@ -2962,16 +2976,20 @@ class QueryResolver:
             # Most joins first; between equals, the one reaching more of the
             # query. Customers and Orders with one join each, under a dimension
             # on Orders: Customers, first by name, cannot reach Orders, and the
-            # one join tree was planned as independent facts.
+            # one join tree was planned as independent facts. Reached without
+            # multiplying the candidate's rows, and only where its star keeps
+            # the other sources' rows without children.
             wanted = ctx.result.required_objects | sources | (filter_objects or set())
             best = ""
             best_rank = (-1, -1)
             for obj_name in candidates:
                 obj = ctx.model.data_objects.get(obj_name)
-                rank = (
-                    len(obj.joins) if obj else 0,
-                    len(wanted & (graph.descendants(obj_name) | {obj_name})),
+                reach = (
+                    len(wanted & (graph.descendants_without_fanout(obj_name) | {obj_name}))
+                    if self._keeps_childless_parents(ctx, obj_name)
+                    else 0
                 )
+                rank = (len(obj.joins) if obj else 0, reach)
                 if rank > best_rank:
                     best = obj_name
                     best_rank = rank
