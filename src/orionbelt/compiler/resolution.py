@@ -2334,10 +2334,19 @@ class QueryResolver:
                 if all(j.join_to != anchor for j in ctx.model.effective_joins(fact, overrides))
             ]
             conformed = {obj for fact in repeated for obj in ctx.conformed_reach[name][fact]}
-            expression = resolved_measure.expression
-            if isinstance(expression, FunctionCall) and expression.name == "SUM":
-                expression = expression.args[0]
-            if not conformed or not _has_term_without_anchor(expression, conformed)[0]:
+            # The SUM may be wrapped: ``defaultValue`` renders COALESCE(SUM(...), 0).
+            summed: list[Expr] = []
+
+            def collect_sums(node: Expr, summed: list[Expr] = summed) -> Expr | None:
+                if isinstance(node, FunctionCall) and node.name == "SUM":
+                    summed.extend(node.args)
+                    return node
+                return None
+
+            map_nodes(resolved_measure.expression, collect_sums)
+            if not conformed or not any(
+                _has_term_without_anchor(arg, conformed)[0] for arg in summed
+            ):
                 continue
             facts = ", ".join(f"'{fact}'" for fact in repeated)
             ctx.result.warnings.append(

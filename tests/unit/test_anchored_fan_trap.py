@@ -59,7 +59,7 @@ measures:
   Net:
     aggregation: {aggregation}
     resultType: float
-{anchor}    expression: '{expression}'
+{default}{anchor}    expression: '{expression}'
 {filters}"""
 
 R, S = "{[Returns].[Return Qty]}", "{[Sales].[Sale Qty]}"
@@ -75,12 +75,14 @@ def _compile(
     anchor: str | None = "Returns",
     aggregation: str = "sum",
     filters: str = "",
+    default: str = "",
 ) -> CompilationResult:
     yaml_text = MODEL_YAML.format(
         aggregation=aggregation,
         anchor=f"    anchor: {anchor}\n" if anchor else "",
         expression=expression,
         filters=filters,
+        default=default,
     )
     raw, source_map = TrackedLoader().load_string(yaml_text)
     model, result = ReferenceResolver().resolve(raw, source_map)
@@ -117,6 +119,14 @@ def test_a_measure_filter_still_repeats_the_term() -> None:
     """The filter wraps the expression in a CASE per anchor row: the sales
     are still subtracted once for each return passing it."""
     assert _fan_traps(_compile(f"{R} - {S}", filters=LARGE_RETURNS)) != []
+
+
+def test_a_default_value_still_warns() -> None:
+    """``defaultValue`` wraps the aggregate in COALESCE(SUM(...), 0): the
+    sum inside it is still the repeated one."""
+    compiled = _compile(f"{R} - {S}", default="    defaultValue: 0\n")
+    assert "COALESCE(SUM(" in compiled.sql
+    assert _fan_traps(compiled) != []
 
 
 @pytest.mark.parametrize(
