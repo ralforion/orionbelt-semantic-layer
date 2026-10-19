@@ -8,6 +8,7 @@ domain lists against the load balancer's IP fetched it in full each time.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -52,6 +53,27 @@ async def test_proxied_page_is_compressed(demo: object, tmp_path: Path) -> None:
     assert resp.status_code == 200
     assert resp.headers["content-encoding"] == "gzip"
     assert favicon_resp.status_code == 200
+
+
+async def test_event_stream_is_not_gzipped(demo: object, tmp_path: Path) -> None:
+    """Gzip would buffer Gradio's SSE queue, holding progress messages back."""
+    from fastapi.responses import StreamingResponse
+
+    favicon = tmp_path / "favicon.png"
+    favicon.write_bytes(b"\x89PNG")
+    app = ui_app._proxied_app(demo, "/ui", favicon)
+
+    async def _events() -> AsyncIterator[bytes]:
+        yield b"data: " + b"x" * 4096 + b"\n\n"
+
+    @app.get("/sse-probe")
+    async def _sse() -> StreamingResponse:
+        return StreamingResponse(_events(), media_type="text/event-stream")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/sse-probe", headers={"Accept-Encoding": "gzip"})
+    assert resp.status_code == 200
+    assert "content-encoding" not in resp.headers
 
 
 def test_vendored_bundles_are_not_inlined() -> None:

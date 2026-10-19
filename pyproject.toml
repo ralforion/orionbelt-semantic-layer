@@ -40,6 +40,11 @@ classifiers = [
 ]
 dependencies = [
     "fastapi>=0.128,<1.0",
+    # Not imported directly: fastapi allows starlette >=0.40, but GZipMiddleware
+    # (the proxied UI) leaves text/event-stream uncompressed only from 0.46.
+    # Older releases gzip Gradio's SSE queue, which buffers progress messages
+    # until the event completes.
+    "starlette>=0.46,<2.0",
     "uvicorn[standard]>=0.40,<1.0",
     "pydantic>=2.12,<3.0",
     "pydantic-settings>=2.12,<3.0",

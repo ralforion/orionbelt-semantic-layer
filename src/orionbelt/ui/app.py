@@ -3383,9 +3383,10 @@ def _proxied_app(demo: Any, root_path: str, favicon_file: Path) -> FastAPI:
         # API host), serve a disallow-all so crawlers skip it.
         return PlainTextResponse("User-agent: *\nDisallow: /\n")
 
-    # The page inlines the vendored mermaid and ACE bundles; uncompressed it
-    # is several MB per load. Starlette skips text/event-stream, so the
-    # Gradio queue's SSE stream is left alone.
+    # The page and the vendored mermaid and ACE bundles are several MB
+    # uncompressed. Starlette >=0.46 (the floor in pyproject.toml) leaves
+    # text/event-stream uncompressed, so the Gradio queue's SSE stream is not
+    # buffered.
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     _reject_unknown_pages(app, root_path, set(demo.config.get("page", {})))
