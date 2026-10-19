@@ -2466,10 +2466,12 @@ class QueryResolver:
         Deliberately narrow, so this can only turn an error into a result and
         never re-plan a query that already works:
 
-        * With **one** measure source object, or with several when the query's
-          WHERE names an object the chosen base cannot reach. Otherwise
-          multi-fact queries keep their existing base so CFL detection (which
-          runs on it straight after) is untouched. With several sources and an
+        * With **one** measure source object, with several the chosen base
+          reaches (Customers and the Regions it joins: one fact seen from
+          its dimension end, as much as a single source is), or with several
+          when the query's WHERE names an object the chosen base cannot reach.
+          Otherwise multi-fact queries keep their existing base so CFL
+          detection (which runs on it straight after) is untouched. With several sources and an
           unreachable filter object the existing base had no right answer: the
           filter was dropped, and a count of customers ``WHERE status = 'ok'``
           counted every customer. Rooted where the filter's rows are, it counts
@@ -2490,14 +2492,16 @@ class QueryResolver:
         """
         graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
         sources = ctx.result.measure_source_objects
-        if len(sources) != 1 and filter_objects - {best} <= graph.descendants(best):
+        reached = graph.descendants(best)
+        one_fact = sources - {best} <= reached
+        if not one_fact and filter_objects - {best} <= reached:
             return best
 
         wanted = ctx.result.required_objects | sources | filter_objects
         remaining = wanted - {best}
         if not remaining:
             return best
-        if remaining <= graph.descendants(best):
+        if remaining <= reached:
             return best
 
         root = graph.find_common_root(wanted | {best})
@@ -2891,7 +2895,7 @@ class QueryResolver:
     def _choose_base_object(
         self, ctx: _ResolutionContext, filter_objects: set[str] | None = None
     ) -> str:
-        """Prefer measure source objects with the most joins."""
+        """Prefer measure source objects with the most joins, then the widest reach."""
         # An anchored measure has already been told which grain to run at, and
         # the planner joins its conformed subqueries against that object. Moving
         # the base elsewhere leaves those joins referencing a table no longer in
@@ -2941,8 +2945,8 @@ class QueryResolver:
 
             sources = ctx.result.measure_source_objects
             candidates = sorted(sources)
+            graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
             if spanning:
-                graph = JoinGraph.of(ctx.model, use_path_names=ctx.result.use_path_names or None)
                 candidates = [
                     name for name in candidates if spanning <= (graph.descendants(name) | {name})
                 ]
@@ -2955,14 +2959,22 @@ class QueryResolver:
                         return root
                     candidates = sorted(sources)
 
+            # Most joins first; between equals, the one reaching more of the
+            # query. Customers and Orders with one join each, under a dimension
+            # on Orders: Customers, first by name, cannot reach Orders, and the
+            # one join tree was planned as independent facts.
+            wanted = ctx.result.required_objects | sources | (filter_objects or set())
             best = ""
-            best_joins = -1
+            best_rank = (-1, -1)
             for obj_name in candidates:
                 obj = ctx.model.data_objects.get(obj_name)
-                n = len(obj.joins) if obj else 0
-                if n > best_joins:
+                rank = (
+                    len(obj.joins) if obj else 0,
+                    len(wanted & (graph.descendants(obj_name) | {obj_name})),
+                )
+                if rank > best_rank:
                     best = obj_name
-                    best_joins = n
+                    best_rank = rank
             if best:
                 return self._reanchor_if_unreachable(ctx, best, filter_objects or set())
 

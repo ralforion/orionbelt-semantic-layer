@@ -89,7 +89,10 @@ The output of resolution contains everything the planner needs:
 
 The base object is the query's `FROM` table, and every join path hangs off it.
 It is normally the measure's own source object, which is right whenever that
-object is the fact table.
+object is the fact table. With several measure sources it is the one with the
+most joins; between sources with as many joins, the one that reaches more of
+the query's objects (its dimensions, measures and filters), so that one join
+tree is not planned as independent facts.
 
 It is wrong when the measure lives on a *dimension* table. `Avg Customer Age`
 grouped by `Category` would anchor on `Customers`, and because joins are
@@ -106,9 +109,12 @@ ordinary star, with the measure deduplicated on the replicated side (see
 The fallback is narrow by design, so it can only turn an error into a result and
 never re-plan a query that already works:
 
-- Only when there is exactly **one** measure source object. Multi-fact queries
-  keep their original base, so CFL detection — which runs on the base object
-  immediately afterwards — is untouched.
+- Only when there is exactly **one** measure source object, or several that the
+  chosen base reaches: `Total Credit` on `Customers` and `Total Population` on
+  the `Regions` it joins are one fact, and grouped by `Order Month` they
+  re-anchor on `Orders` as a single source would. Independent facts keep their
+  original base, so CFL detection — which runs on the base object immediately
+  afterwards — is untouched.
 - Only when that base genuinely cannot reach the rest, the case that errors today.
 - Only when a common root exists. With no connecting object the original base
   stands and the unreachable error still fires, rather than a silent cross join.
