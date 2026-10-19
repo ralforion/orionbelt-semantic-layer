@@ -15,6 +15,7 @@ from orionbelt.compiler.validator import (
     validate_sql,
 )
 from orionbelt.dialect import DialectRegistry
+from orionbelt.dialect.clickhouse import STATEMENT_SETTINGS
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
@@ -94,6 +95,31 @@ def test_pipeline_returns_sql_even_when_invalid() -> None:
     # SQL is always returned regardless of validation
     assert result.sql != ""
     assert isinstance(result.sql_valid, bool)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "SELECT a, SUM(b) AS s FROM t GROUP BY ALL",
+        "SELECT a, SUM(b) AS s FROM t GROUP BY a WITH ROLLUP",
+    ],
+    ids=["group-by-all", "with-rollup"],
+)
+def test_the_clickhouse_settings_suffix_validates_and_formats(body: str) -> None:
+    """sqlglot rejects ``SETTINGS`` after these, which ClickHouse accepts: the
+    statement is checked without it, and formatted with it kept."""
+    sql = f"{body}\n{STATEMENT_SETTINGS}"
+    assert validate_sql(sql, "clickhouse") == []
+    assert format_sql(sql, "clickhouse").endswith(f"\n{STATEMENT_SETTINGS}")
+
+
+def test_every_clickhouse_statement_reads_null_for_an_unmatched_join() -> None:
+    query = QueryObject(
+        select=QuerySelect(dimensions=["Customer Country"], measures=["Total Revenue"])
+    )
+    result = CompilationPipeline().compile(query, _load_model(), "clickhouse")
+    assert result.sql.endswith(f"\n{STATEMENT_SETTINGS}")
+    assert result.sql_valid
 
 
 _PARITY_SQL = [

@@ -7,3 +7,4 @@ FROM "orionbelt_1"."purchases" AS "Purchases"
 )
 SELECT CAST(round(toDecimal256(toString(SUM("composite_01"."Total Sales")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales", CAST(round(toDecimal256(toString(SUM("composite_01"."Total Purchases")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Purchases"
 FROM "composite_01" AS "composite_01"
+SETTINGS join_use_nulls = 1

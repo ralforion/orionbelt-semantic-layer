@@ -16,6 +16,7 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
     RawSQL,
+    Select,
     UnaryOp,
     Unnest,
     WindowFunction,
@@ -30,6 +31,9 @@ from orionbelt.dialect.base import (
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
+
+#: Ends every statement: an unmatched LEFT JOIN reads NULL, as on every engine.
+STATEMENT_SETTINGS = "SETTINGS join_use_nulls = 1"
 
 _GRAIN_FUNCTIONS: dict[TimeGrain, str] = {
     TimeGrain.YEAR: "toStartOfYear",
@@ -397,6 +401,17 @@ class ClickHouseDialect(Dialect):
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
+
+    def compile(self, ast: Select) -> str:
+        """The statement, reading NULL where a LEFT JOIN finds no row.
+
+        ClickHouse's default (``join_use_nulls = 0``) fills an unmatched
+        right-side column with its type's default instead: an order without a
+        customer was in a region ``''`` with a credit of 0, and ``Region is
+        null`` dropped it. The setting is on the statement, so it holds for
+        every join in it, CTEs included, and travels with the SQL.
+        """
+        return f"{super().compile(ast)}\n{STATEMENT_SETTINGS}"
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         func_name = _GRAIN_FUNCTIONS.get(grain)

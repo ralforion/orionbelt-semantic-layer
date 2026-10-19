@@ -8,6 +8,8 @@ from collections import OrderedDict
 import sqlglot
 from sqlglot.errors import SqlglotError
 
+from orionbelt.dialect.clickhouse import STATEMENT_SETTINGS
+
 # Map OrionBelt dialect names to sqlglot dialect identifiers.
 # Dremio uses Calcite-based ANSI SQL; Trino is the closest sqlglot dialect.
 _DIALECT_MAP: dict[str, str] = {
@@ -37,7 +39,7 @@ def validate_sql(sql: str, dialect_name: str) -> list[str]:
     # ``SqlglotError`` a parse does not raise; it cost ~15% of validation.
     errors: list[str] = []
     try:
-        sqlglot.parse(sql, read=sg_dialect)
+        sqlglot.parse(_without_settings(sql, dialect_name)[0], read=sg_dialect)
     except SqlglotError as exc:
         errors.append(str(exc))
     return errors
@@ -55,9 +57,22 @@ def format_sql(sql: str, dialect_name: str) -> str:
     cached = _FORMAT_MEMO.get(sql, sg_dialect)
     if cached is not None:
         return cached
-    formatted = _pretty(sql, sg_dialect)
+    body, settings = _without_settings(sql, dialect_name)
+    formatted = _pretty(body, sg_dialect) + settings
     _FORMAT_MEMO.put(sql, sg_dialect, formatted)
     return formatted
+
+
+def _without_settings(sql: str, dialect_name: str) -> tuple[str, str]:
+    """*sql* and the ClickHouse ``SETTINGS`` suffix the dialect ends it with.
+
+    sqlglot rejects the clause after ``GROUP BY ALL`` and ``WITH ROLLUP``,
+    which ClickHouse accepts, so the statement is parsed without it.
+    """
+    suffix = f"\n{STATEMENT_SETTINGS}"
+    if dialect_name == "clickhouse" and sql.endswith(suffix):
+        return sql.removesuffix(suffix), suffix
+    return sql, ""
 
 
 def _pretty(sql: str, sg_dialect: str) -> str:

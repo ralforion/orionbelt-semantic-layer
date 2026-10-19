@@ -91,3 +91,4 @@ SELECT "pop_base"."Sales Month" AS "Sales Month",
 )
 SELECT "Sales Month" AS "Sales Month", "Total Sales" AS "Total Sales", CAST(round(toDecimal256(toString("Sales MoM Change"), 3), 2) AS Nullable(Decimal(18, 2))) AS "Sales MoM Change"
 FROM "pop_compare" AS "pop_compare"
+SETTINGS join_use_nulls = 1

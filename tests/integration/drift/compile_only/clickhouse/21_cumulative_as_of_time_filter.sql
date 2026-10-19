@@ -42,3 +42,4 @@ LEFT JOIN "cumulative_as_of" AS "cumulative_as_of" ON isNotDistinctFrom("cumulat
 )
 SELECT "Sales Region Name" AS "Sales Region Name", "Total Sales" AS "Total Sales", CAST(round(toDecimal256(toString("YTD Sales"), 3), 2) AS Nullable(Decimal(18, 2))) AS "YTD Sales", CAST(round(toDecimal256(toString("Cumulative Sales"), 3), 2) AS Nullable(Decimal(18, 2))) AS "Cumulative Sales"
 FROM "cumulative_joined" AS "cumulative_joined"
+SETTINGS join_use_nulls = 1
