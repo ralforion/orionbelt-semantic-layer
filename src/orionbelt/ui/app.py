@@ -12,6 +12,7 @@ from __future__ import annotations
 # ``time`` is kept imported so tests can patch ``ui_app.time.sleep`` for the
 # re-exported ``_fetch_settings`` retry loop.
 import time  # noqa: F401
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import gradio as gr
@@ -1359,31 +1360,96 @@ _IMPORT_OSI_JS = """
 #: the ER diagram rendered as its own source text, and the zoom control was
 #: silently dead with it, polling for an ``svg`` nothing would ever produce.
 #:
-#: The bundle is vendored under ``ui/static`` and inlined, exactly as
-#: vis-network is for the ontology graph: the UI loads no external asset, so an
-#: air-gapped deployment needs nothing it does not already have in the wheel.
+#: The vendored bundles the page head loads. They ship under ``ui/static``, so
+#: the UI loads no external asset and an air-gapped deployment needs nothing it
+#: does not already have in the wheel. They are fetched as files from the
+#: app's own ``vendor/`` route (see ``_vendor_routes``) rather than inlined:
+#: inlined as base64 they were 5.4 MB of every page load, uncacheable.
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+_VENDORED_JS = {name: _STATIC_DIR / name for name in ("mermaid.min.js", "ace-sparql.min.js")}
+
+
+def _vendored_src(name: str) -> str:
+    """The page-relative URL of a vendored bundle (the page sets ``<base>``)."""
+    return f"vendor/{name}"
+
+
+def _vendor_routes() -> list[Any]:
+    """The route serving ``ui/static`` at ``vendor/`` inside the Gradio app.
+
+    Starlette's ``StaticFiles`` answers a conditional request (``If-None-Match``,
+    ``If-Modified-Since``) with 304, so a reload that revalidates does not
+    fetch the bundles again; Gradio's file route sends the validators but
+    ignores them, answering 200 with the whole file. Passed as the Gradio
+    app's own routes, it is under the app's path in every serving mode
+    (``/vendor`` standalone, ``/ui/vendor`` mounted), and the URL does not
+    reveal where the package is installed.
+
+    The route compresses its own responses: the API's ``/ui`` and the plain
+    standalone launch have no compressing wrapper, and adding one to the API
+    would compress every API response. Under the proxied wrapper's gzip the
+    response is already encoded, which Starlette passes through as it is.
+    """
+    from starlette.middleware.gzip import GZipMiddleware
+    from starlette.routing import Mount
+    from starlette.staticfiles import StaticFiles
+
+    static = GZipMiddleware(StaticFiles(directory=_STATIC_DIR), minimum_size=1024)
+    return [Mount("/vendor", app=static, name="ob-vendor")]
+
+
 def _mermaid_head() -> str:
     """A ``<head>`` fragment that installs mermaid and a render hook."""
-    from orionbelt.ui.rendering import _get_mermaid_b64
-
     return f"""
 <script>
 (function () {{
-  // atob yields a binary string; the bundle is UTF-8, so decode it as such
-  // rather than letting the bytes be read as Latin-1.
-  var bytes = Uint8Array.from(atob("{_get_mermaid_b64()}"), function (c) {{
-    return c.charCodeAt(0);
+  var PENDING = "#er-diagram .mermaid:not([data-processed]), "
+    + "#lineage-diagram .mermaid:not([data-processed])";
+  var src = "{_vendored_src("mermaid.min.js")}";
+  // Resolves true once mermaid is installed, false if the bundle failed to load.
+  var ready = new Promise(function (resolve) {{
+    var el = document.createElement("script");
+    el.src = src;
+    el.onload = function () {{
+      window.mermaid.initialize({{ startOnLoad: false }});
+      resolve(true);
+    }};
+    el.onerror = function () {{
+      console.error("Diagram renderer could not be loaded from " + src);
+      resolve(false);
+    }};
+    document.head.appendChild(el);
   }});
-  var el = document.createElement("script");
-  el.textContent = new TextDecoder("utf-8").decode(bytes);
-  document.head.appendChild(el);
-  window.mermaid.initialize({{ startOnLoad: false }});
-  window.__obRenderMermaid = async function () {{
-    var nodes = document.querySelectorAll(
-      "#er-diagram .mermaid:not([data-processed]), #lineage-diagram .mermaid:not([data-processed])"
-    );
-    if (nodes.length) {{ await window.mermaid.run({{ nodes: nodes }}); }}
-    return document.querySelectorAll("#er-diagram svg, #lineage-diagram svg").length;
+  // Without the renderer a diagram stays as its source: say why, once per
+  // diagram, and mark it processed so later calls leave it alone. Returns
+  // whether there was a diagram to explain (its markup may not be there yet).
+  function explainFailure() {{
+    var nodes = document.querySelectorAll(PENDING);
+    nodes.forEach(function (node) {{
+      var note = document.createElement("p");
+      note.textContent = "The diagram renderer could not be loaded; showing the diagram source.";
+      node.parentNode.insertBefore(note, node);
+      node.setAttribute("data-processed", "failed");
+    }});
+    return nodes.length > 0;
+  }}
+  // The tabs poll this until their diagram is an svg. Polls that arrive while
+  // a render is running (or while the bundle is still downloading) share it,
+  // so one diagram is rendered once. Returns the number of rendered diagrams,
+  // or -1 once a diagram was explained as unrenderable and polling can stop.
+  var running = null;
+  window.__obRenderMermaid = function () {{
+    if (!running) {{
+      running = ready.then(function (loaded) {{
+        if (!loaded) return explainFailure() ? -1 : 0;
+        var nodes = document.querySelectorAll(PENDING);
+        return (nodes.length ? window.mermaid.run({{ nodes: nodes }}) : Promise.resolve())
+          .then(function () {{
+            return document.querySelectorAll("#er-diagram svg, #lineage-diagram svg").length;
+          }});
+      }}).finally(function () {{ running = null; }});
+    }}
+    return running;
   }};
 }})();
 </script>
@@ -1393,20 +1459,19 @@ def _mermaid_head() -> str:
 #: The SPARQL editor. Gradio's Code component is CodeMirror with a fixed set of
 #: languages and no way to add one, so the SPARQL tab hosts an ACE editor (the
 #: one the ontology builder uses) in a plain div and bridges its text into a
-#: hidden Gradio textbox that the Run button reads. Everything ACE needs is
-#: inlined from the vendored bundle, the same way mermaid is.
+#: hidden Gradio textbox that the Run button reads. ACE comes from the
+#: vendored bundle, loaded the same way mermaid is.
 def _ace_head() -> str:
     """A ``<head>`` fragment that installs ACE and the SPARQL editor glue."""
-    from orionbelt.ui.rendering import _get_ace_b64
-
     return f"""
 <script>
 (function () {{
-  var bytes = Uint8Array.from(atob("{_get_ace_b64()}"), function (c) {{
-    return c.charCodeAt(0);
-  }});
   var el = document.createElement("script");
-  el.textContent = new TextDecoder("utf-8").decode(bytes);
+  el.src = "{_vendored_src("ace-sparql.min.js")}";
+  // A tab opened before the bundle arrived found no window.ace; seed the
+  // editor now so it does not wait for the next tab switch (``ensure`` leaves
+  // a hidden tab for its select event).
+  el.onload = function () {{ window.__obSparql.pull(); }};
   document.head.appendChild(el);
 
   var editor = null;
@@ -1435,6 +1500,8 @@ def _ace_head() -> str:
     ensure: function () {{
       var container = document.getElementById("ob-sparql-ace");
       if (!container || !window.ace) return false;
+      // A hidden tab's container measures 0x0; wait for the tab to be shown.
+      if (!editor && !container.getClientRects().length) return false;
       if (!editor) {{
         editor = window.ace.edit(container, {{
           mode: "ace/mode/sparql",
@@ -1580,19 +1647,24 @@ def _fit_head() -> str:
     return _FIT_JS
 
 
-def frontend_assets(head_html: str | None = None) -> dict[str, str]:
+def frontend_assets(head_html: str | None = None) -> dict[str, Any]:
     """The css/js/head every way of serving this app has to pass along.
 
     Gradio 6 takes these on ``launch()`` and ``mount_gradio_app()`` rather than
     on the ``Blocks`` constructor, so this is the single place all three
     serving modes agree on: standalone ``launch``, the standalone mount, and
     the API's ``/ui``. The mermaid loader belongs here for that reason - put on
-    the constructor it reaches only whichever mode happens to look there.
+    the constructor it reaches only whichever mode happens to look there - and
+    so does the route that serves the bundles, passed as the Gradio app's own
+    routes (``app_kwargs``), which both ``launch`` and ``mount_gradio_app`` take.
     """
-    assets = {"css": _CSS, "js": _DARK_MODE_INIT_JS}
     vendored = _mermaid_head() + _ace_head() + _fit_head()
-    assets["head"] = f"{head_html}\n{vendored}" if head_html else vendored
-    return assets
+    return {
+        "css": _CSS,
+        "js": _DARK_MODE_INIT_JS,
+        "head": f"{head_html}\n{vendored}" if head_html else vendored,
+        "app_kwargs": {"routes": _vendor_routes()},
+    }
 
 
 def create_blocks(
@@ -2475,7 +2547,10 @@ def create_blocks(
                 _apply_zoom_deferred_js = """(zoom) => {
                     let tries = 0;
                     const t = setInterval(async () => {
-                        if (window.__obRenderMermaid) { await window.__obRenderMermaid(); }
+                        if (window.__obRenderMermaid && await window.__obRenderMermaid() < 0) {
+                            clearInterval(t);
+                            return;
+                        }
                         const el = document.querySelector('#er-diagram svg');
                         if (el) {
                             el.style.transform = 'scale(' + (zoom / 100) + ')';
@@ -2721,7 +2796,10 @@ def create_blocks(
                     + """;
                     let tries = 0;
                     const t = setInterval(async () => {
-                        if (window.__obRenderMermaid) { await window.__obRenderMermaid(); }
+                        if (window.__obRenderMermaid && await window.__obRenderMermaid() < 0) {
+                            clearInterval(t);
+                            return;
+                        }
                         if (document.querySelector('#lineage-diagram svg')) {
                             size(zoom);
                             clearInterval(t);
@@ -3308,6 +3386,14 @@ def create_blocks(
     # being restated at each site, where forgetting one is silent.
     demo.ob_frontend = frontend_assets(head_html)
 
+    # Gradio documents every public event as a client API and inlines that
+    # schema, code snippets included, into each page load: 10 MB for this app.
+    # Nobody drives the playground through the Gradio client (the REST API is
+    # the programmatic surface), so the events stay callable but undocumented.
+    for fn in demo.fns.values():
+        if fn.api_visibility == "public":
+            fn.api_visibility = "undocumented"
+
     return demo
 
 
@@ -3329,6 +3415,41 @@ def _reject_unknown_pages(app: FastAPI, root_path: str, pages: set[str]) -> None
         if page is not None and page not in pages and request.url.path.rstrip("/") == root:
             return PlainTextResponse("Not Found", status_code=404)
         return await call_next(request)
+
+
+def _proxied_app(demo: Any, root_path: str, favicon_file: Path) -> FastAPI:
+    """Wrap ``demo`` in a FastAPI app that mounts it under ``root_path``.
+
+    Gradio ignores ``favicon_path`` here (its default head template uses
+    absolute "/favicon.ico"), so the favicon is served by the wrapper and
+    linked from the head ``create_blocks`` was given.
+    """
+    from fastapi import FastAPI
+    from fastapi.middleware.gzip import GZipMiddleware
+    from fastapi.responses import FileResponse, PlainTextResponse
+
+    app = FastAPI()
+
+    @app.get(f"{root_path.rstrip('/')}/favicon.png", include_in_schema=False)
+    async def _favicon() -> FileResponse:
+        return FileResponse(favicon_file, media_type="image/png")
+
+    @app.get("/robots.txt", include_in_schema=False)
+    async def _robots() -> PlainTextResponse:
+        # The UI is an interactive app, not indexable content. When this
+        # service is fronted on its own host (rather than under /ui on the
+        # API host), serve a disallow-all so crawlers skip it.
+        return PlainTextResponse("User-agent: *\nDisallow: /\n")
+
+    # The page and the vendored mermaid and ACE bundles are several MB
+    # uncompressed. Starlette >=0.46 (the floor in pyproject.toml) leaves
+    # text/event-stream uncompressed, so the Gradio queue's SSE stream is not
+    # buffered.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+    _reject_unknown_pages(app, root_path, set(demo.config.get("page", {})))
+    mounted: FastAPI = gr.mount_gradio_app(app, demo, path=root_path, **demo.ob_frontend)
+    return mounted
 
 
 def create_ui() -> None:
@@ -3356,38 +3477,15 @@ def create_ui() -> None:
     set_api_credentials(api_key, api_key_header)
     _warn_if_auth_required_without_key(api_url or _DEFAULT_API_URL, api_key)
 
-    from pathlib import Path
-
     favicon_file = Path(__file__).resolve().parent / "favicon.png"
 
     if root_path:
         # Behind a reverse proxy / load balancer mounting Gradio under
-        # ``root_path``. Gradio ignores ``favicon_path`` here (its default
-        # head template uses absolute "/favicon.ico"), so we serve the
-        # favicon ourselves and inject a <link> tag into the head.
-        import gradio as gr
-        from fastapi import FastAPI
-        from fastapi.responses import FileResponse, PlainTextResponse
-
+        # ``root_path``; the wrapper serves the favicon this <link> points at.
         favicon_url = f"{root_path.rstrip('/')}/favicon.png"
         head_html = f'<link rel="icon" type="image/png" href="{favicon_url}">'
         demo = create_blocks(default_api_url=api_url, head_html=head_html)
-
-        app = FastAPI()
-
-        @app.get(favicon_url, include_in_schema=False)
-        async def _favicon() -> FileResponse:
-            return FileResponse(favicon_file, media_type="image/png")
-
-        @app.get("/robots.txt", include_in_schema=False)
-        async def _robots() -> PlainTextResponse:
-            # The UI is an interactive app, not indexable content. When this
-            # service is fronted on its own host (rather than under /ui on the
-            # API host), serve a disallow-all so crawlers skip it.
-            return PlainTextResponse("User-agent: *\nDisallow: /\n")
-
-        _reject_unknown_pages(app, root_path, set(demo.config.get("page", {})))
-        app = gr.mount_gradio_app(app, demo, path=root_path, **demo.ob_frontend)
+        app = _proxied_app(demo, root_path, favicon_file)
         uvicorn.run(
             app,
             host="0.0.0.0",

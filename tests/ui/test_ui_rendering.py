@@ -229,6 +229,108 @@ class TestTheERDiagramRenders:
         assert page.evaluate("() => typeof window.__obRenderMermaid") == "function"
 
 
+class TestTheVendoredBundlesLoadLate:
+    """mermaid and ACE arrive as files after the page, not inlined in it."""
+
+    def test_polls_during_a_slow_download_render_the_diagram_once(
+        self, playwright: Any, ui_url: str
+    ) -> None:
+        try:
+            browser = playwright.chromium.launch()
+        except Exception as exc:  # noqa: BLE001 - browser binary not installed
+            pytest.skip(f"no chromium available: {exc}")
+        try:
+            page = browser.new_page()
+            # Count mermaid.run calls: wrap it as the bundle installs mermaid.
+            page.add_init_script(
+                """window.__runs = 0;
+                Object.defineProperty(window, 'mermaid', {
+                    configurable: true,
+                    set(m) {
+                        const run = m.run.bind(m);
+                        m.run = (opts) => { window.__runs += 1; return run(opts); };
+                        Object.defineProperty(window, 'mermaid', {value: m, writable: true});
+                    },
+                });"""
+            )
+            # Hold the bundle back until the tab's polls have piled up behind it.
+            held: list[Any] = []
+            page.route("**/mermaid.min.js", lambda route: held.append(route))
+            page.goto(ui_url, wait_until="domcontentloaded")
+            page.wait_for_selector("role=tab[name='ER Diagram']", timeout=60_000)
+            page.get_by_role("tab", name="ER Diagram").click()
+            page.wait_for_selector("#er-diagram .mermaid", state="attached", timeout=30_000)
+            page.wait_for_timeout(1_000)
+            assert held, "the bundle was not requested"
+            for route in held:
+                route.continue_()
+            page.wait_for_selector("#er-diagram svg", timeout=30_000)
+            page.wait_for_timeout(1_000)
+            assert page.locator("#er-diagram svg").count() == 1
+            assert page.evaluate("() => window.__runs") == 1
+        finally:
+            browser.close()
+
+    def test_a_missing_renderer_is_explained_once(self, playwright: Any, ui_url: str) -> None:
+        try:
+            browser = playwright.chromium.launch()
+        except Exception as exc:  # noqa: BLE001 - browser binary not installed
+            pytest.skip(f"no chromium available: {exc}")
+        try:
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("console", lambda m: m.type == "error" and errors.append(m.text))
+            page.route("**/mermaid.min.js", lambda route: route.abort())
+            page.goto(ui_url, wait_until="domcontentloaded")
+            page.wait_for_selector("role=tab[name='ER Diagram']", timeout=60_000)
+            page.get_by_role("tab", name="ER Diagram").click()
+            page.wait_for_selector(
+                "#er-diagram .mermaid[data-processed='failed']", state="attached", timeout=30_000
+            )
+            page.wait_for_timeout(1_500)  # past the next polls
+            assert page.get_by_text("The diagram renderer could not be loaded").count() == 1
+            assert page.locator("#er-diagram svg").count() == 0
+            assert len([e for e in errors if "Diagram renderer" in e]) == 1
+            assert not [e for e in errors if "Diagram renderer" not in e and "mermaid" in e]
+        finally:
+            browser.close()
+
+    def test_the_sparql_editor_waits_for_its_tab(self, playwright: Any, ui_url: str) -> None:
+        """ACE measures its container; created in a hidden tab it would be 0x0.
+
+        The tab is opened before the bundle arrives, then left, so the bundle
+        lands while the editor's container is rendered but hidden.
+        """
+        try:
+            browser = playwright.chromium.launch()
+        except Exception as exc:  # noqa: BLE001 - browser binary not installed
+            pytest.skip(f"no chromium available: {exc}")
+        try:
+            page = browser.new_page()
+            held: list[Any] = []
+            page.route("**/ace-sparql.min.js", lambda route: held.append(route))
+            page.goto(ui_url, wait_until="domcontentloaded")
+            page.wait_for_selector("role=tab[name='SPARQL']", timeout=60_000)
+            page.get_by_role("tab", name="SPARQL").click()
+            page.wait_for_selector("#ob-sparql-ace", state="attached", timeout=30_000)
+            page.get_by_role("tab", name="ER Diagram").click()
+            page.wait_for_selector("#ob-sparql-ace", state="hidden", timeout=30_000)
+            assert held, "the bundle was not requested"
+            for route in held:
+                route.continue_()
+            page.wait_for_function("() => !!window.ace", timeout=30_000)
+            page.wait_for_timeout(500)
+            assert page.locator("#ob-sparql-ace.ace_editor").count() == 0
+            page.get_by_role("tab", name="SPARQL").click()
+            page.wait_for_selector("#ob-sparql-ace.ace_editor", timeout=30_000)
+            box = page.locator("#ob-sparql-ace .ace_content").bounding_box()
+            assert box is not None
+            assert box["width"] > 0
+            assert box["height"] > 0
+        finally:
+            browser.close()
+
+
 class TestTheActionButtons:
     """Compact, one line each. They were full-width and wrapping."""
 
