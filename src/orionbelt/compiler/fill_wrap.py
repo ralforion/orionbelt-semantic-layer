@@ -52,9 +52,10 @@ from orionbelt.compiler.resolution import (
     ResolvedDimension,
     ResolvedMeasure,
     ResolvedQuery,
+    make_column_expr,
     make_dimension_expr,
 )
-from orionbelt.compiler.time_lookback import null_safe_eq, time_filters
+from orionbelt.compiler.time_lookback import null_safe_eq
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.models.types import parse_data_type
@@ -256,16 +257,22 @@ def _bounds(
     column_type = declared.value
     if column_type not in ("date", "timestamp"):
         return None, None
+    if time.via is not None:
+        return None, None
+    column = make_column_expr(model, time.object_name, time.column_name)
     lowers: list[Expr] = []
     uppers: list[Expr] = []
-    for filtered in time_filters(resolved, time.name):
-        for predicate in conjuncts(filtered):
-            if isinstance(predicate, Between) and not predicate.negated:
-                lowers.append(predicate.low)
-                uppers.append(predicate.high)
-            elif isinstance(predicate, BinaryOp) and predicate.op in (">", ">="):
+    # Conjunct by conjunct: a group that also filters another column has no
+    # single subject, and its comparisons on the time column bound it all the
+    # same.
+    for predicate in (p for f in resolved.where_filters for p in conjuncts(f.expression)):
+        if isinstance(predicate, Between) and not predicate.negated and predicate.expr == column:
+            lowers.append(predicate.low)
+            uppers.append(predicate.high)
+        elif isinstance(predicate, BinaryOp) and predicate.left == column:
+            if predicate.op in (">", ">="):
                 lowers.append(predicate)
-            elif isinstance(predicate, BinaryOp) and predicate.op in ("<", "<="):
+            elif predicate.op in ("<", "<="):
                 uppers.append(predicate)
 
     def at(value: Expr) -> Expr:

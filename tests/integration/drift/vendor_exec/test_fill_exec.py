@@ -167,7 +167,12 @@ def _assert_all(target: VendorTarget) -> None:
         {"field": "Order Month", "op": "gte", "value": "2023-12-15"},
         {"field": "Order Month", "op": "lt", "value": "2024-05-01"},
     ]
-    for where in (bounds, [{"logic": "and", "filters": bounds}]):
+    r1 = {"field": "Region", "op": "equals", "value": "r1"}
+    for where in (
+        bounds,
+        [{"logic": "and", "filters": bounds}],
+        [{"logic": "and", "filters": [bounds[0], r1, bounds[1]]}],
+    ):
         assert [row[0] for row in _filled(target, model, ["Order Month"], where)] == [
             DEC,
             JAN,

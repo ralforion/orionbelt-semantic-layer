@@ -241,6 +241,32 @@ def test_bounds_in_an_and_group_set_the_range(
     assert [row[0] for row in rows] == [DEC, JAN, FEB, MAR, APR]
 
 
+def test_bounds_in_an_and_group_with_another_column_set_the_range(
+    con: duckdb.DuckDBPyConnection, model: SemanticModel
+) -> None:
+    """A group that also filters the region has no single subject; its date
+    conjuncts are bounds all the same."""
+    rows = _rows(
+        con,
+        model,
+        {
+            "select": {"dimensions": ["Order Month"], "measures": ["Orders Count"]},
+            "where": [
+                {
+                    "logic": "and",
+                    "filters": [
+                        {"field": "Order Month", "op": "gte", "value": "2023-12-15"},
+                        {"field": "Region", "op": "equals", "value": "r1"},
+                        {"field": "Order Month", "op": "lt", "value": "2024-05-01"},
+                    ],
+                }
+            ],
+            "orderBy": [{"field": "Order Month"}],
+        },
+    )
+    assert rows == [(DEC, 0), (JAN, 1), (FEB, 0), (MAR, 0), (APR, 0)]
+
+
 @pytest.mark.parametrize(
     ("bound", "periods"),
     [
