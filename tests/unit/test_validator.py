@@ -15,6 +15,7 @@ from orionbelt.compiler.validator import (
     validate_sql,
 )
 from orionbelt.dialect import DialectRegistry
+from orionbelt.dialect.clickhouse import STATEMENT_SETTINGS
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
@@ -94,6 +95,81 @@ def test_pipeline_returns_sql_even_when_invalid() -> None:
     # SQL is always returned regardless of validation
     assert result.sql != ""
     assert isinstance(result.sql_valid, bool)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "SELECT a, SUM(b) AS s FROM t GROUP BY ALL",
+        "SELECT a, SUM(b) AS s FROM t GROUP BY a WITH ROLLUP",
+    ],
+    ids=["group-by-all", "with-rollup"],
+)
+def test_the_clickhouse_settings_suffix_validates_and_formats(body: str) -> None:
+    """sqlglot rejects ``SETTINGS`` after these, which ClickHouse accepts: the
+    statement is checked without it, and formatted with it kept."""
+    sql = f"{body}\n{STATEMENT_SETTINGS}"
+    assert validate_sql(sql, "clickhouse") == []
+    assert format_sql(sql, "clickhouse").endswith(f"\n{STATEMENT_SETTINGS}")
+
+
+def test_a_clickhouse_statement_with_a_left_join_reads_null_for_an_unmatched_row() -> None:
+    query = QueryObject(
+        select=QuerySelect(dimensions=["Customer Country"], measures=["Total Revenue"])
+    )
+    result = CompilationPipeline().compile(query, _load_model(), "clickhouse")
+    assert "LEFT JOIN" in result.sql
+    assert result.sql.endswith(f"\n{STATEMENT_SETTINGS}")
+    assert result.sql_valid
+
+
+def test_a_clickhouse_statement_without_a_join_sets_nothing() -> None:
+    """A ``readonly = 1`` user may not change a setting, and without an outer
+    join the setting changes nothing: such a statement goes without it."""
+    query = QueryObject(select=QuerySelect(measures=["Total Revenue"]))
+    result = CompilationPipeline().compile(query, _load_model(), "clickhouse")
+    assert "JOIN" not in result.sql
+    assert "SETTINGS" not in result.sql
+
+
+_JOIN_WORDS_MODEL = """
+version: "1.0"
+name: join_words
+dataObjects:
+  Orders:
+    code: orders
+    columns:
+      Order Id: {code: id, abstractType: string, primaryKey: true}
+      Label: {code: label, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+dimensions:
+  Label: {dataObject: Orders, column: Label, resultType: string}
+measures:
+  Left Join Amount:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+    resultType: float
+"""
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["LEFT JOIN", "it's a FULL OUTER JOIN", "back\\slash' RIGHT JOIN"],
+    ids=["literal", "quote-in-literal", "backslash-in-literal"],
+)
+def test_join_words_in_a_literal_or_an_alias_set_nothing(label: str) -> None:
+    """Only an outer join gets the setting: the words in a string or a quoted
+    name are no join, and a ``readonly = 1`` user would be refused for them."""
+    raw, source_map = TrackedLoader().load_string(_JOIN_WORDS_MODEL)
+    model, validation = ReferenceResolver().resolve(raw, source_map)
+    assert validation.valid, validation.errors
+    query = QueryObject(
+        select=QuerySelect(dimensions=["Label"], measures=["Left Join Amount"]),
+        where=[{"field": "Label", "op": "equals", "value": label}],
+    )
+    result = CompilationPipeline().compile(query, model, "clickhouse")
+    assert "JOIN" in result.sql
+    assert "SETTINGS" not in result.sql
 
 
 _PARITY_SQL = [

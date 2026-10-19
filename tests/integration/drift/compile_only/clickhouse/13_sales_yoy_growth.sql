@@ -50,3 +50,4 @@ SELECT "pop_base"."Sales Month" AS "Sales Month",
 )
 SELECT "Sales Month" AS "Sales Month", CAST(round(toDecimal256(toString("Sales YoY Growth"), 5), 4) AS Nullable(Decimal(18, 4))) AS "Sales YoY Growth"
 FROM "pop_compare" AS "pop_compare"
+SETTINGS join_use_nulls = 1

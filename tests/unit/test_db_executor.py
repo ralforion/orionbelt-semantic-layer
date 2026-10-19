@@ -400,6 +400,36 @@ class TestExecuteSql:
             execute_sql("SELECT 1", dialect="postgres")
 
     @_needs_ob_flight
+    def test_a_readonly_clickhouse_user_is_told_what_to_change(self) -> None:
+        """The statement's own ``SETTINGS join_use_nulls = 1`` refused for a
+        ``readonly = 1`` user: the error says which setting to put where."""
+
+        def execute(sql: str, *args: object, **kwargs: object) -> None:
+            if "SETTINGS join_use_nulls" in sql:
+                raise RuntimeError(
+                    "Code: 164. DB::Exception: Cannot modify 'join_use_nulls' setting "
+                    "in readonly mode. (READONLY)"
+                )
+
+        mock_cursor = MagicMock()
+        mock_cursor.execute.side_effect = execute
+        del mock_cursor.fetch_arrow_table
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with (
+            patch(
+                "ob_flight.db_router.get_connection",
+                side_effect=_mock_get_connection(mock_conn),
+                create=True,
+            ),
+            pytest.raises(
+                ExecutionError, match="in the user's settings profile, or use readonly = 2"
+            ),
+        ):
+            execute_sql("SELECT 1\nSETTINGS join_use_nulls = 1", dialect="clickhouse")
+
+    @_needs_ob_flight
     def test_unsupported_dialect_raises_unavailable(self) -> None:
         def _raise_key_error(dialect: str, **kw):  # noqa: ARG001
             raise KeyError("Unsupported dialect: 'mysql'")

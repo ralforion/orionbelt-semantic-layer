@@ -3,3 +3,4 @@ FROM "orionbelt_1"."sales" AS "Sales"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid" = "Countries"."countryid"
 GROUP BY ALL
+SETTINGS join_use_nulls = 1

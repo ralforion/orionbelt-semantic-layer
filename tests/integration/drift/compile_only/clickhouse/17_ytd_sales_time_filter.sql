@@ -20,3 +20,4 @@ LEFT JOIN "cumulative_window" AS "cumulative_window" ON isNotDistinctFrom("cumul
 )
 SELECT "Sales Month" AS "Sales Month", "Total Sales" AS "Total Sales", CAST(round(toDecimal256(toString("YTD Sales"), 3), 2) AS Nullable(Decimal(18, 2))) AS "YTD Sales"
 FROM "cumulative_joined" AS "cumulative_joined"
+SETTINGS join_use_nulls = 1

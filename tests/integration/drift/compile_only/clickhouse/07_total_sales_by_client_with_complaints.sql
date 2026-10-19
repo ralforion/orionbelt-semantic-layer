@@ -11,3 +11,4 @@ SELECT COALESCE("Sales Client Name", "Complaint Client Name") AS "Client", CAST(
 FROM "composite_01" AS "composite_01"
 GROUP BY ALL
 HAVING accurateCast(trunc(COUNT("composite_01"."Client Complaints Count")), 'Nullable(Int32)') > 0
+SETTINGS join_use_nulls = 1

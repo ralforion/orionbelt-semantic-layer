@@ -13,3 +13,4 @@ LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid
 SELECT "Sales Country Name" AS "Sales Country Name", CAST(round(toDecimal256(toString(SUM("composite_01"."Total Sales")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales", CAST(round(toDecimal256(toString(SUM("composite_01"."Total Returns")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Returns"
 FROM "composite_01" AS "composite_01"
 GROUP BY ALL
+SETTINGS join_use_nulls = 1

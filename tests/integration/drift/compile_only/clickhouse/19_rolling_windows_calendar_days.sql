@@ -22,3 +22,4 @@ LEFT JOIN "cumulative_rolling" AS "cumulative_rolling" ON isNotDistinctFrom("cum
 )
 SELECT "Sales Date" AS "Sales Date", "Total Sales" AS "Total Sales", CAST(round(toDecimal256(toString("Rolling 30 Day Sales"), 1), 0) AS Nullable(Decimal(18, 0))) AS "Rolling 30 Day Sales", CAST(round(toDecimal256(toString("Peak Daily Sales 30D"), 3), 2) AS Nullable(Decimal(18, 2))) AS "Peak Daily Sales 30D"
 FROM "cumulative_joined" AS "cumulative_joined"
+SETTINGS join_use_nulls = 1

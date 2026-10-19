@@ -2,3 +2,4 @@ SELECT splitByString('@', toString("Clients"."clientemail"))[2] AS "Sales Client
 FROM "orionbelt_1"."sales" AS "Sales"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 GROUP BY ALL
+SETTINGS join_use_nulls = 1

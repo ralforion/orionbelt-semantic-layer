@@ -16,6 +16,7 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
     RawSQL,
+    Select,
     UnaryOp,
     Unnest,
     WindowFunction,
@@ -30,6 +31,26 @@ from orionbelt.dialect.base import (
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
+
+#: Ends a statement with an outer join: an unmatched row reads NULL, as on
+#: every engine.
+STATEMENT_SETTINGS = "SETTINGS join_use_nulls = 1"
+
+# Every outer join the compiler writes, through the AST or as raw SQL. A
+# ``LEFT ARRAY JOIN`` (an outer unnest) is not one: the setting leaves it be.
+_OUTER_JOIN = re.compile(r"\b(?:LEFT|RIGHT|FULL)\s+(?:OUTER\s+)?JOIN\b", re.IGNORECASE)
+
+# What the join words may appear in without being a join: a string (quotes
+# doubled or backslash-escaped), a quoted name, a comment. Matched left to
+# right, so a quote inside one of them does not start another.
+_NOT_SQL = re.compile(
+    r"'(?:[^'\\]|\\.|'')*'"
+    r'|"(?:[^"]|"")*"'
+    r"|`(?:[^`]|``)*`"
+    r"|--[^\n]*"
+    r"|/\*.*?\*/",
+    re.DOTALL,
+)
 
 _GRAIN_FUNCTIONS: dict[TimeGrain, str] = {
     TimeGrain.YEAR: "toStartOfYear",
@@ -397,6 +418,26 @@ class ClickHouseDialect(Dialect):
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
+
+    def compile(self, ast: Select) -> str:
+        """The statement, reading NULL where a LEFT JOIN finds no row.
+
+        ClickHouse's default (``join_use_nulls = 0``) fills an unmatched
+        right-side column with its type's default instead: an order without a
+        customer was in a region ``''`` with a credit of 0, and ``Region is
+        null`` dropped it. The setting is on the statement, so it holds for
+        every join in it, CTEs included, and travels with the SQL.
+
+        A ``readonly = 1`` user may not change a setting, so a statement
+        without an outer join, which the setting does not affect, goes without
+        it. With one, such a user needs ``join_use_nulls = 1`` in the profile
+        (then the clause changes nothing and is accepted) or ``readonly = 2``;
+        refusing is right there, as the join would read defaults otherwise.
+        """
+        sql = super().compile(ast)
+        if not _OUTER_JOIN.search(_NOT_SQL.sub(" ", sql)):
+            return sql
+        return f"{sql}\n{STATEMENT_SETTINGS}"
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         func_name = _GRAIN_FUNCTIONS.get(grain)
