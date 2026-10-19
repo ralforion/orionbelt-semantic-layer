@@ -45,13 +45,13 @@ from orionbelt.ast.nodes import (
     SubqueryExpr,
     UnionAll,
 )
-from orionbelt.compiler.expr_rewrite import collect_referenced_tables, map_nodes
+from orionbelt.compiler.expr_rewrite import collect_referenced_tables
+from orionbelt.compiler.filter_resolution import conjuncts
 from orionbelt.compiler.outer_order_by import remap_order_by
 from orionbelt.compiler.resolution import (
     ResolvedDimension,
     ResolvedMeasure,
     ResolvedQuery,
-    make_column_expr,
     make_dimension_expr,
 )
 from orionbelt.compiler.time_lookback import null_safe_eq, time_filters
@@ -74,7 +74,9 @@ def wrap_with_fill(
     """Join *ast*'s rows onto every period of the time dimension."""
     time = next(d for d in resolved.dimensions if d.grain is not None)
     assert time.grain is not None  # resolution refuses fill without one
-    others = [d.name for d in resolved.dimensions if d is not time]
+    # A coalesce group is one column of the result, under its alias.
+    others = list(dict.fromkeys(d.coalesce_alias or d.name for d in resolved.dimensions))
+    others.remove(time.name)
     measures = {m.name: m for m in resolved.measures}
     aliases = [_alias(column) for column in ast.columns]
 
@@ -244,41 +246,61 @@ def _bounds(
 
     Each bound is read as a value of the time column and projected the way the
     dimension is (grain and cast), so it compares with the query's periods.
-    Only a single constant bound on each side is read; anything else (two lower
-    bounds, a relative range, an equality) leaves that side to the data.
+    Only a single constant bound on each side is read, at the top level or in
+    an ``and`` group; anything else (two lower bounds, a relative range, an
+    equality) leaves that side to the data.
     """
-    column = make_column_expr(model, time.object_name, time.column_name)
+    assert time.grain is not None
+    grain = time.grain
     declared = model.data_objects[time.object_name].columns[time.column_name].abstract_type
-    if declared.value not in ("date", "timestamp"):
+    column_type = declared.value
+    if column_type not in ("date", "timestamp"):
         return None, None
     lowers: list[Expr] = []
     uppers: list[Expr] = []
-    for predicate in time_filters(resolved, time.name):
-        if isinstance(predicate, Between) and not predicate.negated:
-            lowers.append(predicate.low)
-            uppers.append(predicate.high)
-        elif isinstance(predicate, BinaryOp) and predicate.op in (">", ">="):
-            lowers.append(predicate)
-        elif isinstance(predicate, BinaryOp) and predicate.op in ("<", "<="):
-            uppers.append(predicate)
+    for filtered in time_filters(resolved, time.name):
+        for predicate in conjuncts(filtered):
+            if isinstance(predicate, Between) and not predicate.negated:
+                lowers.append(predicate.low)
+                uppers.append(predicate.high)
+            elif isinstance(predicate, BinaryOp) and predicate.op in (">", ">="):
+                lowers.append(predicate)
+            elif isinstance(predicate, BinaryOp) and predicate.op in ("<", "<="):
+                uppers.append(predicate)
+
+    def at(value: Expr) -> Expr:
+        return make_dimension_expr(model, time, dialect, column=value)
+
+    def day_after(value: Expr, days: int) -> Expr:
+        # RawSQL: the dialect's date arithmetic, over a constant bound.
+        return RawSQL(sql=dialect.date_add_sql(dialect.compile_expr(value), "day", days))
 
     def period(values: list[Expr]) -> Expr | None:
         if len(values) != 1:
             return None
-        bound, step = values[0], 0
+        bound, op = values[0], None
         if isinstance(bound, BinaryOp):
-            # A strict bound excludes its own day: ``> Nov 30`` starts in
-            # December, and ``< May 1`` ends in April.
-            step = {">": 1, "<": -1}.get(bound.op, 0)
+            op = bound.op
             bound = bound.right
         if not _constant(bound):
             return None
-        typed: Expr = Cast(expr=bound, type_name=declared.value)
-        if step:
-            # RawSQL: the dialect's date arithmetic, over a constant bound.
-            typed = RawSQL(sql=dialect.date_add_sql(dialect.compile_expr(typed), "day", step))
-        projected = make_dimension_expr(model, time, dialect)
-        return map_nodes(projected, lambda node: typed if node == column else None)
+        typed: Expr = Cast(expr=bound, type_name=column_type)
+        if op == ">" and column_type == "date":
+            # ``> Nov 30`` starts in December.
+            return at(day_after(typed, 1))
+        if op == "<" and column_type == "date":
+            # ``< May 1`` ends in April, ``< May 15`` in May.
+            return at(day_after(typed, -1))
+        if op == "<":
+            # ``< Apr 1 12:00`` admits April's first hours, ``< Apr 1 00:00``
+            # none of them: the period is the bound's own unless the bound
+            # starts it. (``> ts`` always admits the rest of ts's period.)
+            start = Cast(expr=dialect.render_time_grain(typed, grain), type_name=column_type)
+            return CaseExpr(
+                when_clauses=[(BinaryOp(start, "=", typed), at(day_after(typed, -1)))],
+                else_clause=at(typed),
+            )
+        return at(typed)
 
     return period(lowers), period(uppers)
 

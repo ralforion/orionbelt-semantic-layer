@@ -229,6 +229,7 @@ def make_dimension_expr(
     model: SemanticModel,
     dim: ResolvedDimension,
     dialect: Dialect | None = None,
+    column: Expr | None = None,
 ) -> Expr:
     """The expression a dimension is projected and grouped by.
 
@@ -252,8 +253,13 @@ def make_dimension_expr(
     Every planner and wrapper renders a dimension through here, so the SELECT
     and the GROUP BY cannot drift apart, which is what eight copies of these
     three lines were free to do.
+
+    *column* stands in for the dimension's column, to project another value
+    (a filter's bound, say) the way the dimension projects its own.
     """
-    col = make_column_expr(model, dim.object_name, dim.column_name)
+    col = (
+        column if column is not None else make_column_expr(model, dim.object_name, dim.column_name)
+    )
     if not dim.grain or dialect is None:
         return col
     col = dialect.render_time_grain(col, dim.grain)
@@ -2327,9 +2333,14 @@ class QueryResolver:
         result = ctx.result
         grains = [(d.name, d.grain) for d in result.dimensions if d.grain is not None]
         declared = [ctx.model.dimensions.get(d.dimension) for d in result.dimensions if d.grain]
-        if len(grains) != 1 or any(
-            dim is None or dim.result_type not in (DataType.DATE, DataType.TIMESTAMP)
-            for dim in declared
+        coalesced = any(d.grain and d.coalesce_alias for d in result.dimensions)
+        if (
+            coalesced
+            or len(grains) != 1
+            or any(
+                dim is None or dim.result_type not in (DataType.DATE, DataType.TIMESTAMP)
+                for dim in declared
+            )
         ):
             ctx.errors.append(
                 SemanticError(
@@ -2337,7 +2348,8 @@ class QueryResolver:
                     message=(
                         f"fill returns every period of the query's time dimension, so the "
                         f"query has to select exactly one dimension at a time grain, with "
-                        f"resultType date or timestamp; it selects {len(grains)} at a grain."
+                        f"resultType date or timestamp and outside a coalesce group; it "
+                        f"selects {len(grains)} at a grain."
                     ),
                     path="fill",
                     hint="Select one time dimension at a grain, such as 'Order Date:month'.",

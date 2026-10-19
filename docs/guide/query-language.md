@@ -433,7 +433,7 @@ of its time dimension, also those without:
 | | |
 |---|---|
 | **Time dimension** | Exactly one selected dimension at a time grain of a day or longer, with `resultType` `date` or `timestamp` |
-| **Range** | From the `where` bounds on that dimension's column (`gte`, `gt`, `lte`, `lt`, `between`): `gte 2023-12-15` starts in December, `lt 2024-05-01` ends in April. A side without a single constant bound runs to the first or last period with data. The range never cuts the data off |
+| **Range** | From the `where` bounds on that dimension's column (`gte`, `gt`, `lte`, `lt`, `between`): `gte 2023-12-15` starts in December, `lt 2024-05-01` ends in April, and on a `timestamp` column `lt 2024-04-01 12:00:00` ends in April, which it admits half a day of. Bounds count at the top level and inside a `logic: and` group. A side without a single constant bound runs to the first or last period with data. The range never cuts the data off |
 | **Other dimensions** | Crossed with the periods: every member the query returns, a NULL member included, gets every period |
 | **Empty values** | A count is `0`, a measure with a `defaultValue` reads it, anything else is `NULL`, a derived metric included |
 | **Rows without a period** | A row whose time is NULL (an order without a date) stays a row of its own |
@@ -883,7 +883,7 @@ Invalid queries return error responses:
 | `AMBIGUOUS_JOIN` | 422 | Multiple join paths possible |
 | `DIMENSIONS_EXCLUDE_WITH_MEASURES` | 400 | `dimensionsExclude` used with measures |
 | `DIMENSIONS_EXCLUDE_INSUFFICIENT` | 400 | `dimensionsExclude` with fewer than 2 dimensions |
-| `FILL_REQUIRES_ONE_TIME_DIMENSION` | 400 | `fill` without exactly one time-grained dimension typed `date` or `timestamp` |
+| `FILL_REQUIRES_ONE_TIME_DIMENSION` | 400 | `fill` without exactly one time-grained dimension typed `date` or `timestamp`, or with it inside a coalesce group |
 | `FILL_GRAIN_NOT_SUPPORTED` | 400 | `fill` over an hour, minute or second grain |
 | `FILL_COMBINATION_NOT_SUPPORTED` | 400 | `fill` with ROLLUP / CUBE, `having`, a total, or a cumulative, window or period-over-period metric |
 

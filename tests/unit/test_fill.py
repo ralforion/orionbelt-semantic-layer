@@ -73,6 +73,14 @@ dimensions:
   Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}
   Order Day: {dataObject: Orders, column: Order Date, resultType: date}
   Order Hour: {dataObject: Orders, column: Order Time, resultType: timestamp, timeGrain: hour}
+  Order Time Month:
+    dataObject: Orders
+    column: Order Time
+    resultType: timestamp
+    timeGrain: month
+  Order Week: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: week}
+  Order Ref: {dataObject: Orders, column: Order Id, resultType: string}
+  Return Ref: {dataObject: Returns, column: Return Id, resultType: string}
   Month: {dataObject: Calendar, column: Day, resultType: date, timeGrain: month}
 measures:
   Revenue:
@@ -132,6 +140,7 @@ def con() -> duckdb.DuckDBPyConnection:
         " t(id, region_id, order_date, amount)"
     )
     con.execute("ALTER TABLE orders ADD COLUMN order_time TIMESTAMP")
+    con.execute("UPDATE orders SET order_time = order_date + INTERVAL 10 HOUR")
     con.execute(
         "CREATE TABLE returns AS SELECT * FROM (VALUES"
         " ('x1', DATE '2024-04-02', 5.0)) t(id, return_date, refund)"
@@ -206,6 +215,102 @@ def test_the_where_bounds_set_the_range(
         },
     )
     assert [row[0] for row in rows] == periods
+
+
+def test_bounds_in_an_and_group_set_the_range(
+    con: duckdb.DuckDBPyConnection, model: SemanticModel
+) -> None:
+    """The bounds read the same inside ``logic: and`` as at the top level."""
+    rows = _rows(
+        con,
+        model,
+        {
+            "select": {"dimensions": ["Order Month"], "measures": ["Orders Count"]},
+            "where": [
+                {
+                    "logic": "and",
+                    "filters": [
+                        {"field": "Order Month", "op": "gte", "value": "2023-12-15"},
+                        {"field": "Order Month", "op": "lt", "value": "2024-05-01"},
+                    ],
+                }
+            ],
+            "orderBy": [{"field": "Order Month"}],
+        },
+    )
+    assert [row[0] for row in rows] == [DEC, JAN, FEB, MAR, APR]
+
+
+@pytest.mark.parametrize(
+    ("bound", "periods"),
+    [
+        (("lt", "2024-04-01 12:00:00"), [JAN, FEB, MAR, APR]),
+        (("lt", "2024-04-01 00:00:00"), [JAN, FEB, MAR]),
+        (("gt", "2023-12-31 12:00:00"), [DEC, JAN, FEB, MAR]),
+    ],
+    ids=["lt-inside-a-period", "lt-a-period-start", "gt-inside-a-period"],
+)
+def test_a_strict_timestamp_bound_keeps_a_partly_admitted_period(
+    con: duckdb.DuckDBPyConnection, model: SemanticModel, bound: tuple, periods: list
+) -> None:
+    """``< 2024-04-01 12:00`` admits April's first half day, so April is a
+    period; ``< 2024-04-01 00:00`` admits none of it."""
+    op, value = bound
+    rows = _rows(
+        con,
+        model,
+        {
+            "select": {"dimensions": ["Order Time Month"], "measures": ["Orders Count"]},
+            "where": [{"field": "Order Time Month", "op": op, "value": value}],
+            "orderBy": [{"field": "Order Time Month"}],
+        },
+    )
+    assert [row[0].date() for row in rows if row[0] is not None] == periods
+
+
+def test_a_weekly_fill_reads_its_bounds(
+    con: duckdb.DuckDBPyConnection, model: SemanticModel
+) -> None:
+    rows = _rows(
+        con,
+        model,
+        {
+            "select": {"dimensions": ["Order Week"], "measures": ["Orders Count"]},
+            "where": [
+                {"field": "Order Week", "op": "between", "value": ["2024-02-20", "2024-03-10"]}
+            ],
+            "orderBy": [{"field": "Order Week"}],
+        },
+    )
+    assert rows == [
+        (date(2024, 2, 19), 0),
+        (date(2024, 2, 26), 1),
+        (date(2024, 3, 4), 1),
+    ]
+
+
+def test_a_coalesced_dimension_is_a_member(
+    con: duckdb.DuckDBPyConnection, model: SemanticModel
+) -> None:
+    """Each leg's reference is one ``Ref`` member, filled like any other."""
+    rows = _rows(
+        con,
+        model,
+        {
+            "select": {
+                "dimensions": [{"coalesce": ["Order Ref", "Return Ref"], "as": "Ref"}, "Month"],
+                "measures": ["Revenue", "Refunds"],
+            },
+            "orderBy": [{"field": "Ref"}, {"field": "Month"}],
+        },
+    )
+    assert [row for row in rows if row[0] == "x1"] == [
+        ("x1", JAN, *_d(None, None)),
+        ("x1", FEB, *_d(None, None)),
+        ("x1", MAR, *_d(None, None)),
+        ("x1", APR, *_d(None, 5)),
+    ]
+    assert len(rows) == 5 * 4 + 1  # five refs over four months, o3 without one
 
 
 def test_a_bound_inside_the_data_does_not_cut_it_off(
@@ -313,6 +418,15 @@ def test_independent_facts_are_filled_together(
         ),
         ({"select": {"fields": ["Orders.Amount"]}}, "FILL_REQUIRES_ONE_TIME_DIMENSION"),
         (
+            {
+                "select": {
+                    "dimensions": [{"coalesce": ["Order Month", "Order Day"], "as": "When"}],
+                    "measures": ["Revenue"],
+                }
+            },
+            "FILL_REQUIRES_ONE_TIME_DIMENSION",
+        ),
+        (
             {"select": {"dimensions": ["Order Hour"], "measures": ["Revenue"]}},
             "FILL_GRAIN_NOT_SUPPORTED",
         ),
@@ -339,7 +453,17 @@ def test_independent_facts_are_filled_together(
             "FILL_COMBINATION_NOT_SUPPORTED",
         ),
     ],
-    ids=["no-time", "two-times", "raw", "hour", "rollup", "having", "total", "cumulative"],
+    ids=[
+        "no-time",
+        "two-times",
+        "raw",
+        "coalesced-time",
+        "hour",
+        "rollup",
+        "having",
+        "total",
+        "cumulative",
+    ],
 )
 def test_refused(model: SemanticModel, query: dict, code: str) -> None:
     with pytest.raises(ResolutionError) as raised:

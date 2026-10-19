@@ -67,6 +67,7 @@ dimensions:
     column: Order Time
     resultType: timestamp
     timeGrain: month
+  Order Week: {{dataObject: Orders, column: Order Date, resultType: date, timeGrain: week}}
 measures:
   Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
@@ -166,12 +167,23 @@ def _assert_all(target: VendorTarget) -> None:
         {"field": "Order Month", "op": "gte", "value": "2023-12-15"},
         {"field": "Order Month", "op": "lt", "value": "2024-05-01"},
     ]
-    assert [row[0] for row in _filled(target, model, ["Order Month"], bounds)] == [
-        DEC,
-        JAN,
-        FEB,
-        MAR,
-        APR,
+    for where in (bounds, [{"logic": "and", "filters": bounds}]):
+        assert [row[0] for row in _filled(target, model, ["Order Month"], where)] == [
+            DEC,
+            JAN,
+            FEB,
+            MAR,
+            APR,
+        ], target.name
+    for value, last in (("2024-04-01 12:00:00", APR), ("2024-04-01 00:00:00", MAR)):
+        before = [{"field": "Order Time Month", "op": "lt", "value": value}]
+        periods = [row[0] for row in _filled(target, model, ["Order Time Month"], before)]
+        assert periods[-1] == last, f"{target.name} < {value}"
+    weeks = [{"field": "Order Week", "op": "between", "value": ["2024-02-20", "2024-03-10"]}]
+    assert [(r[0], r[3]) for r in _filled(target, model, ["Order Week"], weeks)] == [
+        (date(2024, 2, 19), 0),
+        (date(2024, 2, 26), 1),
+        (date(2024, 3, 4), 1),
     ], target.name
     by_region = _filled(
         target,
