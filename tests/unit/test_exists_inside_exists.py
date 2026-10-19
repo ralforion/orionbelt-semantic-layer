@@ -236,3 +236,95 @@ def test_lineage_follows_the_inner_subqueries() -> None:
     sources = {edge.source for edge in lineage.edges if edge.label == "exists"}
     assert {"data_object:Orders", "data_object:Closures"} <= sources
     assert any("Stores" in source for source in sources)
+
+
+POPULATION_YAML = """
+version: "1.0"
+name: exists_inside_exists_population
+dataObjects:
+  Regions:
+    code: regions
+    columns:
+      Region Id: {code: id, abstractType: string, primaryKey: true}
+      Region Name: {code: name, abstractType: string}
+  Countries:
+    code: countries
+    columns:
+      Country Id: {code: id, abstractType: string, primaryKey: true}
+      Country Region Id: {code: region_id, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Regions
+        columnsFrom: [Country Region Id]
+        columnsTo: [Region Id]
+  Customers:
+    code: customers
+    columns:
+      Customer Id: {code: id, abstractType: string, primaryKey: true}
+      Customer Country Id: {code: country_id, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Countries
+        columnsFrom: [Customer Country Id]
+        columnsTo: [Country Id]
+  Orders:
+    code: orders
+    columns:
+      Order Customer Id: {code: customer_id, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer Id]
+        columnsTo: [Customer Id]
+dimensions:
+  Customer: {dataObject: Customers, column: Customer Id, resultType: string}
+measures:
+  Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+    resultType: float
+    defaultValue: 0
+metrics:
+  Average Customer Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: avg
+    population: dimension
+"""
+
+
+def test_a_dimension_population_keeps_an_inner_test() -> None:
+    """Customers in a northern country: k1 (40) and k2 (no orders, 0), an
+    average of 20. The population query read the inner field ``Country Id``
+    as an outer field, could not resolve it, and dropped the whole test from
+    the population: k3 (50) came back in."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE regions (id VARCHAR, name VARCHAR)")
+    con.execute("INSERT INTO regions VALUES ('r1', 'North'), ('r2', 'South')")
+    con.execute("CREATE TABLE countries (id VARCHAR, region_id VARCHAR)")
+    con.execute("INSERT INTO countries VALUES ('c1', 'r1'), ('c2', 'r2')")
+    con.execute("CREATE TABLE customers (id VARCHAR, country_id VARCHAR)")
+    con.execute("INSERT INTO customers VALUES ('k1', 'c1'), ('k2', 'c1'), ('k3', 'c2')")
+    con.execute("CREATE TABLE orders (customer_id VARCHAR, amount DOUBLE)")
+    con.execute("INSERT INTO orders VALUES ('k1', 40), ('k3', 50)")
+    raw, source_map = TrackedLoader().load_string(POPULATION_YAML)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    north = [{"field": "Region Name", "op": "equals", "value": "North"}]
+    query = QueryObject(
+        **{
+            "select": {"measures": ["Average Customer Revenue"]},
+            "where": [
+                _exists(
+                    "exists",
+                    "Customers.Customer Id",
+                    "Countries",
+                    [_exists("exists", "Country Id", "Regions", north)],
+                )
+            ],
+        }
+    )
+    sql = CompilationPipeline().compile(query, model, "duckdb").sql
+    assert con.execute(sql).fetchall() == [(20.0,)]

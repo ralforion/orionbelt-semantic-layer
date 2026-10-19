@@ -95,6 +95,7 @@ from orionbelt.models.query import (
     QueryFilterGroup,
     QueryObject,
     QuerySelect,
+    Subquery,
     time_per_entries,
 )
 from orionbelt.models.semantic import (
@@ -727,18 +728,32 @@ def _filter_objects(item: QueryFilter, model: SemanticModel) -> set[str] | None:
     if found is None:
         return None
     if item.subquery is not None:
-        inner = item.subquery
-        found.add(inner.data_object)
-        for sub in inner.filter:
-            ref = _resolve_subquery_filter_field(sub.field, model, inner.data_object, [])
-            if ref is None:
-                return None
+        inner = _subquery_objects(item.subquery, model)
+        if inner is None:
+            return None
+        found |= inner
+    return found
+
+
+def _subquery_objects(sub: Subquery, model: SemanticModel) -> set[str] | None:
+    """Every data object an ``exists`` subquery reads, its inner ones included.
+
+    Each filter's field resolves as the subquery resolves it, against the
+    subquery's own object. An inner ``exists`` correlates to the object its
+    field is on, so that object is all its field reads.
+    """
+    found = {sub.data_object}
+    for item in sub.filter:
+        ref = _resolve_subquery_filter_field(item.field, model, sub.data_object, [])
+        if ref is None:
+            return None
+        if item.subquery is None:
             found |= _column_objects(*ref, model)
-            if sub.subquery is not None:
-                nested = _filter_objects(sub, model)
-                if nested is None:
-                    return None
-                found |= nested
+            continue
+        inner = _subquery_objects(item.subquery, model)
+        if inner is None:
+            return None
+        found |= {ref[0]} | inner
     return found
 
 
