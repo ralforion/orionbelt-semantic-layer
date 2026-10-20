@@ -505,7 +505,9 @@ it at: `Order Month gte 2025-01-15` also starts in February when the query
 selects `Order Month:day`. To compare dates, filter the date itself: a
 dimension on the same column without a grain, or the qualified column
 (`Orders.Order Date`). A week compares its first day (Monday, or the model's
-`weekStart`), and a `timestamp` period its start at midnight.
+`weekStart`), and a `timestamp` period its start at midnight. The same holds
+wherever a filter names the dimension: a measure's `filterContext.include` item
+and a filter inside an `exists` subquery compare the period too.
 
 The filter compiles to the truncated column (`CAST(DATE_TRUNC('month', ...)
 AS DATE) >= '2025-01-15'`), which an engine cannot use to prune partitions or

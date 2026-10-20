@@ -362,7 +362,11 @@ def resolve_filter(
     If the referenced data object is reachable but not yet joined, the
     join path is auto-extended.
     """
-    from orionbelt.compiler.resolution import ResolvedFilter, make_column_expr, make_period_expr
+    from orionbelt.compiler.resolution import (
+        ResolvedFilter,
+        make_column_expr,
+        make_filter_subject_expr,
+    )
 
     filter_path = "having" if is_having else "where"
 
@@ -381,11 +385,7 @@ def resolve_filter(
         # A grained dimension is filtered by its period, at its own grain
         # whatever grain the query shows it at: the filter means the same in
         # every query.
-        col_expr = (
-            make_column_expr(ctx.model, obj_name, col_name)
-            if dim.time_grain is None
-            else make_period_expr(ctx.model, dim, dim.time_grain)
-        )
+        col_expr = make_filter_subject_expr(ctx.model, dim)
         subject_object, subject_column = obj_name, col_name
 
     # 2. HAVING: try measure or metric name

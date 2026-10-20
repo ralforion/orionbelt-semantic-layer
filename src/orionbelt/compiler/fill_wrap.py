@@ -312,7 +312,7 @@ def _bounds(
         bound, op = values[0]
         if not _constant(bound):
             return None
-        typed: Expr = Cast(expr=bound, type_name=column_type)
+        typed: Expr = Cast(expr=bound, type_name=column_type, obml_type=True)
         if op == "date>" and column_type == "date":
             # ``> Nov 30`` starts in December.
             return at(day_after(typed, 1))
@@ -323,7 +323,9 @@ def _bounds(
             # ``< Apr 1 12:00`` admits April's first hours, ``< Apr 1 00:00``
             # none of them: the period is the bound's own unless the bound
             # starts it. (``> ts`` always admits the rest of ts's period.)
-            start = Cast(expr=dialect.render_time_grain(typed, grain), type_name=column_type)
+            start = Cast(
+                expr=dialect.render_time_grain(typed, grain), type_name=column_type, obml_type=True
+            )
             return CaseExpr(
                 when_clauses=[(BinaryOp(start, "=", typed), at(day_after(typed, -1)))],
                 else_clause=at(typed),

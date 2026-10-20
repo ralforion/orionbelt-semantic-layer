@@ -283,7 +283,20 @@ def make_period_expr(model: SemanticModel, dim: Dimension, grain: TimeGrain) -> 
     period: Expr = FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])
     if dim.result_type not in CASTABLE_TEMPORAL_TYPES:
         return period
-    return Cast(expr=period, type_name=dim.result_type.value)
+    return Cast(expr=period, type_name=dim.result_type.value, obml_type=True)
+
+
+def make_filter_subject_expr(model: SemanticModel, dim: Dimension) -> Expr:
+    """What a filter on the dimension *dim* compares: its period when it has a
+    grain, its column otherwise.
+
+    Every filter path that names a dimension goes through here - ``where``,
+    a ``filterContext.include`` item, the body of an ``exists`` filter - so
+    ``Order Month = 2025-01-01`` finds January wherever it is written.
+    """
+    if dim.time_grain is None:
+        return make_column_expr(model, dim.view, dim.column)
+    return make_period_expr(model, dim, dim.time_grain)
 
 
 def effective_anchor(

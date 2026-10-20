@@ -6,7 +6,11 @@ order   date        amount
 ``o1``  2025-01-05  10
 ``o2``  2025-01-20  1
 ``o3``  2025-02-03  2
+``o4``  2110-01-10  4
 ======  ==========  ======
+
+``o4`` is past 2106, where ClickHouse's ``DateTime`` ends: the period a filter
+compares has to be the ``DateTime64(3)`` the dimension is shown as.
 """
 
 from __future__ import annotations
@@ -57,18 +61,22 @@ measures:
     resultType: float
 """
 
-JAN, FEB = date(2025, 1, 1), date(2025, 2, 1)
+# ClickHouse's ``DateTime`` cannot store ``o4`` at all.
+ORDER_TIME = {**TIMESTAMP, "clickhouse": "Nullable(DateTime64(3))"}
+
+JAN, FEB, FAR = date(2025, 1, 1), date(2025, 2, 1), date(2110, 1, 1)
 
 
 def _prepare(target: VendorTarget) -> SemanticModel:
     _create(
         target,
         ORDERS,
-        [("id", 0), ("order_date", 3), ("order_time", TIMESTAMP[target.dialect]), ("amount", 1)],
+        [("id", 0), ("order_date", 3), ("order_time", ORDER_TIME[target.dialect]), ("amount", 1)],
         [
             ("o1", "2025-01-05", "2025-01-05 10:00:00", 10),
             ("o2", "2025-01-20", "2025-01-20 10:00:00", 1),
             ("o3", "2025-02-03", "2025-02-03 10:00:00", 2),
+            ("o4", "2110-01-10", "2110-01-10 10:00:00", 4),
         ],
     )
     yaml_text = MODEL_YAML.format(orders=ORDERS, schema=SCHEMAS.get(target.dialect, ""))
@@ -105,14 +113,21 @@ def _assert_all(target: VendorTarget) -> None:
     cases: list[tuple[str, str, str, Any, dict[date, Decimal]]] = [
         (month, month, "equals", "2025-01-01", {JAN: Decimal("11.00")}),
         (month, month, "equals", "2025-01-20", {}),
-        (month, month, "gte", "2025-01-15", {FEB: Decimal("2.00")}),
+        (month, month, "gte", "2025-01-15", {FEB: Decimal("2.00"), FAR: Decimal("4.00")}),
         ("Order Week", "Order Week", "equals", "2025-01-20", {date(2025, 1, 20): Decimal("1.00")}),
         (
             "Order Time Month",
             "Order Time Month",
-            "gt",
-            "2025-01-01 00:00:00",
-            {FEB: Decimal("2.00")},
+            "lt",
+            "2025-03-01 00:00:00",
+            {JAN: Decimal("11.00"), FEB: Decimal("2.00")},
+        ),
+        (
+            "Order Time Month",
+            "Order Time Month",
+            "gte",
+            "2110-01-01 00:00:00",
+            {FAR: Decimal("4.00")},
         ),
     ]
     for dimension, field, op, value, expected in cases:

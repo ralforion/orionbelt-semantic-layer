@@ -31,6 +31,7 @@ from orionbelt.models.query import FilterOperator, QueryFilter, UsePathName
 from orionbelt.models.semantic import (
     DataObject,
     DataType,
+    Dimension,
     FilterEnforcement,
     FilterLogic,
     FilterValue,
@@ -587,6 +588,25 @@ def _body_hop(
     )
 
 
+def _subquery_filter_dimension(
+    field: str, model: SemanticModel, target_object: str
+) -> Dimension | None:
+    """The dimension a subquery filter's *field* resolves through, if any.
+
+    The same precedence as :func:`_resolve_subquery_filter_field`: a column of
+    the target shadows a dimension of the same name. A dimension found here is
+    filtered as ``where`` filters it, so a grained one compares its period.
+    """
+    target_obj = model.data_objects.get(target_object)
+    if target_obj is not None and field in target_obj.columns:
+        return None
+    dim = model.dimensions.get(field)
+    dim_obj = model.data_objects.get(dim.view) if dim is not None else None
+    if dim is None or dim_obj is None or dim.column not in dim_obj.columns:
+        return None
+    return dim
+
+
 def _resolve_subquery_filter_field(
     field: str,
     model: SemanticModel,
@@ -835,7 +855,7 @@ def build_exists_filter_expr(
     """
     # Local import: resolution imports filters at module load.
     from orionbelt.compiler.graph import JoinGraph
-    from orionbelt.compiler.resolution import make_column_expr
+    from orionbelt.compiler.resolution import make_column_expr, make_filter_subject_expr
 
     sub = qf.subquery
     if sub is None:
@@ -1063,7 +1083,12 @@ def build_exists_filter_expr(
                 use_path_names=use_path_names,
             )
         else:
-            col_expr = make_column_expr(model, ref_object, ref_column)
+            dim = _subquery_filter_dimension(sub_qf.field, model, sub.data_object)
+            col_expr = (
+                make_column_expr(model, ref_object, ref_column)
+                if dim is None
+                else make_filter_subject_expr(model, dim)
+            )
             sub_expr = build_filter_expr(col_expr, sub_qf, errors)
         if sub_expr is not None:
             where_parts.append(sub_expr)
