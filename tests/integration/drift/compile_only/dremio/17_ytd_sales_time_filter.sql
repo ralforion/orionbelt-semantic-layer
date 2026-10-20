@@ -1,7 +1,7 @@
 WITH "cumulative_base" AS (
 SELECT CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) AS "Sales Month", CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
-WHERE "Sales"."salesdate" >= '2021-03-01' AND "Sales"."salesdate" < '2021-05-01'
+WHERE CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) >= '2021-03-01' AND CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) < '2021-05-01'
 GROUP BY CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE)
 ),
 "cumulative_lookback" AS (

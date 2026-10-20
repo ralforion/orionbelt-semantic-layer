@@ -186,25 +186,33 @@ def test_an_empty_period_is_added_and_a_row_without_one_kept(
     [
         (
             [
-                {"field": "Order Month", "op": "gte", "value": "2023-12-15"},
+                {"field": "Order Month", "op": "gte", "value": "2023-12-01"},
                 {"field": "Order Month", "op": "lt", "value": "2024-05-01"},
             ],
             [DEC, JAN, FEB, MAR, APR],
         ),
         (
+            [
+                {"field": "Order Month", "op": "gte", "value": "2023-12-15"},
+                {"field": "Order Month", "op": "lte", "value": "2024-04-15"},
+            ],
+            [JAN, FEB, MAR, APR],
+        ),
+        (
             [{"field": "Order Month", "op": "between", "value": ["2024-02-10", "2024-04-30"]}],
-            [FEB, MAR, APR],
+            [MAR, APR],
         ),
         ([{"field": "Order Month", "op": "lte", "value": "2024-04-01"}], [JAN, FEB, MAR, APR]),
         ([{"field": "Order Month", "op": "lt", "value": "2024-04-01"}], [JAN, FEB, MAR]),
         ([{"field": "Order Month", "op": "gt", "value": "2023-11-30"}], [DEC, JAN, FEB, MAR]),
     ],
-    ids=["gte-lt", "between", "lte", "lt-a-period-start", "gt"],
+    ids=["gte-lt", "inside-periods", "between", "lte", "lt-a-period-start", "gt"],
 )
 def test_the_where_bounds_set_the_range(
     con: duckdb.DuckDBPyConnection, model: SemanticModel, where: list, periods: list
 ) -> None:
-    """A strict upper bound on a period's first day leaves that period out."""
+    """A filter on ``Order Month`` compares months: ``>= Dec 15`` starts in
+    January, as December starts before it, and ``<= Apr 15`` ends in April."""
     rows = _rows(
         con,
         model,
@@ -230,7 +238,7 @@ def test_bounds_in_an_and_group_set_the_range(
                 {
                     "logic": "and",
                     "filters": [
-                        {"field": "Order Month", "op": "gte", "value": "2023-12-15"},
+                        {"field": "Order Month", "op": "gte", "value": "2023-12-01"},
                         {"field": "Order Month", "op": "lt", "value": "2024-05-01"},
                     ],
                 }
@@ -255,7 +263,7 @@ def test_bounds_in_an_and_group_with_another_column_set_the_range(
                 {
                     "logic": "and",
                     "filters": [
-                        {"field": "Order Month", "op": "gte", "value": "2023-12-15"},
+                        {"field": "Order Month", "op": "gte", "value": "2023-12-01"},
                         {"field": "Region", "op": "equals", "value": "r1"},
                         {"field": "Order Month", "op": "lt", "value": "2024-05-01"},
                     ],
@@ -272,15 +280,15 @@ def test_bounds_in_an_and_group_with_another_column_set_the_range(
     [
         (("lt", "2024-04-01 12:00:00"), [JAN, FEB, MAR, APR]),
         (("lt", "2024-04-01 00:00:00"), [JAN, FEB, MAR]),
-        (("gt", "2023-12-31 12:00:00"), [DEC, JAN, FEB, MAR]),
+        (("gt", "2023-12-31 12:00:00"), [JAN, FEB, MAR]),
     ],
     ids=["lt-inside-a-period", "lt-a-period-start", "gt-inside-a-period"],
 )
-def test_a_strict_timestamp_bound_keeps_a_partly_admitted_period(
+def test_a_strict_timestamp_bound_compares_the_period(
     con: duckdb.DuckDBPyConnection, model: SemanticModel, bound: tuple, periods: list
 ) -> None:
-    """``< 2024-04-01 12:00`` admits April's first half day, so April is a
-    period; ``< 2024-04-01 00:00`` admits none of it."""
+    """April starts at 00:00, before ``2024-04-01 12:00`` and not before
+    ``2024-04-01 00:00``; December starts before ``2023-12-31 12:00``."""
     op, value = bound
     rows = _rows(
         con,
@@ -309,7 +317,6 @@ def test_a_weekly_fill_reads_its_bounds(
         },
     )
     assert rows == [
-        (date(2024, 2, 19), 0),
         (date(2024, 2, 26), 1),
         (date(2024, 3, 4), 1),
     ]

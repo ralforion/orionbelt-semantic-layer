@@ -164,7 +164,7 @@ def _assert_all(target: VendorTarget) -> None:
             (None, _d(4), _d(4), 1),
         ], f"{target.name} {month}"
     bounds = [
-        {"field": "Order Month", "op": "gte", "value": "2023-12-15"},
+        {"field": "Order Month", "op": "gte", "value": "2023-12-01"},
         {"field": "Order Month", "op": "lt", "value": "2024-05-01"},
     ]
     r1 = {"field": "Region", "op": "equals", "value": "r1"}
@@ -186,7 +186,6 @@ def _assert_all(target: VendorTarget) -> None:
         assert periods[-1] == last, f"{target.name} < {value}"
     weeks = [{"field": "Order Week", "op": "between", "value": ["2024-02-20", "2024-03-10"]}]
     assert [(r[0], r[3]) for r in _filled(target, model, ["Order Week"], weeks)] == [
-        (date(2024, 2, 19), 0),
         (date(2024, 2, 26), 1),
         (date(2024, 3, 4), 1),
     ], target.name

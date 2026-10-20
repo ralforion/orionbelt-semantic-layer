@@ -2171,7 +2171,9 @@ class Dialect(ABC):
                     parts.append(f"ELSE {self.compile_expr(else_)}")
                 parts.append("END")
                 return " ".join(parts)
-            case Cast(expr=inner, type_name=type_name, source_exact=source_exact):
+            case Cast(expr=inner, type_name=type_name, source_exact=source_exact, obml_type=obml):
+                if obml:
+                    type_name = self.render_obml_type(parse_data_type(type_name))
                 return self._compile_cast(inner, type_name, source_exact=source_exact)
             case SubqueryExpr(query=query):
                 return f"(\n{self.compile_select(query)}\n)"

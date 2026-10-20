@@ -116,14 +116,16 @@ def _resolve_include_filters(
     # / filterContext include items work on computed (``expression:``)
     # columns — without this the empty ``code:`` slot leaks into the SQL
     # and the database errors on the zero-length identifier.
-    from orionbelt.compiler.resolution import make_column_expr
+    # A dimension goes through ``make_filter_subject_expr``, so a grained one
+    # compares its period here as in ``where``.
+    from orionbelt.compiler.resolution import make_column_expr, make_filter_subject_expr
 
     for incl in fc.include:
         dim = model.dimensions.get(incl.field)
         if dim:
             obj = model.data_objects.get(dim.view)
             if obj and dim.column in obj.columns:
-                col_expr: Expr = make_column_expr(model, dim.view, dim.column)
+                col_expr: Expr = make_filter_subject_expr(model, dim)
                 try:
                     op = FilterOperator(incl.op)
                 except ValueError:

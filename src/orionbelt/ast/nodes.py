@@ -153,10 +153,18 @@ class Cast:
     ClickHouse reads it. That engine converts through the value's own text to
     round a float exactly, which an exact operand does not need and which is
     most of the length of its generated SQL.
+
+    ``obml_type`` says *type_name* is an OBML type (``timestamp``,
+    ``decimal(18, 2)``) rather than an abstract column type, so codegen renders
+    it as a dimension's ``resultType`` renders: on ClickHouse an OBML
+    ``timestamp`` is ``DateTime64(3)``, an abstract one ``DateTime``. A node
+    built before the dialect is known uses it to match the projection it is
+    compared with.
     """
 
     expr: Expr
     type_name: str
+    obml_type: bool = False
     #: Excluded from equality and hashing: two casts of the same value to the
     #: same type are the same cast, and this only says how one engine may
     #: render it. The planners match expressions to remap an ORDER BY onto a

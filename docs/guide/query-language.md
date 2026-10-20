@@ -433,7 +433,7 @@ of its time dimension, also those without:
 | | |
 |---|---|
 | **Time dimension** | Exactly one selected dimension at a time grain of a day or longer, with `resultType` `date` or `timestamp` |
-| **Range** | From the `where` bounds on that dimension's column (`gte`, `gt`, `lte`, `lt`, `between`): `gte 2023-12-15` starts in December, `lt 2024-05-01` ends in April, and on a `timestamp` column `lt 2024-04-01 12:00:00` ends in April, which it admits half a day of. Bounds count at the top level and inside a `logic: and` group. A side without a single constant bound runs to the first or last period with data. The range never cuts the data off |
+| **Range** | The periods the `where` admits (`gte`, `gt`, `lte`, `lt`, `between`). A filter on the dimension itself compares its periods, as it does without `fill`: `gte 2023-12-15` starts in January, `gte 2023-12-01` in December, `lte 2024-04-15` ends in April. A filter on the date itself (a dimension without a grain, or `Orders.Order Date`) admits every period holding an admitted day: `Order Day gte 2023-12-15` starts in December. Bounds count at the top level and inside a `logic: and` group. A side without a single constant bound runs to the first or last period with data. The range never cuts the data off |
 | **Other dimensions** | Crossed with the periods: every member the query returns, a NULL member included, gets every period |
 | **Empty values** | A count is `0`, a measure with a `defaultValue` reads it, anything else is `NULL`, a derived metric included |
 | **Rows without a period** | A row whose time is NULL (an order without a date) stays a row of its own |
@@ -487,6 +487,32 @@ Multiple top-level filters are combined with **AND**. For **OR** logic or more c
   ]
 }
 ```
+
+### Filtering a time-grained dimension
+
+A filter on a dimension with a `timeGrain` compares the period the dimension
+shows, not the date inside it. With `Order Month` at month grain:
+
+| Filter | Admits |
+|---|---|
+| `Order Month equals 2025-01-01` | January, all of it |
+| `Order Month equals 2025-01-20` | nothing: no month starts on the 20th |
+| `Order Month gte 2025-01-15` | February on: January starts before the 15th |
+| `Order Month lte 2025-01-15` | up to January, all of it |
+
+The comparison is at the dimension's own grain, whatever grain the query shows
+it at: `Order Month gte 2025-01-15` also starts in February when the query
+selects `Order Month:day`. To compare dates, filter the date itself: a
+dimension on the same column without a grain, or the qualified column
+(`Orders.Order Date`). A week compares its first day (Monday, or the model's
+`weekStart`), and a `timestamp` period its start at midnight. The same holds
+wherever a filter names the dimension: a measure's `filterContext.include` item
+and a filter inside an `exists` subquery compare the period too.
+
+The filter compiles to the truncated column (`CAST(DATE_TRUNC('month', ...)
+AS DATE) >= '2025-01-15'`), which an engine cannot use to prune partitions or
+use an index on the date. Where that matters, a filter on the date itself,
+written with period starts, admits the same rows.
 
 ### Filter Groups (AND / OR / NOT) { #filter-groups }
 
