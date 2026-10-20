@@ -2271,6 +2271,7 @@ def _placeholder_arrow_type(placeholder: exp.Expression, model: SemanticModel) -
       ``decimal128(18, 2)`` must not be bound as ``double``.
     """
     from orionbelt.service.result_schema import (
+        dimension_arrow_type,
         numeric_result_arrow_type,
         obml_type_to_arrow,
         raw_field_arrow_type,
@@ -2295,8 +2296,7 @@ def _placeholder_arrow_type(placeholder: exp.Expression, model: SemanticModel) -
     key = name.lower()
     dimension = {label.lower(): item for label, item in model.dimensions.items()}.get(key)
     if dimension is not None:
-        rt = getattr(getattr(dimension, "result_type", None), "value", None)
-        return obml_type_to_arrow(rt)
+        return dimension_arrow_type(dimension, model)
 
     measures = {label.lower(): item for label, item in model.effective_measures.items()}
     metrics = {label.lower(): item for label, item in model.metrics.items()}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -10,7 +11,14 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from orionbelt.models.expressions import (
     find_placeholders,
@@ -1047,7 +1055,69 @@ class FilterValue(BaseModel):
     value_date: str | None = Field(None, alias="valueDate")
     value_boolean: bool | None = Field(None, alias="valueBoolean")
 
+    _decimal: Decimal | None = PrivateAttr(None)
+
     model_config = {"populate_by_name": True, "extra": "forbid"}
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _hold_a_decimal_exactly(
+        cls, data: Any, handler: ModelWrapValidatorHandler[FilterValue]
+    ) -> FilterValue:
+        """Keep a ``decimal`` value as the number written, not as its double.
+
+        ``valueFloat`` is a ``float``, and 9007199254740993 coerced to one is
+        9007199254740992: an equality filter would match the wrong row. The
+        exact value is taken from the input before that coercion.
+        """
+        value = handler(data)
+        if value.data_type is DataType.DECIMAL and isinstance(data, dict):
+            raw = data.get("valueFloat", data.get("value_float"))
+            value._decimal = exact_decimal(raw)
+        return value
+
+    @property
+    def decimal_value(self) -> Decimal | None:
+        """The exact value of a ``decimal`` filter value.
+
+        ``None`` when there is none, or when the number arrived as a double
+        that may already differ from what was written (see
+        :func:`exact_decimal`).
+        """
+        return self._decimal
+
+    @property
+    def is_inexact_decimal(self) -> bool:
+        """A ``decimal`` value given that no exact number can be read from."""
+        return (
+            self.data_type is DataType.DECIMAL
+            and not self.is_null
+            and self.value_float is not None
+            and self._decimal is None
+        )
+
+
+#: Significant digits a decimal survives text -> double -> shortest text
+#: unchanged (``DBL_DIG``). Past it, the double may not be the number written.
+_DOUBLE_EXACT_DIGITS = 15
+
+
+def exact_decimal(raw: object) -> Decimal | None:
+    """The decimal *raw* names exactly, or ``None`` when it cannot say.
+
+    An integer is exact. A float is the text it was parsed from only up to 15
+    significant digits: YAML and JSON both hand over a double, and
+    ``12345678901234567.89`` is already 12345678901234568 by then.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return Decimal(raw)
+    if isinstance(raw, float) and math.isfinite(raw):
+        exact = Decimal(float.__repr__(raw))
+        if len(exact.normalize().as_tuple().digits) <= _DOUBLE_EXACT_DIGITS:
+            return exact
+    return None
 
 
 class MeasureFilter(BaseModel):

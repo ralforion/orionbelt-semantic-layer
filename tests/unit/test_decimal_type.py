@@ -19,12 +19,14 @@ import pytest
 
 from orionbelt.ast.nodes import BinaryOp, Cast, ColumnRef, Literal
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.window_wrap import partition_keys
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import DataType, SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
+from orionbelt.parser.validator import SemanticValidator
 
 DIALECTS = [
     "bigquery",
@@ -170,3 +172,125 @@ def test_bigquery_partitions_by_a_decimal_dimension_as_by_a_float() -> None:
     refuses to partition by it, so the key is cast to STRING as a float's is."""
     keys = partition_keys(["Credit Line"], _model("decimal"), DialectRegistry.get("bigquery"))
     assert keys == [Cast(expr=ColumnRef(name="Credit Line"), type_name="STRING")]
+
+
+PRECISE_YAML = """
+version: "1.0"
+name: decimal_precise
+dataObjects:
+  Ledger:
+    code: ledger
+    columns:
+      Entry Id: {{code: id, abstractType: string, primaryKey: true}}
+      Amount: {{code: amount, abstractType: decimal, numClass: additive}}
+      Rate: {{code: rate, abstractType: decimal, sqlPrecision: 38, sqlScale: 12}}
+      Fee: {{code: fee, abstractType: decimal}}
+dimensions:
+  Rate: {{dataObject: Ledger, column: Rate, resultType: decimal}}
+  Fee: {{dataObject: Ledger, column: Fee, resultType: decimal}}
+measures:
+  Matching Amount:
+    columns: [{{dataObject: Ledger, column: Amount}}]
+    aggregation: sum
+    resultType: decimal
+    filters:
+      - column: {{dataObject: Ledger, column: Amount}}
+        operator: equals
+        values: [{{dataType: decimal, valueFloat: {value}}}]
+"""
+
+
+def _precise_model(value: str = "9007199254740993") -> tuple[SemanticModel, list[str]]:
+    raw, source_map = TrackedLoader().load_string(PRECISE_YAML.format(value=value))
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    errors = result.errors + SemanticValidator().validate(model)
+    return model, [error.code for error in errors]
+
+
+class TestADecimalFilterValueIsExact:
+    """A ``decimal`` filter value compares the number written, not its double.
+
+    9007199254740993 is 2**53 + 1, the first integer a double cannot hold: as a
+    float it is 9007199254740992, and the filter selected the other row.
+    """
+
+    def test_the_literal_is_the_number_written(self) -> None:
+        model, errors = _precise_model()
+        assert errors == []
+        query = QueryObject(select={"measures": ["Matching Amount"]})
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert "= 9007199254740993" in sql
+        assert "9007199254740992" not in sql
+
+    def test_the_filter_selects_the_right_row(self) -> None:
+        model, _ = _precise_model()
+        query = QueryObject(select={"measures": ["Matching Amount"]})
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        db = duckdb.connect()
+        db.execute("CREATE TABLE ledger (id VARCHAR, amount DECIMAL(38, 0))")
+        db.execute("INSERT INTO ledger VALUES ('a', 9007199254740992), ('b', 9007199254740993)")
+        assert db.execute(sql).fetchone() == (Decimal("9007199254740993"),)
+
+    def test_a_short_fraction_keeps_its_digits(self) -> None:
+        model, errors = _precise_model("0.1")
+        assert errors == []
+        value = model.measures["Matching Amount"].filters[0].values[0]  # type: ignore[union-attr]
+        assert value.decimal_value == Decimal("0.1")
+
+    def test_a_value_past_fifteen_digits_is_refused(self) -> None:
+        """``12345678901234567.89`` is already 12345678901234568 when YAML hands
+        it over, so no exact number is left to compare against."""
+        _, errors = _precise_model("12345678901234567.89")
+        assert "INEXACT_DECIMAL_VALUE" in errors
+
+    def test_the_compiler_refuses_it_too(self) -> None:
+        """A model built without the validator still does not compare NULL."""
+        model, _ = _precise_model("12345678901234567.89")
+        query = QueryObject(select={"measures": ["Matching Amount"]})
+        with pytest.raises(ResolutionError, match="15 significant digits"):
+            CompilationPipeline().compile(query, model, "duckdb")
+
+    def test_a_float_filter_value_is_unchanged(self) -> None:
+        """Only ``decimal`` reads the exact value; ``float`` stays a double."""
+        from orionbelt.models.semantic import FilterValue
+
+        value = FilterValue(data_type=DataType.FLOAT, value_float=9007199254740993)
+        assert value.decimal_value is None
+        assert not value.is_inexact_decimal
+
+
+class TestADecimalColumnKeepsItsDeclaredWidth:
+    """A ``decimal`` column with ``sqlPrecision``/``sqlScale`` is advertised at
+    that width: 0.123456789012 does not fit ``decimal128(38, 10)``."""
+
+    def test_the_result_schema_takes_the_declared_width(self) -> None:
+        import pyarrow as pa
+
+        from orionbelt.service.result_schema import declared_result_schema
+
+        model, _ = _precise_model()
+        query = QueryObject(select={"dimensions": ["Rate", "Fee"]})
+        schema = declared_result_schema(query, model)
+        assert schema.field("Rate").type == pa.decimal128(38, 12)
+        assert schema.field("Fee").type == pa.decimal128(38, 10)
+
+    def test_the_declared_types_agree(self) -> None:
+        import pyarrow as pa
+
+        from orionbelt.service.result_schema import declared_arrow_types, raw_field_arrow_type
+
+        model, _ = _precise_model()
+        assert declared_arrow_types(model)["Rate"] == pa.decimal128(38, 12)
+        assert raw_field_arrow_type("Ledger.Rate", model) == pa.decimal128(38, 12)
+
+    def test_a_scale_twelve_value_streams_as_advertised(self) -> None:
+        """The value Arrow refused to rescale into (38, 10) fits the schema."""
+        import pyarrow as pa
+
+        from orionbelt.service.result_schema import declared_result_schema
+
+        model, _ = _precise_model()
+        query = QueryObject(select={"dimensions": ["Rate"]})
+        schema = declared_result_schema(query, model)
+        table = pa.table({"Rate": pa.array([Decimal("0.123456789012")], pa.decimal128(38, 12))})
+        assert table.cast(schema).column("Rate")[0].as_py() == Decimal("0.123456789012")

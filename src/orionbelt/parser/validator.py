@@ -1268,6 +1268,20 @@ class SemanticValidator:
     ) -> None:
         """Recursively validate a measure filter item."""
         if isinstance(item, MeasureFilter):
+            for fv in item.values:
+                if fv.is_inexact_decimal:
+                    errors.append(
+                        SemanticError(
+                            code="INEXACT_DECIMAL_VALUE",
+                            message=(
+                                f"Measure '{meas_name}' filter value {fv.value_float!r} is "
+                                f"decimal, but a number with more than 15 significant digits "
+                                f"is read as a double and may no longer be the one written. "
+                                f"Use at most 15 significant digits."
+                            ),
+                            path=f"measures.{meas_name}.filters",
+                        )
+                    )
             if item.column is None:
                 return
             view, column = item.column.view, item.column.column

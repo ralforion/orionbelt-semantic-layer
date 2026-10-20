@@ -290,6 +290,17 @@ its exact decimal type:
 
 A column the database stores as a floating-point number should stay `float`.
 
+A `decimal` column that declares `sqlPrecision` and `sqlScale` is advertised to
+Arrow Flight SQL clients at that width; without them it is advertised as
+`decimal(38, 10)`, so declare the width of a column whose scale
+is larger than 10.
+
+A measure filter value of type `decimal` compares the number written:
+`valueFloat: 9007199254740993` stays that integer, where a `float` value becomes
+the nearest double, 9007199254740992. YAML hands a number with a fraction over
+as a double, so a `decimal` value is exact up to 15 significant digits, and a
+longer one is refused with `INEXACT_DECIMAL_VALUE` rather than compared rounded.
+
 #### Timestamps carry a zone only when you say so
 
 `timestamp` is a wall clock: a reading with no zone attached. `timestamp_tz`
