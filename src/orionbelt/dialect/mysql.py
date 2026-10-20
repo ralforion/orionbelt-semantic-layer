@@ -137,6 +137,7 @@ class MySQLDialect(Dialect):
         "json": "JSON",
         "int": "INT",
         "float": "DOUBLE",
+        "decimal": "DECIMAL(65, 10)",
         "date": "DATE",
         "time": "TIME",
         "time_tz": "TIME",

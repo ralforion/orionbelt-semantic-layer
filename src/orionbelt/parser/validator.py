@@ -902,7 +902,7 @@ class SemanticValidator:
             )
         return errors
 
-    _NUMERIC_TYPES = {DataType.INT, DataType.FLOAT}
+    _NUMERIC_TYPES = {DataType.INT, DataType.FLOAT, DataType.DECIMAL}
 
     def _check_time_grain_on_temporal_columns(self, model: SemanticModel) -> list[SemanticError]:
         """Ensure timeGrain is only set when the underlying column is temporal.

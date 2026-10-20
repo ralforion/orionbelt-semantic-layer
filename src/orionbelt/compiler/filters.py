@@ -307,7 +307,7 @@ def _extract_filter_value(fv: FilterValue) -> str | int | float | bool | None:
             return fv.value_string
         case DataType.INT:
             return fv.value_int
-        case DataType.FLOAT:
+        case DataType.FLOAT | DataType.DECIMAL:
             return fv.value_float
         case DataType.DATE | DataType.TIMESTAMP:
             return fv.value_date

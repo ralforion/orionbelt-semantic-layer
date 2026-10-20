@@ -142,7 +142,7 @@ def resolve_sort_key_type(
     if column is None:
         return None
     kind = column.abstract_type.value
-    if kind not in ("int", "float"):
+    if kind not in _NUMERIC_KINDS:
         return kind
     return _numeric_alignment(kind, column, dialect)
 
@@ -206,7 +206,7 @@ def resolve_null_type_for_field(
     if len(model_measure.columns) == 1:
         column = _source_column(model_measure.columns[0], model)
         if column is not None and (
-            is_passthrough_style or column.abstract_type.value not in ("int", "float")
+            is_passthrough_style or column.abstract_type.value not in _NUMERIC_KINDS
         ):
             return column.abstract_type.value
     # Numeric aggregates: align padding with the outer CAST target.
@@ -216,6 +216,11 @@ def resolve_null_type_for_field(
             return dialect.render_obml_type(resolved)
     # Fallback to measure result_type.
     return model_measure.result_type.value
+
+
+#: Abstract types whose legs align on a number: an integer on BIGINT, a
+#: fractional one (``float`` or ``decimal``) on its declared or the wide decimal.
+_NUMERIC_KINDS = frozenset({"int", "float", "decimal"})
 
 
 # Scale used to align a numeric aggregate's UNION legs when the model has not
@@ -262,14 +267,14 @@ def _alignment_source(
         # An expression has no source column, so its kind is the declared
         # resultType.
         kind = model_measure.result_type.value
-        return (kind if kind in ("int", "float") else None), None
+        return (kind if kind in _NUMERIC_KINDS else None), None
     ref = model_measure.columns[0]
     obj = model.data_objects.get(ref.view) if ref.view else None
     column = obj.columns.get(ref.column) if obj and ref.column else None
     if column is None:
         return None, None
     kind = column.abstract_type.value
-    return (kind if kind in ("int", "float") else None), column
+    return (kind if kind in _NUMERIC_KINDS else None), column
 
 
 def resolve_union_alignment_type(

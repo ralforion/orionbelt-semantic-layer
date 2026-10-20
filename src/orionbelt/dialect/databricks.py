@@ -40,6 +40,7 @@ class DatabricksDialect(Dialect):
         "json": "STRING",
         "int": "INT",
         "float": "FLOAT",
+        "decimal": "DECIMAL(38, 10)",
         "date": "DATE",
         "time": "STRING",
         "time_tz": "STRING",

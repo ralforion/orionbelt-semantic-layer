@@ -77,6 +77,7 @@ OBML_TO_OSI_TYPE = {
     "json": "string",
     "int": "integer",
     "float": "number",
+    "decimal": "number",
     "date": "date",
     "time": "time",
     "time_tz": "time",
@@ -100,12 +101,10 @@ OSI_TO_OBML_TYPE = {
 # capitalised `DataType` enum. It is a *logical* type - the same layer as OBML's
 # column `abstractType` - so this is the field/dimension mapping.
 #
-# `Decimal` has no logical-layer equivalent in OBML: OBML deliberately models
-# exact decimal at the physical/result layer (`sqlType`/`sqlPrecision`/
-# `sqlScale`, measure/metric `dataType` via `decimal(p, s)`), not as a coarse
-# `abstractType`. So `Decimal` narrows to `float` for fields, but is recovered
-# exactly for metrics via the physical `dataType` map below
-# (`OSI_DATATYPE_TO_OBML_PHYSICAL`).
+# `Decimal` is OBML's `decimal` abstract type, the exact counterpart of
+# `float`; its width stays at the physical layer (`sqlPrecision`/`sqlScale`,
+# measure/metric `dataType` via `decimal(p, s)`). Metrics recover the width via
+# the physical `dataType` map below (`OSI_DATATYPE_TO_OBML_PHYSICAL`).
 #
 # `Opaque` is Ossie's own "known type outside the portable vocabulary" marker
 # and is intentionally absent so it falls back to the name heuristic on import.
@@ -113,7 +112,7 @@ OSI_DATATYPE_TO_OBML_ABSTRACT = {
     "String": "string",
     "Integer": "int",
     "Float": "float",
-    "Decimal": "float",
+    "Decimal": "decimal",
     "Boolean": "boolean",
     "Date": "date",
     "Time": "time",
@@ -176,6 +175,7 @@ OBML_ABSTRACT_TO_OSI_DATATYPE = {
     "json": "Opaque",
     "int": "Integer",
     "float": "Float",
+    "decimal": "Decimal",
     "date": "Date",
     "time": "Time",
     "time_tz": "Time",

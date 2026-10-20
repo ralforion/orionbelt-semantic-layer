@@ -776,11 +776,12 @@ class TestEveryDataTypeMaps:
         assert not stray, f"non-decimal types carrying a type modifier: {stray}"
 
     def test_a_decimal_modifier_round_trips(self) -> None:
-        probed = {label: mod for label, oid, mod in self._probe(self._all_types()) if oid == 1700}
-        assert len(probed) == 2, "both decimal widths must be probed"
+        types = self._all_types()
+        probed = {label: mod for label, oid, mod in self._probe(types) if oid == 1700}
+        assert len(probed) == 3, "the decimal type and both decimal widths must be probed"
         for label, mod in probed.items():
             precision, scale = ((mod - 4) >> 16) & 0xFFFF, (mod - 4) & 0xFFFF
-            expected = label[len("decimal(") : -1].split(",")
+            expected = types[label][len("DECIMAL(") : -1].split(",")
             assert (precision, scale) == (int(expected[0]), int(expected[1])), label
 
 

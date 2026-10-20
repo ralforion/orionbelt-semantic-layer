@@ -369,7 +369,8 @@ If a system needs structured filter exchange, it should use a future `OBSL-Full`
 - `string`
 - `json`
 - `int`
-- `float`
+- `float` (binary floating point)
+- `decimal` (exact)
 - `date`
 - `time`
 - `time_tz`

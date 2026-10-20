@@ -64,6 +64,7 @@ _DECLARED_FAMILY: dict[DataType, str] = {
     DataType.JSON: _STRING,
     DataType.INT: _NUMBER,
     DataType.FLOAT: _NUMBER,
+    DataType.DECIMAL: _NUMBER,
     DataType.DATE: _DATETIME,
     DataType.TIME: _DATETIME,
     DataType.TIME_TZ: _DATETIME,

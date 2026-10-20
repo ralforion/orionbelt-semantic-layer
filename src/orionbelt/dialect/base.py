@@ -339,6 +339,7 @@ class Dialect(ABC):
         "json": "VARCHAR",
         "int": "INTEGER",
         "float": "FLOAT",
+        "decimal": "DECIMAL(38, 10)",
         "date": "DATE",
         "time": "TIME",
         "time_tz": "TIME",

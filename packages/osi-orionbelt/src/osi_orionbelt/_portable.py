@@ -213,7 +213,7 @@ def _filter_literal(fv: dict[str, Any], ossie: bool = False) -> str:
     data_type = fv.get("dataType")
     if data_type == "int":
         return _scalar_literal(fv.get("valueInt"))
-    if data_type == "float":
+    if data_type in ("float", "decimal"):
         return _scalar_literal(fv.get("valueFloat"))
     if data_type == "boolean":
         return _scalar_literal(fv.get("valueBoolean"))

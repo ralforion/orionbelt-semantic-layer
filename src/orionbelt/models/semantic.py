@@ -20,10 +20,19 @@ from orionbelt.models.types import parse_data_type
 
 
 class DataType(StrEnum):
+    """An OBML value type.
+
+    ``float`` is a binary floating-point number, ``decimal`` an exact one: a
+    money column or a measure summing one. The compiler aligns, pads and
+    defaults the two alike; ``decimal`` additionally renders as an exact
+    ``DECIMAL`` wherever an abstract type becomes a SQL type.
+    """
+
     STRING = "string"
     JSON = "json"
     INT = "int"
     FLOAT = "float"
+    DECIMAL = "decimal"
     DATE = "date"
     TIME = "time"
     TIME_TZ = "time_tz"

@@ -48,6 +48,7 @@ def _obml_type_map() -> dict[str, Any]:
         "json": pa.utf8(),
         "int": pa.int64(),
         "float": pa.float64(),
+        "decimal": pa.decimal128(38, 10),
         "boolean": pa.bool_(),
         "date": pa.date32(),
         "datetime": pa.timestamp("us"),
