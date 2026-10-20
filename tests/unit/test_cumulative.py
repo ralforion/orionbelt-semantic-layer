@@ -1326,18 +1326,17 @@ metrics:
             ("West", "2022-01-01"): (7.0,),
         }
 
-    def test_a_filter_inside_a_period_still_filters_the_plain_measure(self, orders: Any) -> None:
-        # East's December order is on the 5th: the row disappears, and West's
-        # December revenue counts the 10th only, while its year-to-date reads
-        # the whole history.
+    def test_a_filter_inside_a_period_starts_at_the_next_period(self, orders: Any) -> None:
+        # The filter compares the month shown: December 2021 starts before the
+        # 8th, so no December row is shown, and January's year-to-date still
+        # reads the whole history.
         rows = self._run(
             orders,
             ["Region", "Order Date"],
             ["Revenue", "YTD Revenue"],
             [QueryFilter(field="Order Date", op="gte", value="2021-12-08")],
         )
-        assert ("East", "2021-12-01") not in rows
-        assert rows[("West", "2021-12-01")] == (2.0, 3.0)
+        assert not [key for key in rows if key[1] == "2021-12-01"]
         assert rows[("West", "2022-01-01")] == (4.0, 4.0)
 
     def test_a_filter_on_another_dimension_still_limits_the_history(self, orders: Any) -> None:

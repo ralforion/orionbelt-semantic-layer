@@ -6,7 +6,8 @@ sql: 'WITH "cumulative_base" AS (
 
   FROM "orionbelt_1"."sales" AS "Sales"
 
-  WHERE "Sales"."salesdate" >= ''2021-02-01'' AND "Sales"."salesdate" < ''2021-03-01''
+  WHERE CAST(DATE_TRUNC(''day'', "Sales"."salesdate") AS DATE) >= ''2021-02-01'' AND CAST(DATE_TRUNC(''day'', "Sales"."salesdate")
+  AS DATE) < ''2021-03-01''
 
   GROUP BY ALL
 

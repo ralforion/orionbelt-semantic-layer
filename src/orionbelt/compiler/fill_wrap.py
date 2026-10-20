@@ -45,7 +45,7 @@ from orionbelt.ast.nodes import (
     SubqueryExpr,
     UnionAll,
 )
-from orionbelt.compiler.expr_rewrite import collect_referenced_tables
+from orionbelt.compiler.expr_rewrite import collect_referenced_tables, map_nodes
 from orionbelt.compiler.filter_resolution import conjuncts
 from orionbelt.compiler.outer_order_by import remap_order_by
 from orionbelt.compiler.resolution import (
@@ -54,6 +54,7 @@ from orionbelt.compiler.resolution import (
     ResolvedQuery,
     make_column_expr,
     make_dimension_expr,
+    make_period_expr,
 )
 from orionbelt.compiler.time_lookback import null_safe_eq
 from orionbelt.dialect.base import Dialect
@@ -82,7 +83,7 @@ def wrap_with_fill(
     aliases = [_alias(column) for column in ast.columns]
 
     source = replace(ast, ctes=[], order_by=[], limit=None, offset=None)
-    lower, upper = _bounds(resolved, time, model, dialect)
+    lower, upper, on_periods = _bounds(resolved, time, model, dialect)
     period = ColumnRef(name=time.name, table=_SOURCE)
     data_min = FunctionCall(name="MIN", args=[ColumnRef(name=time.name)])
     data_max = FunctionCall(name="MAX", args=[ColumnRef(name=time.name)])
@@ -173,14 +174,19 @@ def wrap_with_fill(
             columns.append(AliasedExpr(expr=value, alias=alias))
         return columns
 
+    shown = as_shown(ColumnRef(name="spine_date", table=_SPINE))
+    # A filter on the dimension's periods, applied to the spine's: the same
+    # comparison the where makes of each row's period. A row the where kept
+    # passes it, so no period with data is dropped.
+    spine_filter: Expr | None = None
+    for predicate in on_periods:
+        on_spine = _on_spine(predicate, shown)
+        spine_filter = on_spine if spine_filter is None else BinaryOp(spine_filter, "AND", on_spine)
     periods = Select(
-        columns=projection(
-            as_shown(ColumnRef(name="spine_date", table=_SPINE)),
-            _MEMBERS if others else _SOURCE,
-            True,
-        ),
+        columns=projection(shown, _MEMBERS if others else _SOURCE, True),
         from_=From(source=_SPINE, alias=_SPINE),
         joins=list(joins),
+        where=spine_filter,
     )
     # The rows without a period, typed as the spine's column so the two
     # branches agree on every engine.
@@ -242,38 +248,56 @@ def _outer(bound: Expr | None, data: Expr, op: str) -> Expr:
 
 def _bounds(
     resolved: ResolvedQuery, time: ResolvedDimension, model: SemanticModel, dialect: Dialect
-) -> tuple[Expr | None, Expr | None]:
-    """The first and last period the where filters on *time* admit.
+) -> tuple[Expr | None, Expr | None, list[Expr]]:
+    """The first and last period the where filters on *time* admit, and the
+    filters that compare *time*'s periods, to apply to the spine.
 
-    Each bound is read as a value of the time column and projected the way the
-    dimension is (grain and cast), so it compares with the query's periods.
-    Only a single constant bound on each side is read, at the top level or in
-    an ``and`` group; anything else (two lower bounds, a relative range, an
-    equality) leaves that side to the data.
+    A filter on the dimension compares its period (``Order Month >= Jan 15``
+    admits February on): its bound, truncated, only widens the range, and the
+    filter itself, applied to each spine period, admits exactly what the
+    ``where`` does. A filter on the date itself (a dimension without a grain, a
+    qualified column) admits a period with any day it admits, and its bound is
+    read as a date. Only a single constant bound on each side counts, at the top
+    level or in an ``and`` group; anything else leaves that side to the data.
     """
     assert time.grain is not None
     grain = time.grain
     declared = model.data_objects[time.object_name].columns[time.column_name].abstract_type
     column_type = declared.value
-    if column_type not in ("date", "timestamp"):
-        return None, None
-    if time.via is not None:
-        return None, None
+    if column_type not in ("date", "timestamp") or time.via is not None:
+        return None, None, []
     column = make_column_expr(model, time.object_name, time.column_name)
-    lowers: list[Expr] = []
-    uppers: list[Expr] = []
+    dimension = model.dimensions[time.dimension]
+    # Only at the grain shown: a month filter read off weekly spine dates
+    # would drop a week reaching into an admitted month.
+    shown_period = (
+        make_period_expr(model, dimension, grain) if dimension.time_grain == grain else None
+    )
+    lowers: list[tuple[Expr, str]] = []
+    uppers: list[tuple[Expr, str]] = []
+    on_periods: list[Expr] = []
     # Conjunct by conjunct: a group that also filters another column has no
     # single subject, and its comparisons on the time column bound it all the
     # same.
     for predicate in (p for f in resolved.where_filters for p in conjuncts(f.expression)):
-        if isinstance(predicate, Between) and not predicate.negated and predicate.expr == column:
-            lowers.append(predicate.low)
-            uppers.append(predicate.high)
-        elif isinstance(predicate, BinaryOp) and predicate.left == column:
-            if predicate.op in (">", ">="):
-                lowers.append(predicate)
-            elif predicate.op in ("<", "<="):
-                uppers.append(predicate)
+        subject = predicate.expr if isinstance(predicate, Between) else None
+        if isinstance(predicate, BinaryOp):
+            subject = predicate.left
+        is_period = shown_period is not None and subject == shown_period
+        if not is_period and subject != column:
+            continue
+        kind = "period" if is_period else "date"
+        if isinstance(predicate, Between) and not predicate.negated:
+            lowers.append((predicate.low, f"{kind}>="))
+            uppers.append((predicate.high, f"{kind}<="))
+        elif isinstance(predicate, BinaryOp) and predicate.op in (">", ">=", "<", "<="):
+            (lowers if predicate.op[0] == ">" else uppers).append(
+                (predicate.right, f"{kind}{predicate.op}")
+            )
+        else:
+            continue
+        if is_period:
+            on_periods.append(predicate)
 
     def at(value: Expr) -> Expr:
         return make_dimension_expr(model, time, dialect, column=value)
@@ -282,23 +306,20 @@ def _bounds(
         # RawSQL: the dialect's date arithmetic, over a constant bound.
         return RawSQL(sql=dialect.date_add_sql(dialect.compile_expr(value), "day", days))
 
-    def period(values: list[Expr]) -> Expr | None:
+    def period(values: list[tuple[Expr, str]]) -> Expr | None:
         if len(values) != 1:
             return None
-        bound, op = values[0], None
-        if isinstance(bound, BinaryOp):
-            op = bound.op
-            bound = bound.right
+        bound, op = values[0]
         if not _constant(bound):
             return None
         typed: Expr = Cast(expr=bound, type_name=column_type)
-        if op == ">" and column_type == "date":
+        if op == "date>" and column_type == "date":
             # ``> Nov 30`` starts in December.
             return at(day_after(typed, 1))
-        if op == "<" and column_type == "date":
+        if op == "date<" and column_type == "date":
             # ``< May 1`` ends in April, ``< May 15`` in May.
             return at(day_after(typed, -1))
-        if op == "<":
+        if op == "date<":
             # ``< Apr 1 12:00`` admits April's first hours, ``< Apr 1 00:00``
             # none of them: the period is the bound's own unless the bound
             # starts it. (``> ts`` always admits the rest of ts's period.)
@@ -307,9 +328,19 @@ def _bounds(
                 when_clauses=[(BinaryOp(start, "=", typed), at(day_after(typed, -1)))],
                 else_clause=at(typed),
             )
+        # A period filter's bound truncated: the period holding it, which the
+        # spine's own filter keeps or drops.
         return at(typed)
 
-    return period(lowers), period(uppers)
+    return period(lowers), period(uppers), on_periods
+
+
+def _on_spine(predicate: Expr, shown: Expr) -> Expr:
+    """*predicate* on a period filter, comparing the spine's period *shown*."""
+    operand = predicate.expr if isinstance(predicate, Between) else None
+    if isinstance(predicate, BinaryOp):
+        operand = predicate.left
+    return map_nodes(predicate, lambda node: shown if node == operand else None)
 
 
 def _constant(value: Expr) -> bool:

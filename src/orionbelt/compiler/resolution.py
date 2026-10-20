@@ -269,6 +269,23 @@ def make_dimension_expr(
     return dialect.cast_to_obml_type(col, parse_data_type(declared.result_type.value))
 
 
+def make_period_expr(model: SemanticModel, dim: Dimension, grain: TimeGrain) -> Expr:
+    """The period *dim*'s column falls in at *grain*, typed as *dim* shows it.
+
+    What a ``where`` filter on a grained dimension compares, so that ``Order
+    Month = 2025-01-01`` finds January and ``Order Month >= 2025-01-15`` starts
+    in February: the period, not the date inside it. Built from the portable
+    ``date_trunc`` rather than :func:`make_dimension_expr`, because it is
+    resolved before a dialect is known, and stays typed nodes (a week too) for
+    the passes that rewrite a filter's columns.
+    """
+    column = make_column_expr(model, dim.view, dim.column)
+    period: Expr = FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])
+    if dim.result_type not in CASTABLE_TEMPORAL_TYPES:
+        return period
+    return Cast(expr=period, type_name=dim.result_type.value)
+
+
 def effective_anchor(
     model: SemanticModel,
     measure: Measure,

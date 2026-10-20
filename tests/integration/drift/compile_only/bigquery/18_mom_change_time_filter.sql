@@ -4,7 +4,7 @@ SELECT MIN(`__ob_pop_src`.`__ob_bucket`) AS min_date,
   FROM (
     SELECT DATE_TRUNC(`Sales`.`salesdate`, MONTH) AS `__ob_bucket`
       FROM `orionbelt_1`.`sales` AS `Sales`
-      WHERE (`Sales`.`salesdate` >= '2021-03-01') AND (`Sales`.`salesdate` < '2021-05-01')
+      WHERE (CAST(DATE_TRUNC(`Sales`.`salesdate`, MONTH) AS DATE) >= '2021-03-01') AND (CAST(DATE_TRUNC(`Sales`.`salesdate`, MONTH) AS DATE) < '2021-05-01')
   ) AS `__ob_pop_src`
 ),
 `date_spine` AS (
@@ -20,7 +20,7 @@ SELECT `date_spine`.spine_date AS `Sales Month`,
     SELECT DATE_TRUNC(`Sales`.`salesdate`, MONTH) AS `__ob_bucket`,
            `Sales`.`salesamount` AS `Sales__salesamount`
       FROM `orionbelt_1`.`sales` AS `Sales`
-      WHERE (`Sales`.`salesdate` >= '2021-03-01') AND (`Sales`.`salesdate` < '2021-05-01')
+      WHERE (CAST(DATE_TRUNC(`Sales`.`salesdate`, MONTH) AS DATE) >= '2021-03-01') AND (CAST(DATE_TRUNC(`Sales`.`salesdate`, MONTH) AS DATE) < '2021-05-01')
   ) AS `__ob_pop_src`
   JOIN `date_spine`
     ON `__ob_pop_src`.`__ob_bucket` = `date_spine`.spine_date
@@ -32,7 +32,7 @@ SELECT (SELECT spine_date FROM `date_spine` WHERE 1 = 0) AS `Sales Month`,
     SELECT DATE_TRUNC(`Sales`.`salesdate`, MONTH) AS `__ob_bucket`,
            `Sales`.`salesamount` AS `Sales__salesamount`
       FROM `orionbelt_1`.`sales` AS `Sales`
-      WHERE (`Sales`.`salesdate` >= '2021-03-01') AND (`Sales`.`salesdate` < '2021-05-01')
+      WHERE (CAST(DATE_TRUNC(`Sales`.`salesdate`, MONTH) AS DATE) >= '2021-03-01') AND (CAST(DATE_TRUNC(`Sales`.`salesdate`, MONTH) AS DATE) < '2021-05-01')
   ) AS `__ob_pop_src`
   WHERE `__ob_pop_src`.`__ob_bucket` IS NULL
   HAVING COUNT(*) > 0

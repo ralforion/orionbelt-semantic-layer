@@ -11,7 +11,8 @@ sql: 'WITH "cumulative_base" AS (
 
   LEFT JOIN "orionbelt_1"."regions" AS "Regions" ON "Countries"."region" = "Regions"."regionid"
 
-  WHERE "Sales"."salesdate" >= ''2022-03-01'' AND "Sales"."salesdate" < ''2022-07-01''
+  WHERE CAST(DATE_TRUNC(''month'', "Sales"."salesdate") AS DATE) >= ''2022-03-01'' AND CAST(DATE_TRUNC(''month'', "Sales"."salesdate")
+  AS DATE) < ''2022-07-01''
 
   GROUP BY ALL
 
@@ -30,7 +31,8 @@ sql: 'WITH "cumulative_base" AS (
 
   LEFT JOIN "orionbelt_1"."regions" AS "Regions" ON "Countries"."region" = "Regions"."regionid"
 
-  WHERE "Sales"."salesdate" >= ''2022-03-01'' AND "Sales"."salesdate" < ''2022-07-01''
+  WHERE CAST(DATE_TRUNC(''month'', "Sales"."salesdate") AS DATE) >= ''2022-03-01'' AND CAST(DATE_TRUNC(''month'', "Sales"."salesdate")
+  AS DATE) < ''2022-07-01''
 
   GROUP BY ALL
 

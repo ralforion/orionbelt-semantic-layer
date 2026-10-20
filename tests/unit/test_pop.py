@@ -1297,16 +1297,14 @@ class TestPopTimeFilterLookBack:
             ("2024-03-01", "EU"): (Decimal("50.00"), Decimal("30.00")),
         }
 
-    def test_a_filter_inside_a_month_still_filters_the_measure(self) -> None:
-        # February's EU sale is on the 10th, so February EU is not shown; March
-        # still compares with the whole of February.
+    def test_a_filter_inside_a_month_starts_at_the_next_month(self) -> None:
+        # The filter compares the month shown: February starts before the 15th,
+        # so no February row is shown; March still compares with the whole of
+        # February.
         rows = self._rows(
             [QueryFilter(field="Occurred Month", op=FilterOperator.GTE, value="2024-02-15")]
         )
-        assert rows == {
-            ("2024-02-01", "US"): (Decimal("5.00"), None),
-            ("2024-03-01", "EU"): (Decimal("50.00"), Decimal("30.00")),
-        }
+        assert rows == {("2024-03-01", "EU"): (Decimal("50.00"), Decimal("30.00"))}
 
     def test_a_filter_on_another_dimension_still_limits_the_prior_period(self) -> None:
         rows = self._rows(

@@ -176,8 +176,10 @@ February:
 
 A filter counts as a time filter when it is on the time dimension or on another
 dimension (or qualified column) over the same date column, such as `Sales Year`
-next to `Sales Month`. The shown periods and the plain measures still respect it,
-including a boundary inside a period. A filter group counts when every filter
+next to `Sales Month`. The shown periods and the plain measures still respect it:
+a filter on a grained dimension admits whole periods
+([Filtering a time-grained dimension](query-language.md#filtering-a-time-grained-dimension)),
+one on the date itself can end inside a period. A filter group counts when every filter
 in it is on that column, such as a date range written as one `and` group. Every
 other filter - another dimension, a group mixing columns, a model's static
 filters - still limits the prior period too.
