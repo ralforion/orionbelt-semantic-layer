@@ -6,6 +6,7 @@ from orionbelt.ast.builder import QueryBuilder, and_, col, eq, func, lit
 from orionbelt.ast.nodes import (
     AliasedExpr,
     BinaryOp,
+    Cast,
     ColumnRef,
     From,
     FunctionCall,
@@ -18,6 +19,7 @@ from orionbelt.ast.nodes import (
     WindowFunction,
 )
 from orionbelt.ast.visitor import ASTVisitor
+from orionbelt.dialect.clickhouse import ClickHouseDialect
 
 
 class TestLiteral:
@@ -260,3 +262,11 @@ class TestASTVisitor:
         assert result.func_name == "SUM"
         assert len(result.args) == 1
         assert len(result.partition_by) == 1
+
+    def test_visitor_keeps_a_casts_flags(self) -> None:
+        """A visited cast renders as before: an OBML ``timestamp`` stays
+        ``DateTime64(3)`` on ClickHouse rather than the abstract ``DateTime``."""
+        cast = Cast(expr=ColumnRef(name="t"), type_name="timestamp", obml_type=True)
+        result = ASTVisitor().visit(cast)
+        assert result == cast
+        assert "DateTime64(3)" in ClickHouseDialect().compile_expr(result)
