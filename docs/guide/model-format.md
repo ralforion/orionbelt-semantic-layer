@@ -809,7 +809,9 @@ A measure that omits `resultType` takes it from what it aggregates:
 | `listagg` | `string` | `string` |
 | statistical (`stddev`, `corr`, `regr_slope` ...) | `float` | `float` |
 
-An undeclared column or an unknown aggregation gives `decimal`. A declared
+An undeclared column or an unknown aggregation gives `decimal`. An `int`
+answer becomes `decimal` when the measure has a fractional `defaultValue`
+(`0.5`), which an integer type would round on an empty set. A declared
 `resultType` always wins. The inferred type is what the result surfaces
 advertise (Arrow Flight SQL, the PostgreSQL wire catalog, the REST type
 hints), and an inferred `int` on a `sum` compiles to `bigint` exactly as a

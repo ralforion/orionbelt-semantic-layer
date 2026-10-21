@@ -65,6 +65,7 @@ from orionbelt.models.semantic import (
     TimeGrain,
 )
 from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN, count_label, count_pattern_error
+from orionbelt.models.types import default_as_decimal
 from orionbelt.parser.loader import SourceMap
 
 
@@ -574,6 +575,7 @@ def _infer_measure_result_type(
     columns: list[DataColumnRef],
     expression: str | None,
     data_objects: dict[str, DataObject],
+    default_value: object = None,
 ) -> DataType:
     """The ``resultType`` of a measure that does not declare one.
 
@@ -588,7 +590,23 @@ def _infer_measure_result_type(
     Exact (``decimal``) is also the answer when nothing is known: an unknown
     aggregation or an undeclared column. Calling a number a float when it is
     exact loses digits wherever the type is honoured; the opposite loses none.
+
+    An integer answer that a fractional ``defaultValue`` would replace on an
+    empty set is ``decimal`` instead: an ``int`` result rounds 0.5 to 1.
     """
+    inferred = _infer_from_aggregation(aggregation, columns, expression, data_objects)
+    default = default_as_decimal(default_value)
+    if inferred is DataType.INT and default is not None and default != default.to_integral_value():
+        return DataType.DECIMAL
+    return inferred
+
+
+def _infer_from_aggregation(
+    aggregation: object,
+    columns: list[DataColumnRef],
+    expression: str | None,
+    data_objects: dict[str, DataObject],
+) -> DataType:
     try:
         agg = AggregationType(str(aggregation).lower())
     except ValueError:
@@ -1093,6 +1111,7 @@ class ReferenceResolver:
                         measure_columns,
                         expression,
                         data_objects,
+                        raw_meas.get("defaultValue"),
                     ),
                     aggregation=raw_meas.get("aggregation", "sum"),
                     expression=expression,

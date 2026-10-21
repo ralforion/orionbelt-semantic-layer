@@ -16,7 +16,6 @@ Pass-through (no CAST): MIN/MAX, LISTAGG, non-numeric aggregates.
 from __future__ import annotations
 
 from collections.abc import Callable
-from decimal import Decimal, InvalidOperation
 
 from orionbelt.ast.nodes import Expr, FunctionCall
 from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION, Dialect
@@ -40,6 +39,7 @@ from orionbelt.models.types import (
     OBMLType,
     SimpleType,
     decimal_width,
+    default_as_decimal,
     parse_data_type,
 )
 
@@ -357,7 +357,7 @@ def passthrough_decimal_width(measure: Measure, model: SemanticModel) -> tuple[i
     precision, scale = decimal_width(column.sql_precision, column.sql_scale)
     if measure.default_value is None:
         return precision, scale
-    default = _default_as_decimal(measure.default_value)
+    default = default_as_decimal(measure.default_value)
     if default is None:
         return None
     digits, exponent = default.as_tuple()[1:]
@@ -368,22 +368,6 @@ def passthrough_decimal_width(measure: Measure, model: SemanticModel) -> tuple[i
     integer_digits = max(precision - scale, default_integer_digits)
     scale = max(scale, default_scale)
     return max(integer_digits + scale, 1), scale
-
-
-def _default_as_decimal(value: object) -> Decimal | None:
-    """A ``defaultValue`` as the number its SQL literal spells, or ``None``.
-
-    An int or float is rendered as ``str(value)``, and text as a string the
-    engine coerces; a boolean, or text that is not a finite number, is no
-    number at all.
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float | str):
-        return None
-    try:
-        number = Decimal(str(value).strip())
-    except InvalidOperation:
-        return None
-    return number if number.is_finite() else None
 
 
 def measure_yields_integers(

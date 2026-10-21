@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 
 _DECIMAL_RE = re.compile(r"^decimal\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)$")
 
@@ -57,6 +58,22 @@ def decimal_width(precision: int, scale: int) -> tuple[int, int]:
     integer_digits = max(precision - scale, 0)
     scale = max(scale, 0)
     return max(integer_digits + scale, 1), scale
+
+
+def default_as_decimal(value: object) -> Decimal | None:
+    """A ``defaultValue`` as the number its SQL literal spells, or ``None``.
+
+    An int or float is rendered as ``str(value)``, and text as a string the
+    engine coerces; a boolean, or text that is not a finite number, is no
+    number at all.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        number = Decimal(str(value).strip())
+    except InvalidOperation:
+        return None
+    return number if number.is_finite() else None
 
 
 BUILTIN_DEFAULT = DecimalType(precision=18, scale=2)

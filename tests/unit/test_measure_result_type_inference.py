@@ -151,6 +151,23 @@ class TestAnIntegerSumIsAnInteger:
         con.execute("INSERT INTO orders VALUES ('a', 100000000000000000), ('b', 3)")
         assert con.execute(sql).fetchone() == (100000000000000003,)
 
+    @pytest.mark.parametrize("aggregation", ["sum", "min", "max"])
+    def test_a_fractional_default_makes_it_exact(self, aggregation: str) -> None:
+        """An ``int`` result would round the 0.5 an empty set falls back to."""
+        assert _inferred(aggregation, "Quantity", defaultValue="0.5") is DataType.DECIMAL
+
+    @pytest.mark.parametrize("default", ["0", "7", "2.0"])
+    def test_a_whole_default_keeps_it_an_integer(self, default: str) -> None:
+        assert _inferred("sum", "Quantity", defaultValue=default) is DataType.INT
+
+    def test_the_fractional_default_comes_back_unrounded(self) -> None:
+        model = _model({"Units": _measure("sum", "Quantity", defaultValue="0.5")})
+        query = QueryObject.model_validate({"select": {"measures": ["Units"]}})
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        con = duckdb.connect()
+        con.execute("CREATE TABLE orders (id VARCHAR, quantity BIGINT)")
+        assert con.execute(sql).fetchone() == (Decimal("0.50"),)
+
 
 class TestResultSurfacesAgreeWithTheSQL:
     MEASURES = {
