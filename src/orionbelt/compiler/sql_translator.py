@@ -2272,6 +2272,7 @@ def _placeholder_arrow_type(placeholder: exp.Expression, model: SemanticModel) -
     """
     from orionbelt.service.result_schema import (
         dimension_arrow_type,
+        measure_arrow_type,
         numeric_result_arrow_type,
         obml_type_to_arrow,
         raw_field_arrow_type,
@@ -2298,20 +2299,17 @@ def _placeholder_arrow_type(placeholder: exp.Expression, model: SemanticModel) -
     if dimension is not None:
         return dimension_arrow_type(dimension, model)
 
-    measures = {label.lower(): item for label, item in model.effective_measures.items()}
-    metrics = {label.lower(): item for label, item in model.metrics.items()}
-    item = measures.get(key) or metrics.get(key)
-    if item is None:
+    measure = {label.lower(): item for label, item in model.effective_measures.items()}.get(key)
+    if measure is not None:
+        return measure_arrow_type(measure, model)
+    metric = {label.lower(): item for label, item in model.metrics.items()}.get(key)
+    if metric is None:
         return obml_type_to_arrow(None)
-
-    decimal_type = numeric_result_arrow_type(item, model)
+    decimal_type = numeric_result_arrow_type(metric, model)
     if decimal_type is not None:
         return decimal_type
-    rt = getattr(getattr(item, "result_type", None), "value", None)
-    if rt:
-        return obml_type_to_arrow(rt)
-    # A metric with no declared result type is numeric, which is the fallback
+    # A metric with no declared decimal is numeric, which is the fallback
     # ``declared_result_schema`` makes for the same case.
     import pyarrow as pa
 
-    return pa.float64() if key in metrics else obml_type_to_arrow(None)
+    return pa.float64()

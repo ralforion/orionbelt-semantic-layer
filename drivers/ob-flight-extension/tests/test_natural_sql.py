@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 
 import pyarrow as pa
 import pytest
+from orionbelt.models.semantic import DataType, Measure
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.service.compilation_cache import CompilationCache
@@ -487,6 +488,11 @@ class TestSchemaProbeShortcut:
         assert "_g_Customer Country" in names
 
 
+def _sum_measure(data_type: str | None = None) -> Measure:
+    """A ``float`` sum over no column, typed by its declarations alone."""
+    return Measure(name="m", aggregation="sum", result_type=DataType.FLOAT, data_type=data_type)
+
+
 class TestSemanticResultSchemaDecimals:
     """A governed DECIMAL measure/metric is advertised as an exact Arrow decimal
     so the FlightInfo schema matches the high-precision value the stream carries
@@ -515,23 +521,12 @@ class TestSemanticResultSchemaDecimals:
         )
 
     def test_declared_decimal_measure_advertised_as_decimal(self) -> None:
-        model = self._model(
-            measures={
-                "Revenue": SimpleNamespace(
-                    data_type="decimal(18, 2)",
-                    result_type=SimpleNamespace(value="float"),
-                )
-            }
-        )
+        model = self._model(measures={"Revenue": _sum_measure(data_type="decimal(18, 2)")})
         schema = semantic_result_schema(None, self._query(["Revenue"]), model)
         assert schema.field("Revenue").type == pa.decimal128(18, 2)
 
     def test_float_measure_stays_double(self) -> None:
-        model = self._model(
-            measures={
-                "Ratio": SimpleNamespace(data_type=None, result_type=SimpleNamespace(value="float"))
-            }
-        )
+        model = self._model(measures={"Ratio": _sum_measure()})
         schema = semantic_result_schema(None, self._query(["Ratio"]), model)
         assert schema.field("Ratio").type == pa.float64()
 
@@ -549,11 +544,7 @@ class TestSemanticResultSchemaDecimals:
 
     def test_default_numeric_data_type_fallback(self) -> None:
         model = self._model(
-            measures={
-                "Amount": SimpleNamespace(
-                    data_type=None, result_type=SimpleNamespace(value="float")
-                )
-            },
+            measures={"Amount": _sum_measure()},
             default_numeric_data_type="decimal(12, 3)",
         )
         schema = semantic_result_schema(None, self._query(["Amount"]), model)
@@ -563,12 +554,6 @@ class TestSemanticResultSchemaDecimals:
         # OBML permits precisions wider than Arrow's decimal256 max (76); such a
         # declared type must degrade to float64, not raise during FlightInfo
         # schema construction (issue #136 P2b).
-        model = self._model(
-            measures={
-                "Huge": SimpleNamespace(
-                    data_type="decimal(100, 2)", result_type=SimpleNamespace(value="float")
-                )
-            }
-        )
+        model = self._model(measures={"Huge": _sum_measure(data_type="decimal(100, 2)")})
         schema = semantic_result_schema(None, self._query(["Huge"]), model)
         assert schema.field("Huge").type == pa.float64()

@@ -1467,9 +1467,25 @@ def _decimal_duckdb_type(data_type: str | None) -> str | None:
     return f"DECIMAL({precision}, {scale})"
 
 
+#: DuckDB type of each non-decimal ``dataType``.
+_DATA_TYPE_TO_DUCKDB: dict[str, str] = {
+    "bigint": "BIGINT",
+    "integer": "INTEGER",
+    "double": "DOUBLE",
+    "date": "DATE",
+    "timestamp": "TIMESTAMP",
+    "time": "TIME",
+    "string": "VARCHAR",
+    "boolean": "BOOLEAN",
+}
+
+
 def _measure_sql_type(measure: Measure, settings: ModelSettings | None = None) -> str:
+    """The type the compiler casts *measure* to, else its ``resultType``'s."""
     governed = governed_measure_data_type(measure, settings)
-    return _decimal_duckdb_type(governed) or _DATATYPE_TO_DUCKDB.get(measure.result_type, "DOUBLE")
+    if governed is not None:
+        return _decimal_duckdb_type(governed) or _DATA_TYPE_TO_DUCKDB[governed.strip().lower()]
+    return _DATATYPE_TO_DUCKDB.get(measure.result_type, "DOUBLE")
 
 
 def _metric_sql_type(metric: Metric, default_num: str | None = None) -> str:

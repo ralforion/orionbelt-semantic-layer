@@ -9,9 +9,12 @@ and overflowed on a value its ``BIGINT`` column held legally.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import duckdb
 import pyarrow as pa
 import pytest
+from ob_flight.catalog import model_to_virtual_table_schema
 
 from orionbelt.api.query_cache import build_type_map
 from orionbelt.compiler.pipeline import CompilationPipeline
@@ -34,6 +37,7 @@ dataObjects:
       Quantity: {{code: quantity, abstractType: int}}
       Amount: {{code: amount, abstractType: decimal}}
       Weight: {{code: weight, abstractType: float}}
+      Rate: {{code: rate, abstractType: decimal, sqlPrecision: 38, sqlScale: 12}}
       Ordered At: {{code: ordered_at, abstractType: date}}
       Status: {{code: status, abstractType: string}}
 dimensions:
@@ -182,3 +186,45 @@ class TestResultSurfacesAgreeWithTheSQL:
             assert _measure_sql_type(model.measures[label], model.settings) == sql_type
         hints = build_type_map(model)
         assert (hints["Units"], hints["First Order"]) == ("number", "datetime")
+
+
+class TestTheDeclaredTypeWins:
+    """What the compiler casts to, or the column an uncast aggregate returns."""
+
+    def _schemas(self, model: SemanticModel, label: str) -> list[pa.DataType]:
+        query = QueryObject.model_validate({"select": {"measures": [label]}})
+        return [
+            declared_result_schema(query, model).field(label).type,
+            declared_arrow_types(model)[label],
+            model_to_virtual_table_schema(model).field(label).type,
+        ]
+
+    def test_a_min_of_a_wide_decimal_keeps_the_column_width(self) -> None:
+        model = _model({"Lowest Rate": _measure("min", "Rate")})
+        for arrow_type in self._schemas(model, "Lowest Rate"):
+            assert arrow_type == pa.decimal128(38, 12)
+            # The value the engine returns fits the advertised type.
+            pa.array([Decimal("0.123456789012")], pa.decimal128(38, 12)).cast(arrow_type)
+
+    def test_an_explicit_double_over_an_int_column_is_a_double(self) -> None:
+        model = _model({"Units": _measure("sum", "Quantity", dataType="double")})
+        assert model.measures["Units"].result_type is DataType.INT
+        for arrow_type in self._schemas(model, "Units"):
+            assert arrow_type == pa.float64()
+            pa.array([1.8e19]).cast(arrow_type)
+        assert _measure_sql_type(model.measures["Units"], model.settings) == "DOUBLE"
+
+    @pytest.mark.parametrize(
+        ("data_type", "arrow_type", "sql_type"),
+        [
+            ("bigint", pa.int64(), "BIGINT"),
+            ("decimal(30, 6)", pa.decimal128(30, 6), "DECIMAL(30, 6)"),
+            ("string", pa.utf8(), "VARCHAR"),
+        ],
+    )
+    def test_every_explicit_data_type(
+        self, data_type: str, arrow_type: pa.DataType, sql_type: str
+    ) -> None:
+        model = _model({"M": _measure("max", "Weight", dataType=f"'{data_type}'")})
+        assert self._schemas(model, "M") == [arrow_type] * 3
+        assert _measure_sql_type(model.measures["M"], model.settings) == sql_type
