@@ -100,19 +100,20 @@ class TestSingleColumnAggregates:
     `VARIANCE_POP`) rather than being dropped as invalid."""
 
     def test_single_column_aggregates_convert(self) -> None:
-        for expr, agg, rtype in [
-            ("VAR_POP(Orders.amount)", "var_pop", "float"),
-            ("STDDEV(Orders.amount)", "stddev", "float"),
-            ("VARIANCE(Orders.amount)", "variance", "float"),
-            ("MEDIAN(Orders.amount)", "median", "float"),
-            ("MODE(Orders.region)", "mode", "int"),
-            ("LISTAGG(Orders.region)", "listagg", "string"),
+        for expr, agg in [
+            ("VAR_POP(Orders.amount)", "var_pop"),
+            ("STDDEV(Orders.amount)", "stddev"),
+            ("VARIANCE(Orders.amount)", "variance"),
+            ("MEDIAN(Orders.amount)", "median"),
+            ("MODE(Orders.region)", "mode"),
+            ("LISTAGG(Orders.region)", "listagg"),
         ]:
             obml, lossy = _convert(expr)
             assert not lossy, expr
             (measure,) = obml["measures"].values()
             assert measure["aggregation"] == agg, expr
-            assert measure["resultType"] == rtype, expr
+            # OrionBelt infers it from the aggregation and the column's type.
+            assert "resultType" not in measure, expr
 
 
 class TestPreservedAggregates:
@@ -147,14 +148,16 @@ class TestBracketIdentifiers:
         assert measure["columns"] == [{"dataObject": "Orders", "column": "amount"}]
 
 
-class TestDecomposedCountIsInt:
-    """Regression: the decompose path hard-coded every leaf to float."""
+class TestDecomposedLeavesAreTypedByTheLoader:
+    """The decompose path once hard-coded every leaf to float, then guessed a
+    type from the aggregation alone. Neither knew the column, so neither is
+    written: OrionBelt infers it from the aggregation and the column's type."""
 
-    def test_count_leaf_result_type_is_int(self) -> None:
+    def test_leaves_carry_no_result_type(self) -> None:
         obml, _ = _convert("SUM(Orders.amount) / COUNT(DISTINCT Orders.id)")
-        assert obml["measures"]["_Orders_amount_sum"]["resultType"] == "float"
+        assert "resultType" not in obml["measures"]["_Orders_amount_sum"]
         count = obml["measures"]["_Orders_id_count_distinct"]
-        assert count["resultType"] == "int"
+        assert "resultType" not in count
         assert count["aggregation"] == "count"
         assert count["distinct"] is True
 

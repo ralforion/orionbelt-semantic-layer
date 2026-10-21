@@ -184,19 +184,20 @@ measures:
     columns:                      # column references (for simple aggregations)
       - dataObject: Orders
         column: Amount
-    resultType: float             # optional: inferred when omitted (count -> int,
+    resultType: decimal           # optional: inferred when omitted (count -> int,
                                   # sum/min/max -> the column's type, avg -> decimal
-                                  # over int/decimal, float if a float column is read)
+                                  # over int/decimal, float if a float column is read).
+                                  # decimal is exact; a float sum/avg returns a double
     aggregation: sum              # see aggregation values below
     total: false                  # optional: grand total shorthand (= grain: { mode: FIXED })
 
   Profit:                         # expression-based measure
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Orders].[Amount]} - {[Orders].[Cost]}'  # {[DataObject].[Column]} syntax
 
   Revenue by Region:              # grain override — aggregate at region level
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Orders].[Amount]}'
     grain:
@@ -204,7 +205,7 @@ measures:
       include: [Region]           # aggregate at region level only
 
   Unfiltered Revenue:             # filter context — ignore query filters
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Orders].[Amount]}'
     filterContext:
@@ -215,7 +216,7 @@ measures:
     columns:
       - dataObject: Orders
         column: Amount
-    resultType: float
+    resultType: decimal
     aggregation: sum
     filter:
       column:
@@ -698,7 +699,7 @@ measures:
     columns:
       - dataObject: Orders
         column: Amount
-    resultType: float
+    resultType: decimal
     aggregation: sum
 
 metrics:

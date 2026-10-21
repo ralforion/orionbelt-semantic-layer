@@ -199,7 +199,7 @@ def measure_arrow_type(measure: Any, model: Any) -> Any:
     from orionbelt.models.types import DecimalType, parse_data_type
 
     settings = getattr(model, "settings", None)
-    governed = governed_measure_data_type(measure, settings)
+    governed = governed_measure_data_type(measure, settings, model)
     if governed is not None:
         parsed = parse_data_type(governed)
         if isinstance(parsed, DecimalType):

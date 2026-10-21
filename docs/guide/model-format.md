@@ -756,7 +756,7 @@ Reference columns directly in the expression using `{[DataObject].[Column]}`:
 ```yaml
 measures:
   Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
 ```
@@ -764,7 +764,7 @@ measures:
 ```yaml
 measures:
   Profit:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Sales].[Salesamount]} - {[Sales].[Salescosts]}'
     total: true
@@ -809,7 +809,8 @@ A measure that omits `resultType` takes it from what it aggregates:
 | `listagg` | `string` | `string` |
 | statistical (`stddev`, `corr`, `regr_slope` ...) | `float` | `float` |
 
-An undeclared column or an unknown aggregation gives `decimal`. An `int`
+An undeclared column or an unknown aggregation gives `decimal`, and a `float`
+column declaring both `sqlPrecision` and `sqlScale` counts as `decimal`. An `int`
 answer becomes `decimal` when the measure has a fractional `defaultValue`
 (`0.5`), which an integer type would round on an empty set. A declared
 `resultType` always wins. The inferred type is what the result surfaces
@@ -939,7 +940,7 @@ measures:
     columns:
       - dataObject: Line Items
         column: Extended Price
-    resultType: float
+    resultType: decimal
     aggregation: sum
     filters:
       - logic: or
@@ -1510,9 +1511,25 @@ OrionBelt automatically wraps aggregate expressions with `CAST` to ensure consis
 The effective data type for a measure or metric is resolved in this order (first match wins):
 
 1. **Explicit declaration** — `dataType` on the measure or metric
-2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; division in expression → `decimal(18, 6)`; a measure whose `resultType` is `int`, declared or [inferred](#inferred-result-type) from an `int` column, aggregated with SUM → `bigint`
+2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; a SUM/AVG measure whose `resultType` is `float` → `double`, unless `settings.defaultNumericDataType` is set or its `float` columns are fixed-point (see below); division in expression → `decimal(18, 6)`; a measure whose `resultType` is `int`, declared or [inferred](#inferred-result-type) from an `int` column, aggregated with SUM → `bigint`
 3. **Model-level default** — `settings.defaultNumericDataType`
 4. **Built-in default** — `decimal(18, 2)` for SUM/AVG aggregations
+
+!!! note "`float` is a float, `decimal` is exact"
+
+    A SUM or AVG measure declaring `resultType: float` returns the engine's
+    `double`: an average of 1, 1, 1 and 1.25 is 1.0625, where the
+    `decimal(18, 2)` default rounded it to 1.06. A double is not exact,
+    so declare money measures `resultType: decimal`, which keeps the
+    exact defaults above.
+
+    Three things keep a `float` measure exact anyway: its own `dataType`,
+    `settings.defaultNumericDataType`, and fixed-point columns. A `float`
+    measure whose `float` columns all declare `sqlPrecision` and `sqlScale`
+    gets the decimal default, the way models described a money column
+    before OBML had `decimal`. Every result surface (Arrow Flight SQL, the
+    PostgreSQL wire catalog, the REST type hints) advertises the type the
+    measure is cast to.
 
 Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `listagg`.
 
@@ -1756,7 +1773,7 @@ removing it.
 ```yaml
 measures:
   Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: "{[Orders].[Price]}"
     dataType: "decimal(38, 8)"

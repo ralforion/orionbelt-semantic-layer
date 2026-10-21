@@ -311,14 +311,14 @@ dimensions:
     resultType: string
 measures:
   Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: "{[Orders].[Price]}"
   Order Count:
     resultType: int
     aggregation: count
   Avg Price:
-    resultType: float
+    resultType: decimal
     aggregation: avg
     expression: "{[Orders].[Price]} / {[Orders].[Qty]}"
 """
@@ -429,8 +429,8 @@ class TestAnIntegerMeasureIsNotTheNumericDefault:
         )
         assert resolve_measure_data_type(m, None) == DecimalType(18, 2)
 
-    def test_a_float_measure_is_untouched(self) -> None:
-        m = Measure(name="Revenue", aggregation="sum", result_type=DataType.FLOAT)
+    def test_a_decimal_measure_is_untouched(self) -> None:
+        m = Measure(name="Revenue", aggregation="sum", result_type=DataType.DECIMAL)
         assert resolve_measure_data_type(m, None) == BUILTIN_DEFAULT
 
     def test_avg_deliberately_keeps_the_default(self) -> None:

@@ -235,7 +235,7 @@ dimensions:
 
 measures:
   Sales Amount:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[store_sales].[ss_sales_price]} * {[store_sales].[ss_quantity]}'
 
@@ -243,7 +243,7 @@ measures:
     columns:
       - dataObject: store_sales
         column: ss_net_profit
-    resultType: float
+    resultType: decimal
     aggregation: sum
 
   Quantity Sold:
@@ -257,7 +257,7 @@ measures:
     columns:
       - dataObject: store_returns
         column: sr_return_amt
-    resultType: float
+    resultType: decimal
     aggregation: sum
 
   Quantity Returned:

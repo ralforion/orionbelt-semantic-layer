@@ -641,9 +641,20 @@ def _infer_from_aggregation(
 def _declared_column_type(
     ref: DataColumnRef, data_objects: dict[str, DataObject]
 ) -> DataType | None:
+    """The column's ``abstractType``, with a declared width counting as exact.
+
+    A ``float`` column that declares ``sqlPrecision`` and ``sqlScale`` is a
+    fixed-point column in the warehouse, written before OBML had ``decimal``.
+    Read as ``float`` it would turn its sums into ``double``.
+    """
     obj = data_objects.get(ref.view or "")
     column = obj.columns.get(ref.column) if obj is not None and ref.column else None
-    return column.abstract_type if column is not None else None
+    if column is None:
+        return None
+    declares_width = column.sql_precision is not None and column.sql_scale is not None
+    if column.abstract_type is DataType.FLOAT and declares_width:
+        return DataType.DECIMAL
+    return column.abstract_type
 
 
 def _parse_measure_filter_item(

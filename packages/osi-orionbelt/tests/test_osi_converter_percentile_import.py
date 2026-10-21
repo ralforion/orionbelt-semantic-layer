@@ -56,7 +56,6 @@ def _import(
 def _column_measure(aggregation: str, percentile: float) -> dict[str, Any]:
     return {
         "columns": [{"dataObject": "Orders", "column": "amount"}],
-        "resultType": "float" if aggregation == "percentile_cont" else "int",
         "aggregation": aggregation,
         "percentile": percentile,
     }

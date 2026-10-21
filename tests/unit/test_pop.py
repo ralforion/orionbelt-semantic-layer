@@ -911,7 +911,7 @@ class TestPoPDeclaredDataType:
         assert 'CAST("Revenue MoM Diff"' not in sql
         # The operand it inherits from is typed. It reads the column out of the
         # derived table ``pop_base`` selects from, so the reference is flat.
-        assert 'CAST(SUM("__ob_pop_src"."Orders__AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"' in sql
+        assert 'CAST(SUM("__ob_pop_src"."Orders__AMOUNT") AS DOUBLE) AS "Revenue"' in sql
 
     def test_a_wrapper_metric_placeholder_is_not_cast_early(self) -> None:
         """A window metric's ``pop_base`` column is the base measure, not the rank.
@@ -972,8 +972,8 @@ class TestPoPDeclaredDataType:
         # Same aggregate and same declared type in both. The source differs by
         # construction: a plain query reads the fact table, and ``pop_base``
         # reads the derived table it joins the date spine to.
-        assert 'CAST(SUM("Orders"."AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"' in plain
-        assert 'CAST(SUM("__ob_pop_src"."Orders__AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"' in pop
+        assert 'CAST(SUM("Orders"."AMOUNT") AS DOUBLE) AS "Revenue"' in plain
+        assert 'CAST(SUM("__ob_pop_src"."Orders__AMOUNT") AS DOUBLE) AS "Revenue"' in pop
 
 
 _RANK_POP_YAML = """\

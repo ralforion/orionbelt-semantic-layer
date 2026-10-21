@@ -2,7 +2,9 @@
 
 Resolution order (first match wins):
 1. Explicit declaration on the measure/metric
-2. Structural inference from expression shape and result type
+2. Structural inference from expression shape and result type, including
+   ``double`` for a ``resultType: float`` SUM/AVG unless a model-level default
+   is set or its float columns are fixed-point
 3. Model-level default (settings.defaultNumericDataType)
 4. Built-in default: decimal(18, 2)
 
@@ -35,6 +37,7 @@ from orionbelt.models.semantic import (
 from orionbelt.models.types import (
     BUILTIN_DEFAULT,
     DIVISION_DEFAULT,
+    FLOAT_DEFAULT,
     DecimalType,
     OBMLType,
     SimpleType,
@@ -69,10 +72,13 @@ _MAX_DECIMAL_PRECISION = 38
 def resolve_measure_data_type(
     measure: Measure,
     settings: ModelSettings | None,
+    model: SemanticModel | None = None,
 ) -> OBMLType | None:
     """Resolve the effective data_type for a measure.
 
-    Returns None for pass-through (no CAST should be emitted).
+    Returns None for pass-through (no CAST should be emitted). *model* lets a
+    ``float`` measure over fixed-point columns keep the exact default, see
+    :func:`_reads_fixed_point_floats`.
     """
     # 1. Explicit declaration
     if measure.data_type:
@@ -87,6 +93,18 @@ def resolve_measure_data_type(
     # 2. Structural inference: COUNT → bigint
     if agg in _COUNT_AGGREGATIONS:
         return SimpleType(name="bigint")
+
+    # A ``resultType: float`` measure asked for a float, and the decimal
+    # defaults below rounded it: an average of 1, 1, 1 and 1.25 came back as
+    # 1.06. The model-level default is a declaration too and still wins, and
+    # so does a fixed-point source. ``decimal`` keeps the exact defaults.
+    if (
+        measure.result_type == DataType.FLOAT
+        and agg in _NUMERIC_AGGREGATIONS
+        and not (settings and settings.default_numeric_data_type)
+        and not _reads_fixed_point_floats(measure, model)
+    ):
+        return FLOAT_DEFAULT
 
     # 2. Structural inference: division in expression → decimal(18, 6)
     if measure.expression and "/" in measure.expression:
@@ -124,6 +142,33 @@ def resolve_measure_data_type(
 
     # 4. Unknown aggregation → pass-through
     return None
+
+
+def _reads_fixed_point_floats(measure: Measure, model: SemanticModel | None) -> bool:
+    """Whether every ``float`` column *measure* reads declares its width.
+
+    Before OBML had ``decimal``, a fixed-point warehouse column was declared
+    ``float`` with ``sqlPrecision`` and ``sqlScale``, and its measures
+    ``resultType: float``. Those measures were exact and stay so: the width
+    says what the column holds. It takes at least one such column, so a
+    ``float`` measure over ``int`` columns alone is the float it declares.
+    """
+    if model is None:
+        return False
+    refs = [(ref.view, ref.column) for ref in measure.columns if ref.view and ref.column]
+    if measure.expression:
+        refs.extend(find_qualified_refs(measure.expression))
+    floats = []
+    for obj_name, col_name in refs:
+        obj = model.data_objects.get(obj_name)
+        column = obj.columns.get(col_name) if obj else None
+        if column is None:
+            return False
+        if column.abstract_type is DataType.FLOAT:
+            floats.append(column)
+    return bool(floats) and all(
+        column.sql_precision is not None and column.sql_scale is not None for column in floats
+    )
 
 
 # PoP comparisons whose result is a ratio rather than a value in the base
@@ -183,22 +228,31 @@ def resolve_metric_data_type(
     return None
 
 
-def governed_measure_data_type(measure: Measure, settings: ModelSettings | None) -> str | None:
+def governed_measure_data_type(
+    measure: Measure, settings: ModelSettings | None, model: SemanticModel | None
+) -> str | None:
     """The ``dataType`` a measure's result is advertised with, or ``None``.
 
     Its own ``dataType``, or ``settings.defaultNumericDataType`` when the
     compiler casts the result to that default. A count, an integer sum or a
     ``min`` of dates is not cast to it, so it is advertised by its
     ``resultType`` instead: naming the default there described a ``BIGINT`` or
-    a ``DATE`` as the decimal it never became.
+    a ``DATE`` as the decimal it never became. A ``float`` measure the compiler
+    casts to a decimal anyway - one over fixed-point columns, see
+    :func:`_reads_fixed_point_floats` - is advertised as that decimal, at the
+    width the cast has.
     """
     if measure.data_type:
         return measure.data_type
+    resolved = resolve_measure_data_type(measure, settings, model)
     default = settings.default_numeric_data_type if settings else None
-    if default is None:
-        return None
-    resolved = resolve_measure_data_type(measure, settings)
-    return default if resolved == parse_data_type(default) else None
+    if default is not None and resolved == parse_data_type(default):
+        return default
+    if measure.result_type is DataType.FLOAT and isinstance(resolved, DecimalType):
+        cast = resolve_measure_cast_type(measure, settings, None, model)
+        if isinstance(cast, DecimalType):
+            return f"decimal({cast.precision}, {cast.scale})"
+    return None
 
 
 def _get_default(settings: ModelSettings | None) -> OBMLType:
@@ -249,7 +303,7 @@ def rewrite_exact_integer_avg(
         return None
     if aggregate.distinct or len(aggregate.args) != 1:
         return None
-    resolved = resolve_measure_data_type(measure, settings)
+    resolved = resolve_measure_data_type(measure, settings, model)
     if not isinstance(resolved, DecimalType):
         return None
     target = resolved if measure.data_type else _integer_avg_target(measure, resolved, model)
@@ -382,7 +436,7 @@ def measure_yields_integers(
     int``. A ``defaultValue`` that is not a whole number written as one makes the
     value something else, as in :func:`measure_source_is_exact`.
     """
-    resolved = resolve_measure_data_type(measure, settings)
+    resolved = resolve_measure_data_type(measure, settings, model)
     if resolved is not None:
         return isinstance(resolved, SimpleType) and resolved.name in _INTEGER_NAMES
     if measure.aggregation.upper() not in _VALUE_PRESERVING_AGGREGATIONS:
@@ -412,7 +466,7 @@ def reaggregated_data_type(model: SemanticModel, name: str) -> OBMLType | None:
     metric = model.metrics.get(name)
     if metric is None:
         measure = model.effective_measures.get(name)
-        return resolve_measure_data_type(measure, model.settings) if measure else None
+        return resolve_measure_data_type(measure, model.settings, model) if measure else None
     declared = resolve_metric_data_type(metric, model.settings)
     if declared is None and metric.measure:
         return reaggregated_data_type(model, metric.measure)
@@ -756,7 +810,7 @@ def resolve_measure_cast_type(
     everywhere, rather than the shape the expression happens to have at this
     point in the plan.
     """
-    resolved = resolve_measure_data_type(measure, settings)
+    resolved = resolve_measure_data_type(measure, settings, model)
     if measure.data_type:
         return resolved
     if _is_integer_sum(measure) and dialect is not None and dialect.integer_sum_is_widened():

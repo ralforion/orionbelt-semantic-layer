@@ -87,7 +87,7 @@ def build_type_map(model: Any, query: Any = None) -> dict[str, str]:
     for label, dim in model.dimensions.items():
         types[label] = RESULT_TYPE_TO_HINT.get(str(dim.result_type), "string")
     for label, measure in model.measures.items():
-        governed = governed_measure_data_type(measure, model.settings)
+        governed = governed_measure_data_type(measure, model.settings, model)
         types[label] = governed or RESULT_TYPE_TO_HINT.get(str(measure.result_type), "number")
     for label, metric in model.metrics.items():
         if metric.data_type:

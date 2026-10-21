@@ -716,7 +716,7 @@
         },
         "resultType": {
           "$ref": "#/definitions/dataType",
-          "description": "Data type of the result. When omitted it is inferred: int for a count, the column's type for sum/min/max/first/last over one column, decimal for an average of an exact column, float when a float column is read, decimal when nothing is known"
+          "description": "Data type of the result. When omitted it is inferred: int for a count, the column's type for sum/min/max/first/last over one column, decimal for an average of an exact column, float when a float column is read (one declaring sqlPrecision and sqlScale counts as decimal), decimal when nothing is known. A float sum or average is returned as the engine's double; decimal keeps the exact decimal default"
         },
         "aggregation": {
           "type": "string",
