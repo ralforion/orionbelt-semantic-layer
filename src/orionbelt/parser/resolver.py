@@ -35,6 +35,7 @@ from orionbelt.models.semantic import (
     DataObject,
     DataObjectColumn,
     DataObjectJoin,
+    DataType,
     Dimension,
     ExternalConceptMapping,
     FilterContext,
@@ -530,6 +531,103 @@ def _parse_refresh(
     )
 
 
+#: Aggregations that answer one of the values they read, so they keep its type.
+_VALUE_PRESERVING_AGGREGATIONS = frozenset(
+    {
+        AggregationType.MIN,
+        AggregationType.MAX,
+        AggregationType.ANY_VALUE,
+        AggregationType.FIRST,
+        AggregationType.LAST,
+        AggregationType.MODE,
+        AggregationType.PERCENTILE_DISC,
+    }
+)
+
+#: Aggregations that compute a new number from the values they read: exact
+#: over exact values, a float over floats.
+_AVERAGING_AGGREGATIONS = frozenset(
+    {AggregationType.AVG, AggregationType.MEDIAN, AggregationType.PERCENTILE_CONT}
+)
+
+#: Spread, association and regression aggregates. A square root or a
+#: least-squares fit is not exact whatever it reads.
+_STATISTICAL_AGGREGATIONS = frozenset(
+    {
+        AggregationType.STDDEV,
+        AggregationType.STDDEV_POP,
+        AggregationType.VARIANCE,
+        AggregationType.VAR_POP,
+        AggregationType.CORR,
+        AggregationType.COVAR_POP,
+        AggregationType.COVAR_SAMP,
+        AggregationType.REGR_SLOPE,
+        AggregationType.REGR_INTERCEPT,
+    }
+)
+
+_EXACT_NUMBERS = frozenset({DataType.INT, DataType.DECIMAL})
+
+
+def _infer_measure_result_type(
+    aggregation: object,
+    columns: list[DataColumnRef],
+    expression: str | None,
+    data_objects: dict[str, DataObject],
+) -> DataType:
+    """The ``resultType`` of a measure that does not declare one.
+
+    It follows from the aggregation and the columns it reads. A count is an
+    integer, a ``listagg`` a string, a spread or regression a float. ``sum``
+    and the aggregates that answer one of their values (``min``, ``max``,
+    ``first`` ...) over a single column keep that column's type; an average,
+    median or interpolated percentile of one is exact over an exact column and
+    a float over a float. Over an expression or several columns the result is
+    a float when any column read is one, and exact otherwise.
+
+    Exact (``decimal``) is also the answer when nothing is known: an unknown
+    aggregation or an undeclared column. Calling a number a float when it is
+    exact loses digits wherever the type is honoured; the opposite loses none.
+    """
+    try:
+        agg = AggregationType(str(aggregation).lower())
+    except ValueError:
+        return DataType.DECIMAL
+    if agg in (AggregationType.COUNT, AggregationType.COUNT_DISTINCT):
+        return DataType.INT
+    if agg is AggregationType.LISTAGG:
+        return DataType.STRING
+    if agg in _STATISTICAL_AGGREGATIONS:
+        return DataType.FLOAT
+
+    if expression:
+        refs = [DataColumnRef(view=obj, column=col) for obj, col in find_qualified_refs(expression)]
+    else:
+        refs = columns
+    types = [_declared_column_type(ref, data_objects) for ref in refs]
+    if expression or len(types) != 1:
+        return DataType.FLOAT if DataType.FLOAT in types else DataType.DECIMAL
+
+    column_type = types[0]
+    if column_type is None:
+        return DataType.DECIMAL
+    if agg in _VALUE_PRESERVING_AGGREGATIONS:
+        return column_type
+    if agg is AggregationType.SUM and column_type in _EXACT_NUMBERS:
+        return column_type
+    if agg in (AggregationType.SUM, *_AVERAGING_AGGREGATIONS) and column_type is DataType.FLOAT:
+        return DataType.FLOAT
+    return DataType.DECIMAL
+
+
+def _declared_column_type(
+    ref: DataColumnRef, data_objects: dict[str, DataObject]
+) -> DataType | None:
+    obj = data_objects.get(ref.view or "")
+    column = obj.columns.get(ref.column) if obj is not None and ref.column else None
+    return column.abstract_type if column is not None else None
+
+
 def _parse_measure_filter_item(
     raw: dict[str, Any],
     path: str,
@@ -989,7 +1087,13 @@ class ReferenceResolver:
                 measures[name] = Measure(
                     name=name,
                     columns=measure_columns,
-                    result_type=raw_meas.get("resultType", "float"),
+                    result_type=raw_meas.get("resultType")
+                    or _infer_measure_result_type(
+                        raw_meas.get("aggregation", "sum"),
+                        measure_columns,
+                        expression,
+                        data_objects,
+                    ),
                     aggregation=raw_meas.get("aggregation", "sum"),
                     expression=expression,
                     distinct=raw_meas.get("distinct", False),

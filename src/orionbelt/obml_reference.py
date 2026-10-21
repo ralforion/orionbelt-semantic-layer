@@ -184,7 +184,9 @@ measures:
     columns:                      # column references (for simple aggregations)
       - dataObject: Orders
         column: Amount
-    resultType: float
+    resultType: float             # optional: inferred when omitted (count -> int,
+                                  # sum/min/max -> the column's type, avg -> decimal
+                                  # over int/decimal, float if a float column is read)
     aggregation: sum              # see aggregation values below
     total: false                  # optional: grand total shorthand (= grain: { mode: FIXED })
 

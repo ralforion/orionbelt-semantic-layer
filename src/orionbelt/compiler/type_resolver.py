@@ -180,6 +180,24 @@ def resolve_metric_data_type(
     return None
 
 
+def governed_measure_data_type(measure: Measure, settings: ModelSettings | None) -> str | None:
+    """The ``dataType`` a measure's result is advertised with, or ``None``.
+
+    Its own ``dataType``, or ``settings.defaultNumericDataType`` when the
+    compiler casts the result to that default. A count, an integer sum or a
+    ``min`` of dates is not cast to it, so it is advertised by its
+    ``resultType`` instead: naming the default there described a ``BIGINT`` or
+    a ``DATE`` as the decimal it never became.
+    """
+    if measure.data_type:
+        return measure.data_type
+    default = settings.default_numeric_data_type if settings else None
+    if default is None:
+        return None
+    resolved = resolve_measure_data_type(measure, settings)
+    return default if resolved == parse_data_type(default) else None
+
+
 def _get_default(settings: ModelSettings | None) -> OBMLType:
     """Return the model-level or built-in default numeric type."""
     if settings and settings.default_numeric_data_type:

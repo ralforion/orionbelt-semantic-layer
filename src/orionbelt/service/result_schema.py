@@ -140,7 +140,16 @@ def numeric_result_arrow_type(item: Any, model: Any) -> Any | None:
         # here for every synthesized count, which it looked up in
         # ``model.measures`` rather than ``effective_measures``.
         return None
-    declared = getattr(item, "data_type", None)
+    from orionbelt.compiler.type_resolver import governed_measure_data_type
+    from orionbelt.models.semantic import Measure
+
+    settings = getattr(model, "settings", None)
+    if isinstance(item, Measure):
+        declared = governed_measure_data_type(item, settings)
+        if declared is None:
+            return None
+    else:
+        declared = getattr(item, "data_type", None)
     if not declared:
         aggregation = str(getattr(item, "aggregation", "") or "").upper()
         if aggregation in _COUNT_AGGREGATIONS:
@@ -150,7 +159,6 @@ def numeric_result_arrow_type(item: Any, model: Any) -> Any | None:
             # count as ``decimal(18, 2)`` - contradicting the column the query
             # actually returns, on both the result and the parameter schema.
             return None
-        settings = getattr(model, "settings", None)
         declared = getattr(settings, "default_numeric_data_type", None) if settings else None
     if not declared:
         return None

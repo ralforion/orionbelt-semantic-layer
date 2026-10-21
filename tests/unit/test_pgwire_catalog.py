@@ -330,15 +330,17 @@ def test_catalog_type_uses_default_numeric_data_type() -> None:
 
     from types import SimpleNamespace
 
-    from orionbelt.models.semantic import DataType
+    from orionbelt.models.semantic import DataType, Measure, ModelSettings
     from orionbelt.pgwire.catalog import _measure_sql_type, _metric_sql_type
 
-    no_dt = SimpleNamespace(data_type=None, result_type=DataType.FLOAT)
-    assert _measure_sql_type(no_dt, "decimal(18, 2)") == "DECIMAL(18, 2)"
-    assert _metric_sql_type(no_dt, "decimal(18, 2)") == "DECIMAL(18, 2)"
+    settings = ModelSettings(default_numeric_data_type="decimal(18, 2)")
+    no_dt = Measure(name="m", aggregation="sum", result_type=DataType.FLOAT)
+    assert _measure_sql_type(no_dt, settings) == "DECIMAL(18, 2)"
+    no_dt_metric = SimpleNamespace(data_type=None)
+    assert _metric_sql_type(no_dt_metric, "decimal(18, 2)") == "DECIMAL(18, 2)"
     # Explicit dataType wins over the default.
-    explicit = SimpleNamespace(data_type="decimal(10, 4)", result_type=DataType.FLOAT)
-    assert _measure_sql_type(explicit, "decimal(18, 2)") == "DECIMAL(10, 4)"
+    explicit = no_dt.model_copy(update={"data_type": "decimal(10, 4)"})
+    assert _measure_sql_type(explicit, settings) == "DECIMAL(10, 4)"
     # No default + no dataType -> coarse DOUBLE.
     assert _measure_sql_type(no_dt, None) == "DOUBLE"
 

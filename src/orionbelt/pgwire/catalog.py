@@ -33,7 +33,15 @@ from typing import Any
 
 import duckdb
 
-from orionbelt.models.semantic import DataType, Dimension, Measure, Metric, SemanticModel
+from orionbelt.compiler.type_resolver import governed_measure_data_type
+from orionbelt.models.semantic import (
+    DataType,
+    Dimension,
+    Measure,
+    Metric,
+    ModelSettings,
+    SemanticModel,
+)
 from orionbelt.service.db_executor import ColumnMeta, ExecutionResult, parse_decimal_type
 from orionbelt.service.session_manager import SessionManager
 
@@ -1259,7 +1267,7 @@ def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
     for label, dim in model.dimensions.items():
         yield label, _dim_sql_type(dim)
     for label, measure in model.effective_measures.items():
-        yield label, _measure_sql_type(measure, default_num)
+        yield label, _measure_sql_type(measure, model.settings)
     for label, metric in model.metrics.items():
         yield label, _metric_sql_type(metric, default_num)
 
@@ -1459,10 +1467,9 @@ def _decimal_duckdb_type(data_type: str | None) -> str | None:
     return f"DECIMAL({precision}, {scale})"
 
 
-def _measure_sql_type(measure: Measure, default_num: str | None = None) -> str:
-    return _decimal_duckdb_type(measure.data_type or default_num) or _DATATYPE_TO_DUCKDB.get(
-        measure.result_type, "DOUBLE"
-    )
+def _measure_sql_type(measure: Measure, settings: ModelSettings | None = None) -> str:
+    governed = governed_measure_data_type(measure, settings)
+    return _decimal_duckdb_type(governed) or _DATATYPE_TO_DUCKDB.get(measure.result_type, "DOUBLE")
 
 
 def _metric_sql_type(metric: Metric, default_num: str | None = None) -> str:

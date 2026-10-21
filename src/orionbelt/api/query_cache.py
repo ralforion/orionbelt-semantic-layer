@@ -29,6 +29,7 @@ from orionbelt.cache import build_datasource_key
 from orionbelt.cache.protocol import Cache
 from orionbelt.cache.result_codec import decode_data, encode_data, encode_table
 from orionbelt.cache.ttl import TtlResult
+from orionbelt.compiler.type_resolver import governed_measure_data_type
 from orionbelt.compiler.validator import format_sql
 from orionbelt.service.db_executor import (
     ColumnMeta,
@@ -86,12 +87,8 @@ def build_type_map(model: Any, query: Any = None) -> dict[str, str]:
     for label, dim in model.dimensions.items():
         types[label] = RESULT_TYPE_TO_HINT.get(str(dim.result_type), "string")
     for label, measure in model.measures.items():
-        if measure.data_type:
-            types[label] = measure.data_type
-        elif default_num:
-            types[label] = default_num
-        else:
-            types[label] = RESULT_TYPE_TO_HINT.get(str(measure.result_type), "number")
+        governed = governed_measure_data_type(measure, model.settings)
+        types[label] = governed or RESULT_TYPE_TO_HINT.get(str(measure.result_type), "number")
     for label, metric in model.metrics.items():
         if metric.data_type:
             types[label] = metric.data_type

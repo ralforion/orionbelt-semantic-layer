@@ -716,7 +716,7 @@
         },
         "resultType": {
           "$ref": "#/definitions/dataType",
-          "description": "Data type of the result (informative only, not used for SQL generation)"
+          "description": "Data type of the result. When omitted it is inferred: int for a count, the column's type for sum/min/max/first/last over one column, decimal for an average of an exact column, float when a float column is read, decimal when nothing is known"
         },
         "aggregation": {
           "type": "string",
