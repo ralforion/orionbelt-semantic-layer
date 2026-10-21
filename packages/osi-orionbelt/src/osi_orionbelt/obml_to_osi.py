@@ -33,6 +33,7 @@ from osi_orionbelt._portable import (
     NotPortableError,
     PortableRenderer,
     case_collisions,
+    decimal_filter_value,
     sql_ident,
 )
 
@@ -79,6 +80,8 @@ class OBMLtoOSI:
         self._legacy_renames, self._legacy_ambiguous = code_renames(
             self.obml.get("dataObjects", {}) or {}
         )
+
+        self._warn_decimal_floats(self.obml.get("measures", {}) or {})
 
         osi: dict[str, Any] = {"version": _OSI_VERSION}
 
@@ -783,6 +786,35 @@ class OBMLtoOSI:
             osi_metric["expression"]["dialects"].append(
                 {"dialect": "OSSIE_SQL_2026", "expression": sql}
             )
+
+    def _warn_decimal_floats(self, measures: dict[str, Any]) -> None:
+        """Warn of a ``decimal`` filter value that arrived as a binary float.
+
+        A double may already be the rounding of what was written
+        (``1.0000000000000001`` parses as 1.0), and once parsed nothing says
+        so. It is exported as the double's shortest text; the exact form is
+        the digits as text, ``valueString``.
+        """
+
+        def visit(name: str, items: Any) -> None:
+            for item in items if isinstance(items, list) else [items]:
+                if not isinstance(item, dict):
+                    continue
+                visit(name, item.get("filters") or [])
+                for fv in item.get("values") or []:
+                    if not isinstance(fv, dict) or fv.get("dataType") != "decimal":
+                        continue
+                    value = decimal_filter_value(fv)
+                    if isinstance(value, float):
+                        self.warnings.append(
+                            f"Measure '{name}' has a decimal filter value {value!r} given "
+                            f"as a binary float, which may already be the rounding of the "
+                            f"number written. Write it as valueString to keep its digits."
+                        )
+
+        for name, measure in measures.items():
+            if isinstance(measure, dict):
+                visit(name, measure.get("filters") or measure.get("filter") or [])
 
     def _leave_out(self, kind: str, name: str, definition: dict, reason: str) -> None:
         """Keep a non-portable measure or metric for the model-level extension."""

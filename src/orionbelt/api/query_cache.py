@@ -49,6 +49,7 @@ RESULT_TYPE_TO_HINT: dict[str, str] = {
     "json": "string",
     "int": "number",
     "float": "number",
+    "decimal": "number",
     "date": "datetime",
     "time": "datetime",
     "time_tz": "datetime",

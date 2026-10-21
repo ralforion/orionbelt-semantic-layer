@@ -74,15 +74,20 @@ def partition_keys(
     return keys
 
 
+_FRACTIONAL_TYPES = frozenset({DataType.FLOAT, DataType.DECIMAL})
+
+
 def _is_float_dimension(model: SemanticModel, name: str) -> bool:
     dim = model.dimensions.get(name)
     if dim is None:
         return False
-    if dim.result_type is DataType.FLOAT:
+    # ``decimal`` too: it is a declaration, and a column declared one can
+    # still be FLOAT64 in BigQuery, which refuses to partition by it.
+    if dim.result_type in _FRACTIONAL_TYPES:
         return True
     obj = model.data_objects.get(dim.view)
     column = obj.columns.get(dim.column) if obj is not None else None
-    return column is not None and column.abstract_type is DataType.FLOAT
+    return column is not None and column.abstract_type in _FRACTIONAL_TYPES
 
 
 def axis_dimensions(resolved: ResolvedQuery, time_dim_name: str) -> list[str]:

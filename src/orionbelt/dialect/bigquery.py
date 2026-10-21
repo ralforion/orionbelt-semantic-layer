@@ -134,6 +134,7 @@ class BigQueryDialect(Dialect):
         "json": "JSON",
         "int": "INT64",
         "float": "FLOAT64",
+        "decimal": "BIGNUMERIC",
         "date": "DATE",
         "time": "TIME",
         "time_tz": "TIME",

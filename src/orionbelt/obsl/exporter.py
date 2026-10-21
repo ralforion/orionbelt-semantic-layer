@@ -177,6 +177,8 @@ def _format_filter_value(fv: object) -> str:
         return str(fv)
     if fv.is_null:
         return "NULL"
+    if fv.decimal_value is not None:
+        return format(fv.decimal_value, "f")
     for attr in ("value_string", "value_date"):
         v = getattr(fv, attr, None)
         if v is not None:

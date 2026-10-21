@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from orionbelt.models.expressions import (
     find_placeholders,
@@ -20,10 +28,19 @@ from orionbelt.models.types import parse_data_type
 
 
 class DataType(StrEnum):
+    """An OBML value type.
+
+    ``float`` is a binary floating-point number, ``decimal`` an exact one: a
+    money column or a measure summing one. The compiler aligns, pads and
+    defaults the two alike; ``decimal`` additionally renders as an exact
+    ``DECIMAL`` wherever an abstract type becomes a SQL type.
+    """
+
     STRING = "string"
     JSON = "json"
     INT = "int"
     FLOAT = "float"
+    DECIMAL = "decimal"
     DATE = "date"
     TIME = "time"
     TIME_TZ = "time_tz"
@@ -1038,7 +1055,86 @@ class FilterValue(BaseModel):
     value_date: str | None = Field(None, alias="valueDate")
     value_boolean: bool | None = Field(None, alias="valueBoolean")
 
+    _decimal: Decimal | None = PrivateAttr(None)
+
     model_config = {"populate_by_name": True, "extra": "forbid"}
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _hold_a_decimal_exactly(
+        cls, data: Any, handler: ModelWrapValidatorHandler[FilterValue]
+    ) -> FilterValue:
+        """Keep a ``decimal`` value as the number written, not as its double.
+
+        ``valueFloat`` is a ``float``, and 9007199254740993 coerced to one is
+        9007199254740992: an equality filter would match the wrong row. The
+        exact value is taken from the input before that coercion, or from
+        ``valueString``, the digits as text, which no JSON or YAML writer
+        rounds.
+        """
+        value = handler(data)
+        if value.data_type is DataType.DECIMAL and isinstance(data, dict):
+            raw = data.get("valueFloat", data.get("value_float"))
+            if raw is None:
+                raw = value.value_string
+            value._decimal = exact_decimal(raw)
+        return value
+
+    @property
+    def decimal_value(self) -> Decimal | None:
+        """The exact value of a ``decimal`` filter value.
+
+        ``None`` when there is none, or when the number arrived as a double
+        with nothing left to say what was written (see :func:`exact_decimal`).
+        """
+        return self._decimal
+
+    @property
+    def is_inexact_decimal(self) -> bool:
+        """A ``decimal`` value given that no exact number can be read from."""
+        return (
+            self.data_type is DataType.DECIMAL
+            and not self.is_null
+            and (self.value_float is not None or self.value_string is not None)
+            and self._decimal is None
+        )
+
+
+#: Attribute the YAML loader sets on a float to the digits it was written
+#: with. A double has already rounded them: ``1.0000000000000001`` is 1.0.
+SOURCE_TEXT_ATTR = "source_text"
+
+
+def exact_decimal(raw: object) -> Decimal | None:
+    """The decimal *raw* names exactly, or ``None`` when it cannot say.
+
+    An integer is exact, and so is text spelling a finite number. So is a
+    float the YAML loader parsed, read from
+    the digits it was written with (:data:`SOURCE_TEXT_ATTR`). A float that
+    arrived without them - a JSON body, a fragment merged in as plain YAML -
+    is not: any double, 1.0 included, may be the rounding of what was
+    written (``1.0000000000000001``), and nothing left says.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return Decimal(raw)
+    if isinstance(raw, Decimal):
+        return raw if raw.is_finite() else None
+    if isinstance(raw, str):
+        return _decimal_from_text(raw)
+    if not isinstance(raw, float) or not math.isfinite(raw):
+        return None
+    text = getattr(raw, SOURCE_TEXT_ATTR, None)
+    return _decimal_from_text(text.replace("_", "")) if isinstance(text, str) else None
+
+
+def _decimal_from_text(text: str) -> Decimal | None:
+    try:
+        exact = Decimal(text.strip())
+    except InvalidOperation:
+        return None
+    return exact if exact.is_finite() else None
 
 
 class MeasureFilter(BaseModel):

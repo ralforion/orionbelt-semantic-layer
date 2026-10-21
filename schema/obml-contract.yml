@@ -29,7 +29,7 @@ enums:
     values: ['facts', 'dimension']
   DataType:
     python: orionbelt.models.semantic.DataType
-    values: ['string', 'json', 'int', 'float', 'date', 'time', 'time_tz', 'timestamp', 'timestamp_tz', 'boolean']
+    values: ['string', 'json', 'int', 'float', 'decimal', 'date', 'time', 'time_tz', 'timestamp', 'timestamp_tz', 'boolean']
   FilterContextMode:
     python: orionbelt.models.semantic.FilterContextMode
     values: ['RELATIVE', 'FIXED']

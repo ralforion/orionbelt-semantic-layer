@@ -902,7 +902,7 @@ class SemanticValidator:
             )
         return errors
 
-    _NUMERIC_TYPES = {DataType.INT, DataType.FLOAT}
+    _NUMERIC_TYPES = {DataType.INT, DataType.FLOAT, DataType.DECIMAL}
 
     def _check_time_grain_on_temporal_columns(self, model: SemanticModel) -> list[SemanticError]:
         """Ensure timeGrain is only set when the underlying column is temporal.
@@ -1268,6 +1268,22 @@ class SemanticValidator:
     ) -> None:
         """Recursively validate a measure filter item."""
         if isinstance(item, MeasureFilter):
+            for fv in item.values:
+                if fv.is_inexact_decimal:
+                    given = fv.value_float if fv.value_float is not None else fv.value_string
+                    errors.append(
+                        SemanticError(
+                            code="INEXACT_DECIMAL_VALUE",
+                            message=(
+                                f"Measure '{meas_name}' decimal filter value {given!r} "
+                                f"is not an exact number: either text that is not a finite "
+                                f"number, or a binary float without the digits it was "
+                                f"written with, which may have been rounded. Give the "
+                                f"digits as text, e.g. valueString: '1.05'."
+                            ),
+                            path=f"measures.{meas_name}.filters",
+                        )
+                    )
             if item.column is None:
                 return
             view, column = item.column.view, item.column.column

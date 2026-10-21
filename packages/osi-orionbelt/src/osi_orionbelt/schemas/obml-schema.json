@@ -162,6 +162,7 @@
         "json",
         "int",
         "float",
+        "decimal",
         "date",
         "time",
         "time_tz",
@@ -268,7 +269,8 @@
             "abstractType": {
               "enum": [
                 "int",
-                "float"
+                "float",
+                "decimal"
               ]
             }
           },
@@ -429,6 +431,7 @@
           "type": "boolean"
         },
         "valueString": {
+          "description": "Text. For dataType decimal, the number's exact digits (\"1.0000000000000001\"), which no JSON or YAML writer rounds as it does valueFloat",
           "type": "string"
         },
         "valueInt": {

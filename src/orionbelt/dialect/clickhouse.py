@@ -200,7 +200,7 @@ _TYPE_PRESERVING_CALLS: frozenset[str] = frozenset(
 
 #: OBML abstract types that are numbers. ``trunc`` takes these and none of the
 #: other types a column can declare.
-_NUMERIC_ABSTRACT_TYPES: frozenset[str] = frozenset({"int", "float"})
+_NUMERIC_ABSTRACT_TYPES: frozenset[str] = frozenset({"int", "float", "decimal"})
 
 
 #: Integer cast targets this dialect renders. ``accurateCast`` is used for these
@@ -372,6 +372,7 @@ class ClickHouseDialect(Dialect):
         "json": "String",
         "int": "Int64",
         "float": "Float64",
+        "decimal": "Decimal(38, 10)",
         "date": "Date",
         "time": "String",
         "time_tz": "String",

@@ -89,11 +89,13 @@ class TestImportDatatype:
             "dttz": "timestamp_tz",
         }
 
-    def test_decimal_narrows_to_float(self) -> None:
+    def test_decimal_imports_as_decimal(self) -> None:
+        """OBML has an exact type of its own now, so ``Decimal`` no longer
+        narrows to ``float``."""
         cols = _obml_columns(
             conv.OSItoOBML(_osi_model([_osi_field("d", datatype="Decimal")])).convert()
         )
-        assert cols["d"]["abstractType"] == "float"
+        assert cols["d"]["abstractType"] == "decimal"
 
     def test_opaque_falls_back_to_heuristic(self) -> None:
         # `price` is a heuristic float keyword; Opaque must not override it to a
@@ -129,6 +131,7 @@ class TestExportDatatype:
         for abstract_type, expected in [
             ("int", "Integer"),
             ("float", "Float"),
+            ("decimal", "Decimal"),
             ("timestamp_tz", "DateTimeTz"),
             ("json", "Opaque"),
             ("boolean", "Boolean"),
@@ -143,7 +146,7 @@ class TestRoundtripLossless:
     def test_narrowing_types_survive(self) -> None:
         # json -> Opaque and time_tz -> Time are lossy in the datatype map alone;
         # the stashed obml_abstract_type must restore them exactly.
-        for abstract_type in ["json", "time_tz", "float", "timestamp_tz"]:
+        for abstract_type in ["json", "time_tz", "float", "decimal", "timestamp_tz"]:
             obml = {
                 "dataObjects": {
                     "Orders": {

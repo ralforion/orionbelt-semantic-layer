@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 import pyarrow as pa
-from orionbelt.service.result_schema import obml_type_to_arrow
+from orionbelt.service.result_schema import (
+    column_arrow_type,
+    dimension_arrow_type,
+    obml_type_to_arrow,
+)
 from pyarrow import flight
 
 # The OBML -> Arrow mapping moved to ``orionbelt.service.result_schema``: it
@@ -92,9 +96,7 @@ def dimensions_view_schema(model: Any) -> pa.Schema:
     if hasattr(model, "dimensions") and model.dimensions:
         for label, dim in model.dimensions.items():
             display = getattr(dim, "label", label) or label
-            rt = getattr(dim, "result_type", None)
-            rt_name = getattr(rt, "value", None) or "string"
-            fields.append(pa.field(display, _obml_type_to_arrow(rt_name)))
+            fields.append(pa.field(display, dimension_arrow_type(dim, model)))
     return pa.schema(fields)
 
 
@@ -163,8 +165,7 @@ def object_to_schema(data_object: Any) -> pa.Schema:
     fields: list[pa.Field] = []
     if hasattr(data_object, "columns") and data_object.columns:
         for col_name, col in data_object.columns.items():
-            abstract_type = getattr(col, "abstract_type", "string") or "string"
-            arrow_type = _obml_type_to_arrow(getattr(abstract_type, "value", str(abstract_type)))
+            arrow_type = column_arrow_type(col)
             label = getattr(col, "label", col_name) or col_name
             fields.append(pa.field(label, arrow_type))
     return pa.schema(fields)
@@ -206,9 +207,7 @@ def model_to_virtual_table_schema(model: Any) -> pa.Schema:
     if hasattr(model, "dimensions") and model.dimensions:
         for label, dim in model.dimensions.items():
             display = getattr(dim, "label", label) or label
-            rt = getattr(dim, "result_type", None)
-            rt_name = getattr(rt, "value", None) or "string"
-            fields.append(pa.field(display, _obml_type_to_arrow(rt_name)))
+            fields.append(pa.field(display, dimension_arrow_type(dim, model)))
     if hasattr(model, "effective_measures") and model.effective_measures:
         for label, meas in model.effective_measures.items():
             display = getattr(meas, "label", label) or label

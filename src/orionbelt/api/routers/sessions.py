@@ -84,6 +84,7 @@ from orionbelt.api.warnings_adapter import (
 )
 from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.sql_translator import SQLTranslationError, translate_sql_to_query
+from orionbelt.parser.loader import pin_decimal_digits
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
@@ -396,7 +397,7 @@ async def export_model_to_osi(
         )
     store = _get_store(session_id, mgr)
     try:
-        obml_dict = store.get_raw(model_id)
+        obml_dict = pin_decimal_digits(store.get_raw(model_id))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found") from None
 

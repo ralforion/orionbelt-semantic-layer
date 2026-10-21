@@ -49,6 +49,7 @@ _DATATYPE_TO_DUCKDB: dict[DataType, str] = {
     DataType.JSON: "JSON",
     DataType.INT: "BIGINT",
     DataType.FLOAT: "DOUBLE",
+    DataType.DECIMAL: "DECIMAL(38, 10)",
     DataType.DATE: "DATE",
     DataType.TIME: "TIME",
     DataType.TIME_TZ: "TIMETZ",

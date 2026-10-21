@@ -294,7 +294,7 @@ obsl:primaryKey a owl:DatatypeProperty ;
 
 obsl:resultType a owl:DatatypeProperty ;
     rdfs:label "result type" ;
-    rdfs:comment "Abstract data type of the value: string, int, float, date, time, timestamp, boolean, json, time_tz, timestamp_tz." ;
+    rdfs:comment "Abstract data type of the value: string, int, float, decimal, date, time, timestamp, boolean, json, time_tz, timestamp_tz. float is a binary floating-point number, decimal an exact one." ;
     rdfs:range xsd:string .
 
 obsl:aggregation a owl:DatatypeProperty ;

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from decimal import Decimal
 from typing import TYPE_CHECKING, TypedDict
 
 from orionbelt.ast.nodes import (
@@ -298,7 +299,7 @@ def parse_relative_filter(
 # ---------------------------------------------------------------------------
 
 
-def _extract_filter_value(fv: FilterValue) -> str | int | float | bool | None:
+def _extract_filter_value(fv: FilterValue) -> str | int | float | Decimal | bool | None:
     """Pick the concrete value from a typed FilterValue."""
     if fv.is_null:
         return None
@@ -309,6 +310,8 @@ def _extract_filter_value(fv: FilterValue) -> str | int | float | bool | None:
             return fv.value_int
         case DataType.FLOAT:
             return fv.value_float
+        case DataType.DECIMAL:
+            return fv.decimal_value
         case DataType.DATE | DataType.TIMESTAMP:
             return fv.value_date
         case DataType.BOOLEAN:
@@ -366,6 +369,19 @@ def _build_single_measure_filter(
 
     col: Expr = make_column_expr(model, mf.column.view, mf.column.column)
     op_str = mf.operator.lower()
+
+    if any(fv.is_inexact_decimal for fv in mf.values):
+        errors.append(
+            SemanticError(
+                code="INEXACT_DECIMAL_VALUE",
+                message=(
+                    f"Measure filter on '{mf.column.view}.{mf.column.column}' has a decimal "
+                    f"value that is not an exact number"
+                ),
+                path="measures",
+            )
+        )
+        return None
 
     # Extract values
     values = [_extract_filter_value(fv) for fv in mf.values]

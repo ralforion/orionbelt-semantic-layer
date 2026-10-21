@@ -48,6 +48,7 @@ def _obml_type_map() -> dict[str, Any]:
         "json": pa.utf8(),
         "int": pa.int64(),
         "float": pa.float64(),
+        "decimal": pa.decimal128(38, 10),
         "boolean": pa.bool_(),
         "date": pa.date32(),
         "datetime": pa.timestamp("us"),
@@ -90,6 +91,35 @@ def decimal_arrow_type(precision: int, scale: int, *, exact: bool = False) -> An
     if precision <= DECIMAL256_MAX_PRECISION:
         return pa.decimal256(precision if exact else DECIMAL256_MAX_PRECISION, scale)
     return pa.float64()
+
+
+def column_arrow_type(column: Any, type_name: str | None = None) -> Any:
+    """The Arrow type a data-object *column* arrives as.
+
+    *type_name* is the OBML type it is read as, the column's own
+    ``abstractType`` by default. A ``decimal`` read of a column that declares
+    ``sqlPrecision`` and ``sqlScale`` takes that width: the engine returns the
+    column at it, and ``decimal128(38, 10)`` cannot hold a scale of 12 - Arrow
+    refuses to rescale 0.123456789012, so the stream contradicts the schema
+    that advertised it.
+    """
+    if type_name is None:
+        abstract_type = getattr(column, "abstract_type", None)
+        type_name = getattr(abstract_type, "value", abstract_type)
+    precision = getattr(column, "sql_precision", None)
+    scale = getattr(column, "sql_scale", None)
+    if type_name == "decimal" and isinstance(precision, int) and isinstance(scale, int):
+        return decimal_arrow_type(precision, scale, exact=True)
+    return obml_type_to_arrow(type_name)
+
+
+def dimension_arrow_type(dimension: Any, model: Any) -> Any:
+    """The Arrow type a *dimension* arrives as: its ``resultType``, at the
+    declared width of the column it reads (see :func:`column_arrow_type`)."""
+    type_name = getattr(getattr(dimension, "result_type", None), "value", None) or "string"
+    data_object = getattr(model, "data_objects", {}).get(getattr(dimension, "view", None))
+    column = data_object.columns.get(dimension.column) if data_object is not None else None
+    return column_arrow_type(column, type_name)
 
 
 def numeric_result_arrow_type(item: Any, model: Any) -> Any | None:
@@ -200,7 +230,7 @@ def raw_field_arrow_type(reference: str, model: Any) -> Any:
     column = data_object.columns.get(column_name)
     if column is None:
         return obml_type_to_arrow(None)
-    return obml_type_to_arrow(getattr(getattr(column, "abstract_type", None), "value", None))
+    return column_arrow_type(column)
 
 
 _raw_field_arrow_type = raw_field_arrow_type
@@ -233,8 +263,7 @@ def declared_result_schema(query: Any, model: Any) -> Any:
     for label, dim in dimension_labels(dims, model):
         if label is None:
             continue
-        rt = getattr(getattr(dim, "result_type", None), "value", None) or "string"
-        fields.append(pa.field(label, obml_type_to_arrow(rt)))
+        fields.append(pa.field(label, dimension_arrow_type(dim, model)))
     for label in measures:
         # ``effective_measures``, not ``measures``: a synthesized count is a
         # measure a query can select, and looking it up in the declared-only
@@ -278,9 +307,7 @@ def declared_arrow_types(model: Any, query: Any = None) -> dict[str, Any]:
     """
     types: dict[str, Any] = {}
     for label, dim in model.dimensions.items():
-        rt = getattr(getattr(dim, "result_type", None), "value", None)
-        if rt:
-            types[label] = obml_type_to_arrow(rt)
+        types[label] = dimension_arrow_type(dim, model)
     for label, item in list(model.effective_measures.items()) + list(model.metrics.items()):
         decimal_type = numeric_result_arrow_type(item, model)
         if decimal_type is not None:
@@ -294,9 +321,8 @@ def declared_arrow_types(model: Any, query: Any = None) -> dict[str, Any]:
         for label, declared in dimension_labels(getattr(select, "dimensions", None), model):
             if label in model.dimensions:
                 continue  # a dimension's own name, already in the model map under it
-            rt = getattr(getattr(declared, "result_type", None), "value", None)
-            if label and rt:
-                types[label] = obml_type_to_arrow(rt)
+            if label and declared is not None:
+                types[label] = dimension_arrow_type(declared, model)
     return types
 
 

@@ -258,7 +258,7 @@ Project.Ancestors` addresses the array without any further declaration.
 |----------|------|----------|-------------|
 | `code` | string | Yes (or `expression`) | Physical column name in the database. Mutually exclusive with `expression` |
 | `expression` | string | Yes (or `code`) | SQL-style expression that references sibling columns via single-brace `{Column}` placeholders. Defines a **computed column** — see below. Mutually exclusive with `code` |
-| `abstractType` | enum | Yes | `string`, `int`, `float`, `date`, `time`, `time_tz`, `timestamp`, `timestamp_tz`, `boolean`, `json` |
+| `abstractType` | enum | Yes | `string`, `int`, `float`, `decimal`, `date`, `time`, `time_tz`, `timestamp`, `timestamp_tz`, `boolean`, `json` |
 | `sqlType` | string | No | Informational: SQL data type (e.g. `VARCHAR`, `INTEGER`, `NUMERIC(10,2)`) |
 | `sqlPrecision` | int | No | Informational: numeric precision |
 | `sqlScale` | int | No | Informational: numeric scale |
@@ -268,6 +268,50 @@ Project.Ancestors` addresses the array without any further declaration.
 | `comment` | string | No | Documentation |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
+
+#### Exact and floating-point numbers
+
+`float` is a binary floating-point number: a measurement, a ratio, a score.
+`decimal` is an exact one: money, or anything else that has to add up to the
+cent. Both are numbers to the compiler, which aligns, pads and defaults them
+alike, and both take `numClass`, `sqlPrecision` and `sqlScale`.
+
+They differ where an abstract type becomes a SQL type of its own - the typed
+NULLs that pad a multi-fact query's legs, or a field read out of a nested
+array. A `float` renders as the engine's floating-point type, a `decimal` as
+its exact decimal type:
+
+| Engine | `decimal` renders as |
+|---|---|
+| BigQuery | `BIGNUMERIC` |
+| ClickHouse | `Decimal(38, 10)` |
+| MySQL | `DECIMAL(65, 10)` |
+| PostgreSQL, DuckDB, Snowflake, Databricks, Dremio | `DECIMAL(38, 10)` |
+
+A column the database stores as a floating-point number should stay `float`.
+
+A `decimal` column that declares `sqlPrecision` and `sqlScale` is advertised to
+Arrow Flight SQL clients at that width; without them it is advertised as
+`decimal(38, 10)`, so declare the width of a column whose scale
+is larger than 10.
+
+A measure filter value of type `decimal` compares the number written:
+`valueFloat: 9007199254740993` stays that integer and `1.0000000000000001` keeps
+every digit, where a `float` value becomes the nearest double (9007199254740992,
+1.0). The digits are read from the model's YAML. A number written with a decimal
+point or exponent that arrives without them, in a `model_json` body or an
+`extends`/`inherits` fragment, may already have been rounded, so a `decimal`
+value there is refused with `INEXACT_DECIMAL_VALUE` unless it is an integer.
+
+The digits can also be given as text, which no JSON or YAML writer rounds:
+
+```yaml
+values:
+  - dataType: decimal
+    valueString: "1.0000000000000001"
+```
+
+The OSI export writes a `decimal` value this way, so it comes back exact.
 
 #### Timestamps carry a zone only when you say so
 
