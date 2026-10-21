@@ -221,6 +221,9 @@ def _matching_amount(model: SemanticModel, amounts: list[str]) -> Decimal | None
     db.execute("CREATE TABLE ledger (id VARCHAR, amount DECIMAL(38, 18))")
     for i, amount in enumerate(amounts):
         db.execute("INSERT INTO ledger VALUES (?, CAST(? AS DECIMAL(38, 18)))", [str(i), amount])
+    # An OSI round trip qualifies the table with the default schema.
+    db.execute('CREATE SCHEMA "PUBLIC"')
+    db.execute('CREATE VIEW "PUBLIC".ledger AS SELECT * FROM main.ledger')
     row = db.execute(sql).fetchone()
     return None if row is None else row[0]
 
@@ -288,7 +291,7 @@ class TestADecimalFilterValueIsExact:
         """A model built without the validator still does not compare NULL."""
         model, _ = _precise_model("0.5", as_json=True)
         query = QueryObject(select={"measures": ["Matching Amount"]})
-        with pytest.raises(ResolutionError, match="without the digits it was written with"):
+        with pytest.raises(ResolutionError, match="not an exact number"):
             CompilationPipeline().compile(query, model, "duckdb")
 
     def test_a_float_filter_value_is_unchanged(self) -> None:
@@ -335,3 +338,85 @@ class TestADecimalColumnKeepsItsDeclaredWidth:
         schema = declared_result_schema(query, model)
         table = pa.table({"Rate": pa.array([Decimal("0.123456789012")], pa.decimal128(38, 12))})
         assert table.cast(schema).column("Rate")[0].as_py() == Decimal("0.123456789012")
+
+
+class TestDecimalDigitsAsText:
+    """``valueString`` holds a ``decimal`` value's digits, which no JSON or YAML
+    writer rounds - the form exact decimals take wherever a float would not
+    survive (a JSON body, OSI metadata)."""
+
+    def test_text_digits_select_the_right_rows(self) -> None:
+        yaml_text = PRECISE_YAML.format(value="0").replace(
+            "valueFloat: 0", "valueString: '1.0000000000000001'"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.errors + SemanticValidator().validate(model) == []
+        rows = ["1", "1.0000000000000001", "1.0000000000000001"]
+        assert _matching_amount(model, rows) == Decimal("2")
+
+    def test_text_that_is_not_a_number_is_refused(self) -> None:
+        yaml_text = PRECISE_YAML.format(value="0").replace(
+            "valueFloat: 0", "valueString: 'one point five'"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        codes = [e.code for e in SemanticValidator().validate(model)]
+        assert "INEXACT_DECIMAL_VALUE" in codes
+
+    def test_pinning_writes_the_known_digits_as_text(self) -> None:
+        from orionbelt.parser.loader import pin_decimal_digits
+
+        raw, _ = TrackedLoader().load_string(PRECISE_YAML.format(value="1.0000000000000001"))
+        pinned = pin_decimal_digits(raw)
+        value = pinned["measures"]["Matching Amount"]["filters"][0]["values"][0]
+        assert value == {"dataType": "decimal", "valueString": "1.0000000000000001"}
+
+    def test_pinning_leaves_a_float_without_digits_for_the_reader(self) -> None:
+        from orionbelt.parser.loader import pin_decimal_digits
+
+        value = {"dataType": "decimal", "valueFloat": 1.0}
+        assert pin_decimal_digits(value) == value
+
+    def test_the_converters_yaml_parse_keeps_the_digits(self) -> None:
+        from orionbelt.parser.loader import load_yaml_keeping_decimals
+
+        data = load_yaml_keeping_decimals(PRECISE_YAML.format(value="1.0000000000000001"))
+        value = data["measures"]["Matching Amount"]["filters"][0]["values"][0]
+        assert value["valueString"] == "1.0000000000000001"
+
+
+class TestDecimalDigitsSurviveOSI:
+    """Export to Apache Ossie and back keeps a ``decimal`` filter value exact.
+
+    The converter wrote the double into both the exported expression and the
+    round-trip metadata, so 1.0000000000000001 came back 1.0 and the measure
+    summed one row instead of two. This is the session export/import path:
+    the stored raw is pinned, converted, and the result loaded back as YAML.
+    """
+
+    def _osi(self) -> dict[str, object]:
+        from osi_orionbelt import OBMLtoOSI
+
+        from orionbelt.parser.loader import pin_decimal_digits
+
+        raw, _ = TrackedLoader().load_string(PRECISE_YAML.format(value="1.0000000000000001"))
+        converter = OBMLtoOSI(pin_decimal_digits(raw))
+        osi = converter.convert()
+        assert not any("decimal filter value" in w for w in converter.warnings)
+        return osi
+
+    def test_the_exported_expression_keeps_the_digits(self) -> None:
+        assert "= 1.0000000000000001" in json.dumps(self._osi())
+
+    def test_the_round_trip_computes_what_the_model_did(self) -> None:
+        import yaml
+        from osi_orionbelt import OSItoOBML
+
+        obml = OSItoOBML(self._osi()).convert()
+        text = yaml.dump(obml, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        raw, source_map = TrackedLoader().load_string(text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.errors + SemanticValidator().validate(model) == []
+        rows = ["1", "1.0000000000000001", "1.0000000000000001"]
+        assert _matching_amount(model, rows) == Decimal("2")

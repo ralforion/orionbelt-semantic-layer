@@ -298,10 +298,20 @@ is larger than 10.
 A measure filter value of type `decimal` compares the number written:
 `valueFloat: 9007199254740993` stays that integer and `1.0000000000000001` keeps
 every digit, where a `float` value becomes the nearest double (9007199254740992,
-1.0). The digits are read from the model's YAML. A number written with a decimal point or exponent
-that arrives without them, in a `model_json` body or an
+1.0). The digits are read from the model's YAML. A number written with a decimal
+point or exponent that arrives without them, in a `model_json` body or an
 `extends`/`inherits` fragment, may already have been rounded, so a `decimal`
 value there is refused with `INEXACT_DECIMAL_VALUE` unless it is an integer.
+
+The digits can also be given as text, which no JSON or YAML writer rounds:
+
+```yaml
+values:
+  - dataType: decimal
+    valueString: "1.0000000000000001"
+```
+
+The OSI export writes a `decimal` value this way, so it comes back exact.
 
 #### Timestamps carry a zone only when you say so
 

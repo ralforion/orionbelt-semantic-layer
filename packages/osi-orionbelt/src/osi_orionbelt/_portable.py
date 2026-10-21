@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Iterable
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from functools import cache
 from typing import Any
 
@@ -213,8 +213,10 @@ def _filter_literal(fv: dict[str, Any], ossie: bool = False) -> str:
     data_type = fv.get("dataType")
     if data_type == "int":
         return _scalar_literal(fv.get("valueInt"))
-    if data_type in ("float", "decimal"):
+    if data_type == "float":
         return _scalar_literal(fv.get("valueFloat"))
+    if data_type == "decimal":
+        return _decimal_literal(fv)
     if data_type == "boolean":
         return _scalar_literal(fv.get("valueBoolean"))
     if data_type == "date" and fv.get("valueDate") is not None:
@@ -223,6 +225,35 @@ def _filter_literal(fv: dict[str, Any], ossie: bool = False) -> str:
         text = _string_literal(str(fv["valueDate"]))
         return f"CAST({text} AS TIMESTAMP)" if ossie else f"TIMESTAMP {text}"
     return _scalar_literal(fv.get("valueString"))
+
+
+def decimal_filter_value(fv: dict[str, Any]) -> Any:
+    """What a ``decimal`` filter value was given as: ``valueFloat``, else the
+    digits as text in ``valueString``, as OrionBelt reads it."""
+    value = fv.get("valueFloat")
+    return fv.get("valueString") if value is None else value
+
+
+def _decimal_literal(fv: dict[str, Any]) -> str:
+    """A ``decimal`` filter value as the exact number it names.
+
+    ``valueString`` holds the digits as text, which no JSON or YAML writer
+    rounds; a float renders its shortest text (``converter`` warns about it).
+    Text that is not a finite number has no literal and is refused rather
+    than spliced into the SQL.
+    """
+    value = decimal_filter_value(fv)
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        raise NotPortableError(f"its decimal filter value {value!r} is not a number")
+    try:
+        exact = Decimal(str(value).strip())
+    except InvalidOperation:
+        exact = None
+    if exact is None or not exact.is_finite():
+        raise NotPortableError(f"its decimal filter value {value!r} is not a number")
+    return format(exact, "f")
 
 
 def _filter_text(fv: dict[str, Any]) -> str:

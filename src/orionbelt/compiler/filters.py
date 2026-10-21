@@ -376,8 +376,7 @@ def _build_single_measure_filter(
                 code="INEXACT_DECIMAL_VALUE",
                 message=(
                     f"Measure filter on '{mf.column.view}.{mf.column.column}' has a decimal "
-                    f"value that arrived as a binary float without the digits it was "
-                    f"written with"
+                    f"value that is not an exact number"
                 ),
                 path="measures",
             )

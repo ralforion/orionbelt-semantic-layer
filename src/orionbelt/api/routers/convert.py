@@ -77,7 +77,7 @@ async def obml_to_osi(body: OBMLtoOSIRequest) -> ConvertResponse:
                 "OSI conversion is unchanged."
             ),
         )
-    data = parse_yaml(body.input_yaml)
+    data = parse_yaml(body.input_yaml, obml=True)
     mod = get_converter_module()
 
     # Validate the OBML input against the schema before converting. Advisory —

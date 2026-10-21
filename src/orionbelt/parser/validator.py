@@ -1270,15 +1270,16 @@ class SemanticValidator:
         if isinstance(item, MeasureFilter):
             for fv in item.values:
                 if fv.is_inexact_decimal:
+                    given = fv.value_float if fv.value_float is not None else fv.value_string
                     errors.append(
                         SemanticError(
                             code="INEXACT_DECIMAL_VALUE",
                             message=(
-                                f"Measure '{meas_name}' filter value {fv.value_float!r} is "
-                                f"decimal, but it arrived as a binary float without the "
-                                f"digits it was written with, so it may no longer be the "
-                                f"number written. Load the model as OBML YAML, where the "
-                                f"digits are kept, or give a whole number."
+                                f"Measure '{meas_name}' decimal filter value {given!r} "
+                                f"is not an exact number: either text that is not a finite "
+                                f"number, or a binary float without the digits it was "
+                                f"written with, which may have been rounded. Give the "
+                                f"digits as text, e.g. valueString: '1.05'."
                             ),
                             path=f"measures.{meas_name}.filters",
                         )

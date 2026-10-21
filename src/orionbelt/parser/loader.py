@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.constructor import RoundTripConstructor
@@ -14,7 +15,7 @@ from ruamel.yaml.nodes import ScalarNode
 from ruamel.yaml.scalarfloat import ScalarFloat
 
 from orionbelt.models.errors import SourceSpan
-from orionbelt.models.semantic import SOURCE_TEXT_ATTR
+from orionbelt.models.semantic import SOURCE_TEXT_ATTR, exact_decimal
 
 # ---------------------------------------------------------------------------
 # Safety limits
@@ -224,3 +225,56 @@ class TrackedLoader:
         if isinstance(data, list):
             return [self._to_plain_value(item) for item in data]
         return data
+
+
+def pin_decimal_digits(raw: Any) -> Any:
+    """A plain copy of *raw* whose ``decimal`` filter values carry their digits as text.
+
+    A float leaves this loader carrying the digits it was written with, and
+    loses them at the first JSON or YAML writer, which writes the double:
+    ``1.0000000000000001`` comes back 1.0. Before raw OBML is handed on (the
+    OSI converter writes it into JSON metadata and SQL text), each ``decimal``
+    ``valueFloat`` with known digits becomes ``valueString`` holding them,
+    which every writer keeps. A value whose digits are unknown is left as it
+    is, for the reader to refuse. Other floats come back as plain ``float``.
+    """
+    if isinstance(raw, dict):
+        out = {key: pin_decimal_digits(value) for key, value in raw.items()}
+        if raw.get("dataType") == "decimal" and raw.get("valueFloat") is not None:
+            exact = exact_decimal(raw["valueFloat"])
+            if exact is not None:
+                del out["valueFloat"]
+                out["valueString"] = format(exact, "f")
+        return out
+    if isinstance(raw, list):
+        return [pin_decimal_digits(item) for item in raw]
+    if isinstance(raw, float):
+        return float(raw)
+    return raw
+
+
+class _WrittenFloat(float):
+    """A float that can carry the digits it was written with."""
+
+
+class _DigitKeepingSafeLoader(yaml.SafeLoader):
+    """PyYAML's safe loader, keeping each float's written digits like
+    :class:`_DigitKeepingConstructor` does for the tracked loader."""
+
+
+def _construct_written_float(loader: yaml.SafeLoader, node: yaml.ScalarNode) -> float:
+    value = _WrittenFloat(loader.construct_yaml_float(node))
+    setattr(value, SOURCE_TEXT_ATTR, node.value)
+    return value
+
+
+_DigitKeepingSafeLoader.add_constructor("tag:yaml.org,2002:float", _construct_written_float)
+
+
+def load_yaml_keeping_decimals(text: str) -> Any:
+    """``yaml.safe_load`` for OBML on its way out (the OSI converter), with
+    ``decimal`` filter values pinned to their written digits.
+
+    See :func:`pin_decimal_digits`; the result holds only plain types.
+    """
+    return pin_decimal_digits(yaml.load(text, Loader=_DigitKeepingSafeLoader))

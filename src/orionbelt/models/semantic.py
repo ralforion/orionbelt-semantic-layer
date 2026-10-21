@@ -1068,11 +1068,15 @@ class FilterValue(BaseModel):
 
         ``valueFloat`` is a ``float``, and 9007199254740993 coerced to one is
         9007199254740992: an equality filter would match the wrong row. The
-        exact value is taken from the input before that coercion.
+        exact value is taken from the input before that coercion, or from
+        ``valueString``, the digits as text, which no JSON or YAML writer
+        rounds.
         """
         value = handler(data)
         if value.data_type is DataType.DECIMAL and isinstance(data, dict):
             raw = data.get("valueFloat", data.get("value_float"))
+            if raw is None:
+                raw = value.value_string
             value._decimal = exact_decimal(raw)
         return value
 
@@ -1091,7 +1095,7 @@ class FilterValue(BaseModel):
         return (
             self.data_type is DataType.DECIMAL
             and not self.is_null
-            and self.value_float is not None
+            and (self.value_float is not None or self.value_string is not None)
             and self._decimal is None
         )
 
@@ -1104,7 +1108,8 @@ SOURCE_TEXT_ATTR = "source_text"
 def exact_decimal(raw: object) -> Decimal | None:
     """The decimal *raw* names exactly, or ``None`` when it cannot say.
 
-    An integer is exact, and so is a float the YAML loader parsed, read from
+    An integer is exact, and so is text spelling a finite number. So is a
+    float the YAML loader parsed, read from
     the digits it was written with (:data:`SOURCE_TEXT_ATTR`). A float that
     arrived without them - a JSON body, a fragment merged in as plain YAML -
     is not: any double, 1.0 included, may be the rounding of what was
@@ -1116,16 +1121,20 @@ def exact_decimal(raw: object) -> Decimal | None:
         return Decimal(raw)
     if isinstance(raw, Decimal):
         return raw if raw.is_finite() else None
+    if isinstance(raw, str):
+        return _decimal_from_text(raw)
     if not isinstance(raw, float) or not math.isfinite(raw):
         return None
     text = getattr(raw, SOURCE_TEXT_ATTR, None)
-    if isinstance(text, str):
-        try:
-            exact = Decimal(text.replace("_", ""))
-        except InvalidOperation:
-            return None
-        return exact if exact.is_finite() else None
-    return None
+    return _decimal_from_text(text.replace("_", "")) if isinstance(text, str) else None
+
+
+def _decimal_from_text(text: str) -> Decimal | None:
+    try:
+        exact = Decimal(text.strip())
+    except InvalidOperation:
+        return None
+    return exact if exact.is_finite() else None
 
 
 class MeasureFilter(BaseModel):

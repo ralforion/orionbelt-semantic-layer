@@ -19,6 +19,7 @@ import yaml
 from fastapi import HTTPException
 
 from orionbelt.api.schemas import ValidationDetail
+from orionbelt.parser.loader import load_yaml_keeping_decimals
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +51,14 @@ def get_converter_module() -> types.ModuleType:
         ) from exc
 
 
-def parse_yaml(raw: str) -> dict[str, Any]:
-    """Parse a YAML string to a dict, raising HTTPException on failure."""
+def parse_yaml(raw: str, *, obml: bool = False) -> dict[str, Any]:
+    """Parse a YAML string to a dict, raising HTTPException on failure.
+
+    *obml* input keeps each ``decimal`` filter value's written digits, which a
+    plain parse rounds to a double (see ``load_yaml_keeping_decimals``).
+    """
     try:
-        data = yaml.safe_load(raw)
+        data = load_yaml_keeping_decimals(raw) if obml else yaml.safe_load(raw)
     except yaml.YAMLError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}") from exc
     if not isinstance(data, dict):

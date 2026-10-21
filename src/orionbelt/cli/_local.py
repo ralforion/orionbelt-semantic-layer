@@ -468,10 +468,10 @@ def convert_obml_to_osi(
 
     Returns ``(osi_dict, warnings, validation)``.
     """
-    import yaml
+    from orionbelt.parser.loader import load_yaml_keeping_decimals
 
     mod = _converter_module()
-    data = yaml.safe_load(input_yaml)
+    data = load_yaml_keeping_decimals(input_yaml)
     if not isinstance(data, dict):
         raise CliError("OBML input must be a YAML/JSON mapping (object)")
     # The CLI is an external boundary: surface OBML input schema issues (e.g. an
