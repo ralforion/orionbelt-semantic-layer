@@ -43,6 +43,22 @@ class SimpleType:
 
 OBMLType = DecimalType | SimpleType
 
+
+def decimal_width(precision: int, scale: int) -> tuple[int, int]:
+    """A ``(precision, scale)`` with ``0 <= scale <= precision`` holding every
+    value of ``DECIMAL(precision, scale)``.
+
+    PostgreSQL accepts both a negative scale - ``NUMERIC(2, -3)`` rounds to
+    thousands and holds up to 99000 - and a scale beyond the precision -
+    ``NUMERIC(3, 5)`` holds up to 0.00999. Arrow and DuckDB accept neither, so
+    the integer digits and the fractional digits are kept and the width is
+    rebuilt from them: ``(5, 0)`` and ``(5, 5)``.
+    """
+    integer_digits = max(precision - scale, 0)
+    scale = max(scale, 0)
+    return max(integer_digits + scale, 1), scale
+
+
 BUILTIN_DEFAULT = DecimalType(precision=18, scale=2)
 DIVISION_DEFAULT = DecimalType(precision=18, scale=6)
 

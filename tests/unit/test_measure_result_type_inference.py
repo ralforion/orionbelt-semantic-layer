@@ -22,7 +22,7 @@ from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import DataType, SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
-from orionbelt.pgwire.catalog import _dim_sql_type, _measure_sql_type
+from orionbelt.pgwire.catalog import _build_table_ddl, _dim_sql_type, _measure_sql_type
 from orionbelt.service.result_schema import declared_arrow_types, declared_result_schema
 
 MODEL_YAML = """
@@ -39,11 +39,15 @@ dataObjects:
       Weight: {{code: weight, abstractType: float}}
       Rate: {{code: rate, abstractType: decimal, sqlPrecision: 38, sqlScale: 12}}
       Units Held: {{code: units_held, abstractType: decimal, sqlPrecision: 19, sqlScale: 0}}
+      Thousands: {{code: thousands, abstractType: decimal, sqlPrecision: 2, sqlScale: -3}}
+      Tiny: {{code: tiny, abstractType: decimal, sqlPrecision: 3, sqlScale: 5}}
       Ordered At: {{code: ordered_at, abstractType: date}}
       Status: {{code: status, abstractType: string}}
 dimensions:
   Status: {{dataObject: Orders, column: Status, resultType: string}}
   Rate Band: {{dataObject: Orders, column: Rate, resultType: decimal}}
+  Thousands Band: {{dataObject: Orders, column: Thousands, resultType: decimal}}
+  Tiny Band: {{dataObject: Orders, column: Tiny, resultType: decimal}}
 measures:
 {measures}
 """
@@ -251,3 +255,73 @@ class TestTheDeclaredTypeWins:
             assert cast[0].as_py() == Decimal("1.5")
         sql_type = _measure_sql_type(model.measures["Typical Holding"], model)
         assert sql_type != "DECIMAL(19, 0)"
+
+
+class TestTheAdvertisedWidthHoldsEveryValue:
+    def _arrow(self, model: SemanticModel, label: str) -> pa.DataType:
+        query = QueryObject.model_validate({"select": {"measures": [label]}})
+        return declared_result_schema(query, model).field(label).type
+
+    @pytest.mark.parametrize(
+        ("default", "arrow_type", "sql_type"),
+        [
+            ("0.5", pa.decimal128(20, 1), "DECIMAL(20, 1)"),
+            ("0", pa.decimal128(19, 0), "DECIMAL(19, 0)"),
+            ("100000000000000000000", pa.decimal128(21, 0), "DECIMAL(21, 0)"),
+            ("'0.25'", pa.decimal128(21, 2), "DECIMAL(21, 2)"),
+            ("'none'", pa.decimal128(38, 10), "DECIMAL(38, 10)"),
+        ],
+    )
+    def test_a_default_value_widens_the_column_width(
+        self, default: str, arrow_type: pa.DataType, sql_type: str
+    ) -> None:
+        """Over an empty table ``COALESCE(MIN(x), 0.5)`` returns the 0.5."""
+        model = _model({"Fewest": _measure("min", "Units Held", defaultValue=default)})
+        assert self._arrow(model, "Fewest") == arrow_type
+        assert _measure_sql_type(model.measures["Fewest"], model) == sql_type
+
+    def test_the_default_comes_back_in_the_advertised_type(self) -> None:
+        model = _model({"Fewest": _measure("min", "Units Held", defaultValue="0.5")})
+        query = QueryObject.model_validate({"select": {"measures": ["Fewest"]}})
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        con = duckdb.connect()
+        con.execute("CREATE TABLE orders (units_held DECIMAL(19, 0))")
+        table = con.execute(sql).to_arrow_table()
+        assert table.cast(pa.schema([("Fewest", self._arrow(model, "Fewest"))]))[0][0].as_py() == (
+            Decimal("0.5")
+        )
+
+    @pytest.mark.parametrize(
+        ("column", "arrow_type", "sql_type", "value"),
+        [
+            ("Thousands", pa.decimal128(5, 0), "DECIMAL(5, 0)", Decimal("99000")),
+            ("Tiny", pa.decimal128(5, 5), "DECIMAL(5, 5)", Decimal("0.00999")),
+        ],
+    )
+    def test_a_postgres_width_is_normalized(
+        self, column: str, arrow_type: pa.DataType, sql_type: str, value: Decimal
+    ) -> None:
+        model = _model({"Lowest": _measure("min", column)})
+        dimension = model.dimensions[f"{column} Band"]
+        assert self._arrow(model, "Lowest") == arrow_type
+        assert declared_arrow_types(model)[f"{column} Band"] == arrow_type
+        assert _measure_sql_type(model.measures["Lowest"], model) == sql_type
+        assert _dim_sql_type(dimension, model) == sql_type
+        pa.array([value]).cast(arrow_type)
+
+    def test_the_catalog_table_is_created(self) -> None:
+        """A width DuckDB refuses dropped the model from every metadata query."""
+        model = _model(
+            {
+                "Lowest Thousands": _measure("min", "Thousands"),
+                "Lowest Tiny": _measure("min", "Tiny"),
+                "Huge": _measure("sum", "Amount", dataType="'decimal(100, 2)'"),
+            }
+        )
+        assert _measure_sql_type(model.measures["Huge"], model) == "DOUBLE"
+        ddl = _build_table_ddl("inference", model)
+        assert ddl is not None
+        con = duckdb.connect()
+        con.execute("ATTACH ':memory:' AS \"orionbelt\"")
+        con.execute('CREATE SCHEMA "orionbelt"."inference"')
+        con.execute(ddl)

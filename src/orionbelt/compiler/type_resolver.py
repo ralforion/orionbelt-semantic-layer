@@ -16,6 +16,7 @@ Pass-through (no CAST): MIN/MAX, LISTAGG, non-numeric aggregates.
 from __future__ import annotations
 
 from collections.abc import Callable
+from decimal import Decimal, InvalidOperation
 
 from orionbelt.ast.nodes import Expr, FunctionCall
 from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION, Dialect
@@ -38,6 +39,7 @@ from orionbelt.models.types import (
     DecimalType,
     OBMLType,
     SimpleType,
+    decimal_width,
     parse_data_type,
 )
 
@@ -337,6 +339,51 @@ def passthrough_source_column(measure: Measure, model: SemanticModel) -> DataObj
     ref = measure.columns[0]
     data_object = model.data_objects.get(ref.view or "")
     return data_object.columns.get(ref.column) if data_object and ref.column else None
+
+
+def passthrough_decimal_width(measure: Measure, model: SemanticModel) -> tuple[int, int] | None:
+    """The ``(precision, scale)`` of the values *measure* returns as they are.
+
+    The declared width of its :func:`passthrough_source_column`, normalized by
+    :func:`~orionbelt.models.types.decimal_width`, and widened to hold its
+    ``defaultValue``: over an empty table ``COALESCE(MIN(x), 0.5)`` returns the
+    0.5, which a column of scale 0 cannot. A default that is not a number gives
+    no width at all, since no decimal holds it. ``None`` when the column
+    declares no width.
+    """
+    column = passthrough_source_column(measure, model)
+    if column is None or column.sql_precision is None or column.sql_scale is None:
+        return None
+    precision, scale = decimal_width(column.sql_precision, column.sql_scale)
+    if measure.default_value is None:
+        return precision, scale
+    default = _default_as_decimal(measure.default_value)
+    if default is None:
+        return None
+    digits, exponent = default.as_tuple()[1:]
+    if not isinstance(exponent, int):
+        return None
+    default_scale = max(-exponent, 0)
+    default_integer_digits = max(len(digits) + exponent, 0)
+    integer_digits = max(precision - scale, default_integer_digits)
+    scale = max(scale, default_scale)
+    return max(integer_digits + scale, 1), scale
+
+
+def _default_as_decimal(value: object) -> Decimal | None:
+    """A ``defaultValue`` as the number its SQL literal spells, or ``None``.
+
+    An int or float is rendered as ``str(value)``, and text as a string the
+    engine coerces; a boolean, or text that is not a finite number, is no
+    number at all.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        number = Decimal(str(value).strip())
+    except InvalidOperation:
+        return None
+    return number if number.is_finite() else None
 
 
 def measure_yields_integers(

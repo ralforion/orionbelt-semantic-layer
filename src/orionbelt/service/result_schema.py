@@ -109,7 +109,9 @@ def column_arrow_type(column: Any, type_name: str | None = None) -> Any:
     precision = getattr(column, "sql_precision", None)
     scale = getattr(column, "sql_scale", None)
     if type_name == "decimal" and isinstance(precision, int) and isinstance(scale, int):
-        return decimal_arrow_type(precision, scale, exact=True)
+        from orionbelt.models.types import decimal_width
+
+        return decimal_arrow_type(*decimal_width(precision, scale), exact=True)
     return obml_type_to_arrow(type_name)
 
 
@@ -186,12 +188,13 @@ def measure_arrow_type(measure: Any, model: Any) -> Any:
     (:func:`~orionbelt.compiler.type_resolver.governed_measure_data_type`).
     Otherwise its ``resultType``, and a ``min``, ``max`` or other aggregate
     returning one of its column's values at that column's declared width
-    (:func:`~orionbelt.compiler.type_resolver.passthrough_source_column`):
+    and its ``defaultValue``
+    (:func:`~orionbelt.compiler.type_resolver.passthrough_decimal_width`):
     ``decimal128(38, 10)`` cannot hold a value of scale 12.
     """
     from orionbelt.compiler.type_resolver import (
         governed_measure_data_type,
-        passthrough_source_column,
+        passthrough_decimal_width,
     )
     from orionbelt.models.types import DecimalType, parse_data_type
 
@@ -202,7 +205,11 @@ def measure_arrow_type(measure: Any, model: Any) -> Any:
         if isinstance(parsed, DecimalType):
             return decimal_arrow_type(parsed.precision, parsed.scale, exact=True)
         return obml_type_to_arrow(_DATA_TYPE_ARROW_NAMES[parsed.name])
-    return column_arrow_type(passthrough_source_column(measure, model), measure.result_type.value)
+    type_name = measure.result_type.value
+    width = passthrough_decimal_width(measure, model)
+    if type_name == "decimal" and width is not None:
+        return decimal_arrow_type(*width, exact=True)
+    return obml_type_to_arrow(type_name)
 
 
 def dimension_label_and_declaration(entry: Any, model: Any) -> tuple[str | None, Any]:
