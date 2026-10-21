@@ -109,7 +109,9 @@ def column_arrow_type(column: Any, type_name: str | None = None) -> Any:
     precision = getattr(column, "sql_precision", None)
     scale = getattr(column, "sql_scale", None)
     if type_name == "decimal" and isinstance(precision, int) and isinstance(scale, int):
-        return decimal_arrow_type(precision, scale, exact=True)
+        from orionbelt.models.types import decimal_width
+
+        return decimal_arrow_type(*decimal_width(precision, scale), exact=True)
     return obml_type_to_arrow(type_name)
 
 
@@ -123,7 +125,10 @@ def dimension_arrow_type(dimension: Any, model: Any) -> Any:
 
 
 def numeric_result_arrow_type(item: Any, model: Any) -> Any | None:
-    """A governed measure/metric's declared DECIMAL as an exact Arrow decimal.
+    """A governed metric's declared DECIMAL as an exact Arrow decimal.
+
+    A measure is typed by :func:`measure_arrow_type`, which reads the same
+    declarations and the column the measure aggregates.
 
     The precision/scale come from the model's declared ``dataType`` (e.g.
     ``decimal(18, 2)``), falling back to the model-level
@@ -140,6 +145,7 @@ def numeric_result_arrow_type(item: Any, model: Any) -> Any | None:
         # here for every synthesized count, which it looked up in
         # ``model.measures`` rather than ``effective_measures``.
         return None
+    settings = getattr(model, "settings", None)
     declared = getattr(item, "data_type", None)
     if not declared:
         aggregation = str(getattr(item, "aggregation", "") or "").upper()
@@ -150,7 +156,6 @@ def numeric_result_arrow_type(item: Any, model: Any) -> Any | None:
             # count as ``decimal(18, 2)`` - contradicting the column the query
             # actually returns, on both the result and the parameter schema.
             return None
-        settings = getattr(model, "settings", None)
         declared = getattr(settings, "default_numeric_data_type", None) if settings else None
     if not declared:
         return None
@@ -159,6 +164,52 @@ def numeric_result_arrow_type(item: Any, model: Any) -> Any | None:
         return None
     precision, scale = parsed
     return decimal_arrow_type(precision, scale, exact=True)
+
+
+#: Arrow type of each non-decimal ``dataType``. ``integer`` is 32 bits on the
+#: engines that have it and 64 on the rest, so it is advertised as the wider.
+_DATA_TYPE_ARROW_NAMES = {
+    "bigint": "int",
+    "integer": "int",
+    "double": "float",
+    "date": "date",
+    "timestamp": "timestamp",
+    "time": "time",
+    "string": "string",
+    "boolean": "boolean",
+}
+
+
+def measure_arrow_type(measure: Any, model: Any) -> Any:
+    """The Arrow type a *measure*'s column arrives as.
+
+    The type the compiler casts the result to, when it casts: an explicit
+    ``dataType`` of any kind, or ``defaultNumericDataType`` where it applies
+    (:func:`~orionbelt.compiler.type_resolver.governed_measure_data_type`).
+    Otherwise its ``resultType``, and a ``min``, ``max`` or other aggregate
+    returning one of its column's values at that column's declared width
+    and its ``defaultValue``
+    (:func:`~orionbelt.compiler.type_resolver.passthrough_decimal_width`):
+    ``decimal128(38, 10)`` cannot hold a value of scale 12.
+    """
+    from orionbelt.compiler.type_resolver import (
+        governed_measure_data_type,
+        passthrough_decimal_width,
+    )
+    from orionbelt.models.types import DecimalType, parse_data_type
+
+    settings = getattr(model, "settings", None)
+    governed = governed_measure_data_type(measure, settings)
+    if governed is not None:
+        parsed = parse_data_type(governed)
+        if isinstance(parsed, DecimalType):
+            return decimal_arrow_type(parsed.precision, parsed.scale, exact=True)
+        return obml_type_to_arrow(_DATA_TYPE_ARROW_NAMES[parsed.name])
+    type_name = measure.result_type.value
+    width = passthrough_decimal_width(measure, model)
+    if type_name == "decimal" and width is not None:
+        return decimal_arrow_type(*width, exact=True)
+    return obml_type_to_arrow(type_name)
 
 
 def dimension_label_and_declaration(entry: Any, model: Any) -> tuple[str | None, Any]:
@@ -270,15 +321,11 @@ def declared_result_schema(query: Any, model: Any) -> Any:
         # map made it unresolvable - which then took the ``float64`` fallback
         # below, or a governed decimal from an item that was ``None``.
         meas = model.effective_measures.get(label)
-        met = model.metrics.get(label) if meas is None else None
-        decimal_type = numeric_result_arrow_type(meas or met, model)
-        if decimal_type is not None:
-            fields.append(pa.field(label, decimal_type))
-        elif meas is not None:
-            rt = getattr(getattr(meas, "result_type", None), "value", None) or "float"
-            fields.append(pa.field(label, obml_type_to_arrow(rt)))
-        else:
-            fields.append(pa.field(label, pa.float64()))
+        if meas is not None:
+            fields.append(pa.field(label, measure_arrow_type(meas, model)))
+            continue
+        decimal_type = numeric_result_arrow_type(model.metrics.get(label), model)
+        fields.append(pa.field(label, decimal_type or pa.float64()))
     if getattr(query, "grouping", None) is not None:
         # GROUPING() flag columns - int64, one per dimension. See
         # PLAN_with_rollup.md §"Output: GROUPING() flag columns".
@@ -308,14 +355,12 @@ def declared_arrow_types(model: Any, query: Any = None) -> dict[str, Any]:
     types: dict[str, Any] = {}
     for label, dim in model.dimensions.items():
         types[label] = dimension_arrow_type(dim, model)
-    for label, item in list(model.effective_measures.items()) + list(model.metrics.items()):
-        decimal_type = numeric_result_arrow_type(item, model)
+    for label, measure in model.effective_measures.items():
+        types[label] = measure_arrow_type(measure, model)
+    for label, metric in model.metrics.items():
+        decimal_type = numeric_result_arrow_type(metric, model)
         if decimal_type is not None:
             types[label] = decimal_type
-            continue
-        rt = getattr(getattr(item, "result_type", None), "value", None)
-        if rt:
-            types[label] = obml_type_to_arrow(rt)
     if query is not None:
         select = getattr(query, "select", None)
         for label, declared in dimension_labels(getattr(select, "dimensions", None), model):

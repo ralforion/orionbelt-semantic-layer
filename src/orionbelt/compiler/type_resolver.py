@@ -22,6 +22,7 @@ from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION, Dialect
 from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import (
     CumulativeAggType,
+    DataObjectColumn,
     DataType,
     Measure,
     Metric,
@@ -37,6 +38,8 @@ from orionbelt.models.types import (
     DecimalType,
     OBMLType,
     SimpleType,
+    decimal_width,
+    default_as_decimal,
     parse_data_type,
 )
 
@@ -180,6 +183,24 @@ def resolve_metric_data_type(
     return None
 
 
+def governed_measure_data_type(measure: Measure, settings: ModelSettings | None) -> str | None:
+    """The ``dataType`` a measure's result is advertised with, or ``None``.
+
+    Its own ``dataType``, or ``settings.defaultNumericDataType`` when the
+    compiler casts the result to that default. A count, an integer sum or a
+    ``min`` of dates is not cast to it, so it is advertised by its
+    ``resultType`` instead: naming the default there described a ``BIGINT`` or
+    a ``DATE`` as the decimal it never became.
+    """
+    if measure.data_type:
+        return measure.data_type
+    default = settings.default_numeric_data_type if settings else None
+    if default is None:
+        return None
+    resolved = resolve_measure_data_type(measure, settings)
+    return default if resolved == parse_data_type(default) else None
+
+
 def _get_default(settings: ModelSettings | None) -> OBMLType:
     """Return the model-level or built-in default numeric type."""
     if settings and settings.default_numeric_data_type:
@@ -301,6 +322,52 @@ _INTERPOLATING_REAGGREGATIONS = frozenset(
 _VALUE_PRESERVING_AGGREGATIONS = frozenset(
     {"MIN", "MAX", "ANY_VALUE", "MODE", "PERCENTILE_DISC", "FIRST", "LAST"}
 )
+
+
+def passthrough_source_column(measure: Measure, model: SemanticModel) -> DataObjectColumn | None:
+    """The column whose values *measure* returns as they are, or ``None``.
+
+    A ``min``, ``max``, ``first`` or other aggregate that answers one of its
+    input values, over one column and not cast, returns a value of that column,
+    at its declared width. A ``median`` or ``percentile_cont`` interpolates:
+    the midpoint of 1 and 2 is 1.5, which a column of scale 0 cannot hold.
+    """
+    if measure.data_type or measure.expression or len(measure.columns) != 1:
+        return None
+    if measure.aggregation.upper() not in _VALUE_PRESERVING_AGGREGATIONS:
+        return None
+    ref = measure.columns[0]
+    data_object = model.data_objects.get(ref.view or "")
+    return data_object.columns.get(ref.column) if data_object and ref.column else None
+
+
+def passthrough_decimal_width(measure: Measure, model: SemanticModel) -> tuple[int, int] | None:
+    """The ``(precision, scale)`` of the values *measure* returns as they are.
+
+    The declared width of its :func:`passthrough_source_column`, normalized by
+    :func:`~orionbelt.models.types.decimal_width`, and widened to hold its
+    ``defaultValue``: over an empty table ``COALESCE(MIN(x), 0.5)`` returns the
+    0.5, which a column of scale 0 cannot. A default that is not a number gives
+    no width at all, since no decimal holds it. ``None`` when the column
+    declares no width.
+    """
+    column = passthrough_source_column(measure, model)
+    if column is None or column.sql_precision is None or column.sql_scale is None:
+        return None
+    precision, scale = decimal_width(column.sql_precision, column.sql_scale)
+    if measure.default_value is None:
+        return precision, scale
+    default = default_as_decimal(measure.default_value)
+    if default is None:
+        return None
+    digits, exponent = default.as_tuple()[1:]
+    if not isinstance(exponent, int):
+        return None
+    default_scale = max(-exponent, 0)
+    default_integer_digits = max(len(digits) + exponent, 0)
+    integer_digits = max(precision - scale, default_integer_digits)
+    scale = max(scale, default_scale)
+    return max(integer_digits + scale, 1), scale
 
 
 def measure_yields_integers(

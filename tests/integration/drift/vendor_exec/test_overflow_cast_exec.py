@@ -60,10 +60,12 @@ measures:
     dataType: "decimal(18, 2)"
   Qty Sum Int32:
     columns: [{dataObject: Charges, column: Qty}]
+    resultType: float
     aggregation: sum
     dataType: "integer"
   Qty Sum Int32 Defaulted:
     columns: [{dataObject: Charges, column: Qty}]
+    resultType: float
     aggregation: sum
     dataType: "integer"
     defaultValue: 0
@@ -83,12 +85,12 @@ OVERFLOWING = [
     # SIGNED, BigQuery INT64, Snowflake NUMBER(38, 0)) answer with the total,
     # which the contract accepts - it forbids a *wrong* number, not a right one.
     #
-    # It declares ``dataType`` and *not* ``resultType``, deliberately. With
-    # ``resultType: int`` the #338 fix casts the SUM argument to Decimal128
-    # first, and a Decimal-to-Int cast already raises on ClickHouse, so the
-    # saturation is unreachable through that door and this case would pass
-    # against the unfixed dialect. The default float ``resultType`` leaves a
-    # Float64 SUM, which is what saturates.
+    # It declares ``resultType: float`` over an int column, deliberately. With
+    # ``resultType: int``, declared or inferred from the column, the #338 fix
+    # casts the SUM argument to Decimal128 first, and a Decimal-to-Int cast
+    # already raises on ClickHouse, so the saturation is unreachable through
+    # that door and this case would pass against the unfixed dialect. A float
+    # ``resultType`` leaves a Float64 SUM, which is what saturates.
     ("Qty Sum Int32", [2000000000, 2000000000], "4000000000"),
     # The same measure with a defaultValue, which wraps the aggregate in
     # COALESCE. Review found the ClickHouse guard matching only the outermost

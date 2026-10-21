@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pyarrow as pa
 import pytest
+from orionbelt.models.semantic import DataType, Measure
 
 from ob_flight.catalog import (
     build_dimensions_data,
@@ -131,13 +132,7 @@ def _make_model_with_dim(name: str = "sales_model") -> MagicMock:
     dim.column = "region"
     dim.view = "Sales"
 
-    meas = MagicMock()
-    meas.label = "Total Sales"
-    meas.aggregation = "sum"
-    meas.expression = None
-    meas.result_type = MagicMock(value="float")
-    meas.columns = []
-    meas.description = None
+    meas = Measure(name="Total Sales", aggregation="sum", result_type=DataType.FLOAT)
 
     col = MagicMock()
     col.label = "X"
@@ -155,6 +150,7 @@ def _make_model_with_dim(name: str = "sales_model") -> MagicMock:
     # Declared plus synthesized; the mock declares the one and synthesizes none.
     model.effective_measures = model.measures
     model.metrics = {}
+    model.settings = None
     return model
 
 

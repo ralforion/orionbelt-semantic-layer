@@ -8,6 +8,7 @@ import pyarrow as pa
 from orionbelt.service.result_schema import (
     column_arrow_type,
     dimension_arrow_type,
+    measure_arrow_type,
     obml_type_to_arrow,
 )
 from pyarrow import flight
@@ -197,8 +198,8 @@ def model_virtual_table_name(model: Any) -> str:
 def model_to_virtual_table_schema(model: Any) -> pa.Schema:
     """Build the virtual-table Arrow schema for a model.
 
-    Columns are the union of dimensions + measures + metrics, typed by each
-    artefact's ``result_type``. This is the schema BI tools see when they
+    Columns are the union of dimensions + measures + metrics, typed as each
+    artefact's column arrives. This is the schema BI tools see when they
     pick from the catalog tree. Measures include the synthesized counts, as
     in ``model_table.model_table_columns``: ``SELECT *`` expands to that list,
     and a client checks the result against this schema.
@@ -211,9 +212,7 @@ def model_to_virtual_table_schema(model: Any) -> pa.Schema:
     if hasattr(model, "effective_measures") and model.effective_measures:
         for label, meas in model.effective_measures.items():
             display = getattr(meas, "label", label) or label
-            rt = getattr(meas, "result_type", None)
-            rt_name = getattr(rt, "value", None) or "float"
-            fields.append(pa.field(display, _obml_type_to_arrow(rt_name)))
+            fields.append(pa.field(display, measure_arrow_type(meas, model)))
     if hasattr(model, "metrics") and model.metrics:
         for label, met in model.metrics.items():
             display = getattr(met, "label", label) or label

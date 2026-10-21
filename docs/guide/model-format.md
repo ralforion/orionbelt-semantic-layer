@@ -775,7 +775,7 @@ measures:
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
 | `columns` | list | No | List of column references (`dataObject`+`column`) for simple single-column measures |
-| `resultType` | enum | Yes | Data type of the result. Emitted as a CAST around the aggregate, so the measure carries its declared precision and type |
+| `resultType` | enum | No | Data type of the result. Emitted as a CAST around the aggregate, so the measure carries its declared precision and type. When omitted it is inferred from the aggregation and the columns read, see [Inferred result type](#inferred-result-type) |
 | `aggregation` | enum | Yes | `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `any_value`, `median`, `mode`, `listagg`; statistical: `stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` — see [Aggregation Types](#aggregation-types) for dialect coverage |
 | `expression` | string | No | Expression with `{[DataObject].[Column]}` placeholders. It has to parse: a body the expression parser does not accept is refused at load with `INVALID_MEASURE_EXPRESSION`, the way a computed column's is with `INVALID_COLUMN_EXPRESSION` |
 | `distinct` | bool | No | Apply DISTINCT to aggregation |
@@ -795,6 +795,27 @@ measures:
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
 | `externalConceptMappings` | list | No | Links to concepts in an external ontology; see [External Concept Mappings](concept-mappings.md) |
+
+#### Inferred result type
+
+A measure that omits `resultType` takes it from what it aggregates:
+
+| Aggregation | Over one column | Over an expression or several columns |
+|---|---|---|
+| `count`, `count_distinct` | `int` | `int` |
+| `sum` | the column's type when it is `int`, `decimal` or `float`, else `decimal` | `float` if any column read is `float`, else `decimal` |
+| `min`, `max`, `first`, `last`, `any_value`, `mode`, `percentile_disc` | the column's type | `float` if any column read is `float`, else `decimal` |
+| `avg`, `median`, `percentile_cont` | `float` over a `float` column, else `decimal` | `float` if any column read is `float`, else `decimal` |
+| `listagg` | `string` | `string` |
+| statistical (`stddev`, `corr`, `regr_slope` ...) | `float` | `float` |
+
+An undeclared column or an unknown aggregation gives `decimal`. An `int`
+answer becomes `decimal` when the measure has a fractional `defaultValue`
+(`0.5`), which an integer type would round on an empty set. A declared
+`resultType` always wins. The inferred type is what the result surfaces
+advertise (Arrow Flight SQL, the PostgreSQL wire catalog, the REST type
+hints), and an inferred `int` on a `sum` compiles to `bigint` exactly as a
+declared one does.
 
 ### Aggregation Types
 
@@ -1489,7 +1510,7 @@ OrionBelt automatically wraps aggregate expressions with `CAST` to ensure consis
 The effective data type for a measure or metric is resolved in this order (first match wins):
 
 1. **Explicit declaration** — `dataType` on the measure or metric
-2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; division in expression → `decimal(18, 6)`; a measure with `resultType: int` aggregated with SUM → `bigint`
+2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; division in expression → `decimal(18, 6)`; a measure whose `resultType` is `int`, declared or [inferred](#inferred-result-type) from an `int` column, aggregated with SUM → `bigint`
 3. **Model-level default** — `settings.defaultNumericDataType`
 4. **Built-in default** — `decimal(18, 2)` for SUM/AVG aggregations
 
@@ -1523,8 +1544,8 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     The built-in default holds only 16 integer digits, but a 64-bit column
     needs 19. Left to default, `SUM` over a `BIGINT` produced a value the
     engine computed correctly and then failed to cast, so the query errored on
-    a perfectly legal figure. A measure declaring `resultType: int` therefore
-    infers `bigint` for `SUM`.
+    a perfectly legal figure. A measure whose `resultType` is `int`, declared
+    or inferred from an `int` column, therefore infers `bigint` for `SUM`.
 
     **On two engines the sum itself is rewritten**, because their accumulator
     is 64-bit and *wraps* rather than overflowing. Measured on two rows of
@@ -1542,7 +1563,7 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     | Dremio | `SUM(CAST(x AS DECIMAL(38, 0)))` |
     | everyone else | plain `SUM`, cast to `bigint` |
 
-    Only `resultType: int` is rewritten, and only a plain `SUM`. A windowed sum
+    Only a `resultType` of `int` is rewritten, and only a plain `SUM`. A windowed sum
     inside a cumulative or period-over-period metric keeps the engine's own
     behaviour; the measure it aggregates is already rewritten inside the CTE,
     which is where the accumulation over rows happens.

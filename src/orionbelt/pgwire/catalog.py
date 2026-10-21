@@ -33,7 +33,15 @@ from typing import Any
 
 import duckdb
 
-from orionbelt.models.semantic import DataType, Dimension, Measure, Metric, SemanticModel
+from orionbelt.compiler.type_resolver import governed_measure_data_type, passthrough_decimal_width
+from orionbelt.models.semantic import (
+    DataType,
+    Dimension,
+    Measure,
+    Metric,
+    SemanticModel,
+)
+from orionbelt.models.types import decimal_width
 from orionbelt.service.db_executor import ColumnMeta, ExecutionResult, parse_decimal_type
 from orionbelt.service.session_manager import SessionManager
 
@@ -1257,9 +1265,9 @@ def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
     if model.settings is not None and model.settings.default_numeric_data_type:
         default_num = model.settings.default_numeric_data_type
     for label, dim in model.dimensions.items():
-        yield label, _dim_sql_type(dim)
+        yield label, _dim_sql_type(dim, model)
     for label, measure in model.effective_measures.items():
-        yield label, _measure_sql_type(measure, default_num)
+        yield label, _measure_sql_type(measure, model)
     for label, metric in model.metrics.items():
         yield label, _metric_sql_type(metric, default_num)
 
@@ -1436,8 +1444,40 @@ def _values_view_ddl(
     return f'CREATE OR REPLACE VIEW "{qdb}"."{schema}"."{view}" AS {select_clause}'
 
 
-def _dim_sql_type(dim: Dimension) -> str:
-    return _DATATYPE_TO_DUCKDB.get(dim.result_type, "VARCHAR")
+#: The widest ``DECIMAL`` DuckDB accepts.
+_DUCKDB_MAX_DECIMAL_PRECISION = 38
+
+
+def _decimal_sql_type(data_type: DataType, width: tuple[int, int] | None, fallback: str) -> str:
+    """*data_type* as DuckDB spells it, a ``decimal`` at *width* when known.
+
+    *width* is normalized (:func:`orionbelt.models.types.decimal_width`), as
+    the Arrow schema's is.
+    """
+    if data_type is DataType.DECIMAL and width is not None:
+        return _duckdb_decimal(*width)
+    return _DATATYPE_TO_DUCKDB.get(data_type, fallback)
+
+
+def _duckdb_decimal(precision: int, scale: int) -> str:
+    """``DECIMAL(precision, scale)``, or ``DOUBLE`` past DuckDB's 38 digits.
+
+    The catalog is a DuckDB table, which cannot be created with a wider
+    decimal; the model would drop out of every metadata query. ``DOUBLE`` is
+    the numeric type left, as ``float64`` is past Arrow's widest decimal.
+    """
+    if precision > _DUCKDB_MAX_DECIMAL_PRECISION:
+        return "DOUBLE"
+    return f"DECIMAL({precision}, {scale})"
+
+
+def _dim_sql_type(dim: Dimension, model: SemanticModel) -> str:
+    data_object = model.data_objects.get(dim.view)
+    column = data_object.columns.get(dim.column) if data_object is not None else None
+    width = None
+    if column is not None and column.sql_precision is not None and column.sql_scale is not None:
+        width = decimal_width(column.sql_precision, column.sql_scale)
+    return _decimal_sql_type(dim.result_type, width, "VARCHAR")
 
 
 def _decimal_duckdb_type(data_type: str | None) -> str | None:
@@ -1455,14 +1495,30 @@ def _decimal_duckdb_type(data_type: str | None) -> str | None:
     parsed = parse_decimal_type(data_type)
     if parsed is None:
         return None
-    precision, scale = parsed
-    return f"DECIMAL({precision}, {scale})"
+    return _duckdb_decimal(*parsed)
 
 
-def _measure_sql_type(measure: Measure, default_num: str | None = None) -> str:
-    return _decimal_duckdb_type(measure.data_type or default_num) or _DATATYPE_TO_DUCKDB.get(
-        measure.result_type, "DOUBLE"
-    )
+#: DuckDB type of each non-decimal ``dataType``.
+_DATA_TYPE_TO_DUCKDB: dict[str, str] = {
+    "bigint": "BIGINT",
+    "integer": "INTEGER",
+    "double": "DOUBLE",
+    "date": "DATE",
+    "timestamp": "TIMESTAMP",
+    "time": "TIME",
+    "string": "VARCHAR",
+    "boolean": "BOOLEAN",
+}
+
+
+def _measure_sql_type(measure: Measure, model: SemanticModel) -> str:
+    """The type the compiler casts *measure* to, else its ``resultType``'s, at
+    the width of the column whose values it returns as they are."""
+    governed = governed_measure_data_type(measure, model.settings)
+    if governed is not None:
+        return _decimal_duckdb_type(governed) or _DATA_TYPE_TO_DUCKDB[governed.strip().lower()]
+    width = passthrough_decimal_width(measure, model)
+    return _decimal_sql_type(measure.result_type, width, "DOUBLE")
 
 
 def _metric_sql_type(metric: Metric, default_num: str | None = None) -> str:
