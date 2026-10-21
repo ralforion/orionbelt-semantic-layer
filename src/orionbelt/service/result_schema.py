@@ -184,14 +184,14 @@ def measure_arrow_type(measure: Any, model: Any) -> Any:
     The type the compiler casts the result to, when it casts: an explicit
     ``dataType`` of any kind, or ``defaultNumericDataType`` where it applies
     (:func:`~orionbelt.compiler.type_resolver.governed_measure_data_type`).
-    Otherwise its ``resultType``, and a ``min``, ``max`` or other uncast
-    aggregate of one column at that column's declared width: it returns one of
-    the column's values, which ``decimal128(38, 10)`` cannot hold at a scale
-    of 12.
+    Otherwise its ``resultType``, and a ``min``, ``max`` or other aggregate
+    returning one of its column's values at that column's declared width
+    (:func:`~orionbelt.compiler.type_resolver.passthrough_source_column`):
+    ``decimal128(38, 10)`` cannot hold a value of scale 12.
     """
     from orionbelt.compiler.type_resolver import (
         governed_measure_data_type,
-        resolve_measure_data_type,
+        passthrough_source_column,
     )
     from orionbelt.models.types import DecimalType, parse_data_type
 
@@ -202,17 +202,7 @@ def measure_arrow_type(measure: Any, model: Any) -> Any:
         if isinstance(parsed, DecimalType):
             return decimal_arrow_type(parsed.precision, parsed.scale, exact=True)
         return obml_type_to_arrow(_DATA_TYPE_ARROW_NAMES[parsed.name])
-    type_name = measure.result_type.value
-    if (
-        len(measure.columns) == 1
-        and not measure.expression
-        and resolve_measure_data_type(measure, settings) is None
-    ):
-        ref = measure.columns[0]
-        data_object = getattr(model, "data_objects", {}).get(ref.view)
-        column = data_object.columns.get(ref.column) if data_object is not None else None
-        return column_arrow_type(column, type_name)
-    return obml_type_to_arrow(type_name)
+    return column_arrow_type(passthrough_source_column(measure, model), measure.result_type.value)
 
 
 def dimension_label_and_declaration(entry: Any, model: Any) -> tuple[str | None, Any]:

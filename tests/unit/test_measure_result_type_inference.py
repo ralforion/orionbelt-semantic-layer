@@ -22,7 +22,7 @@ from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import DataType, SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
-from orionbelt.pgwire.catalog import _measure_sql_type
+from orionbelt.pgwire.catalog import _dim_sql_type, _measure_sql_type
 from orionbelt.service.result_schema import declared_arrow_types, declared_result_schema
 
 MODEL_YAML = """
@@ -38,10 +38,12 @@ dataObjects:
       Amount: {{code: amount, abstractType: decimal}}
       Weight: {{code: weight, abstractType: float}}
       Rate: {{code: rate, abstractType: decimal, sqlPrecision: 38, sqlScale: 12}}
+      Units Held: {{code: units_held, abstractType: decimal, sqlPrecision: 19, sqlScale: 0}}
       Ordered At: {{code: ordered_at, abstractType: date}}
       Status: {{code: status, abstractType: string}}
 dimensions:
   Status: {{dataObject: Orders, column: Status, resultType: string}}
+  Rate Band: {{dataObject: Orders, column: Rate, resultType: decimal}}
 measures:
 {measures}
 """
@@ -183,7 +185,7 @@ class TestResultSurfacesAgreeWithTheSQL:
             ("First Order", "DATE"),
             ("Orders Counted", "BIGINT"),
         ]:
-            assert _measure_sql_type(model.measures[label], model.settings) == sql_type
+            assert _measure_sql_type(model.measures[label], model) == sql_type
         hints = build_type_map(model)
         assert (hints["Units"], hints["First Order"]) == ("number", "datetime")
 
@@ -212,7 +214,7 @@ class TestTheDeclaredTypeWins:
         for arrow_type in self._schemas(model, "Units"):
             assert arrow_type == pa.float64()
             pa.array([1.8e19]).cast(arrow_type)
-        assert _measure_sql_type(model.measures["Units"], model.settings) == "DOUBLE"
+        assert _measure_sql_type(model.measures["Units"], model) == "DOUBLE"
 
     @pytest.mark.parametrize(
         ("data_type", "arrow_type", "sql_type"),
@@ -227,4 +229,25 @@ class TestTheDeclaredTypeWins:
     ) -> None:
         model = _model({"M": _measure("max", "Weight", dataType=f"'{data_type}'")})
         assert self._schemas(model, "M") == [arrow_type] * 3
-        assert _measure_sql_type(model.measures["M"], model.settings) == sql_type
+        assert _measure_sql_type(model.measures["M"], model) == sql_type
+
+    def test_the_pgwire_catalog_keeps_the_column_width(self) -> None:
+        model = _model({"Lowest Rate": _measure("min", "Rate")})
+        assert _measure_sql_type(model.measures["Lowest Rate"], model) == "DECIMAL(38, 12)"
+        assert _dim_sql_type(model.dimensions["Rate Band"], model) == "DECIMAL(38, 12)"
+
+    @pytest.mark.parametrize(
+        ("aggregation", "extra"),
+        [("median", {}), ("percentile_cont", {"percentile": "0.5"}), ("avg", {})],
+    )
+    def test_an_interpolated_value_is_not_held_to_the_column_scale(
+        self, aggregation: str, extra: dict[str, str]
+    ) -> None:
+        """The midpoint of 1 and 2 is 1.5, which a column of scale 0 cannot hold."""
+        model = _model({"Typical Holding": _measure(aggregation, "Units Held", **extra)})
+        for arrow_type in self._schemas(model, "Typical Holding"):
+            assert arrow_type.scale > 0
+            cast = pa.array([Decimal("1.5")], pa.decimal128(38, 1)).cast(arrow_type)
+            assert cast[0].as_py() == Decimal("1.5")
+        sql_type = _measure_sql_type(model.measures["Typical Holding"], model)
+        assert sql_type != "DECIMAL(19, 0)"

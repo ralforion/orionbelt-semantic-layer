@@ -22,6 +22,7 @@ from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION, Dialect
 from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import (
     CumulativeAggType,
+    DataObjectColumn,
     DataType,
     Measure,
     Metric,
@@ -319,6 +320,23 @@ _INTERPOLATING_REAGGREGATIONS = frozenset(
 _VALUE_PRESERVING_AGGREGATIONS = frozenset(
     {"MIN", "MAX", "ANY_VALUE", "MODE", "PERCENTILE_DISC", "FIRST", "LAST"}
 )
+
+
+def passthrough_source_column(measure: Measure, model: SemanticModel) -> DataObjectColumn | None:
+    """The column whose values *measure* returns as they are, or ``None``.
+
+    A ``min``, ``max``, ``first`` or other aggregate that answers one of its
+    input values, over one column and not cast, returns a value of that column,
+    at its declared width. A ``median`` or ``percentile_cont`` interpolates:
+    the midpoint of 1 and 2 is 1.5, which a column of scale 0 cannot hold.
+    """
+    if measure.data_type or measure.expression or len(measure.columns) != 1:
+        return None
+    if measure.aggregation.upper() not in _VALUE_PRESERVING_AGGREGATIONS:
+        return None
+    ref = measure.columns[0]
+    data_object = model.data_objects.get(ref.view or "")
+    return data_object.columns.get(ref.column) if data_object and ref.column else None
 
 
 def measure_yields_integers(
