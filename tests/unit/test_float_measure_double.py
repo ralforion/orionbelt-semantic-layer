@@ -87,7 +87,9 @@ measures:
   Half Revenue: {{columns: [{{dataObject: Orders, column: Half Price}}], aggregation: sum,
                   resultType: float}}
   Float Units: {{columns: [{{dataObject: Orders, column: Quantity}}], aggregation: avg,
-                 resultType: float}}
+                 resultType: float, defaultValue: 0}}
+  Exact Mean: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: avg,
+                resultType: decimal}}
   Inferred Revenue: {{columns: [{{dataObject: Orders, column: Price}}], aggregation: sum}}
   Returned: {{columns: [{{dataObject: Returns, column: Returned Weight}}], aggregation: sum,
               resultType: float}}
@@ -141,6 +143,33 @@ class TestAFloatIsADouble:
         assert declared_arrow_types(model)["Mean Weight"] == pa.float64()
         assert _measure_sql_type(model.measures["Mean Weight"], model) == "DOUBLE"
         assert build_type_map(model)["Mean Weight"] == "number"
+
+
+class TestSnowflakeAveragesADouble:
+    """Snowflake's ``AVG`` of 1, 1 and 2 is the ``NUMBER(38, 6)`` 1.333333, so
+    a cast of the result is too late; the argument is averaged as a double."""
+
+    def test_the_argument_is_cast(self) -> None:
+        assert 'AVG(CAST("Orders"."weight" AS FLOAT))' in _sql(["Mean Weight"], "snowflake")
+
+    def test_under_a_default_value_too(self) -> None:
+        sql = (
+            CompilationPipeline()
+            .compile(
+                QueryObject.model_validate({"select": {"measures": ["Float Units"]}}),
+                _model(),
+                "snowflake",
+            )
+            .sql
+        )
+        assert 'AVG(CAST("Orders"."quantity" AS FLOAT))' in sql
+
+    @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "bigquery"])
+    def test_not_where_avg_keeps_the_digits(self, dialect: str) -> None:
+        assert "AVG(CAST(" not in _sql(["Mean Weight"], dialect)
+
+    def test_not_for_an_exact_average(self) -> None:
+        assert "AVG(CAST(" not in _sql(["Exact Mean"], "snowflake")
 
 
 class TestADeclarationKeepsItExact:

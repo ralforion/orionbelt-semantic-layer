@@ -18,6 +18,7 @@ Pass-through (no CAST): MIN/MAX, LISTAGG, non-numeric aggregates.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 from orionbelt.ast.nodes import Expr, FunctionCall
 from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION, Dialect
@@ -743,6 +744,7 @@ def cast_measure_to_resolved_type(
     if exact is not None:
         rewritten, target = exact
         return dialect.cast_to_obml_type(rewritten, target)
+    expr = apply_float_avg_input(expr, measure, settings, dialect, model)
     expr = apply_exact_integer_sum(expr, measure, dialect)
     resolved = resolve_measure_cast_type(measure, settings, dialect, model)
     if resolved is None:
@@ -786,7 +788,37 @@ def apply_exact_integer_avg(
     if dialect is None:
         return expr
     exact = rewrite_exact_integer_avg(measure, settings, dialect, expr, model)
-    return expr if exact is None else exact[0]
+    if exact is not None:
+        return exact[0]
+    return apply_float_avg_input(expr, measure, settings, dialect, model)
+
+
+def apply_float_avg_input(
+    expr: Expr,
+    measure: Measure,
+    settings: ModelSettings | None,
+    dialect: Dialect,
+    model: SemanticModel | None,
+) -> Expr:
+    """``AVG(CAST(x AS DOUBLE))`` for a ``double`` average where ``AVG`` rounds.
+
+    On an engine whose ``AVG`` of an exact input keeps a fixed number of places
+    (:attr:`~orionbelt.dialect.base.Dialect.avg_rounds_exact_input`), the
+    ``double`` a ``float`` measure is cast to would carry an already rounded
+    value: 1.333333 for the average of 1, 1 and 2. Averaging the argument as a
+    double gives 1.3333333333333333, which is what the measure asked for.
+    """
+    if not dialect.avg_rounds_exact_input or measure.aggregation.upper() != "AVG":
+        return expr
+    if resolve_measure_data_type(measure, settings, model) != FLOAT_DEFAULT:
+        return expr
+    aggregate, rebuild = unwrap_default(expr)
+    if not isinstance(aggregate, FunctionCall) or aggregate.name != "AVG":
+        return expr
+    if len(aggregate.args) != 1:
+        return expr
+    arg = dialect.cast_to_obml_type(aggregate.args[0], FLOAT_DEFAULT)
+    return rebuild(replace(aggregate, args=[arg]))
 
 
 def resolve_measure_cast_type(

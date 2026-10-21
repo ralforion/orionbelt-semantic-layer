@@ -55,6 +55,8 @@ class SnowflakeDialect(Dialect):
 
     avg_over_integers_is_exact = True
 
+    avg_rounds_exact_input = True
+
     backslash_escapes_strings = True
 
     like_needs_escape_clause = True

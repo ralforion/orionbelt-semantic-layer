@@ -113,7 +113,7 @@ dataObjects:
     columns:
       Customer: {{code: customer_id, abstractType: string}}
       Country: {{code: country, abstractType: string}}
-      Amount: {{code: amount, abstractType: float}}
+      Amount: {{code: amount, abstractType: decimal}}
       Order Date: {{code: order_date, abstractType: date}}
     joins:
       - {{joinType: many-to-one, joinTo: Customers, columnsFrom: [Customer], columnsTo: [Customer]}}
