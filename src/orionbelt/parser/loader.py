@@ -9,8 +9,12 @@ from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.constructor import RoundTripConstructor
+from ruamel.yaml.nodes import ScalarNode
+from ruamel.yaml.scalarfloat import ScalarFloat
 
 from orionbelt.models.errors import SourceSpan
+from orionbelt.models.semantic import SOURCE_TEXT_ATTR
 
 # ---------------------------------------------------------------------------
 # Safety limits
@@ -53,6 +57,26 @@ class SourceMap:
         return list(self._positions.keys())
 
 
+class _DigitKeepingConstructor(RoundTripConstructor):
+    """Keeps the digits a float was written with on the float.
+
+    The double is all YAML hands over, and it has already rounded
+    ``1.0000000000000001`` to 1.0. A ``decimal`` filter value has to compare
+    the number written, so the text is kept beside it.
+    """
+
+    def construct_yaml_float(self, node: ScalarNode) -> Any:
+        value = super().construct_yaml_float(node)
+        if isinstance(value, ScalarFloat):  # .inf and .nan come back plain
+            setattr(value, SOURCE_TEXT_ATTR, node.value)
+        return value
+
+
+_DigitKeepingConstructor.add_constructor(
+    "tag:yaml.org,2002:float", _DigitKeepingConstructor.construct_yaml_float
+)
+
+
 class TrackedLoader:
     """YAML loader that tracks source positions for error reporting.
 
@@ -62,6 +86,7 @@ class TrackedLoader:
     def __init__(self) -> None:
         self._yaml = YAML()
         self._yaml.preserve_quotes = True
+        self._yaml.Constructor = _DigitKeepingConstructor
         # Reject duplicate YAML keys (e.g. two columns with the same name).
         # Without this, ruamel.yaml silently keeps only the last value.
         self._yaml.allow_duplicate_keys = False

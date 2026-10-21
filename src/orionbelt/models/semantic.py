@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any
 
@@ -1081,8 +1081,7 @@ class FilterValue(BaseModel):
         """The exact value of a ``decimal`` filter value.
 
         ``None`` when there is none, or when the number arrived as a double
-        that may already differ from what was written (see
-        :func:`exact_decimal`).
+        with nothing left to say what was written (see :func:`exact_decimal`).
         """
         return self._decimal
 
@@ -1097,26 +1096,35 @@ class FilterValue(BaseModel):
         )
 
 
-#: Significant digits a decimal survives text -> double -> shortest text
-#: unchanged (``DBL_DIG``). Past it, the double may not be the number written.
-_DOUBLE_EXACT_DIGITS = 15
+#: Attribute the YAML loader sets on a float to the digits it was written
+#: with. A double has already rounded them: ``1.0000000000000001`` is 1.0.
+SOURCE_TEXT_ATTR = "source_text"
 
 
 def exact_decimal(raw: object) -> Decimal | None:
     """The decimal *raw* names exactly, or ``None`` when it cannot say.
 
-    An integer is exact. A float is the text it was parsed from only up to 15
-    significant digits: YAML and JSON both hand over a double, and
-    ``12345678901234567.89`` is already 12345678901234568 by then.
+    An integer is exact, and so is a float the YAML loader parsed, read from
+    the digits it was written with (:data:`SOURCE_TEXT_ATTR`). A float that
+    arrived without them - a JSON body, a fragment merged in as plain YAML -
+    is not: any double, 1.0 included, may be the rounding of what was
+    written (``1.0000000000000001``), and nothing left says.
     """
     if isinstance(raw, bool):
         return None
     if isinstance(raw, int):
         return Decimal(raw)
-    if isinstance(raw, float) and math.isfinite(raw):
-        exact = Decimal(float.__repr__(raw))
-        if len(exact.normalize().as_tuple().digits) <= _DOUBLE_EXACT_DIGITS:
-            return exact
+    if isinstance(raw, Decimal):
+        return raw if raw.is_finite() else None
+    if not isinstance(raw, float) or not math.isfinite(raw):
+        return None
+    text = getattr(raw, SOURCE_TEXT_ATTR, None)
+    if isinstance(text, str):
+        try:
+            exact = Decimal(text.replace("_", ""))
+        except InvalidOperation:
+            return None
+        return exact if exact.is_finite() else None
     return None
 
 

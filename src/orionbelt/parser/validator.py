@@ -1275,9 +1275,10 @@ class SemanticValidator:
                             code="INEXACT_DECIMAL_VALUE",
                             message=(
                                 f"Measure '{meas_name}' filter value {fv.value_float!r} is "
-                                f"decimal, but a number with more than 15 significant digits "
-                                f"is read as a double and may no longer be the one written. "
-                                f"Use at most 15 significant digits."
+                                f"decimal, but it arrived as a binary float without the "
+                                f"digits it was written with, so it may no longer be the "
+                                f"number written. Load the model as OBML YAML, where the "
+                                f"digits are kept, or give a whole number."
                             ),
                             path=f"measures.{meas_name}.filters",
                         )

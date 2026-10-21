@@ -200,11 +200,29 @@ measures:
 """
 
 
-def _precise_model(value: str = "9007199254740993") -> tuple[SemanticModel, list[str]]:
+def _precise_model(
+    value: str = "9007199254740993", *, as_json: bool = False
+) -> tuple[SemanticModel, list[str]]:
+    """The ledger model, loaded from YAML or, with *as_json*, as a JSON body
+    (``model_json``), whose numbers arrive as bare doubles."""
     raw, source_map = TrackedLoader().load_string(PRECISE_YAML.format(value=value))
+    if as_json:
+        raw, source_map = json.loads(json.dumps(raw)), None
     model, result = ReferenceResolver().resolve(raw, source_map)
     errors = result.errors + SemanticValidator().validate(model)
     return model, [error.code for error in errors]
+
+
+def _matching_amount(model: SemanticModel, amounts: list[str]) -> Decimal | None:
+    """Run the filtered measure on DuckDB over ledger rows with *amounts*."""
+    query = QueryObject(select={"measures": ["Matching Amount"]})
+    sql = CompilationPipeline().compile(query, model, "duckdb").sql
+    db = duckdb.connect()
+    db.execute("CREATE TABLE ledger (id VARCHAR, amount DECIMAL(38, 18))")
+    for i, amount in enumerate(amounts):
+        db.execute("INSERT INTO ledger VALUES (?, CAST(? AS DECIMAL(38, 18)))", [str(i), amount])
+    row = db.execute(sql).fetchone()
+    return None if row is None else row[0]
 
 
 class TestADecimalFilterValueIsExact:
@@ -212,6 +230,8 @@ class TestADecimalFilterValueIsExact:
 
     9007199254740993 is 2**53 + 1, the first integer a double cannot hold: as a
     float it is 9007199254740992, and the filter selected the other row.
+    ``1.0000000000000001`` is 1.0 as a double, which YAML has already produced
+    by the time the model sees it, so the loader keeps the written digits.
     """
 
     def test_the_literal_is_the_number_written(self) -> None:
@@ -224,30 +244,51 @@ class TestADecimalFilterValueIsExact:
 
     def test_the_filter_selects_the_right_row(self) -> None:
         model, _ = _precise_model()
-        query = QueryObject(select={"measures": ["Matching Amount"]})
-        sql = CompilationPipeline().compile(query, model, "duckdb").sql
-        db = duckdb.connect()
-        db.execute("CREATE TABLE ledger (id VARCHAR, amount DECIMAL(38, 0))")
-        db.execute("INSERT INTO ledger VALUES ('a', 9007199254740992), ('b', 9007199254740993)")
-        assert db.execute(sql).fetchone() == (Decimal("9007199254740993"),)
+        total = _matching_amount(model, ["9007199254740992", "9007199254740993"])
+        assert total == Decimal("9007199254740993")
 
-    def test_a_short_fraction_keeps_its_digits(self) -> None:
-        model, errors = _precise_model("0.1")
+    def test_a_fraction_past_a_doubles_precision_selects_the_right_row(self) -> None:
+        """Two rows hold the value written and one holds 1: comparing 1.0 sums 1."""
+        model, errors = _precise_model("1.0000000000000001")
+        assert errors == []
+        rows = ["1", "1.0000000000000001", "1.0000000000000001"]
+        assert _matching_amount(model, rows) == Decimal("2")
+
+    @pytest.mark.parametrize(
+        ("written", "exact"),
+        [
+            ("0.1", "0.1"),
+            ("12345678901234567.89", "12345678901234567.89"),
+            ("1_000.5", "1000.5"),
+            ("-1.5e-3", "-0.0015"),
+        ],
+    )
+    def test_the_written_digits_are_kept(self, written: str, exact: str) -> None:
+        model, errors = _precise_model(written)
         assert errors == []
         value = model.measures["Matching Amount"].filters[0].values[0]  # type: ignore[union-attr]
-        assert value.decimal_value == Decimal("0.1")
+        assert value.decimal_value == Decimal(exact)
 
-    def test_a_value_past_fifteen_digits_is_refused(self) -> None:
-        """``12345678901234567.89`` is already 12345678901234568 when YAML hands
-        it over, so no exact number is left to compare against."""
-        _, errors = _precise_model("12345678901234567.89")
+    def test_a_fraction_without_its_digits_is_refused(self) -> None:
+        """A JSON body hands over 1.0, and nothing says 1.0000000000000001 was
+        meant, so the value is refused rather than compared as 1.0."""
+        _, errors = _precise_model("1.0000000000000001", as_json=True)
         assert "INEXACT_DECIMAL_VALUE" in errors
+
+    def test_a_whole_double_without_its_digits_is_refused_too(self) -> None:
+        """1.0 may itself be 1.0000000000000001 rounded; a JSON integer is not."""
+        _, errors = _precise_model("1.0", as_json=True)
+        assert "INEXACT_DECIMAL_VALUE" in errors
+        model, errors = _precise_model("9007199254740993", as_json=True)
+        assert errors == []
+        value = model.measures["Matching Amount"].filters[0].values[0]  # type: ignore[union-attr]
+        assert value.decimal_value == Decimal("9007199254740993")
 
     def test_the_compiler_refuses_it_too(self) -> None:
         """A model built without the validator still does not compare NULL."""
-        model, _ = _precise_model("12345678901234567.89")
+        model, _ = _precise_model("0.5", as_json=True)
         query = QueryObject(select={"measures": ["Matching Amount"]})
-        with pytest.raises(ResolutionError, match="15 significant digits"):
+        with pytest.raises(ResolutionError, match="without the digits it was written with"):
             CompilationPipeline().compile(query, model, "duckdb")
 
     def test_a_float_filter_value_is_unchanged(self) -> None:
