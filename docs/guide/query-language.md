@@ -892,6 +892,8 @@ Invalid queries return error responses:
 | `UNKNOWN_DIMENSION` | 400 | Dimension name not in model |
 | `INVALID_TIME_GRAIN` | 422 | A dimension's `:grain` suffix is not one of `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` |
 | `UNKNOWN_MEASURE` | 400 | Measure name not in model |
+| `DUPLICATE_DIMENSION` | 422 | A dimension is selected twice at the same grain (`Order Date` beside `Order Date:month` when it declares `timeGrain: month`); one column would be named twice. The same dimension at two grains is two columns and allowed |
+| `DUPLICATE_MEASURE` | 422 | A measure or metric is selected twice |
 | `UNKNOWN_FILTER_FIELD` | 400 | Filter field is not a dimension (WHERE) or measure (HAVING) |
 | `UNREACHABLE_FILTER_OBJECT` | 400 | WHERE filter names a data object the query cannot reach |
 | `FILTER_ADMITS_ROWS_WITHOUT` | 400 | WHERE on the many side of the measures' objects could hold for a row with no matching rows there, and the query's shape cannot add those rows (several one-side objects under ROLLUP / CUBE, a nested object, `allowFanOut`); use `exists` / `nonexists` |

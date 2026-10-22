@@ -70,6 +70,11 @@ measures:
     expression: 'COALESCE({[Customers].[Credit]}, 0) + 1'
     aggregation: sum
     resultType: float
+  All Credit:
+    columns: [{dataObject: Customers, column: Credit}]
+    aggregation: sum
+    resultType: float
+    total: true
 metrics:
   Credit And Orders:
     expression: '{[Total Credit]} + {[Orders Count]}'
@@ -150,6 +155,34 @@ def test_a_where_no_such_customer_passes_leaves_them_out(
     )
     assert "NOT EXISTS" not in sql
     assert _rows(con, sql) == [("tools", 10.0)]
+
+
+def test_a_total_alone_keeps_the_null_group(con: duckdb.DuckDBPyConnection) -> None:
+    """A total reads no group, so Carol's NULL category came from the plain
+    credit measure beside it: alone, the total listed tools and toys only."""
+    sql = _sql({"select": {"dimensions": ["Category"], "measures": ["All Credit"]}})
+    assert _rows(con, sql) == [("tools", 70.0), ("toys", 70.0), (None, 70.0)]
+
+
+def test_the_groups_do_not_depend_on_the_measures(con: duckdb.DuckDBPyConnection) -> None:
+    def groups(measures: list[str]) -> list[object]:
+        sql = _sql({"select": {"dimensions": ["Category"], "measures": measures}})
+        return [row[0] for row in _rows(con, sql)]
+
+    assert (
+        groups(["All Credit"]) == groups(["Total Credit"]) == groups(["All Credit", "Total Credit"])
+    )
+
+
+def test_a_total_adds_no_group_for_a_customer_the_where_rejects(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Carol is gold, so ``Tier = silver`` leaves her out, total or not."""
+    query = {
+        "select": {"dimensions": ["Category"], "measures": ["All Credit"]},
+        "where": [{"field": "Tier", "op": "=", "value": "silver"}],
+    }
+    assert _rows(con, _sql(query)) == [("toys", 20.0)]
 
 
 def test_one_cte_has_every_group() -> None:

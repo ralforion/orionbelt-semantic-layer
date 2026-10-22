@@ -1288,7 +1288,19 @@ class QueryResolver:
                     self._append_resolved_dimension(ctx, dim_entry)
 
             # 2. Resolve measures and track their source objects
+            selected_measures: set[str] = set()
             for measure_name in query.select.measures:
+                # A measure or metric named twice is one column named twice.
+                if measure_name in selected_measures:
+                    ctx.errors.append(
+                        SemanticError(
+                            code="DUPLICATE_MEASURE",
+                            message=f"'{measure_name}' is selected twice; list each measure once",
+                            path="select.measures",
+                        )
+                    )
+                    continue
+                selected_measures.add(measure_name)
                 resolved_meas = self._resolve_measure(ctx, measure_name)
                 if resolved_meas:
                     ctx.result.measures.append(resolved_meas)
@@ -1650,6 +1662,29 @@ class QueryResolver:
         if coalesce_alias is not None:
             resolved_dim.coalesce_alias = coalesce_alias
         else:
+            # The same dimension at the same grain twice is one column named
+            # twice: a client reading the result by name sees only one of them.
+            earlier = next(
+                (
+                    d
+                    for d in ctx.result.dimensions
+                    if d.coalesce_alias is None
+                    and (d.dimension, d.grain) == (resolved_dim.dimension, resolved_dim.grain)
+                ),
+                None,
+            )
+            if earlier is not None:
+                ctx.errors.append(
+                    SemanticError(
+                        code="DUPLICATE_DIMENSION",
+                        message=(
+                            f"'{dim_str}' selects the same column as "
+                            f"'{dimension_reference(earlier)}'; list each dimension once"
+                        ),
+                        path="select.dimensions",
+                    )
+                )
+                return None
             # The same dimension at a second grain: a column of its own, or
             # every wrapper joining and grouping by name reads the first twice.
             resolved_dim.name = column_name(

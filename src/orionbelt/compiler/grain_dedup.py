@@ -149,6 +149,9 @@ _AT_TOTAL_CTE = "__ob_at_total"
 # The query's groups when parents without children add some ``main`` lacks.
 _GROUPS_ALL_CTE = "__ob_groups_all"
 _GROUPS_CTE = "__ob_groups"
+# The groups of a parent's rows without children, when no CTE of that parent
+# is at the query's grain to carry them.
+_CHILDLESS_GROUPS_CTE = "__ob_childless_groups"
 #: Marks a row of a deduplicated aggregate joined to its groups.
 _MATCHED = "__ob_matched"
 
@@ -1084,7 +1087,36 @@ def wrap_with_grain_dedup(
         joined_ctes = [_MAIN_CTE, *(name for name in ordered_ctes if name != driver_cte)]
     elif split_groups:
         grain_of_cte[_MAIN_CTE] = tuple(dim_names)
-        all_ctes.extend(_group_list(dim_names, [_MAIN_CTE, *ordered_ctes], grain_of_cte))
+        group_sources = [_MAIN_CTE, *ordered_ctes]
+        # A parent whose measures are all totals (or at a coarser grain) has
+        # no CTE at the query's grain, so its rows without children reached no
+        # group: the customer without orders was the NULL status beside a
+        # plain credit measure and missing beside only a total one. Its groups
+        # are listed from those rows directly; the totals stay one row each.
+        if resolved.grouping is None:
+            for idx, (parent, childless) in enumerate(childless_of.items()):
+                if any(k[0] == parent and k[1] == tuple(dim_names) and not k[2] for k in by_group):
+                    continue
+                cte_name = f"{_CHILDLESS_GROUPS_CTE}_{idx}"
+                all_ctes.append(
+                    CTE(
+                        name=cte_name,
+                        query=_rows_without_children(
+                            childless,
+                            ast,
+                            parent,
+                            [],
+                            [],
+                            list({d.name: d for d in resolved.dimensions}.values()),
+                            resolved,
+                            model,
+                            dialect,
+                        ),
+                    )
+                )
+                grain_of_cte[cte_name] = tuple(dim_names)
+                group_sources.append(cte_name)
+        all_ctes.extend(_group_list(dim_names, group_sources, grain_of_cte))
         outer_from = _GROUPS_CTE
         joined_ctes = [_MAIN_CTE, *ordered_ctes]
 

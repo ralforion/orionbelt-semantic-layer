@@ -723,6 +723,28 @@ class TestSessionModelFlow:
         codes = [e["code"] for e in response.json()["detail"]["errors"]]
         assert codes == ["INVALID_TIME_GRAIN"]
 
+    async def test_a_selection_named_twice_is_422(self, client: AsyncClient) -> None:
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        load = await client.post(
+            f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML}
+        )
+        response = await client.post(
+            f"/v1/sessions/{sid}/query/sql",
+            json={
+                "model_id": load.json()["model_id"],
+                "query": {
+                    "select": {
+                        "dimensions": ["Customer Country", "Customer Country"],
+                        "measures": ["Total Revenue", "Total Revenue"],
+                    },
+                },
+                "dialect": "postgres",
+            },
+        )
+        assert response.status_code == 422
+        codes = [e["code"] for e in response.json()["detail"]["errors"]]
+        assert codes == ["DUPLICATE_DIMENSION", "DUPLICATE_MEASURE"]
+
     async def test_load_invalid_model(self, client: AsyncClient) -> None:
         sid = (await client.post("/v1/sessions")).json()["session_id"]
         response = await client.post(
