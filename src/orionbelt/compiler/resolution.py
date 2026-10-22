@@ -1596,7 +1596,23 @@ class QueryResolver:
         coalesce_alias: str | None = None,
     ) -> ResolvedDimension | None:
         """Resolve a single dimension string and append it to the result."""
-        dim_ref = DimensionRef.parse(dim_str)
+        try:
+            dim_ref = DimensionRef.parse(dim_str)
+        except ValueError:
+            # Pydantic's "'day_of_week' is not a valid TimeGrain" escaped as an
+            # untyped error, naming neither the entry nor the grains there are.
+            grain = dim_str.rsplit(":", 1)[1]
+            ctx.errors.append(
+                SemanticError(
+                    code="INVALID_TIME_GRAIN",
+                    message=(
+                        f"Unknown time grain '{grain}' in '{dim_str}'; use one of "
+                        f"{', '.join(g.value for g in TimeGrain)}"
+                    ),
+                    path="select.dimensions",
+                )
+            )
+            return None
         resolved_dim = self._resolve_dimension(ctx, dim_ref)
         if resolved_dim is None:
             return None
