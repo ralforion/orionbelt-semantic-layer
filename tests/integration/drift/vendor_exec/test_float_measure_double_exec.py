@@ -44,6 +44,11 @@ measures:
     aggregation: sum
     distinct: true
     resultType: float
+  Distinct Expression Units:
+    expression: "{[Charges].[Qty]}"
+    aggregation: sum
+    distinct: true
+    resultType: float
   Distinct Mean Units:
     columns: [{dataObject: Charges, column: Qty}]
     aggregation: avg
@@ -59,6 +64,12 @@ CASES = {
     # Wrapped to -1.4467440737095516e18 on ClickHouse.
     "distinct_sum_past_64_bits": (
         "Distinct Total Units",
+        [9 * 10**18, 8 * 10**18, 8 * 10**18],
+        1.7e19,
+        1e4,
+    ),
+    "distinct_expression_sum_past_64_bits": (
+        "Distinct Expression Units",
         [9 * 10**18, 8 * 10**18, 8 * 10**18],
         1.7e19,
         1e4,

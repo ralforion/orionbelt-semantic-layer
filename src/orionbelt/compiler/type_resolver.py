@@ -17,12 +17,13 @@ Pass-through (no CAST): MIN/MAX, LISTAGG, non-numeric aggregates.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import replace
 
 from orionbelt.ast.nodes import BinaryOp, Expr, FunctionCall
 from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION, Dialect
-from orionbelt.models.expressions import find_qualified_refs
+from orionbelt.models.expressions import QUALIFIED_COLUMN_REF, find_qualified_refs
 from orionbelt.models.semantic import (
     CumulativeAggType,
     DataObjectColumn,
@@ -63,6 +64,9 @@ _PASSTHROUGH_AGGREGATIONS = frozenset(
         "LISTAGG",
     }
 )
+
+# What an expression may hold besides column references and still be an integer.
+_INTEGER_ARITHMETIC = re.compile(r"[\s\d+\-*()]*")
 
 # The result types a measure is advertised at its decimal cast's width for.
 _FRACTIONAL_TYPES = frozenset({DataType.FLOAT, DataType.DECIMAL})
@@ -861,12 +865,29 @@ def apply_float_input(
 
 
 def _reads_integer_columns(measure: Measure, model: SemanticModel | None) -> bool:
-    """Whether *measure* aggregates one or more ``int`` columns and nothing else."""
-    if model is None or measure.expression or not measure.columns:
+    """Whether every row *measure* aggregates is provably an integer.
+
+    Its ``columns`` are all ``int``, or its ``expression`` reads only ``int``
+    columns and combines them with nothing but integer literals, ``+``, ``-``,
+    ``*`` and parentheses: ``{[T].[Qty]}`` or ``{[T].[Qty]} * 2 - 1``. A
+    division, a function, a string or a fractional literal is not proven, and
+    neither is an undeclared column.
+    """
+    if model is None:
         return False
-    for ref in measure.columns:
-        obj = model.data_objects.get(ref.view or "")
-        column = obj.columns.get(ref.column) if obj and ref.column else None
+    if measure.expression:
+        refs = find_qualified_refs(measure.expression)
+        residue = QUALIFIED_COLUMN_REF.sub("", measure.expression)
+        if not refs or not _INTEGER_ARITHMETIC.fullmatch(residue):
+            return False
+        pairs = refs
+    elif measure.columns:
+        pairs = [(ref.view or "", ref.column or "") for ref in measure.columns]
+    else:
+        return False
+    for view, name in pairs:
+        obj = model.data_objects.get(view)
+        column = obj.columns.get(name) if obj and name else None
         if column is None or column.abstract_type is not DataType.INT:
             return False
     return True

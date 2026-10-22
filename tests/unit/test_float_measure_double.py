@@ -101,6 +101,31 @@ measures:
                        distinct: true, resultType: float}}
   Distinct Weight Sum: {{columns: [{{dataObject: Orders, column: Weight}}], aggregation: sum,
                          distinct: true, resultType: float}}
+  Distinct Bare Sum:
+    expression: "{{[Orders].[Quantity]}}"
+    aggregation: sum
+    distinct: true
+    resultType: float
+  Distinct Scaled Sum:
+    expression: "({{[Orders].[Quantity]}} * 2 - 1)"
+    aggregation: sum
+    distinct: true
+    resultType: float
+  Distinct Halved Sum:
+    expression: "{{[Orders].[Quantity]}} / 2"
+    aggregation: sum
+    distinct: true
+    resultType: float
+  Distinct Mixed Sum:
+    expression: "{{[Orders].[Quantity]}} + {{[Orders].[Weight]}}"
+    aggregation: sum
+    distinct: true
+    resultType: float
+  Distinct Fraction Sum:
+    expression: "{{[Orders].[Quantity]}} * 1.5"
+    aggregation: sum
+    distinct: true
+    resultType: float
   Returned: {{columns: [{{dataObject: Returns, column: Returned Weight}}], aggregation: sum,
               resultType: float}}
 """
@@ -218,6 +243,25 @@ class TestAWrappingAccumulatorIsAvoided:
         128-bit widening keeps every integer distinct and does not wrap."""
         sql = _sql([measure], dialect)
         assert f"SUM({widened})" in sql, sql
+
+    @pytest.mark.parametrize("dialect", ["clickhouse", "dremio"])
+    @pytest.mark.parametrize("measure", ["Distinct Bare Sum", "Distinct Scaled Sum"])
+    def test_so_is_an_integer_expression(self, dialect: str, measure: str) -> None:
+        """Integer columns under ``+``, ``-``, ``*`` and integer literals are
+        integers, whether named in ``columns`` or in an ``expression``."""
+        widened = "toDecimal128(" if dialect == "clickhouse" else "AS DECIMAL(38, 0))"
+        sql = _sql([measure], dialect)
+        assert "SUM(DISTINCT " in sql and widened in sql, sql
+
+    @pytest.mark.parametrize("dialect", ["clickhouse", "dremio"])
+    @pytest.mark.parametrize(
+        "measure", ["Distinct Halved Sum", "Distinct Mixed Sum", "Distinct Fraction Sum"]
+    )
+    def test_not_an_expression_that_may_be_fractional(self, dialect: str, measure: str) -> None:
+        """A cast to an integer width would truncate it, and two values it
+        would truncate alike would be deduplicated as one."""
+        sql = _sql([measure], dialect)
+        assert "toDecimal128" not in sql and "DECIMAL(38, 0)" not in sql, sql
 
     @pytest.mark.parametrize("dialect", ["clickhouse", "dremio"])
     def test_a_distinct_float_is_not_widened(self, dialect: str) -> None:
