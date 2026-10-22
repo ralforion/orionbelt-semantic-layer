@@ -91,6 +91,14 @@ measures:
   Exact Mean: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: avg,
                 resultType: decimal}}
   Inferred Revenue: {{columns: [{{dataObject: Orders, column: Price}}], aggregation: sum}}
+  Inferred Big Revenue: {{columns: [{{dataObject: Orders, column: Big Price}}],
+                          aggregation: sum}}
+  Float Unit Sum: {{columns: [{{dataObject: Orders, column: Quantity}}], aggregation: sum,
+                    resultType: float}}
+  Distinct Mean: {{columns: [{{dataObject: Orders, column: Quantity}}], aggregation: avg,
+                   distinct: true, resultType: float}}
+  Distinct Unit Sum: {{columns: [{{dataObject: Orders, column: Quantity}}], aggregation: sum,
+                       distinct: true, resultType: float}}
   Returned: {{columns: [{{dataObject: Returns, column: Returned Weight}}], aggregation: sum,
               resultType: float}}
 """
@@ -172,6 +180,65 @@ class TestSnowflakeAveragesADouble:
         assert "AVG(CAST(" not in _sql(["Exact Mean"], "snowflake")
 
 
+class TestAWrappingAccumulatorIsAvoided:
+    """ClickHouse and Dremio sum and average 64-bit integers in 64 bits: two
+    rows of 9000000000000000000 sum to -446744073709551616, and the double
+    cast around the aggregate carried that along."""
+
+    @pytest.mark.parametrize(
+        ("dialect", "double"), [("clickhouse", "Nullable(Float64)"), ("dremio", "DOUBLE")]
+    )
+    @pytest.mark.parametrize(
+        ("measure", "agg"), [("Float Unit Sum", "SUM"), ("Float Units", "AVG")]
+    )
+    def test_the_argument_is_a_double(
+        self, dialect: str, double: str, measure: str, agg: str
+    ) -> None:
+        sql = _sql([measure], dialect)
+        assert f'{agg}(CAST("Orders"."quantity" AS {double}))' in sql, sql
+
+    @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "bigquery", "databricks"])
+    def test_not_where_the_accumulator_holds_or_raises(self, dialect: str) -> None:
+        assert "SUM(CAST(" not in _sql(["Float Unit Sum"], dialect)
+
+    @pytest.mark.parametrize("dialect", ["clickhouse", "dremio"])
+    def test_not_inside_a_distinct(self, dialect: str) -> None:
+        """Two integers past 2**53 become one double and would be deduplicated
+        as one value."""
+        sql = _sql(["Distinct Unit Sum"], dialect)
+        assert "DISTINCT CAST(" not in sql, sql
+
+    def test_a_sum_past_64_bits_adds_up(self) -> None:
+        """Executed on DuckDB, whose accumulator holds: the rewrite changes
+        nothing there, the vendor test covers the engines it is for."""
+        sql = _sql(["Float Unit Sum"])
+        con = duckdb.connect()
+        con.execute("CREATE TABLE customers (id VARCHAR)")
+        con.execute("INSERT INTO customers VALUES ('c')")
+        con.execute("CREATE TABLE orders (id VARCHAR, customer_id VARCHAR, quantity BIGINT)")
+        con.execute("INSERT INTO orders VALUES ('a', 'c', 9e18), ('b', 'c', 9e18)")
+        assert con.execute(sql).fetchall() == [("c", 1.8e19)]
+
+
+class TestADistinctAverageDeduplicatesFirst:
+    """``AVG(DISTINCT CAST(x AS FLOAT))`` merges integers that round to the same
+    double: 0, 2**53 and 2**53 + 1 averaged two values."""
+
+    def test_snowflake_divides_an_exact_distinct_sum(self) -> None:
+        sql = _sql(["Distinct Mean"], "snowflake")
+        expected = (
+            'CAST(SUM(DISTINCT "Orders"."quantity") AS FLOAT)'
+            ' / NULLIF(COUNT(DISTINCT "Orders"."quantity"), 0)'
+        )
+        assert expected in sql, sql
+        assert "DISTINCT CAST(" not in sql, sql
+
+    @pytest.mark.parametrize("dialect", ["duckdb", "clickhouse", "dremio"])
+    def test_elsewhere_the_distinct_average_is_native(self, dialect: str) -> None:
+        sql = _sql(["Distinct Mean"], dialect)
+        assert "AVG(DISTINCT " in sql and "DISTINCT CAST(" not in sql, sql
+
+
 class TestADeclarationKeepsItExact:
     def test_the_model_default(self) -> None:
         sql = _sql(["Mean Weight"], settings='settings: {defaultNumericDataType: "decimal(18, 4)"}')
@@ -216,6 +283,21 @@ class TestAFixedPointColumnKeepsItExact:
         assert types["Big Revenue"] == pa.decimal128(36, 2)
         assert _measure_sql_type(model.measures["Revenue"], model) == "DECIMAL(18, 2)"
         assert build_type_map(model)["Revenue"] == "decimal(18, 2)"
+
+    def test_an_inferred_decimal_is_advertised_at_its_cast_width(self) -> None:
+        """It was advertised as the generic ``decimal(38, 10)``, which cannot
+        hold the 34 integer digits of the ``decimal(36, 2)`` it is cast to."""
+        model = _model()
+        assert "AS DECIMAL(36, 2))" in _sql(["Inferred Big Revenue"])
+        assert declared_arrow_types(model)["Inferred Big Revenue"] == pa.decimal128(36, 2)
+        measure = model.measures["Inferred Big Revenue"]
+        assert _measure_sql_type(measure, model) == "DECIMAL(36, 2)"
+        assert build_type_map(model)["Inferred Big Revenue"] == "decimal(36, 2)"
+
+    def test_a_declared_decimal_too(self) -> None:
+        model = _model()
+        assert declared_arrow_types(model)["Exact Amount"] == pa.decimal128(18, 2)
+        assert _measure_sql_type(model.measures["Exact Amount"], model) == "DECIMAL(18, 2)"
 
     def test_an_omitted_result_type_infers_decimal(self) -> None:
         model = _model()

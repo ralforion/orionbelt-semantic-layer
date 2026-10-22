@@ -155,8 +155,8 @@ class TestWhatIsNotRewritten:
         fractional sum accumulates in a wider type already, and rewriting it
         would change the scale the model asked for.
         """
-        assert "toDecimal128" not in _sql("Amt Sum", dialect)
-        assert "SUM(CAST(" not in _sql("Amt Sum", dialect)
+        sql = _sql("Amt Sum", dialect)
+        assert "DECIMAL" not in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", WRAPS)
     def test_a_count_is_untouched(self, dialect: str) -> None:

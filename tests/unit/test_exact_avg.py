@@ -142,7 +142,7 @@ class TestWhatIsAndIsNotEligible:
         """
         sql = _sql("Amount Avg", dialect)
         assert "divideDecimal" not in sql and "NULLIF(COUNT(" not in sql, sql
-        assert "AVG(CAST(" not in sql, sql
+        assert "DECIMAL" not in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", sorted(REWRITTEN))
     def test_a_distinct_average_is_untouched(self, dialect: str) -> None:

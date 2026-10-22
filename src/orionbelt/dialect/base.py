@@ -522,7 +522,7 @@ class Dialect(ABC):
     #: ``NUMBER(38, 6)`` 1.333333, and over a ``NUMBER(18, 2)`` column it has 8
     #: places. A cast of the result cannot recover the digits, so a measure
     #: asking for a float averages its argument as a double instead
-    #: (:func:`~orionbelt.compiler.type_resolver.apply_float_avg_input`).
+    #: (:func:`~orionbelt.compiler.type_resolver.apply_float_input`).
     avg_rounds_exact_input: bool = False
 
     def integer_avg_is_exact(self) -> bool:

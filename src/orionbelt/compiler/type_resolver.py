@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 
-from orionbelt.ast.nodes import Expr, FunctionCall
+from orionbelt.ast.nodes import BinaryOp, Expr, FunctionCall
 from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION, Dialect
 from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import (
@@ -63,6 +63,9 @@ _PASSTHROUGH_AGGREGATIONS = frozenset(
         "LISTAGG",
     }
 )
+
+# The result types a measure is advertised at its decimal cast's width for.
+_FRACTIONAL_TYPES = frozenset({DataType.FLOAT, DataType.DECIMAL})
 
 # Digits in the largest 64-bit integer (9223372036854775807), and the widest
 # precision every supported dialect accepts.
@@ -238,10 +241,12 @@ def governed_measure_data_type(
     compiler casts the result to that default. A count, an integer sum or a
     ``min`` of dates is not cast to it, so it is advertised by its
     ``resultType`` instead: naming the default there described a ``BIGINT`` or
-    a ``DATE`` as the decimal it never became. A ``float`` measure the compiler
-    casts to a decimal anyway - one over fixed-point columns, see
-    :func:`_reads_fixed_point_floats` - is advertised as that decimal, at the
-    width the cast has.
+    a ``DATE`` as the decimal it never became. A ``decimal`` measure, and a
+    ``float`` one the compiler casts to a decimal anyway - one over fixed-point
+    columns, see :func:`_reads_fixed_point_floats` - is advertised as the
+    decimal it is cast to, at the width the cast has: the generic
+    ``decimal(38, 10)`` of its ``resultType`` cannot hold the 34 integer digits
+    of a sum widened to ``decimal(36, 2)``.
     """
     if measure.data_type:
         return measure.data_type
@@ -249,7 +254,7 @@ def governed_measure_data_type(
     default = settings.default_numeric_data_type if settings else None
     if default is not None and resolved == parse_data_type(default):
         return default
-    if measure.result_type is DataType.FLOAT and isinstance(resolved, DecimalType):
+    if measure.result_type in _FRACTIONAL_TYPES and isinstance(resolved, DecimalType):
         cast = resolve_measure_cast_type(measure, settings, None, model)
         if isinstance(cast, DecimalType):
             return f"decimal({cast.precision}, {cast.scale})"
@@ -744,7 +749,7 @@ def cast_measure_to_resolved_type(
     if exact is not None:
         rewritten, target = exact
         return dialect.cast_to_obml_type(rewritten, target)
-    expr = apply_float_avg_input(expr, measure, settings, dialect, model)
+    expr = apply_float_input(expr, measure, settings, dialect, model)
     expr = apply_exact_integer_sum(expr, measure, dialect)
     resolved = resolve_measure_cast_type(measure, settings, dialect, model)
     if resolved is None:
@@ -790,35 +795,60 @@ def apply_exact_integer_avg(
     exact = rewrite_exact_integer_avg(measure, settings, dialect, expr, model)
     if exact is not None:
         return exact[0]
-    return apply_float_avg_input(expr, measure, settings, dialect, model)
+    return apply_float_input(expr, measure, settings, dialect, model)
 
 
-def apply_float_avg_input(
+def apply_float_input(
     expr: Expr,
     measure: Measure,
     settings: ModelSettings | None,
     dialect: Dialect,
     model: SemanticModel | None,
 ) -> Expr:
-    """``AVG(CAST(x AS DOUBLE))`` for a ``double`` average where ``AVG`` rounds.
+    """Aggregate a ``double`` measure's argument as a double where it matters.
 
-    On an engine whose ``AVG`` of an exact input keeps a fixed number of places
-    (:attr:`~orionbelt.dialect.base.Dialect.avg_rounds_exact_input`), the
-    ``double`` a ``float`` measure is cast to would carry an already rounded
-    value: 1.333333 for the average of 1, 1 and 2. Averaging the argument as a
-    double gives 1.3333333333333333, which is what the measure asked for.
+    The ``double`` a ``float`` measure is cast to comes too late in two cases,
+    both measured:
+
+    * an engine whose integer accumulator wraps
+      (:meth:`~orionbelt.dialect.base.Dialect.integer_sum_is_widened`):
+      ClickHouse and Dremio sum two rows of 9000000000000000000 to
+      -446744073709551616 and average them to -2.2e17, and the cast carries
+      that along. ``SUM(CAST(x AS DOUBLE))`` is 1.8e19;
+    * an engine whose ``AVG`` of an exact input keeps a fixed number of places
+      (:attr:`~orionbelt.dialect.base.Dialect.avg_rounds_exact_input`):
+      Snowflake averages 1, 1 and 2 to 1.333333. ``AVG(CAST(x AS FLOAT))`` is
+      1.3333333333333333.
+
+    A DISTINCT aggregate cannot take the cast inside: two integers past 2**53
+    become the same double and are deduplicated as one, so 0, 2**53 and
+    2**53 + 1 averaged two values. On Snowflake its average is assembled from
+    an exact ``SUM(DISTINCT x)`` instead, which an empty group divides to NULL;
+    elsewhere a DISTINCT aggregate is left as it is.
     """
-    if not dialect.avg_rounds_exact_input or measure.aggregation.upper() != "AVG":
+    agg = measure.aggregation.upper()
+    if agg not in ("SUM", "AVG"):
         return expr
     if resolve_measure_data_type(measure, settings, model) != FLOAT_DEFAULT:
         return expr
+    wraps = dialect.integer_sum_is_widened()
+    rounds = agg == "AVG" and dialect.avg_rounds_exact_input
+    if not (wraps or rounds):
+        return expr
     aggregate, rebuild = unwrap_default(expr)
-    if not isinstance(aggregate, FunctionCall) or aggregate.name != "AVG":
+    if not isinstance(aggregate, FunctionCall) or aggregate.name != agg:
         return expr
     if len(aggregate.args) != 1:
         return expr
-    arg = dialect.cast_to_obml_type(aggregate.args[0], FLOAT_DEFAULT)
-    return rebuild(replace(aggregate, args=[arg]))
+    if not aggregate.distinct:
+        arg = dialect.cast_to_obml_type(aggregate.args[0], FLOAT_DEFAULT)
+        return rebuild(replace(aggregate, args=[arg]))
+    if not rounds:
+        return expr
+    total = FunctionCall(name="SUM", args=aggregate.args, distinct=True)
+    count = FunctionCall(name="COUNT", args=aggregate.args, distinct=True)
+    mean = BinaryOp(left=dialect.cast_to_obml_type(total, FLOAT_DEFAULT), op="/", right=count)
+    return rebuild(mean)
 
 
 def resolve_measure_cast_type(
