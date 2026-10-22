@@ -12,6 +12,7 @@ import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import ResolutionError
+from orionbelt.compiler.sql_translator import translate_sql_to_query
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 
@@ -58,3 +59,23 @@ def test_a_measure_or_metric_twice(sales_model: SemanticModel, name: str) -> Non
 def test_a_dimension_at_two_grains_is_two_columns(sales_model: SemanticModel) -> None:
     sql = _compile(sales_model, ["Order Date", "Order Date:year"], ["Revenue"])
     assert 'AS "Order Date"' in sql and 'AS "Order Date:year"' in sql
+
+
+@pytest.mark.parametrize(
+    ("sql", "code"),
+    [
+        (
+            'SELECT "Customer Country", "Customer Country", "Revenue" FROM sales',
+            "DUPLICATE_DIMENSION",
+        ),
+        ('SELECT "Customer Country", "Revenue", "Revenue" FROM sales', "DUPLICATE_MEASURE"),
+    ],
+    ids=["dimension", "measure"],
+)
+def test_obsql_names_a_column_twice(sales_model: SemanticModel, sql: str, code: str) -> None:
+    """Over pgwire or Flight a client binds the columns by position, so a
+    duplicate dropped silently would shift every column after it."""
+    query = translate_sql_to_query(sql, sales_model)
+    with pytest.raises(ResolutionError) as exc:
+        CompilationPipeline().compile(query, sales_model, "duckdb")
+    assert [e.code for e in exc.value.errors] == [code]
