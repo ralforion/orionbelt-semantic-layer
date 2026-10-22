@@ -56,6 +56,7 @@ dataObjects:
 dimensions:
   Tier: {{dataObject: Customers, column: Tier, resultType: string}}
   Customer ID: {{dataObject: Customers, column: Customer ID, resultType: string}}
+  Order ID: {{dataObject: Orders, column: Order ID, resultType: string}}
 measures:
   Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
@@ -79,6 +80,11 @@ measures:
       - column: {{dataObject: Orders, column: Amount}}
         operator: gt
         values: [{{dataType: float, valueFloat: 90}}]
+  All Credit:
+    columns: [{{dataObject: Customers, column: Credit}}]
+    aggregation: sum
+    resultType: float
+    total: true
 metrics:
   Credit Score:
     expression: '{{[Total Credit]}} + 1'
@@ -345,3 +351,49 @@ def test_databricks_metrics_over_order_values(vendor_databricks: VendorTarget) -
 
 def test_dremio_metrics_over_order_values(vendor_dremio: VendorTarget) -> None:
     _assert_metrics_over_order_values(vendor_dremio)
+
+
+def _assert_total_alone(target: VendorTarget) -> None:
+    """Only a total selected: c3, without orders, is still the NULL order group.
+    The total reads no group, and the groups were read from the CTEs at the
+    query's grain only, so c3 was missing unless a plain credit measure was
+    selected beside it."""
+    rows = _run(
+        target,
+        _prepare(target),
+        QueryObject(**{"select": {"dimensions": ["Order ID"], "measures": ["All Credit"]}}),
+    )
+    by_order = {row["order id"]: _number(row["all credit"]) for row in rows}
+    assert by_order == {key: Decimal(70) for key in ("o1", "o2", "o3", "o4", None)}
+
+
+def test_duckdb_total_alone_keeps_the_null_group(vendor_duckdb: VendorTarget) -> None:
+    _assert_total_alone(vendor_duckdb)
+
+
+def test_postgres_total_alone_keeps_the_null_group(vendor_postgres: VendorTarget) -> None:
+    _assert_total_alone(vendor_postgres)
+
+
+def test_mysql_total_alone_keeps_the_null_group(vendor_mysql: VendorTarget) -> None:
+    _assert_total_alone(vendor_mysql)
+
+
+def test_clickhouse_total_alone_keeps_the_null_group(vendor_clickhouse: VendorTarget) -> None:
+    _assert_total_alone(vendor_clickhouse)
+
+
+def test_bigquery_total_alone_keeps_the_null_group(vendor_bigquery: VendorTarget) -> None:
+    _assert_total_alone(vendor_bigquery)
+
+
+def test_snowflake_total_alone_keeps_the_null_group(vendor_snowflake: VendorTarget) -> None:
+    _assert_total_alone(vendor_snowflake)
+
+
+def test_databricks_total_alone_keeps_the_null_group(vendor_databricks: VendorTarget) -> None:
+    _assert_total_alone(vendor_databricks)
+
+
+def test_dremio_total_alone_keeps_the_null_group(vendor_dremio: VendorTarget) -> None:
+    _assert_total_alone(vendor_dremio)

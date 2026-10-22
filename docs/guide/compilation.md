@@ -371,7 +371,10 @@ A `WHERE` the added rows cannot pass (`Region = 'north'`, which their `NULL`
 region fails) adds nothing, and the query plans as before. The rows are added
 for each object whose measures are read through the base, a set of their own
 (customers without orders and products never ordered, beside the order rows);
-with several, the query's groups are listed from every CTE. A
+with several, the query's groups are listed from every CTE. An object whose
+measures are all totals (`total: true`) or at a coarser `grain` has no CTE at the query's grain to
+carry their group, so those rows are listed among the groups directly: the
+`NULL` group is there whichever of the object's measures are selected. A
 period-over-period query adds them to its own rows (see
 [Period-over-Period](period-over-period.md)). A nested object, a measure with
 `allowFanOut: true`, or several such objects under `ROLLUP` / `CUBE` keep the
