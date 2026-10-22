@@ -39,6 +39,11 @@ measures:
     columns: [{dataObject: Charges, column: Qty}]
     aggregation: sum
     resultType: float
+  Distinct Total Units:
+    columns: [{dataObject: Charges, column: Qty}]
+    aggregation: sum
+    distinct: true
+    resultType: float
   Distinct Mean Units:
     columns: [{dataObject: Charges, column: Qty}]
     aggregation: avg
@@ -51,6 +56,19 @@ CASES = {
     "mean": ("Mean Units", [1, 1, 2], 4 / 3, 1e-12),
     # Wrapped to -446744073709551616 on ClickHouse and Dremio.
     "sum_past_64_bits": ("Total Units", [9 * 10**18, 9 * 10**18], 1.8e19, 1e4),
+    # Wrapped to -1.4467440737095516e18 on ClickHouse.
+    "distinct_sum_past_64_bits": (
+        "Distinct Total Units",
+        [9 * 10**18, 8 * 10**18, 8 * 10**18],
+        1.7e19,
+        1e4,
+    ),
+    "distinct_mean_past_64_bits": (
+        "Distinct Mean Units",
+        [9 * 10**18, 8 * 10**18, 8 * 10**18],
+        8.5e18,
+        1e4,
+    ),
     # Averaged two values, 4503599627370496, once 2**53 and 2**53 + 1 became
     # one double before DISTINCT saw them. Doubles are 1 apart at this size.
     "distinct_mean": (
@@ -79,7 +97,7 @@ def _assert_case(target: VendorTarget, case: str) -> None:
     dia = DialectRegistry.get(target.dialect)
     source = target.rows_of(dia.quote_identifier("Charges"), dia.quote_identifier("qty"), rows)
     statement = f"SELECT {match.group(1).strip()} FROM {source}"
-    if case == "sum_past_64_bits" and target.name in RAISES_ON_OVERFLOW:
+    if case.endswith("sum_past_64_bits") and target.name in RAISES_ON_OVERFLOW:
         with pytest.raises(Exception, match="(?i)overflow"):
             target.execute(statement)
         return

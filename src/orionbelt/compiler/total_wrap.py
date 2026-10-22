@@ -24,7 +24,8 @@ Re-aggregation mapping (outer window function per aggregation type):
 from __future__ import annotations
 
 from collections.abc import Container
-from dataclasses import replace
+from dataclasses import fields, is_dataclass, replace
+from typing import cast
 
 from orionbelt.ast.nodes import (
     CTE,
@@ -395,20 +396,32 @@ def _is_window_wrapped_by_name(name: str, resolved: ResolvedQuery) -> bool:
     return False
 
 
-def _aggregate_of(expr: Expr) -> Expr:
-    """The aggregate inside a projected measure column.
+def _averaged_argument(expr: Expr, helper: str) -> list[Expr] | None:
+    """The argument the *helper* (``SUM`` or ``COUNT``) of an average reads.
 
-    Peels what the layers above it wrap it in and nothing else: the column
-    alias, the planner's cast to the measure's declared type, and a declared
-    default's ``COALESCE``.
+    The first ``AVG``, or the first *helper*, met left to right through
+    whatever wraps it: the column alias, the planner's cast, a declared
+    default's ``COALESCE``, and the exact or double rewrites a dialect makes
+    of the average itself. Those leave no ``AVG`` to read - ``SUM(CAST(x AS
+    DECIMAL(38, 0))) / COUNT(x)`` on Dremio, integer arithmetic on DuckDB,
+    ``CAST(SUM(DISTINCT x) AS FLOAT) / COUNT(DISTINCT x)`` on Snowflake - but
+    each still sums and counts the argument, the sum through whatever widens
+    its accumulator. Looking only through the wrappers found no aggregate
+    under a division and fell back to ``SUM(1) / COUNT(1)``: the total of an
+    integer average of 2, 4 and 6 read 1.
     """
-    if isinstance(expr, AliasedExpr):
-        return _aggregate_of(expr.expr)
-    if isinstance(expr, Cast):
-        return _aggregate_of(expr.expr)
-    if isinstance(expr, FunctionCall) and expr.name.upper() == "COALESCE" and len(expr.args) == 2:
-        return _aggregate_of(expr.args[0])
-    return expr
+    if isinstance(expr, FunctionCall) and expr.name.upper() in ("AVG", helper):
+        return list(expr.args)
+    if not is_dataclass(expr):
+        return None
+    for field in fields(expr):
+        value = getattr(expr, field.name)
+        for child in value if isinstance(value, (list, tuple)) else (value,):
+            if is_dataclass(child) and not isinstance(child, type):
+                found = _averaged_argument(cast(Expr, child), helper)
+                if found is not None:
+                    return found
+    return None
 
 
 def _build_avg_helpers_base_col(measure: ResolvedMeasure, kind: str, source: Expr) -> AliasedExpr:
@@ -423,19 +436,17 @@ def _build_avg_helpers_base_col(measure: ResolvedMeasure, kind: str, source: Exp
     star, a conformed subquery's column when the measure is anchored, and the
     composite CTE's column under CFL - where the measure's own resolved
     expression still names a fact table this CTE does not select from. What it
-    is not is the whole projected column: :func:`_aggregate_of` takes the cast
+    is not is the whole projected column: :func:`_averaged_argument` takes the cast
     and any declared default off first, since ``COALESCE(AVG(x), 0)``
     decomposed as it stands reads the default as a second argument and emits
     ``SUM(AVG(x), 0)``, which is not SQL. The default goes back on in
     :func:`_build_total_window`.
     """
-    aggregate = _aggregate_of(source)
-    if isinstance(aggregate, FunctionCall) and aggregate.args:
-        inner_args = list(aggregate.args)
-    else:
-        # Fallback: use Literal(1) — an AVG measure with no args is unusual
-        # but using the measure alias as a column ref would be invalid SQL.
-        inner_args = [Literal.number(1)]
+    # Fallback: use Literal(1) — an AVG measure with no args is unusual
+    # but using the measure alias as a column ref would be invalid SQL.
+    inner_args = _averaged_argument(source, "SUM" if kind == "sum" else "COUNT") or [
+        Literal.number(1)
+    ]
 
     if kind == "sum":
         return AliasedExpr(

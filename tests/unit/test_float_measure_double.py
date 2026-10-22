@@ -99,6 +99,8 @@ measures:
                    distinct: true, resultType: float}}
   Distinct Unit Sum: {{columns: [{{dataObject: Orders, column: Quantity}}], aggregation: sum,
                        distinct: true, resultType: float}}
+  Distinct Weight Sum: {{columns: [{{dataObject: Orders, column: Weight}}], aggregation: sum,
+                         distinct: true, resultType: float}}
   Returned: {{columns: [{{dataObject: Returns, column: Returned Weight}}], aggregation: sum,
               resultType: float}}
 """
@@ -201,12 +203,29 @@ class TestAWrappingAccumulatorIsAvoided:
     def test_not_where_the_accumulator_holds_or_raises(self, dialect: str) -> None:
         assert "SUM(CAST(" not in _sql(["Float Unit Sum"], dialect)
 
+    @pytest.mark.parametrize(
+        ("dialect", "widened"),
+        [
+            ("clickhouse", 'DISTINCT toDecimal128("Orders"."quantity", 0)'),
+            ("dremio", 'DISTINCT CAST("Orders"."quantity" AS DECIMAL(38, 0))'),
+        ],
+    )
+    @pytest.mark.parametrize("measure", ["Distinct Unit Sum", "Distinct Mean"])
+    def test_a_distinct_integer_is_widened_exactly(
+        self, dialect: str, widened: str, measure: str
+    ) -> None:
+        """A double would merge two integers past 2**53 into one value; the
+        128-bit widening keeps every integer distinct and does not wrap."""
+        sql = _sql([measure], dialect)
+        assert f"SUM({widened})" in sql, sql
+
     @pytest.mark.parametrize("dialect", ["clickhouse", "dremio"])
-    def test_not_inside_a_distinct(self, dialect: str) -> None:
-        """Two integers past 2**53 become one double and would be deduplicated
-        as one value."""
-        sql = _sql(["Distinct Unit Sum"], dialect)
-        assert "DISTINCT CAST(" not in sql, sql
+    def test_a_distinct_float_is_not_widened(self, dialect: str) -> None:
+        """Its accumulator does not wrap, and a cast to an integer width would
+        truncate it."""
+        sql = _sql(["Distinct Weight Sum"], dialect)
+        assert "SUM(DISTINCT " in sql and "DISTINCT CAST(" not in sql, sql
+        assert "toDecimal128" not in sql, sql
 
     def test_a_sum_past_64_bits_adds_up(self) -> None:
         """Executed on DuckDB, whose accumulator holds: the rewrite changes
@@ -233,7 +252,7 @@ class TestADistinctAverageDeduplicatesFirst:
         assert expected in sql, sql
         assert "DISTINCT CAST(" not in sql, sql
 
-    @pytest.mark.parametrize("dialect", ["duckdb", "clickhouse", "dremio"])
+    @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "bigquery"])
     def test_elsewhere_the_distinct_average_is_native(self, dialect: str) -> None:
         sql = _sql(["Distinct Mean"], dialect)
         assert "AVG(DISTINCT " in sql and "DISTINCT CAST(" not in sql, sql

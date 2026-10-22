@@ -822,9 +822,12 @@ def apply_float_input(
 
     A DISTINCT aggregate cannot take the cast inside: two integers past 2**53
     become the same double and are deduplicated as one, so 0, 2**53 and
-    2**53 + 1 averaged two values. On Snowflake its average is assembled from
-    an exact ``SUM(DISTINCT x)`` instead, which an empty group divides to NULL;
-    elsewhere a DISTINCT aggregate is left as it is.
+    2**53 + 1 averaged two values. It sums exactly instead - through the
+    dialect's integer widening (:meth:`~orionbelt.dialect.base.Dialect.
+    exact_integer_sum`) where the accumulator wraps and every column read is an
+    integer, which no two distinct values share - and an average divides that
+    sum by ``COUNT(DISTINCT x)``. A float or decimal column needs no widening:
+    its accumulator does not wrap.
     """
     agg = measure.aggregation.upper()
     if agg not in ("SUM", "AVG"):
@@ -843,12 +846,30 @@ def apply_float_input(
     if not aggregate.distinct:
         arg = dialect.cast_to_obml_type(aggregate.args[0], FLOAT_DEFAULT)
         return rebuild(replace(aggregate, args=[arg]))
-    if not rounds:
+    widened = dialect.exact_integer_sum(aggregate.args[0]) if wraps else None
+    if isinstance(widened, FunctionCall) and _reads_integer_columns(measure, model):
+        total = replace(widened, distinct=True)
+    elif rounds:
+        total = FunctionCall(name="SUM", args=aggregate.args, distinct=True)
+    else:
         return expr
-    total = FunctionCall(name="SUM", args=aggregate.args, distinct=True)
+    if agg == "SUM":
+        return rebuild(total)
     count = FunctionCall(name="COUNT", args=aggregate.args, distinct=True)
     mean = BinaryOp(left=dialect.cast_to_obml_type(total, FLOAT_DEFAULT), op="/", right=count)
     return rebuild(mean)
+
+
+def _reads_integer_columns(measure: Measure, model: SemanticModel | None) -> bool:
+    """Whether *measure* aggregates one or more ``int`` columns and nothing else."""
+    if model is None or measure.expression or not measure.columns:
+        return False
+    for ref in measure.columns:
+        obj = model.data_objects.get(ref.view or "")
+        column = obj.columns.get(ref.column) if obj and ref.column else None
+        if column is None or column.abstract_type is not DataType.INT:
+            return False
+    return True
 
 
 def resolve_measure_cast_type(
