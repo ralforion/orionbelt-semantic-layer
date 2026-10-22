@@ -890,6 +890,7 @@ Invalid queries return error responses:
 | Error Code | Status | Cause |
 |------------|--------|-------|
 | `UNKNOWN_DIMENSION` | 400 | Dimension name not in model |
+| `INVALID_TIME_GRAIN` | 422 | A dimension's `:grain` suffix is not one of `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` |
 | `UNKNOWN_MEASURE` | 400 | Measure name not in model |
 | `UNKNOWN_FILTER_FIELD` | 400 | Filter field is not a dimension (WHERE) or measure (HAVING) |
 | `UNREACHABLE_FILTER_OBJECT` | 400 | WHERE filter names a data object the query cannot reach |
