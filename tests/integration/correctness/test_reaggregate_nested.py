@@ -192,7 +192,8 @@ def test_same_as_the_inner_metric_aggregated_again(
     assert len(got) == len(rows), f"{len(rows)} rows for {len(got)} keys"
 
     groups: dict[tuple[Any, ...], list[Any]] = {}
-    for row in run([*dimensions, *metric["per"]], [metric["measure"]], where=where):
+    stage_one = list(dict.fromkeys([*dimensions, *metric["per"]]))
+    for row in run(stage_one, [metric["measure"]], where=where):
         groups.setdefault(tuple(row[d] for d in dimensions), []).append(row[metric["measure"]])
     want = {key: _aggregate(metric["aggregation"], values) for key, values in groups.items()}
 

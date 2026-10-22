@@ -144,9 +144,8 @@ def test_each_row_is_its_month(
     [
         (["Sales Date", "Sales Date:month"], ["Sales Date", "Sales Date:month"]),
         (["Sales Date:month", "Sales Date"], ["Sales Date", "Sales Date:day"]),
-        (["Sales Date:month", "Sales Date:month"], ["Sales Date", "Sales Date"]),
     ],
-    ids=["declared grain first", "declared grain second", "one grain twice"],
+    ids=["declared grain first", "declared grain second"],
 )
 def test_column_names(
     model: SemanticModel,
@@ -272,3 +271,17 @@ def test_reaggregate_over_a_cumulative_keeps_its_axis_column(
     assert len(rows) == len(want)
     for row in rows:
         assert row[-1] == want[row[at]], row
+
+
+@pytest.mark.parametrize(
+    "dims",
+    [["Sales Date:month", "Sales Date:month"], ["Sales Date", "Sales Date:day"]],
+    ids=["one grain twice", "the declared grain named"],
+)
+def test_one_grain_twice_is_refused(model: SemanticModel, dims: list[str]) -> None:
+    """Two entries for one column named it twice, and a client reading the
+    result by name saw one of them."""
+    query = QueryObject(select=QuerySelect(dimensions=dims, measures=["Total Sales"]))
+    with pytest.raises(ResolutionError) as exc:
+        CompilationPipeline().compile(query, model, "duckdb")
+    assert [e.code for e in exc.value.errors] == ["DUPLICATE_DIMENSION"]

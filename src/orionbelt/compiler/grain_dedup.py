@@ -1459,17 +1459,12 @@ def _group_list(
     dim_names: list[str], sources: list[str], grain_of_cte: dict[str, tuple[str, ...]]
 ) -> list[CTE]:
     """The query's groups, read from every CTE at its grain: ``main`` and the
-    deduplicated ones, which have the groups of parents without children too.
-
-    Each name once: a query can list a dimension twice (a reaggregate's first
-    stage, as the query's and as the metric's ``per``), and the branches are
-    unioned by name, which refuses a column named twice.
-    """
-    names = list(dict.fromkeys(dim_names))
+    deduplicated ones, which have the groups of parents without children too."""
     branches = [
         Select(
             columns=[
-                AliasedExpr(expr=ColumnRef(name=name, table=source), alias=name) for name in names
+                AliasedExpr(expr=ColumnRef(name=name, table=source), alias=name)
+                for name in dim_names
             ],
             from_=From(source=source, alias=source),
         )
@@ -1477,7 +1472,7 @@ def _group_list(
         if grain_of_cte.get(source) == tuple(dim_names)
     ]
     listed = Select(
-        columns=[AliasedExpr(expr=ColumnRef(name=name), alias=name) for name in names],
+        columns=[AliasedExpr(expr=ColumnRef(name=name), alias=name) for name in dim_names],
         from_=From(source=_GROUPS_ALL_CTE, alias=_GROUPS_ALL_CTE),
         distinct=True,
     )

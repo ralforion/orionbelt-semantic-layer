@@ -174,14 +174,6 @@ def test_the_groups_do_not_depend_on_the_measures(con: duckdb.DuckDBPyConnection
     )
 
 
-def test_a_dimension_listed_twice_beside_a_total(con: duckdb.DuckDBPyConnection) -> None:
-    """The group list is a union by name, which refuses a column named twice;
-    a reaggregate's first stage lists a dimension as the query's and as its
-    ``per``."""
-    sql = _sql({"select": {"dimensions": ["Category", "Category"], "measures": ["All Credit"]}})
-    assert [row[0] for row in _rows(con, sql)] == ["tools", "toys", None]
-
-
 def test_a_total_adds_no_group_for_a_customer_the_where_rejects(
     con: duckdb.DuckDBPyConnection,
 ) -> None:
