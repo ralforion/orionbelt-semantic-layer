@@ -247,7 +247,9 @@ class ClickHouseDialect(Dialect):
         "bigint": "Int64",
         "integer": "Int32",
         "double": "Float64",
-        "date": "Date",
+        # Date32, not Date: Date holds 1970 to 2149 and a cast of an older
+        # Date32 into it wraps silently (1960-01-01 read 2139-06-07).
+        "date": "Date32",
         "timestamp": "DateTime64(3)",
         "time": "String",
         "string": "String",
