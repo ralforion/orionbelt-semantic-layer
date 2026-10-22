@@ -538,7 +538,10 @@ def resolve_reaggregate_metric(
         )
         return None
 
-    if all(
+    # Not with ``population: dimension``: each group still has one value, but
+    # the metric lists every member, those without rows too, so it changes
+    # which rows the query returns and is no no-op.
+    if metric.population is not ReaggregatePopulation.DIMENSION and all(
         reaggregate_per_covered(
             ctx.model, reaggregate_per_ref(ctx.model, entry), ctx.result.dimensions
         )
