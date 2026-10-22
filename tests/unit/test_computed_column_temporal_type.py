@@ -34,11 +34,14 @@ dataObjects:
       Next Day: {expression: "date_add('day', 1, {Order Date})", abstractType: date}
       Same Day: {expression: "{Order Date}", abstractType: date}
       Order Label: {expression: "concat('#', {Id})", abstractType: string}
+      Placed At: {code: placed_at, abstractType: timestamp}
+      Placed At Again: {expression: "coalesce({Placed At}, {Placed At})", abstractType: timestamp}
 dimensions:
   Order Month: {dataObject: Orders, column: Order Month, resultType: date}
   Next Day: {dataObject: Orders, column: Next Day, resultType: date}
   Same Day: {dataObject: Orders, column: Same Day, resultType: date}
   Order Label: {dataObject: Orders, column: Order Label, resultType: string}
+  Placed At Again: {dataObject: Orders, column: Placed At Again, resultType: timestamp}
 measures:
   Revenue: {columns: [{dataObject: Orders, column: Amount}], aggregation: sum,
             resultType: float}
@@ -94,7 +97,7 @@ def test_a_filter_compares_the_date(con: duckdb.DuckDBPyConnection) -> None:
 )
 def test_every_dialect_casts_it(dialect: str) -> None:
     sql = _sql({"select": {"dimensions": ["Order Month", "Next Day"], "measures": []}}, dialect)
-    date_type = "Nullable\\(Date\\)" if dialect == "clickhouse" else "DATE"
+    date_type = "Nullable\\(Date32\\)" if dialect == "clickhouse" else "DATE"
     for alias in ("Order Month", "Next Day"):
         assert re.search(rf"AS {date_type}\) AS [`\"]{alias}[`\"]", sql), sql
 
@@ -103,3 +106,11 @@ def test_every_dialect_casts_it(dialect: str) -> None:
 def test_a_column_already_of_its_type_is_not_cast(dimension: str) -> None:
     sql = _sql({"select": {"dimensions": [dimension], "measures": []}})
     assert "CAST(" not in sql, sql
+
+
+def test_a_computed_timestamp_keeps_its_precision() -> None:
+    """Not cast: ClickHouse's ``DateTime64(3)`` merged ``.123456`` and
+    ``.123789`` into one group, and MySQL's ``DATETIME`` keeps no fraction."""
+    for dialect in ("clickhouse", "mysql", "duckdb"):
+        sql = _sql({"select": {"dimensions": ["Placed At Again"], "measures": []}}, dialect)
+        assert "CAST(" not in sql, sql

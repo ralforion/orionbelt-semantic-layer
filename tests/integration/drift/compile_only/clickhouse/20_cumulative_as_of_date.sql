@@ -7,7 +7,7 @@ LEFT JOIN "orionbelt_1"."regions" AS "Regions" ON "Countries"."region" = "Region
 GROUP BY ALL
 ),
 "cumulative_as_of_periods" AS (
-SELECT "Regions"."regionname" AS "Sales Region Name", CAST(toStartOfMonth("Sales"."salesdate") AS Nullable(Date)) AS "Sales Month", CAST(round(toDecimal256(toString(SUM("Sales"."salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
+SELECT "Regions"."regionname" AS "Sales Region Name", CAST(toStartOfMonth("Sales"."salesdate") AS Nullable(Date32)) AS "Sales Month", CAST(round(toDecimal256(toString(SUM("Sales"."salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid" = "Countries"."countryid"
@@ -21,7 +21,7 @@ WHERE date_diff('month', "cumulative_as_of_periods"."Sales Month", CAST(toStartO
 GROUP BY ALL
 ),
 "cumulative_as_of_periods_2" AS (
-SELECT "Regions"."regionname" AS "Sales Region Name", CAST(toDate("Sales"."salesdate") AS Nullable(Date)) AS "Sales Date", CAST(round(toDecimal256(toString(SUM("Sales"."salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
+SELECT "Regions"."regionname" AS "Sales Region Name", CAST(toDate("Sales"."salesdate") AS Nullable(Date32)) AS "Sales Date", CAST(round(toDecimal256(toString(SUM("Sales"."salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid" = "Countries"."countryid"

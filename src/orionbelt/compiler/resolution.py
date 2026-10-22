@@ -160,7 +160,7 @@ def _build_computed_column_expr(
                 )
             ]
         ) from exc
-    parsed = _as_declared_temporal(parsed, column)
+    parsed = _as_declared_date(parsed, column)
     # A join key opts out of the timezone conversion for the same reason a plain
     # one does, and it has to be threaded this far: a computed key converted
     # while the plain key it is compared against is not would be an asymmetric
@@ -171,8 +171,8 @@ def _build_computed_column_expr(
     return apply_query_timezone(parsed, model)
 
 
-def _as_declared_temporal(parsed: Expr, column: DataObjectColumn) -> Expr:
-    """A computed column's body, typed as the column declares a date or time.
+def _as_declared_date(parsed: Expr, column: DataObjectColumn) -> Expr:
+    """A computed column's body, typed as a date when the column declares one.
 
     ``date_trunc`` and ``date_add`` return whatever the engine makes of them:
     over a DATE, a timestamp on DuckDB, a timestamptz on PostgreSQL (in the
@@ -180,15 +180,20 @@ def _as_declared_temporal(parsed: Expr, column: DataObjectColumn) -> Expr:
     from Databricks' ``date_trunc``, where the other engines keep the date. So
     ``abstractType: date`` described the column on four engines and not on the
     other four. The same cast a grained dimension gets keeps the declaration
-    (see :func:`make_dimension_expr`); a body that is already a column of the
-    declared type needs none.
+    (see :func:`make_dimension_expr`); a body that is already a date column
+    needs none.
+
+    Only a date. A cast to a declared ``timestamp`` would fix a precision the
+    body has its own: ClickHouse's ``DateTime64(3)`` merged ``.123456`` and
+    ``.123789`` into one group, and MySQL's ``DATETIME`` keeps no fraction at
+    all. A date has none to lose, and the target is wide enough on every
+    engine for every date it holds.
     """
-    declared = column.abstract_type
-    if declared not in CASTABLE_TEMPORAL_TYPES:
+    if column.abstract_type != DataType.DATE:
         return parsed
-    if isinstance(parsed, ColumnRef | NestedField) and parsed.abstract_type == declared:
+    if isinstance(parsed, ColumnRef | NestedField) and parsed.abstract_type == DataType.DATE:
         return parsed
-    return Cast(expr=parsed, type_name=declared.value, obml_type=True)
+    return Cast(expr=parsed, type_name=DataType.DATE.value, obml_type=True)
 
 
 def _reads_a_number(measure: Measure, model: SemanticModel) -> bool:
