@@ -160,6 +160,7 @@ def _build_computed_column_expr(
                 )
             ]
         ) from exc
+    parsed = _as_declared_temporal(parsed, column)
     # A join key opts out of the timezone conversion for the same reason a plain
     # one does, and it has to be threaded this far: a computed key converted
     # while the plain key it is compared against is not would be an asymmetric
@@ -168,6 +169,26 @@ def _build_computed_column_expr(
     if not in_query_timezone:
         return parsed
     return apply_query_timezone(parsed, model)
+
+
+def _as_declared_temporal(parsed: Expr, column: DataObjectColumn) -> Expr:
+    """A computed column's body, typed as the column declares a date or time.
+
+    ``date_trunc`` and ``date_add`` return whatever the engine makes of them:
+    over a DATE, a timestamp on DuckDB, a timestamptz on PostgreSQL (in the
+    session's zone), a DATETIME from BigQuery's ``date_add`` and a TIMESTAMP
+    from Databricks' ``date_trunc``, where the other engines keep the date. So
+    ``abstractType: date`` described the column on four engines and not on the
+    other four. The same cast a grained dimension gets keeps the declaration
+    (see :func:`make_dimension_expr`); a body that is already a column of the
+    declared type needs none.
+    """
+    declared = column.abstract_type
+    if declared not in CASTABLE_TEMPORAL_TYPES:
+        return parsed
+    if isinstance(parsed, ColumnRef | NestedField) and parsed.abstract_type == declared:
+        return parsed
+    return Cast(expr=parsed, type_name=declared.value, obml_type=True)
 
 
 def _reads_a_number(measure: Measure, model: SemanticModel) -> bool:
