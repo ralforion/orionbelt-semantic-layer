@@ -65,6 +65,25 @@ def _nests_in(inner: TimeGrain | None, outer: TimeGrain | None) -> bool:
     return _GRAIN_RANK[inner] < _GRAIN_RANK[outer]
 
 
+def _metric_input_error(kind: str, name: str, ref: str, ctx: _ResolutionContext) -> SemanticError:
+    """Refuse a cumulative or window metric's ``measure`` that is not a base,
+    naming a metric there as one rather than reporting it unknown."""
+    if ref in ctx.model.metrics:
+        return SemanticError(
+            code=f"{kind.upper()}_MEASURE_ONLY",
+            message=(
+                f"{kind} metric '{name}' references metric '{ref}'; 'measure' must "
+                f"name a measure or a reaggregate metric."
+            ),
+            path=f"metrics.{name}.measure",
+        )
+    return SemanticError(
+        code="UNKNOWN_MEASURE",
+        message=f"{kind} metric '{name}' references unknown measure '{ref}'",
+        path=f"metrics.{name}.measure",
+    )
+
+
 def reaggregate_per_ref(model: SemanticModel, entry: str) -> DimensionRef:
     """A ``per`` entry as a dimension at the grain it groups by.
 
@@ -189,15 +208,7 @@ def resolve_window_metric(
     elif base_measure_name is not None:
         base_measure = ctx.model.effective_measures.get(base_measure_name)
         if base_measure is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="UNKNOWN_MEASURE",
-                    message=(
-                        f"Window metric '{name}' references unknown measure '{base_measure_name}'"
-                    ),
-                    path=f"metrics.{name}.measure",
-                )
-            )
+            ctx.errors.append(_metric_input_error("Window", name, base_measure_name, ctx))
             return None
         base_aggregation = base_measure.aggregation
         if base_measure_name not in ctx.result.metric_components:
@@ -375,15 +386,7 @@ def resolve_cumulative_metric(
     over_reaggregate = base_metric is not None and base_metric.type is MetricType.REAGGREGATE
     base_measure = ctx.model.effective_measures.get(metric.measure)
     if base_measure is None and not over_reaggregate:
-        ctx.errors.append(
-            SemanticError(
-                code="UNKNOWN_MEASURE",
-                message=(
-                    f"Cumulative metric '{name}' references unknown measure '{metric.measure}'"
-                ),
-                path=f"metrics.{name}.measure",
-            )
-        )
+        ctx.errors.append(_metric_input_error("Cumulative", name, metric.measure, ctx))
         return None
 
     # Validate timeDimension is a known dimension

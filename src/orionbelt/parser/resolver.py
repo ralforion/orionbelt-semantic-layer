@@ -17,7 +17,7 @@ from orionbelt.models.concept_links import (
     expand_concept,
     is_absolute_iri,
 )
-from orionbelt.models.errors import SemanticError, ValidationResult
+from orionbelt.models.errors import SemanticError, SourceSpan, ValidationResult
 from orionbelt.models.expressions import find_malformed_measure_refs, find_qualified_refs
 from orionbelt.models.query import DimensionRef, time_per_entries
 from orionbelt.models.rules import (
@@ -1262,15 +1262,7 @@ class ReferenceResolver:
                     ):
                         span = source_map.get(f"metrics.{name}.measure") if source_map else None
                         errors.append(
-                            SemanticError(
-                                code="UNKNOWN_MEASURE",
-                                message=(
-                                    f"Cumulative metric '{name}' references "
-                                    f"unknown measure '{ref_measure}'"
-                                ),
-                                path=f"metrics.{name}.measure",
-                                span=span,
-                            )
+                            _metric_input_error("Cumulative", name, ref_measure, raw_metrics, span)
                         )
 
                     # Validate timeDimension references a known dimension
@@ -1421,15 +1413,7 @@ class ReferenceResolver:
                     ):
                         span = source_map.get(f"metrics.{name}.measure") if source_map else None
                         errors.append(
-                            SemanticError(
-                                code="UNKNOWN_MEASURE",
-                                message=(
-                                    f"Window metric '{name}' references "
-                                    f"unknown measure '{ref_measure}'"
-                                ),
-                                path=f"metrics.{name}.measure",
-                                span=span,
-                            )
+                            _metric_input_error("Window", name, ref_measure, raw_metrics, span)
                         )
 
                     win_time_dim = raw_metric.get("timeDimension", "")
@@ -2405,6 +2389,31 @@ class ReferenceResolver:
                         context={"metric": metric_name, "references": ref_name},
                     )
                 )
+
+
+def _metric_input_error(
+    kind: str, name: str, ref: str, raw_metrics: dict[str, Any], span: SourceSpan | None
+) -> SemanticError:
+    """Refuse a cumulative or window metric's ``measure`` that is not a base.
+
+    A metric there exists, so it is named as one rather than reported unknown.
+    """
+    if ref in raw_metrics:
+        return SemanticError(
+            code=f"{kind.upper()}_MEASURE_ONLY",
+            message=(
+                f"{kind} metric '{name}' references metric '{ref}'; 'measure' must "
+                f"name a measure or a reaggregate metric."
+            ),
+            path=f"metrics.{name}.measure",
+            span=span,
+        )
+    return SemanticError(
+        code="UNKNOWN_MEASURE",
+        message=f"{kind} metric '{name}' references unknown measure '{ref}'",
+        path=f"metrics.{name}.measure",
+        span=span,
+    )
 
 
 def _is_reaggregate(raw_metric: object) -> bool:
