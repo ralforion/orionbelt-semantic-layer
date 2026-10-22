@@ -108,7 +108,7 @@ dimensions:
 
 measures:
   Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
     synonyms: [sales, income, turnover]
@@ -121,18 +121,18 @@ measures:
     aggregation: count
 
   Average Order Value:
-    resultType: float
+    resultType: decimal
     aggregation: avg
     expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
 
   Grand Total Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
     total: true
 
   US Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
     filters:

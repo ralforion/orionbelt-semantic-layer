@@ -57,7 +57,7 @@ dataObjects:
 dimensions:
   Sale Month: {dataObject: S, column: Sold On, timeGrain: month}
 measures:
-  Amount: {columns: [{dataObject: S, column: Amt}], resultType: float, aggregation: sum}
+  Amount: {columns: [{dataObject: S, column: Amt}], resultType: decimal, aggregation: sum}
   Orders: {columns: [{dataObject: S, column: Qty}], resultType: int, aggregation: sum}
   Sale Count: {columns: [{dataObject: S, column: Qty}], resultType: int, aggregation: count}
   Biggest: {columns: [{dataObject: S, column: Amt}], resultType: float, aggregation: max}

@@ -48,11 +48,11 @@ measures:
   Money Sum: {columns: [{dataObject: Charges, column: Money}], resultType: float, aggregation: sum}
   Undeclared Sum:
     columns: [{dataObject: Charges, column: Undeclared}]
-    resultType: float
+    resultType: decimal
     aggregation: sum
   Half Sum:
     columns: [{dataObject: Charges, column: HalfDeclared}]
-    resultType: float
+    resultType: decimal
     aggregation: sum
   Int Sum: {columns: [{dataObject: Charges, column: WideInt}], resultType: float, aggregation: sum}
   Expr Sum:

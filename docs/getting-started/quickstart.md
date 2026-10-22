@@ -79,7 +79,7 @@ dimensions:
 
 measures:
   Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
 

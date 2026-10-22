@@ -145,14 +145,14 @@ measures:
     columns:
       - dataObject: Store Sales
         column: Amount
-    resultType: float
+    resultType: decimal
     aggregation: sum
 
   Total Returns:
     columns:
       - dataObject: Store Returns
         column: Refund Amount
-    resultType: float
+    resultType: decimal
     aggregation: sum
 
 metrics:

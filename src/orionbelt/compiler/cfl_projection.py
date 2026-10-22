@@ -211,7 +211,7 @@ def resolve_null_type_for_field(
             return column.abstract_type.value
     # Numeric aggregates: align padding with the outer CAST target.
     if dialect is not None and len(model_measure.columns) <= 1:
-        resolved = resolve_measure_data_type(model_measure, model.settings)
+        resolved = resolve_measure_data_type(model_measure, model.settings, model)
         if resolved is not None:
             return dialect.render_obml_type(resolved)
     # Fallback to measure result_type.

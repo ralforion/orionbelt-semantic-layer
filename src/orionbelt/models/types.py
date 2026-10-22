@@ -78,6 +78,7 @@ def default_as_decimal(value: object) -> Decimal | None:
 
 BUILTIN_DEFAULT = DecimalType(precision=18, scale=2)
 DIVISION_DEFAULT = DecimalType(precision=18, scale=6)
+FLOAT_DEFAULT = SimpleType(name="double")
 
 
 def parse_data_type(raw: str) -> OBMLType:

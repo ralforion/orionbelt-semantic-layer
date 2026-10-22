@@ -1199,7 +1199,9 @@ class Measure(BaseModel):
 
     name: str
     columns: list[DataColumnRef] = []
-    result_type: DataType = Field(DataType.FLOAT, alias="resultType")
+    # The loader infers an omitted ``resultType``; a measure built without one
+    # takes the inference's answer when nothing is known.
+    result_type: DataType = Field(DataType.DECIMAL, alias="resultType")
     aggregation: AggregationType
     expression: str | None = None
     distinct: bool = False

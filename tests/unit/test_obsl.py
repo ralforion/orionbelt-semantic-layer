@@ -307,7 +307,7 @@ class TestExporterMeasures:
         uri = URIRef(f"{BASE}t1/measure/revenue")
         assert (uri, RDFS.label, Literal("Revenue")) in g
         assert (uri, OBSL.aggregation, Literal("sum")) in g
-        assert (uri, OBSL.resultType, Literal("float")) in g
+        assert (uri, OBSL.resultType, Literal("decimal")) in g
 
     def test_expression_source(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")

@@ -332,7 +332,7 @@ dimensions:
 
 measures:
   Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
     dataType: "decimal(18, 2)"
@@ -343,13 +343,13 @@ measures:
     columns:
       - dataObject: Line Items
         column: Extended Price
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
 
   Total Discount:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * {[Line Items].[Discount]}"
     dataType: "decimal(18, 2)"
@@ -387,20 +387,20 @@ measures:
     columns:
       - dataObject: Orders
         column: Order Total
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
 
   Supply Cost:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: "{[Line Items].[Quantity]} * {[Part Supply].[Supply Cost]}"
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
 
   Inventory Value:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: "{[Part Supply].[Available Qty]} * {[Part Supply].[Supply Cost]}"
     dataType: "decimal(18, 2)"
@@ -416,7 +416,7 @@ measures:
     format: "#,##0"
 
   Returned Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
     dataType: "decimal(18, 2)"
@@ -428,7 +428,7 @@ measures:
     description: Revenue from returned items only
 
   Grand Total Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
     dataType: "decimal(18, 2)"
@@ -438,7 +438,7 @@ measures:
     description: Grand total revenue across all dimensions
 
   Revenue by Nation:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
     dataType: "decimal(18, 2)"
@@ -449,7 +449,7 @@ measures:
     description: Revenue aggregated at nation level only
 
   Unfiltered Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
     dataType: "decimal(18, 2)"

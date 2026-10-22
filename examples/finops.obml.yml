@@ -647,7 +647,7 @@ measures:
     columns:
       - dataObject: Charges
         column: Billed Cost Value
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 6)"
     format: "#,##0.00"
@@ -658,7 +658,7 @@ measures:
     columns:
       - dataObject: Charges
         column: Effective Cost Value
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 6)"
     format: "#,##0.00"
@@ -671,7 +671,7 @@ measures:
     columns:
       - dataObject: Charges
         column: List Cost Value
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 6)"
     format: "#,##0.00"
@@ -681,7 +681,7 @@ measures:
     columns:
       - dataObject: Charges
         column: Contracted Cost Value
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 6)"
     format: "#,##0.00"
@@ -709,7 +709,7 @@ measures:
     columns:
       - dataObject: Charges
         column: Effective Cost Value
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 6)"
     format: "#,##0.00"
@@ -722,7 +722,7 @@ measures:
     columns:
       - dataObject: Invoice Details
         column: Invoiced Amount Value
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 6)"
     format: "#,##0.00"
@@ -732,7 +732,7 @@ measures:
     columns:
       - dataObject: Invoice Details
         column: Invoice Tax Value
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 6)"
     format: "#,##0.00"
@@ -741,7 +741,7 @@ measures:
     columns:
       - dataObject: Invoice Details
         column: Invoice Total Value
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 6)"
     format: "#,##0.00"
@@ -751,7 +751,7 @@ measures:
     columns:
       - dataObject: Commitments
         column: Committed Amount Value
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 6)"
     format: "#,##0.00"
@@ -769,7 +769,7 @@ measures:
     columns:
       - dataObject: Charge Credits
         column: Credit Amount
-    resultType: float
+    resultType: decimal
     aggregation: sum
     dataType: "decimal(18, 6)"
     format: "#,##0.00"

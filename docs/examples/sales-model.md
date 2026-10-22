@@ -114,7 +114,7 @@ dimensions:
 
 measures:
   Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
 
@@ -126,7 +126,7 @@ measures:
     aggregation: count
 
   Average Order Value:
-    resultType: float
+    resultType: decimal
     aggregation: avg
     expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
 
@@ -197,7 +197,7 @@ The `timeGrain: month` means queries using this dimension will apply `date_trunc
 
 ```yaml
 Revenue:
-  resultType: float
+  resultType: decimal
   aggregation: sum
   expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
 ```
@@ -223,7 +223,7 @@ Compiles to: `COUNT("Orders"."ORDER_ID")`
 
 ```yaml
 Average Order Value:
-  resultType: float
+  resultType: decimal
   aggregation: avg
   expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
 ```
@@ -250,7 +250,7 @@ dataObjects:
 
 measures:
   Revenue:
-    resultType: float
+    resultType: decimal
     aggregation: sum
     expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
     externalConceptMappings:

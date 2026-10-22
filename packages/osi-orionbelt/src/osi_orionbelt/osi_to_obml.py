@@ -106,14 +106,6 @@ _PERCENTILE_NAMES = frozenset(
     }
 )
 
-# Aggregations whose result is fractional regardless of the input column type.
-# Everything else defaults to int, except listagg (string) - see
-# ``_measure_result_type``. (Without the column's declared type this is a
-# best-effort guess, matching the converter's other type heuristics.)
-_FLOAT_RESULT_AGGS = frozenset(
-    {"sum", "avg", "median", "percentile_cont", "stddev", "stddev_pop", "variance", "var_pop"}
-)
-
 
 def _restore_concept_links(
     extras: dict, target: dict, key: str = "obml_external_concept_mappings"
@@ -1226,7 +1218,6 @@ class OSItoOBML:
                 _, agg, dataset, column, is_distinct, extra = decomposed
                 measure_def: dict[str, Any] = {
                     "columns": [{"dataObject": dataset, "column": column}],
-                    "resultType": self._measure_result_type(agg),
                     "aggregation": agg.lower(),
                     **extra,
                 }
@@ -1243,7 +1234,6 @@ class OSItoOBML:
                 _, agg, obml_expr, is_distinct, extra = decomposed
                 measure_def = {
                     "expression": obml_expr,
-                    "resultType": self._measure_result_type(agg),
                     "aggregation": agg.lower(),
                     **extra,
                 }
@@ -1804,16 +1794,6 @@ class OSItoOBML:
         return {"percentile": float(parts[2])}
 
     @staticmethod
-    def _measure_result_type(agg: str) -> str:
-        """OBML resultType for an aggregation: fractional aggregates yield a
-        float, listagg a string, the count/min/max/mode family an int. (This also
-        fixes the old decompose path, which hard-coded every auto-measure to
-        float - a decomposed COUNT is now correctly int.)"""
-        if agg == "listagg":
-            return "string"
-        return "float" if agg in _FLOAT_RESULT_AGGS else "int"
-
-    @staticmethod
     def _agg_arg(node: exp.Expr) -> tuple[exp.Expr | None, bool]:
         """The aggregate's single argument and whether it is DISTINCT. Unwraps
         the ``exp.Distinct`` node of ``COUNT(DISTINCT x)``. Returns ``None`` for a
@@ -1970,7 +1950,6 @@ class OSItoOBML:
                 key = f"_{key_stub}_{agg}{suffix}"
                 measure_def: dict[str, Any] = {
                     "columns": [{"dataObject": ds, "column": col}],
-                    "resultType": self._measure_result_type(agg),
                     "aggregation": agg,
                 }
             else:
@@ -1978,7 +1957,6 @@ class OSItoOBML:
                 key = f"_{agg}_{expr_slug}{suffix}"
                 measure_def = {
                     "expression": self._render_obml(arg),
-                    "resultType": self._measure_result_type(agg),
                     "aggregation": agg,
                 }
             if is_distinct:

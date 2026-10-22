@@ -72,7 +72,6 @@ from orionbelt.models.semantic import (
     Metric,
     MetricType,
     ModelFilter,
-    ModelSettings,
     PeriodOverPeriodComparison,
     ReaggregateAggType,
     SemanticModel,
@@ -171,13 +170,13 @@ def _build_computed_column_expr(
     return apply_query_timezone(parsed, model)
 
 
-def _reads_a_number(measure: Measure, settings: ModelSettings | None) -> bool:
+def _reads_a_number(measure: Measure, model: SemanticModel) -> bool:
     """Whether this measure's value is read as a number.
 
     ``None`` means the measure passes its value through and emits no cast, so
     a boolean has nothing to arrive at.
     """
-    declared = resolve_measure_data_type(measure, settings)
+    declared = resolve_measure_data_type(measure, model.settings, model)
     if declared is None:
         return False
     return isinstance(declared, DecimalType) or declared.name in ("integer", "bigint", "double")
@@ -1944,7 +1943,7 @@ class QueryResolver:
         # Whether a cast is coming, and whether it is a numeric one. A boolean
         # source only has to become a number when it is about to be read as
         # one; ``None`` here means the measure passes its value through.
-        numeric_output = _reads_a_number(measure, ctx.model.settings)
+        numeric_output = _reads_a_number(measure, ctx.model)
 
         args: list[Expr] = []
         if measure.columns:
@@ -2005,7 +2004,7 @@ class QueryResolver:
         # The same rule the ``columns:`` form gets: two spellings of one
         # measure, so a boolean reaches a numeric output as a number either
         # way. Scoping it to the other branch left this one failing.
-        if _reads_a_number(measure, ctx.model.settings):
+        if _reads_a_number(measure, ctx.model):
             inner = _flag_as_number(inner)
 
         distinct = measure.distinct

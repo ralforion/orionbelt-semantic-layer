@@ -1,10 +1,10 @@
-"""``decimal``: an exact number, compiled as ``float`` compiles one.
+"""``decimal``: an exact number, compiled as ``float`` compiled one.
 
-The type adds a word to the model, not a behaviour to the compiler: a measure
-or a multi-fact query over ``decimal`` columns compiles to the SQL the same
-model declaring ``float`` does, on every dialect. Only where an abstract type
-becomes a SQL type of its own does ``decimal`` render differently, as the
-engine's exact decimal rather than its float.
+A ``decimal`` measure or multi-fact query keeps the exact defaults a ``float``
+one had before it became the engine's ``double``: it compiles to the SQL a
+``float`` model pinned to ``defaultNumericDataType: decimal(18, 2)`` does, on
+every dialect. Where an abstract type becomes a SQL type of its own, ``decimal``
+renders as the engine's exact decimal rather than its float.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from orionbelt.compiler.window_wrap import partition_keys
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import DataType, SemanticModel
+from orionbelt.models.types import parse_data_type
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.validator import SemanticValidator
@@ -93,15 +94,15 @@ measures:
 """
 
 
-def _model(type_name: str) -> SemanticModel:
-    raw, source_map = TrackedLoader().load_string(MODEL_YAML.format(t=type_name))
+def _model(type_name: str, settings: str = "") -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(settings + MODEL_YAML.format(t=type_name))
     model, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     return model
 
 
-def _sql(type_name: str, query: QueryObject, dialect: str) -> str:
-    return CompilationPipeline().compile(query, _model(type_name), dialect).sql
+def _sql(type_name: str, query: QueryObject, dialect: str, settings: str = "") -> str:
+    return CompilationPipeline().compile(query, _model(type_name, settings), dialect).sql
 
 
 def test_a_decimal_model_loads_and_matches_the_schema() -> None:
@@ -132,9 +133,19 @@ QUERIES = {
 
 @pytest.mark.parametrize("dialect", DIALECTS)
 @pytest.mark.parametrize("shape", sorted(QUERIES))
-def test_decimal_compiles_as_float_does(shape: str, dialect: str) -> None:
+def test_decimal_compiles_as_float_did(shape: str, dialect: str) -> None:
     query = QUERIES[shape]
-    assert _sql("decimal", query, dialect) == _sql("float", query, dialect)
+    pinned = 'settings: {defaultNumericDataType: "decimal(18, 2)"}\n'
+    assert _sql("decimal", query, dialect) == _sql("float", query, dialect, pinned)
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+def test_float_compiles_to_the_engines_double(dialect: str) -> None:
+    dia = DialectRegistry.get(dialect)
+    double = dia.render_obml_type(parse_data_type("double"))
+    sql = _sql("float", QUERIES["star"], dialect)
+    assert f"{double})" in sql, sql
+    assert f"{double})" not in _sql("decimal", QUERIES["star"], dialect)
 
 
 @pytest.mark.parametrize(

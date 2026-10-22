@@ -1514,7 +1514,7 @@ _DATA_TYPE_TO_DUCKDB: dict[str, str] = {
 def _measure_sql_type(measure: Measure, model: SemanticModel) -> str:
     """The type the compiler casts *measure* to, else its ``resultType``'s, at
     the width of the column whose values it returns as they are."""
-    governed = governed_measure_data_type(measure, model.settings)
+    governed = governed_measure_data_type(measure, model.settings, model)
     if governed is not None:
         return _decimal_duckdb_type(governed) or _DATA_TYPE_TO_DUCKDB[governed.strip().lower()]
     width = passthrough_decimal_width(measure, model)
