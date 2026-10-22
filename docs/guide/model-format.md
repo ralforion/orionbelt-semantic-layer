@@ -1133,7 +1133,7 @@ metrics:
 !!! tip "Time filters pick the periods shown"
  A filter on the time dimension, or on another dimension over the same date column (`Order Year` next to `Order Month`), selects which periods are *shown*; it does not cut what the metric reads. Filtered to March-April, `Revenue YTD` for March still includes January and February, and a running total still starts at the first period with data. The plain measures in the same query respect the filter as usual: a filter on a grained dimension admits whole periods ([Filtering a time-grained dimension](query-language.md#filtering-a-time-grained-dimension)), one on the date itself can end inside a period. A filter group counts when every filter in it is on that column, such as a date range written as one `and` group. Every other filter (another dimension, a group mixing columns, a static model filter) still limits the history. Period-over-period metrics follow the same rule: the first period shown compares with the one before it.
 
-A cumulative metric's `measure` may also name a [reaggregate metric](#reaggregate-metrics): the running, grain-to-date or rolling window then runs over the reaggregate metric's finished values per period, after its two stages:
+A cumulative metric's `measure` may also name a [reaggregate metric](#reaggregate-metrics): the running, grain-to-date or rolling window then runs over the reaggregate metric's finished values per period, after its two stages. Any other metric there is refused with `CUMULATIVE_MEASURE_ONLY`:
 
 ```yaml
 metrics:
@@ -1223,7 +1223,7 @@ metrics:
 
 Window metrics compose freely with derived metrics — `expression: '{[Revenue]} - {[Revenue Prior Month]}'` yields a MoM delta without writing any SQL.
 
-A window metric's `measure` may also name a [reaggregate metric](#reaggregate-metrics): the window then runs over the reaggregate metric's finished values, after its two stages, so a prior month's or a rank of the average customer's revenue reads the same numbers that metric shows:
+A window metric's `measure` may also name a [reaggregate metric](#reaggregate-metrics): the window then runs over the reaggregate metric's finished values, after its two stages, so a prior month's or a rank of the average customer's revenue reads the same numbers that metric shows. Any other metric there is refused with `WINDOW_MEASURE_ONLY`:
 
 ```yaml
 metrics:
