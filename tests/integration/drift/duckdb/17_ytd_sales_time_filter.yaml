@@ -27,7 +27,7 @@ sql: 'WITH "cumulative_base" AS (
   "cumulative_window" AS (
 
   SELECT "Sales Month" AS "Sales Month", SUM("Total Sales") OVER (PARTITION BY DATE_TRUNC(''year'', "Sales Month") ORDER BY
-  "Sales Month" ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS "YTD Sales"
+  "Sales Month" ASC NULLS LAST ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS "YTD Sales"
 
   FROM "cumulative_lookback" AS "cumulative_lookback"
 

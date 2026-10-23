@@ -10,7 +10,7 @@ FROM `orionbelt_1`.`sales` AS `Sales`
 GROUP BY ALL
 ),
 `cumulative_window` AS (
-SELECT `Sales Month` AS `Sales Month`, SUM(`Total Sales`) OVER (PARTITION BY DATE_TRUNC('year', `Sales Month`) ORDER BY `Sales Month` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `YTD Sales`
+SELECT `Sales Month` AS `Sales Month`, SUM(`Total Sales`) OVER (PARTITION BY DATE_TRUNC('year', `Sales Month`) ORDER BY `Sales Month` ASC NULLS LAST ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `YTD Sales`
 FROM `cumulative_lookback` AS `cumulative_lookback`
 ),
 `cumulative_joined` AS (

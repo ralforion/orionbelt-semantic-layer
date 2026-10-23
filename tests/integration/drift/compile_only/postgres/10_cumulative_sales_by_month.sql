@@ -3,5 +3,5 @@ SELECT CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) AS "Sales Month", 
 FROM "orionbelt_1"."sales" AS "Sales"
 GROUP BY CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE)
 )
-SELECT "Sales Month" AS "Sales Month", CAST(SUM("Total Sales") OVER (ORDER BY "Sales Month" ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS DECIMAL(18, 2)) AS "Cumulative Sales"
+SELECT "Sales Month" AS "Sales Month", CAST(SUM("Total Sales") OVER (ORDER BY "Sales Month" ASC NULLS LAST ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS DECIMAL(18, 2)) AS "Cumulative Sales"
 FROM "cumulative_base" AS "cumulative_base"
