@@ -127,6 +127,23 @@ metrics:
     type: cumulative
     measure: Revenue
     timeDimension: Order Time Month
+  Running Period Count:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: count
+  Rolling Period Count:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: count
+    window: 1
+  Period Count QTD:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: count
+    grainToDate: quarter
   Average Per Order:
     type: reaggregate
     measure: Revenue
@@ -558,6 +575,32 @@ def test_a_cumulative_window_reads_its_own_member(
         (FEB, *_d(1)),
         (MAR, *_d(11)),
     ]
+
+
+COUNTS = ["Running Period Count", "Rolling Period Count", "Period Count QTD"]
+
+
+def test_a_cumulative_count_over_no_period_is_null(
+    con: duckdb.DuckDBPyConnection, model: SemanticModel
+) -> None:
+    """A count reads 0 over no rows, where its window here reads no period:
+    December before the first one, February outside a one-month window, April
+    and May in a quarter without one. ``asOf`` answers NULL there too."""
+    query = {
+        "select": {"dimensions": ["Order Month"], "measures": COUNTS},
+        "where": [{"field": "Order Month", "op": "between", "value": ["2023-12-01", "2024-05-31"]}],
+    }
+    assert _dated(_rows(con, model, query)) == [
+        (DEC, None, None, None),
+        (JAN, 1, 1, 1),
+        (FEB, 1, None, 1),
+        (MAR, 2, 1, 2),
+        (APR, 2, None, None),
+        (date(2024, 5, 1), 2, None, None),
+    ]
+    as_of = QueryObject(select={"dimensions": [], "measures": COUNTS}, asOf="2024-02-01")
+    compiled = CompilationPipeline().compile(as_of, model, "duckdb")
+    assert con.execute(compiled.sql).fetchall() == [(1, None, 1)]
 
 
 @pytest.mark.parametrize(

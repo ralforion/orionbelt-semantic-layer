@@ -72,13 +72,15 @@ from orionbelt.compiler.resolution import (
 )
 from orionbelt.compiler.time_lookback import null_safe_eq
 from orionbelt.dialect.base import Dialect
-from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.semantic import CumulativeAggType, SemanticModel
 from orionbelt.models.types import parse_data_type
 
 _SOURCE = "fill_source"
 _RANGE = "fill_range"
 _SPINE = "fill_spine"
 _MEMBERS = "fill_members"
+#: The source's time on a row of the cumulative source union, NULL on an added one.
+_DATED = "fill_dated"
 _FILLED = "filled"
 
 _COUNTS = frozenset({"count", "count_distinct"})
@@ -166,7 +168,7 @@ def wrap_with_fill(
                 ),
             )
     joins.append(Join(join_type=JoinType.LEFT, source=_SOURCE, alias=_SOURCE, on=on))
-    cumulative_ctes, cumulative_values = _cumulative_ctes(
+    cumulative_ctes, cumulative_values, reach = _cumulative_ctes(
         resolved, time.name, others, model, dialect
     )
     ctes += cumulative_ctes
@@ -216,18 +218,21 @@ def wrap_with_fill(
             elif empty_values and alias in cumulative_values:
                 # The query's own value where the period has a row, so filling
                 # changes none of them.
+                value_cte = cumulative_values[alias]
+                filled_value = _apply_metric_cast(
+                    ColumnRef(name=alias, table=value_cte), alias, model, dialect
+                )
+                if alias in reach:
+                    # A count is 0 over the added rows alone; over no period
+                    # with rows it is NULL, as an ``asOf`` there answers.
+                    reached = BinaryOp(
+                        left=ColumnRef(name=reach[alias], table=value_cte),
+                        op=">",
+                        right=Literal.number(0),
+                    )
+                    filled_value = CaseExpr(when_clauses=[(reached, filled_value)])
                 value = CaseExpr(
-                    when_clauses=[
-                        (
-                            IsNull(expr=period),
-                            _apply_metric_cast(
-                                ColumnRef(name=alias, table=cumulative_values[alias]),
-                                alias,
-                                model,
-                                dialect,
-                            ),
-                        )
-                    ],
+                    when_clauses=[(IsNull(expr=period), filled_value)],
                     else_clause=ColumnRef(name=alias, table=_SOURCE),
                 )
             elif empty_values:
@@ -288,15 +293,21 @@ def _cumulative_ctes(
     others: list[str],
     model: SemanticModel,
     dialect: Dialect,
-) -> tuple[list[CTE], dict[str, str]]:
+) -> tuple[list[CTE], dict[str, str], dict[str, str]]:
     """The CTEs evaluating each cumulative metric at every spine period.
 
     Its windows read :attr:`ResolvedQuery.cumulative_sources`, one row per
     group and period with rows. A row per spine period and member without one
     is added, its base measure the NULL of the unmatched join, which no
     aggregate counts: the window over it reads the periods with rows, as the
-    cumulative pass's own window reads them. Returns the CTEs and, per metric,
-    the CTE holding its value under its name.
+    cumulative pass's own window reads them.
+
+    ``COUNT`` is the exception, 0 rather than NULL over the added rows alone,
+    so a count metric gets a companion counting the source rows its window
+    reaches (:data:`_DATED`, the source's time, NULL on an added row).
+
+    Returns the CTEs; per metric, the CTE holding its value under its name;
+    and per count metric, its companion's name in that CTE.
     """
     by_source: dict[str, list[ResolvedMeasure]] = {}
     for m in resolved.measures:
@@ -305,6 +316,7 @@ def _cumulative_ctes(
             by_source.setdefault(source, []).append(m)
     ctes: list[CTE] = []
     values: dict[str, str] = {}
+    reach: dict[str, str] = {}
     for index, (source, metrics) in enumerate(by_source.items(), 1):
         suffix = "" if index == 1 else f"_{index}"
         union_name = f"fill_cumulative_source{suffix}"
@@ -312,7 +324,10 @@ def _cumulative_ctes(
         names = [d.name for d in resolved.dimensions]
         member_of = {d.name: d.coalesce_alias or d.name for d in resolved.dimensions}
         with_rows = Select(
-            columns=[ColumnRef(name=name) for name in [*names, *bases]],
+            columns=[
+                *(ColumnRef(name=name) for name in [*names, *bases]),
+                AliasedExpr(expr=ColumnRef(name=time_name), alias=_DATED),
+            ],
             from_=From(source=source, alias=source),
         )
         on = _all_of(
@@ -356,6 +371,9 @@ def _cumulative_ctes(
         without_columns += [
             AliasedExpr(expr=ColumnRef(name=base, table=source), alias=base) for base in bases
         ]
+        without_columns.append(
+            AliasedExpr(expr=ColumnRef(name=time_name, table=source), alias=_DATED)
+        )
         without_rows = Select(
             columns=without_columns,
             from_=From(source=_SPINE, alias=_SPINE),
@@ -364,6 +382,17 @@ def _cumulative_ctes(
         )
         ctes.append(CTE(name=union_name, query=UnionAll(queries=[with_rows, without_rows])))
 
+        for m in metrics:
+            if m.cumulative_type is CumulativeAggType.COUNT:
+                reach[m.name] = f"fill_reach_{len(reach) + 1}"
+        metrics = [
+            *metrics,
+            *(
+                replace(m, name=reach[m.name], cumulative_measure=_DATED)
+                for m in metrics
+                if m.name in reach
+            ),
+        ]
         windowed = [m for m in metrics if not _is_rolling(m)]
         if windowed:
             name = f"fill_cumulative{suffix}"
@@ -396,7 +425,7 @@ def _cumulative_ctes(
             query = _rolling_query(union_name, same_axis, axis, list(partitions), resolved)
             ctes.append(CTE(name=name, query=query))
             values.update((m.name, name) for m in same_axis)
-    return ctes, values
+    return ctes, values, reach
 
 
 def _all_of(predicates: list[Expr]) -> Expr:

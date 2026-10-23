@@ -437,7 +437,7 @@ of its time dimension, also those without:
 | **Other dimensions** | Crossed with the periods: every member the query returns, a NULL member included, gets every period |
 | **Empty values** | A count is `0`, a measure with a `defaultValue` reads it, anything else is `NULL`, a derived metric included |
 | **Rows without a period** | A row whose time is NULL (an order without a date) stays a row of its own |
-| **Cumulative metrics** | An empty period shows what its window holds as of that period: a running total carries the last value on, a rolling window drops the periods it no longer reaches, a grain-to-date metric starts again in a new year or quarter and is `NULL` until it has rows. A period with rows shows what it shows without `fill`, and a time filter does not shorten a window. The metric's `timeDimension` has to be the dimension being filled |
+| **Cumulative metrics** | An empty period shows what its window holds as of that period: a running total carries the last value on, a rolling window drops the periods it no longer reaches, a grain-to-date metric starts again in a new year or quarter and is `NULL` until it has rows. A window that reaches no period with rows is `NULL`, a `cumulativeType: count` one included, as `asOf` answers there. A period with rows shows what it shows without `fill`, and a time filter does not shorten a window. The metric's `timeDimension` has to be the dimension being filled |
 | **ORDER BY, LIMIT** | Apply to the filled rows |
 
 The empty periods are added to the rows the query computed, so a feature that
