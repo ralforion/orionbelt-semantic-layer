@@ -384,7 +384,7 @@ class TestCompilerGeneratedCalls:
         # literal and the call is left exactly as the planner built it.
         assert rendered["bigquery"] == "DATE_TRUNC(`Sales`.`salesdate`, MONTH)"
         # ClickHouse and MySQL never went through date_trunc at all.
-        assert rendered["clickhouse"] == 'toStartOfMonth("Sales"."salesdate")'
+        assert rendered["clickhouse"] == 'dateTrunc(\'month\', toDate32("Sales"."salesdate"))'
         assert "DATE_FORMAT" in rendered["mysql"]
 
 
@@ -407,7 +407,7 @@ class TestWeekStart:
     @pytest.mark.parametrize(
         ("dialect", "expected"),
         [
-            ("clickhouse", 'toStartOfWeek("S].[D", 0)'),
+            ("clickhouse", '(toDate32("S].[D") - toDayOfWeek("S].[D", 2))'),
             ("bigquery", "DATE_TRUNC(`S].[D`, WEEK)"),
             ("mysql", "DATE(DATE_SUB(`S].[D`, INTERVAL DAYOFWEEK(`S].[D`) - 1 DAY))"),
             (
@@ -460,7 +460,7 @@ class TestWeekStart:
             token in sql for token in ("DATEADD", "TIMESTAMPADD", "DATE_SUB", "- ")
         )
         if subtracts_days:
-            assert "DATE_TRUNC('day'" in sql or "DATE(" in sql, (
+            assert any(day in sql for day in ("DATE_TRUNC('day'", "DATE(", "toDate32(")), (
                 f"{dialect} steps back from the value rather than from its day: {sql}"
             )
 
