@@ -299,16 +299,16 @@ def _assert_cumulative(target: VendorTarget) -> None:
         (APR, _d(11), _d(10), None, _d(1.5)),
         (date(2024, 5, 1), _d(11), None, None, _d(1.5)),
     ], target.name
-    # A count over no period with rows is NULL, not the 0 of COUNT over none.
+    # A count is never NULL: over no period with rows it counts 0.
     counts = ["Running Period Count", "Rolling Period Count", "Period Count QTD"]
     wider = [{"field": "Order Month", "op": "between", "value": ["2023-12-01", "2024-05-31"]}]
     assert _cumulative(target, model, ["Order Month"], counts, wider) == [
-        (date(2023, 12, 1), None, None, None),
+        (date(2023, 12, 1), _d(0), _d(0), _d(0)),
         (JAN, _d(1), _d(1), _d(1)),
-        (FEB, _d(1), None, _d(1)),
+        (FEB, _d(1), _d(0), _d(1)),
         (MAR, _d(2), _d(1), _d(2)),
-        (APR, _d(2), None, None),
-        (date(2024, 5, 1), _d(2), None, None),
+        (APR, _d(2), _d(0), _d(0)),
+        (date(2024, 5, 1), _d(2), _d(0), _d(0)),
     ], target.name
     by_region = _cumulative(
         target, model, ["Region", "Order Month"], ["Running Revenue", "Rolling Revenue"], []
