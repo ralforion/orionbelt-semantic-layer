@@ -106,15 +106,17 @@ The `timeGrain` is rendered differently per dialect:
 === "ClickHouse"
 
     ```sql
-    toStartOfMonth("order_date")
-    toStartOfYear("order_date")
-    toStartOfQuarter("order_date")
-    toMonday("order_date")        -- week
-    toDate("order_date")          -- day
-    toStartOfHour("order_date")
-    toStartOfMinute("order_date")
-    toStartOfSecond("order_date")
+    dateTrunc('month', toDate32("order_date"))
+    dateTrunc('year', toDate32("order_date"))
+    dateTrunc('quarter', toDate32("order_date"))
+    dateTrunc('week', toDate32("order_date"))     -- week (Monday)
+    toDate32("order_date")                        -- day
+    dateTrunc('hour', toStartOfSecond("order_date" + toIntervalSecond(0) + toIntervalMicrosecond(0)))
+    dateTrunc('minute', toStartOfSecond("order_date" + toIntervalSecond(0) + toIntervalMicrosecond(0)))
+    toStartOfSecond("order_date" + toIntervalSecond(0) + toIntervalMicrosecond(0))
     ```
+
+    Not `toStartOfMonth` and its family: they return `Date` / `DateTime`, which start in 1970, so every month of 1959 read 1970-01-01 and `toDate` of 1959-12-31 read 2139. `toDate32` and `toStartOfSecond` floor a value before 1970 exactly, and `dateTrunc` keeps their wide types. `dateTrunc` is not applied to a timestamp directly because it rounds a fraction of a second before 1970 up (1959-12-31 23:59:59.987 fell in 1960). Adding zero seconds turns a date into a timestamp and zero microseconds a `DateTime` into the `DateTime64` that `toStartOfSecond` requires, leaving a finer scale as it is. `date_trunc('day', …)` in an expression is midnight of that kind rather than the day grain's `Date32`, so it can be truncated or added to as a timestamp.
 
 === "Databricks"
 

@@ -233,14 +233,19 @@ class TestClickHouseDialect:
         assert dialect.name == "clickhouse"
 
     def test_time_grain_month(self, dialect: ClickHouseDialect) -> None:
-        result = dialect.render_time_grain(col("dt"), TimeGrain.MONTH)
-        assert isinstance(result, FunctionCall)
-        assert result.name == "toStartOfMonth"
+        sql = dialect.compile_expr(dialect.render_time_grain(col("dt"), TimeGrain.MONTH))
+        assert sql == "dateTrunc('month', toDate32(\"dt\"))"
 
     def test_time_grain_year(self, dialect: ClickHouseDialect) -> None:
-        result = dialect.render_time_grain(col("dt"), TimeGrain.YEAR)
-        assert isinstance(result, FunctionCall)
-        assert result.name == "toStartOfYear"
+        sql = dialect.compile_expr(dialect.render_time_grain(col("dt"), TimeGrain.YEAR))
+        assert sql == "dateTrunc('year', toDate32(\"dt\"))"
+
+    def test_date_trunc_day_stays_a_timestamp(self, dialect: ClickHouseDialect) -> None:
+        """An expression may treat ``date_trunc('day', x)`` as a timestamp, so it
+        is midnight rather than the day grain's ``Date32``."""
+        sql = dialect._render_date_trunc("day", col("ts"))
+        assert sql.startswith("dateTrunc('day', toStartOfSecond(")
+        assert "toDate32" not in sql
 
     def test_cast_to_int(self, dialect: ClickHouseDialect) -> None:
         result = dialect.render_cast(col("val"), "INT")

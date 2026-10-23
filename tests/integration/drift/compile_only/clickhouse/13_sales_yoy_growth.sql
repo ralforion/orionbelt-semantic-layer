@@ -2,7 +2,7 @@ WITH "date_range" AS (
 SELECT MIN("__ob_pop_src"."__ob_bucket") AS min_date,
        MAX("__ob_pop_src"."__ob_bucket") AS max_date
   FROM (
-    SELECT toStartOfMonth("Sales"."salesdate") AS "__ob_bucket"
+    SELECT dateTrunc('month', toDate32("Sales"."salesdate")) AS "__ob_bucket"
       FROM "orionbelt_1"."sales" AS "Sales"
   ) AS "__ob_pop_src"
 ),
@@ -16,7 +16,7 @@ FROM (SELECT arrayJoin(range(0, toUInt32(dateDiff('month', (SELECT min_date FROM
 SELECT "date_spine".spine_date AS "Sales Month",
        CAST(round(toDecimal256(toString(SUM("__ob_pop_src"."Sales__salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
   FROM (
-    SELECT toStartOfMonth("Sales"."salesdate") AS "__ob_bucket",
+    SELECT dateTrunc('month', toDate32("Sales"."salesdate")) AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
       FROM "orionbelt_1"."sales" AS "Sales"
   ) AS "__ob_pop_src"
@@ -27,7 +27,7 @@ UNION ALL
 SELECT (SELECT spine_date FROM "date_spine" WHERE 1 = 0) AS "Sales Month",
        CAST(round(toDecimal256(toString(SUM("__ob_pop_src"."Sales__salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
   FROM (
-    SELECT toStartOfMonth("Sales"."salesdate") AS "__ob_bucket",
+    SELECT dateTrunc('month', toDate32("Sales"."salesdate")) AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
       FROM "orionbelt_1"."sales" AS "Sales"
   ) AS "__ob_pop_src"

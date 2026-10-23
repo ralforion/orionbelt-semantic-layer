@@ -64,7 +64,7 @@ query = QueryObject(
     LIMIT 1000
     ```
 
-    **Key traits:** Double-quoted identifiers, `Decimal(p, s)` type syntax, custom time functions (`toStartOfMonth()`, `toStartOfYear()`), native type conversion (`toInt64()`, `toFloat64()`).
+    **Key traits:** Double-quoted identifiers, `Decimal(p, s)` type syntax, time grains over `dateTrunc()` and `toDate32()`, which hold dates before 1970, native type conversion (`toInt64()`, `toFloat64()`).
 
 === "Databricks"
 
@@ -173,7 +173,7 @@ If the query included `"Order Date:month"` as a dimension:
 === "ClickHouse"
 
     ```sql
-    toStartOfMonth("Orders"."ORDER_DATE") AS "Order Date"
+    dateTrunc('month', toDate32("Orders"."ORDER_DATE")) AS "Order Date"
     ```
 
 === "Databricks"

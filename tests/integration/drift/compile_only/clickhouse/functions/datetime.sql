@@ -2,13 +2,13 @@
 
 -- date_trunc(unit, x)
 --   date_trunc('month', DATE '2026-08-15') = '2026-08-01'
-DATE_TRUNC('month', CAST('2026-08-15' AS Nullable(Date)));
+dateTrunc('month', toDate32(CAST('2026-08-15' AS Nullable(Date))));
 --   date_trunc('quarter', DATE '2026-08-15') = '2026-07-01'
-DATE_TRUNC('quarter', CAST('2026-08-15' AS Nullable(Date)));
+dateTrunc('quarter', toDate32(CAST('2026-08-15' AS Nullable(Date))));
 --   date_trunc('week', DATE '2026-08-15') = '2026-08-10'
-DATE_TRUNC('week', CAST('2026-08-15' AS Nullable(Date)));
+dateTrunc('week', toDate32(CAST('2026-08-15' AS Nullable(Date))));
 --   date_trunc('year', DATE '2026-08-15') = '2026-01-01'
-DATE_TRUNC('year', CAST('2026-08-15' AS Nullable(Date)));
+dateTrunc('year', toDate32(CAST('2026-08-15' AS Nullable(Date))));
 
 -- date_add(unit, n, x)
 --   date_add('day', 5, DATE '2026-08-01') = '2026-08-06'
@@ -26,7 +26,7 @@ date_add(QUARTER, 1 + 1, CAST('2026-01-01' AS Nullable(Date)));
 --   date_diff('day', DATE '2026-08-01', DATE '2026-08-15') = 14
 date_diff('day', CAST('2026-08-01' AS Nullable(Date)), CAST('2026-08-15' AS Nullable(Date)));
 --   date_diff('week', DATE '2026-08-09', DATE '2026-08-15') = 1
-intDiv(date_diff('day', DATE_TRUNC('week', CAST('2026-08-09' AS Nullable(Date))), DATE_TRUNC('week', CAST('2026-08-15' AS Nullable(Date)))), 7);
+intDiv(date_diff('day', dateTrunc('week', toDate32(CAST('2026-08-09' AS Nullable(Date)))), dateTrunc('week', toDate32(CAST('2026-08-15' AS Nullable(Date))))), 7);
 --   date_diff('day', DATE '2026-08-15', DATE '2026-08-01') = -14
 date_diff('day', CAST('2026-08-15' AS Nullable(Date)), CAST('2026-08-01' AS Nullable(Date)));
 --   date_diff('month', DATE '2026-01-31', DATE '2026-03-01') = 2

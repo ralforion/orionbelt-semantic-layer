@@ -695,7 +695,7 @@ dimensions:
     timeGrain: month
 ```
 
-This generates `date_trunc('month', col)` in Postgres/Snowflake or `toStartOfMonth(col)` in ClickHouse.
+This generates `date_trunc('month', col)` in Postgres/Snowflake or `dateTrunc('month', toDate32(col))` in ClickHouse.
 
 You can also apply time grain at query time using the `"dimension:grain"` syntax — see [Query Language](query-language.md).
 

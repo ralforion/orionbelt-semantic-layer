@@ -42,7 +42,10 @@ APPROVED_RAWSQL: dict[str, int] = {
     # `toString` sits outside whatever spelling the argument compiled to. A
     # typed Cast node would say Decimal/String rather than "read this by value
     # rather than by storage", which is what the padding makes necessary.
-    "src/orionbelt/dialect/clickhouse.py": 1,
+    # And the period-over-period spine's truncation: the caller hands over SQL
+    # text, and wrapping it lets the grain's one truncation serve the spine,
+    # whose own copy read every month before 1970 as 1970-01.
+    "src/orionbelt/dialect/clickhouse.py": 2,
     # Week handling: each site re-wraps SQL the dialect just rendered, so that
     # one weekly floor serves the catalog function, the time-grain dimension
     # and the period-over-period spine rather than one implementation per

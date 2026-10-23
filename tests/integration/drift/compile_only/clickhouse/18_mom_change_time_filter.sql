@@ -2,9 +2,9 @@ WITH "date_range" AS (
 SELECT MIN("__ob_pop_src"."__ob_bucket") AS min_date,
        MAX("__ob_pop_src"."__ob_bucket") AS max_date
   FROM (
-    SELECT toStartOfMonth("Sales"."salesdate") AS "__ob_bucket"
+    SELECT dateTrunc('month', toDate32("Sales"."salesdate")) AS "__ob_bucket"
       FROM "orionbelt_1"."sales" AS "Sales"
-      WHERE (CAST(DATE_TRUNC('month', "Sales"."salesdate") AS Nullable(Date32)) >= '2021-03-01') AND (CAST(DATE_TRUNC('month', "Sales"."salesdate") AS Nullable(Date32)) < '2021-05-01')
+      WHERE (CAST(dateTrunc('month', toDate32("Sales"."salesdate")) AS Nullable(Date32)) >= '2021-03-01') AND (CAST(dateTrunc('month', toDate32("Sales"."salesdate")) AS Nullable(Date32)) < '2021-05-01')
   ) AS "__ob_pop_src"
 ),
 "date_spine" AS (
@@ -17,10 +17,10 @@ FROM (SELECT arrayJoin(range(0, toUInt32(dateDiff('month', (SELECT min_date FROM
 SELECT "date_spine".spine_date AS "Sales Month",
        CAST(round(toDecimal256(toString(SUM("__ob_pop_src"."Sales__salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
   FROM (
-    SELECT toStartOfMonth("Sales"."salesdate") AS "__ob_bucket",
+    SELECT dateTrunc('month', toDate32("Sales"."salesdate")) AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
       FROM "orionbelt_1"."sales" AS "Sales"
-      WHERE (CAST(DATE_TRUNC('month', "Sales"."salesdate") AS Nullable(Date32)) >= '2021-03-01') AND (CAST(DATE_TRUNC('month', "Sales"."salesdate") AS Nullable(Date32)) < '2021-05-01')
+      WHERE (CAST(dateTrunc('month', toDate32("Sales"."salesdate")) AS Nullable(Date32)) >= '2021-03-01') AND (CAST(dateTrunc('month', toDate32("Sales"."salesdate")) AS Nullable(Date32)) < '2021-05-01')
   ) AS "__ob_pop_src"
   JOIN "date_spine"
     ON "__ob_pop_src"."__ob_bucket" = "date_spine".spine_date
@@ -29,10 +29,10 @@ UNION ALL
 SELECT (SELECT spine_date FROM "date_spine" WHERE 1 = 0) AS "Sales Month",
        CAST(round(toDecimal256(toString(SUM("__ob_pop_src"."Sales__salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
   FROM (
-    SELECT toStartOfMonth("Sales"."salesdate") AS "__ob_bucket",
+    SELECT dateTrunc('month', toDate32("Sales"."salesdate")) AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
       FROM "orionbelt_1"."sales" AS "Sales"
-      WHERE (CAST(DATE_TRUNC('month', "Sales"."salesdate") AS Nullable(Date32)) >= '2021-03-01') AND (CAST(DATE_TRUNC('month', "Sales"."salesdate") AS Nullable(Date32)) < '2021-05-01')
+      WHERE (CAST(dateTrunc('month', toDate32("Sales"."salesdate")) AS Nullable(Date32)) >= '2021-03-01') AND (CAST(dateTrunc('month', toDate32("Sales"."salesdate")) AS Nullable(Date32)) < '2021-05-01')
   ) AS "__ob_pop_src"
   WHERE "__ob_pop_src"."__ob_bucket" IS NULL
   HAVING COUNT(*) > 0
@@ -41,7 +41,7 @@ SELECT (SELECT spine_date FROM "date_spine" WHERE 1 = 0) AS "Sales Month",
 SELECT MIN("__ob_pop_src"."__ob_bucket") AS min_date,
        MAX("__ob_pop_src"."__ob_bucket") AS max_date
   FROM (
-    SELECT toStartOfMonth("Sales"."salesdate") AS "__ob_bucket"
+    SELECT dateTrunc('month', toDate32("Sales"."salesdate")) AS "__ob_bucket"
       FROM "orionbelt_1"."sales" AS "Sales"
   ) AS "__ob_pop_src"
 ),
@@ -55,7 +55,7 @@ FROM (SELECT arrayJoin(range(0, toUInt32(dateDiff('month', (SELECT min_date FROM
 SELECT "date_spine_lookback".spine_date AS "Sales Month",
        CAST(round(toDecimal256(toString(SUM("__ob_pop_src"."Sales__salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
   FROM (
-    SELECT toStartOfMonth("Sales"."salesdate") AS "__ob_bucket",
+    SELECT dateTrunc('month', toDate32("Sales"."salesdate")) AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
       FROM "orionbelt_1"."sales" AS "Sales"
   ) AS "__ob_pop_src"
@@ -66,7 +66,7 @@ UNION ALL
 SELECT (SELECT spine_date FROM "date_spine_lookback" WHERE 1 = 0) AS "Sales Month",
        CAST(round(toDecimal256(toString(SUM("__ob_pop_src"."Sales__salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
   FROM (
-    SELECT toStartOfMonth("Sales"."salesdate") AS "__ob_bucket",
+    SELECT dateTrunc('month', toDate32("Sales"."salesdate")) AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
       FROM "orionbelt_1"."sales" AS "Sales"
   ) AS "__ob_pop_src"

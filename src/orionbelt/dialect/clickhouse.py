@@ -52,16 +52,49 @@ _NOT_SQL = re.compile(
     re.DOTALL,
 )
 
-_GRAIN_FUNCTIONS: dict[TimeGrain, str] = {
-    TimeGrain.YEAR: "toStartOfYear",
-    TimeGrain.QUARTER: "toStartOfQuarter",
-    TimeGrain.MONTH: "toStartOfMonth",
-    TimeGrain.WEEK: "toMonday",
-    TimeGrain.DAY: "toDate",
-    TimeGrain.HOUR: "toStartOfHour",
-    TimeGrain.MINUTE: "toStartOfMinute",
-    TimeGrain.SECOND: "toStartOfSecond",
-}
+
+def _floor_second(value: Expr) -> Expr:
+    """*value* as a ``DateTime64`` floored to its whole second.
+
+    ``toStartOfSecond`` floors a timestamp before 1970 exactly but takes only a
+    ``DateTime64``. Adding zero seconds turns a date into a timestamp (a
+    ``Date32`` into a ``DateTime64``) and adding zero microseconds a
+    ``DateTime`` into a ``DateTime64``, while a finer ``DateTime64`` keeps its
+    own scale; ``toDateTime64(x, 6)`` would round a nanosecond one up.
+    """
+    widened = BinaryOp(
+        left=BinaryOp(
+            left=value,
+            op="+",
+            right=FunctionCall(name="toIntervalSecond", args=[Literal.number(0)]),
+        ),
+        op="+",
+        right=FunctionCall(name="toIntervalMicrosecond", args=[Literal.number(0)]),
+    )
+    return FunctionCall(name="toStartOfSecond", args=[widened])
+
+
+def _truncate(value: Expr, unit: str) -> Expr:
+    """*value* floored to the start of *unit*, before 1970 as after.
+
+    The ``toStartOf*`` family answers ``Date`` / ``DateTime`` unless a setting
+    says otherwise, and both start in 1970: ``toStartOfMonth`` read 1960-02-15
+    as 1970-01-01, ``toDate`` as 2139-07-22 and ``toStartOfHour`` a 1960
+    timestamp as 2096. ``dateTrunc`` keeps ``Date32`` / ``DateTime64``, but
+    over a timestamp before 1970 with a fraction of a second it rounds up, so
+    1959-12-31 23:59:59.987 was in 1960. So a date grain truncates the
+    ``Date32`` day, which ``toDate32`` floors exactly, and a time grain the
+    whole second (:func:`_floor_second`). Measured on ClickHouse 26.7.
+    """
+    if unit in ("hour", "minute", "second"):
+        second = _floor_second(value)
+        if unit == "second":
+            return second
+        return FunctionCall(name="dateTrunc", args=[Literal.string(unit), second])
+    day = FunctionCall(name="toDate32", args=[value])
+    if unit == "day":
+        return day
+    return FunctionCall(name="dateTrunc", args=[Literal.string(unit), day])
 
 
 #: Aggregates whose result is numeric however their argument is typed, named as
@@ -443,10 +476,21 @@ class ClickHouseDialect(Dialect):
         return f"{sql}\n{STATEMENT_SETTINGS}"
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
-        func_name = _GRAIN_FUNCTIONS.get(grain)
-        if func_name:
-            return FunctionCall(name=func_name, args=[column])
-        return column
+        return _truncate(column, grain.value)
+
+    def _render_date_trunc(self, unit: str, value: Expr) -> str:
+        """The catalog's ``date_trunc``, which ``DATE_TRUNC`` rounded up before 1970.
+
+        A day stays a timestamp at midnight, as ``DATE_TRUNC('day', x)`` was,
+        rather than the grain's ``Date32``: an expression may go on to treat it
+        as one, and ``date_trunc('hour', date_trunc('day', x))`` failed over a
+        ``Date32``.
+        """
+        if unit == "day":
+            return self.compile_expr(
+                FunctionCall(name="dateTrunc", args=[Literal.string(unit), _floor_second(value)])
+            )
+        return self.compile_expr(_truncate(value, unit))
 
     def compile_group_by(self, group_by: list[Expr], grouping: str | None) -> str:
         """ClickHouse uses trailing-modifier form for ROLLUP / CUBE, not the
@@ -888,8 +932,13 @@ class ClickHouseDialect(Dialect):
         return f"toTimeZone({rendered}, {self._quote_zone(zone)})"
 
     def _render_week_start_sunday(self, value: Expr) -> str:
-        """ClickHouse: ``toStartOfWeek(x, 0)``, where mode 0 is a Sunday week."""
-        return f"toStartOfWeek({self.compile_expr(value)}, 0)"
+        """The day minus its weekday, where mode 2 numbers Sunday 0.
+
+        Not ``toStartOfWeek(x, 0)``, which answers a ``Date`` and read every
+        week before 1970 as 1970-01-01.
+        """
+        rendered = self.compile_expr(value)
+        return self._render_infix(f"toDate32({rendered}) - toDayOfWeek({rendered}, 2)")
 
     def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
         """ClickHouse takes the unit as a keyword, not a string: ``date_add('day',
@@ -1012,15 +1061,8 @@ class ClickHouseDialect(Dialect):
         return f"{func}({date_sql}, {count})"
 
     def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
-        grain_func_map: dict[str, str] = {
-            "year": "toStartOfYear",
-            "quarter": "toStartOfQuarter",
-            "month": "toStartOfMonth",
-            "week": "toMonday",
-            "day": "toDate",
-        }
-        func = grain_func_map.get(grain, "toDate")
-        return f"{func}({column_sql})"
+        # RawSQL: the caller already has SQL text; the truncation is the grain's.
+        return self.compile_expr(_truncate(RawSQL(sql=column_sql), grain))
 
     def render_date_spine_cte_sql(
         self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
