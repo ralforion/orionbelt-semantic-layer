@@ -409,7 +409,9 @@ Without `asOf` the metric is evaluated at the latest period with data under
 the query's filters. A time filter therefore picks the period: filtered to
 `Order Month < 2025-07-01`, year-to-date is June's, read from January. The
 plain measures respect the filter as usual. A group without data in the
-metric's range gets NULL, also with `cumulativeType: count`.
+metric's range gets NULL, except a count, which is never NULL: a
+`cumulativeType: count` metric, or a running `sum` of a count measure, reads
+`0` there.
 
 `asOf` has no effect on a cumulative metric whose time dimension is selected,
 and a query that sets it with no such metric compiles with a
@@ -437,7 +439,7 @@ of its time dimension, also those without:
 | **Other dimensions** | Crossed with the periods: every member the query returns, a NULL member included, gets every period |
 | **Empty values** | A count is `0`, a measure with a `defaultValue` reads it, anything else is `NULL`, a derived metric included |
 | **Rows without a period** | A row whose time is NULL (an order without a date) stays a row of its own |
-| **Cumulative metrics** | An empty period shows what its window holds as of that period: a running total carries the last value on, a rolling window drops the periods it no longer reaches, a grain-to-date metric starts again in a new year or quarter and is `NULL` until it has rows. A `cumulativeType: count` metric is never `NULL`: a window that reaches no period with rows counts `0`. A period with rows shows what it shows without `fill`, and a time filter does not shorten a window. The metric's `timeDimension` has to be the dimension being filled |
+| **Cumulative metrics** | An empty period shows what its window holds as of that period: a running total carries the last value on, a rolling window drops the periods it no longer reaches, a grain-to-date metric starts again in a new year or quarter and is `NULL` until it has rows. A count is never `NULL`: a `cumulativeType: count` metric, or a running `sum` of a count measure, reads `0` in a window that reaches no period with rows. A period with rows shows what it shows without `fill`, and a time filter does not shorten a window. The metric's `timeDimension` has to be the dimension being filled |
 | **ORDER BY, LIMIT** | Apply to the filled rows |
 
 The empty periods are added to the rows the query computed, so a feature that

@@ -1078,13 +1078,15 @@ class TestCompile:
             value = f"CAST({value} AS DOUBLE)"
         assert f'{name}(0.25) WITHIN GROUP (ORDER BY {value}) AS "Probe"' in sql
 
-    def test_count_without_having_is_read_as_is(self) -> None:
+    def test_count_without_having_is_0_where_no_group_is_read(self) -> None:
+        """A row of the query without a stage-2 group (one another fact
+        brought) counted none: 0, not the NULL of the unmatched join."""
         having_model = self._having_model(("Customers", "count", ""))
         sql = _compile(
             having_model,
             QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Customers"])),
         ).sql
-        assert "COALESCE" not in sql
+        assert 'COALESCE("reagg_1"."Customers"' in sql
 
     def test_derived_metric_rebuilt_over_components(self) -> None:
         probe_model, result = _resolve(
