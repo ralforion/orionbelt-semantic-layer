@@ -355,7 +355,8 @@ class QueryObject(BaseModel):
             "dimension, or else from the first and last period with data. Other "
             "dimensions are crossed with the periods, member by member as the query "
             "returns them. An empty period counts 0, reads a measure's defaultValue, "
-            "and is NULL otherwise."
+            "and is NULL otherwise; a cumulative metric shows its window as of that "
+            "period."
         ),
     )
 

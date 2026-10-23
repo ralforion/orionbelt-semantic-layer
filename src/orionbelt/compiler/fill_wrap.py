@@ -17,6 +17,13 @@ over no rows: a count is 0, a measure with a ``defaultValue`` reads it, and
 everything else is NULL. A row whose time is NULL (an order without a date) is
 no period, and is kept as it is rather than dropped by the join.
 
+A cumulative metric is the exception: its window reads other periods, so an
+empty period shows the value its row would have shown, over the periods with
+rows in its window (``fill_cumulative``, see :func:`_cumulative_ctes`). A
+running total carries on, a rolling window drops the periods it no longer
+reaches. The empty period's own 0 takes no part, so filling never changes the
+value of a period with rows.
+
 The range never cuts the data off: a bound is only taken where it lies outside
 the data, so a period with rows is always on the spine.
 """
@@ -44,6 +51,13 @@ from orionbelt.ast.nodes import (
     Select,
     SubqueryExpr,
     UnionAll,
+)
+from orionbelt.compiler.cumulative_wrap import (
+    _apply_metric_cast,
+    _is_rolling,
+    _partition_names,
+    _rolling_query,
+    _window_for,
 )
 from orionbelt.compiler.expr_rewrite import collect_referenced_tables, map_nodes
 from orionbelt.compiler.filter_resolution import conjuncts
@@ -152,6 +166,38 @@ def wrap_with_fill(
                 ),
             )
     joins.append(Join(join_type=JoinType.LEFT, source=_SOURCE, alias=_SOURCE, on=on))
+    cumulative_ctes, cumulative_values = _cumulative_ctes(
+        resolved, time.name, others, model, dialect
+    )
+    ctes += cumulative_ctes
+    spine_period = ColumnRef(name="spine_date", table=_SPINE)
+    for value_cte in dict.fromkeys(cumulative_values.values()):
+        joins.append(
+            Join(
+                join_type=JoinType.LEFT,
+                source=value_cte,
+                alias=value_cte,
+                on=_all_of(
+                    [
+                        BinaryOp(
+                            left=Cast(
+                                expr=ColumnRef(name=time.name, table=value_cte), type_name="date"
+                            ),
+                            op="=",
+                            right=spine_period,
+                        ),
+                        *(
+                            null_safe_eq(
+                                ColumnRef(name=d.name, table=value_cte),
+                                ColumnRef(name=d.coalesce_alias or d.name, table=_MEMBERS),
+                            )
+                            for d in resolved.dimensions
+                            if d.name != time.name
+                        ),
+                    ]
+                ),
+            )
+        )
 
     result_type = model.dimensions[time.dimension].result_type
 
@@ -167,6 +213,23 @@ def wrap_with_fill(
                 value = time_value
             elif alias in others:
                 value = ColumnRef(name=alias, table=member_table)
+            elif empty_values and alias in cumulative_values:
+                # The query's own value where the period has a row, so filling
+                # changes none of them.
+                value = CaseExpr(
+                    when_clauses=[
+                        (
+                            IsNull(expr=period),
+                            _apply_metric_cast(
+                                ColumnRef(name=alias, table=cumulative_values[alias]),
+                                alias,
+                                model,
+                                dialect,
+                            ),
+                        )
+                    ],
+                    else_clause=ColumnRef(name=alias, table=_SOURCE),
+                )
             elif empty_values:
                 value = _empty_value(measures.get(alias), ColumnRef(name=alias, table=_SOURCE))
             else:
@@ -217,6 +280,130 @@ def wrap_with_fill(
         offset=ast.offset,
         ctes=ctes,
     )
+
+
+def _cumulative_ctes(
+    resolved: ResolvedQuery,
+    time_name: str,
+    others: list[str],
+    model: SemanticModel,
+    dialect: Dialect,
+) -> tuple[list[CTE], dict[str, str]]:
+    """The CTEs evaluating each cumulative metric at every spine period.
+
+    Its windows read :attr:`ResolvedQuery.cumulative_sources`, one row per
+    group and period with rows. A row per spine period and member without one
+    is added, its base measure the NULL of the unmatched join, which no
+    aggregate counts: the window over it reads the periods with rows, as the
+    cumulative pass's own window reads them. Returns the CTEs and, per metric,
+    the CTE holding its value under its name.
+    """
+    by_source: dict[str, list[ResolvedMeasure]] = {}
+    for m in resolved.measures:
+        source = resolved.cumulative_sources.get(m.name)
+        if source is not None:
+            by_source.setdefault(source, []).append(m)
+    ctes: list[CTE] = []
+    values: dict[str, str] = {}
+    for index, (source, metrics) in enumerate(by_source.items(), 1):
+        suffix = "" if index == 1 else f"_{index}"
+        union_name = f"fill_cumulative_source{suffix}"
+        bases = list(dict.fromkeys(m.cumulative_measure or m.name for m in metrics))
+        names = [d.name for d in resolved.dimensions]
+        member_of = {d.name: d.coalesce_alias or d.name for d in resolved.dimensions}
+        with_rows = Select(
+            columns=[ColumnRef(name=name) for name in [*names, *bases]],
+            from_=From(source=source, alias=source),
+        )
+        on = _all_of(
+            [
+                BinaryOp(
+                    left=Cast(expr=ColumnRef(name=time_name, table=source), type_name="date"),
+                    op="=",
+                    right=ColumnRef(name="spine_date", table=_SPINE),
+                ),
+                *(
+                    null_safe_eq(
+                        ColumnRef(name=name, table=source),
+                        ColumnRef(name=member_of[name], table=_MEMBERS),
+                    )
+                    for name in names
+                    if name != time_name
+                ),
+            ]
+        )
+        joins: list[Join] = []
+        if others:
+            joins.append(Join(join_type=JoinType.CROSS, source=_MEMBERS, alias=_MEMBERS))
+        joins.append(Join(join_type=JoinType.LEFT, source=source, alias=source, on=on))
+        shown = dialect.cast_to_obml_type(
+            ColumnRef(name="spine_date", table=_SPINE),
+            parse_data_type(
+                model.dimensions[
+                    next(d.dimension for d in resolved.dimensions if d.name == time_name)
+                ].result_type.value
+            ),
+        )
+        without_columns: list[Expr] = [
+            AliasedExpr(
+                expr=shown
+                if name == time_name
+                else ColumnRef(name=member_of[name], table=_MEMBERS),
+                alias=name,
+            )
+            for name in names
+        ]
+        without_columns += [
+            AliasedExpr(expr=ColumnRef(name=base, table=source), alias=base) for base in bases
+        ]
+        without_rows = Select(
+            columns=without_columns,
+            from_=From(source=_SPINE, alias=_SPINE),
+            joins=list(joins),
+            where=IsNull(expr=ColumnRef(name=time_name, table=source)),
+        )
+        ctes.append(CTE(name=union_name, query=UnionAll(queries=[with_rows, without_rows])))
+
+        windowed = [m for m in metrics if not _is_rolling(m)]
+        if windowed:
+            name = f"fill_cumulative{suffix}"
+            ctes.append(
+                CTE(
+                    name=name,
+                    query=Select(
+                        columns=[
+                            *(AliasedExpr(expr=ColumnRef(name=n), alias=n) for n in names),
+                            *(
+                                AliasedExpr(
+                                    expr=_window_for(m, resolved, model, dialect), alias=m.name
+                                )
+                                for m in windowed
+                            ),
+                        ],
+                        from_=From(source=union_name, alias=union_name),
+                    ),
+                )
+            )
+            values.update((m.name, name) for m in windowed)
+        rolling: dict[tuple[str, tuple[str, ...]], list[ResolvedMeasure]] = {}
+        for m in metrics:
+            if _is_rolling(m):
+                assert m.cumulative_time_dimension is not None
+                key = (m.cumulative_time_dimension, tuple(_partition_names(m, resolved)))
+                rolling.setdefault(key, []).append(m)
+        for count, ((axis, partitions), same_axis) in enumerate(rolling.items(), 1):
+            name = f"fill_cumulative_rolling{suffix}" + ("" if count == 1 else f"_{count}")
+            query = _rolling_query(union_name, same_axis, axis, list(partitions), resolved)
+            ctes.append(CTE(name=name, query=query))
+            values.update((m.name, name) for m in same_axis)
+    return ctes, values
+
+
+def _all_of(predicates: list[Expr]) -> Expr:
+    result = predicates[0]
+    for predicate in predicates[1:]:
+        result = BinaryOp(left=result, op="AND", right=predicate)
+    return result
 
 
 def _alias(column: Expr) -> str:

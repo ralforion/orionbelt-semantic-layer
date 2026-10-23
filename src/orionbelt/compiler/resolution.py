@@ -996,6 +996,14 @@ class ResolvedQuery:
     aggregate reads its input only on flagged rows (see
     :func:`~orionbelt.compiler.cfl_projection.composite_aliases`)."""
 
+    cumulative_sources: dict[str, str] = field(default_factory=dict)
+    """Cumulative metrics the cumulative pass computes, mapped to the CTE its
+    windows read: one row per group and period with the metric's base measure,
+    over every period the window reads (past a time filter, too).
+
+    ``fill`` evaluates an empty period's value from it, as the window would
+    have, had the period had a row."""
+
     composite_cte: str | None = None
     """Name of the UNION ALL composite CTE, when the plan actually built one.
 
@@ -2431,10 +2439,14 @@ class QueryResolver:
         """Refuse ``fill`` where it has no single axis, or a feature reads the
         rows before the empty periods are added.
 
-        A window, cumulative or period-over-period metric and a total are
-        computed over the rows the query returns, so an empty period added
-        afterwards would show none of their values; ROLLUP / CUBE subtotals
-        and a HAVING would have to be evaluated again over it.
+        A window or period-over-period metric and a total are computed over
+        the rows the query returns, so an empty period added afterwards would
+        show none of their values; ROLLUP / CUBE subtotals and a HAVING would
+        have to be evaluated again over it. A cumulative metric is evaluated
+        for an empty period by the fill itself, from the periods its window
+        reads, unless it is not computed per period of the filled dimension:
+        one over another time dimension is evaluated as of a single period,
+        and one over a reaggregate metric by a later pass.
         """
         result = ctx.result
         grains = [(d.name, d.grain) for d in result.dimensions if d.grain is not None]
@@ -2480,7 +2492,17 @@ class QueryResolver:
                 ("ROLLUP / CUBE", result.grouping is not None),
                 ("having", bool(query.having)),
                 ("a total", result.has_totals),
-                ("a cumulative metric", result.has_cumulative),
+                (
+                    "a cumulative metric over a reaggregate metric",
+                    any(m.is_cumulative and m.cumulative_over_reaggregate for m in result.measures),
+                ),
+                (
+                    f"a cumulative metric over a time dimension other than '{name}'",
+                    any(
+                        m.is_cumulative and m.cumulative_time_dimension != name
+                        for m in result.measures
+                    ),
+                ),
                 ("a period-over-period metric", result.has_pop),
                 ("a window metric", result.has_window),
             )
