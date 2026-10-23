@@ -37,12 +37,26 @@ dataObjects:
       Order Date: {{code: order_date, abstractType: date}}
       Placed At: {{code: placed_at, abstractType: timestamp}}
       Shipped At: {{code: shipped_at, abstractType: timestamp}}
+      Placed Day Hour:
+        expression: "date_trunc('hour', date_trunc('day', {{Placed At}}))"
+        abstractType: timestamp
+      Shipped Day Hour:
+        expression: "date_trunc('hour', date_trunc('day', {{Shipped At}}))"
+        abstractType: timestamp
+      Placed Day Plus:
+        expression: "date_add('hour', 1, date_trunc('day', {{Placed At}}))"
+        abstractType: timestamp
+      Order Day Start: {{expression: "date_trunc('day', {{Order Date}})", abstractType: timestamp}}
       Placed Month: {{expression: "date_trunc('month', {{Placed At}})", abstractType: date}}
       Placed Week: {{expression: "date_trunc('week', {{Placed At}})", abstractType: date}}
 dimensions:
   Order Date: {{dataObject: Orders, column: Order Date, resultType: date}}
   Placed At: {{dataObject: Orders, column: Placed At, resultType: timestamp}}
   Shipped At: {{dataObject: Orders, column: Shipped At, resultType: timestamp}}
+  Placed Day Hour: {{dataObject: Orders, column: Placed Day Hour, resultType: timestamp}}
+  Shipped Day Hour: {{dataObject: Orders, column: Shipped Day Hour, resultType: timestamp}}
+  Placed Day Plus: {{dataObject: Orders, column: Placed Day Plus, resultType: timestamp}}
+  Order Day Start: {{dataObject: Orders, column: Order Day Start, resultType: timestamp}}
   Placed Month: {{dataObject: Orders, column: Placed Month, resultType: date}}
   Placed Week: {{dataObject: Orders, column: Placed Week, resultType: date}}
 """
@@ -73,6 +87,12 @@ TIME_GRAINS = {
     "Placed At:second": datetime.datetime(1959, 12, 31, 23, 59, 59),
     # A plain DateTime, which toStartOfSecond refused outright.
     "Shipped At:second": datetime.datetime(2026, 8, 15, 10, 30, 45),
+    # date_trunc('day', ...) in an expression stays a timestamp at midnight, so
+    # an hour of it, or an hour added to it, compiles.
+    "Placed Day Hour": datetime.datetime(1959, 12, 31),
+    "Shipped Day Hour": datetime.datetime(2026, 8, 15),
+    "Placed Day Plus": datetime.datetime(1959, 12, 31, 1),
+    "Order Day Start": datetime.datetime(1959, 12, 31),
 }
 
 

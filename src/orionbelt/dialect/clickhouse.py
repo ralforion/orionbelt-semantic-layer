@@ -53,6 +53,27 @@ _NOT_SQL = re.compile(
 )
 
 
+def _floor_second(value: Expr) -> Expr:
+    """*value* as a ``DateTime64`` floored to its whole second.
+
+    ``toStartOfSecond`` floors a timestamp before 1970 exactly but takes only a
+    ``DateTime64``. Adding zero seconds turns a date into a timestamp (a
+    ``Date32`` into a ``DateTime64``) and adding zero microseconds a
+    ``DateTime`` into a ``DateTime64``, while a finer ``DateTime64`` keeps its
+    own scale; ``toDateTime64(x, 6)`` would round a nanosecond one up.
+    """
+    widened = BinaryOp(
+        left=BinaryOp(
+            left=value,
+            op="+",
+            right=FunctionCall(name="toIntervalSecond", args=[Literal.number(0)]),
+        ),
+        op="+",
+        right=FunctionCall(name="toIntervalMicrosecond", args=[Literal.number(0)]),
+    )
+    return FunctionCall(name="toStartOfSecond", args=[widened])
+
+
 def _truncate(value: Expr, unit: str) -> Expr:
     """*value* floored to the start of *unit*, before 1970 as after.
 
@@ -63,22 +84,10 @@ def _truncate(value: Expr, unit: str) -> Expr:
     over a timestamp before 1970 with a fraction of a second it rounds up, so
     1959-12-31 23:59:59.987 was in 1960. So a date grain truncates the
     ``Date32`` day, which ``toDate32`` floors exactly, and a time grain the
-    whole second, which ``toStartOfSecond`` does. Adding zero microseconds
-    makes a ``DateTime`` a ``DateTime64``, which ``toStartOfSecond`` requires,
-    and leaves a finer ``DateTime64`` at its own scale; ``toDateTime64(x, 6)``
-    would round a nanosecond one up too. Measured on ClickHouse 26.7.
+    whole second (:func:`_floor_second`). Measured on ClickHouse 26.7.
     """
     if unit in ("hour", "minute", "second"):
-        second = FunctionCall(
-            name="toStartOfSecond",
-            args=[
-                BinaryOp(
-                    left=value,
-                    op="+",
-                    right=FunctionCall(name="toIntervalMicrosecond", args=[Literal.number(0)]),
-                )
-            ],
-        )
+        second = _floor_second(value)
         if unit == "second":
             return second
         return FunctionCall(name="dateTrunc", args=[Literal.string(unit), second])
@@ -470,7 +479,17 @@ class ClickHouseDialect(Dialect):
         return _truncate(column, grain.value)
 
     def _render_date_trunc(self, unit: str, value: Expr) -> str:
-        """The catalog's ``date_trunc``, which ``DATE_TRUNC`` rounded up before 1970."""
+        """The catalog's ``date_trunc``, which ``DATE_TRUNC`` rounded up before 1970.
+
+        A day stays a timestamp at midnight, as ``DATE_TRUNC('day', x)`` was,
+        rather than the grain's ``Date32``: an expression may go on to treat it
+        as one, and ``date_trunc('hour', date_trunc('day', x))`` failed over a
+        ``Date32``.
+        """
+        if unit == "day":
+            return self.compile_expr(
+                FunctionCall(name="dateTrunc", args=[Literal.string(unit), _floor_second(value)])
+            )
         return self.compile_expr(_truncate(value, unit))
 
     def compile_group_by(self, group_by: list[Expr], grouping: str | None) -> str:
