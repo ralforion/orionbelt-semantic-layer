@@ -294,6 +294,8 @@ def wrap_with_cumulative(
 
     cte_name = "cumulative_base"
     over_cte = wraps_a_cte(ast)
+    # ``_value_ctes`` repoints a metric whose windows read a look-back copy.
+    resolved.cumulative_sources.update((m.name, cte_name) for m in cumulative_measures)
     base_cte = CTE(name=cte_name, query=_base_query(ast, resolved, model, dialect, over_cte))
     value_ctes = _value_ctes(
         ast,
@@ -519,6 +521,7 @@ def _value_ctes(
             source = f"cumulative_lookback{suffix}"
             base = _base_query(body, resolved, model, dialect, over_cte)
             ctes += [*added, CTE(name=source, query=base)]
+        resolved.cumulative_sources.update((m.name, source) for m in metrics)
 
         windowed = [m for m in metrics if not _is_rolling(m)]
         if windowed:

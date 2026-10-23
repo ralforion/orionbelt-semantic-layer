@@ -108,6 +108,51 @@ metrics:
     type: cumulative
     measure: Revenue
     timeDimension: Order Month
+  Rolling Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Month
+    window: 2
+  Revenue QTD:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Month
+    grainToDate: quarter
+  Running Average Orders:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: avg
+  Running Revenue By Time:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Time Month
+  Running Period Count:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: count
+  Rolling Period Count:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: count
+    window: 1
+  Period Count QTD:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: count
+    grainToDate: quarter
+  Average Per Order:
+    type: reaggregate
+    measure: Revenue
+    per: [Order Ref]
+    aggregation: avg
+  Running Average Per Order:
+    type: cumulative
+    measure: Average Per Order
+    timeDimension: Order Month
 """
 
 JAN, FEB, MAR, APR = date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1), date(2024, 4, 1)
@@ -438,6 +483,123 @@ def test_independent_facts_are_filled_together(
     ]
 
 
+CUMULATIVE = ["Running Revenue", "Rolling Revenue", "Revenue QTD", "Running Average Orders"]
+
+
+def _dated(rows: list[tuple], axis: int = 0) -> list[tuple]:
+    """The rows with a period, in order, numbers to two places: an undated
+    row's running value is the cumulative pass's own, not something the fill
+    adds, and a time filter types the running values float."""
+    dated = [
+        tuple(Decimal(f"{v:.2f}") if isinstance(v, float | Decimal) else v for v in row)
+        for row in rows
+        if row[axis] is not None
+    ]
+    return sorted(dated, key=lambda r: tuple((v is None, v) for v in r[: axis + 1]))
+
+
+def test_an_empty_period_reads_its_cumulative_window_as_of_itself(
+    con: duckdb.DuckDBPyConnection, model: SemanticModel
+) -> None:
+    """February carries the running total, the rolling window and the quarter
+    on from January; a period with rows reads what it reads without the fill."""
+    query = {"select": {"dimensions": ["Order Month"], "measures": CUMULATIVE}}
+    filled = _dated(_rows(con, model, query))
+    assert filled == [
+        (JAN, *_d(1, 1, 1, 1)),
+        (FEB, *_d(1, 1, 1, 1)),
+        (MAR, *_d(11, 10, 11, 1.5)),
+    ]
+    compiled = CompilationPipeline().compile(QueryObject(**query), model, "duckdb")
+    unfilled = _dated(con.execute(compiled.sql).fetchall())
+    assert [row for row in filled if row[0] != FEB] == unfilled
+
+
+def test_a_cumulative_window_reads_past_the_filter_and_the_data(
+    con: duckdb.DuckDBPyConnection, model: SemanticModel
+) -> None:
+    """February reads January before the filter; April and May, after the
+    data, keep the running total while the rolling window and the quarter
+    run out."""
+    rows = _rows(
+        con,
+        model,
+        {
+            "select": {"dimensions": ["Order Month"], "measures": CUMULATIVE},
+            "where": [
+                {"field": "Order Month", "op": "between", "value": ["2024-02-01", "2024-05-31"]}
+            ],
+        },
+    )
+    assert _dated(rows) == [
+        (FEB, *_d(1, 1, 1, 1)),
+        (MAR, *_d(11, 10, 11, 1.5)),
+        (APR, *_d(11, 10, None, 1.5)),
+        (date(2024, 5, 1), *_d(11, None, None, 1.5)),
+    ]
+
+
+def test_a_cumulative_window_reads_its_own_member(
+    con: duckdb.DuckDBPyConnection, model: SemanticModel
+) -> None:
+    """Each region's empty months read that region's earlier months only, and
+    a timestamp dimension fills like a date."""
+    rows = _rows(
+        con,
+        model,
+        {
+            "select": {
+                "dimensions": ["Region", "Order Month"],
+                "measures": ["Running Revenue", "Rolling Revenue"],
+            }
+        },
+    )
+    assert _dated(rows, axis=1) == [
+        ("r1", JAN, *_d(1, 1)),
+        ("r1", FEB, *_d(1, 1)),
+        ("r1", MAR, *_d(1, None)),
+        ("r2", JAN, *_d(None, None)),
+        ("r2", FEB, *_d(None, None)),
+        ("r2", MAR, *_d(2, 2)),
+        (None, JAN, *_d(None, None)),
+        (None, FEB, *_d(None, None)),
+        (None, MAR, *_d(8, 8)),
+    ]
+    by_time = _rows(
+        con,
+        model,
+        {"select": {"dimensions": ["Order Time Month"], "measures": ["Running Revenue By Time"]}},
+    )
+    assert [(r[0].date(), *r[1:]) for r in _dated(by_time)] == [
+        (JAN, *_d(1)),
+        (FEB, *_d(1)),
+        (MAR, *_d(11)),
+    ]
+
+
+COUNTS = ["Running Period Count", "Rolling Period Count", "Period Count QTD"]
+
+
+def test_a_cumulative_count_over_no_period_with_rows_is_0(
+    con: duckdb.DuckDBPyConnection, model: SemanticModel
+) -> None:
+    """A count is never NULL: a window that reaches no period with rows counts
+    0 of them, in December before the first one, in February outside a
+    one-month window, and in April and May in a quarter without one."""
+    query = {
+        "select": {"dimensions": ["Order Month"], "measures": COUNTS},
+        "where": [{"field": "Order Month", "op": "between", "value": ["2023-12-01", "2024-05-31"]}],
+    }
+    assert _dated(_rows(con, model, query)) == [
+        (DEC, 0, 0, 0),
+        (JAN, 1, 1, 1),
+        (FEB, 1, 0, 1),
+        (MAR, 2, 1, 2),
+        (APR, 2, 0, 0),
+        (date(2024, 5, 1), 2, 0, 0),
+    ]
+
+
 @pytest.mark.parametrize(
     ("query", "code"),
     [
@@ -482,7 +644,11 @@ def test_independent_facts_are_filled_together(
             "FILL_COMBINATION_NOT_SUPPORTED",
         ),
         (
-            {"select": {"dimensions": ["Order Month"], "measures": ["Running Revenue"]}},
+            {"select": {"dimensions": ["Order Day:month"], "measures": ["Running Revenue"]}},
+            "FILL_COMBINATION_NOT_SUPPORTED",
+        ),
+        (
+            {"select": {"dimensions": ["Order Month"], "measures": ["Running Average Per Order"]}},
             "FILL_COMBINATION_NOT_SUPPORTED",
         ),
     ],
@@ -495,7 +661,8 @@ def test_independent_facts_are_filled_together(
         "rollup",
         "having",
         "total",
-        "cumulative",
+        "cumulative-other-time",
+        "cumulative-over-reaggregate",
     ],
 )
 def test_refused(model: SemanticModel, query: dict, code: str) -> None:

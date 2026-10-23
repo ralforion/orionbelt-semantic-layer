@@ -437,12 +437,14 @@ of its time dimension, also those without:
 | **Other dimensions** | Crossed with the periods: every member the query returns, a NULL member included, gets every period |
 | **Empty values** | A count is `0`, a measure with a `defaultValue` reads it, anything else is `NULL`, a derived metric included |
 | **Rows without a period** | A row whose time is NULL (an order without a date) stays a row of its own |
+| **Cumulative metrics** | An empty period shows what its window holds as of that period: a running total carries the last value on, a rolling window drops the periods it no longer reaches, a grain-to-date metric starts again in a new year or quarter and is `NULL` until it has rows. A `cumulativeType: count` metric is never `NULL`: a window that reaches no period with rows counts `0`. A period with rows shows what it shows without `fill`, and a time filter does not shorten a window. The metric's `timeDimension` has to be the dimension being filled |
 | **ORDER BY, LIMIT** | Apply to the filled rows |
 
 The empty periods are added to the rows the query computed, so a feature that
 reads those rows is refused with it: `grouping: rollup/cube`, `having`, a
-`total: true` measure, and cumulative, window and period-over-period metrics
-(`FILL_COMBINATION_NOT_SUPPORTED`). The SQL surfaces (OBSQL, Flight SQL, the
+`total: true` measure, window and period-over-period metrics, a cumulative
+metric over another time dimension, and a cumulative metric over a reaggregate
+metric (`FILL_COMBINATION_NOT_SUPPORTED`). The SQL surfaces (OBSQL, Flight SQL, the
 Postgres wire) have no `fill`.
 
 ## Filters
@@ -914,7 +916,7 @@ Invalid queries return error responses:
 | `DIMENSIONS_EXCLUDE_INSUFFICIENT` | 400 | `dimensionsExclude` with fewer than 2 dimensions |
 | `FILL_REQUIRES_ONE_TIME_DIMENSION` | 400 | `fill` without exactly one time-grained dimension typed `date` or `timestamp`, or with it inside a coalesce group |
 | `FILL_GRAIN_NOT_SUPPORTED` | 400 | `fill` over an hour, minute or second grain |
-| `FILL_COMBINATION_NOT_SUPPORTED` | 400 | `fill` with ROLLUP / CUBE, `having`, a total, or a cumulative, window or period-over-period metric |
+| `FILL_COMBINATION_NOT_SUPPORTED` | 400 | `fill` with ROLLUP / CUBE, `having`, a total, a window or period-over-period metric, or a cumulative metric over another time dimension or over a reaggregate metric |
 
 ## Semantics Summary
 

@@ -78,6 +78,47 @@ measures:
     aggregation: sum
     resultType: float
     defaultValue: 0
+metrics:
+  Running Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Month
+  Rolling Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Month
+    window: 2
+  Revenue QTD:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Month
+    grainToDate: quarter
+  Running Average Orders:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: avg
+  Running Period Count:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: count
+  Rolling Period Count:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: count
+    window: 1
+  Period Count QTD:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    cumulativeType: count
+    grainToDate: quarter
+  Running Revenue By Time:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Time Month
 """
 
 JAN, FEB, MAR, APR = date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1), date(2024, 4, 1)
@@ -208,6 +249,83 @@ def _assert_all(target: VendorTarget) -> None:
     ], target.name
 
 
+CUMULATIVE = ["Running Revenue", "Rolling Revenue", "Revenue QTD", "Running Average Orders"]
+
+
+def _cumulative(
+    target: VendorTarget,
+    model: SemanticModel,
+    dimensions: list[str],
+    measures: list[str],
+    where: list[dict],
+    fill: bool = True,
+) -> list[tuple]:
+    """The dated rows, NULL group last; an undated row's running value is the
+    cumulative pass's own and not what a fill adds."""
+    query = QueryObject(
+        select={"dimensions": dimensions, "measures": measures}, where=where, fill=fill
+    )
+    keys = [d.lower() for d in dimensions]
+    result = [
+        (
+            *(_day(row[k]) if "month" in k else row[k] for k in keys),
+            *(_number(row[m.lower()]) for m in measures),
+        )
+        for row in _run(target, model, query)
+        if all(row[k] is not None for k in keys if "month" in k)
+    ]
+    return sorted(result, key=lambda r: tuple((v is None, v) for v in r[: len(keys)]))
+
+
+def _assert_cumulative(target: VendorTarget) -> None:
+    """An empty period reads its window as of itself; a period with rows reads
+    what it reads without the fill."""
+    model = _prepare(target)
+    shown = _cumulative(target, model, ["Order Month"], CUMULATIVE, [])
+    assert shown == [
+        (JAN, _d(1), _d(1), _d(1), _d(1)),
+        (FEB, _d(1), _d(1), _d(1), _d(1)),
+        (MAR, _d(11), _d(10), _d(11), _d(1.5)),
+    ], target.name
+    unfilled = _cumulative(target, model, ["Order Month"], CUMULATIVE, [], fill=False)
+    assert [row for row in shown if row[0] != FEB] == unfilled, target.name
+    by_time = _cumulative(target, model, ["Order Time Month"], ["Running Revenue By Time"], [])
+    assert by_time == [(JAN, _d(1)), (FEB, _d(1)), (MAR, _d(11))], target.name
+    # The window reads January past the filter, and April and May past the data.
+    later = [{"field": "Order Month", "op": "between", "value": ["2024-02-01", "2024-05-31"]}]
+    assert _cumulative(target, model, ["Order Month"], CUMULATIVE, later) == [
+        (FEB, _d(1), _d(1), _d(1), _d(1)),
+        (MAR, _d(11), _d(10), _d(11), _d(1.5)),
+        (APR, _d(11), _d(10), None, _d(1.5)),
+        (date(2024, 5, 1), _d(11), None, None, _d(1.5)),
+    ], target.name
+    # A count is never NULL: over no period with rows it counts 0.
+    counts = ["Running Period Count", "Rolling Period Count", "Period Count QTD"]
+    wider = [{"field": "Order Month", "op": "between", "value": ["2023-12-01", "2024-05-31"]}]
+    assert _cumulative(target, model, ["Order Month"], counts, wider) == [
+        (date(2023, 12, 1), _d(0), _d(0), _d(0)),
+        (JAN, _d(1), _d(1), _d(1)),
+        (FEB, _d(1), _d(0), _d(1)),
+        (MAR, _d(2), _d(1), _d(2)),
+        (APR, _d(2), _d(0), _d(0)),
+        (date(2024, 5, 1), _d(2), _d(0), _d(0)),
+    ], target.name
+    by_region = _cumulative(
+        target, model, ["Region", "Order Month"], ["Running Revenue", "Rolling Revenue"], []
+    )
+    assert by_region == [
+        ("r1", JAN, _d(1), _d(1)),
+        ("r1", FEB, _d(1), _d(1)),
+        ("r1", MAR, _d(1), None),
+        ("r2", JAN, None, None),
+        ("r2", FEB, None, None),
+        ("r2", MAR, _d(2), _d(2)),
+        (None, JAN, None, None),
+        (None, FEB, None, None),
+        (None, MAR, _d(8), _d(8)),
+    ], target.name
+
+
 def test_duckdb_fill(vendor_duckdb: VendorTarget) -> None:
     _assert_all(vendor_duckdb)
 
@@ -238,3 +356,35 @@ def test_databricks_fill(vendor_databricks: VendorTarget) -> None:
 
 def test_dremio_fill(vendor_dremio: VendorTarget) -> None:
     _assert_all(vendor_dremio)
+
+
+def test_duckdb_fill_cumulative(vendor_duckdb: VendorTarget) -> None:
+    _assert_cumulative(vendor_duckdb)
+
+
+def test_postgres_fill_cumulative(vendor_postgres: VendorTarget) -> None:
+    _assert_cumulative(vendor_postgres)
+
+
+def test_mysql_fill_cumulative(vendor_mysql: VendorTarget) -> None:
+    _assert_cumulative(vendor_mysql)
+
+
+def test_clickhouse_fill_cumulative(vendor_clickhouse: VendorTarget) -> None:
+    _assert_cumulative(vendor_clickhouse)
+
+
+def test_bigquery_fill_cumulative(vendor_bigquery: VendorTarget) -> None:
+    _assert_cumulative(vendor_bigquery)
+
+
+def test_snowflake_fill_cumulative(vendor_snowflake: VendorTarget) -> None:
+    _assert_cumulative(vendor_snowflake)
+
+
+def test_databricks_fill_cumulative(vendor_databricks: VendorTarget) -> None:
+    _assert_cumulative(vendor_databricks)
+
+
+def test_dremio_fill_cumulative(vendor_dremio: VendorTarget) -> None:
+    _assert_cumulative(vendor_dremio)
