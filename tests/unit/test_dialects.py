@@ -242,10 +242,9 @@ class TestClickHouseDialect:
 
     def test_date_trunc_day_stays_a_timestamp(self, dialect: ClickHouseDialect) -> None:
         """An expression may treat ``date_trunc('day', x)`` as a timestamp, so it
-        is midnight rather than the day grain's ``Date32``."""
+        is midnight in *x*'s zone rather than the day grain's ``Date32``."""
         sql = dialect._render_date_trunc("day", col("ts"))
-        assert sql.startswith("dateTrunc('day', toStartOfSecond(")
-        assert "toDate32" not in sql
+        assert sql == 'toDateTime64(toDate32("ts"), 0, timeZoneOf("ts" + toIntervalSecond(0)))'
 
     def test_cast_to_int(self, dialect: ClickHouseDialect) -> None:
         result = dialect.render_cast(col("val"), "INT")
