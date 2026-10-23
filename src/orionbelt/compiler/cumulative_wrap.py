@@ -117,9 +117,12 @@ def _build_cumulative_window(
     # beside its month, a week split across two months) would otherwise tie in
     # the ``ROWS`` frame, and the running value would depend on the order the
     # rows arrived in.
+    # NULLs last, said rather than left to the engine: MySQL, BigQuery and
+    # Databricks sort them first, and a running total there added a row
+    # without a date to January's.
     order_by = [
-        OrderByItem(expr=time_ref),
-        *(OrderByItem(expr=ColumnRef(name=d)) for d in axis_dims or []),
+        OrderByItem(expr=time_ref, nulls_last=True),
+        *(OrderByItem(expr=ColumnRef(name=d), nulls_last=True) for d in axis_dims or []),
     ]
     # The query's other dimensions partition the window, so the metric
     # accumulates per group (per country, per product, ...), then any
