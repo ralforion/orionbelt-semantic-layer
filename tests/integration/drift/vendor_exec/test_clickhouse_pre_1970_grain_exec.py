@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import re
+import zoneinfo
 
 import pytest
 
@@ -43,6 +44,14 @@ dataObjects:
       Shipped At: {{code: shipped_at, abstractType: timestamp}}
       Due Date: {{code: due_date, abstractType: date}}
       Opened On: {{code: opened_on, abstractType: date}}
+      Due Rarely: {{code: due_lc, abstractType: date}}
+      Shipped Rarely: {{code: shipped_lc, abstractType: timestamp}}
+      Cleared At: {{expression: "NULL", abstractType: timestamp}}
+      Due Rarely Day: {{expression: "date_trunc('day', {{Due Rarely}})", abstractType: timestamp}}
+      Shipped Rarely Day:
+        expression: "date_trunc('day', {{Shipped Rarely}})"
+        abstractType: timestamp
+      Cleared Day: {{expression: "date_trunc('day', {{Cleared At}})", abstractType: timestamp}}
       Due Day Start: {{expression: "date_trunc('day', {{Due Date}})", abstractType: timestamp}}
       Opened Day Start: {{expression: "date_trunc('day', {{Opened On}})", abstractType: timestamp}}
       Placed Day Hour:
@@ -64,6 +73,9 @@ dimensions:
   Due Date: {{dataObject: Orders, column: Due Date, resultType: date}}
   Due Day Start: {{dataObject: Orders, column: Due Day Start, resultType: timestamp}}
   Opened Day Start: {{dataObject: Orders, column: Opened Day Start, resultType: timestamp}}
+  Due Rarely Day: {{dataObject: Orders, column: Due Rarely Day, resultType: timestamp}}
+  Shipped Rarely Day: {{dataObject: Orders, column: Shipped Rarely Day, resultType: timestamp}}
+  Cleared Day: {{dataObject: Orders, column: Cleared Day, resultType: timestamp}}
   Placed Day Hour: {{dataObject: Orders, column: Placed Day Hour, resultType: timestamp}}
   Shipped Day Hour: {{dataObject: Orders, column: Shipped Day Hour, resultType: timestamp}}
   Placed Day Plus: {{dataObject: Orders, column: Placed Day Plus, resultType: timestamp}}
@@ -76,7 +88,10 @@ SOURCE = (
     "(SELECT toDate32('1959-12-31') AS order_date, "
     "toDateTime64('1959-12-31 23:59:59.987', 3, 'UTC') AS placed_at, "
     "toDateTime('2026-08-15 10:30:45', 'UTC') AS shipped_at, "
-    "toDate('2140-01-01') AS due_date, toDate('1970-01-01') AS opened_on) \"Orders\""
+    "toDate('2140-01-01') AS due_date, toDate('1970-01-01') AS opened_on, "
+    "toLowCardinality(toDate('2140-01-01')) AS due_lc, "
+    "toLowCardinality(toDateTime('2026-08-15 01:30:00', 'Asia/Kolkata')) AS shipped_lc) "
+    '"Orders"'
 )
 
 DATE_GRAINS = {
@@ -140,3 +155,17 @@ def test_sunday_week_before_1970(vendor_clickhouse: VendorTarget) -> None:
     sunday = datetime.date(1959, 12, 27)
     assert _value(vendor_clickhouse, "Order Date:week", "sunday") == sunday
     assert _value(vendor_clickhouse, "Placed Week", "sunday") == sunday
+
+
+def test_day_start_of_low_cardinality_and_null(vendor_clickhouse: VendorTarget) -> None:
+    """``timeZoneOf`` refuses a ``LowCardinality`` type and a bare ``NULL``.
+
+    01:30 in Kolkata is the evening before in Europe, so midnight in any zone
+    but the column's own is a different instant.
+    """
+    kolkata = zoneinfo.ZoneInfo("Asia/Kolkata")
+    due = _value(vendor_clickhouse, "Due Rarely Day")
+    assert due.replace(tzinfo=None) == datetime.datetime(2140, 1, 1)  # type: ignore[attr-defined]
+    shipped = _value(vendor_clickhouse, "Shipped Rarely Day")
+    assert shipped == datetime.datetime(2026, 8, 15, tzinfo=kolkata)
+    assert _value(vendor_clickhouse, "Cleared Day") is None

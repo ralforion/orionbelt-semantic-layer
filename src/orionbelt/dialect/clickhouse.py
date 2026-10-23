@@ -80,22 +80,28 @@ def _midnight(value: Expr) -> Expr:
     after 2106 (2140-01-01 read 2003-11-24), and ``toDateTime64`` read
     1970-01-01, a non-nullable ``Date``'s default, as 1970-01-02 on a server
     east of UTC. Midnight is in *value*'s own zone, which ``timeZoneOf`` reads
-    from the type; adding zero seconds gives a date the server's zone, as a
-    ``DateTime`` has, and only its type is read, so the value it wraps to does
-    not matter.
+    from a type and not a value, so that conversion's value does not matter:
+    it gives a date the server's zone, as a ``DateTime`` has, and drops a
+    ``LowCardinality`` wrapper, which ``timeZoneOf`` refuses. ``ifNull`` gives
+    a bare ``NULL`` (``Nullable(Nothing)``, also refused) the server's zone, so
+    ``date_trunc('day', NULL)`` is ``NULL``.
     """
-    zoned = BinaryOp(
-        left=value,
-        op="+",
-        right=FunctionCall(name="toIntervalSecond", args=[Literal.number(0)]),
+    typed = FunctionCall(name="toDateTime64", args=[value, Literal.number(0)])
+    zone = FunctionCall(
+        name="timeZoneOf",
+        args=[
+            FunctionCall(
+                name="ifNull",
+                args=[
+                    typed,
+                    FunctionCall(name="toDateTime64", args=[Literal.number(0), Literal.number(0)]),
+                ],
+            )
+        ],
     )
     return FunctionCall(
         name="toDateTime64",
-        args=[
-            FunctionCall(name="toDate32", args=[value]),
-            Literal.number(0),
-            FunctionCall(name="timeZoneOf", args=[zoned]),
-        ],
+        args=[FunctionCall(name="toDate32", args=[value]), Literal.number(0), zone],
     )
 
 
