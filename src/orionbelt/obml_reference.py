@@ -494,7 +494,8 @@ the final rows. Select it beside other measures (other facts too), in `having` a
   measure, an `avg` reaggregate metric, or a `min`/`max`/`median`/percentile
   one over either
 - Every `per` dimension already in the query (at its grain or finer):
-  `REAGGREGATE_NO_OP` warning
+  `REAGGREGATE_NO_OP` warning, except with `population: dimension`, which
+  lists every member and so is no no-op
 - Selects beside any measure or metric, including total/grain, filterContext,
   cumulative, period-over-period and window ones
 - A window metric may name it as its `measure`: the window runs over its

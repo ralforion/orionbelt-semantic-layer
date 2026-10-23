@@ -655,6 +655,22 @@ class TestCompile:
         )
         assert "REAGGREGATE_NO_OP" in {w.code for w in result.warnings}
 
+    def test_per_already_in_query_does_not_warn_with_dimension_population(self) -> None:
+        """Each group still has one value, but the metric lists every customer,
+        those without orders too: it changes the rows, so it is no no-op."""
+        probe_model, result = _resolve(
+            _with_metric(
+                "type: reaggregate\nmeasure: Revenue\nper: [Customer]\n"
+                "aggregation: sum\npopulation: dimension"
+            )
+        )
+        assert result.valid
+        result = _compile(
+            probe_model,
+            QueryObject(select=QuerySelect(dimensions=["Customer"], measures=["Probe"])),
+        )
+        assert "REAGGREGATE_NO_OP" not in {w.code for w in result.warnings}
+
     def test_refused_under_rollup(self, model: SemanticModel) -> None:
         query = QueryObject(
             select=QuerySelect(dimensions=["Country"], measures=["Avg Revenue per Customer"]),
