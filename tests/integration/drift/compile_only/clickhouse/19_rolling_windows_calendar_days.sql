@@ -1,7 +1,7 @@
 WITH "cumulative_base" AS (
 SELECT CAST(toDate32("Sales"."salesdate") AS Nullable(Date32)) AS "Sales Date", CAST(round(toDecimal256(toString(SUM("Sales"."salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
-WHERE CAST(dateTrunc('day', toStartOfSecond("Sales"."salesdate" + toIntervalSecond(0) + toIntervalMicrosecond(0))) AS Nullable(Date32)) >= '2021-02-01' AND CAST(dateTrunc('day', toStartOfSecond("Sales"."salesdate" + toIntervalSecond(0) + toIntervalMicrosecond(0))) AS Nullable(Date32)) < '2021-03-01'
+WHERE CAST(toDateTime64(toDate32("Sales"."salesdate"), 0, timeZoneOf(ifNull(toDateTime64("Sales"."salesdate", 0), toDateTime64(0, 0)))) AS Nullable(Date32)) >= '2021-02-01' AND CAST(toDateTime64(toDate32("Sales"."salesdate"), 0, timeZoneOf(ifNull(toDateTime64("Sales"."salesdate", 0), toDateTime64(0, 0)))) AS Nullable(Date32)) < '2021-03-01'
 GROUP BY ALL
 ),
 "cumulative_lookback" AS (

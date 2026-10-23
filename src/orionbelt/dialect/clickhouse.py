@@ -54,24 +54,55 @@ _NOT_SQL = re.compile(
 
 
 def _floor_second(value: Expr) -> Expr:
-    """*value* as a ``DateTime64`` floored to its whole second.
+    """*value*, a timestamp, as a ``DateTime64`` floored to its whole second.
 
     ``toStartOfSecond`` floors a timestamp before 1970 exactly but takes only a
-    ``DateTime64``. Adding zero seconds turns a date into a timestamp (a
-    ``Date32`` into a ``DateTime64``) and adding zero microseconds a
-    ``DateTime`` into a ``DateTime64``, while a finer ``DateTime64`` keeps its
-    own scale; ``toDateTime64(x, 6)`` would round a nanosecond one up.
+    ``DateTime64``. Adding zero microseconds makes a ``DateTime`` one and
+    leaves a finer ``DateTime64`` at its own scale; ``toDateTime64(x, 6)``
+    would round a nanosecond one up. A date is refused here, as
+    ``date_trunc('hour', <date>)`` always was: widening it with zero seconds
+    made a ``Date`` a ``DateTime``, which ends in 2106, and 2140-01-01 read
+    2003-11-24.
     """
     widened = BinaryOp(
-        left=BinaryOp(
-            left=value,
-            op="+",
-            right=FunctionCall(name="toIntervalSecond", args=[Literal.number(0)]),
-        ),
+        left=value,
         op="+",
         right=FunctionCall(name="toIntervalMicrosecond", args=[Literal.number(0)]),
     )
     return FunctionCall(name="toStartOfSecond", args=[widened])
+
+
+def _midnight(value: Expr) -> Expr:
+    """The start of *value*'s day as a ``DateTime64``, for a date or a timestamp.
+
+    The day is ``toDate32``'s, which is exact whatever the type. Converting a
+    ``Date`` to a timestamp directly is not: through ``DateTime`` it wraps
+    after 2106 (2140-01-01 read 2003-11-24), and ``toDateTime64`` read
+    1970-01-01, a non-nullable ``Date``'s default, as 1970-01-02 on a server
+    east of UTC. Midnight is in *value*'s own zone, which ``timeZoneOf`` reads
+    from a type and not a value, so that conversion's value does not matter:
+    it gives a date the server's zone, as a ``DateTime`` has, and drops a
+    ``LowCardinality`` wrapper, which ``timeZoneOf`` refuses. ``ifNull`` gives
+    a bare ``NULL`` (``Nullable(Nothing)``, also refused) the server's zone, so
+    ``date_trunc('day', NULL)`` is ``NULL``.
+    """
+    typed = FunctionCall(name="toDateTime64", args=[value, Literal.number(0)])
+    zone = FunctionCall(
+        name="timeZoneOf",
+        args=[
+            FunctionCall(
+                name="ifNull",
+                args=[
+                    typed,
+                    FunctionCall(name="toDateTime64", args=[Literal.number(0), Literal.number(0)]),
+                ],
+            )
+        ],
+    )
+    return FunctionCall(
+        name="toDateTime64",
+        args=[FunctionCall(name="toDate32", args=[value]), Literal.number(0), zone],
+    )
 
 
 def _truncate(value: Expr, unit: str) -> Expr:
@@ -487,9 +518,7 @@ class ClickHouseDialect(Dialect):
         ``Date32``.
         """
         if unit == "day":
-            return self.compile_expr(
-                FunctionCall(name="dateTrunc", args=[Literal.string(unit), _floor_second(value)])
-            )
+            return self.compile_expr(_midnight(value))
         return self.compile_expr(_truncate(value, unit))
 
     def compile_group_by(self, group_by: list[Expr], grouping: str | None) -> str:
