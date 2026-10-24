@@ -168,6 +168,7 @@ OBSL has no named-view-with-refinements concept. Queries are constructed fresh e
 | `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy`**) | Express via **calculations** (window functions) inside queries | OBSL is declarative; Malloy is per-query |
 | `Metric` `type: period_over_period` with 4 comparison modes | Pattern via `prior_period` style queries; renderer's <pre><code>big_value {<br> comparison_field = ...<br>}</code></pre> for visual deltas | OBSL has a dedicated metric type; Malloy treats it as "just write the query" |
 | `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Calculations (`rank()`, `lag()`, `first_value()`) inside queries | OBSL exposes these as declarative reusable metric types; Malloy keeps them per-query (matches the "expressive queries" philosophy) |
+| `Metric` `type: reaggregate`: a measure aggregated per `per` group, then again (`sum` / `avg` / `min` / `max` / `count` / `median` / percentiles / `first` / `last`) | A query pipeline: one stage groups by customer, the next (`->`) aggregates its output; a named view in a source can carry the stages | OBSL declares it as one reusable metric (with a first-stage `having`, `population: dimension`, `carryForward`); Malloy writes the stages per query or per view |
 
 **Different philosophies**: OBSL prefers reusable metric definitions (write once, every query gets PoP / window / cumulative). Malloy prefers expressive ad-hoc queries (write the comparison in the query itself). Either fits depending on whether you're publishing a metrics catalog or empowering analysts. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface.
 
@@ -252,6 +253,7 @@ The authoring story differs more than it looks at first glance:
 | Time grain | `TimeGrain` enum on dimensions/queries (year/quarter/month/week/day/hour/minute/second) | First-class field operators: `field.month`, `field.year_quarter`, `field.day_of_week`, etc. |
 | Period comparison | Dedicated `period_over_period` metric type (4 comparison modes) | Ad-hoc query patterns + `prior_period` techniques |
 | Cumulative / windowed | Dedicated `cumulative` metric type (running, rolling, grain-to-date) | `calculation:` declarations using window functions |
+| Empty periods | `fill: true` on a query returns every period of its time dimension in the `where` range | No documented construct |
 
 Malloy's time syntax is more ergonomic in a query; OBSL's metric types are more reusable across queries.
 
@@ -319,7 +321,7 @@ It's plausible to use both: Malloy as the analyst-facing modeling/exploration la
 
 ### To match OBSL, Malloy would need:
 
-1. **First-class cumulative & period-over-period metric types** — declarative versions of what's currently expressed per-query.
+1. **First-class cumulative, period-over-period and re-aggregation metric types** — declarative versions of what's currently expressed per-query.
 2. **Named secondary join paths** with per-query selection.
 3. **More warehouse dialects** — ClickHouse, Databricks, Dremio.
 4. **RDF/SPARQL graph surface** for governance/lineage.
@@ -338,3 +340,4 @@ It's plausible to use both: Malloy as the analyst-facing modeling/exploration la
 - Malloy: https://github.com/malloydata/malloy
 - Malloy Publisher (REST + MCP server for Malloy models): https://github.com/malloydata/publisher
 - Malloy docs: https://docs.malloydata.dev/
+- Malloy query stages and views: https://docs.malloydata.dev/documentation/language/query
