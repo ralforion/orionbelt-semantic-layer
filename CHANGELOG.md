@@ -4,9 +4,15 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.35.1] - 2026-10-24
+
 ### Fixed
 
-- **The UI's SPARQL editor and diagrams load behind a firewall.** 2.35.0 served the mermaid and ACE bundles from `/ui/vendor/`, a path firewalls deny as a PHP exploit probe (`/vendor/phpunit/...`). Behind the demo's load balancer both were refused: the SPARQL editor showed no query, and no ER or lineage diagram rendered. The bundles are now served from `bundles/`.
+- **The UI's SPARQL editor and diagrams load behind a firewall.** 2.35.0 served the mermaid and ACE bundles from `/ui/vendor/`, a path firewalls deny as a PHP exploit probe (`/vendor/phpunit/...`). Behind the demo's load balancer both were refused: the SPARQL editor showed no query, and no ER or lineage diagram rendered. The bundles are now served from `bundles/` (#635).
+
+### Docs
+
+- **The dbt, LookML and Malloy comparisons cover re-aggregation and empty periods.** Each page compares the `reaggregate` metric with the tool's documented route (no dbt metric type, a Looker derived table, a Malloy pipeline), and `fill` with dbt's `join_to_timespine` / `fill_nulls_with` and Looker's `allow_fill`; the overview gains a row for filling empty periods (#634).
 
 ## [2.35.0] - 2026-10-24
 
