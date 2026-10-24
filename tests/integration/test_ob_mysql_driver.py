@@ -494,6 +494,27 @@ class TestWhatTheADBCDriverReadsDifferently:
             cur.execute("SET SESSION sql_mode = DEFAULT")
             cur.close()
 
+    @pytest.mark.parametrize("sql_mode", ["", "NO_BACKSLASH_ESCAPES"])
+    def test_a_sequence_parameter_is_escaped_as_the_session_reads_it(
+        self, mysql_conn, sql_mode: str
+    ) -> None:
+        """PyMySQL escaped the elements of a sequence with backslashes whatever
+        the mode, so under NO_BACKSLASH_ESCAPES one ended its literal."""
+        cur = mysql_conn.cursor()
+        cur.execute(f"SET SESSION sql_mode = '{sql_mode}'")
+        try:
+            cur.execute("SELECT 1 WHERE 'known' IN %s", (("' ) OR 1=1 -- ",),))
+            assert cur.fetchall() == []
+            cur.execute("SELECT 1 WHERE X'27' IN %s", ((b"' ) OR 1=1 -- ",),))
+            assert cur.fetchall() == []
+            cur.execute("SELECT 'it''s' IN %s, 'a\\b' IN %s", (("x", ("it's",)), [r"a\b"]))
+            assert [tuple(int(v) for v in row) for row in cur.fetchall()] == [
+                (1, int(bool(sql_mode)))
+            ]
+        finally:
+            cur.execute("SET SESSION sql_mode = DEFAULT")
+            cur.close()
+
     def test_a_parameter_does_not_replace_the_last_statements_counts(self, mysql_conn) -> None:
         """A query before the statement (to learn the sql_mode) replaced what
         ROW_COUNT() and FOUND_ROWS() report about the one before."""

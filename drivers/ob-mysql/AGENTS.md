@@ -59,8 +59,11 @@ threads fetching 100k rows each took 21 s where one took 0.08 s.
 
 ## Vendor-Specific Notes
 
-- `format` paramstyle (`%s`, `%(name)s`) on both clients. PyMySQL escapes its parameters
-  itself. ADBC's own binding mangles durations, and MySQL cannot prepare every statement
+- `format` paramstyle (`%s`, `%(name)s`) on both clients, written by one renderer that walks
+  into lists, tuples and sets. On PyMySQL each value is written by PyMySQL's `literal()`, which
+  follows the session's `sql_mode`; its own handling of a sequence escapes the elements with
+  backslashes whatever the mode, which under `NO_BACKSLASH_ESCAPES` let `("' ) OR 1=1 -- ",)`
+  end its literal. ADBC's own binding mangles durations, and MySQL cannot prepare every statement
   (`SHOW ... LIKE ?`), so the driver writes most parameters into the statement as PyMySQL
   does: text as a quoted literal with the quote doubled (read alike under every `sql_mode`,
   takes the session's collation, accepted by `SHOW ... LIKE`), bytes as `X'..'`, everything

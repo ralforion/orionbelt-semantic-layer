@@ -52,6 +52,8 @@ def _pymysql_native(
     cursor.fetchall.return_value = rows or []
     cursor.rowcount = len(rows) if rows is not None else rowcount
     cursor.lastrowid = lastrowid
+    # PyMySQL's own rendering of one value, as the session's sql_mode reads it.
+    native.literal.side_effect = lambda value: f"<{value}>"
     return native
 
 
@@ -243,15 +245,19 @@ def test_cursor_execute_runs_the_statement() -> None:
     native = _pymysql_native(_ROWS_FIELDS, _ROWS)
     with _pymysql(native).cursor() as cur:
         assert cur.execute("SELECT 1") is cur
-    native.cursor.return_value.execute.assert_called_once_with("SELECT 1", None)
+    native.cursor.return_value.execute.assert_called_once_with("SELECT 1")
 
 
-def test_pymysql_escapes_its_own_parameters() -> None:
-    """PyMySQL reads the session's sql_mode from the server's status flags."""
+def test_pymysql_writes_every_value_nested_ones_too() -> None:
+    """PyMySQL writes a value as the session's sql_mode reads it, but escapes
+    the elements of a sequence with backslashes whatever the mode: under
+    NO_BACKSLASH_ESCAPES ``("' ) OR 1=1 -- ",)`` ended its literal."""
     native = _pymysql_native(_ROWS_FIELDS, _ROWS)
     with _pymysql(native).cursor() as cur:
-        cur.execute("SELECT %s", ["it's"])
-    native.cursor.return_value.execute.assert_called_once_with("SELECT %s", ["it's"])
+        cur.execute("SELECT %s IN %s, %%", ["it's", ("a", ["b", 2])])
+        cur.execute("SELECT %(x)s IN %(y)s", {"x": "k", "y": {"z"}})
+    statements = [c.args for c in native.cursor.return_value.execute.call_args_list]
+    assert statements == [("SELECT <it's> IN (<a>,(<b>,<2>)), %",), ("SELECT <k> IN (<z>)",)]
 
 
 _READ_MODE = "SELECT @@session.sql_mode"
@@ -432,7 +438,7 @@ def test_cursor_executemany_plain_sql() -> None:
     cur = _pymysql(native).cursor()
     cur.executemany("INSERT INTO t VALUES (%s, %s)", [(1, "a"), (2, "b")])
     calls = [c.args for c in native.cursor.return_value.execute.call_args_list]
-    assert calls == [("INSERT INTO t VALUES (%s, %s)", p) for p in [(1, "a"), (2, "b")]]
+    assert calls == [("INSERT INTO t VALUES (<1>, <a>)",), ("INSERT INTO t VALUES (<2>, <b>)",)]
 
 
 def test_cursor_executemany_obml_raises() -> None:
@@ -521,7 +527,7 @@ def test_obml_compile_and_execute() -> None:
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)), conn.cursor() as cur:
         cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
         assert len(cur.fetchall()) == 3
-    native.cursor.return_value.execute.assert_called_once_with(compiled_sql, None)
+    native.cursor.return_value.execute.assert_called_once_with(compiled_sql)
 
 
 def test_obml_rest_dialect_is_mysql() -> None:
@@ -552,4 +558,4 @@ def test_plain_sql_passthrough() -> None:
     with patch("httpx.post") as mock_post, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM orders")
     mock_post.assert_not_called()
-    native.cursor.return_value.execute.assert_called_once_with("SELECT COUNT(*) FROM orders", None)
+    native.cursor.return_value.execute.assert_called_once_with("SELECT COUNT(*) FROM orders")

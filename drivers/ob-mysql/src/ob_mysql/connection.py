@@ -47,9 +47,27 @@ def _mode_dependent(text: str) -> bool:
     return "\\" in text or "\x00" in text
 
 
-def _render(sql: str, parameters: Any, text: Callable[[str], str]) -> str:
-    """*sql* with its ``%s`` / ``%(name)s`` *parameters* written into it, for
-    the ADBC driver, whose own binding mangles durations.
+def _render(sql: str, parameters: Any, scalar: Callable[[Any], str]) -> str:
+    """*sql* with its ``%s`` / ``%(name)s`` *parameters* written into it, each
+    value by *scalar*. A list, tuple or set is ``(a,b)``, its elements written
+    by *scalar* too, at any depth: PyMySQL escapes the elements of one with
+    backslashes whatever the ``sql_mode``."""
+
+    def literal(value: Any) -> str:
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return "(" + ",".join(literal(v) for v in value) + ")"
+        return scalar(value)
+
+    if isinstance(parameters, dict):
+        return str(sql % _Named(parameters, literal))
+    if isinstance(parameters, (list, tuple)):
+        return str(sql % tuple(literal(v) for v in parameters))
+    return str(sql % literal(parameters))
+
+
+def _adbc_literal(text: Callable[[str], str]) -> Callable[[Any], str]:
+    """How one value is written for the ADBC driver, whose own binding mangles
+    durations.
 
     Text is a quoted literal, as PyMySQL writes it, so it takes the session's
     collation and goes wherever a quoted string does (``SHOW ... LIKE``). A
@@ -60,20 +78,14 @@ def _render(sql: str, parameters: Any, text: Callable[[str], str]) -> str:
     """
     from pymysql.converters import escape_item
 
-    def literal(value: Any) -> str:
+    def scalar(value: Any) -> str:
         if isinstance(value, str):
             return text(value) if _mode_dependent(value) else "'" + value.replace("'", "''") + "'"
         if isinstance(value, (bytes, bytearray, memoryview)):
             return "X'" + bytes(value).hex() + "'"
-        if isinstance(value, (list, tuple, set, frozenset)):
-            return "(" + ",".join(literal(v) for v in value) + ")"
         return str(escape_item(value, "utf8mb4"))
 
-    if isinstance(parameters, dict):
-        return str(sql % _Named(parameters, literal))
-    if isinstance(parameters, (list, tuple)):
-        return str(sql % tuple(literal(v) for v in parameters))
-    return str(sql % literal(parameters))
+    return scalar
 
 
 class _Named:
@@ -171,7 +183,7 @@ class Connection:
             bound.append(text)
             return "?"
 
-        statement = _render(sql, parameters, bind)
+        statement = _render(sql, parameters, _adbc_literal(bind))
         if not bound:
             return self._execute_adbc(statement)
         import adbc_driver_manager
@@ -185,7 +197,9 @@ class Connection:
         # A statement the server cannot prepare, such as SHOW ... LIKE: the
         # text is quoted for the mode the session is in now. Asking replaces
         # ROW_COUNT() and FOUND_ROWS(), which no such statement reads.
-        return self._execute_adbc(_render(sql, parameters, self._quote_for_session()))
+        return self._execute_adbc(
+            _render(sql, parameters, _adbc_literal(self._quote_for_session()))
+        )
 
     def _quote_for_session(self) -> Callable[[str], str]:
         """How the session reads a quoted literal now: with backslash escapes,
@@ -240,11 +254,12 @@ class Connection:
             cursor.close()
 
     def _execute_pymysql(self, sql: str, parameters: Any) -> _Result:
-        # PyMySQL escapes the parameters itself, as the session's sql_mode
-        # reads them.
+        # PyMySQL writes a value as the session's sql_mode reads it (it follows
+        # the server's status flags), but not the elements of a sequence.
+        statement = sql if parameters is None else _render(sql, parameters, self._native.literal)
         cursor = self._native.cursor()
         try:
-            cursor.execute(sql, parameters)
+            cursor.execute(statement)
             if cursor.description is None:
                 return _Result(
                     names=[],
