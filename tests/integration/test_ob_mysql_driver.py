@@ -7,12 +7,19 @@ needing a running API server.
     uv run pytest -m docker
 
 Skipped automatically when:
-- ob-mysql, testcontainers, or mysql-connector-python packages are not installed
+- ob-mysql, testcontainers, or pymysql packages are not installed
 - Docker is not running
+
+Every test runs through both of ob-mysql's clients: the ADBC MySQL driver
+(skipped where it is not installed: ``pip install dbc && dbc install mysql``)
+and PyMySQL, its fallback.
 """
 
 from __future__ import annotations
 
+import datetime
+import time
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Any
 
@@ -120,41 +127,59 @@ def _patch_compiler(sales_model: SemanticModel) -> Any:
     cursor_mod.compile_obml = original  # type: ignore[assignment]
 
 
+def _adbc_installed() -> bool:
+    try:
+        import adbc_driver_manager
+        import adbc_driver_manager.dbapi
+    except ImportError:
+        return False
+    try:
+        adbc_driver_manager.dbapi.connect(
+            driver=ob_mysql.ADBC_DRIVER, db_kwargs={"uri": "mysql://x@127.0.0.1:1/x"}
+        )
+    except adbc_driver_manager.Error as error:
+        return error.status_code != adbc_driver_manager.AdbcStatusCode.NOT_FOUND
+    return True
+
+
 @pytest.fixture(scope="module")
-def mysql_conn(_patch_compiler: Any):
-    """Spin up MySQL, seed data, return ob-mysql driver connection."""
+def mysql_server(_patch_compiler: Any):
+    """Spin up MySQL, seed data, return the connection arguments."""
     if not _docker_available():
         pytest.skip("Docker is not running")
 
-    import mysql.connector
+    import pymysql
 
     with MySqlContainer("mysql:8.0") as mysql_c:
-        # Seed data using mysql-connector as root
-        raw = mysql.connector.connect(
-            host=mysql_c.get_container_host_ip(),
-            port=int(mysql_c.get_exposed_port(3306)),
-            user="root",
-            password=mysql_c.root_password,
-            autocommit=True,
-        )
-        cur = raw.cursor()
-        for stmt in _SETUP_SQL.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                cur.execute(stmt)
-        cur.close()
+        server = {
+            "host": mysql_c.get_container_host_ip(),
+            "port": int(mysql_c.get_exposed_port(3306)),
+            "user": "root",
+            "password": mysql_c.root_password,
+        }
+        raw = pymysql.connect(**server, autocommit=True)
+        with raw.cursor() as cur:
+            for stmt in _SETUP_SQL.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    cur.execute(stmt)
         raw.close()
+        yield {**server, "database": "PUBLIC"}
 
-        # Connect via ob-mysql driver
-        conn = ob_mysql.connect(
-            host=mysql_c.get_container_host_ip(),
-            port=int(mysql_c.get_exposed_port(3306)),
-            user="root",
-            password=mysql_c.root_password,
-            database="PUBLIC",
-        )
-        yield conn
-        conn.close()
+
+# Ids that are not ``adbc``: the conftest skips a test carrying that keyword
+# unless ``-m adbc`` (the Postgres ADBC suite) is selected.
+@pytest.fixture(
+    scope="module", params=["adbc", "pymysql"], ids=["adbc_mysql_driver", "pymysql_client"]
+)
+def mysql_conn(request: pytest.FixtureRequest, mysql_server: dict[str, Any]):
+    """An ob-mysql connection through each client in turn."""
+    if request.param == "adbc" and not _adbc_installed():
+        pytest.skip("the ADBC MySQL driver is not installed (dbc install mysql)")
+    conn = ob_mysql.connect(**mysql_server, backend=request.param)
+    assert conn.backend == request.param
+    yield conn
+    conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -292,32 +317,56 @@ def _schema_of(conn, sql: str) -> pa.Schema:
     return schema
 
 
-class TestArrowSchemaComesFromMetadata:
-    """A column's Arrow type must not change with the rows that come back.
+def _table(conn, sql: str) -> pa.Table:
+    cur = conn.cursor()
+    cur.execute(sql)
+    table = cur.fetch_arrow_table()
+    cur.close()
+    return table
 
-    The mappings are asserted against a live server rather than a hand-written
-    ``description`` tuple, because two of them were wrong in a way only the
-    server could show: MySQL sends BIT as an integer rather than as bytes, and
-    sends SET as ``STRING`` plus a flag, with the value arriving as a Python
-    ``set``. Both built an array that the declared type would not take, which
-    fell through to inference and put the row-dependence back.
-    """
+
+#: Each column's type, through both clients: what ADBC and PyMySQL read
+#: differently is brought to one schema (see ``ob_mysql.arrow_types``).
+_ALL_TYPES_SCHEMA = {
+    "c_dec": pa.decimal128(18, 2),
+    "c_tiny": pa.int8(),
+    "c_bool": pa.int8(),
+    "c_small": pa.int16(),
+    "c_medium": pa.int32(),
+    "c_int": pa.int32(),
+    "c_big": pa.int64(),
+    "c_ubig": pa.uint64(),
+    "c_float": pa.float32(),
+    "c_double": pa.float64(),
+    "c_bit": pa.uint64(),
+    "c_date": pa.date32(),
+    "c_time": pa.duration("us"),
+    "c_dt": pa.timestamp("us"),
+    "c_ts": pa.timestamp("us"),
+    "c_year": pa.int16(),
+    "c_char": pa.string(),
+    "c_vchar": pa.string(),
+    "c_text": pa.string(),
+    "c_blob": pa.binary(),
+    "c_enum": pa.string(),
+    "c_set": pa.string(),
+    "c_json": pa.string(),
+    "c_bin": pa.binary(),
+}
+
+
+class TestArrowSchemaComesFromMetadata:
+    """A column's Arrow type must not change with the rows, or with the client."""
+
+    def test_every_type_maps_the_same_through_either_client(self, alltypes_conn) -> None:
+        schema = _schema_of(alltypes_conn, "SELECT * FROM alltypes")
+        assert {f.name: f.type for f in schema} == _ALL_TYPES_SCHEMA
 
     def test_every_type_survives_an_empty_result_unchanged(self, alltypes_conn) -> None:
-        """Populated and empty results agree on every column but the decimal."""
+        """The decimal included: its scale used to be read off the values."""
         populated = _schema_of(alltypes_conn, "SELECT * FROM alltypes")
         empty = _schema_of(alltypes_conn, "SELECT * FROM alltypes WHERE 1=0")
-
-        drifted = {
-            field.name: (str(field.type), str(empty.field(field.name).type))
-            for field in populated
-            if field.type != empty.field(field.name).type
-        }
-        # The decimal is the documented exception: MySQL discards the scale
-        # before ``description`` is built, so an empty result has nothing to
-        # read it from. Pinned here so the exception stays the only one.
-        assert set(drifted) == {"c_dec"}, f"columns drifted with the rows: {drifted}"
-        assert drifted["c_dec"] == ("decimal256(76, 2)", "decimal256(76, 0)")
+        assert populated == empty
 
     def test_all_null_column_keeps_the_type_of_a_populated_one(self, alltypes_conn) -> None:
         cur = alltypes_conn.cursor()
@@ -327,31 +376,8 @@ class TestArrowSchemaComesFromMetadata:
         populated = _schema_of(alltypes_conn, "SELECT c_bit, c_set, c_blob FROM alltypes")
         assert nulls == populated
 
-    def test_the_mappings_measured_against_the_server(self, alltypes_conn) -> None:
-        """Each of these was read off a live MySQL, not off the documentation."""
-        schema = _schema_of(alltypes_conn, "SELECT * FROM alltypes")
-        by_name = {field.name: field.type for field in schema}
-        assert by_name["c_bit"] == pa.uint64(), "BIT arrives as an int, not as bytes"
-        assert by_name["c_set"] == pa.string(), "SET arrives as a Python set"
-        assert by_name["c_enum"] == pa.string()
-        assert by_name["c_ubig"] == pa.uint64()
-        assert by_name["c_int"] == pa.int32()
-        assert by_name["c_tiny"] == pa.int8()
-        assert by_name["c_year"] == pa.int16()
-        assert by_name["c_float"] == pa.float32()
-        assert by_name["c_time"] == pa.duration("us")
-        assert by_name["c_text"] == pa.string()
-        assert by_name["c_blob"] == pa.binary()
-        assert by_name["c_bin"] == pa.binary()
-        assert by_name["c_json"] == pa.string()
-
     def test_a_wide_decimal_reports_one_width_for_every_filter(self, alltypes_conn) -> None:
-        """Two filters over one DECIMAL(65, 2) column must agree on the type.
-
-        Measuring the precision from the values and narrowing to decimal128
-        when they fit made the width a property of the rows, so the same
-        column answered decimal128 below 10^36 and decimal256 above it.
-        """
+        """Two filters over one DECIMAL(65, 2) column must agree on the type."""
         cur = alltypes_conn.cursor()
         cur.execute("DROP TABLE IF EXISTS wide_decimal")
         cur.execute("CREATE TABLE wide_decimal (d DECIMAL(65,2))")
@@ -360,25 +386,98 @@ class TestArrowSchemaComesFromMetadata:
 
         small = _schema_of(alltypes_conn, "SELECT d FROM wide_decimal WHERE d < 2")
         large = _schema_of(alltypes_conn, "SELECT d FROM wide_decimal WHERE d > 2")
-        both = _schema_of(alltypes_conn, "SELECT d FROM wide_decimal")
-        assert small == large == both
-        assert small.field("d").type == pa.decimal256(76, 2)
-
-        cur = alltypes_conn.cursor()
-        cur.execute("SELECT d FROM wide_decimal WHERE d > 2")
-        table = cur.fetch_arrow_table()
-        cur.close()
+        none = _schema_of(alltypes_conn, "SELECT d FROM wide_decimal WHERE d < 0")
+        assert small == large == none
+        assert small.field("d").type == pa.decimal256(65, 2)
+        table = _table(alltypes_conn, "SELECT d FROM wide_decimal WHERE d > 2")
         assert table.column(0)[0].as_py() == Decimal("9" * 40 + ".99")
 
     def test_values_survive_the_declared_types(self, alltypes_conn) -> None:
-        cur = alltypes_conn.cursor()
-        cur.execute("SELECT c_bit, c_set, c_ubig, c_dec FROM alltypes WHERE c_int = 4")
-        table = cur.fetch_arrow_table()
+        table = _table(
+            alltypes_conn,
+            "SELECT c_bit, c_set, c_ubig, c_dec, c_year, c_time, c_json FROM alltypes "
+            "WHERE c_int = 4",
+        )
+        assert table.to_pylist() == [
+            {
+                "c_bit": 170,
+                "c_set": "a,b",
+                "c_ubig": 18446744073709551615,
+                "c_dec": Decimal("2.55"),
+                "c_year": 2026,
+                "c_time": datetime.timedelta(hours=1, minutes=2, seconds=3),
+                "c_json": '{"k": 1}',
+            }
+        ]
+
+
+class TestWhatTheADBCDriverReadsDifferently:
+    """Each case was a failed result or a moved value through the ADBC driver
+    alone, and reads as PyMySQL reads it now."""
+
+    def test_a_time_outside_a_day(self, mysql_conn) -> None:
+        """ADBC reads TIME as a clock reading and refuses -838:59:59 or 25:00."""
+        table = _table(
+            mysql_conn,
+            "SELECT CAST('-838:59:59' AS TIME) AS low, CAST('25:00:00' AS TIME) AS high",
+        )
+        assert table.schema.types == [pa.duration("us"), pa.duration("us")]
+        assert table.to_pylist() == [
+            {
+                "low": -datetime.timedelta(hours=838, minutes=59, seconds=59),
+                "high": datetime.timedelta(hours=25),
+            }
+        ]
+
+    def test_a_zero_date_reads_as_null(self, mysql_conn) -> None:
+        cur = mysql_conn.cursor()
+        cur.execute("SET SESSION sql_mode = ''")
+        cur.execute("SELECT CAST('0000-00-00 00:00:00' AS DATETIME) AS z, DATE('2024-01-01') AS d")
+        assert cur.fetchall() == [(None, datetime.date(2024, 1, 1))]
+        cur.execute("SET SESSION sql_mode = DEFAULT")
         cur.close()
-        row = {name: table.column(name)[0].as_py() for name in table.column_names}
-        assert row["c_bit"] == 170
-        # A set has no order left by the time the connector hands it over, so
-        # the rendering sorts rather than inventing one.
-        assert row["c_set"] == "a,b"
-        assert row["c_ubig"] == 18446744073709551615
-        assert row["c_dec"] == Decimal("2.55")
+
+    def test_the_session_keeps_the_servers_time_zone(self, mysql_conn) -> None:
+        """The ADBC driver sets the session to UTC, moving NOW(), CURRENT_DATE
+        and every TIMESTAMP away from the server's zone."""
+        table = _table(mysql_conn, "SELECT @@session.time_zone = @@global.time_zone AS same")
+        assert table.column(0).to_pylist() == [1]
+
+    def test_parameters_are_escaped(self, mysql_conn) -> None:
+        cur = mysql_conn.cursor()
+        cur.execute("SELECT %s AS a, %s AS b, %s AS c", ("it's", None, 3))
+        assert cur.fetchall() == [("it's", None, 3)]
+        cur.close()
+
+
+def test_concurrent_fetches_stay_concurrent(mysql_conn, mysql_server) -> None:
+    """Ten threads, each with its own connection, fetching 100k rows at once.
+
+    mysql-connector-python released the GIL once or more per row, so ten such
+    fetches took 21 s where one took 0.08 s (#619). The bound here is loose on
+    purpose: it fails on that, not on a slow machine.
+    """
+    if mysql_conn.backend != "adbc":
+        pytest.skip("PyMySQL is bound by the GIL; its scaling depends on the Python build")
+    sql = (
+        "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000) "
+        "SELECT i, i * 2 FROM n"
+    )
+
+    def fetch(_: int) -> int:
+        conn = ob_mysql.connect(**mysql_server, backend=mysql_conn.backend)
+        cur = conn.cursor()
+        cur.execute("SET SESSION cte_max_recursion_depth = 100001")
+        cur.execute(sql)
+        rows = cur.fetch_arrow_table().num_rows
+        conn.close()
+        return rows
+
+    start = time.perf_counter()
+    assert fetch(0) == 100_000
+    alone = time.perf_counter() - start
+    with ThreadPoolExecutor(10) as pool:
+        start = time.perf_counter()
+        assert list(pool.map(fetch, range(10))) == [100_000] * 10
+        together = time.perf_counter() - start
+    assert together < 10 * alone + 2, f"one fetch {alone:.2f} s, ten at once {together:.2f} s"

@@ -101,9 +101,16 @@ driver.
 
 The vendor drivers each depend on that vendor's own client SDK
 (`snowflake-connector-python`, `databricks-sql-connector`,
-`google-cloud-bigquery`, `clickhouse-connect`, `mysql-connector-python`,
-`duckdb`, `adbc-driver-postgresql`), so this image carries the largest
-third-party tree of the three.
+`google-cloud-bigquery`, `clickhouse-connect`, `pymysql`,
+`adbc-driver-manager`, `duckdb`, `adbc-driver-postgresql`), so this image
+carries the largest third-party tree of the three.
+
+It also carries one native library that is not a Python package: the
+[ADBC Driver Foundry MySQL driver](https://github.com/adbc-drivers/mysql)
+(Apache-2.0), which `ob-mysql` reads MySQL through. It is installed by
+[`scripts/install_adbc_mysql.py`](scripts/install_adbc_mysql.py), pinned and
+checksummed, into `/opt/adbc/lib/` with its `LICENSE` and `NOTICE`. The API
+image built with `OB_EXTRA=flight` carries it too.
 
 ### `ralforion/orionbelt-semantic-layer-ui`
 

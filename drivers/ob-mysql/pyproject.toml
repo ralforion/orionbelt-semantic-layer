@@ -14,7 +14,8 @@ keywords = ["mysql", "semantic-layer", "obml", "db-api", "orionbelt"]
 requires-python = ">=3.12"
 dependencies = [
     "ob-driver-core>=0.1",
-    "mysql-connector-python>=8.0",
+    "adbc-driver-manager>=1.8",
+    "pymysql>=1.1",
     "pyarrow>=16.0",
 ]
 
@@ -59,7 +60,7 @@ files = ["src/ob_mysql"]
 
 # Untyped upstream - neither ships a py.typed marker.
 [[tool.mypy.overrides]]
-module = ["pyarrow.*"]
+module = ["pyarrow.*", "pymysql.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
