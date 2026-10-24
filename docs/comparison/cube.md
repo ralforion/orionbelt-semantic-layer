@@ -207,6 +207,20 @@ OBSL ships `static | scheduled | heartbeat | unknown` modes and exposes `GET /v1
 
 **Cube's multi-stage measures** (GA with Tesseract in v1.7) are the generic version of this axis: `multi_stage: true` with `group_by` / `reduce_by` / `add_group_by` directives expresses staged aggregations — ratios against a partition total, rankings, nested aggregates. OBSL covers those three with typed constructs: a `grain` / `total` override for the partition total, a `window` metric for rankings, and a [`reaggregate` metric](../guide/model-format.md#reaggregate-metrics) for a nested aggregate (`add_group_by` plus an outer aggregate: average revenue per customer, by country). More stages nest by naming one reaggregate metric as another's `measure`, and a metric's `having` keeps only the first-stage groups that meet a condition (customers with more than five orders), `population: dimension` takes the first stage from every member of the dimension (customers without orders count, at the measure's default), and window and cumulative metrics run over a reaggregated value, or a reaggregate over a cumulative one (the average month-end year-to-date); Cube chains stages as a DAG of its own. v1.7 added grain directives and filter directives on top. OBSL is cleaner and more portable where it has a first-class type; Cube is more flexible for shapes the type system didn't anticipate.
 
+### 4.3 Empty periods
+
+OBSL has a query-level option that fills the periods without rows in the compiled SQL, for any measure or metric. Cube has no such option: its general-purpose fill runs in the JavaScript SDK, after the query returned. The exception is a `rolling_window` measure (cumulative, trailing, to-date): queried with a granularity, Cube joins it to a date series generated in the SQL, so its empty periods come back from every API with the window carried. The legacy planner needs a `dateRange` for that; Tesseract takes the time dimension's min and max without one.
+
+| | OBSL | Cube |
+|---|---|---|
+| Where | Per query: `fill: true`, in the SQL | Client-side: `fillMissingDates` in the `pivotConfig` of the JS SDK's `ResultSet` (on by default); in the SQL only for `rolling_window` measures |
+| Range | The periods the query's `where` admits, crossed with every other dimension of the query | The query's `dateRange`; without one, between the first and last data point |
+| Empty value | A count is 0, a measure with a `defaultValue` reads it, anything else is NULL; a cumulative metric shows its window as of the period | `fillWithValue`, else 0, for every measure; a `rolling_window` measure its window as of the period |
+| Consumers | Every client of a query object (REST); not OBSQL, Flight SQL or the Postgres wire | JS SDK only, except `rolling_window` measures: the REST, GraphQL and SQL APIs otherwise return the rows the warehouse returned |
+| Limits | Not beside period-over-period or window metrics, ROLLUP / CUBE, `having` or totals (`FILL_COMBINATION_NOT_SUPPORTED`) | `fillMissingDates` overrides the query's `order` |
+
+See [Filling Empty Periods](../guide/query-language.md#filling-empty-periods-fill).
+
 See [Trend Analysis](../guide/trend-analysis.md) for OBSL's full v2.6 surface (window functions, statistical aggregates, dialect coverage matrix).
 
 ---
@@ -413,6 +427,7 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 | First-class PoP metric type | ✅ (4 comparison modes) | ❌ (`time_shift` at query time) |
 | First-class cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy`) | Partial (`rolling_window` only) |
 | First-class window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ | Via `type: number` + raw SQL |
+| Empty periods filled | ✅ in the SQL (`fill: true`), crossed with the other dimensions | Client-side in the JS SDK (`fillMissingDates`), with 0 or `fillWithValue` for every measure; in the SQL only for `rolling_window` measures |
 | Statistical aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) as first-class measure types | ✅ 9 declarative aggregations | Via `type: number` + raw SQL |
 | Multi-rooted DAG modeling | ✅ via CFL (`UNION ALL` legs, common root per leg) | ✅ via multi-fact views (per-fact subqueries `FULL JOIN`ed on shared dims) — **new in v1.7** |
 | Named secondary join paths, selectable per query | ✅ | ❌ (pin a path in a view at design time) |
@@ -488,6 +503,7 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 8. **First-class DB-API 2.0 drivers** for direct programmatic access from Python (PEP 249).
 9. **Interactive RDF/ontology graph visualization** in the playground (vis-network-style) — Cube Playground's schema browser is functional but not graph-shaped.
 10. **OSI ↔ Cube model round-trip** for portability between semantic layers.
+11. **A query-level fill option for any measure** — today only `rolling_window` measures get their empty periods in the SQL; for the rest, REST, GraphQL and SQL API consumers get no fill, and the SDK fills a count and every other measure alike with 0 rather than NULL.
 
 ---
 
@@ -510,6 +526,9 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 - Cube hierarchies: https://cube.dev/docs/product/data-modeling/reference/hierarchies
 - Cube calendar cubes: https://cube.dev/docs/product/data-modeling/concepts/calendar-cubes
 - Cube data access policies: https://cube.dev/docs/reference/data-modeling/data-access-policies
+- Cube JS SDK `fillMissingDates` / `fillWithValue`: https://docs.cube.dev/reference/javascript-sdk/reference/cubejs-client-core
+- Cube rolling-window date series (legacy planner, `dateRange` required): https://github.com/cube-js/cube/blob/master/packages/cubejs-schema-compiler/src/adapter/BaseQuery.ts
+- Cube multi-stage calculations (Tesseract: rolling windows without a date range): https://docs.cube.dev/docs/data-modeling/concepts/multi-stage-calculations
 - Cube pre-aggregations: https://cube.dev/docs/product/caching/using-pre-aggregations
 - Cube SQL API: https://cube.dev/docs/product/apis-integrations/sql-api
 - Cube Core v1.7 (Tesseract GA, 2026-07-08): https://cube.dev/blog/cube-core-v1-7-tesseract-ga-data-modeling-performance
