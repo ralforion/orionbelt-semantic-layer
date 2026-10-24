@@ -61,11 +61,16 @@ threads fetching 100k rows each took 21 s where one took 0.08 s.
 
 - `format` paramstyle (`%s`, `%(name)s`) on both clients. PyMySQL escapes its parameters
   itself. ADBC's own binding mangles text, bytes and durations, so the driver writes the
-  literals, with no query to learn the `sql_mode` (one would replace `ROW_COUNT()` /
-  `FOUND_ROWS()`). Text is `'...'` with each quote doubled, which every mode reads alike and
-  which keeps the session's collation and goes where `SHOW ... LIKE` takes a string. Text holding
-  a backslash or NUL (mode-dependent, or refused raw) is `_utf8mb4 X'..'`: mode-independent, but
-  compared under utf8mb4's default collation and refused by `SHOW`. Bytes are `X'..'`.
+  literals as PyMySQL does: text as a quoted literal (the session's collation, accepted by
+  `SHOW ... LIKE`), a quote doubled, a backslash and NUL escaped only when the session reads
+  escapes. The `sql_mode` is read when the connection opens and again after any statement that
+  mentions `sql_mode`, never before a statement (that would replace `ROW_COUNT()` /
+  `FOUND_ROWS()`). Under `NO_BACKSLASH_ESCAPES` a NUL has no quoted form: the quoted pieces are
+  joined by `CHAR(0 USING <charset>)` in a `CONCAT`, which keeps the session collation and a
+  literal's coercibility (not accepted by `SHOW`). A backslash or NUL in a statement that sets
+  its own `sql_mode` (a `SET_VAR` hint) is refused. Bytes are `X'..'`. Several review rounds
+  went through hex literals (`_utf8mb4 X'..'`): they take utf8mb4's default collation and
+  `SHOW` refuses them, so they are not used for text.
 - The ADBC driver is not on PyPI: `pip install dbc && dbc install mysql`. The Docker images
   install a pinned, checksummed release with `scripts/install_adbc_mysql.py`
   (`ADBC_DRIVER_PATH=/opt/adbc/drivers`).

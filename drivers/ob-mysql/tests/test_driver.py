@@ -59,10 +59,14 @@ def _pymysql(native: MagicMock, **kwargs: Any) -> Connection:
     return Connection(native, backend="pymysql", **kwargs)
 
 
-def _adbc_native(table: pa.Table | None = None, *, error: Exception | None = None) -> MagicMock:
-    """An ADBC connection whose cursor returns *table*, or raises *error*."""
+def _adbc_native(
+    table: pa.Table | None = None, *, error: Exception | None = None, sql_mode: str = ""
+) -> MagicMock:
+    """An ADBC connection whose cursor returns *table*, or raises *error*, and
+    whose session reports *sql_mode*."""
     native = MagicMock()
     cursor = native.cursor.return_value
+    cursor.fetchone.return_value = (sql_mode,)
     cursor.description = [(name, None) for name in table.column_names] if table else []
     cursor.rowcount = -1
     if error is not None:
@@ -107,7 +111,7 @@ def test_paramstyle() -> None:
 
 
 def test_connect_reads_through_adbc_when_the_driver_is_installed() -> None:
-    adbc = MagicMock()
+    adbc = _adbc_native()
     with (
         patch("ob_mysql._connect_adbc", return_value=adbc) as connect_adbc,
         patch("pymysql.connect") as connect_pymysql,
@@ -250,28 +254,68 @@ def test_pymysql_escapes_its_own_parameters() -> None:
     native.cursor.return_value.execute.assert_called_once_with("SELECT %s", ["it's"])
 
 
+_READ_MODE = "SELECT @@session.sql_mode"
+_PLAIN = "STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES"
+
+
 def _adbc_statements(native: MagicMock) -> list[str]:
-    return [c.args[0] for c in native.cursor.return_value.execute.call_args_list]
+    """What the connection ran after reading the session's sql_mode on opening."""
+    statements = [c.args[0] for c in native.cursor.return_value.execute.call_args_list]
+    assert statements[0] == _READ_MODE
+    return statements[1:]
 
 
 @pytest.mark.parametrize(
-    ("text", "literal"),
+    ("sql_mode", "text", "literal"),
     [
-        # Doubling the quote reads alike under every sql_mode, so no query
-        # learns the mode (one would replace ROW_COUNT() and FOUND_ROWS()), and
-        # the literal keeps the session's collation and goes where SHOW takes one.
-        ("it's ' OR 1=1 -- ", "'it''s '' OR 1=1 -- '"),
-        ("", "''"),
-        # A backslash means one thing or another by mode, and a raw NUL is
-        # refused: hex is the same in every mode.
-        ("a\\'b", "_utf8mb4 X'615c2762'"),
-        ("a\x00b", "_utf8mb4 X'610062'"),
+        # Quoted as PyMySQL quotes it: the session's collation, and accepted by
+        # SHOW ... LIKE. A doubled quote reads alike under every mode.
+        ("STRICT_TRANS_TABLES", "it's ' OR 1=1 -- ", "'it\\'s \\' OR 1=1 -- '"),
+        ("STRICT_TRANS_TABLES", "review\\_named", "'review\\\\_named'"),
+        ("STRICT_TRANS_TABLES", "a\x00b", "'a\\0b'"),
+        # A backslash is an ordinary character here; escaping the quote with
+        # one would end the literal and run the rest as SQL.
+        (_PLAIN, "it's \\' OR 1=1 -- ", "'it''s \\'' OR 1=1 -- '"),
+        (_PLAIN, "", "''"),
+        # No quoted form for a NUL there: the pieces around it, joined by one
+        # that keeps the session's collation and a literal's coercibility.
+        (_PLAIN, "a'\x00b", "CONCAT('a''', CHAR(0 USING utf8mb4), 'b')"),
     ],
 )
-def test_adbc_text_parameters(text: str, literal: str) -> None:
-    native = _adbc_native(pa.table({"v": ["x"]}))
+def test_adbc_text_parameters(sql_mode: str, text: str, literal: str) -> None:
+    native = _adbc_native(pa.table({"v": ["x"]}), sql_mode=sql_mode)
     Connection(native, backend="adbc").cursor().execute("SELECT %s", [text])
+    # No query before the statement: it would replace ROW_COUNT() / FOUND_ROWS().
     assert _adbc_statements(native) == [f"SELECT {literal}"]
+
+
+def test_the_charset_is_a_name() -> None:
+    """It is written into a NUL's ``CHAR(0 USING ...)``."""
+    with pytest.raises(ProgrammingError, match="character set"):
+        ob_mysql.connect(charset="utf8mb4) --")
+
+
+def test_adbc_rereads_the_mode_after_a_statement_that_sets_it() -> None:
+    native = _adbc_native(None)
+    cur = Connection(native, backend="adbc").cursor()
+    native.cursor.return_value.fetchone.return_value = (_PLAIN,)
+    cur.execute("SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'")
+    cur.execute("SELECT %s", ["a\\b"])
+    assert _adbc_statements(native) == [
+        "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'",
+        _READ_MODE,
+        "SELECT 'a\\b'",
+    ]
+
+
+def test_adbc_refuses_a_backslash_where_the_statement_sets_its_own_mode() -> None:
+    """A SET_VAR hint changes the mode after the literals are written."""
+    native = _adbc_native(pa.table({"v": ["x"]}))
+    cur = Connection(native, backend="adbc").cursor()
+    hinted = "SELECT /*+ SET_VAR(sql_mode = 'NO_BACKSLASH_ESCAPES') */ %s"
+    with pytest.raises(NotSupportedError, match="sets sql_mode"):
+        cur.execute(hinted, [("a", "b\\c")])
+    cur.execute(hinted, ["plain"])
 
 
 def test_adbc_parameters_of_every_kind() -> None:

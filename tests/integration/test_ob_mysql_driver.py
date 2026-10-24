@@ -494,23 +494,44 @@ class TestWhatTheADBCDriverReadsDifferently:
             cur.execute("DROP TEMPORARY TABLE counted")
             cur.close()
 
-    def test_a_text_parameter_takes_the_sessions_collation(self, mysql_conn) -> None:
-        """As a quoted literal does; a ``_utf8mb4`` introducer took that
-        character set's default, case-insensitive collation."""
+    @pytest.mark.parametrize("sql_mode", ["", "NO_BACKSLASH_ESCAPES"])
+    def test_a_text_parameter_takes_the_sessions_collation(self, mysql_conn, sql_mode: str) -> None:
+        """As a quoted literal does, backslash and NUL included; a ``_utf8mb4``
+        introducer took that character set's default, case-insensitive one."""
         cur = mysql_conn.cursor()
+        cur.execute(f"SET SESSION sql_mode = '{sql_mode}'")
         cur.execute("SET collation_connection = 'utf8mb4_bin'")
         try:
-            cur.execute("SELECT %s = %s AS same", ("A", "a"))
-            assert [tuple(int(v) for v in row) for row in cur.fetchall()] == [(0,)]
+            cur.execute("SELECT %s = %s, %s = %s", ("A", "a", r"A\b", r"a\b"))
+            assert [tuple(int(v) for v in row) for row in cur.fetchall()] == [(0, 0)]
+            cur.execute("SELECT %s = %s, HEX(%s)", ("A\x00b", "a\x00b", "a\x00b"))
+            assert [(int(same), hexed) for same, hexed in cur.fetchall()] == [(0, "610062")]
         finally:
             cur.execute("SET collation_connection = DEFAULT")
+            cur.execute("SET SESSION sql_mode = DEFAULT")
             cur.close()
 
-    def test_a_text_parameter_where_only_a_quoted_string_goes(self, mysql_conn) -> None:
+    @pytest.mark.parametrize(
+        ("sql_mode", "found"),
+        # LIKE reads ``\_`` as a literal underscore, where the literal keeps
+        # the backslash: under NO_BACKSLASH_ESCAPES it has two, and matches none.
+        [("", [("review_named_table",)]), ("NO_BACKSLASH_ESCAPES", [])],
+    )
+    def test_a_text_parameter_where_only_a_quoted_string_goes(
+        self, mysql_conn, sql_mode: str, found: list[tuple[str]]
+    ) -> None:
         cur = mysql_conn.cursor()
-        cur.execute("SHOW TABLES LIKE %s", ("ORDERS",))
-        assert cur.fetchall() == [("ORDERS",)]
-        cur.close()
+        cur.execute("CREATE TABLE IF NOT EXISTS review_named_table (i INT)")
+        cur.execute("CREATE TABLE IF NOT EXISTS reviewXnamedXtable (i INT)")
+        cur.execute(f"SET SESSION sql_mode = '{sql_mode}'")
+        try:
+            cur.execute("SHOW TABLES LIKE %s", ("ORDERS",))
+            assert cur.fetchall() == [("ORDERS",)]
+            cur.execute("SHOW TABLES LIKE %s", (r"review\_named\_table",))
+            assert cur.fetchall() == found
+        finally:
+            cur.execute("SET SESSION sql_mode = DEFAULT")
+            cur.close()
 
     def test_a_text_parameter_compares_under_the_columns_collation(self, mysql_conn) -> None:
         """As a quoted literal does: case-insensitive against a ``_ci`` column,
