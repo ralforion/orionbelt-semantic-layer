@@ -477,6 +477,23 @@ class TestWhatTheADBCDriverReadsDifferently:
             cur.execute("SET SESSION sql_mode = DEFAULT")
             cur.close()
 
+    @pytest.mark.parametrize("payload", ["' OR 1=1 -- ", "\\' OR 1=1 -- "])
+    def test_a_mode_set_by_a_prepared_statement(self, mysql_conn, payload: str) -> None:
+        """A mode the driver kept track of went stale when a prepared statement
+        changed it: the parameter's quote ended its literal."""
+        cur = mysql_conn.cursor()
+        cur.execute("PREPARE set_mode FROM \"SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'\"")
+        cur.execute("EXECUTE set_mode")
+        try:
+            cur.execute("SELECT COUNT(*) FROM (SELECT 'x' AS c) AS t WHERE c = %s", (payload,))
+            assert cur.fetchall() == [(0,)]
+            cur.execute("SELECT %s AS v, %s AS w", (payload, "why?"))
+            assert cur.fetchall() == [(payload, "why?")]
+        finally:
+            cur.execute("DEALLOCATE PREPARE set_mode")
+            cur.execute("SET SESSION sql_mode = DEFAULT")
+            cur.close()
+
     def test_a_parameter_does_not_replace_the_last_statements_counts(self, mysql_conn) -> None:
         """A query before the statement (to learn the sql_mode) replaced what
         ROW_COUNT() and FOUND_ROWS() report about the one before."""
@@ -490,22 +507,38 @@ class TestWhatTheADBCDriverReadsDifferently:
             cur.fetchall()
             cur.execute("SELECT FOUND_ROWS() AS n, %s AS tag", ("found",))
             assert cur.fetchall() == [(2, "found")]
+            # Text the server binds (a backslash, a NUL) needs no query first.
+            cur.execute("INSERT INTO counted VALUES (1), (2)")
+            cur.execute("SELECT ROW_COUNT() AS n, %s AS tag", ("in\\sert\x00",))
+            assert cur.fetchall() == [(2, "in\\sert\x00")]
+            # A statement naming sql_mode once had the mode read after it.
+            cur.execute("ALTER TABLE counted ADD COLUMN sql_mode VARCHAR(20)")
+            cur.execute("INSERT INTO counted (i, sql_mode) VALUES (3, %s), (4, 'b')", ("a",))
+            cur.execute("SELECT ROW_COUNT() AS n")
+            assert cur.fetchall() == [(2,)]
         finally:
             cur.execute("DROP TEMPORARY TABLE counted")
             cur.close()
 
     @pytest.mark.parametrize("sql_mode", ["", "NO_BACKSLASH_ESCAPES"])
-    def test_a_text_parameter_takes_the_sessions_collation(self, mysql_conn, sql_mode: str) -> None:
-        """As a quoted literal does, backslash and NUL included; a ``_utf8mb4``
-        introducer took that character set's default, case-insensitive one."""
+    @pytest.mark.parametrize(
+        ("collation", "same"),
+        [("utf8mb4_bin", 0), ("utf8mb4_unicode_ci", 1), ("utf8mb4_turkish_ci", 1)],
+    )
+    def test_a_text_parameter_takes_the_sessions_collation(
+        self, mysql_conn, sql_mode: str, collation: str, same: int
+    ) -> None:
+        """As a quoted literal does, backslash and NUL included: a ``_utf8mb4``
+        introducer took that character set's default collation, and a NUL
+        joined in by ``CHAR(0 USING utf8mb4)`` mixed it with the session's."""
         cur = mysql_conn.cursor()
         cur.execute(f"SET SESSION sql_mode = '{sql_mode}'")
-        cur.execute("SET collation_connection = 'utf8mb4_bin'")
+        cur.execute(f"SET collation_connection = '{collation}'")
         try:
             cur.execute("SELECT %s = %s, %s = %s", ("A", "a", r"A\b", r"a\b"))
-            assert [tuple(int(v) for v in row) for row in cur.fetchall()] == [(0, 0)]
+            assert [tuple(int(v) for v in row) for row in cur.fetchall()] == [(same, same)]
             cur.execute("SELECT %s = %s, HEX(%s)", ("A\x00b", "a\x00b", "a\x00b"))
-            assert [(int(same), hexed) for same, hexed in cur.fetchall()] == [(0, "610062")]
+            assert [(int(eq), hexed) for eq, hexed in cur.fetchall()] == [(same, "610062")]
         finally:
             cur.execute("SET collation_connection = DEFAULT")
             cur.execute("SET SESSION sql_mode = DEFAULT")

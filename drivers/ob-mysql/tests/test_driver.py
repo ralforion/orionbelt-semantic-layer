@@ -258,64 +258,99 @@ _READ_MODE = "SELECT @@session.sql_mode"
 _PLAIN = "STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES"
 
 
-def _adbc_statements(native: MagicMock) -> list[str]:
-    """What the connection ran after reading the session's sql_mode on opening."""
-    statements = [c.args[0] for c in native.cursor.return_value.execute.call_args_list]
-    assert statements[0] == _READ_MODE
-    return statements[1:]
+def _adbc_statements(native: MagicMock) -> list[tuple[str, Any]]:
+    """What the connection ran, with what it bound."""
+    return [tuple(c.args) for c in native.cursor.return_value.execute.call_args_list]
+
+
+def _unpreparable(native: MagicMock) -> None:
+    """The server refuses to prepare what is sent with bound parameters, as it
+    refuses ``SHOW ... LIKE ?``."""
+
+    def execute(sql: str, bound: Any = None) -> None:
+        if bound is not None:
+            raise adbc_driver_manager.ProgrammingError(
+                "INVALID_ARGUMENT: [MySQL] failed to prepare statement: Error 1064 (42000): "
+                "You have an error in your SQL syntax",
+                status_code=adbc_driver_manager.AdbcStatusCode.INVALID_ARGUMENT,
+            )
+
+    native.cursor.return_value.execute.side_effect = execute
 
 
 @pytest.mark.parametrize(
-    ("sql_mode", "text", "literal"),
+    ("text", "statement"),
     [
         # Quoted as PyMySQL quotes it: the session's collation, and accepted by
-        # SHOW ... LIKE. A doubled quote reads alike under every mode.
-        ("STRICT_TRANS_TABLES", "it's ' OR 1=1 -- ", "'it\\'s \\' OR 1=1 -- '"),
-        ("STRICT_TRANS_TABLES", "review\\_named", "'review\\\\_named'"),
-        ("STRICT_TRANS_TABLES", "a\x00b", "'a\\0b'"),
-        # A backslash is an ordinary character here; escaping the quote with
-        # one would end the literal and run the rest as SQL.
-        (_PLAIN, "it's \\' OR 1=1 -- ", "'it''s \\'' OR 1=1 -- '"),
-        (_PLAIN, "", "''"),
-        # No quoted form for a NUL there: the pieces around it, joined by one
-        # that keeps the session's collation and a literal's coercibility.
-        (_PLAIN, "a'\x00b", "CONCAT('a''', CHAR(0 USING utf8mb4), 'b')"),
+        # SHOW ... LIKE. A doubled quote reads alike under every sql_mode.
+        ("it's ' OR 1=1 -- ", ("SELECT 'it''s '' OR 1=1 -- '", None)),
+        ("", ("SELECT ''", None)),
+        # A backslash or a NUL reads differently under NO_BACKSLASH_ESCAPES: the
+        # server binds it, alike under every mode, with no query before the
+        # statement to replace ROW_COUNT() / FOUND_ROWS().
+        ("it's \\' OR 1=1 -- ", ("SELECT ?", ("it's \\' OR 1=1 -- ",))),
+        ("a\x00b", ("SELECT ?", ("a\x00b",))),
     ],
 )
-def test_adbc_text_parameters(sql_mode: str, text: str, literal: str) -> None:
-    native = _adbc_native(pa.table({"v": ["x"]}), sql_mode=sql_mode)
+def test_adbc_text_parameters(text: str, statement: tuple[str, Any]) -> None:
+    native = _adbc_native(pa.table({"v": ["x"]}))
     Connection(native, backend="adbc").cursor().execute("SELECT %s", [text])
-    # No query before the statement: it would replace ROW_COUNT() / FOUND_ROWS().
-    assert _adbc_statements(native) == [f"SELECT {literal}"]
+    assert _adbc_statements(native) == [statement]
 
 
-def test_the_charset_is_a_name() -> None:
-    """It is written into a NUL's ``CHAR(0 USING ...)``."""
-    with pytest.raises(ProgrammingError, match="character set"):
-        ob_mysql.connect(charset="utf8mb4) --")
+def test_adbc_binds_named_parameters_in_the_statements_order() -> None:
+    native = _adbc_native(pa.table({"v": ["x"]}))
+    Connection(native, backend="adbc").cursor().execute(
+        "SELECT %(b)s, %(a)s, %(c)s, %(b)s", {"a": "a\\", "b": "b\\", "c": "c"}
+    )
+    assert _adbc_statements(native) == [("SELECT ?, ?, 'c', ?", ("b\\", "a\\", "b\\"))]
 
 
-def test_adbc_rereads_the_mode_after_a_statement_that_sets_it() -> None:
-    native = _adbc_native(None)
-    cur = Connection(native, backend="adbc").cursor()
-    native.cursor.return_value.fetchone.return_value = (_PLAIN,)
-    cur.execute("SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'")
-    cur.execute("SELECT %s", ["a\\b"])
+@pytest.mark.parametrize(
+    ("sql_mode", "literal"),
+    [("STRICT_TRANS_TABLES", "'review\\\\_named'"), (_PLAIN, "'review\\_named'")],
+)
+def test_adbc_quotes_for_the_session_what_the_server_cannot_prepare(
+    sql_mode: str, literal: str
+) -> None:
+    """MySQL prepares no SHOW ... LIKE: its pattern is quoted for the mode the
+    session is in. Asking replaces ROW_COUNT(), which no SHOW reads."""
+    native = _adbc_native(pa.table({"v": ["x"]}), sql_mode=sql_mode)
+    _unpreparable(native)
+    Connection(native, backend="adbc").cursor().execute("SHOW TABLES LIKE %s", ["review\\_named"])
     assert _adbc_statements(native) == [
-        "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'",
-        _READ_MODE,
-        "SELECT 'a\\b'",
+        ("SHOW TABLES LIKE ?", ("review\\_named",)),
+        (_READ_MODE,),
+        (f"SHOW TABLES LIKE {literal}", None),
     ]
 
 
-def test_adbc_refuses_a_backslash_where_the_statement_sets_its_own_mode() -> None:
-    """A SET_VAR hint changes the mode after the literals are written."""
-    native = _adbc_native(pa.table({"v": ["x"]}))
-    cur = Connection(native, backend="adbc").cursor()
-    hinted = "SELECT /*+ SET_VAR(sql_mode = 'NO_BACKSLASH_ESCAPES') */ %s"
-    with pytest.raises(NotSupportedError, match="sets sql_mode"):
-        cur.execute(hinted, [("a", "b\\c")])
-    cur.execute(hinted, ["plain"])
+def test_adbc_refuses_a_nul_it_can_neither_bind_nor_quote() -> None:
+    native = _adbc_native(pa.table({"v": ["x"]}), sql_mode=_PLAIN)
+    _unpreparable(native)
+    with pytest.raises(NotSupportedError, match="NUL"):
+        Connection(native, backend="adbc").cursor().execute("SHOW TABLES LIKE %s", ["a\x00"])
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Prepared, but failed when run: running it again could repeat its effects.
+        "INTEGRITY: [MySQL] failed to create record reader: failed to execute query: "
+        "Error 1062 (23000): Duplicate entry",
+        # Preparable, but wrong: quoting it would not help.
+        "NOT_FOUND: [MySQL] failed to prepare statement: Error 1146 (42S02): Table "
+        "'probe.nonexist' doesn't exist",
+    ],
+)
+def test_adbc_runs_a_bound_statement_once(message: str) -> None:
+    native = _adbc_native(None)
+    native.cursor.return_value.execute.side_effect = adbc_driver_manager.Error(
+        message, status_code=adbc_driver_manager.AdbcStatusCode.UNKNOWN
+    )
+    with pytest.raises(adbc_driver_manager.Error):
+        Connection(native, backend="adbc").cursor().execute("INSERT INTO t VALUES (%s)", ["a\\"])
+    assert len(_adbc_statements(native)) == 1
 
 
 def test_adbc_parameters_of_every_kind() -> None:
@@ -327,8 +362,8 @@ def test_adbc_parameters_of_every_kind() -> None:
     )
     cur.execute("SELECT %(a)s", {"a": ""})
     assert _adbc_statements(native) == [
-        "SELECT X'0080ff', NULL, 3, 1.50, '2024-01-02', 2 IN (1,'a')",
-        "SELECT ''",
+        ("SELECT X'0080ff', NULL, 3, 1.50, '2024-01-02', 2 IN (1,'a')", None),
+        ("SELECT ''", None),
     ]
 
 

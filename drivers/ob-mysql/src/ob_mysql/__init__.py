@@ -144,8 +144,6 @@ def connect(
     ob_timeout : int
         HTTP timeout in seconds for OBML compilation.
     """
-    if not charset.replace("_", "").isalnum():
-        raise ProgrammingError(f"Not a MySQL character set name: {charset!r}")
     ssl = {k: v for k, v in (("ca", ssl_ca), ("cert", ssl_cert), ("key", ssl_key)) if v}
     if backend == "adbc" and ssl:
         raise NotSupportedError(
@@ -183,7 +181,6 @@ def connect(
         backend=chosen,
         ob_api_url=ob_api_url,
         ob_timeout=ob_timeout,
-        charset=charset,
     )
 
 

@@ -60,17 +60,20 @@ threads fetching 100k rows each took 21 s where one took 0.08 s.
 ## Vendor-Specific Notes
 
 - `format` paramstyle (`%s`, `%(name)s`) on both clients. PyMySQL escapes its parameters
-  itself. ADBC's own binding mangles text, bytes and durations, so the driver writes the
-  literals as PyMySQL does: text as a quoted literal (the session's collation, accepted by
-  `SHOW ... LIKE`), a quote doubled, a backslash and NUL escaped only when the session reads
-  escapes. The `sql_mode` is read when the connection opens and again after any statement that
-  mentions `sql_mode`, never before a statement (that would replace `ROW_COUNT()` /
-  `FOUND_ROWS()`). Under `NO_BACKSLASH_ESCAPES` a NUL has no quoted form: the quoted pieces are
-  joined by `CHAR(0 USING <charset>)` in a `CONCAT`, which keeps the session collation and a
-  literal's coercibility (not accepted by `SHOW`). A backslash or NUL in a statement that sets
-  its own `sql_mode` (a `SET_VAR` hint) is refused. Bytes are `X'..'`. Several review rounds
-  went through hex literals (`_utf8mb4 X'..'`): they take utf8mb4's default collation and
-  `SHOW` refuses them, so they are not used for text.
+  itself. ADBC's own binding mangles durations, and MySQL cannot prepare every statement
+  (`SHOW ... LIKE ?`), so the driver writes most parameters into the statement as PyMySQL
+  does: text as a quoted literal with the quote doubled (read alike under every `sql_mode`,
+  takes the session's collation, accepted by `SHOW ... LIKE`), bytes as `X'..'`, everything
+  else as digits and separators. Text holding a backslash or a NUL reads differently under
+  `NO_BACKSLASH_ESCAPES`, so the server binds it instead (`?`, a prepared statement): the
+  driver never needs to know the mode, and runs no query before a statement that would replace
+  `ROW_COUNT()` / `FOUND_ROWS()`. Only when MySQL cannot prepare the statement (errors 1064,
+  1295; a statement that failed when run is never run again) does it read the session's mode
+  and quote for it; a NUL there under `NO_BACKSLASH_ESCAPES` is refused.
+  Review rounds went through mode tracking (stale after `PREPARE`/`EXECUTE`, set off by any
+  statement naming `sql_mode`), hex literals (`_utf8mb4 X'..'`: utf8mb4's default collation,
+  refused by `SHOW`) and `CONCAT(.., CHAR(0 USING utf8mb4), ..)` for a NUL (an illegal mix with
+  `utf8mb4_unicode_ci`).
 - The ADBC driver is not on PyPI: `pip install dbc && dbc install mysql`. The Docker images
   install a pinned, checksummed release with `scripts/install_adbc_mysql.py`
   (`ADBC_DRIVER_PATH=/opt/adbc/drivers`).

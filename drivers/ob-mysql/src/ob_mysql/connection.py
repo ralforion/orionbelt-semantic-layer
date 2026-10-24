@@ -16,6 +16,8 @@ from ob_mysql.cursor import Cursor
 from ob_mysql.exceptions import DataError, NotSupportedError, ProgrammingError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import pyarrow as pa
 
 Backend = Literal["adbc", "pymysql"]
@@ -31,58 +33,59 @@ _ZERO_DATETIME_OPTION = {"mysql.query.zero_datetime_behavior": "convert_to_null"
 _UNREADABLE_VALUE = "failed to append value"
 
 
-#: Characters whose quoted form depends on the ``sql_mode``: a backslash
-#: escapes, or under NO_BACKSLASH_ESCAPES does not, and a NUL is the escape
-#: ``\\0`` or else no quoted form at all (the ADBC driver refuses it raw).
-_MODE_DEPENDENT = ("\\", "\x00")
+#: The ADBC driver's message when the server will not prepare a statement, and
+#: the server's errors for one it cannot prepare (``SHOW ... LIKE ?``): 1064
+#: syntax, 1295 not supported by the prepared-statement protocol.
+_PREPARE_FAILED = "failed to prepare statement"
+_UNPREPARABLE = ("Error 1064 ", "Error 1295 ")
 
 
-def _literal(value: Any, charset: str, backslash_escapes: bool) -> str:
-    """*value* as a MySQL literal, for a statement the ADBC driver is given
-    finished (its own parameter binding mangles text, bytes and durations).
+def _mode_dependent(text: str) -> bool:
+    """Whether quoting *text* depends on the ``sql_mode``: a backslash escapes,
+    or under NO_BACKSLASH_ESCAPES does not, and a NUL is the escape ``\\0`` or
+    else has no quoted form (the ADBC driver refuses it raw)."""
+    return "\\" in text or "\x00" in text
+
+
+def _render(sql: str, parameters: Any, text: Callable[[str], str]) -> str:
+    """*sql* with its ``%s`` / ``%(name)s`` *parameters* written into it, for
+    the ADBC driver, whose own binding mangles durations.
 
     Text is a quoted literal, as PyMySQL writes it, so it takes the session's
     collation and goes wherever a quoted string does (``SHOW ... LIKE``). A
-    quote is doubled, which every ``sql_mode`` reads alike; a backslash and a
-    NUL are escaped only where *backslash_escapes* says the session reads
-    escapes. Without escapes a NUL has no quoted form: the text is the quoted
-    pieces around it joined by ``CHAR(0 USING <charset>)``, which keeps the
-    session's collation and a literal's coercibility. Bytes are a hex literal.
+    quote is doubled, which every ``sql_mode`` reads alike; text holding a
+    backslash or a NUL is written by *text*. Bytes are a hex literal.
     Everything else (numbers, dates, decimals, durations) is PyMySQL's
     rendering, made of digits and separators only.
     """
-    from pymysql.converters import escape_item, escape_string
+    from pymysql.converters import escape_item
 
-    if isinstance(value, str):
-        if backslash_escapes:
-            return "'" + str(escape_string(value)) + "'"
-        pieces = ["'" + piece.replace("'", "''") + "'" for piece in value.split("\x00")]
-        if len(pieces) == 1:
-            return pieces[0]
-        return "CONCAT(" + f", CHAR(0 USING {charset}), ".join(pieces) + ")"
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return "X'" + bytes(value).hex() + "'"
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return "(" + ",".join(_literal(v, charset, backslash_escapes) for v in value) + ")"
-    return str(escape_item(value, charset))
+    def literal(value: Any) -> str:
+        if isinstance(value, str):
+            return text(value) if _mode_dependent(value) else "'" + value.replace("'", "''") + "'"
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return "X'" + bytes(value).hex() + "'"
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return "(" + ",".join(literal(v) for v in value) + ")"
+        return str(escape_item(value, "utf8mb4"))
 
-
-def _mode_dependent(value: Any) -> bool:
-    """Whether *value*, or any text within it, holds a backslash or a NUL."""
-    if isinstance(value, str):
-        return any(c in value for c in _MODE_DEPENDENT)
-    if isinstance(value, dict):
-        return any(_mode_dependent(v) for v in value.values())
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return any(_mode_dependent(v) for v in value)
-    return False
+    if isinstance(parameters, dict):
+        return str(sql % _Named(parameters, literal))
+    if isinstance(parameters, (list, tuple)):
+        return str(sql % tuple(literal(v) for v in parameters))
+    return str(sql % literal(parameters))
 
 
-def _sets_sql_mode(sql: str) -> bool:
-    """Whether *sql* may change the session's ``sql_mode``: ``SET [SESSION]
-    sql_mode``, ``SET @@sql_mode``, a ``SET_VAR`` hint. A stored routine runs
-    under its own mode and gives the caller's back."""
-    return "sql_mode" in sql.lower()
+class _Named:
+    """Named parameters, rendered as ``%`` looks them up: in the statement's
+    order, so the placeholders a renderer leaves are bound in that order."""
+
+    def __init__(self, values: dict[str, Any], literal: Callable[[Any], str]) -> None:
+        self._values = values
+        self._literal = literal
+
+    def __getitem__(self, key: str) -> str:
+        return self._literal(self._values[key])
 
 
 @dataclass
@@ -135,30 +138,12 @@ class Connection:
         backend: Backend,
         ob_api_url: str = "http://localhost:8000",
         ob_timeout: int = 30,
-        charset: str = "utf8mb4",
     ) -> None:
         self._native = native
         self.backend: Backend = backend
         self._closed = False
         self._ob_api_url = ob_api_url
         self._ob_timeout = ob_timeout
-        self._charset = charset
-        # How the session reads a backslash in a quoted literal, kept current
-        # without a query before each statement: one would replace what
-        # ROW_COUNT() and FOUND_ROWS() report. Read now, and again after any
-        # statement that may change it.
-        self._backslash_escapes = True
-        if backend == "adbc":
-            self._read_sql_mode()
-
-    def _read_sql_mode(self) -> None:
-        cursor = self._native.cursor()
-        try:
-            cursor.execute("SELECT @@session.sql_mode")
-            (mode,) = cursor.fetchone()
-        finally:
-            cursor.close()
-        self._backslash_escapes = "NO_BACKSLASH_ESCAPES" not in str(mode).upper().split(",")
 
     def _check_open(self) -> None:
         if self._closed:
@@ -175,19 +160,66 @@ class Connection:
         self._check_open()
         if self.backend == "pymysql":
             return self._execute_pymysql(sql, parameters)
-        statement = sql if parameters is None else self._interpolate(sql, parameters)
-        result = self._execute_adbc(statement)
-        if _sets_sql_mode(sql):
-            self._read_sql_mode()
-        return result
+        if parameters is None:
+            return self._execute_adbc(sql)
+        # Text whose quoting depends on the sql_mode is bound by the server,
+        # which reads it alike under every mode: nothing to keep track of, and
+        # no query before the statement to replace ROW_COUNT() / FOUND_ROWS().
+        bound: list[str] = []
 
-    def _execute_adbc(self, sql: str) -> _Result:
+        def bind(text: str) -> str:
+            bound.append(text)
+            return "?"
+
+        statement = _render(sql, parameters, bind)
+        if not bound:
+            return self._execute_adbc(statement)
+        import adbc_driver_manager
+
+        try:
+            return self._execute_adbc(statement, tuple(bound))
+        except adbc_driver_manager.Error as error:
+            message = str(error)
+            if _PREPARE_FAILED not in message or not any(e in message for e in _UNPREPARABLE):
+                raise
+        # A statement the server cannot prepare, such as SHOW ... LIKE: the
+        # text is quoted for the mode the session is in now. Asking replaces
+        # ROW_COUNT() and FOUND_ROWS(), which no such statement reads.
+        return self._execute_adbc(_render(sql, parameters, self._quote_for_session()))
+
+    def _quote_for_session(self) -> Callable[[str], str]:
+        """How the session reads a quoted literal now: with backslash escapes,
+        as PyMySQL quotes, or under NO_BACKSLASH_ESCAPES, with only the quote
+        doubled (where a NUL has no quoted form)."""
+        from pymysql.converters import escape_string
+
+        cursor = self._native.cursor()
+        try:
+            cursor.execute("SELECT @@session.sql_mode")
+            (mode,) = cursor.fetchone()
+        finally:
+            cursor.close()
+        if "NO_BACKSLASH_ESCAPES" not in str(mode).upper().split(","):
+            return lambda text: "'" + str(escape_string(text)) + "'"
+
+        def quote(text: str) -> str:
+            if "\x00" in text:
+                raise NotSupportedError(
+                    "A NUL in a parameter of a statement MySQL cannot prepare (such as "
+                    "SHOW ... LIKE) has no quoted form under NO_BACKSLASH_ESCAPES: "
+                    "connect with backend='pymysql'."
+                )
+            return "'" + text.replace("'", "''") + "'"
+
+        return quote
+
+    def _execute_adbc(self, sql: str, bound: tuple[str, ...] | None = None) -> _Result:
         import adbc_driver_manager
 
         cursor = self._native.cursor()
         try:
             cursor.adbc_statement.set_options(**_ZERO_DATETIME_OPTION)
-            cursor.execute(sql)
+            cursor.execute(sql, bound)
             if not cursor.description:
                 return _Result(names=[], type_objects=[], rowcount=cursor.rowcount)
             try:
@@ -237,30 +269,6 @@ class Connection:
             )
         finally:
             cursor.close()
-
-    def _interpolate(self, sql: str, parameters: Any) -> str:
-        """*sql* with ``%s`` / ``%(name)s`` *parameters* written into it as
-        literals, as PyMySQL does on the client: see :func:`_literal`."""
-        if _sets_sql_mode(sql) and _mode_dependent(parameters):
-            # A SET_VAR hint changes the mode for this statement alone, after
-            # its literals are written.
-            raise NotSupportedError(
-                "A text parameter holding a backslash or NUL, in a statement that sets "
-                "sql_mode itself, cannot be quoted for the mode it runs under: connect "
-                "with backend='pymysql'."
-            )
-
-        def literal(value: Any) -> str:
-            return _literal(value, self._charset, self._backslash_escapes)
-
-        escaped: Any
-        if isinstance(parameters, dict):
-            escaped = {k: literal(v) for k, v in parameters.items()}
-        elif isinstance(parameters, (list, tuple)):
-            escaped = tuple(literal(v) for v in parameters)
-        else:
-            escaped = literal(parameters)
-        return str(sql % escaped)
 
     def commit(self) -> None:
         """Commit the current transaction."""
