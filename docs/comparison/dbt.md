@@ -40,9 +40,10 @@ OBSL `MetricType` enum (`src/orionbelt/models/semantic.py`):
 | `Metric` `type: cumulative` (running total, rolling window, grain-to-date, **per-dimension partition**) | `cumulative` (running, period-to-date, rolling — no partition-by) | Both first-class — see §3 |
 | `Metric` `type: period_over_period` with 4 comparison modes | Approximated via `offset_window` and `metric_time` | OBSL has a dedicated metric type — see §4 |
 | `Metric` `type: window` (rank / dense_rank / row_number / ntile / lag / lead / first_value / last_value) | — | **Gap in dbt** — no equivalent surface; users would compose raw SQL |
+| `Metric` `type: reaggregate`: a measure aggregated per `per` group, then again (`sum` / `avg` / `min` / `max` / `count` / `median` / `percentile_cont` / `percentile_disc` / `first` / `last`), with a first-stage `having`, `population: dimension` and `carryForward` | — | **Gap in dbt**: no metric type aggregates another metric's per-group values (average revenue per customer, by country); the inner grain becomes a dbt model with its own semantic model. See the [reaggregate metric](../guide/model-format.md#reaggregate-metrics) |
 | — | `conversion` | **Gap in OBSL** |
 
-OBSL coverage: ~95% of dbt's metric expressivity (missing only `conversion`), plus three OBSL-only surfaces dbt SL has no native answer for: `MetricType.WINDOW` (rank/lag/lead/ntile), `partitionBy` on cumulative metrics, and the 9-function statistical-aggregate surface.
+OBSL coverage: ~95% of dbt's metric expressivity (missing only `conversion`), plus four OBSL-only surfaces dbt SL has no native answer for: `MetricType.WINDOW` (rank/lag/lead/ntile), `MetricType.REAGGREGATE` (an aggregate over per-group values), `partitionBy` on cumulative metrics, and the 9-function statistical-aggregate surface.
 
 ---
 
@@ -132,6 +133,21 @@ metrics:
 Window metrics compose freely with derived metrics — a `{[Revenue]} - {[Revenue Prior Month]}` MoM delta needs no new SQL. Implementation: `src/orionbelt/compiler/window_wrap.py`, runs after `cumulative_wrap` in the pipeline so window functions can rank cumulative outputs.
 
 See [Trend Analysis](../guide/trend-analysis.md) for the full feature surface.
+
+---
+
+## 3b. Empty periods (parity)
+
+Both fill the periods without rows, configured in different places:
+
+| | OBSL | dbt SL |
+|---|---|---|
+| Where | Per query: `fill: true` | Per metric: `join_to_timespine: true`, with `fill_nulls_with: 0` for the value |
+| Range | The periods the query's `where` admits, crossed with every other dimension of the query | The time spine |
+| Empty value | A count is 0, a measure with a `defaultValue` reads it, anything else is NULL; a cumulative metric shows its window as of the period | `fill_nulls_with` (a derived or ratio metric needs it on its input metrics) |
+| Limits | Not beside period-over-period or window metrics, ROLLUP / CUBE, `having` or totals (`FILL_COMBINATION_NOT_SUPPORTED`); not on the SQL surfaces | Documented for simple metrics; derived and ratio metrics fill through their inputs |
+
+See [Filling Empty Periods](../guide/query-language.md#filling-empty-periods-fill).
 
 ---
 
@@ -283,6 +299,7 @@ Conversely, dbt SL would need to add to match OBSL's strengths:
 2. **RDF/SPARQL graph view** of the model.
 3. **Named secondary join paths** for non-trivial multi-path scenarios.
 4. **Explicit fanout detection / CFL planner exposure**.
+5. **A re-aggregation metric type**: an aggregate over a metric's per-group values, without a dbt model at the inner grain.
 
 ---
 
@@ -298,4 +315,5 @@ Conversely, dbt SL would need to add to match OBSL's strengths:
 - OBSL CFL planner: `src/orionbelt/compiler/cfl.py`
 - OBSL docs: [Model Format](../guide/model-format.md), [Period-over-Period Metrics](../guide/period-over-period.md), [Compilation Pipeline](../guide/compilation.md)
 - dbt SL: https://docs.getdbt.com/docs/build/about-metricflow
+- dbt `fill_nulls_with` and `join_to_timespine`: https://docs.getdbt.com/docs/build/fill-nulls-advanced
 - dbt SL GraphQL API: https://docs.getdbt.com/docs/dbt-cloud-apis/sl-graphql

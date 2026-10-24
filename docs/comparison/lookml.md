@@ -78,6 +78,8 @@ That produces `created_raw`, `created_date`, `created_week`, etc. as separate di
 
 **OBSL**: a single `Dimension` carries a `timeGrain` enum, and queries pass the grain at query time. More compact in the model, less ergonomic from a "list everything available" UI perspective.
 
+**Empty periods**: Looker fills missing dates in the Explore (`allow_fill`, on by default), for a query with one dimension or pivot and no measure filters. OBSL fills them per query with `fill: true`, crossed with every other dimension of the query, a count reading 0 and a cumulative metric its window as of the period (see [Filling Empty Periods](../guide/query-language.md#filling-empty-periods-fill)).
+
 ### 3.3 Liquid templating + parameters
 
 LookML embeds Liquid (Shopify's template language) for dynamic SQL and UI logic. Combined with `parameter:`, this drives dynamic dimensions, swappable measures, and personalization on user attributes.
@@ -145,6 +147,7 @@ LookML carries UI metadata: `drill_fields: [order_id, customer_name, ...]`, `val
 | `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy`**) | `type: running_total` (basic), or table calculations in UI for richer cases | OBSL has richer **declarative** cumulative |
 | `Metric` `type: period_over_period` (4 comparison modes) | Filtered measures with Liquid: <pre><code>{% if date.is_in_period %}<br> ...<br>{% endif %}</code></pre> or table calculations | OBSL has a dedicated metric type |
 | `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Looker table calculations (`rank()`, `offset()`, `pivot_offset()`) — UI-side, not LookML model | OBSL ships these as declarative metric types reusable across every consumer; Looker's equivalents live in the dashboard layer |
+| `Metric` `type: reaggregate`: a measure aggregated per `per` group, then again (`sum` / `avg` / `min` / `max` / `count` / `median` / percentiles / `first` / `last`) | Not in a measure: a `sum`, `average`, `min`, `max` or `list` measure may not reference another measure. The documented route is a derived table that computes the inner aggregate per group and "dimensionalizes" it, with the outer measure on that dimension | OBSL declares it as one reusable metric, with a first-stage `having`, `population: dimension` and `carryForward` |
 | `Measure.filterContext` / `filteredMeasures` | <pre><code>measure: paid_revenue {<br> type: sum<br> filters: [is_paid: "yes"]<br>}</code></pre> | Comparable |
 
 Bottom line: LookML wins on aggregate-variant *shape* (`sum_distinct`, `median_distinct`, `percentile_distinct`) and on UI-side table-calc breadth; OBSL wins on **first-class statistical/regression aggregates** and on **time/window/PoP/cumulative as declarative metric types** that survive across every consumer (BI tool, agent, JSON API) without re-implementing the table calc. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface.
@@ -319,6 +322,7 @@ A common hybrid: ship Looker for the human BI audience and run OBSL alongside it
 4. **RDF/SPARQL graph surface** for governance/lineage.
 5. ~~Native MCP server~~ — **closed**: Looker ships a managed MCP server alongside the open-source MCP Toolbox.
 6. **OSI ↔ model round-trip** for portability.
+7. **Re-aggregation in the model** — an aggregate over another measure's per-group values without a derived table.
 
 ---
 
@@ -332,5 +336,7 @@ A common hybrid: ship Looker for the human BI audience and run OBSL alongside it
 - OBSL fanout detection: `src/orionbelt/compiler/fanout.py`
 - OBSL docs: [Model Format](../guide/model-format.md), [Period-over-Period Metrics](../guide/period-over-period.md), [Compilation Pipeline](../guide/compilation.md)
 - LookML docs: https://cloud.google.com/looker/docs/what-is-lookml
+- Measures may not reference other aggregate measures: https://docs.cloud.google.com/looker/docs/best-practices/error-measures-with-looker-aggregations-reference-other-aggregations
+- LookML `allow_fill`: https://docs.cloud.google.com/looker/docs/reference/param-field-allow-fill
 - Looker API: https://cloud.google.com/looker/docs/api-and-integration
 - pylookml (programmatic LookML generation): https://github.com/looker-open-source/pylookml
