@@ -15,7 +15,8 @@ Each case read NULL before: a ``filterContext`` count for a region without
 open orders, and the NULL region's real count, lost to a ``=`` join; a
 reaggregate count on r3, which only the returns bring; an ``asOf`` count and a
 running sum of a count over no period, with and without ``fill``; and a
-cumulative metric on the rows ``population: dimension`` adds.
+cumulative metric on the rows ``population: dimension`` adds, per period or
+evaluated as of one. A count declared as text did not compile; it reads '0'.
 """
 
 from __future__ import annotations
@@ -150,6 +151,11 @@ metrics:
     timeDimension: Order Month
     cumulativeType: count
     window: 1
+  Running Orders Text:
+    type: cumulative
+    measure: Orders Count
+    timeDimension: Order Month
+    dataType: string
   Running Revenue:
     type: cumulative
     measure: Revenue
@@ -269,6 +275,19 @@ def _assert_all(target: VendorTarget) -> None:
         (None, *_n(0, 0, 0, 0)),
     ], target.name
     assert _rows(target, model, [], counts, asOf="2023-12-15") == [_n(0, 0, 0, 0)], target.name
+    # A text count reads '0' too, as of a date, under a time filter and filled.
+    text = _rows(target, model, ["Region"], ["Running Orders Text"], asOf="2024-02-15")
+    assert [(region, value.strip()) for region, value in text] == [
+        ("r1", "1"),
+        ("r2", "0"),
+        (None, "0"),
+    ], target.name
+    march = [{"field": "Order Month", "op": "between", "value": ["2024-03-01", "2024-03-31"]}]
+    text = _rows(target, model, ["Region", "Order Month"], ["Running Orders Text"], where=march)
+    assert [(region, value.strip()) for region, _, value in text] == [
+        ("r2", "1"),
+        (None, "1"),
+    ], target.name
 
     # fill: before the first month, a rolling window run out, a new quarter.
     sums = ["Running Orders", "Rolling Orders", "Orders QTD"]
@@ -281,6 +300,15 @@ def _assert_all(target: VendorTarget) -> None:
         (MAR, *_n(3, 2, 3)),
         (APR, *_n(3, 0, 0)),
         (MAY, *_n(3, 0, 0)),
+    ], target.name
+    text = _rows(target, model, ["Order Month"], ["Running Orders Text"], where=wider, fill=True)
+    assert [value.strip() for month, value in text if month is not None] == [
+        "0",
+        "1",
+        "1",
+        "3",
+        "3",
+        "3",
     ], target.name
     # From February, the window still reads January.
     later = [{"field": "Order Month", "op": "between", "value": ["2024-02-01", "2024-05-31"]}]
@@ -307,6 +335,20 @@ def _assert_all(target: VendorTarget) -> None:
         ("c2", MAR, *_n(1, 2, 10)),
         ("c3", JAN, *_n(1, 0), None),
         ("c3", MAR, *_n(1, 0), None),
+    ], target.name
+
+    # Without the month, each member reads its running total as of March (as
+    # of the date): c1's January carries on, c3 has none.
+    measures = ["Orders per Customer", "Running Orders", "Rolling Period Count", "Running Revenue"]
+    assert _rows(target, model, ["Customer"], measures, where=march) == [
+        ("c1", *_n(1, 1, 0, 1)),
+        ("c2", *_n(1, 2, 1, 10)),
+        ("c3", *_n(1, 0, 0), None),
+    ], target.name
+    assert _rows(target, model, ["Customer"], measures, asOf="2024-02-15") == [
+        ("c1", *_n(1, 1, 0, 1)),
+        ("c2", *_n(1, 0, 0), None),
+        ("c3", *_n(1, 0, 0), None),
     ], target.name
 
 

@@ -314,7 +314,9 @@ def wrap_with_cumulative(
                 "A cumulative metric without its time dimension selected needs the "
                 "model, dialect, table qualifier and query to plan its periods"
             )
-        value_ctes += _as_of_ctes(query, resolved, as_of_measures, model, dialect, qualify_table)
+        as_of = _as_of_ctes(query, resolved, as_of_measures, model, dialect, qualify_table)
+        resolved.as_of_values.update((m.name, name) for name, _, metrics in as_of for m in metrics)
+        value_ctes += as_of
     order_by = outer_order_by(resolved, model)
 
     if not value_ctes:

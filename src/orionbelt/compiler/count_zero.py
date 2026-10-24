@@ -55,7 +55,10 @@ def zero_if_missing(
     value: Expr, measure: ResolvedMeasure, model: SemanticModel, dialect: Dialect
 ) -> Expr:
     """*value*, or a count's 0 where it is NULL, in the type the measure
-    declares (a count declared ``dataType: varchar`` reads ``'0'``)."""
+    declares (a count declared ``dataType: string`` reads ``'0'``).
+
+    Both sides take the declared type: a window's count is still an integer
+    where the 0 is already text, and an engine refuses to mix them."""
     declared = (
         resolve_metric_data_type(model.metrics[measure.name], model.settings)
         if measure.name in model.metrics
@@ -67,5 +70,7 @@ def zero_if_missing(
     )
     zero: Expr = Literal.number(0)
     if declared is not None:
-        zero = dialect.cast_to_obml_type(zero, declared)
+        # A count is an integer: no float reaches either cast.
+        value = dialect.cast_to_obml_type(value, declared, source_exact=True)
+        zero = dialect.cast_to_obml_type(zero, declared, source_exact=True)
     return FunctionCall(name="COALESCE", args=[value, zero])

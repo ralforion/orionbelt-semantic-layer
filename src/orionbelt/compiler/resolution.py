@@ -1004,6 +1004,14 @@ class ResolvedQuery:
     ``fill`` evaluates an empty period's value from it, as the window would
     have, had the period had a row."""
 
+    as_of_values: dict[str, str] = field(default_factory=dict)
+    """Cumulative metrics evaluated as of one period (their time dimension not
+    selected), mapped to the CTE holding their value: one row per group of the
+    query, for every group with data in the periods it reads.
+
+    A row a later pass adds (a ``population: dimension`` member) reads its
+    value there."""
+
     composite_cte: str | None = None
     """Name of the UNION ALL composite CTE, when the plan actually built one.
 

@@ -1370,9 +1370,12 @@ def wrap_with_reaggregate(
         ctes.append(CTE(name=_ROWS, query=_distinct(_ROWS_ALL, dim_names)))
         anchor = _ROWS
     # A cumulative metric on a row only the members have reads its window as
-    # of that row: a member with earlier periods carries them on.
+    # of that row: a member with earlier periods carries them on. Evaluated
+    # as of one period, it reads its group's value, which a member with no
+    # rows shown may still have.
     cumulative_of: dict[str, str] = {}
     if by_rows:
+        cumulative_of.update(resolved.as_of_values)
         axes = dict.fromkeys(
             m.cumulative_time_dimension
             for m in resolved.measures
