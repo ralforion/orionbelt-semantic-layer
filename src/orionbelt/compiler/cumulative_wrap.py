@@ -48,6 +48,7 @@ from orionbelt.ast.nodes import (
     WindowFrame,
     WindowFunction,
 )
+from orionbelt.compiler.count_zero import counts, zero_if_missing
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.time_lookback import lookback_query, null_safe_eq, time_filters
@@ -313,7 +314,9 @@ def wrap_with_cumulative(
                 "A cumulative metric without its time dimension selected needs the "
                 "model, dialect, table qualifier and query to plan its periods"
             )
-        value_ctes += _as_of_ctes(query, resolved, as_of_measures, model, dialect, qualify_table)
+        as_of = _as_of_ctes(query, resolved, as_of_measures, model, dialect, qualify_table)
+        resolved.as_of_values.update((m.name, name) for name, _, metrics in as_of for m in metrics)
+        value_ctes += as_of
     order_by = outer_order_by(resolved, model)
 
     if not value_ctes:
@@ -348,7 +351,12 @@ def wrap_with_cumulative(
     window_of = {m.name: name for name, _, metrics in value_ctes for m in metrics}
     for m in resolved.measures:
         table = window_of.get(m.name, cte_name)
-        joined_columns.append(AliasedExpr(expr=ColumnRef(table=table, name=m.name), alias=m.name))
+        value: Expr = ColumnRef(table=table, name=m.name)
+        if table != cte_name and model is not None and dialect is not None and counts(m, model):
+            # A count is never NULL: a group with no period in reach (none up
+            # to the as-of one, none left in a rolling window) counts 0.
+            value = zero_if_missing(value, m, model, dialect)
+        joined_columns.append(AliasedExpr(expr=value, alias=m.name))
     # Without dimensions every value CTE is one row, the query's own total.
     joins: list[Join | Unnest] = [
         Join(
@@ -572,7 +580,8 @@ def _as_of_ctes(
     to accumulate over. It takes the value the row for the *as-of* period would
     show with that dimension selected: its aggregate over the periods that the
     running total, grain-to-date or rolling window reaches back from there,
-    per group. A group without data in that range gets NULL.
+    per group. A group without data in that range gets NULL, or 0 for a count
+    (see :mod:`~orionbelt.compiler.count_zero`).
 
     The periods are planned as a query in their own right: the query's
     dimensions plus the time dimension, with the base measures and the query's
@@ -698,17 +707,6 @@ def _as_of_ctes(
             aggregate: Expr = FunctionCall(
                 name=_CUMULATIVE_AGG_MAP[m.cumulative_type], args=[value]
             )
-            if m.cumulative_type is CumulativeAggType.COUNT:
-                # COUNT of an empty range is 0, where every other aggregate
-                # gives the NULL of a group without data in the range.
-                in_reach: Expr = (
-                    Literal.number(1)
-                    if reaches is None
-                    else CaseExpr(when_clauses=[(reaches, Literal.number(1))])
-                )
-                periods_in_range = FunctionCall(name="COUNT", args=[in_reach])
-                in_range = BinaryOp(left=periods_in_range, op=">", right=Literal.number(0))
-                aggregate = CaseExpr(when_clauses=[(in_range, aggregate)])
             columns.append(AliasedExpr(expr=aggregate, alias=m.name))
         name = f"cumulative_as_of{suffix}"
         ctes.append(

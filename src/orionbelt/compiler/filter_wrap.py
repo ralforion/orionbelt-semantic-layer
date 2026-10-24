@@ -35,6 +35,7 @@ from orionbelt.ast.nodes import (
     Select,
     Unnest,
 )
+from orionbelt.compiler.count_zero import counts, zero_if_missing
 from orionbelt.compiler.expr_rewrite import map_column_refs, map_nodes
 from orionbelt.compiler.filters import build_filter_expr
 from orionbelt.compiler.having_hoist import windowed_aliases
@@ -47,6 +48,7 @@ from orionbelt.compiler.resolution import (
     make_column_expr,
     make_dimension_expr,
 )
+from orionbelt.compiler.time_lookback import null_safe_eq
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
     FilterOperator,
@@ -551,6 +553,23 @@ def wrap_with_filter_context(
     cte_of: dict[str, str] = {
         m.name: cte_name for cte_name, measure_group, _ in isolated_cte_info for m in measure_group
     }
+    isolated_measures = {m.name: m for _, group, _ in isolated_cte_info for m in group}
+    # Without ``main`` the first isolated CTE anchors the FROM and the rest
+    # cross-join onto it, which is what they would have done anyway.
+    anchor = "main" if keep_main else isolated_cte_info[0][0]
+
+    def isolated_value(name: str, default_table: str) -> Expr:
+        """*name* as the outer query reads it: from its CTE, a count 0 on a
+        row that CTE has no group for."""
+        table = cte_of.get(name)
+        if table is None:
+            return ColumnRef(name=name, table=default_table)
+        value: Expr = ColumnRef(name=name, table=table)
+        measure = isolated_measures[name]
+        if table != anchor and counts(measure, model):
+            value = zero_if_missing(value, measure, model, dialect)
+        return value
+
     for m in inline_measures:
         if m.name in split_metrics:
             outer_columns.append(
@@ -558,7 +577,7 @@ def wrap_with_filter_context(
                     expr=metric_over_components(
                         m,
                         resolved.metric_components,
-                        lambda name: ColumnRef(name=name, table=cte_of.get(name, "main")),
+                        lambda name: isolated_value(name, "main"),
                         model,
                         dialect,
                     ),
@@ -575,14 +594,9 @@ def wrap_with_filter_context(
             # reads it is.
             if m.name not in selected_names:
                 continue
-            outer_columns.append(
-                AliasedExpr(expr=ColumnRef(name=m.name, table=cte_name), alias=m.name)
-            )
+            outer_columns.append(AliasedExpr(expr=isolated_value(m.name, cte_name), alias=m.name))
 
     # --- JOINs from main to isolated CTEs ---
-    # Without ``main`` the first isolated CTE anchors the FROM and the rest
-    # cross-join onto it, which is what they would have done anyway.
-    anchor = "main" if keep_main else isolated_cte_info[0][0]
     outer_joins: list[Join | Unnest] = []
     for cte_name, _, grain in isolated_cte_info:
         if cte_name == anchor:
@@ -597,15 +611,14 @@ def wrap_with_filter_context(
                 )
             )
         else:
-            on_parts: list[Expr] = []
-            for dim_name in grain:
-                on_parts.append(
-                    BinaryOp(
-                        left=ColumnRef(name=dim_name, table=anchor),
-                        op="=",
-                        right=ColumnRef(name=dim_name, table=cte_name),
-                    )
+            # NULL-safe: the row of a NULL member is a group like any other.
+            on_parts: list[Expr] = [
+                null_safe_eq(
+                    ColumnRef(name=dim_name, table=anchor),
+                    ColumnRef(name=dim_name, table=cte_name),
                 )
+                for dim_name in grain
+            ]
             on_expr: Expr = on_parts[0]
             for part in on_parts[1:]:
                 on_expr = BinaryOp(left=on_expr, op="AND", right=part)
@@ -657,7 +670,7 @@ def wrap_with_filter_context(
     # ``SUM("Sales"."AMOUNT")`` against a FROM that no longer has ``Sales``.
     for cte_name, measure_group, _ in isolated_cte_info:
         for m in measure_group:
-            resolved.projected_expressions[m.name] = ColumnRef(name=m.name, table=cte_name)
+            resolved.projected_expressions[m.name] = isolated_value(m.name, cte_name)
     for metric in split_metrics.values():
         for comp in leaf_components[metric.name]:
             if comp.filter_context is None:
@@ -674,7 +687,7 @@ def wrap_with_filter_context(
         """
         if name in split_metrics:
             return ColumnRef(name=name)
-        return ColumnRef(name=name, table=cte_of.get(name, anchor))
+        return isolated_value(name, anchor)
 
     outer_order_by: list[OrderByItem] = []
     for ob in ast.order_by:

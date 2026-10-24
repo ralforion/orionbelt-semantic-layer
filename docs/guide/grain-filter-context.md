@@ -124,6 +124,15 @@ When deciding whether a query filter matches an `exclude` or `keepOnly` entry:
 - If any referenced field matches a listed name, the entire filter clause is matched.
 - `exclude` removes matching filters; `keepOnly` keeps only matching filters.
 
+### Rows Without a Group
+
+The isolated CTE is joined back onto the query's rows by their dimensions, a
+NULL member matching a NULL member, so the row of an order without a region
+reads the count of such orders. A row the CTE has no group for (no open orders
+in a region) reads what the measure gives over no rows: a `count` or
+`count_distinct` reads `0`, typed as the measure declares; anything else is
+NULL.
+
 ## Combining Grain and Filter Context
 
 A measure can use both `grain` and `filterContext` together. The grain controls the GROUP BY and the filter context controls the WHERE clause of the isolated CTE.

@@ -1109,9 +1109,9 @@ class TestAsOf:
         )
         assert _run_gappy(gappy, query, model_yaml)[("East",)] == (1000.0,)
 
-    def test_a_count_over_an_empty_range_is_null(self, gappy: Any) -> None:
-        """No March: a one-month count as of March has nothing to count, while
-        the running count reads January and February."""
+    def test_a_count_over_an_empty_range_is_0(self, gappy: Any) -> None:
+        """No March: a one-month count as of March counts no month, 0 and not
+        NULL, while the running count reads January and February."""
         model_yaml = self.MODEL_YAML.replace(
             "  # Cumulative: rolling max",
             """  Monthly Order Count:
@@ -1135,12 +1135,12 @@ class TestAsOf:
             ),
             asOf="2021-03-10",
         )
-        assert _run_gappy(gappy, query, model_yaml)[("East",)] == (None, 2.0)
+        assert _run_gappy(gappy, query, model_yaml)[("East",)] == (0, 2.0)
         before_any = QueryObject(
             select=QuerySelect(measures=["Monthly Order Count", "Running Order Count"]),
             asOf="2020-12-01",
         )
-        assert _run_gappy(gappy, before_any, model_yaml) == {(): (None, None)}
+        assert _run_gappy(gappy, before_any, model_yaml) == {(): (0, 0)}
 
     def test_a_date_is_not_truncated_to_a_finer_grain(self) -> None:
         """A date already starts its hour; BigQuery truncates only a

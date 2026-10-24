@@ -55,6 +55,9 @@ from orionbelt.ast.nodes import (
     WindowFrame,
     WindowFunction,
 )
+from orionbelt.compiler.count_zero import counts, zero_if_missing
+from orionbelt.compiler.cumulative_rows import cumulative_on_rows
+from orionbelt.compiler.cumulative_wrap import _apply_metric_cast
 from orionbelt.compiler.filters import _resolve_subquery_filter_field
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.late_window import is_late
@@ -1317,12 +1320,10 @@ def wrap_with_reaggregate(
         joined.append(_COMPONENTS)
 
     # A count with no stage-2 row for a row of the query counted no group: a
-    # ``having`` removed them all, or the row is one only the members have.
-    counted_after_having = {
-        m.name
-        for m in reaggregates
-        if m.reaggregate_aggregation is ReaggregateAggType.COUNT
-        and (by_rows or _having(model, m.name))
+    # ``having`` removed them all, the row is one only the members have, or
+    # another fact's (a region with returns and no orders).
+    counted = {
+        m.name for m in reaggregates if m.reaggregate_aggregation is ReaggregateAggType.COUNT
     }
     source_of: dict[str, str] = {}
     stage_two_names: list[str] = []
@@ -1368,8 +1369,38 @@ def wrap_with_reaggregate(
         )
         ctes.append(CTE(name=_ROWS, query=_distinct(_ROWS_ALL, dim_names)))
         anchor = _ROWS
+    # A cumulative metric on a row only the members have reads its window as
+    # of that row: a member with earlier periods carries them on. Evaluated
+    # as of one period, it reads its group's value, which a member with no
+    # rows shown may still have.
+    cumulative_of: dict[str, str] = {}
+    if by_rows:
+        cumulative_of.update(resolved.as_of_values)
+        axes = dict.fromkeys(
+            m.cumulative_time_dimension
+            for m in resolved.measures
+            if m.name in resolved.cumulative_sources
+        )
+        for index, axis in enumerate(axes, 1):
+            assert axis is not None
+            added, values = cumulative_on_rows(
+                resolved,
+                _ROWS,
+                axis,
+                model,
+                dialect,
+                prefix=f"reagg_cumulative_{index}",
+                same_period=lambda source, row: BinaryOp(left=source, op="=", right=row),
+            )
+            ctes += added
+            cumulative_of.update(values)
     joins: list[Join | Unnest] = []
-    for name in [*([_BASE] if by_rows else []), *stage_two_names, *joined]:
+    for name in [
+        *([_BASE] if by_rows else []),
+        *stage_two_names,
+        *joined,
+        *dict.fromkeys(cumulative_of.values()),
+    ]:
         if name == anchor:
             continue
         joins.append(
@@ -1382,16 +1413,17 @@ def wrap_with_reaggregate(
         )
 
     def stage_two_value(name: str) -> Expr:
-        value = ColumnRef(name=name, table=source_of[name])
+        value: Expr = ColumnRef(name=name, table=source_of[name])
         missing: Expr | None = None
-        if name in counted_after_having:
-            # A group whose stage-1 rows ``having`` all removed has no stage-2
-            # row; the join leaves NULL where the count is 0. The 0 takes the
-            # count's own cast, so a declared ``dataType`` holds on both sides.
+        if name in counted:
+            # A row with no stage-2 group has no row to join; the join leaves
+            # NULL where the count is 0. The 0 takes the count's own cast, so
+            # a declared ``dataType`` holds on both sides.
             missing = Literal.number(0)
             target = resolve_metric_data_type(model.metrics[name], model.settings)
             if target is not None:
                 missing = dialect.cast_to_obml_type(missing, target)
+            value = FunctionCall(name="COALESCE", args=[value, missing])
         if by_rows:
             matched = BinaryOp(
                 left=ColumnRef(name=_MATCHED, table=source_of[name]),
@@ -1399,13 +1431,18 @@ def wrap_with_reaggregate(
                 right=Literal.number(1),
             )
             return CaseExpr(when_clauses=[(matched, value)], else_clause=missing)
-        if missing is not None:
-            return FunctionCall(name="COALESCE", args=[value, missing])
         return value
 
     def empty_of(name: str) -> Expr:
         """What *name* reports over no rows: a measure its defaultValue, 0 for
-        a count, a derived metric its formula over those, otherwise NULL."""
+        a count, a derived metric its formula over those, a cumulative metric
+        its window as of the row, otherwise NULL."""
+        if name in cumulative_of:
+            cumulative = next(m for m in resolved.measures if m.name == name)
+            value: Expr = ColumnRef(name=name, table=cumulative_of[name])
+            if counts(cumulative, model):
+                value = zero_if_missing(value, cumulative, model, dialect)
+            return _apply_metric_cast(value, name, model, dialect)
         empty = _empty_value(name, model)
         if empty is not None:
             return empty
