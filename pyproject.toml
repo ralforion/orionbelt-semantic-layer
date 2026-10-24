@@ -312,6 +312,12 @@ dev = [
     "adbc-driver-flightsql>=1.0",
 ]
 
+[tool.uv]
+# gradio 6.x caps pillow<13, which leaves the lock on Pillow 12 and its
+# advisories. The UI uses no images, and Gradio 7 (unreleased) lifts the cap
+# after adapting only to I-mode PNG encoding. Remove with the move to Gradio 7.
+override-dependencies = ["pillow>=13.0.0"]
+
 [tool.uv.workspace]
 members = [
     "drivers/ob-driver-core",
