@@ -1,7 +1,7 @@
 """PEP 249 type objects — re-exported from ob-driver-core plus MySQL field type mapping.
 
-mysql-connector-python cursor.description returns integer field type constants.
-The MYSQL_TYPE_MAP maps common field types to PEP 249 type objects.
+MySQL's column-definition packet carries an integer field type, which
+MYSQL_TYPE_MAP maps to a PEP 249 type object.
 
 MySQL field type constants:
 https://dev.mysql.com/doc/dev/mysql-server/latest/field__types_8h.html

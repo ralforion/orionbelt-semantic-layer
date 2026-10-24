@@ -32,6 +32,15 @@ COPY src/ src/
 COPY schema/ schema/
 RUN uv sync --no-dev --no-editable --frozen --extra ${OB_EXTRA}
 
+# The ADBC MySQL driver ob_mysql reads through (not on PyPI; pinned and
+# checksummed), when the extra installs ob_mysql. Without it ob_mysql falls
+# back to PyMySQL. /opt/adbc exists either way for the runtime COPY.
+COPY scripts/install_adbc_mysql.py scripts/
+RUN mkdir -p /opt/adbc \
+    && if .venv/bin/python -c "import ob_mysql" 2>/dev/null; then \
+        python scripts/install_adbc_mysql.py /opt/adbc; \
+    fi
+
 # --- Runtime stage: minimal image ---
 FROM python:3.14-slim
 
@@ -54,7 +63,9 @@ RUN groupadd -r app && useradd -r -g app -d /app -s /sbin/nologin app
 
 # Copy installed virtualenv from builder
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
-ENV PATH="/app/.venv/bin:$PATH"
+COPY --from=builder /opt/adbc /opt/adbc
+ENV PATH="/app/.venv/bin:$PATH" \
+    ADBC_DRIVER_PATH=/opt/adbc/drivers
 
 # Copy schema (needed at runtime for validation)
 COPY --from=builder --chown=app:app /app/schema schema/

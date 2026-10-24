@@ -1,45 +1,81 @@
 """Unit tests for the ob-mysql DB-API 2.0 driver.
 
-All tests mock mysql.connector — no live MySQL needed.
+Both clients are faked: PyMySQL by a cursor holding rows and column-definition
+fields, the ADBC driver by a cursor holding an Arrow table. No live MySQL is
+needed; ``tests/integration/test_ob_mysql_driver.py`` runs both against one.
 OBML tests additionally mock the REST API call to ``/v1/query/sql``.
 """
 
 from __future__ import annotations
 
-from collections import namedtuple
+import datetime
+from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
+import adbc_driver_manager
+import pyarrow as pa
 import pytest
 
 import ob_mysql
 from ob_mysql.connection import Connection
-from ob_mysql.exceptions import NotSupportedError, ProgrammingError
+from ob_mysql.exceptions import DataError, InterfaceError, NotSupportedError, ProgrammingError
 from ob_mysql.type_codes import DATETIME, NUMBER, STRING
 
-# ---------------------------------------------------------------------------
-# Helper to build a mock mysql.connector connection
-# ---------------------------------------------------------------------------
-
-# mysql-connector description columns
-MysqlColumn = namedtuple(
-    "Column",
-    ["name", "type_code", "display_size", "internal_size", "precision", "scale", "null_ok"],
-)
+LONG = 3
+DOUBLE = 5
+DATETIME_CODE = 12
+VAR_STRING = 253
+UTF8MB4 = 255
 
 
-def _make_mock_native() -> MagicMock:
-    """Return a mock mysql.connector connection."""
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_conn.cursor.return_value = mock_cursor
-    # Default: no results
-    mock_cursor.description = None
-    mock_cursor.rowcount = -1
-    mock_cursor.fetchone.return_value = None
-    mock_cursor.fetchall.return_value = []
-    mock_cursor.fetchmany.return_value = []
-    mock_cursor.lastrowid = None
-    return mock_conn
+def _field(name: str, type_code: int, *, flags: int = 0, length: int = 11, scale: int = 0) -> Any:
+    """A PyMySQL ``FieldDescriptor``: the column-definition packet."""
+    return SimpleNamespace(
+        name=name, type_code=type_code, flags=flags, charsetnr=UTF8MB4, length=length, scale=scale
+    )
+
+
+def _pymysql_native(
+    fields: list[Any] | None = None,
+    rows: list[tuple[Any, ...]] | None = None,
+    *,
+    rowcount: int = -1,
+    lastrowid: int | None = None,
+) -> MagicMock:
+    """A PyMySQL connection whose cursor returns *rows* under *fields*."""
+    native = MagicMock()
+    cursor = native.cursor.return_value
+    cursor._result = SimpleNamespace(fields=fields) if fields is not None else None
+    cursor.description = [(f.name, f.type_code) for f in fields] if fields is not None else None
+    cursor.fetchall.return_value = rows or []
+    cursor.rowcount = len(rows) if rows is not None else rowcount
+    cursor.lastrowid = lastrowid
+    # PyMySQL's own rendering of one value, as the session's sql_mode reads it.
+    native.literal.side_effect = lambda value: f"<{value}>"
+    return native
+
+
+def _pymysql(native: MagicMock, **kwargs: Any) -> Connection:
+    return Connection(native, backend="pymysql", **kwargs)
+
+
+def _adbc_native(
+    table: pa.Table | None = None, *, error: Exception | None = None, sql_mode: str = ""
+) -> MagicMock:
+    """An ADBC connection whose cursor returns *table*, or raises *error*, and
+    whose session reports *sql_mode*."""
+    native = MagicMock()
+    cursor = native.cursor.return_value
+    cursor.fetchone.return_value = (sql_mode,)
+    cursor.description = [(name, None) for name in table.column_names] if table else []
+    cursor.rowcount = -1
+    if error is not None:
+        cursor.fetch_arrow_table.side_effect = error
+    else:
+        cursor.fetch_arrow_table.return_value = table
+    return native
 
 
 def _mock_api_response(sql: str) -> MagicMock:
@@ -48,6 +84,10 @@ def _mock_api_response(sql: str) -> MagicMock:
     resp.is_success = True
     resp.json.return_value = {"sql": sql}
     return resp
+
+
+_ROWS_FIELDS = [_field("id", LONG), _field("name", VAR_STRING)]
+_ROWS = [(1, "Alice"), (2, "Bob"), (3, "Carol")]
 
 
 # ---------------------------------------------------------------------------
@@ -68,44 +108,96 @@ def test_paramstyle() -> None:
 
 
 # ---------------------------------------------------------------------------
-# connect()
+# connect(): which client
 # ---------------------------------------------------------------------------
 
 
-def test_connect_returns_connection() -> None:
-    with patch("mysql.connector.connect") as mock_connect:
-        mock_connect.return_value = _make_mock_native()
-        conn = ob_mysql.connect(database="testdb", user="testuser")
-        assert isinstance(conn, Connection)
-        mock_connect.assert_called_once()
-        kwargs = mock_connect.call_args.kwargs
-        assert kwargs["database"] == "testdb"
-        assert kwargs["user"] == "testuser"
+def test_connect_reads_through_adbc_when_the_driver_is_installed() -> None:
+    adbc = _adbc_native()
+    with (
+        patch("ob_mysql._connect_adbc", return_value=adbc) as connect_adbc,
+        patch("pymysql.connect") as connect_pymysql,
+    ):
+        conn = ob_mysql.connect(host="db", port=3307, database="sales", user="me", password="pw")
+    assert conn.backend == "adbc"
+    assert conn._native is adbc
+    connect_pymysql.assert_not_called()
+    assert connect_adbc.call_args.args[0] == (
+        "mysql://me:pw@db:3307/sales?tls=preferred&charset=utf8mb4"
+    )
 
 
-def test_connect_default_port() -> None:
-    with patch("mysql.connector.connect") as mock_connect:
-        mock_connect.return_value = _make_mock_native()
-        ob_mysql.connect()
-        kwargs = mock_connect.call_args.kwargs
-        assert kwargs["port"] == 3306
+def test_connect_falls_back_to_pymysql_without_the_driver() -> None:
+    with (
+        patch("ob_mysql._connect_adbc", return_value=None),
+        patch("pymysql.connect") as connect_pymysql,
+    ):
+        conn = ob_mysql.connect(database="sales", user="me")
+    assert conn.backend == "pymysql"
+    kwargs = connect_pymysql.call_args.kwargs
+    assert (kwargs["database"], kwargs["user"], kwargs["port"]) == ("sales", "me", 3306)
+    assert kwargs["charset"] == "utf8mb4"
 
 
-def test_connect_default_charset() -> None:
-    with patch("mysql.connector.connect") as mock_connect:
-        mock_connect.return_value = _make_mock_native()
-        ob_mysql.connect()
-        kwargs = mock_connect.call_args.kwargs
-        assert kwargs["charset"] == "utf8mb4"
+def test_connect_insisting_on_adbc_without_the_driver_says_how_to_install_it() -> None:
+    with (
+        patch("ob_mysql._connect_adbc", return_value=None),
+        pytest.raises(InterfaceError, match="dbc install mysql"),
+    ):
+        ob_mysql.connect(backend="adbc")
 
 
-def test_connect_context_manager() -> None:
-    with patch("mysql.connector.connect") as mock_connect:
-        mock_native = _make_mock_native()
-        mock_connect.return_value = mock_native
-        with ob_mysql.connect() as conn:
-            assert isinstance(conn, Connection)
-        mock_native.close.assert_called_once()
+def test_connect_insisting_on_pymysql_never_tries_adbc() -> None:
+    with patch("ob_mysql._connect_adbc") as connect_adbc, patch("pymysql.connect"):
+        conn = ob_mysql.connect(backend="pymysql")
+    connect_adbc.assert_not_called()
+    assert conn.backend == "pymysql"
+
+
+def test_certificate_files_go_through_pymysql() -> None:
+    """The ADBC driver's URI takes no certificate files."""
+    with patch("ob_mysql._connect_adbc") as connect_adbc, patch("pymysql.connect") as connect:
+        conn = ob_mysql.connect(ssl_ca="/ca.pem", ssl_cert="/c.pem")
+    connect_adbc.assert_not_called()
+    assert conn.backend == "pymysql"
+    assert connect.call_args.kwargs["ssl"] == {"ca": "/ca.pem", "cert": "/c.pem"}
+    with pytest.raises(NotSupportedError, match="certificate"):
+        ob_mysql.connect(ssl_ca="/ca.pem", backend="adbc")
+
+
+def test_the_uri_quotes_credentials() -> None:
+    uri = ob_mysql._adbc_uri(
+        host="db", port=3306, database="my db", user="a@b", password="p:w/d", charset="utf8mb4"
+    )
+    assert uri == "mysql://a%40b:p%3Aw%2Fd@db:3306/my%20db?tls=preferred&charset=utf8mb4"
+
+
+def test_an_adbc_connection_keeps_the_servers_time_zone() -> None:
+    """The driver sets the session to UTC; the connection sets it back."""
+    native = MagicMock()
+    with patch("adbc_driver_manager.dbapi.connect", return_value=native) as connect:
+        assert ob_mysql._connect_adbc("mysql://db/x") is native
+    # ``db_kwargs`` rather than ``uri=``, which adbc-driver-manager 1.8 lacks.
+    assert connect.call_args.kwargs == {"driver": "mysql", "db_kwargs": {"uri": "mysql://db/x"}}
+    statement = native.cursor.return_value.__enter__.return_value.execute.call_args.args[0]
+    assert statement == "SET time_zone = @@global.time_zone"
+
+
+def test_a_missing_driver_is_not_an_error_but_a_refused_login_is() -> None:
+    missing = adbc_driver_manager.ProgrammingError(
+        "NOT_FOUND: [Driver Manager] Could not load `mysql`",
+        status_code=adbc_driver_manager.AdbcStatusCode.NOT_FOUND,
+    )
+    with patch("adbc_driver_manager.dbapi.connect", side_effect=missing):
+        assert ob_mysql._connect_adbc("mysql://db/x") is None
+    refused = adbc_driver_manager.OperationalError(
+        "UNAUTHENTICATED: Access denied", status_code=adbc_driver_manager.AdbcStatusCode.IO
+    )
+    with (
+        patch("adbc_driver_manager.dbapi.connect", side_effect=refused),
+        pytest.raises(adbc_driver_manager.OperationalError),
+    ):
+        ob_mysql._connect_adbc("mysql://db/x")
 
 
 # ---------------------------------------------------------------------------
@@ -113,294 +205,357 @@ def test_connect_context_manager() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_connect_context_manager() -> None:
+    native = _pymysql_native()
+    with _pymysql(native) as conn:
+        assert isinstance(conn, Connection)
+    native.close.assert_called_once()
+
+
 def test_connection_close_is_idempotent() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
+    native = _pymysql_native()
+    conn = _pymysql(native)
     conn.close()
-    conn.close()  # should not raise
-    mock_native.close.assert_called_once()
+    conn.close()
+    native.close.assert_called_once()
 
 
 def test_connection_cursor_after_close_raises() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
+    conn = _pymysql(_pymysql_native())
     conn.close()
     with pytest.raises(ProgrammingError, match="closed"):
         conn.cursor()
 
 
-def test_connection_commit() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
+def test_connection_commit_and_rollback() -> None:
+    native = _pymysql_native()
+    conn = _pymysql(native)
     conn.commit()
-    mock_native.commit.assert_called_once()
-
-
-def test_connection_rollback() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
     conn.rollback()
-    mock_native.rollback.assert_called_once()
+    native.commit.assert_called_once()
+    native.rollback.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# Cursor — plain SQL
+# Cursor: plain SQL through PyMySQL
 # ---------------------------------------------------------------------------
 
 
-def test_cursor_execute_calls_native() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
-    with conn.cursor() as cur:
-        cur.execute("SELECT 1")
-        mock_native.cursor().execute.assert_called_once_with("SELECT 1")
+def test_cursor_execute_runs_the_statement() -> None:
+    native = _pymysql_native(_ROWS_FIELDS, _ROWS)
+    with _pymysql(native).cursor() as cur:
+        assert cur.execute("SELECT 1") is cur
+    native.cursor.return_value.execute.assert_called_once_with("SELECT 1")
 
 
-def test_cursor_execute_with_params() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
-    with conn.cursor() as cur:
-        cur.execute("SELECT %s + %s", [3, 4])
-        mock_native.cursor().execute.assert_called_once_with("SELECT %s + %s", [3, 4])
+def test_pymysql_writes_every_value_nested_ones_too() -> None:
+    """PyMySQL writes a value as the session's sql_mode reads it, but escapes
+    the elements of a sequence with backslashes whatever the mode: under
+    NO_BACKSLASH_ESCAPES ``("' ) OR 1=1 -- ",)`` ended its literal."""
+    native = _pymysql_native(_ROWS_FIELDS, _ROWS)
+    with _pymysql(native).cursor() as cur:
+        cur.execute("SELECT %s IN %s, %%", ["it's", ("a", ["b", 2])])
+        cur.execute("SELECT %(x)s IN %(y)s", {"x": "k", "y": {"z"}})
+    statements = [c.args for c in native.cursor.return_value.execute.call_args_list]
+    assert statements == [("SELECT <it's> IN (<a>,(<b>,<2>)), %",), ("SELECT <k> IN (<z>)",)]
 
 
-def test_cursor_execute_returns_self() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
-    with conn.cursor() as cur:
-        result = cur.execute("SELECT 1")
-        assert result is cur
+_READ_MODE = "SELECT @@session.sql_mode"
+_PLAIN = "STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES"
+
+
+def _adbc_statements(native: MagicMock) -> list[tuple[str, Any]]:
+    """What the connection ran, with what it bound."""
+    return [tuple(c.args) for c in native.cursor.return_value.execute.call_args_list]
+
+
+def _unpreparable(native: MagicMock) -> None:
+    """The server refuses to prepare what is sent with bound parameters, as it
+    refuses ``SHOW ... LIKE ?``."""
+
+    def execute(sql: str, bound: Any = None) -> None:
+        if bound is not None:
+            raise adbc_driver_manager.ProgrammingError(
+                "INVALID_ARGUMENT: [MySQL] failed to prepare statement: Error 1064 (42000): "
+                "You have an error in your SQL syntax",
+                status_code=adbc_driver_manager.AdbcStatusCode.INVALID_ARGUMENT,
+            )
+
+    native.cursor.return_value.execute.side_effect = execute
+
+
+@pytest.mark.parametrize(
+    ("text", "statement"),
+    [
+        # Quoted as PyMySQL quotes it: the session's collation, and accepted by
+        # SHOW ... LIKE. A doubled quote reads alike under every sql_mode.
+        ("it's ' OR 1=1 -- ", ("SELECT 'it''s '' OR 1=1 -- '", None)),
+        ("", ("SELECT ''", None)),
+        # A backslash or a NUL reads differently under NO_BACKSLASH_ESCAPES: the
+        # server binds it, alike under every mode, with no query before the
+        # statement to replace ROW_COUNT() / FOUND_ROWS().
+        ("it's \\' OR 1=1 -- ", ("SELECT ?", ("it's \\' OR 1=1 -- ",))),
+        ("a\x00b", ("SELECT ?", ("a\x00b",))),
+    ],
+)
+def test_adbc_text_parameters(text: str, statement: tuple[str, Any]) -> None:
+    native = _adbc_native(pa.table({"v": ["x"]}))
+    Connection(native, backend="adbc").cursor().execute("SELECT %s", [text])
+    assert _adbc_statements(native) == [statement]
+
+
+def test_adbc_binds_named_parameters_in_the_statements_order() -> None:
+    native = _adbc_native(pa.table({"v": ["x"]}))
+    Connection(native, backend="adbc").cursor().execute(
+        "SELECT %(b)s, %(a)s, %(c)s, %(b)s", {"a": "a\\", "b": "b\\", "c": "c"}
+    )
+    assert _adbc_statements(native) == [("SELECT ?, ?, 'c', ?", ("b\\", "a\\", "b\\"))]
+
+
+@pytest.mark.parametrize(
+    ("sql_mode", "literal"),
+    [("STRICT_TRANS_TABLES", "'review\\\\_named'"), (_PLAIN, "'review\\_named'")],
+)
+def test_adbc_quotes_for_the_session_what_the_server_cannot_prepare(
+    sql_mode: str, literal: str
+) -> None:
+    """MySQL prepares no SHOW ... LIKE: its pattern is quoted for the mode the
+    session is in. Asking replaces ROW_COUNT(), which no SHOW reads."""
+    native = _adbc_native(pa.table({"v": ["x"]}), sql_mode=sql_mode)
+    _unpreparable(native)
+    Connection(native, backend="adbc").cursor().execute("SHOW TABLES LIKE %s", ["review\\_named"])
+    assert _adbc_statements(native) == [
+        ("SHOW TABLES LIKE ?", ("review\\_named",)),
+        (_READ_MODE,),
+        (f"SHOW TABLES LIKE {literal}", None),
+    ]
+
+
+def test_adbc_refuses_a_nul_it_can_neither_bind_nor_quote() -> None:
+    native = _adbc_native(pa.table({"v": ["x"]}), sql_mode=_PLAIN)
+    _unpreparable(native)
+    with pytest.raises(NotSupportedError, match="NUL"):
+        Connection(native, backend="adbc").cursor().execute("SHOW TABLES LIKE %s", ["a\x00"])
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Prepared, but failed when run: running it again could repeat its effects.
+        "INTEGRITY: [MySQL] failed to create record reader: failed to execute query: "
+        "Error 1062 (23000): Duplicate entry",
+        # Preparable, but wrong: quoting it would not help.
+        "NOT_FOUND: [MySQL] failed to prepare statement: Error 1146 (42S02): Table "
+        "'probe.nonexist' doesn't exist",
+    ],
+)
+def test_adbc_runs_a_bound_statement_once(message: str) -> None:
+    native = _adbc_native(None)
+    native.cursor.return_value.execute.side_effect = adbc_driver_manager.Error(
+        message, status_code=adbc_driver_manager.AdbcStatusCode.UNKNOWN
+    )
+    with pytest.raises(adbc_driver_manager.Error):
+        Connection(native, backend="adbc").cursor().execute("INSERT INTO t VALUES (%s)", ["a\\"])
+    assert len(_adbc_statements(native)) == 1
+
+
+def test_adbc_parameters_of_every_kind() -> None:
+    native = _adbc_native(pa.table({"v": ["x"]}))
+    cur = Connection(native, backend="adbc").cursor()
+    cur.execute(
+        "SELECT %s, %s, %s, %s, %s, %s IN %s",
+        [b"\x00\x80\xff", None, 3, Decimal("1.50"), datetime.date(2024, 1, 2), 2, (1, "a")],
+    )
+    cur.execute("SELECT %(a)s", {"a": ""})
+    assert _adbc_statements(native) == [
+        ("SELECT X'0080ff', NULL, 3, 1.50, '2024-01-02', 2 IN (1,'a')", None),
+        ("SELECT ''", None),
+    ]
 
 
 def test_cursor_description() -> None:
-    mock_native = _make_mock_native()
-    mock_cursor = mock_native.cursor()
-    mock_cursor.description = [
-        MysqlColumn("num", 3, None, None, None, None, None),  # LONG → NUMBER
-        MysqlColumn("txt", 253, None, None, None, None, None),  # VAR_STRING → STRING
-        MysqlColumn("dt", 12, None, None, None, None, None),  # DATETIME → DATETIME
-    ]
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    desc = cur.description
-    assert desc is not None
-    assert len(desc) == 3
-    assert all(len(col) == 7 for col in desc)
-    assert desc[0][0] == "num"
-    assert desc[0][1] == NUMBER
-    assert desc[1][0] == "txt"
-    assert desc[1][1] == STRING
-    assert desc[2][0] == "dt"
-    assert desc[2][1] == DATETIME
-
-
-def test_cursor_description_none_before_execute() -> None:
-    mock_native = _make_mock_native()
-    mock_native.cursor().description = None
-    conn = Connection(mock_native)
-    cur = conn.cursor()
+    fields = [_field("num", LONG), _field("txt", VAR_STRING), _field("dt", DATETIME_CODE)]
+    native = _pymysql_native(fields, [])
+    cur = _pymysql(native).cursor()
     assert cur.description is None
+    cur.execute("SELECT 1")
+    assert cur.description == (
+        ("num", NUMBER, None, None, None, None, None),
+        ("txt", STRING, None, None, None, None, None),
+        ("dt", DATETIME, None, None, None, None, None),
+    )
 
 
-def test_cursor_fetchone() -> None:
-    mock_native = _make_mock_native()
-    mock_native.cursor().fetchone.return_value = (42,)
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    row = cur.fetchone()
-    assert row == (42,)
-
-
-def test_cursor_fetchone_exhausted() -> None:
-    mock_native = _make_mock_native()
-    mock_native.cursor().fetchone.return_value = None
-    conn = Connection(mock_native)
-    cur = conn.cursor()
+def test_fetch_methods_page_through_one_result() -> None:
+    cur = _pymysql(_pymysql_native(_ROWS_FIELDS, _ROWS)).cursor()
+    cur.execute("SELECT 1")
+    assert cur.fetchone() == (1, "Alice")
+    assert cur.fetchmany(1) == [(2, "Bob")]
+    assert cur.fetchall() == [(3, "Carol")]
     assert cur.fetchone() is None
+    cur.execute("SELECT 1")
+    assert list(cur) == _ROWS
 
 
-def test_cursor_fetchall() -> None:
-    mock_native = _make_mock_native()
-    mock_native.cursor().fetchall.return_value = [(1, "a"), (2, "b"), (3, "c")]
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    rows = cur.fetchall()
-    assert len(rows) == 3
-    assert rows[0] == (1, "a")
+def test_fetch_arrow_table_takes_the_rows_not_yet_fetched() -> None:
+    cur = _pymysql(_pymysql_native(_ROWS_FIELDS, _ROWS)).cursor()
+    cur.execute("SELECT 1")
+    cur.fetchone()
+    table = cur.fetch_arrow_table()
+    assert table.to_pylist() == [{"id": 2, "name": "Bob"}, {"id": 3, "name": "Carol"}]
+    assert table.schema.field("id").type == pa.int32()
+    assert cur.fetchall() == []
 
 
-def test_cursor_fetchmany() -> None:
-    mock_native = _make_mock_native()
-    mock_native.cursor().fetchmany.return_value = [(1,), (2,), (3,)]
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    batch = cur.fetchmany(3)
-    assert len(batch) == 3
-    mock_native.cursor().fetchmany.assert_called_with(3)
+def test_fetch_arrow_table_empty_keeps_the_columns() -> None:
+    cur = _pymysql(_pymysql_native(_ROWS_FIELDS, [])).cursor()
+    cur.execute("SELECT 1")
+    table = cur.fetch_arrow_table()
+    assert table.num_rows == 0
+    assert table.schema.names == ["id", "name"]
+    assert table.schema.field("name").type == pa.string()
 
 
-def test_cursor_iteration() -> None:
-    mock_native = _make_mock_native()
-    mock_native.cursor().fetchone.side_effect = [(0,), (1,), (2,), None]
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    rows = list(cur)
-    assert len(rows) == 3
-    assert rows[0] == (0,)
+def test_a_statement_without_a_result_set() -> None:
+    native = _pymysql_native(None, rowcount=2, lastrowid=42)
+    cur = _pymysql(native).cursor()
+    cur.execute("INSERT INTO t VALUES (1), (2)")
+    assert (cur.description, cur.rowcount, cur.lastrowid) == (None, 2, 42)
+    assert cur.fetchall() == []
+    with pytest.raises(ProgrammingError, match="No result set"):
+        cur.fetch_arrow_table()
 
 
 def test_cursor_close_then_fetch_raises() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
-    cur = conn.cursor()
+    cur = _pymysql(_pymysql_native()).cursor()
     cur.close()
     with pytest.raises(ProgrammingError, match="closed"):
         cur.fetchone()
 
 
 def test_cursor_executemany_plain_sql() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
-    cur = conn.cursor()
+    native = _pymysql_native(None)
+    cur = _pymysql(native).cursor()
     cur.executemany("INSERT INTO t VALUES (%s, %s)", [(1, "a"), (2, "b")])
-    assert mock_native.cursor().execute.call_count == 2
+    calls = [c.args for c in native.cursor.return_value.execute.call_args_list]
+    assert calls == [("INSERT INTO t VALUES (<1>, <a>)",), ("INSERT INTO t VALUES (<2>, <b>)",)]
 
 
 def test_cursor_executemany_obml_raises() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
-    cur = conn.cursor()
+    cur = _pymysql(_pymysql_native()).cursor()
     obml = "select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n"
     with pytest.raises(NotSupportedError, match="executemany"):
         cur.executemany(obml, [])
 
 
-def test_cursor_setinputsizes_noop() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    cur.setinputsizes([])  # should not raise
-
-
-def test_cursor_setoutputsize_noop() -> None:
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    cur.setoutputsize(1000)  # should not raise
-
-
-def test_cursor_lastrowid() -> None:
-    mock_native = _make_mock_native()
-    mock_native.cursor().lastrowid = 42
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    assert cur.lastrowid == 42
-
-
-def test_cursor_rowcount() -> None:
-    mock_native = _make_mock_native()
-    mock_native.cursor().rowcount = 5
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    assert cur.rowcount == 5
+def test_cursor_setinputsizes_and_setoutputsize_are_noops() -> None:
+    cur = _pymysql(_pymysql_native()).cursor()
+    cur.setinputsizes([])
+    cur.setoutputsize(1000)
 
 
 # ---------------------------------------------------------------------------
-# Cursor — OBML queries (mocked REST API)
+# Cursor: ADBC
+# ---------------------------------------------------------------------------
+
+
+def test_adbc_result_is_normalized_and_paged() -> None:
+    table = pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "amount": pa.array([1, 2], pa.decimal128(9, 2)).cast(pa.decimal64(9, 2)),
+        }
+    )
+    native = _adbc_native(table)
+    cur = Connection(native, backend="adbc").cursor()
+    cur.execute("SELECT id, amount FROM t")
+    native_cursor = native.cursor.return_value
+    native_cursor.adbc_statement.set_options.assert_called_once_with(
+        **{"mysql.query.zero_datetime_behavior": "convert_to_null"}
+    )
+    assert cur.description is not None
+    assert [d[1] for d in cur.description] == [NUMBER, NUMBER]
+    assert cur.rowcount == 2
+    assert cur.fetchone() is not None
+    remaining = cur.fetch_arrow_table()
+    assert remaining.num_rows == 1
+    assert remaining.schema.field("amount").type == pa.decimal128(9, 2)
+
+
+def test_adbc_reports_a_result_it_cannot_read() -> None:
+    """ADBC refuses a TIME outside a day. Reading it again through another
+    client would read it outside this session (without its uncommitted rows,
+    temporary tables or variables), so the failure is reported instead."""
+    error = adbc_driver_manager.OperationalError(
+        "UNKNOWN: [mysql] failed to append value to column 0: hour out of range",
+        status_code=adbc_driver_manager.AdbcStatusCode.UNKNOWN,
+    )
+    conn = Connection(_adbc_native(pa.table({"t": [1]}), error=error), backend="adbc")
+    with pytest.raises(DataError, match="backend='pymysql'") as raised:
+        conn.cursor().execute("SELECT t FROM durations")
+    assert raised.value.__cause__ is error
+
+
+def test_adbc_other_errors_are_raised() -> None:
+    error = adbc_driver_manager.OperationalError(
+        "IO: connection lost", status_code=adbc_driver_manager.AdbcStatusCode.IO
+    )
+    conn = Connection(_adbc_native(pa.table({"t": [1]}), error=error), backend="adbc")
+    with pytest.raises(adbc_driver_manager.OperationalError, match="connection lost"):
+        conn.cursor().execute("SELECT 1")
+
+
+def test_adbc_statement_without_a_result_set() -> None:
+    native = _adbc_native(None)
+    cur = Connection(native, backend="adbc").cursor()
+    cur.execute("CREATE TABLE t (i INT)")
+    assert cur.description is None
+    native.cursor.return_value.fetch_arrow_table.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Cursor: OBML queries (mocked REST API)
 # ---------------------------------------------------------------------------
 
 
 def test_obml_compile_and_execute() -> None:
     """OBML query is compiled via REST API then executed on MySQL."""
-    mock_native = _make_mock_native()
     compiled_sql = "SELECT `region`, SUM(`amount`) AS `revenue` FROM `orders` GROUP BY `region`"
-    mock_native.cursor().description = [
-        MysqlColumn("region", 253, None, None, None, None, None),
-        MysqlColumn("revenue", 5, None, None, None, None, None),
-    ]
-    mock_native.cursor().fetchall.return_value = [
-        ("EMEA", 300.0),
-        ("APAC", 150.0),
-        ("AMER", 550.0),
-    ]
-    conn = Connection(mock_native)
-    with patch("httpx.post", return_value=_mock_api_response(compiled_sql)):
-        with conn.cursor() as cur:
-            cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
-            rows = cur.fetchall()
-            assert len(rows) == 3
-            # Verify the compiled SQL was passed to native cursor
-            mock_native.cursor().execute.assert_called_once_with(compiled_sql)
+    fields = [_field("region", VAR_STRING), _field("revenue", DOUBLE)]
+    native = _pymysql_native(fields, [("EMEA", 300.0), ("APAC", 150.0), ("AMER", 550.0)])
+    conn = _pymysql(native)
+    with patch("httpx.post", return_value=_mock_api_response(compiled_sql)), conn.cursor() as cur:
+        cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
+        assert len(cur.fetchall()) == 3
+    native.cursor.return_value.execute.assert_called_once_with(compiled_sql)
 
 
 def test_obml_rest_dialect_is_mysql() -> None:
-    """REST API is called with dialect=mysql."""
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
-    compiled_sql = "SELECT 1"
-    with patch("httpx.post", return_value=_mock_api_response(compiled_sql)) as mock_post:
-        with conn.cursor() as cur:
-            cur.execute("select:\n  measures:\n    - Revenue\n")
-            url = mock_post.call_args.args[0]
-            assert "/v1/query/sql" in url
-            assert mock_post.call_args.kwargs["params"] == {"dialect": "mysql"}
+    conn = _pymysql(_pymysql_native(_ROWS_FIELDS, _ROWS))
+    with (
+        patch("httpx.post", return_value=_mock_api_response("SELECT 1")) as mock_post,
+        conn.cursor() as cur,
+    ):
+        cur.execute("select:\n  measures:\n    - Revenue\n")
+    assert "/v1/query/sql" in mock_post.call_args.args[0]
+    assert mock_post.call_args.kwargs["params"] == {"dialect": "mysql"}
 
 
 def test_obml_custom_api_url() -> None:
-    """Custom ob_api_url is forwarded to the REST call."""
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native, ob_api_url="http://my-api:9000")
-    compiled_sql = "SELECT 1"
-    with patch("httpx.post", return_value=_mock_api_response(compiled_sql)) as mock_post:
-        with conn.cursor() as cur:
-            cur.execute("select:\n  measures:\n    - Revenue\n")
-            url = mock_post.call_args.args[0]
-            assert url == "http://my-api:9000/v1/query/sql"
+    conn = _pymysql(_pymysql_native(_ROWS_FIELDS, _ROWS), ob_api_url="http://my-api:9000")
+    with (
+        patch("httpx.post", return_value=_mock_api_response("SELECT 1")) as mock_post,
+        conn.cursor() as cur,
+    ):
+        cur.execute("select:\n  measures:\n    - Revenue\n")
+    assert mock_post.call_args.args[0] == "http://my-api:9000/v1/query/sql"
 
 
 def test_plain_sql_passthrough() -> None:
-    """Plain SQL is passed through without OBML compilation — no REST call."""
-    mock_native = _make_mock_native()
-    conn = Connection(mock_native)
+    """Plain SQL is passed through without OBML compilation: no REST call."""
+    native = _pymysql_native(_ROWS_FIELDS, _ROWS)
+    conn = _pymysql(native)
     with patch("httpx.post") as mock_post, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM orders")
-        mock_post.assert_not_called()
-        mock_native.cursor().execute.assert_called_once_with("SELECT COUNT(*) FROM orders")
-
-
-# ---------------------------------------------------------------------------
-# fetch_arrow_table()
-# ---------------------------------------------------------------------------
-
-
-def test_fetch_arrow_table() -> None:
-    """fetch_arrow_table() converts rows to PyArrow Table."""
-    mock_native = _make_mock_native()
-    mock_cursor = mock_native.cursor()
-    mock_cursor.description = [
-        MysqlColumn("id", 3, None, None, None, None, None),
-        MysqlColumn("name", 253, None, None, None, None, None),
-    ]
-    mock_cursor.fetchall.return_value = [(1, "Alice"), (2, "Bob")]
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    table = cur.fetch_arrow_table()
-    assert table.num_rows == 2
-    assert table.num_columns == 2
-    assert table.column_names == ["id", "name"]
-
-
-def test_fetch_arrow_table_empty() -> None:
-    """fetch_arrow_table() returns empty table with correct columns."""
-    mock_native = _make_mock_native()
-    mock_cursor = mock_native.cursor()
-    mock_cursor.description = [
-        MysqlColumn("id", 3, None, None, None, None, None),
-        MysqlColumn("name", 253, None, None, None, None, None),
-    ]
-    mock_cursor.fetchall.return_value = []
-    conn = Connection(mock_native)
-    cur = conn.cursor()
-    table = cur.fetch_arrow_table()
-    assert table.num_rows == 0
-    assert table.column_names == ["id", "name"]
+    mock_post.assert_not_called()
+    native.cursor.return_value.execute.assert_called_once_with("SELECT COUNT(*) FROM orders")
