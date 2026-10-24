@@ -78,7 +78,7 @@ That produces `created_raw`, `created_date`, `created_week`, etc. as separate di
 
 **OBSL**: a single `Dimension` carries a `timeGrain` enum, and queries pass the grain at query time. More compact in the model, less ergonomic from a "list everything available" UI perspective.
 
-**Empty periods**: Looker fills missing dates in the Explore (`allow_fill`, on by default), for a query with one dimension or pivot and no measure filters. OBSL fills them per query with `fill: true`, crossed with every other dimension of the query, a count reading 0 and a cumulative metric its window as of the period (see [Filling Empty Periods](../guide/query-language.md#filling-empty-periods-fill)).
+**Empty periods**: Looker fills missing dates in the Explore (`allow_fill`, on by default), also over several dimensions at once, pivots included. It fills automatically for a query with one dimension or pivot and no measure filters, and may turn fill off when it would add too many rows. OBSL fills them per query with `fill: true`, crossed with every other dimension of the query, a count reading 0 and a cumulative metric its window as of the period (see [Filling Empty Periods](../guide/query-language.md#filling-empty-periods-fill)).
 
 ### 3.3 Liquid templating + parameters
 
