@@ -471,8 +471,46 @@ class TestWhatTheADBCDriverReadsDifferently:
             assert cur.fetchall() == [("it's \\ ok", None, 3)]
             cur.execute("SELECT %(x)s AS x", {"x": "named"})
             assert cur.fetchall() == [("named",)]
+            cur.execute("SELECT %s AS nul, %s AS empty_text", ("a\x00b", ""))
+            assert cur.fetchall() == [("a\x00b", "")]
         finally:
             cur.execute("SET SESSION sql_mode = DEFAULT")
+            cur.close()
+
+    def test_a_parameter_does_not_replace_the_last_statements_counts(self, mysql_conn) -> None:
+        """A query before the statement (to learn the sql_mode) replaced what
+        ROW_COUNT() and FOUND_ROWS() report about the one before."""
+        cur = mysql_conn.cursor()
+        cur.execute("CREATE TEMPORARY TABLE counted (i INT)")
+        try:
+            cur.execute("INSERT INTO counted VALUES (1), (2)")
+            cur.execute("SELECT ROW_COUNT() AS n, %s AS tag", ("insert",))
+            assert cur.fetchall() == [(2, "insert")]
+            cur.execute("SELECT SQL_CALC_FOUND_ROWS i FROM counted LIMIT 1")
+            cur.fetchall()
+            cur.execute("SELECT FOUND_ROWS() AS n, %s AS tag", ("found",))
+            assert cur.fetchall() == [(2, "found")]
+        finally:
+            cur.execute("DROP TEMPORARY TABLE counted")
+            cur.close()
+
+    def test_a_text_parameter_compares_under_the_columns_collation(self, mysql_conn) -> None:
+        """As a quoted literal does: case-insensitive against a ``_ci`` column,
+        exact against ``_bin``, and converted for a latin1 one."""
+        cur = mysql_conn.cursor()
+        cur.execute(
+            "CREATE TEMPORARY TABLE collated (ci VARCHAR(10) COLLATE utf8mb4_unicode_ci, "
+            "bin VARCHAR(10) COLLATE utf8mb4_bin, l1 VARCHAR(10) CHARACTER SET latin1)"
+        )
+        try:
+            cur.execute("INSERT INTO collated VALUES ('Abc', 'Abc', 'Abc')")
+            cur.execute(
+                "SELECT SUM(ci = %s), SUM(bin = %s), SUM(l1 = %s) FROM collated",
+                ("abc", "abc", "abc"),
+            )
+            assert [tuple(int(v) for v in row) for row in cur.fetchall()] == [(1, 0, 1)]
+        finally:
+            cur.execute("DROP TEMPORARY TABLE collated")
             cur.close()
 
     def test_bytes_parameters_with_high_bytes(self, mysql_conn) -> None:

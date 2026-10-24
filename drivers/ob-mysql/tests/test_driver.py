@@ -59,14 +59,10 @@ def _pymysql(native: MagicMock, **kwargs: Any) -> Connection:
     return Connection(native, backend="pymysql", **kwargs)
 
 
-def _adbc_native(
-    table: pa.Table | None = None, *, error: Exception | None = None, sql_mode: str = ""
-) -> MagicMock:
-    """An ADBC connection whose cursor returns *table*, or raises *error*, and
-    reports *sql_mode* as the session's."""
+def _adbc_native(table: pa.Table | None = None, *, error: Exception | None = None) -> MagicMock:
+    """An ADBC connection whose cursor returns *table*, or raises *error*."""
     native = MagicMock()
     cursor = native.cursor.return_value
-    cursor.fetchone.return_value = (sql_mode,)
     cursor.description = [(name, None) for name in table.column_names] if table else []
     cursor.rowcount = -1
     if error is not None:
@@ -258,19 +254,14 @@ def _adbc_statements(native: MagicMock) -> list[str]:
     return [c.args[0] for c in native.cursor.return_value.execute.call_args_list]
 
 
-@pytest.mark.parametrize(
-    ("sql_mode", "quoted"),
-    [
-        ("STRICT_TRANS_TABLES", "'it\\'s \\\\ \\' OR 1=1 -- '"),
-        # A backslash is an ordinary character there: escaping the quote with
-        # one would end the literal and let the rest run as SQL.
-        ("STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES", "'it''s \\ '' OR 1=1 -- '"),
-    ],
-)
-def test_adbc_parameters_follow_the_sessions_sql_mode(sql_mode: str, quoted: str) -> None:
-    native = _adbc_native(pa.table({"v": ["x"]}), sql_mode=sql_mode)
-    Connection(native, backend="adbc").cursor().execute("SELECT %s", ["it's \\ ' OR 1=1 -- "])
-    assert _adbc_statements(native) == ["SELECT @@session.sql_mode", f"SELECT {quoted}"]
+def test_adbc_text_parameters_are_hex_literals() -> None:
+    """Hex reads the same under every sql_mode: a backslash-escaped quote ends
+    the literal under NO_BACKSLASH_ESCAPES. It carries a NUL, and needs no
+    query to learn the mode (one would replace ROW_COUNT() and FOUND_ROWS())."""
+    native = _adbc_native(pa.table({"v": ["x"]}))
+    Connection(native, backend="adbc").cursor().execute("SELECT %s", ["' OR 1=1 -- \x00é"])
+    hexed = "' OR 1=1 -- \x00é".encode().hex()
+    assert _adbc_statements(native) == [f"SELECT _utf8mb4 X'{hexed}'"]
 
 
 def test_adbc_parameters_of_every_kind() -> None:
@@ -280,11 +271,10 @@ def test_adbc_parameters_of_every_kind() -> None:
         "SELECT %s, %s, %s, %s, %s, %s IN %s",
         [b"\x00\x80\xff", None, 3, Decimal("1.50"), datetime.date(2024, 1, 2), 2, (1, "a")],
     )
-    cur.execute("SELECT %(a)s", {"a": "x"})
-    # Bytes as a hex literal: no text encoding, and no mode reads it differently.
-    assert _adbc_statements(native)[1::2] == [
-        "SELECT X'0080ff', NULL, 3, 1.50, '2024-01-02', 2 IN (1,'a')",
-        "SELECT 'x'",
+    cur.execute("SELECT %(a)s", {"a": ""})
+    assert _adbc_statements(native) == [
+        "SELECT X'0080ff', NULL, 3, 1.50, '2024-01-02', 2 IN (1,_utf8mb4 X'61')",
+        "SELECT _utf8mb4 X''",
     ]
 
 

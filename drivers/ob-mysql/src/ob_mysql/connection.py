@@ -31,27 +31,27 @@ _ZERO_DATETIME_OPTION = {"mysql.query.zero_datetime_behavior": "convert_to_null"
 _UNREADABLE_VALUE = "failed to append value"
 
 
-def _literal(value: Any, charset: str, no_backslash_escapes: bool) -> str:
+def _literal(value: Any, charset: str) -> str:
     """*value* as a MySQL literal, for a statement the ADBC driver is given
     finished (its own parameter binding mangles text, bytes and durations).
 
-    Text is escaped the way the session's ``sql_mode`` reads it: with
-    ``NO_BACKSLASH_ESCAPES`` a backslash is an ordinary character and only a
-    quote is doubled. Bytes are a hex literal, which no mode reads differently
-    and which needs no text encoding. Everything else (numbers, dates,
-    decimals, durations) is PyMySQL's rendering, made of digits and
-    separators only.
+    Text and bytes are hex literals, text with a ``_utf8mb4`` introducer: hex
+    digits read the same whatever the session's ``sql_mode`` (a backslash
+    escape does not under ``NO_BACKSLASH_ESCAPES``), carry a NUL or any byte
+    without encoding it into the statement, and need no query to learn the
+    mode, which would replace ``ROW_COUNT()`` and ``FOUND_ROWS()``. An
+    introduced literal compares as a quoted one does: coercible, so a column's
+    own collation decides. Everything else (numbers, dates, decimals,
+    durations) is PyMySQL's rendering, made of digits and separators only.
     """
-    from pymysql.converters import escape_item, escape_string
+    from pymysql.converters import escape_item
 
     if isinstance(value, str):
-        if no_backslash_escapes:
-            return "'" + value.replace("'", "''") + "'"
-        return "'" + str(escape_string(value)) + "'"
+        return "_utf8mb4 X'" + value.encode("utf-8").hex() + "'"
     if isinstance(value, (bytes, bytearray, memoryview)):
         return "X'" + bytes(value).hex() + "'"
     if isinstance(value, (list, tuple, set, frozenset)):
-        return "(" + ",".join(_literal(v, charset, no_backslash_escapes) for v in value) + ")"
+        return "(" + ",".join(_literal(v, charset) for v in value) + ")"
     return str(escape_item(value, charset))
 
 
@@ -189,29 +189,14 @@ class Connection:
 
     def _interpolate(self, sql: str, parameters: Any) -> str:
         """*sql* with ``%s`` / ``%(name)s`` *parameters* written into it as
-        literals, as PyMySQL does on the client: see :func:`_literal`.
-
-        The session's ``sql_mode`` is read for every statement: a ``SET`` in
-        between may have changed how it reads a backslash.
-        """
-        cursor = self._native.cursor()
-        try:
-            cursor.execute("SELECT @@session.sql_mode")
-            (mode,) = cursor.fetchone()
-        finally:
-            cursor.close()
-        plain = "NO_BACKSLASH_ESCAPES" in str(mode).upper().split(",")
-
-        def literal(value: Any) -> str:
-            return _literal(value, self._charset, plain)
-
+        literals, as PyMySQL does on the client: see :func:`_literal`."""
         escaped: Any
         if isinstance(parameters, dict):
-            escaped = {k: literal(v) for k, v in parameters.items()}
+            escaped = {k: _literal(v, self._charset) for k, v in parameters.items()}
         elif isinstance(parameters, (list, tuple)):
-            escaped = tuple(literal(v) for v in parameters)
+            escaped = tuple(_literal(v, self._charset) for v in parameters)
         else:
-            escaped = literal(parameters)
+            escaped = _literal(parameters, self._charset)
         return str(sql % escaped)
 
     def commit(self) -> None:
