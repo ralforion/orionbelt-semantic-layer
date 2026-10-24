@@ -8,6 +8,8 @@ OBML tests additionally mock the REST API call to ``/v1/query/sql``.
 
 from __future__ import annotations
 
+import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -18,7 +20,7 @@ import pytest
 
 import ob_mysql
 from ob_mysql.connection import Connection
-from ob_mysql.exceptions import InterfaceError, NotSupportedError, ProgrammingError
+from ob_mysql.exceptions import DataError, InterfaceError, NotSupportedError, ProgrammingError
 from ob_mysql.type_codes import DATETIME, NUMBER, STRING
 
 LONG = 3
@@ -57,10 +59,14 @@ def _pymysql(native: MagicMock, **kwargs: Any) -> Connection:
     return Connection(native, backend="pymysql", **kwargs)
 
 
-def _adbc_native(table: pa.Table | None = None, *, error: Exception | None = None) -> MagicMock:
-    """An ADBC connection whose cursor returns *table*, or raises *error*."""
+def _adbc_native(
+    table: pa.Table | None = None, *, error: Exception | None = None, sql_mode: str = ""
+) -> MagicMock:
+    """An ADBC connection whose cursor returns *table*, or raises *error*, and
+    reports *sql_mode* as the session's."""
     native = MagicMock()
     cursor = native.cursor.return_value
+    cursor.fetchone.return_value = (sql_mode,)
     cursor.description = [(name, None) for name in table.column_names] if table else []
     cursor.rowcount = -1
     if error is not None:
@@ -237,17 +243,49 @@ def test_cursor_execute_runs_the_statement() -> None:
     native = _pymysql_native(_ROWS_FIELDS, _ROWS)
     with _pymysql(native).cursor() as cur:
         assert cur.execute("SELECT 1") is cur
-    native.cursor.return_value.execute.assert_called_once_with("SELECT 1")
+    native.cursor.return_value.execute.assert_called_once_with("SELECT 1", None)
 
 
-def test_parameters_are_escaped_into_the_statement() -> None:
-    """Both clients take ``%s``; the statement reaches them finished."""
+def test_pymysql_escapes_its_own_parameters() -> None:
+    """PyMySQL reads the session's sql_mode from the server's status flags."""
     native = _pymysql_native(_ROWS_FIELDS, _ROWS)
     with _pymysql(native).cursor() as cur:
-        cur.execute("SELECT %s, %s, %s", ["it's", None, 3])
-        cur.execute("SELECT %(a)s", {"a": "x"})
-    calls = [c.args[0] for c in native.cursor.return_value.execute.call_args_list]
-    assert calls == ["SELECT 'it\\'s', NULL, 3", "SELECT 'x'"]
+        cur.execute("SELECT %s", ["it's"])
+    native.cursor.return_value.execute.assert_called_once_with("SELECT %s", ["it's"])
+
+
+def _adbc_statements(native: MagicMock) -> list[str]:
+    return [c.args[0] for c in native.cursor.return_value.execute.call_args_list]
+
+
+@pytest.mark.parametrize(
+    ("sql_mode", "quoted"),
+    [
+        ("STRICT_TRANS_TABLES", "'it\\'s \\\\ \\' OR 1=1 -- '"),
+        # A backslash is an ordinary character there: escaping the quote with
+        # one would end the literal and let the rest run as SQL.
+        ("STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES", "'it''s \\ '' OR 1=1 -- '"),
+    ],
+)
+def test_adbc_parameters_follow_the_sessions_sql_mode(sql_mode: str, quoted: str) -> None:
+    native = _adbc_native(pa.table({"v": ["x"]}), sql_mode=sql_mode)
+    Connection(native, backend="adbc").cursor().execute("SELECT %s", ["it's \\ ' OR 1=1 -- "])
+    assert _adbc_statements(native) == ["SELECT @@session.sql_mode", f"SELECT {quoted}"]
+
+
+def test_adbc_parameters_of_every_kind() -> None:
+    native = _adbc_native(pa.table({"v": ["x"]}))
+    cur = Connection(native, backend="adbc").cursor()
+    cur.execute(
+        "SELECT %s, %s, %s, %s, %s, %s IN %s",
+        [b"\x00\x80\xff", None, 3, Decimal("1.50"), datetime.date(2024, 1, 2), 2, (1, "a")],
+    )
+    cur.execute("SELECT %(a)s", {"a": "x"})
+    # Bytes as a hex literal: no text encoding, and no mode reads it differently.
+    assert _adbc_statements(native)[1::2] == [
+        "SELECT X'0080ff', NULL, 3, 1.50, '2024-01-02', 2 IN (1,'a')",
+        "SELECT 'x'",
+    ]
 
 
 def test_cursor_description() -> None:
@@ -314,8 +352,8 @@ def test_cursor_executemany_plain_sql() -> None:
     native = _pymysql_native(None)
     cur = _pymysql(native).cursor()
     cur.executemany("INSERT INTO t VALUES (%s, %s)", [(1, "a"), (2, "b")])
-    calls = [c.args[0] for c in native.cursor.return_value.execute.call_args_list]
-    assert calls == ["INSERT INTO t VALUES (1, 'a')", "INSERT INTO t VALUES (2, 'b')"]
+    calls = [c.args for c in native.cursor.return_value.execute.call_args_list]
+    assert calls == [("INSERT INTO t VALUES (%s, %s)", p) for p in [(1, "a"), (2, "b")]]
 
 
 def test_cursor_executemany_obml_raises() -> None:
@@ -359,51 +397,27 @@ def test_adbc_result_is_normalized_and_paged() -> None:
     assert remaining.schema.field("amount").type == pa.decimal128(9, 2)
 
 
-def test_adbc_reads_an_unreadable_time_through_pymysql() -> None:
-    """ADBC refuses a TIME outside a day; the read goes to PyMySQL."""
+def test_adbc_reports_a_result_it_cannot_read() -> None:
+    """ADBC refuses a TIME outside a day. Reading it again through another
+    client would read it outside this session (without its uncommitted rows,
+    temporary tables or variables), so the failure is reported instead."""
     error = adbc_driver_manager.OperationalError(
         "UNKNOWN: [mysql] failed to append value to column 0: hour out of range",
         status_code=adbc_driver_manager.AdbcStatusCode.UNKNOWN,
     )
-    fallback = _pymysql_native(_ROWS_FIELDS, _ROWS)
-    opened = MagicMock(return_value=fallback)
-    conn = Connection(
-        _adbc_native(pa.table({"t": [1]}), error=error), backend="adbc", fallback=opened
-    )
-    cur = conn.cursor()
-    cur.execute("SELECT t FROM durations")
-    cur.execute("WITH x AS (SELECT 1) SELECT t FROM durations")
-    assert cur.fetchall() == _ROWS
-    opened.assert_called_once()  # opened once, then kept
-    conn.close()
-    fallback.close.assert_called_once()
-
-
-def test_adbc_never_reruns_a_statement_that_writes() -> None:
-    error = adbc_driver_manager.OperationalError(
-        "UNKNOWN: [mysql] failed to append value to column 0",
-        status_code=adbc_driver_manager.AdbcStatusCode.UNKNOWN,
-    )
-    opened = MagicMock()
-    conn = Connection(
-        _adbc_native(pa.table({"t": [1]}), error=error), backend="adbc", fallback=opened
-    )
-    with pytest.raises(adbc_driver_manager.OperationalError):
-        conn.cursor().execute("CALL make_durations()")
-    opened.assert_not_called()
+    conn = Connection(_adbc_native(pa.table({"t": [1]}), error=error), backend="adbc")
+    with pytest.raises(DataError, match="backend='pymysql'") as raised:
+        conn.cursor().execute("SELECT t FROM durations")
+    assert raised.value.__cause__ is error
 
 
 def test_adbc_other_errors_are_raised() -> None:
     error = adbc_driver_manager.OperationalError(
         "IO: connection lost", status_code=adbc_driver_manager.AdbcStatusCode.IO
     )
-    opened = MagicMock()
-    conn = Connection(
-        _adbc_native(pa.table({"t": [1]}), error=error), backend="adbc", fallback=opened
-    )
+    conn = Connection(_adbc_native(pa.table({"t": [1]}), error=error), backend="adbc")
     with pytest.raises(adbc_driver_manager.OperationalError, match="connection lost"):
         conn.cursor().execute("SELECT 1")
-    opened.assert_not_called()
 
 
 def test_adbc_statement_without_a_result_set() -> None:
@@ -428,7 +442,7 @@ def test_obml_compile_and_execute() -> None:
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)), conn.cursor() as cur:
         cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
         assert len(cur.fetchall()) == 3
-    native.cursor.return_value.execute.assert_called_once_with(compiled_sql)
+    native.cursor.return_value.execute.assert_called_once_with(compiled_sql, None)
 
 
 def test_obml_rest_dialect_is_mysql() -> None:
@@ -459,4 +473,4 @@ def test_plain_sql_passthrough() -> None:
     with patch("httpx.post") as mock_post, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM orders")
     mock_post.assert_not_called()
-    native.cursor.return_value.execute.assert_called_once_with("SELECT COUNT(*) FROM orders")
+    native.cursor.return_value.execute.assert_called_once_with("SELECT COUNT(*) FROM orders", None)

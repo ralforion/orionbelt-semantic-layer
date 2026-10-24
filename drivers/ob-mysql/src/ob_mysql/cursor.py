@@ -68,9 +68,7 @@ class Cursor:
         """Execute a query: OBML YAML or plain SQL."""
         self._check_open()
         sql = self._resolve_sql(operation)
-        if parameters is not None:
-            sql = self._connection._interpolate(sql, parameters)
-        self._result = self._connection._execute(sql)
+        self._result = self._connection._execute(sql, parameters)
         self._position = 0
         return self
 

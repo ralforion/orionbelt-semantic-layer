@@ -416,18 +416,29 @@ class TestWhatTheADBCDriverReadsDifferently:
     alone, and reads as PyMySQL reads it now."""
 
     def test_a_time_outside_a_day(self, mysql_conn) -> None:
-        """ADBC reads TIME as a clock reading and refuses -838:59:59 or 25:00."""
-        table = _table(
-            mysql_conn,
-            "SELECT CAST('-838:59:59' AS TIME) AS low, CAST('25:00:00' AS TIME) AS high",
-        )
-        assert table.schema.types == [pa.duration("us"), pa.duration("us")]
-        assert table.to_pylist() == [
-            {
-                "low": -datetime.timedelta(hours=838, minutes=59, seconds=59),
-                "high": datetime.timedelta(hours=25),
-            }
-        ]
+        """ADBC reads TIME as a clock reading and refuses -838:59:59 or 25:00.
+
+        It is reported rather than read again through PyMySQL: another
+        connection would not see this one's uncommitted row.
+        """
+        cur = mysql_conn.cursor()
+        cur.execute("CREATE TEMPORARY TABLE durations (t TIME)")
+        cur.execute("INSERT INTO durations VALUES ('-838:59:59'), ('25:00:00')")
+        try:
+            if mysql_conn.backend == "adbc":
+                with pytest.raises(ob_mysql.DataError, match="backend='pymysql'"):
+                    cur.execute("SELECT t FROM durations")
+                return
+            cur.execute("SELECT t FROM durations")
+            table = cur.fetch_arrow_table()
+            assert table.schema.types == [pa.duration("us")]
+            assert table.column(0).to_pylist() == [
+                -datetime.timedelta(hours=838, minutes=59, seconds=59),
+                datetime.timedelta(hours=25),
+            ]
+        finally:
+            cur.execute("DROP TEMPORARY TABLE durations")
+            cur.close()
 
     def test_a_zero_date_reads_as_null(self, mysql_conn) -> None:
         cur = mysql_conn.cursor()
@@ -443,10 +454,31 @@ class TestWhatTheADBCDriverReadsDifferently:
         table = _table(mysql_conn, "SELECT @@session.time_zone = @@global.time_zone AS same")
         assert table.column(0).to_pylist() == [1]
 
-    def test_parameters_are_escaped(self, mysql_conn) -> None:
+    @pytest.mark.parametrize("sql_mode", ["", "NO_BACKSLASH_ESCAPES"])
+    def test_parameters_are_escaped_as_the_session_reads_them(
+        self, mysql_conn, sql_mode: str
+    ) -> None:
+        """With NO_BACKSLASH_ESCAPES a backslash does not escape a quote, so
+        escaping one with it ended the literal and ran the rest as SQL."""
         cur = mysql_conn.cursor()
-        cur.execute("SELECT %s AS a, %s AS b, %s AS c", ("it's", None, 3))
-        assert cur.fetchall() == [("it's", None, 3)]
+        cur.execute(f"SET SESSION sql_mode = '{sql_mode}'")
+        try:
+            cur.execute(
+                "SELECT COUNT(*) FROM (SELECT 'x' AS c) AS t WHERE c = %s", ("' OR 1=1 -- ",)
+            )
+            assert cur.fetchall() == [(0,)]
+            cur.execute("SELECT %s AS a, %s AS b, %s AS c", ("it's \\ ok", None, 3))
+            assert cur.fetchall() == [("it's \\ ok", None, 3)]
+            cur.execute("SELECT %(x)s AS x", {"x": "named"})
+            assert cur.fetchall() == [("named",)]
+        finally:
+            cur.execute("SET SESSION sql_mode = DEFAULT")
+            cur.close()
+
+    def test_bytes_parameters_with_high_bytes(self, mysql_conn) -> None:
+        cur = mysql_conn.cursor()
+        cur.execute("SELECT HEX(%s) AS h", (b"\x00\x80\xff",))
+        assert cur.fetchall() == [("0080FF",)]
         cur.close()
 
 

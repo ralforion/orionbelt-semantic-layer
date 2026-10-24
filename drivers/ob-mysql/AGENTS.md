@@ -59,8 +59,10 @@ threads fetching 100k rows each took 21 s where one took 0.08 s.
 
 ## Vendor-Specific Notes
 
-- `format` paramstyle (`%s`) on both clients: parameters are escaped into the statement on the
-  client (PyMySQL's own escaping), and ADBC is given the finished statement.
+- `format` paramstyle (`%s`, `%(name)s`) on both clients. PyMySQL escapes its parameters
+  itself. ADBC's own binding mangles text, bytes and durations, so the driver writes the
+  literals: text escaped as the session's `sql_mode` reads it (read before every parameterized
+  statement; with `NO_BACKSLASH_ESCAPES` only the quote is doubled), bytes as `X'..'`.
 - The ADBC driver is not on PyPI: `pip install dbc && dbc install mysql`. The Docker images
   install a pinned, checksummed release with `scripts/install_adbc_mysql.py`
   (`ADBC_DRIVER_PATH=/opt/adbc/drivers`).
@@ -73,8 +75,10 @@ threads fetching 100k rows each took 21 s where one took 0.08 s.
   - A zero date fails the result: the statement option
     `mysql.query.zero_datetime_behavior=convert_to_null` reads it as NULL (a connection option
     is ignored).
-  - A TIME outside 00:00:00-23:59:59 fails the result ("failed to append value"): a reading
-    statement is run again through a PyMySQL connection to the same server.
+  - A TIME outside 00:00:00-23:59:59 fails the result ("failed to append value"), reported as
+    `DataError` naming the workarounds (`TIME_TO_SEC`, text, `backend='pymysql'`). Reading it
+    again through another connection would lose the session's uncommitted rows, temporary
+    tables and variables.
   - It does not report `rowcount` for DML or `lastrowid`.
 - `commit()` and `rollback()` are meaningful — MySQL uses real transactions
 - Default charset is `utf8mb4` for full Unicode support

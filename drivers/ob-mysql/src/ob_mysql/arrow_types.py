@@ -20,8 +20,8 @@ MySQL                  ADBC returns                Both report
 =====================  ==========================  ===========================
 
 TIME is a signed interval of up to 838 hours rather than a clock reading, so
-it is a duration. ADBC refuses a TIME outside a day outright; the connection
-reads such a result through PyMySQL instead (see
+it is a duration. ADBC refuses a TIME outside a day outright, and the result
+fails with :class:`~ob_mysql.exceptions.DataError` (see
 :meth:`ob_mysql.connection.Connection._execute`).
 
 PyMySQL hands over Python values and the column-definition packet, so its

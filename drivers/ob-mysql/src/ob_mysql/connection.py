@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -14,7 +13,7 @@ from ob_mysql.arrow_types import (
     type_object_for,
 )
 from ob_mysql.cursor import Cursor
-from ob_mysql.exceptions import ProgrammingError
+from ob_mysql.exceptions import DataError, ProgrammingError
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -31,14 +30,29 @@ _ZERO_DATETIME_OPTION = {"mysql.query.zero_datetime_behavior": "convert_to_null"
 #: clock time rather than as MySQL's signed interval of up to 838 hours.
 _UNREADABLE_VALUE = "failed to append value"
 
-#: First keywords of a statement that only reads, so running it again through
-#: PyMySQL changes nothing.
-_READS = frozenset({"SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "TABLE", "VALUES"})
 
+def _literal(value: Any, charset: str, no_backslash_escapes: bool) -> str:
+    """*value* as a MySQL literal, for a statement the ADBC driver is given
+    finished (its own parameter binding mangles text, bytes and durations).
 
-def _only_reads(sql: str) -> bool:
-    words = sql.lstrip(" \t\r\n(").split(None, 1)
-    return bool(words) and words[0].upper() in _READS
+    Text is escaped the way the session's ``sql_mode`` reads it: with
+    ``NO_BACKSLASH_ESCAPES`` a backslash is an ordinary character and only a
+    quote is doubled. Bytes are a hex literal, which no mode reads differently
+    and which needs no text encoding. Everything else (numbers, dates,
+    decimals, durations) is PyMySQL's rendering, made of digits and
+    separators only.
+    """
+    from pymysql.converters import escape_item, escape_string
+
+    if isinstance(value, str):
+        if no_backslash_escapes:
+            return "'" + value.replace("'", "''") + "'"
+        return "'" + str(escape_string(value)) + "'"
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return "X'" + bytes(value).hex() + "'"
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return "(" + ",".join(_literal(v, charset, no_backslash_escapes) for v in value) + ")"
+    return str(escape_item(value, charset))
 
 
 @dataclass
@@ -92,7 +106,6 @@ class Connection:
         ob_api_url: str = "http://localhost:8000",
         ob_timeout: int = 30,
         charset: str = "utf8mb4",
-        fallback: Callable[[], Any] | None = None,
     ) -> None:
         self._native = native
         self.backend: Backend = backend
@@ -100,10 +113,6 @@ class Connection:
         self._ob_api_url = ob_api_url
         self._ob_timeout = ob_timeout
         self._charset = charset
-        # Opens a PyMySQL connection to the same server, for a result ADBC
-        # cannot read; opened on first use and kept.
-        self._fallback = fallback
-        self._fallback_native: Any = None
 
     def _check_open(self) -> None:
         if self._closed:
@@ -114,13 +123,16 @@ class Connection:
         self._check_open()
         return Cursor(self, ob_api_url=self._ob_api_url, ob_timeout=self._ob_timeout)
 
-    def _execute(self, sql: str) -> _Result:
-        """Run *sql* and read its whole result."""
+    def _execute(self, sql: str, parameters: Any = None) -> _Result:
+        """Run *sql* with its ``format``-style *parameters* and read its whole
+        result."""
         self._check_open()
         if self.backend == "pymysql":
-            return self._execute_pymysql(self._native, sql)
+            return self._execute_pymysql(sql, parameters)
         import adbc_driver_manager
 
+        if parameters is not None:
+            sql = self._interpolate(sql, parameters)
         cursor = self._native.cursor()
         try:
             cursor.adbc_statement.set_options(**_ZERO_DATETIME_OPTION)
@@ -130,24 +142,26 @@ class Connection:
             try:
                 table = cursor.fetch_arrow_table()
             except adbc_driver_manager.Error as error:
-                if (
-                    _UNREADABLE_VALUE not in str(error)
-                    or self._fallback is None
-                    or not _only_reads(sql)
-                ):
+                if _UNREADABLE_VALUE not in str(error):
                     raise
-                if self._fallback_native is None:
-                    self._fallback_native = self._fallback()
-                return self._execute_pymysql(self._fallback_native, sql)
+                # Reading it through another client would read it outside
+                # this session: without its uncommitted rows, temporary tables
+                # or variables.
+                raise DataError(
+                    f"The ADBC MySQL driver cannot read this result ({error}). A TIME "
+                    "outside 00:00:00-23:59:59 is the known case: select it as "
+                    "TIME_TO_SEC(...) or as text, or connect with backend='pymysql'."
+                ) from error
             return _Result.from_table(normalize_adbc(table))
         finally:
             cursor.close()
 
-    @staticmethod
-    def _execute_pymysql(native: Any, sql: str) -> _Result:
-        cursor = native.cursor()
+    def _execute_pymysql(self, sql: str, parameters: Any) -> _Result:
+        # PyMySQL escapes the parameters itself, as the session's sql_mode
+        # reads them.
+        cursor = self._native.cursor()
         try:
-            cursor.execute(sql)
+            cursor.execute(sql, parameters)
             if cursor.description is None:
                 return _Result(
                     names=[],
@@ -174,20 +188,30 @@ class Connection:
             cursor.close()
 
     def _interpolate(self, sql: str, parameters: Any) -> str:
-        """*sql* with ``%s`` / ``%(name)s`` *parameters* escaped into it.
+        """*sql* with ``%s`` / ``%(name)s`` *parameters* written into it as
+        literals, as PyMySQL does on the client: see :func:`_literal`.
 
-        PyMySQL binds parameters on the client this way; ADBC is given the
-        finished statement, so both backends take the ``format`` paramstyle.
+        The session's ``sql_mode`` is read for every statement: a ``SET`` in
+        between may have changed how it reads a backslash.
         """
-        from pymysql.converters import escape_item
+        cursor = self._native.cursor()
+        try:
+            cursor.execute("SELECT @@session.sql_mode")
+            (mode,) = cursor.fetchone()
+        finally:
+            cursor.close()
+        plain = "NO_BACKSLASH_ESCAPES" in str(mode).upper().split(",")
+
+        def literal(value: Any) -> str:
+            return _literal(value, self._charset, plain)
 
         escaped: Any
         if isinstance(parameters, dict):
-            escaped = {k: escape_item(v, self._charset) for k, v in parameters.items()}
+            escaped = {k: literal(v) for k, v in parameters.items()}
         elif isinstance(parameters, (list, tuple)):
-            escaped = tuple(escape_item(v, self._charset) for v in parameters)
+            escaped = tuple(literal(v) for v in parameters)
         else:
-            escaped = escape_item(parameters, self._charset)
+            escaped = literal(parameters)
         return str(sql % escaped)
 
     def commit(self) -> None:
@@ -203,8 +227,6 @@ class Connection:
     def close(self) -> None:
         """Close the connection."""
         if not self._closed:
-            if self._fallback_native is not None:
-                self._fallback_native.close()
             self._native.close()
             self._closed = True
 

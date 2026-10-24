@@ -182,7 +182,6 @@ def connect(
         ob_api_url=ob_api_url,
         ob_timeout=ob_timeout,
         charset=charset,
-        fallback=open_pymysql if chosen == "adbc" else None,
     )
 
 
