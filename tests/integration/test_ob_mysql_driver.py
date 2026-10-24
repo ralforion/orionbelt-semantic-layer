@@ -494,6 +494,24 @@ class TestWhatTheADBCDriverReadsDifferently:
             cur.execute("DROP TEMPORARY TABLE counted")
             cur.close()
 
+    def test_a_text_parameter_takes_the_sessions_collation(self, mysql_conn) -> None:
+        """As a quoted literal does; a ``_utf8mb4`` introducer took that
+        character set's default, case-insensitive collation."""
+        cur = mysql_conn.cursor()
+        cur.execute("SET collation_connection = 'utf8mb4_bin'")
+        try:
+            cur.execute("SELECT %s = %s AS same", ("A", "a"))
+            assert [tuple(int(v) for v in row) for row in cur.fetchall()] == [(0,)]
+        finally:
+            cur.execute("SET collation_connection = DEFAULT")
+            cur.close()
+
+    def test_a_text_parameter_where_only_a_quoted_string_goes(self, mysql_conn) -> None:
+        cur = mysql_conn.cursor()
+        cur.execute("SHOW TABLES LIKE %s", ("ORDERS",))
+        assert cur.fetchall() == [("ORDERS",)]
+        cur.close()
+
     def test_a_text_parameter_compares_under_the_columns_collation(self, mysql_conn) -> None:
         """As a quoted literal does: case-insensitive against a ``_ci`` column,
         exact against ``_bin``, and converted for a latin1 one."""

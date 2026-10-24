@@ -254,14 +254,24 @@ def _adbc_statements(native: MagicMock) -> list[str]:
     return [c.args[0] for c in native.cursor.return_value.execute.call_args_list]
 
 
-def test_adbc_text_parameters_are_hex_literals() -> None:
-    """Hex reads the same under every sql_mode: a backslash-escaped quote ends
-    the literal under NO_BACKSLASH_ESCAPES. It carries a NUL, and needs no
-    query to learn the mode (one would replace ROW_COUNT() and FOUND_ROWS())."""
+@pytest.mark.parametrize(
+    ("text", "literal"),
+    [
+        # Doubling the quote reads alike under every sql_mode, so no query
+        # learns the mode (one would replace ROW_COUNT() and FOUND_ROWS()), and
+        # the literal keeps the session's collation and goes where SHOW takes one.
+        ("it's ' OR 1=1 -- ", "'it''s '' OR 1=1 -- '"),
+        ("", "''"),
+        # A backslash means one thing or another by mode, and a raw NUL is
+        # refused: hex is the same in every mode.
+        ("a\\'b", "_utf8mb4 X'615c2762'"),
+        ("a\x00b", "_utf8mb4 X'610062'"),
+    ],
+)
+def test_adbc_text_parameters(text: str, literal: str) -> None:
     native = _adbc_native(pa.table({"v": ["x"]}))
-    Connection(native, backend="adbc").cursor().execute("SELECT %s", ["' OR 1=1 -- \x00é"])
-    hexed = "' OR 1=1 -- \x00é".encode().hex()
-    assert _adbc_statements(native) == [f"SELECT _utf8mb4 X'{hexed}'"]
+    Connection(native, backend="adbc").cursor().execute("SELECT %s", [text])
+    assert _adbc_statements(native) == [f"SELECT {literal}"]
 
 
 def test_adbc_parameters_of_every_kind() -> None:
@@ -273,8 +283,8 @@ def test_adbc_parameters_of_every_kind() -> None:
     )
     cur.execute("SELECT %(a)s", {"a": ""})
     assert _adbc_statements(native) == [
-        "SELECT X'0080ff', NULL, 3, 1.50, '2024-01-02', 2 IN (1,_utf8mb4 X'61')",
-        "SELECT _utf8mb4 X''",
+        "SELECT X'0080ff', NULL, 3, 1.50, '2024-01-02', 2 IN (1,'a')",
+        "SELECT ''",
     ]
 
 

@@ -31,23 +31,33 @@ _ZERO_DATETIME_OPTION = {"mysql.query.zero_datetime_behavior": "convert_to_null"
 _UNREADABLE_VALUE = "failed to append value"
 
 
+#: Characters a quoted literal cannot carry the same way under every
+#: ``sql_mode``: a backslash escapes, or does not under NO_BACKSLASH_ESCAPES,
+#: and MySQL refuses a raw NUL.
+_MODE_DEPENDENT = ("\\", "\x00")
+
+
 def _literal(value: Any, charset: str) -> str:
     """*value* as a MySQL literal, for a statement the ADBC driver is given
     finished (its own parameter binding mangles text, bytes and durations).
 
-    Text and bytes are hex literals, text with a ``_utf8mb4`` introducer: hex
-    digits read the same whatever the session's ``sql_mode`` (a backslash
-    escape does not under ``NO_BACKSLASH_ESCAPES``), carry a NUL or any byte
-    without encoding it into the statement, and need no query to learn the
-    mode, which would replace ``ROW_COUNT()`` and ``FOUND_ROWS()``. An
-    introduced literal compares as a quoted one does: coercible, so a column's
-    own collation decides. Everything else (numbers, dates, decimals,
-    durations) is PyMySQL's rendering, made of digits and separators only.
+    Text is a quoted literal with each quote doubled, which every
+    ``sql_mode`` reads alike: it takes the session's character set and
+    collation, and goes wherever a quoted string does (``SHOW ... LIKE``).
+    Text holding a backslash or a NUL has no such form, and learning the mode
+    takes a query, which would replace what ``ROW_COUNT()`` and
+    ``FOUND_ROWS()`` report. It is a ``_utf8mb4`` hex literal instead: the
+    same in every mode, but compared under utf8mb4's default collation and
+    refused by ``SHOW``. Bytes are a hex literal. Everything else (numbers,
+    dates, decimals, durations) is PyMySQL's rendering, made of digits and
+    separators only.
     """
     from pymysql.converters import escape_item
 
     if isinstance(value, str):
-        return "_utf8mb4 X'" + value.encode("utf-8").hex() + "'"
+        if any(c in value for c in _MODE_DEPENDENT):
+            return "_utf8mb4 X'" + value.encode("utf-8").hex() + "'"
+        return "'" + value.replace("'", "''") + "'"
     if isinstance(value, (bytes, bytearray, memoryview)):
         return "X'" + bytes(value).hex() + "'"
     if isinstance(value, (list, tuple, set, frozenset)):

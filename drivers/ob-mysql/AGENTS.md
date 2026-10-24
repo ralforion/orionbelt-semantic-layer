@@ -61,10 +61,11 @@ threads fetching 100k rows each took 21 s where one took 0.08 s.
 
 - `format` paramstyle (`%s`, `%(name)s`) on both clients. PyMySQL escapes its parameters
   itself. ADBC's own binding mangles text, bytes and durations, so the driver writes the
-  literals: text as `_utf8mb4 X'..'`, bytes as `X'..'`. Hex reads the same under every
-  `sql_mode` (`NO_BACKSLASH_ESCAPES` included), carries NUL, and needs no query to learn the
-  mode (one would replace `ROW_COUNT()` / `FOUND_ROWS()`). The introducer keeps a literal's
-  coercibility (4), so a column's collation decides comparisons as with `'...'`.
+  literals, with no query to learn the `sql_mode` (one would replace `ROW_COUNT()` /
+  `FOUND_ROWS()`). Text is `'...'` with each quote doubled, which every mode reads alike and
+  which keeps the session's collation and goes where `SHOW ... LIKE` takes a string. Text holding
+  a backslash or NUL (mode-dependent, or refused raw) is `_utf8mb4 X'..'`: mode-independent, but
+  compared under utf8mb4's default collation and refused by `SHOW`. Bytes are `X'..'`.
 - The ADBC driver is not on PyPI: `pip install dbc && dbc install mysql`. The Docker images
   install a pinned, checksummed release with `scripts/install_adbc_mysql.py`
   (`ADBC_DRIVER_PATH=/opt/adbc/drivers`).
