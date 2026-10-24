@@ -1363,26 +1363,28 @@ _IMPORT_OSI_JS = """
 #: The vendored bundles the page head loads. They ship under ``ui/static``, so
 #: the UI loads no external asset and an air-gapped deployment needs nothing it
 #: does not already have in the wheel. They are fetched as files from the
-#: app's own ``vendor/`` route (see ``_vendor_routes``) rather than inlined:
-#: inlined as base64 they were 5.4 MB of every page load, uncacheable.
+#: app's own ``bundles/`` route (see ``_vendor_routes``) rather than inlined:
+#: inlined as base64 they were 5.4 MB of every page load, uncacheable. Not
+#: ``vendor/``: firewalls deny it as a PHP exploit probe (``/vendor/phpunit``),
+#: which kept both bundles off the page behind the demo's load balancer.
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 _VENDORED_JS = {name: _STATIC_DIR / name for name in ("mermaid.min.js", "ace-sparql.min.js")}
 
 
 def _vendored_src(name: str) -> str:
     """The page-relative URL of a vendored bundle (the page sets ``<base>``)."""
-    return f"vendor/{name}"
+    return f"bundles/{name}"
 
 
 def _vendor_routes() -> list[Any]:
-    """The route serving ``ui/static`` at ``vendor/`` inside the Gradio app.
+    """The route serving ``ui/static`` at ``bundles/`` inside the Gradio app.
 
     Starlette's ``StaticFiles`` answers a conditional request (``If-None-Match``,
     ``If-Modified-Since``) with 304, so a reload that revalidates does not
     fetch the bundles again; Gradio's file route sends the validators but
     ignores them, answering 200 with the whole file. Passed as the Gradio
     app's own routes, it is under the app's path in every serving mode
-    (``/vendor`` standalone, ``/ui/vendor`` mounted), and the URL does not
+    (``/bundles`` standalone, ``/ui/bundles`` mounted), and the URL does not
     reveal where the package is installed.
 
     The route compresses its own responses: the API's ``/ui`` and the plain
@@ -1395,7 +1397,7 @@ def _vendor_routes() -> list[Any]:
     from starlette.staticfiles import StaticFiles
 
     static = GZipMiddleware(StaticFiles(directory=_STATIC_DIR), minimum_size=1024)
-    return [Mount("/vendor", app=static, name="ob-vendor")]
+    return [Mount("/bundles", app=static, name="ob-bundles")]
 
 
 def _mermaid_head() -> str:

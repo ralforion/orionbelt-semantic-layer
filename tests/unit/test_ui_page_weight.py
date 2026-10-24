@@ -93,6 +93,18 @@ async def test_vendored_bundles_are_served(demo: object, tmp_path: Path, name: s
     assert str(ui_app._STATIC_DIR) not in ui_app._vendored_src(name)
 
 
+@pytest.mark.parametrize("name", ["mermaid.min.js", "ace-sparql.min.js"])
+def test_bundle_urls_pass_exploit_probe_filters(name: str) -> None:
+    """Firewalls deny paths that exploit scanners probe, ``/vendor/`` among
+    them (``/vendor/phpunit/...``). Served under ``/ui/vendor/`` the bundles
+    were refused by the demo's load balancer: the SPARQL editor showed no
+    query and no mermaid diagram rendered."""
+    probed = {"vendor", "wp-admin", "wp-content", "wp-includes", "cgi-bin", "admin", "phpunit"}
+    segments = ui_app._vendored_src(name).split("/")[:-1]
+    assert not probed.intersection(segments)
+    assert not any(segment.startswith(".") for segment in segments)
+
+
 @pytest.mark.parametrize("mode", ["api", "proxied"])
 async def test_vendored_bundles_are_compressed(demo: object, tmp_path: Path, mode: str) -> None:
     """Compressed by the route itself, so also where no wrapper compresses (the
