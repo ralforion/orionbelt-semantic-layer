@@ -362,18 +362,23 @@ class JoinGraph:
         left out, since its rows reach the required objects through that one.
 
         Joins only, no unnest: each root is the FROM of a leg (see
-        ``descendants_without_unnest``). Sorted by name, for a stable plan.
+        ``descendants_without_unnest``), so none is returned where a root is
+        a nested object, which only an unnest reaches, and the query keeps the
+        single base that unnests it. Sorted by name, for a stable plan.
         """
         required = required_objects & set(self._directed.nodes)
         if len(required) <= 1:
             return []
         reach = {node: self.descendants_without_unnest(node) | {node} for node in self._directed}
         covering = [node for node, reached in reach.items() if required <= reached]
-        return sorted(
+        roots = sorted(
             node
             for node in covering
             if not any(other != node and other in reach[node] for other in covering)
         )
+        if any(self._unnest_root(root) != root for root in roots):
+            return []
+        return roots
 
     def _find_center_undirected(self, required: set[str]) -> str:
         """Fallback: center of the Steiner tree in the undirected graph."""

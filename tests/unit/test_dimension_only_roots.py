@@ -234,3 +234,96 @@ def test_minimal_roots() -> None:
 
     linked = JoinGraph(_model(MODEL_YAML.replace("\ndimensions:", RETURNS_JOIN_ORDERS, 1)))
     assert linked.minimal_roots({"Customers", "Products"}) == ["Orders"]
+
+
+def test_every_leg_is_a_cache_dependency() -> None:
+    compiled = _compile({"select": {"dimensions": ["Region", "Category"]}})
+
+    # A change to the returns has to invalidate the pairs it contributed.
+    assert {"orders", "returns", "customers", "products"} <= set(compiled.physical_tables)
+
+
+COMPUTED = (
+    MODEL_YAML.replace(
+        "  Customers:\n",
+        """  Countries:
+    code: countries
+    columns:
+      Country Id: {code: id, abstractType: string, primaryKey: true}
+      Country Name: {code: name, abstractType: string}
+  Customers:
+""",
+        1,
+    ).replace(
+        "      Region: {code: region, abstractType: string}\n",
+        """      Region: {code: region, abstractType: string}
+      Country: {code: country_id, abstractType: string}
+      Country Upper: {expression: "upper({[Countries].[Country Name]})", abstractType: string}
+    joins:
+      - {joinType: many-to-one, joinTo: Countries, columnsFrom: [Country], columnsTo: [Country Id]}
+""",
+        1,
+    )
+    + "  Country Upper: {dataObject: Customers, column: Country Upper, resultType: string}\n"
+)
+
+
+@pytest.fixture
+def con_countries(con: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConnection:
+    con.execute("CREATE TABLE countries AS SELECT * FROM (VALUES ('c1', 'italy')) t(id, name)")
+    con.execute("ALTER TABLE customers ADD COLUMN country_id VARCHAR DEFAULT 'c1'")
+    return con
+
+
+def test_a_computed_dimension_joins_what_it_reads_in_each_leg(
+    con_countries: duckdb.DuckDBPyConnection,
+) -> None:
+    compiled = _compile({"select": {"dimensions": ["Country Upper", "Category"]}}, COMPUTED)
+
+    assert compiled.explain is not None
+    assert compiled.explain.planner == "CFL"
+    assert "returns" in compiled.physical_tables and "countries" in compiled.physical_tables
+    # The orphan order's customer is unknown, so its pair has no country.
+    assert _rows(con_countries, compiled) == [
+        ("ITALY", "Books"),
+        ("ITALY", "Games"),
+        (None, "Books"),
+    ]
+
+
+def test_a_nested_root_keeps_the_single_base_that_unnests_it() -> None:
+    nested = MODEL_YAML.replace(
+        "  Orders:\n    code: orders\n",
+        """  Order Batches:
+    code: batches
+    columns:
+      Batch Id: {code: id, abstractType: string, primaryKey: true}
+      Lines: {code: lines, abstractType: string}
+  Orders:
+    nestedIn: {dataObject: Order Batches, column: Lines}
+""",
+        1,
+    )
+    compiled = _compile({"select": {"dimensions": ["Region", "Category"]}}, nested)
+
+    assert compiled.explain is not None
+    assert compiled.explain.planner == "Star Schema"
+    assert "UNNEST" in compiled.sql
+
+
+def test_a_computed_dimension_beside_measures_of_two_facts(
+    con_countries: duckdb.DuckDBPyConnection,
+) -> None:
+    compiled = _compile(
+        {
+            "select": {
+                "dimensions": ["Country Upper"],
+                "measures": ["Orders Count", "Returns Count"],
+            }
+        },
+        COMPUTED,
+    )
+
+    assert compiled.explain is not None
+    assert compiled.explain.planner == "CFL"
+    assert _rows(con_countries, compiled) == [("ITALY", 2, 2), (None, 1, 0)]

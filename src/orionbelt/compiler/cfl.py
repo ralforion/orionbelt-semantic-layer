@@ -701,6 +701,16 @@ class CFLPlanner:
             leg_required = {
                 dim.object_name for dim in resolved.dimensions if dim.object_name in reachable
             }
+            # A computed dimension inlines its expression, and the objects it
+            # reads have to be joined too, or the leg names an alias its FROM
+            # chain never binds.
+            leg_required.update(
+                obj
+                for dim in resolved.dimensions
+                if dim.object_name in reachable
+                for obj in model.column_reference_objects(dim.object_name, dim.column_name)
+                if obj in reachable
+            )
             leg_required.add(obj_name)
             # Only filter objects this leg can actually reach. A nested one it
             # never can - the leg has no unnest to reach it with. The

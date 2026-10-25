@@ -1403,13 +1403,31 @@ class QueryResolver:
             dim_objects = {d.object_name for d in ctx.result.dimensions}
             if not dim_objects <= {ctx.result.base_object}:
                 graph = JoinGraph.of(model, use_path_names=query.use_path_names or None)
-                # Each leg has to reach a role dimension's waypoint and the
-                # objects the WHERE names, or it would answer without them.
+                # Each leg has to reach a role dimension's waypoint, the objects
+                # a computed dimension reads and those the WHERE names, or it
+                # would answer without them.
                 vias = {d.via for d in ctx.result.dimensions if d.via}
-                roots = graph.minimal_roots(dim_objects | vias | where_filter_objects)
+                computed = {
+                    obj
+                    for d in ctx.result.dimensions
+                    for obj in model.column_reference_objects(d.object_name, d.column_name)
+                }
+                leg_objects = dim_objects | vias | computed | where_filter_objects
+                roots = graph.minimal_roots(leg_objects)
                 if len(roots) > 1:
                     ctx.result.requires_cfl = True
                     ctx.result.dimension_roots = roots
+                    # Every leg's tables are read, and the result cache is
+                    # invalidated by the tables in ``required_objects``.
+                    for root in roots:
+                        ctx.result.required_objects.add(root)
+                        for step in graph.find_join_path(
+                            {root},
+                            leg_objects,
+                            via_constraints=ctx.result.via_constraints or None,
+                        ):
+                            ctx.result.required_objects.add(step.from_object)
+                            ctx.result.required_objects.add(step.to_object)
                 else:
                     steps = graph.find_join_path(
                         {ctx.result.base_object},
