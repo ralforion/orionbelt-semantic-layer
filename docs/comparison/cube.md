@@ -11,7 +11,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Cube** (f
 ## TL;DR
 
 - **Cube wins on**: **pre-aggregations** (its flagship feature — materialized rollups with refresh, partitioning, and lambda strategies), GraphQL alongside REST, first-class multi-tenancy and row-level security via `query_rewrite` + JWT security contexts + **data access policies with conditional masking**, Twig templating for dynamic models, a **curated-view surface** (folders, view groups, hierarchies, AI context), **custom granularities and calendar cubes** (fiscal / 4-5-4), **multi-stage calculations**, and the broadest data-source portfolio of the OSS semantic layers.
-- **OBSL wins on**: **first-class declarative metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value) where Cube has `rolling_window`, `time_shift`, and multi-stage measures but no declarative rank/lag metric *type*; **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*); **named secondary join paths with per-query selection** (`pathName` + `usePathNames`), which Cube has no primitive for; an **RDF/SPARQL graph view** of the model and a matching **interactive ontology-graph playground**; **two SQL wire protocols** — PostgreSQL wire AND Arrow Flight SQL (v2.5.0+) — where Cube ships Postgres wire only; 8 first-class **DB-API 2.0 drivers**; a **`UNION ALL` CFL multi-fact planner** that needs no per-fact-to-shared-dimension direct join; **OSI ↔ OBML format conversion**; and a simpler operational footprint (no Redis, no scheduler, no separate query orchestrator).
+- **OBSL wins on**: **first-class declarative metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value) where Cube has `rolling_window`, `time_shift`, and multi-stage measures but no declarative rank/lag metric *type*; **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*); **named secondary join paths with per-query selection** (`pathName` + `usePathNames`), which Cube has no primitive for; an **RDF/SPARQL graph view** of the model and a matching **interactive ontology-graph playground**; **two SQL wire protocols** — PostgreSQL wire AND Arrow Flight SQL (v2.5.0+) — where Cube ships Postgres wire only; 8 first-class **DB-API 2.0 drivers**; a **`UNION ALL` CFL multi-fact planner** that needs no per-fact-to-shared-dimension direct join; **per-query lineage**; and a simpler operational footprint (no Redis, no scheduler, no separate query orchestrator).
 - **Changed since the 2026-05 capture**: multi-fact modeling is **no longer an OBSL-only capability**. Cube Core v1.7 made **Tesseract** the default planner and graduated **multi-fact views** to GA — a view spanning several fact tables now compiles to one aggregating subquery per fact, `FULL JOIN`ed on the shared dimensions. The remaining topology difference is narrower and more specific (see [§6](#6-data-modeling-topology-still-a-differentiator-but-a-narrower-one)).
 - **Different niches**: Cube is "the production semantic-layer + caching + API gateway" — built to serve high-volume embedded analytics with millisecond response times. OBSL is "an embeddable semantic compiler with a clean REST surface and rich modeling primitives" — best when you don't need pre-aggregation infrastructure and want a smaller dependency footprint.
 
@@ -385,7 +385,7 @@ Cube wins on breadth (especially legacy enterprise sources); OBSL covers modern 
 | Native SDKs | Python (FastAPI client) + DB-API drivers | JS/TS (`@cubejs-client/*`), React, Vue, Angular bindings |
 | UI / Playground | Interactive Gradio playground: SQL Compiler, Query Results, auto-generated Mermaid ER diagrams, **interactive RDF/OBSL ontology graph** (vis-network), OSI import/export, settings panel | Cube Playground (OSS): query builder, schema browser, generated SQL preview. Cube Cloud Studio (paid) adds advanced workspace features |
 | RDF graph + SPARQL | Yes (`/graph`, `/sparql`) | No |
-| Format conversion | OSI ↔ OBML (`/convert/*`) | No equivalent |
+| Format conversion | OSI / Apache Ossie ↔ OBML (`/convert/*`, `obsl convert`, UI) | Apache Ossie import and export through the Cube CLI and Platform API (Oct 2026; CLI in preview) |
 
 Cube's SQL API is a structural advantage for BI-tool connectivity. OBSL's RDF/SPARQL surface is unique for governance/lineage tooling.
 
@@ -436,7 +436,8 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 | RDF/SPARQL graph view | ✅ | ❌ |
 | Business rules compiled to findings | ✅ `rules:` compiled to the query that reports findings (members or violations), evaluated over REST and MCP | ❌ the `cube` object has no test, assertion or rule parameter (its parameters: `sql`, `measures`, `dimensions`, `segments`, `joins`, `pre_aggregations`, `hierarchies`, `access_policy`, `meta`, ...) |
 | Links into an external ontology | ✅ `externalConceptMappings` with SKOS relations + provenance, projected to RDF and discoverable over REST | Free-form `meta` ("can be used to pass any information to the frontend"), with an `ai_context` key that gives an agent free-text guidance; no IRI or relation vocabulary |
-| OSI ↔ OBML conversion | ✅ | ❌ |
+| Apache Ossie conversion | ✅ both ways | ✅ both ways (Cube CLI and Platform API, Oct 2026) |
+| Lineage | ✅ per artefact and per query, down to columns and the joins chosen | Partial: Cube Cloud Metadata API, cubes and members to source tables; no per-query lineage |
 | Built-in caching layer | ❌ | ✅ multi-tier |
 | Cube Store / materialization engine | n/a | ✅ |
 | Operational simplicity | Single Python process | Multiple services in production |
@@ -463,7 +464,6 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 - You want **role-playing dimensions as plain named dimensions** (`Sales Employee`, `Support Employee`) in one query, without a second cube per role that duplicates every member, or a view to hide the duplicates.
 - You want **first-class declarative cumulative and period-over-period metric types** instead of expressing them via query-time `time_shift` or per-measure `rolling_window`.
 - You want a **graph view of the model** (RDF/SPARQL) and **lineage per artefact and per query** (REST, CLI, UI) for governance tooling.
-- You need **OSI interoperability** for moving models between semantic layer formats.
 - Your operational appetite is small — **one Python service**, no Redis, no scheduler, no separate query orchestrator.
 - You're targeting **Dremio** or otherwise want full feature parity self-hosted without a Cloud upgrade path.
 - Your consumers are **agents/LLMs** primarily — both projects expose MCP, but OBSL's smaller surface is easier to point an agent at without query-shape ambiguity.
@@ -502,14 +502,14 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 7. **Apache Arrow Flight SQL** as a columnar wire protocol option alongside Postgres wire — modern analytical payloads transfer more efficiently in Arrow.
 8. **First-class DB-API 2.0 drivers** for direct programmatic access from Python (PEP 249).
 9. **Interactive RDF/ontology graph visualization** in the playground (vis-network-style) — Cube Playground's schema browser is functional but not graph-shaped.
-10. **OSI ↔ Cube model round-trip** for portability between semantic layers.
-11. **A query-level fill option for any measure** — today only `rolling_window` measures get their empty periods in the SQL; for the rest, REST, GraphQL and SQL API consumers get no fill, and the SDK fills a count and every other measure alike with 0 rather than NULL.
+10. **A query-level fill option for any measure** — today only `rolling_window` measures get their empty periods in the SQL; for the rest, REST, GraphQL and SQL API consumers get no fill, and the SDK fills a count and every other measure alike with 0 rather than NULL.
 
 ---
 
 ## References
 
-- Cube Semantic Catalog (lineage described in blog posts only): https://cube.dev/blog/introducing-semantic-catalog-preview
+- Cube Metadata API lineage (changelog, Aug-Oct 2026): https://cube.dev/changelog
+- Cube Apache Ossie integration (2026-10-16): https://cube.dev/changelog/2026-10-16-changelog-apache-ossie-integration
 - Cube `cube` reference (parameters, `meta`, `ai_context`): https://docs.cube.dev/reference/data-modeling/cube
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`
 - OBSL CFL planner: `src/orionbelt/compiler/cfl.py`

@@ -130,6 +130,28 @@ You did not write the join path, the window function over an aggregate, the `NUL
 
 **This is checked, not asserted.** 40 TPC-DS queries are built against a single OBML model and compared row by row against each engine's own reference SQL: 39 of 40 match on DuckDB at sf=1, 37 of 40 on ClickHouse at sf=10. Every one of the remaining differences traces to a reference variant rather than a compilation error, and each is documented. See [the sweep](https://ralforion.com/orionbelt-semantic-layer/examples/tpcds-sweep/), or the queries in [`examples/tpcds_queries/`](examples/tpcds_queries/).
 
+### The same answer on every engine
+
+Compiling for eight engines is the easy part. The engines disagree about results, and a layer that only fixes the spelling of a function passes the disagreement through to your dashboard or your agent. OrionBelt pins the answer:
+
+| Expression | What the engines do | What OrionBelt returns |
+|---|---|---|
+| `x / 0` | `inf` on one engine, an error on four, NULL on the rest | NULL, everywhere |
+| `round(2.5)` on a float | ClickHouse, PostgreSQL and MySQL round ties to even and answer 2 | 3, everywhere |
+| `greatest(1, NULL, 3)` | Four engines skip the NULL and answer 3 | NULL, everywhere |
+| `length('äbcd')` | ClickHouse and MySQL count bytes and answer 5 | 4 characters |
+| `json_value(doc, '$.a')` where `a` is an object | Four engines return the serialized JSON | NULL: the path did not reach a scalar |
+
+Each row is executed against the live engines and asserted, not derived from vendor documentation. Set `expressionMode: portable` and a function outside the [portable catalog](https://ralforion.com/orionbelt-semantic-layer/comparison/#what-portable-means-here) becomes an error, so a model cannot pick up an engine dependency by accident.
+
+## Open and traceable
+
+A semantic model should not be a dead end, and a number should be able to say where it came from.
+
+- **[Apache Ossie](https://ralforion.com/orionbelt-semantic-layer/guide/osi/) both ways.** OSI (Open Semantic Interchange) is the open standard for portable semantic models, now developed as [Apache Ossie (incubating)](https://github.com/apache/ossie). OrionBelt converts OBML to Ossie and back, with schema validation in both directions, over REST, the CLI (`obsl convert`) and the UI. The converter is also a standalone package (`pip install osi-orionbelt`) and is being contributed upstream.
+- **[Lineage](https://ralforion.com/orionbelt-semantic-layer/api/endpoints/#lineage) for every artefact and every query.** What a dimension, measure, metric or rule is built from, and for a query the joins the planner actually chose, its multi-fact `UNION ALL` legs and `exists` subqueries, down to columns and tables. As JSON, Mermaid or Turtle, over REST, the CLI (`obsl lineage`) and the UI.
+- **[The model as a standard graph](https://ralforion.com/orionbelt-semantic-layer/guide/obsl/).** Every loaded model exports as RDF (OWL, SHACL, SKOS, PROV) and answers read-only SPARQL, so *"which measures read this column?"* is a query rather than a code search, and lineage links into the same graph.
+
 ## Where OrionBelt fits
 
 OrionBelt is a sidecar, not a platform. It compiles a YAML model into correct SQL and exposes it over the protocols you already use. It does not run a cluster, own your cache, or ask you to adopt a cloud.
@@ -140,7 +162,9 @@ OrionBelt is a sidecar, not a platform. It compiles a YAML model into correct SQ
 - Agents query your data and a silently wrong number is unacceptable. Multi-fact queries route through a Composite Fact Layer planner that blocks fan-trap join paths instead of quietly summing across them.
 - You want your metric definitions in reviewable YAML, with no JavaScript or Python in the model layer.
 - Your BI tool should connect over the Postgres driver it already ships, with no new connector to install and no vendor runtime in the path.
-- You self-host, across more than one engine, and want one model to compile for all of them.
+- You self-host, across more than one engine, and want one model to compile for all of them, with the same answer on each.
+- You have to show where a number came from: which columns, which tables, and which join path the query took.
+- Your model has to move between tools rather than live in one, through Apache Ossie or as an RDF graph.
 
 **Reach for something else when:**
 
@@ -203,7 +227,7 @@ Guides: [Business Rules](https://ralforion.com/orionbelt-semantic-layer/guide/bu
 
 ## Contents
 
-[Model the questions](#model-the-questions) · [Four ways in](#four-ways-in) · [What is a Context Layer?](#what-is-a-context-layer) · [Meaning, not just metrics](#meaning-not-just-metrics) · [Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
+[Model the questions](#model-the-questions) · [Four ways in](#four-ways-in) · [Eight ways out](#eight-ways-out) · [Open and traceable](#open-and-traceable) · [What is a Context Layer?](#what-is-a-context-layer) · [Meaning, not just metrics](#meaning-not-just-metrics) · [Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
 
 ---
 
@@ -433,14 +457,17 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 
 | | OrionBelt | dbt Semantic Layer | Cube | Malloy |
 |---|---|---|---|---|
-| **Model format** | YAML-only (OBML) | Python + YAML | JavaScript | Custom DSL |
-| **SQL generation** | AST-based (injection-safe) | String templates | String templates | Compiler |
-| **Multi-dialect** | 8 dialects, no runtime lock-in | dbt Cloud required | Cube Cloud or self-host | BigQuery-focused |
-| **Multi-fact queries** | Star Schema + CFL planner (fan-trap prevention) | Limited | Pre-aggregations | Automatic joins |
-| **Integration surface** | REST API + MCP + Gradio UI | dbt Cloud API | REST + GraphQL | VS Code extension |
-| **Deployment** | Self-host anywhere, single binary | SaaS (Cloud) | SaaS or self-host | Library |
-| **License** | BUSL-1.1 (converts to Apache 2.0) | Apache 2.0 | AGPL / proprietary | MIT |
+| **Model format** | YAML (OBML) | YAML on dbt models | YAML or JavaScript | Malloy language |
+| **Runtime** | Self-hosted service | dbt Cloud | Cube Core (self-hosted) or Cube Cloud | Library, plus the Publisher server |
+| **License** | BUSL-1.1 (converts to Apache 2.0) | Definitions open source; runtime in dbt Cloud | Apache 2.0 core + Cube Cloud | Open source |
+| **Query surfaces** | OBSQL over PostgreSQL wire and Arrow Flight SQL, REST, MCP, DB-API drivers, CLI | GraphQL, JDBC (Cloud) | SQL API (PostgreSQL wire), REST, GraphQL | Malloy language; Publisher REST and MCP |
+| **Multi-fact queries** | `UNION ALL` legs (CFL), fan-trap paths refused | `FULL OUTER JOIN` on shared entities | Per-fact subqueries joined on shared dimensions | Single-rooted sources |
+| **Same answer on every engine** | Pinned and executed (`x/0`, rounding, NULLs, JSON) | Inherits engine semantics | Inherits engine semantics | Partly normalized: `greatest` / `least` NULL if any argument is, `round` half away from zero, `length` in characters; `x / 0` is left to the engine (`inf` on DuckDB), and "perfect compatibility across all dialects for all functions is not guaranteed" |
+| **Lineage** | Per artefact and per query, down to columns and the joins chosen | Catalog DAG of semantic models and metrics; no per-query lineage | Cube Cloud Metadata API: lineage from cubes and members to source tables, with database names and SQL expressions, for catalog integrations; no per-query lineage | None documented |
+| **Interchange** | Apache Ossie both ways; the model as RDF with SPARQL | No | Apache Ossie import and export through the Cube CLI and Platform API (Oct 2026; the CLI is in preview, access via Cube support) | No |
 | **Business meaning in the model** | Rules compiled to the query that reports their findings; SKOS links to an external ontology | Column-level data tests; free-form `meta` | Free-form `meta` (`ai_context`) | Annotations, uninterpreted |
+
+Full, two-sided comparisons, including where each of these tools is ahead: [dbt](https://ralforion.com/orionbelt-semantic-layer/comparison/dbt/), [Cube](https://ralforion.com/orionbelt-semantic-layer/comparison/cube/), [Malloy](https://ralforion.com/orionbelt-semantic-layer/comparison/malloy/), [LookML](https://ralforion.com/orionbelt-semantic-layer/comparison/lookml/), [AtScale](https://ralforion.com/orionbelt-semantic-layer/comparison/atscale/).
 
 ---
 
