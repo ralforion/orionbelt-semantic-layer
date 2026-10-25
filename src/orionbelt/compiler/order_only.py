@@ -66,12 +66,26 @@ def wrap_order_only(ast: Select, ctx: CompileContext) -> Select:
     aliases = _aliases(ast)
     if aliases is None:
         return ast
+    # The sort values are the ones the measures would show in this query: the
+    # same filters and join paths, a cumulative metric as of the same date,
+    # and the filled periods carrying theirs.
     sort_query = QueryObject(
         select=QuerySelect(dimensions=list(query.select.dimensions), measures=hidden),
         where=list(query.where),
         use_path_names=list(query.use_path_names),
+        allow_fan_out=query.allow_fan_out,
+        as_of=query.as_of,
+        fill=query.fill,
     )
-    sort_ast, _ = plan_in_own_right(sort_query, ctx.model, ctx.dialect, ctx.qualify_table)
+    sort_ast, sort_resolved = plan_in_own_right(
+        sort_query, ctx.model, ctx.dialect, ctx.qualify_table
+    )
+    # Every table the sort query reads is a cache dependency of this one.
+    ctx.resolved.subquery_objects.update(
+        sort_resolved.required_objects | sort_resolved.subquery_objects
+    )
+    for step in sort_resolved.join_steps:
+        ctx.resolved.subquery_objects.update((step.from_object, step.to_object))
     sort_aliases = _aliases(sort_ast)
     if sort_aliases is None:
         return ast

@@ -69,8 +69,8 @@ transformations (the "passes"), defined in `compiler/passes.py`:
 | 7 | `window` | a selected metric is a window metric (rank/lag/lead/...) |
 | 8 | `reaggregate` | a selected metric (or a component of one) is a reaggregate metric; wraps what the passes above built |
 | 9 | `having_over_window` | a HAVING filter reads a value one of the passes above computes |
-| 10 | `having_projection_cleanup` | HAVING auto-included a measure not in `select` |
-| 11 | `order_only` | `orderBy` names a measure or metric not in `select`; sorts the finished rows by it and returns the rest |
+| 10 | `order_only` | `orderBy` names a measure or metric not in `select`; sorts the finished rows by it and returns the rest |
+| 11 | `having_projection_cleanup` | HAVING auto-included a measure not in `select` |
 
 Each pass is a frozen `CompilerPass` (a `name`, an `applies` predicate, a
 `run(ast, ctx)` callable, and `incompatible_with` metadata). The order is

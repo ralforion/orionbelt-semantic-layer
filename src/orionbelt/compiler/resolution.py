@@ -1651,9 +1651,20 @@ class QueryResolver:
             raise ResolutionError(ctx.errors)
 
         selected = {d.name for d in ctx.result.dimensions}
-        if query.as_of is not None and not any(
-            m.is_cumulative and m.cumulative_time_dimension not in selected
-            for m in ctx.result.measures
+        # A cumulative metric only sorted by reads asOf too (``order_only``).
+        sorted_cumulative = any(
+            (metric := model.metrics.get(name)) is not None
+            and metric.type == MetricType.CUMULATIVE
+            and metric.time_dimension not in selected
+            for name in ctx.result.order_only_measures
+        )
+        if (
+            query.as_of is not None
+            and not sorted_cumulative
+            and not any(
+                m.is_cumulative and m.cumulative_time_dimension not in selected
+                for m in ctx.result.measures
+            )
         ):
             ctx.result.warnings.append(
                 warning(

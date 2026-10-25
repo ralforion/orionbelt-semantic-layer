@@ -265,3 +265,97 @@ def test_two_dimensions_join_on_both(model: SemanticModel, con: duckdb.DuckDBPyC
         ("Ann", date(2025, 1, 1)),
         ("Bob", date(2025, 2, 1)),
     ]
+
+
+def test_a_having_only_measure_sorts_beside_a_hidden_one(
+    model: SemanticModel, con: duckdb.DuckDBPyConnection
+) -> None:
+    query = {
+        "select": {"dimensions": ["Customer Name"]},
+        "having": [{"field": "Orders Count", "op": ">=", "value": 1}],
+        "orderBy": [_by("Orders Count", "desc"), _by("Revenue", "desc")],
+    }
+    result = con.execute(_compile(model, query).sql)
+    assert [column[0] for column in result.description] == ["Customer Name"]
+    assert result.fetchall() == [("Bob",), ("Cy",), ("Ann",)]
+
+
+def test_a_hidden_cumulative_metric_reads_as_of(
+    model: SemanticModel, con: duckdb.DuckDBPyConnection
+) -> None:
+    query = {
+        "select": {"dimensions": ["Customer Name"]},
+        "asOf": "2025-01-31",
+        "orderBy": [{"field": "Running Revenue", "direction": "desc", "nulls": "last"}],
+    }
+    compiled = _compile(model, query)
+    # As of January: Bob 50, Ann 10, Cy and Dan nothing yet. February's totals
+    # would put Cy (30) ahead of Ann.
+    assert con.execute(compiled.sql).fetchall() == [("Bob",), ("Ann",), ("Cy",), ("Dan",)]
+    assert not any("asOf" in w.message for w in compiled.warnings)
+
+
+def test_a_filled_period_carries_its_cumulative_sort_value(
+    model: SemanticModel, con: duckdb.DuckDBPyConnection
+) -> None:
+    query = {
+        "select": {"dimensions": ["Order Month"]},
+        "where": [{"field": "Order Month", "op": "between", "value": ["2025-01-01", "2025-03-01"]}],
+        "fill": True,
+        "orderBy": [_by("Running Revenue", "desc"), _by("Order Month", "desc")],
+    }
+    # March has no orders and carries February's 95, ahead of January's 60.
+    assert _rows(model, con, query) == [
+        (date(2025, 3, 1),),
+        (date(2025, 2, 1),),
+        (date(2025, 1, 1),),
+    ]
+
+
+def test_every_table_of_the_sort_query_is_a_cache_dependency() -> None:
+    bridged = """
+version: "1.0"
+dataObjects:
+  Customers:
+    code: customers
+    columns:
+      Cust Id: {code: id, abstractType: string, primaryKey: true}
+      Name: {code: name, abstractType: string}
+  Customer Links:
+    code: customer_links
+    columns:
+      Link Id: {code: id, abstractType: string, primaryKey: true}
+      Linked Customer: {code: customer_id, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Linked Customer]
+        columnsTo: [Cust Id]
+  Orders:
+    code: orders
+    columns:
+      Order Id: {code: id, abstractType: string, primaryKey: true}
+      Link: {code: link_id, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - {joinType: many-to-one, joinTo: Customer Links, columnsFrom: [Link], columnsTo: [Link Id]}
+dimensions:
+  Customer Name: {dataObject: Customers, column: Name, resultType: string}
+measures:
+  Revenue: {columns: [{dataObject: Orders, column: Amount}], aggregation: sum, resultType: float}
+"""
+    raw, source_map = TrackedLoader().load_string(bridged)
+    bridged_model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = {"select": {"dimensions": ["Customer Name"]}, "orderBy": [_by("Revenue", "desc")]}
+    compiled = _compile(bridged_model, query)
+
+    # The sort query reaches the customers through the links: a change there
+    # reorders the rows.
+    assert '"customer_links"' in compiled.sql
+    assert {"customers", "customer_links", "orders"} <= set(compiled.physical_tables)
+    # The same holds for the bridge of a query selecting the measure.
+    selected = _compile(
+        bridged_model, {"select": {"dimensions": ["Customer Name"], "measures": ["Revenue"]}}
+    )
+    assert "customer_links" in selected.physical_tables

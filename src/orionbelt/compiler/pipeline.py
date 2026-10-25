@@ -194,6 +194,10 @@ def _compute_physical_tables(
     filter joined in.
     """
     object_names: set[str] = set(resolved.required_objects)
+    # A table joined only on the way (Orders -> Customer Links -> Customers) is
+    # read as much as the ones at either end.
+    for step in resolved.join_steps:
+        object_names.update((step.from_object, step.to_object))
     object_names.update(resolved.subquery_objects)
     object_names.update(_collect_subquery_objects(list(query.where)))
     object_names.update(_collect_subquery_objects(list(query.having)))

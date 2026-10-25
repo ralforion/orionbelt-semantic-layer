@@ -283,16 +283,18 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
                 ast, hoisted_predicates(ctx.resolved, ctx.model), cte_name="having_window"
             ),
         ),
-        CompilerPass(
-            name=PASS_HAVING_CLEANUP,
-            applies=lambda r: bool(r.having_only_measures),
-            run=_drop_having_only_projection,
-        ),
-        # Last: it sorts the rows every pass above finished.
+        # Sorts the rows every pass above finished. Before the HAVING cleanup,
+        # so a HAVING-only measure is still a column to sort by; the cleanup
+        # then drops it from this pass's projection.
         CompilerPass(
             name=PASS_ORDER_ONLY,
             applies=lambda r: bool(r.order_only_measures),
             run=wrap_order_only,
+        ),
+        CompilerPass(
+            name=PASS_HAVING_CLEANUP,
+            applies=lambda r: bool(r.having_only_measures),
+            run=_drop_having_only_projection,
         ),
     )
 

@@ -108,9 +108,10 @@ def test_pass_order_is_declared_once() -> None:
         # Runs after every wrapper: the filtering query it adds needs all of
         # their aliases in scope at once.
         PASS_HAVING_WINDOW,
-        PASS_HAVING_CLEANUP,
-        # Sorts the finished rows by a measure the query does not return.
+        # Sorts the finished rows by a measure the query does not return,
+        # while a HAVING-only measure is still a column to sort by.
         PASS_ORDER_ONLY,
+        PASS_HAVING_CLEANUP,
     ]
 
 
