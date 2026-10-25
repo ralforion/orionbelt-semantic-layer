@@ -40,7 +40,9 @@ from orionbelt.compiler.expr_rewrite import map_column_refs, map_nodes
 from orionbelt.compiler.filters import build_filter_expr
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
+from orionbelt.compiler.period_literals import column_is_date_bearing, dimension_is_date_bearing
 from orionbelt.compiler.resolution import (
+    ResolutionError,
     ResolvedFilter,
     ResolvedMeasure,
     ResolvedQuery,
@@ -133,7 +135,9 @@ def _resolve_include_filters(
                 except ValueError:
                     continue
                 qf = QueryFilter(field=incl.field, op=op, value=incl.value)
-                filter_expr = build_filter_expr(col_expr, qf, errors)
+                filter_expr = build_filter_expr(
+                    col_expr, qf, errors, date_bearing=dimension_is_date_bearing(dim)
+                )
                 if filter_expr:
                     results.append(
                         ResolvedFilter(
@@ -152,7 +156,12 @@ def _resolve_include_filters(
                 except ValueError:
                     continue
                 qf = QueryFilter(field=incl.field, op=op, value=incl.value)
-                filter_expr = build_filter_expr(col_expr, qf, errors)
+                filter_expr = build_filter_expr(
+                    col_expr,
+                    qf,
+                    errors,
+                    date_bearing=column_is_date_bearing(model, obj_name, col_name),
+                )
                 if filter_expr:
                     results.append(
                         ResolvedFilter(
@@ -160,6 +169,10 @@ def _resolve_include_filters(
                             referenced_fields=frozenset({incl.field}),
                         )
                     )
+    # An include item that cannot be built is refused, not left out: without
+    # it the measure reads rows its filter context excludes.
+    if errors:
+        raise ResolutionError(errors)
     return results
 
 

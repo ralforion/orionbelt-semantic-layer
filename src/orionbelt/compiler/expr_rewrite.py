@@ -118,13 +118,7 @@ def map_nodes(expr: Expr, fn: Callable[[Expr], Expr | None]) -> Expr:
                 case_insensitive=expr.case_insensitive,
             )
         case RelativeDateRange(column=column):
-            return RelativeDateRange(
-                column=map_nodes(column, fn),
-                unit=expr.unit,
-                count=expr.count,
-                direction=expr.direction,
-                include_current=expr.include_current,
-            )
+            return replace(expr, column=map_nodes(column, fn))
         case WindowFunction(func_name=func_name, args=args):
             return WindowFunction(
                 func_name=func_name,

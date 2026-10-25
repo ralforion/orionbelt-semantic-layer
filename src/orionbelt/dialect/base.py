@@ -2215,6 +2215,8 @@ class Dialect(ABC):
                 count=count,
                 direction=direction,
                 include_current=include_current,
+                calendar=calendar,
+                to_date=to_date,
             ):
                 return self.compile_relative_date_range(
                     column=column,
@@ -2222,6 +2224,8 @@ class Dialect(ABC):
                     count=count,
                     direction=direction,
                     include_current=include_current,
+                    calendar=calendar,
+                    to_date=to_date,
                 )
             case WindowFunction(
                 func_name=fname,
@@ -2299,10 +2303,34 @@ class Dialect(ABC):
         count: int,
         direction: str,
         include_current: bool,
+        calendar: bool = False,
+        to_date: bool = False,
     ) -> str:
-        """Compile a relative date range predicate to SQL."""
+        """Compile a relative date range predicate to SQL.
+
+        Rolling, ``count`` units back (or ahead) from today; or, with
+        *calendar*, whole periods counted from the start of the current one:
+        the current quarter, or the last full month without it. *to_date* ends
+        the current period at today.
+        """
         col_sql = self.compile_expr(column)
         base = self.current_date_sql()
+
+        if calendar:
+            # The start of the current period, through the same truncation the
+            # date spine and a week's model calendar use.
+            current = self.render_date_trunc_sql(base, unit)
+
+            def shifted(periods: int) -> str:
+                return self.date_add_sql(current, unit, periods) if periods else current
+
+            # The first period taken, counted from the current one (0).
+            first = (0 if include_current else 1) if direction == "future" else -count
+            if direction == "past" and include_current:
+                first += 1
+            start = shifted(first)
+            end = self.date_add_sql(base, "day", 1) if to_date else shifted(first + count)
+            return f"({col_sql} >= {start} AND {col_sql} < {end})"
 
         if direction == "future":
             start = base if include_current else self.date_add_sql(base, "day", 1)

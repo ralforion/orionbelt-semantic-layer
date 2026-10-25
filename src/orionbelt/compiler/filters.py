@@ -27,6 +27,12 @@ from orionbelt.ast.nodes import (
     Unnest,
 )
 from orionbelt.compiler.expr_rewrite import map_column_refs
+from orionbelt.compiler.period_literals import (
+    build_period_filter_expr,
+    column_is_date_bearing,
+    dimension_is_date_bearing,
+    has_period_literal,
+)
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import FilterOperator, QueryFilter, UsePathName
 from orionbelt.models.semantic import (
@@ -57,12 +63,22 @@ class RelativeFilterParsed(TypedDict):
     count: int
     direction: str
     include_current: bool
+    calendar: bool
+    to_date: bool
 
 
-def build_filter_expr(col: Expr, qf: QueryFilter, errors: list[SemanticError]) -> Expr | None:
-    """Build a filter expression from operator and value."""
+def build_filter_expr(
+    col: Expr, qf: QueryFilter, errors: list[SemanticError], *, date_bearing: bool = False
+) -> Expr | None:
+    """Build a filter expression from operator and value.
+
+    On a *date_bearing* field a period literal (``'2025-Q1'``) is read as its
+    bounds (``period_literals``).
+    """
     op = qf.op
     val = qf.value
+    if date_bearing and has_period_literal(val):
+        return build_period_filter_expr(col, qf, errors)
 
     match op:
         case FilterOperator.EQUALS | FilterOperator.EQ:
@@ -189,6 +205,8 @@ def build_filter_expr(col: Expr, qf: QueryFilter, errors: list[SemanticError]) -
                 count=relative["count"],
                 direction=relative["direction"],
                 include_current=relative["include_current"],
+                calendar=relative["calendar"],
+                to_date=relative["to_date"],
             )
         case FilterOperator.EXISTS | FilterOperator.NONEXISTS:
             # exists/nonexists need model + subject_object + qualify_table to
@@ -227,7 +245,7 @@ def parse_relative_filter(
                 code="INVALID_RELATIVE_FILTER",
                 message=(
                     f"Relative filter for '{field}' must be an object "
-                    "with keys {unit, count, direction?, include_current?}"
+                    "with keys {unit, count, direction?, include_current?, calendar?, toDate?}"
                 ),
                 path="filters",
             )
@@ -238,6 +256,8 @@ def parse_relative_filter(
     count = value.get("count")
     direction = value.get("direction", "past")
     include_current = value.get("include_current", value.get("includeCurrent", True))
+    calendar = value.get("calendar", False)
+    to_date = value.get("toDate", value.get("to_date", False))
 
     if not isinstance(unit, str):
         errors.append(
@@ -249,7 +269,7 @@ def parse_relative_filter(
         )
         return None
     unit = unit.lower()
-    if unit not in {"day", "week", "month", "year"}:
+    if unit not in {"day", "week", "month", "quarter", "year"}:
         errors.append(
             SemanticError(
                 code="INVALID_RELATIVE_FILTER",
@@ -286,11 +306,38 @@ def parse_relative_filter(
         )
         return None
 
+    if not isinstance(calendar, bool) or not isinstance(to_date, bool):
+        errors.append(
+            SemanticError(
+                code="INVALID_RELATIVE_FILTER",
+                message=f"Relative filter for '{field}' has non-boolean calendar or toDate",
+                path="filters",
+            )
+        )
+        return None
+    # To date is the current calendar period cut at today: without the
+    # calendar there is no period start, and without the current period, or
+    # looking ahead, there is no today inside it to cut at.
+    if to_date and not (calendar and include_current and direction == "past"):
+        errors.append(
+            SemanticError(
+                code="INVALID_RELATIVE_FILTER",
+                message=(
+                    f"Relative filter for '{field}': toDate needs calendar: true, "
+                    "include_current: true and direction: past"
+                ),
+                path="filters",
+            )
+        )
+        return None
+
     return {
         "unit": unit,
         "count": count,
         "direction": direction,
         "include_current": include_current,
+        "calendar": calendar,
+        "to_date": to_date,
     }
 
 
@@ -1105,7 +1152,12 @@ def build_exists_filter_expr(
                 if dim is None
                 else make_filter_subject_expr(model, dim)
             )
-            sub_expr = build_filter_expr(col_expr, sub_qf, errors)
+            date_bearing = (
+                column_is_date_bearing(model, ref_object, ref_column)
+                if dim is None
+                else dimension_is_date_bearing(dim)
+            )
+            sub_expr = build_filter_expr(col_expr, sub_qf, errors, date_bearing=date_bearing)
         if sub_expr is not None:
             where_parts.append(sub_expr)
 
@@ -1152,7 +1204,8 @@ def static_filter_predicate(
 
     col_expr = make_column_expr(model, mf.data_object, mf.column)
     qf = QueryFilter(field=mf.column, op=mf.operator, value=mf.value or mf.values or None)
-    return build_filter_expr(col_expr, qf, errors)
+    date_bearing = column_is_date_bearing(model, mf.data_object, mf.column)
+    return build_filter_expr(col_expr, qf, errors, date_bearing=date_bearing)
 
 
 def static_filter_unreachable_error(label: str, unreachable: str, where: str) -> SemanticError:

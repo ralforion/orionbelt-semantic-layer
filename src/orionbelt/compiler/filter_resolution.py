@@ -24,6 +24,7 @@ from orionbelt.compiler.filters import (
     static_filter_predicate,
     static_filter_unreachable_error,
 )
+from orionbelt.compiler.period_literals import column_is_date_bearing, dimension_is_date_bearing
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
     FilterOperator,
@@ -390,6 +391,8 @@ def resolve_filter(
     col_expr: Expr
     subject_object: str | None = None
     subject_column = ""
+    # A date-bearing field reads a period literal ('2025-Q1') as its bounds.
+    date_bearing = False
     dim = ctx.model.dimensions.get(qf.field)
     if dim:
         obj_name = dim.view
@@ -403,6 +406,7 @@ def resolve_filter(
         # every query.
         col_expr = make_filter_subject_expr(ctx.model, dim)
         subject_object, subject_column = obj_name, col_name
+        date_bearing = dimension_is_date_bearing(dim)
 
     # 2. HAVING: try measure or metric name
     elif is_having and (qf.field in ctx.model.effective_measures or qf.field in ctx.model.metrics):
@@ -440,6 +444,7 @@ def resolve_filter(
             return None
         col_expr = make_column_expr(ctx.model, obj_name, col_name)
         subject_object, subject_column = obj_name, col_name
+        date_bearing = column_is_date_bearing(ctx.model, obj_name, col_name)
 
     else:
         ctx.errors.append(
@@ -497,7 +502,7 @@ def resolve_filter(
             touched_objects=ctx.result.subquery_objects,
         )
     else:
-        filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
+        filter_expr = build_filter_expr(col_expr, qf, ctx.errors, date_bearing=date_bearing)
 
     if filter_expr is None:
         return None

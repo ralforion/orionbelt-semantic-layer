@@ -329,10 +329,15 @@ class RelativeDateRange:
     """Relative date range predicate on a column (half-open interval)."""
 
     column: Expr
-    unit: str  # day, week, month, year
+    unit: str  # day, week, month, quarter, year
     count: int
     direction: str  # past or future
     include_current: bool = True
+    calendar: bool = False
+    """Whole calendar periods (this quarter, the last full month) rather than
+    ``count`` units back from today."""
+    to_date: bool = False
+    """The current calendar period up to today (year to date); ``calendar`` only."""
 
 
 @dataclass(frozen=True)
