@@ -171,10 +171,14 @@ class CFLPlanner:
         # Group measures by their source object
         measures_by_object, cross_fact = self._group_measures_by_object(resolved, model)
 
-        # Dimension-only CFL: no measures but dimensions on independent branches.
-        # Create leg groupings from connecting fact tables.
+        # Dimension-only CFL: no measures but dimensions on independent branches,
+        # or several roots joining them, each a leg of its own.
         if not measures_by_object and not cross_fact and resolved.requires_cfl:
-            measures_by_object = self._group_dimensions_into_legs(resolved, model)
+            measures_by_object = (
+                {root: [] for root in resolved.dimension_roots}
+                if resolved.dimension_roots
+                else self._group_dimensions_into_legs(resolved, model)
+            )
 
         # A dimension no leg can reach is projected by none of them, and the
         # union then has no such column for the outer SELECT to group on. Under
@@ -697,6 +701,16 @@ class CFLPlanner:
             leg_required = {
                 dim.object_name for dim in resolved.dimensions if dim.object_name in reachable
             }
+            # A computed dimension inlines its expression, and the objects it
+            # reads have to be joined too, or the leg names an alias its FROM
+            # chain never binds.
+            leg_required.update(
+                obj
+                for dim in resolved.dimensions
+                if dim.object_name in reachable
+                for obj in model.column_reference_objects(dim.object_name, dim.column_name)
+                if obj in reachable
+            )
             leg_required.add(obj_name)
             # Only filter objects this leg can actually reach. A nested one it
             # never can - the leg has no unnest to reach it with. The
@@ -1225,8 +1239,9 @@ class CFLPlanner:
         graph: JoinGraph,
         qualify: Callable[[DataObject], str],
         dialect: Dialect | None = None,
+        root: str | None = None,
     ) -> Select:
         """Build SELECT for existing dimension combinations via fact-table joins."""
         return cfl_exclude.build_existing_pairs_select(
-            self, resolved, model, graph, qualify, dialect
+            self, resolved, model, graph, qualify, dialect, root
         )

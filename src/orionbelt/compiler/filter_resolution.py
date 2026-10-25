@@ -228,12 +228,28 @@ def resolve_filter_object(
         return False
     reachable = any(obj_name in ctx.graph.descendants(j) for j in list(ctx.joined_objects))
     if not reachable:
-        # The union's legs are rooted at the measures' facts, or in raw mode
-        # at the selected fields' objects.
-        roots = ctx.result.measure_source_objects | {f.object_name for f in ctx.result.fields}
-        if ctx.result.requires_cfl and any(
-            obj_name in ctx.graph.descendants_without_unnest(root) | {root} for root in roots
-        ):
+        # The union's legs are rooted at the measures' facts, at a
+        # dimension-only query's roots, or in raw mode at the selected fields'
+        # objects.
+        roots = (
+            ctx.result.measure_source_objects
+            | set(ctx.result.dimension_roots)
+            | {f.object_name for f in ctx.result.fields}
+        )
+        reaching = sorted(
+            root
+            for root in roots
+            if obj_name in ctx.graph.descendants_without_unnest(root) | {root}
+        )
+        if ctx.result.requires_cfl and reaching:
+            # The legs on these roots join the object to filter, so it and the
+            # tables on the way are read, and the result cache is invalidated
+            # by the tables in required_objects.
+            for root in reaching:
+                ctx.result.required_objects.add(root)
+                for step in ctx.graph.find_join_path({root}, {root, obj_name}):
+                    ctx.result.required_objects.add(step.from_object)
+                    ctx.result.required_objects.add(step.to_object)
             return True
         if static:
             return False

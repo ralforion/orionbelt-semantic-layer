@@ -22,6 +22,7 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler import cfl_projection
+from orionbelt.compiler.filter_resolution import conjuncts
 from orionbelt.compiler.filters import static_filter_unreachable_error
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.resolution import (
@@ -103,17 +104,21 @@ def plan_dimensions_exclude(
         )
     all_pairs_select = all_pairs_builder.build()
 
-    # Build "existing_pairs": actual combinations via fact-table joins
-    existing_pairs_select = planner._build_existing_pairs_select(
-        resolved, model, graph, qualify, dialect
-    )
-
-    # EXCEPT CTE: all_pairs EXCEPT existing_pairs
-    except_cte = CTE(
-        name="non_combinations",
-        query=Except(left=all_pairs_select, right=existing_pairs_select),
-    )
-    ctes.append(except_cte)
+    # EXCEPT CTE: all_pairs EXCEPT existing_pairs, the actual combinations via
+    # fact-table joins. Where several roots join the dimensions, a combination
+    # any of them holds exists, so each root's are taken away in turn.
+    roots: list[str | None] = [*resolved.dimension_roots] or [None]
+    remaining = all_pairs_select
+    for i, root in enumerate(roots):
+        existing_pairs_select = planner._build_existing_pairs_select(
+            resolved, model, graph, qualify, dialect, root
+        )
+        cte_name = "non_combinations" if i == len(roots) - 1 else f"non_combinations_{i:02d}"
+        ctes.append(CTE(name=cte_name, query=Except(left=remaining, right=existing_pairs_select)))
+        remaining_builder = QueryBuilder()
+        for dim in resolved.dimensions:
+            remaining_builder.select(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
+        remaining = remaining_builder.from_(cte_name, alias=cte_name).build()
 
     # Outer query: SELECT from non_combinations with ORDER BY / LIMIT
     outer_builder = QueryBuilder()
@@ -284,17 +289,20 @@ def build_existing_pairs_select(
     graph: JoinGraph,
     qualify: Callable[[DataObject], str],
     dialect: Dialect | None = None,
+    root: str | None = None,
 ) -> Select:
     """Build SELECT for existing dimension combinations via fact-table joins.
 
     Uses a fact/bridge table as the base and joins through hub tables
-    to reach all dimension objects on both branches.
+    to reach all dimension objects on both branches. *root* is one of the
+    query's ``dimension_roots``: the combinations that one holds.
     """
     all_dim_objects = {d.object_name for d in resolved.dimensions}
 
     # Find fact tables that connect the dimension groups
-    leg_objects = planner._group_dimensions_into_legs(resolved, model)
-    fact_tables = set(leg_objects.keys())
+    fact_tables = (
+        {root} if root else set(planner._group_dimensions_into_legs(resolved, model).keys())
+    )
 
     # Use a fact table as the base (pick the one with most joins)
     best_fact = max(
@@ -314,8 +322,16 @@ def build_existing_pairs_select(
     if best_fact_obj:
         builder.from_(qualify(best_fact_obj), alias=best_fact)
 
-    # Required: all dimension objects + all fact tables
-    all_needed = all_dim_objects | fact_tables | {best_fact}
+    # Required: all dimension objects + all fact tables. With a root, the
+    # objects its filters read too, where it reaches them; one it cannot
+    # reach is another root's (below).
+    filter_objects: set[str] = set()
+    if root:
+        for wf in resolved.where_filters:
+            cfl_projection.collect_table_refs(wf.expression, filter_objects)
+            cfl_projection.collect_correlated_tables(wf.expression, filter_objects)
+        filter_objects &= graph.descendants_without_unnest(root) | {root}
+    all_needed = all_dim_objects | fact_tables | {best_fact} | filter_objects
     joined: set[str] = {best_fact}
     steps = graph.find_join_path(
         {best_fact},
@@ -344,8 +360,29 @@ def build_existing_pairs_select(
             )
             joined.add(new_table)
 
-    # Apply WHERE filters to existing pairs
+    # Apply WHERE filters to existing pairs. A root's combinations take a
+    # condition only on objects it joins: a static filter on another root's
+    # fact is skipped, as in that root's union leg, and refused if enforced.
     for wf in resolved.where_filters:
-        builder.where(wf.expression)
+        if root is None:
+            builder.where(wf.expression)
+            continue
+        for condition in conjuncts(wf.expression):
+            objects: set[str] = set()
+            cfl_projection.collect_table_refs(condition, objects)
+            cfl_projection.collect_correlated_tables(condition, objects)
+            if objects <= joined:
+                builder.where(condition)
+            elif wf.enforced:
+                unreachable = ", ".join(sorted(objects - joined))
+                raise ResolutionError(
+                    [
+                        static_filter_unreachable_error(
+                            f"static filter on '{unreachable}'",
+                            unreachable,
+                            f"the combinations of '{root}'",
+                        )
+                    ]
+                )
 
     return builder.build()

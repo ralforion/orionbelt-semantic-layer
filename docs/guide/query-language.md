@@ -329,7 +329,7 @@ dimensionsExclude: true
 This generates an anti-join query using SQL `EXCEPT`:
 
 1. **All possible combinations** — A `CROSS JOIN` of the distinct values of each dimension
-2. **Existing combinations** — The actual dimension pairs found through the join graph
+2. **Existing combinations** — The actual dimension pairs found through the join graph. Where several data objects join the dimensions (movies and series both joining directors and producers), a pair any of them holds exists.
 3. **Result** — All combinations `EXCEPT` existing ones
 
 ### Constraints

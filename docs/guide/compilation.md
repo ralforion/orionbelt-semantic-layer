@@ -228,7 +228,12 @@ If there is only one fact table, the CFL planner delegates to the Star Schema pl
 
 ### Dimension-Only Queries
 
-Queries with only dimensions (no measures) are supported. When dimensions come from multiple data objects, the resolver selects the best intermediate fact/bridge table as the base object using `find_common_root()`. If dimensions span independent branches, the CFL planner builds separate legs — each leg joining through its own fact table — and combines them with `UNION ALL`.
+Queries with only dimensions (no measures) are supported. When dimensions come from multiple data objects, the resolver looks for the data objects that join all of them (`JoinGraph.minimal_roots()`), leaving out one that reaches them only through another:
+
+- **One such data object**: it is the base of a star query, joining the dimensions' tables.
+- **Several**: each holds its own combinations. With Orders and Returns both joining Customers and Products, region by category is the pairs ordered *or* returned. The CFL planner builds a leg on each and combines them with `UNION ALL`, and the outer query groups by the dimensions. No data object is preferred over another, so the answer does not depend on their names.
+
+A WHERE filter counts as one of the objects a data object has to reach: a filter on an Orders column leaves Orders alone. To read the combinations of one fact, select one of its measures. If dimensions span independent branches that no data object joins, the CFL planner builds separate legs, each joining through its own fact table, and combines them the same way.
 
 ### Dimension Exclusion (EXCEPT Pattern)
 

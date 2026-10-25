@@ -350,6 +350,36 @@ class JoinGraph:
         candidates.sort(key=lambda x: (x[1], x[0]))
         return self._unnest_root(candidates[0][0])
 
+    def minimal_roots(self, required_objects: set[str]) -> list[str]:
+        """Every node joining to all *required_objects*, except through another one.
+
+        Where ``find_common_root`` picks one ancestor, this returns each that
+        holds its own combinations of the required objects. In ``orders ->
+        customers``, ``orders -> products``, ``returns -> customers`` and
+        ``returns -> products``, with required ``{customers, products}``, both
+        facts are returned: the pairs ordered and the pairs returned differ, and
+        neither name decides between them. A node reaching another candidate is
+        left out, since its rows reach the required objects through that one.
+
+        Joins only, no unnest: each root is the FROM of a leg (see
+        ``descendants_without_unnest``), so none is returned where a root is
+        a nested object, which only an unnest reaches, and the query keeps the
+        single base that unnests it. Sorted by name, for a stable plan.
+        """
+        required = required_objects & set(self._directed.nodes)
+        if len(required) <= 1:
+            return []
+        reach = {node: self.descendants_without_unnest(node) | {node} for node in self._directed}
+        covering = [node for node, reached in reach.items() if required <= reached]
+        roots = sorted(
+            node
+            for node in covering
+            if not any(other != node and other in reach[node] for other in covering)
+        )
+        if any(self._unnest_root(root) != root for root in roots):
+            return []
+        return roots
+
     def _find_center_undirected(self, required: set[str]) -> str:
         """Fallback: center of the Steiner tree in the undirected graph."""
         nodes = sorted(required)

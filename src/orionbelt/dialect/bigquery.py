@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, RawSQL
+from orionbelt.ast.nodes import Cast, Except, Expr, FunctionCall, Literal, OrderByItem, RawSQL
 from orionbelt.dialect.base import (
     AmbiguousTableReferenceError,
     Dialect,
@@ -515,3 +515,9 @@ class BigQueryDialect(Dialect):
         pat_sql = self.compile_expr(Literal.string(pattern))
         result = f"REGEXP_CONTAINS({col_sql}, {pat_sql})"
         return f"NOT {result}" if negated else result
+
+    def compile_except(self, node: Except) -> str:
+        """BigQuery refuses a bare ``EXCEPT``: the standard one is ``EXCEPT DISTINCT``."""
+        return (
+            self.compile_select(node.left) + "\nEXCEPT DISTINCT\n" + self.compile_select(node.right)
+        )

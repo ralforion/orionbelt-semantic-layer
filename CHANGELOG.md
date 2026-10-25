@@ -4,6 +4,16 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **A dimension-only query returns the combinations of every data object joining its dimensions.** With Orders and Returns both joining Customers and Products, region by category was answered from one of them: the one reaching the fewest objects, and between equals the first by name. Renaming `Orders` to `Sales` turned "the pairs ordered" into "the pairs returned", without a warning. Each such data object is now a CFL leg, and the query returns the pairs any of them holds. One that joins the dimensions only through another (Returns joining its Order) adds no leg, and a WHERE filter keeps only the data objects reaching it, so a filter on an Orders column still reads Orders alone. `dimensionsExclude` takes away the combinations of every one of them. Where one of them is a nested data object (`nestedIn`), the query keeps the single base that unnests it.
+
+### Fixed
+
+- **A computed dimension beside measures of independent facts joins what it reads.** A dimension computed from another data object's column (`upper({[Countries].[Name]})` on Customers) was selected in each fact's leg without that object being joined, and the database refused the query. Each leg now joins the objects its dimensions read.
+
+- **`dimensionsExclude` runs on BigQuery.** The anti-join rendered a bare `EXCEPT`, which BigQuery refuses ("EXCEPT must be followed by ALL, DISTINCT"). It is now `EXCEPT DISTINCT` there.
+
 ## [2.35.1] - 2026-10-24
 
 ### Fixed
