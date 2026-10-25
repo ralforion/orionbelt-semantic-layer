@@ -359,3 +359,114 @@ measures:
         bridged_model, {"select": {"dimensions": ["Customer Name"], "measures": ["Revenue"]}}
     )
     assert "customer_links" in selected.physical_tables
+
+
+BRIDGED_RETURNS = """
+version: "1.0"
+dataObjects:
+  Customers:
+    code: customers
+    columns:
+      Cust Id: {code: id, abstractType: string, primaryKey: true}
+      Name: {code: name, abstractType: string}
+  Customer Links:
+    code: customer_links
+    columns:
+      Link Id: {code: id, abstractType: string, primaryKey: true}
+      Linked Customer: {code: customer_id, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Linked Customer]
+        columnsTo: [Cust Id]
+  Orders:
+    code: orders
+    columns:
+      Order Id: {code: id, abstractType: string, primaryKey: true}
+      Customer: {code: customer_id, abstractType: string}
+      Order Date: {code: order_date, abstractType: date}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - {joinType: many-to-one, joinTo: Customers, columnsFrom: [Customer], columnsTo: [Cust Id]}
+  Returns:
+    code: returns
+    columns:
+      Return Id: {code: id, abstractType: string, primaryKey: true}
+      Link: {code: link_id, abstractType: string}
+      Quantity: {code: quantity, abstractType: int}
+    joins:
+      - {joinType: many-to-one, joinTo: Customer Links, columnsFrom: [Link], columnsTo: [Link Id]}
+dimensions:
+  Customer Name: {dataObject: Customers, column: Name, resultType: string}
+measures:
+  Revenue: {columns: [{dataObject: Orders, column: Amount}], aggregation: sum, resultType: float}
+  Returned: {columns: [{dataObject: Returns, column: Quantity}], aggregation: sum, resultType: int}
+"""
+
+JANUARY = [{"field": "Orders.Order Date", "op": "<", "value": "2025-02-01"}]
+
+
+@pytest.fixture(scope="module")
+def bridged() -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(BRIDGED_RETURNS)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    return model
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"select": {"dimensions": ["Customer Name"], "measures": ["Revenue", "Returned"]}},
+        {"select": {"dimensions": ["Customer Name"]}, "orderBy": [_by("Revenue"), _by("Returned")]},
+    ],
+    ids=["selected", "sorted"],
+)
+def test_a_bridge_in_another_cfl_leg_is_a_cache_dependency(
+    bridged: SemanticModel, query: dict
+) -> None:
+    # The Returns leg reaches the customers through the links.
+    assert "customer_links" in _compile(bridged, query).physical_tables
+
+
+def test_a_filter_the_sort_fact_cannot_apply_is_reported(bridged: SemanticModel) -> None:
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE customers AS SELECT * FROM"
+        " (VALUES ('c1', 'Ann'), ('c2', 'Bob'), ('c3', 'Cy')) t(id, name)"
+    )
+    con.execute(
+        "CREATE TABLE customer_links AS SELECT * FROM"
+        " (VALUES ('l1', 'c1'), ('l2', 'c2'), ('l3', 'c3')) t(id, customer_id)"
+    )
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES ('o1', 'c1', DATE '2025-01-05', 10.0),"
+        " ('o2', 'c2', DATE '2025-01-09', 50.0), ('o3', 'c3', DATE '2025-02-03', 30.0))"
+        " t(id, customer_id, order_date, amount)"
+    )
+    con.execute(
+        "CREATE TABLE returns AS SELECT * FROM"
+        " (VALUES ('r1', 'l3', 5), ('r2', 'l2', 1)) t(id, link_id, quantity)"
+    )
+    sorted_query = {
+        "select": {"dimensions": ["Customer Name"], "measures": ["Revenue"]},
+        "where": JANUARY,
+        "orderBy": [{"field": "Returned", "direction": "desc", "nulls": "last"}],
+    }
+    compiled = _compile(bridged, sorted_query)
+    selected = _compile(
+        bridged,
+        {
+            "select": {"dimensions": ["Customer Name"], "measures": ["Revenue", "Returned"]},
+            "where": JANUARY,
+        },
+    )
+
+    # The returns cannot be restricted to January orders, as when selected.
+    codes = [w.code for w in compiled.warnings]
+    assert "FILTER_NOT_APPLIED" in codes
+    assert codes.count("FILTER_NOT_APPLIED") == [w.code for w in selected.warnings].count(
+        "FILTER_NOT_APPLIED"
+    )
+    # January's customers, ranked by all their returns: Bob 1, Ann none.
+    assert con.execute(compiled.sql).fetchall() == [("Bob", 50.0), ("Ann", 10.0)]

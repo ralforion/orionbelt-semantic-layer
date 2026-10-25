@@ -66,11 +66,14 @@ def wrap_order_only(ast: Select, ctx: CompileContext) -> Select:
     aliases = _aliases(ast)
     if aliases is None:
         return ast
-    # The sort values are the ones the measures would show in this query: the
+    # The sort values are the ones the measures would show selected in this
+    # query: beside its selected measures, so the same plan reads them (a
+    # filter one fact cannot reach is skipped there and said so), with the
     # same filters and join paths, a cumulative metric as of the same date,
     # and the filled periods carrying theirs.
+    measures = list(dict.fromkeys([*query.select.measures, *hidden]))
     sort_query = QueryObject(
-        select=QuerySelect(dimensions=list(query.select.dimensions), measures=hidden),
+        select=QuerySelect(dimensions=list(query.select.dimensions), measures=measures),
         where=list(query.where),
         use_path_names=list(query.use_path_names),
         allow_fan_out=query.allow_fan_out,
@@ -86,10 +89,17 @@ def wrap_order_only(ast: Select, ctx: CompileContext) -> Select:
     )
     for step in sort_resolved.join_steps:
         ctx.resolved.subquery_objects.update((step.from_object, step.to_object))
+    # What the sort query reports holds for the ranking: a filter its facts
+    # could not apply leaves the order partly unfiltered.
+    known = {(w.code, w.message) for w in ctx.resolved.warnings}
+    for w in sort_resolved.warnings:
+        if (w.code, w.message) not in known:
+            ctx.resolved.warnings.append(w)
+            known.add((w.code, w.message))
     sort_aliases = _aliases(sort_ast)
     if sort_aliases is None:
         return ast
-    dimensions = [alias for alias in sort_aliases if alias not in hidden]
+    dimensions = [alias for alias in sort_aliases if alias not in measures]
     if not dimensions:
         # One row: there is nothing to sort.
         return ast

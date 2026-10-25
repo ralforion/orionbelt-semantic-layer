@@ -16,7 +16,7 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Fixed
 
-- **A table joined only on the way is a cache dependency.** A query reading Customers through Orders -> Customer Links listed `orders` and `customers` in its physical tables but not `customer_links`, so a change there invalidated nothing and the cached result was served. Every table a join path walks now counts.
+- **A table joined only on the way is a cache dependency.** A query reading Customers through Orders -> Customer Links listed `orders` and `customers` in its physical tables but not `customer_links`, so a change there invalidated nothing and the cached result was served. Every table a join path walks now counts, in each leg of a multi-fact query too.
 - **A computed dimension beside measures of independent facts joins what it reads.** A dimension computed from another data object's column (`upper({[Countries].[Name]})` on Customers) was selected in each fact's leg without that object being joined, and the database refused the query. Each leg now joins the objects its dimensions read.
 
 - **`dimensionsExclude` runs on BigQuery.** The anti-join rendered a bare `EXCEPT`, which BigQuery refuses ("EXCEPT must be followed by ALL, DISTINCT"). It is now `EXCEPT DISTINCT` there.

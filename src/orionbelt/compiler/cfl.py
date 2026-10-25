@@ -768,6 +768,12 @@ class CFLPlanner:
                         )
                         joined_aliases.add(step.to_object)
 
+            # The leg reads its lead and every table on its joins, a bridge on
+            # the way included, and the result cache is invalidated by them.
+            resolved.subquery_objects.add(lead)
+            for step in steps:
+                resolved.subquery_objects.update((step.from_object, step.to_object))
+
             # A measure sourced from an object this leg's own joins replicate
             # would be summed once per row of the many side. Resolution cannot
             # see that: its join steps are the base object's, and the step that
