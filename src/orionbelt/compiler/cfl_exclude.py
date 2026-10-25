@@ -103,17 +103,21 @@ def plan_dimensions_exclude(
         )
     all_pairs_select = all_pairs_builder.build()
 
-    # Build "existing_pairs": actual combinations via fact-table joins
-    existing_pairs_select = planner._build_existing_pairs_select(
-        resolved, model, graph, qualify, dialect
-    )
-
-    # EXCEPT CTE: all_pairs EXCEPT existing_pairs
-    except_cte = CTE(
-        name="non_combinations",
-        query=Except(left=all_pairs_select, right=existing_pairs_select),
-    )
-    ctes.append(except_cte)
+    # EXCEPT CTE: all_pairs EXCEPT existing_pairs, the actual combinations via
+    # fact-table joins. Where several roots join the dimensions, a combination
+    # any of them holds exists, so each root's are taken away in turn.
+    roots: list[str | None] = [*resolved.dimension_roots] or [None]
+    remaining = all_pairs_select
+    for i, root in enumerate(roots):
+        existing_pairs_select = planner._build_existing_pairs_select(
+            resolved, model, graph, qualify, dialect, root
+        )
+        cte_name = "non_combinations" if i == len(roots) - 1 else f"non_combinations_{i:02d}"
+        ctes.append(CTE(name=cte_name, query=Except(left=remaining, right=existing_pairs_select)))
+        remaining_builder = QueryBuilder()
+        for dim in resolved.dimensions:
+            remaining_builder.select(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
+        remaining = remaining_builder.from_(cte_name, alias=cte_name).build()
 
     # Outer query: SELECT from non_combinations with ORDER BY / LIMIT
     outer_builder = QueryBuilder()
@@ -284,17 +288,20 @@ def build_existing_pairs_select(
     graph: JoinGraph,
     qualify: Callable[[DataObject], str],
     dialect: Dialect | None = None,
+    root: str | None = None,
 ) -> Select:
     """Build SELECT for existing dimension combinations via fact-table joins.
 
     Uses a fact/bridge table as the base and joins through hub tables
-    to reach all dimension objects on both branches.
+    to reach all dimension objects on both branches. *root* is one of the
+    query's ``dimension_roots``: the combinations that one holds.
     """
     all_dim_objects = {d.object_name for d in resolved.dimensions}
 
     # Find fact tables that connect the dimension groups
-    leg_objects = planner._group_dimensions_into_legs(resolved, model)
-    fact_tables = set(leg_objects.keys())
+    fact_tables = (
+        {root} if root else set(planner._group_dimensions_into_legs(resolved, model).keys())
+    )
 
     # Use a fact table as the base (pick the one with most joins)
     best_fact = max(

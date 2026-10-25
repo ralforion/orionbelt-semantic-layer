@@ -492,6 +492,13 @@ class CompilationPipeline:
                     "dimensionsExclude anti-join — "
                     "CROSS JOIN of distinct values EXCEPT existing combinations"
                 )
+            elif resolved.dimension_roots:
+                planner = "CFL"
+                roots = ", ".join(q(r) for r in resolved.dimension_roots)
+                planner_reason = (
+                    f"Several data objects join the dimensions ({roots}) — "
+                    f"Composite Fact Layer returns the combinations of every one via UNION ALL"
+                )
             else:
                 planner = "CFL"
                 sources = ", ".join(q(s) for s in sorted(resolved.measure_source_objects))
@@ -520,6 +527,8 @@ class CompilationPipeline:
                 )
             else:
                 base_reason = f"{q(base)} selected as base — sole measure source object"
+        elif use_cfl and resolved.dimension_roots:
+            base_reason = "Not applicable — each CFL leg uses its own common root (see cfl_legs)"
         elif len(resolved.required_objects) > 1:
             base_reason = (
                 f"{q(base)} selected as base — common root that can reach "

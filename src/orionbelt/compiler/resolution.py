@@ -942,6 +942,9 @@ class ResolvedQuery:
     offset: int | None = None
     warnings: list[SemanticError] = field(default_factory=list)
     requires_cfl: bool = False
+    dimension_roots: list[str] = field(default_factory=list)
+    """A dimension-only query's roots, one CFL leg each, where several join its
+    dimensions (``JoinGraph.minimal_roots``); empty otherwise."""
     measure_source_objects: set[str] = field(default_factory=set)
     metric_components: dict[str, ResolvedMeasure] = field(default_factory=dict)
     use_path_names: list[UsePathName] = field(default_factory=list)
@@ -1389,21 +1392,33 @@ class QueryResolver:
                 ctx.result.requires_cfl = True
 
         # Dimension-only queries: when dimensions span independent branches,
-        # join through intermediate bridge/fact tables (no CFL needed).
-        # Add intermediate tables from the join steps to required_objects
-        # so the star schema planner includes them.
+        # join through intermediate bridge/fact tables. Where several roots
+        # join them (orders and returns both reaching customers and products),
+        # each holds its own combinations, and picking one by name answered
+        # "ordered pairs" or "returned pairs" depending on what the facts were
+        # called. CFL takes a leg from each root and the union of what they
+        # hold. With one root, add the intermediate tables from the join steps
+        # to required_objects so the star schema planner includes them.
         if not ctx.result.measure_source_objects and ctx.result.dimensions:
             dim_objects = {d.object_name for d in ctx.result.dimensions}
             if not dim_objects <= {ctx.result.base_object}:
                 graph = JoinGraph.of(model, use_path_names=query.use_path_names or None)
-                steps = graph.find_join_path(
-                    {ctx.result.base_object},
-                    dim_objects,
-                    via_constraints=ctx.result.via_constraints or None,
-                )
-                for step in steps:
-                    ctx.result.required_objects.add(step.from_object)
-                    ctx.result.required_objects.add(step.to_object)
+                # Each leg has to reach a role dimension's waypoint and the
+                # objects the WHERE names, or it would answer without them.
+                vias = {d.via for d in ctx.result.dimensions if d.via}
+                roots = graph.minimal_roots(dim_objects | vias | where_filter_objects)
+                if len(roots) > 1:
+                    ctx.result.requires_cfl = True
+                    ctx.result.dimension_roots = roots
+                else:
+                    steps = graph.find_join_path(
+                        {ctx.result.base_object},
+                        dim_objects,
+                        via_constraints=ctx.result.via_constraints or None,
+                    )
+                    for step in steps:
+                        ctx.result.required_objects.add(step.from_object)
+                        ctx.result.required_objects.add(step.to_object)
 
         # Raw mode: detect multi-fact (fields span objects unreachable from
         # the base via directed joins). The pipeline rejects this case for
