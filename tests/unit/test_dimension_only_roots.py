@@ -366,3 +366,43 @@ def test_dimensions_exclude_applies_a_static_filter_to_its_root_only(
 
     # r1 (South, Books) is filtered out of the returns, so that pair is missing.
     assert _rows(con, compiled) == [("East", "Books"), ("North", "Games"), ("South", "Books")]
+
+
+# Returns joins its flags, and a static filter keeps the returns flagged ok.
+RETURN_FLAGS = """      - {joinType: many-to-one, joinTo: Return Flags, columnsFrom: [Return Id],
+         columnsTo: [Flag Id]}
+  Return Flags:
+    code: return_flags
+    columns:
+      Flag Id: {code: id, abstractType: string, primaryKey: true}
+      Status: {code: status, abstractType: string}
+"""
+RETURN_DATE_JOIN = "columnsFrom: [Return Date], columnsTo: [Day]}\n"
+FLAGGED = (
+    MODEL_YAML.replace(RETURN_DATE_JOIN, RETURN_DATE_JOIN + RETURN_FLAGS, 1)
+    + """filters:
+  - dataObject: Return Flags
+    column: Status
+    operator: equals
+    value: ok
+"""
+)
+
+
+@pytest.mark.parametrize("exclude", [False, True], ids=["pairs", "exclude"])
+def test_a_table_joined_for_a_static_filter_is_a_cache_dependency(
+    con: duckdb.DuckDBPyConnection, exclude: bool
+) -> None:
+    con.execute("CREATE TABLE return_flags AS SELECT * FROM (VALUES ('o2', 'ok')) t(id, status)")
+    query: dict = {"select": {"dimensions": ["Region", "Category"]}}
+    if exclude:
+        query["dimensionsExclude"] = True
+    compiled = _compile(query, FLAGGED)
+
+    # A change to the flags changes which returns count.
+    assert "return_flags" in compiled.physical_tables
+    rows = _rows(con, compiled)
+    if exclude:
+        assert rows == [("East", "Books"), ("North", "Games"), ("South", "Books")]
+    else:
+        assert rows == [("East", "Games"), ("North", "Books"), ("South", "Games"), (None, "Books")]
