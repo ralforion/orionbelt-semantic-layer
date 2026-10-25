@@ -260,3 +260,107 @@ def test_an_operator_without_a_period_reading_is_refused(model: SemanticModel) -
     with pytest.raises(ResolutionError) as excinfo:
         CompilationPipeline().compile(query, model, "duckdb")
     assert [e.code for e in excinfo.value.errors] == ["INVALID_FILTER_VALUE"]
+
+
+SHIPMENTS = """
+  Shipments:
+    code: shipments
+    columns:
+      Shipment Id: {code: id, abstractType: int, primaryKey: true}
+      Shipped Order: {code: order_id, abstractType: int}
+      Ship Date: {code: ship_date, abstractType: date}
+    joins:
+      - {joinType: many-to-one, joinTo: Orders, columnsFrom: [Shipped Order], columnsTo: [Order Id]}
+dimensions:"""
+
+MEASURES = """measures:
+  Order Rows:
+    columns: [{dataObject: Orders, column: Order Id}]
+    aggregation: count
+    resultType: int
+  Q1 Order Rows:
+    columns: [{dataObject: Orders, column: Order Id}]
+    aggregation: count
+    resultType: int
+    filterContext:
+      mode: FIXED
+      include:
+        - {field: Order Date, op: '=', value: '2025-Q1'}
+"""
+
+PATHS_YAML = MODEL_YAML.replace("\ndimensions:", SHIPMENTS, 1) + MEASURES
+
+
+def _paths_model(extra: str = "") -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(PATHS_YAML + extra)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    return model
+
+
+@pytest.fixture
+def con_shipments() -> duckdb.DuckDBPyConnection:
+    con = _con(LITERAL_DAYS)
+    # Order 2 (1 January) ships in February, order 4 (1 April) in April.
+    con.execute(
+        "CREATE TABLE shipments AS SELECT * FROM (VALUES"
+        " (1, 2, DATE '2025-02-10'), (2, 4, DATE '2025-04-05')) t(id, order_id, ship_date)"
+    )
+    return con
+
+
+def _scalar(model: SemanticModel, con: duckdb.DuckDBPyConnection, query: dict) -> object:
+    sql = CompilationPipeline().compile(QueryObject(**query), model, "duckdb").sql
+    return con.execute(sql).fetchall()
+
+
+def test_a_period_inside_an_exists_subquery(con_shipments: duckdb.DuckDBPyConnection) -> None:
+    where = {
+        "field": "Orders.Order Id",
+        "op": "exists",
+        "subquery": {
+            "dataObject": "Shipments",
+            "filter": [{"field": "Shipments.Ship Date", "op": "=", "value": "2025-Q1"}],
+        },
+    }
+    assert _days(_paths_model(), con_shipments, where) == [date(2025, 1, 1)]
+
+
+def test_a_period_in_a_filter_context_include(con_shipments: duckdb.DuckDBPyConnection) -> None:
+    query = {"select": {"measures": ["Q1 Order Rows"]}}
+    assert _scalar(_paths_model(), con_shipments, query) == [(2,)]
+
+
+def test_a_period_in_a_static_model_filter(con_shipments: duckdb.DuckDBPyConnection) -> None:
+    static = """filters:
+  - dataObject: Orders
+    column: Order Date
+    operator: gte
+    value: '2025'
+"""
+    query = {"select": {"measures": ["Order Rows"]}}
+    assert _scalar(_paths_model(static), con_shipments, query) == [(4,)]
+
+
+@pytest.mark.parametrize("literal", ["0000", "9999", "9999-12", "0000-Q1"])
+def test_a_period_a_date_cannot_bound_is_refused(model: SemanticModel, literal: str) -> None:
+    query = QueryObject(
+        **{
+            "select": {"dimensions": ["Order Date"]},
+            "where": [{"field": "Order Date", "op": "=", "value": literal}],
+        }
+    )
+    with pytest.raises(ResolutionError) as excinfo:
+        CompilationPipeline().compile(query, model, "duckdb")
+    assert [e.code for e in excinfo.value.errors] == ["INVALID_FILTER_VALUE"]
+
+
+def test_the_last_bounded_period_compiles(model: SemanticModel) -> None:
+    query = QueryObject(
+        **{
+            "select": {"dimensions": ["Order Date"]},
+            "where": [{"field": "Order Date", "op": "=", "value": "9999-11"}],
+        }
+    )
+    sql = CompilationPipeline().compile(query, model, "duckdb").sql
+    assert "'9999-12-01'" in sql

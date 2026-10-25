@@ -8,7 +8,10 @@ from 1 January to 31 March. A comparison against the string itself would read
 leave the rest of December out.
 
 Only a date-bearing field is expanded, and only a value in one of these
-shapes: an ISO date stays the value it was.
+shapes: an ISO date stays the value it was. Every path that builds a filter
+over a field does it, through ``build_filter_expr``: a query's ``where``, a
+``filterContext.include`` item, a filter inside an ``exists`` subquery and a
+static model filter.
 """
 
 from __future__ import annotations
@@ -20,12 +23,34 @@ from typing import Any
 from orionbelt.ast.nodes import BinaryOp, Expr, Literal, UnaryOp
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import FilterOperator, QueryFilter
+from orionbelt.models.semantic import DATE_BEARING_TYPES, Dimension, SemanticModel
 
 _PERIOD = re.compile(r"^(\d{4})(?:-(?:[Qq]([1-4])|(0[1-9]|1[0-2])))?$")
 
 
+def dimension_is_date_bearing(dim: Dimension) -> bool:
+    """Whether a filter on *dim* reads a period literal as its bounds."""
+    return dim.time_grain is not None or dim.result_type in DATE_BEARING_TYPES
+
+
+def column_is_date_bearing(model: SemanticModel, obj_name: str, col_name: str) -> bool:
+    """Whether a filter on the column *obj_name*.*col_name* reads a period literal."""
+    obj = model.data_objects.get(obj_name)
+    column = obj.columns.get(col_name) if obj else None
+    return column is not None and column.abstract_type in DATE_BEARING_TYPES
+
+
+def is_period_literal(value: object) -> bool:
+    """Whether *value* has the shape of a period literal, representable or not."""
+    return isinstance(value, str) and _PERIOD.match(value.strip()) is not None
+
+
 def period_bounds(value: object) -> tuple[date, date] | None:
-    """The half-open ``[start, end)`` a period literal names; ``None`` otherwise."""
+    """The half-open ``[start, end)`` a period literal names; ``None`` otherwise.
+
+    Raises ``ValueError`` for a period a date cannot bound: year 0, or one
+    ending in year 10000 (``'9999'``, ``'9999-12'``).
+    """
     if not isinstance(value, str):
         return None
     match = _PERIOD.match(value.strip())
@@ -46,7 +71,7 @@ def period_bounds(value: object) -> tuple[date, date] | None:
 def has_period_literal(value: object) -> bool:
     """Whether *value*, or an item of it, is a period literal."""
     items = value if isinstance(value, list) else [value]
-    return any(period_bounds(item) is not None for item in items)
+    return any(is_period_literal(item) for item in items)
 
 
 def _cmp(col: Expr, op: str, day: date) -> Expr:
@@ -92,6 +117,21 @@ def build_period_filter_expr(
     comparison with it is NULL, and so is ``NOT`` around one.
     """
     op, val = qf.op, qf.value
+    for item in val if isinstance(val, list) else [val]:
+        try:
+            period_bounds(item)
+        except ValueError:
+            errors.append(
+                SemanticError(
+                    code="INVALID_FILTER_VALUE",
+                    message=(
+                        f"Filter on '{qf.field}': the period {item!r} has bounds outside "
+                        "the dates from 0001-01-01 to 9999-12-31"
+                    ),
+                    path="filters",
+                )
+            )
+            return None
     bounds = period_bounds(val)
     match op:
         case FilterOperator.EQUALS | FilterOperator.EQ if bounds:

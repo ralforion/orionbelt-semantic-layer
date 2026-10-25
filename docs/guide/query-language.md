@@ -791,7 +791,7 @@ A filter on a date or timestamp field also accepts a **period** as its value: a 
 | `{op: between, value: ["2025-01", "2025-03"]}` | 2025-01-01 up to, not including, 2025-04-01 |
 | `{op: in, value: ["2025-Q1", "2025-07-04"]}` | The first quarter, or 4 July |
 
-`=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`, `between` and `notbetween` take periods, and a period can sit beside an ISO date in a list. Another operator with a period value is `INVALID_FILTER_VALUE`. A value that is not one of these shapes, such as `'2025-01-15'`, is compared as before, and a field that is not a date keeps the value as it is: `Batch = '2025'` compares the string.
+`=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`, `between` and `notbetween` take periods, and a period can sit beside an ISO date in a list. Another operator with a period value is `INVALID_FILTER_VALUE`. A value that is not one of these shapes, such as `'2025-01-15'`, is compared as before, and a field that is not a date keeps the value as it is: `Batch = '2025'` compares the string. Periods are read the same way wherever a filter names a date field: in `where`, inside an `exists` subquery's `filter`, in a measure's `filterContext.include` and in a static model filter. A period whose bounds fall outside 0001-01-01 to 9999-12-31 (`'0000'`, `'9999-12'`) is `INVALID_FILTER_VALUE`.
 
 !!! info "String contains is dialect-aware"
     The `contains` operator generates different SQL per dialect:

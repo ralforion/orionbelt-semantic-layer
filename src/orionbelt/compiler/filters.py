@@ -27,6 +27,12 @@ from orionbelt.ast.nodes import (
     Unnest,
 )
 from orionbelt.compiler.expr_rewrite import map_column_refs
+from orionbelt.compiler.period_literals import (
+    build_period_filter_expr,
+    column_is_date_bearing,
+    dimension_is_date_bearing,
+    has_period_literal,
+)
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import FilterOperator, QueryFilter, UsePathName
 from orionbelt.models.semantic import (
@@ -61,10 +67,18 @@ class RelativeFilterParsed(TypedDict):
     to_date: bool
 
 
-def build_filter_expr(col: Expr, qf: QueryFilter, errors: list[SemanticError]) -> Expr | None:
-    """Build a filter expression from operator and value."""
+def build_filter_expr(
+    col: Expr, qf: QueryFilter, errors: list[SemanticError], *, date_bearing: bool = False
+) -> Expr | None:
+    """Build a filter expression from operator and value.
+
+    On a *date_bearing* field a period literal (``'2025-Q1'``) is read as its
+    bounds (``period_literals``).
+    """
     op = qf.op
     val = qf.value
+    if date_bearing and has_period_literal(val):
+        return build_period_filter_expr(col, qf, errors)
 
     match op:
         case FilterOperator.EQUALS | FilterOperator.EQ:
@@ -1138,7 +1152,12 @@ def build_exists_filter_expr(
                 if dim is None
                 else make_filter_subject_expr(model, dim)
             )
-            sub_expr = build_filter_expr(col_expr, sub_qf, errors)
+            date_bearing = (
+                column_is_date_bearing(model, ref_object, ref_column)
+                if dim is None
+                else dimension_is_date_bearing(dim)
+            )
+            sub_expr = build_filter_expr(col_expr, sub_qf, errors, date_bearing=date_bearing)
         if sub_expr is not None:
             where_parts.append(sub_expr)
 
@@ -1185,7 +1204,8 @@ def static_filter_predicate(
 
     col_expr = make_column_expr(model, mf.data_object, mf.column)
     qf = QueryFilter(field=mf.column, op=mf.operator, value=mf.value or mf.values or None)
-    return build_filter_expr(col_expr, qf, errors)
+    date_bearing = column_is_date_bearing(model, mf.data_object, mf.column)
+    return build_filter_expr(col_expr, qf, errors, date_bearing=date_bearing)
 
 
 def static_filter_unreachable_error(label: str, unreachable: str, where: str) -> SemanticError:
