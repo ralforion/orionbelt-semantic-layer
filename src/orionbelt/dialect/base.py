@@ -68,11 +68,9 @@ def _unit_of(arg: Expr) -> str:
     return arg.value.lower()
 
 
-def _is_unit_literal(arg: Expr) -> bool:
-    """Whether *arg* is a literal naming one of the catalog's time units."""
-    return (
-        isinstance(arg, Literal) and isinstance(arg.value, str) and arg.value.lower() in TIME_UNITS
-    )
+def _is_unit_literal(arg: Expr, units: tuple[str, ...] = TIME_UNITS) -> bool:
+    """Whether *arg* is a literal naming one of *units*, the catalog's time units by default."""
+    return isinstance(arg, Literal) and isinstance(arg.value, str) and arg.value.lower() in units
 
 
 def _cast_target_of(arg: Expr) -> OBMLType | None:
@@ -1565,7 +1563,18 @@ class Dialect(ABC):
 
     def _render_extract(self, unit: str, value: Expr) -> str:
         """Default: ANSI ``EXTRACT(UNIT FROM x)``."""
+        if unit == "day_of_week":
+            return self._render_iso_day_of_week(value)
         return f"EXTRACT({self._SQL_UNITS[unit]} FROM {self.compile_expr(value)})"
+
+    def _render_iso_day_of_week(self, value: Expr) -> str:
+        """Monday 1 to Sunday 7. Default: ``EXTRACT(ISODOW ...)``, measured on
+        DuckDB, Postgres and ClickHouse; the other five override."""
+        return f"EXTRACT(ISODOW FROM {self.compile_expr(value)})"
+
+    def _render_sunday_first_as_iso(self, sunday_first_sql: str) -> str:
+        """ISO numbering from a Sunday 1 to Saturday 7 one (BigQuery, Dremio)."""
+        return f"(MOD({sunday_first_sql} + 5, 7) + 1)"
 
     def _render_last_day(self, value: Expr) -> str:
         """Default: native ``LAST_DAY(x)``."""
@@ -2133,7 +2142,10 @@ class Dialect(ABC):
                     spec is not None
                     and not distinct
                     and spec.accepts(len(args))
-                    and (spec.unit_argument is None or _is_unit_literal(args[spec.unit_argument]))
+                    and (
+                        spec.unit_argument is None
+                        or _is_unit_literal(args[spec.unit_argument], spec.units)
+                    )
                     and (
                         spec.path_argument is None
                         or _is_json_path_literal(args[spec.path_argument])

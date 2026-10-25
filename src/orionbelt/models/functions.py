@@ -141,7 +141,12 @@ class FunctionSpec:
     #: ``FixedString`` carries; everywhere else it is the identity.
     text_arguments: tuple[int, ...] = ()
     unit_argument: int | None = None
-    """Index of an argument that must be a literal from :data:`TIME_UNITS`."""
+    """Index of an argument that must be a literal from :attr:`units`."""
+
+    units: tuple[str, ...] = TIME_UNITS
+    """The units :attr:`unit_argument` takes. Every entry with one takes the time
+    units; ``extract`` also takes ``day_of_week``, which is a number of a date
+    but not a span to truncate, add or count by."""
 
     type_argument: int | None = None
     """Index of an argument that must be a literal OBML type name.
@@ -888,9 +893,11 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
         semantics=(
             "An integer, where Postgres returns a numeric. Week numbering is ISO "
             "8601, so 2026-08-15 is week 33: MySQL's WEEK and BigQuery's WEEK are "
-            "Sunday-based and answer 32, so both are rewritten. Written as a call "
-            "rather than the ANSI ``EXTRACT(unit FROM x)`` so it parses like every "
-            "other entry."
+            "Sunday-based and answer 32, so both are rewritten. ``day_of_week`` is "
+            "ISO too, Monday 1 to Sunday 7: BigQuery and Dremio number Sunday 1, "
+            "MySQL Monday 0, and Snowflake and Databricks spell it differently, so "
+            "five engines are rewritten. Written as a call rather than the ANSI "
+            "``EXTRACT(unit FROM x)`` so it parses like every other entry."
         ),
         examples=(
             FunctionExample("extract('year', DATE '2026-08-15')", 2026),
@@ -898,8 +905,12 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
             FunctionExample("extract('quarter', DATE '2026-08-15')", 3),
             FunctionExample("extract('week', DATE '2026-08-15')", 33),
             FunctionExample("extract('day', DATE '2026-08-15')", 15),
+            FunctionExample("extract('day_of_week', DATE '2026-08-15')", 6),
+            FunctionExample("extract('day_of_week', DATE '2026-08-16')", 7),
+            FunctionExample("extract('day_of_week', DATE '2026-08-10')", 1),
         ),
         unit_argument=0,
+        units=(*TIME_UNITS, "day_of_week"),
     ),
     FunctionSpec(
         name="last_day",

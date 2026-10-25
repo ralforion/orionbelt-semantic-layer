@@ -47,6 +47,12 @@ EXTRACT(QUARTER FROM CAST('2026-08-15' AS DATE));
 WEEK(CAST('2026-08-15' AS DATE), 3);
 --   extract('day', DATE '2026-08-15') = 15
 EXTRACT(DAY FROM CAST('2026-08-15' AS DATE));
+--   extract('day_of_week', DATE '2026-08-15') = 6
+(WEEKDAY(CAST('2026-08-15' AS DATE)) + 1);
+--   extract('day_of_week', DATE '2026-08-16') = 7
+(WEEKDAY(CAST('2026-08-16' AS DATE)) + 1);
+--   extract('day_of_week', DATE '2026-08-10') = 1
+(WEEKDAY(CAST('2026-08-10' AS DATE)) + 1);
 
 -- last_day(x)
 --   last_day(DATE '2026-08-15') = '2026-08-31'

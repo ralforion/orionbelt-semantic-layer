@@ -374,3 +374,7 @@ class DremioDialect(Dialect):
         row_type = _dremio_row_type(path, self.quote_identifier)
         access = _dremio_access(path, self.quote_identifier)
         return f"(TRY_CONVERT_FROM({doc} AS {row_type}){access})"
+
+    def _render_iso_day_of_week(self, value: Expr) -> str:
+        """Dremio's EXTRACT takes no ``ISODOW``; its ``DOW`` is Sunday 1."""
+        return self._render_sunday_first_as_iso(f"EXTRACT(DOW FROM {self.compile_expr(value)})")

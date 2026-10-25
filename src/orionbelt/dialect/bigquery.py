@@ -521,3 +521,9 @@ class BigQueryDialect(Dialect):
         return (
             self.compile_select(node.left) + "\nEXCEPT DISTINCT\n" + self.compile_select(node.right)
         )
+
+    def _render_iso_day_of_week(self, value: Expr) -> str:
+        """BigQuery takes no ISO day-of-week part; its ``DAYOFWEEK`` is Sunday 1."""
+        return self._render_sunday_first_as_iso(
+            f"EXTRACT(DAYOFWEEK FROM {self.compile_expr(value)})"
+        )

@@ -350,6 +350,12 @@ class TestTimeUnits:
     def test_the_unit_is_case_insensitive(self) -> None:
         assert _errors_for("extract('WEEK', {Zip})") == []
 
+    def test_day_of_week_is_a_unit_of_extract_only(self) -> None:
+        """A number of a date, not a span: nothing to truncate, add or count by."""
+        assert _errors_for("extract('day_of_week', {Zip})") == []
+        assert "UNKNOWN_TIME_UNIT" in _errors_for("date_trunc('day_of_week', {Zip})")
+        assert "UNKNOWN_TIME_UNIT" in _errors_for("date_add('day_of_week', 1, {Zip})")
+
     def test_a_rejected_unit_still_compiles_to_the_authors_call(self) -> None:
         """Codegen does not raise on what the validator reports, for the same
         reason a wrong arity does not: the database error stays recognisable.
