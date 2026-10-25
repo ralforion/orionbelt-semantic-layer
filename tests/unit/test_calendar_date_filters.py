@@ -364,3 +364,15 @@ def test_the_last_bounded_period_compiles(model: SemanticModel) -> None:
     )
     sql = CompilationPipeline().compile(query, model, "duckdb").sql
     assert "'9999-12-01'" in sql
+
+
+def test_an_invalid_period_in_a_filter_context_include_is_refused() -> None:
+    # Dropping the include would count every order as a Q1 one.
+    yaml = PATHS_YAML.replace("value: '2025-Q1'", "value: '9999'")
+    raw, source_map = TrackedLoader().load_string(yaml)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = QueryObject(**{"select": {"measures": ["Q1 Order Rows"]}})
+    with pytest.raises(ResolutionError) as excinfo:
+        CompilationPipeline().compile(query, model, "duckdb")
+    assert [e.code for e in excinfo.value.errors] == ["INVALID_FILTER_VALUE"]

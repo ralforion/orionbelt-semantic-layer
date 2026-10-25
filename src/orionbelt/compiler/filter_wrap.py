@@ -42,6 +42,7 @@ from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
 from orionbelt.compiler.period_literals import column_is_date_bearing, dimension_is_date_bearing
 from orionbelt.compiler.resolution import (
+    ResolutionError,
     ResolvedFilter,
     ResolvedMeasure,
     ResolvedQuery,
@@ -168,6 +169,10 @@ def _resolve_include_filters(
                             referenced_fields=frozenset({incl.field}),
                         )
                     )
+    # An include item that cannot be built is refused, not left out: without
+    # it the measure reads rows its filter context excludes.
+    if errors:
+        raise ResolutionError(errors)
     return results
 
 
