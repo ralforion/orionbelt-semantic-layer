@@ -23,6 +23,7 @@ from orionbelt.compiler.passes import (
     PASS_HAVING_CLEANUP,
     PASS_HAVING_WINDOW,
     PASS_LATE_WINDOW,
+    PASS_ORDER_ONLY,
     PASS_PERIOD_OVER_PERIOD,
     PASS_REAGGREGATE,
     PASS_REAGGREGATE_COMPONENTS,
@@ -108,6 +109,8 @@ def test_pass_order_is_declared_once() -> None:
         # their aliases in scope at once.
         PASS_HAVING_WINDOW,
         PASS_HAVING_CLEANUP,
+        # Sorts the finished rows by a measure the query does not return.
+        PASS_ORDER_ONLY,
     ]
 
 

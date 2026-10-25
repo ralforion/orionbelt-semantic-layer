@@ -1098,6 +1098,10 @@ class ResolvedQuery:
     the formula's other leaves. The late window pass reads their finished
     columns and leaves them out of the projection."""
 
+    order_only_measures: set[str] = field(default_factory=set)
+    """Measures and metrics the ``orderBy`` sorts by that the query does not
+    select. Kept out of the plan; the ``order_only`` pass computes them over
+    the query's dimensions and sorts the finished rows by them."""
     having_only_measures: set[str] = field(default_factory=set)
     """Measures auto-included by HAVING (not in ``select.measures``).
 
@@ -1595,9 +1599,13 @@ class QueryResolver:
         self._push_filters_into_conformed_facts(ctx)
         self._plan_rows_without_children(ctx)
 
-        # 7. Resolve order by — must reference a dimension or measure in SELECT
+        # 7. Resolve order by — a dimension or measure in SELECT, or a measure
+        # or metric the query does not select.
         select_count = len(ctx.result.dimensions) + len(ctx.result.measures)
+        selected = {d.name for d in ctx.result.dimensions} | {m.name for m in ctx.result.measures}
         for ob in query.order_by:
+            if self._order_only(ctx, ob.field, selected):
+                continue
             expr = self._resolve_order_by_field(ctx, ob.field, select_count)
             if expr:
                 ctx.result.order_by_exprs.append((expr, ob.direction == "desc", ob.nulls))
@@ -2286,6 +2294,41 @@ class QueryResolver:
     ) -> ResolvedMeasure | None:
         """Resolve a period-over-period metric."""
         return metric_resolution.resolve_pop_metric(self, ctx, name, metric)
+
+    def _order_only(self, ctx: _ResolutionContext, name: str, selected: set[str]) -> bool:
+        """Whether the ORDER BY field *name* is a measure or metric not selected.
+
+        "The top three customers by revenue", showing the names: the rows are
+        the query's own, so the measure is not added to its plan, where its
+        fact would choose the base and drop the customers without revenue. The
+        ``order_only`` pass computes it in a query of its own over the same
+        dimensions and filters, joins it onto the finished rows and sorts them.
+        A dimension is not taken: the query's grain holds no one value of it.
+        """
+        model = ctx.model
+        if ctx.result.is_raw or name in selected or name in ctx.result.coalesce_aliases:
+            return False
+        if name not in model.effective_measures and name not in model.metrics:
+            return False
+        if ctx.result.grouping is not None:
+            ctx.errors.append(
+                SemanticError(
+                    code="ORDER_BY_COMBINATION_NOT_SUPPORTED",
+                    message=(
+                        f"ORDER BY '{name}', which the query does not select, is not "
+                        f"supported beside {ctx.result.grouping.value.upper()}: its subtotal "
+                        "rows have no value of it to sort by"
+                    ),
+                    path="orderBy",
+                    hint=f"Select '{name}' to sort by it.",
+                )
+            )
+            return True
+        ctx.result.order_only_measures.add(name)
+        # Read by the sort query, so the result cache depends on its tables.
+        ctx.result.subquery_objects.update(self._get_measure_source_objects(ctx, name))
+        ctx.result.subquery_objects.update(self._get_measure_join_objects(ctx, name))
+        return True
 
     def _collect_having_measure_refs(self, query: QueryObject, model: SemanticModel) -> list[str]:
         """Collect measure/metric names referenced in any HAVING filter.
