@@ -4,6 +4,11 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Calendar-aligned relative filters.** A `relative` filter counted its units back from today, so `{unit: month, count: 1}` was the 30-odd days before today, and "this quarter" or "last full month" could only be written as a computed column. `calendar: true` takes whole calendar periods from the start of the current one: `{unit: quarter, count: 1, calendar: true}` is this quarter, `include_current: false` makes it the last full one, and `toDate: true` ends the current period today (year to date). `quarter` is a new unit, rolling or calendar. A week starts on the model's `weekStart`.
+- **Period literals in date filters.** A filter on a date or timestamp field takes `'2025'`, `'2025-Q1'` or `'2025-03'` as a value and reads it as the whole period: `= '2025-Q1'` is the quarter, `<= '2024-12'` runs through the last moment of 31 December, `between ['2025-01', '2025-03']` covers the three months, and `in` may mix periods and ISO dates. An operator with no period reading, such as `contains`, is refused (`INVALID_FILTER_VALUE`); a value of another shape, or a field that is not a date, is compared as before.
+
 ### Changed
 
 - **A dimension-only query returns the combinations of every data object joining its dimensions.** With Orders and Returns both joining Customers and Products, region by category was answered from one of them: the one reaching the fewest objects, and between equals the first by name. Renaming `Orders` to `Sales` turned "the pairs ordered" into "the pairs returned", without a warning. Each such data object is now a CFL leg, and the query returns the pairs any of them holds. One that joins the dimensions only through another (Returns joining its Order) adds no leg, and a WHERE filter keeps only the data objects reaching it, so a filter on an Orders column still reads Orders alone. `dimensionsExclude` takes away the combinations of every one of them. Where one of them is a nested data object (`nestedIn`), the query keeps the single base that unnests it.

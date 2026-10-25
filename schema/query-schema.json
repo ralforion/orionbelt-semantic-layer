@@ -100,7 +100,7 @@
           "$ref": "#/definitions/filterOperator"
         },
         "value": {
-          "description": "Filter value (type depends on operator). Omit for 'exists' / 'nonexists' \u2014 use 'subquery' instead."
+          "description": "Filter value (type depends on operator). Omit for 'exists' / 'nonexists' \u2014 use 'subquery' instead. For 'relative': {unit: day|week|month|quarter|year, count, direction?: past|future, include_current?, calendar?, toDate?}. On a date or timestamp field a period literal ('2025', '2025-Q1', '2025-03') stands for the whole period."
         },
         "subquery": {
           "$ref": "#/definitions/querySubquery",

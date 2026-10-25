@@ -746,10 +746,12 @@ Useful for filtering on padded codes, fixed-width identifiers, or detecting trun
 
 The `relative` operator expects an object with the following keys:
 
-- `unit`: one of `day`, `week`, `month`, `year`
+- `unit`: one of `day`, `week`, `month`, `quarter`, `year`
 - `count`: positive integer number of units
 - `direction` (optional): `past` (default) or `future`
 - `include_current` (optional): boolean, default `true`
+- `calendar` (optional): boolean, default `false`. Whole calendar periods instead of a rolling window (see below)
+- `toDate` (optional): boolean, default `false`. With `calendar`, the current period ends today
 
 Example (last 7 days, inclusive of today):
 
@@ -763,6 +765,33 @@ where:
       direction: past
       include_current: true
 ```
+
+Without `calendar`, the window rolls: `{unit: month, count: 3}` is the three months back from today, starting on today's day of the month. With `calendar: true`, it counts whole periods from the start of the current one, so "this quarter" and "last full month" mean what they say:
+
+| Value | Range (today 2025-05-20) |
+|---|---|
+| `{unit: quarter, count: 1, calendar: true}` | This quarter: 2025-04-01 to 2025-06-30 |
+| `{unit: month, count: 1, calendar: true, include_current: false}` | Last full month: 2025-04-01 to 2025-04-30 |
+| `{unit: quarter, count: 4, calendar: true, include_current: false}` | The last four full quarters: 2024-04-01 to 2025-03-31 |
+| `{unit: month, count: 3, calendar: true}` | This month and the two before: 2025-03-01 to 2025-05-31 |
+| `{unit: year, count: 1, calendar: true, toDate: true}` | Year to date: 2025-01-01 to 2025-05-20 |
+| `{unit: month, count: 2, calendar: true, direction: future, include_current: false}` | The next two full months: 2025-06-01 to 2025-07-31 |
+
+A week starts on the model's `weekStart` (Monday by default). `toDate` needs `calendar: true`, `include_current: true` and `direction: past`; anything else is `INVALID_RELATIVE_FILTER`.
+
+#### Period Literals
+
+A filter on a date or timestamp field also accepts a **period** as its value: a year (`'2025'`), a quarter (`'2025-Q1'`) or a month (`'2025-03'`). It stands for the whole period, so the comparison holds for every day in it, including the last day's times on a timestamp:
+
+| Filter | Means |
+|---|---|
+| `{op: "=", value: "2025-Q1"}` | 2025-01-01 up to, not including, 2025-04-01 |
+| `{op: "<=", value: "2024-12"}` | Before 2025-01-01, all of December included |
+| `{op: ">", value: "2025-Q1"}` | From 2025-04-01 |
+| `{op: between, value: ["2025-01", "2025-03"]}` | 2025-01-01 up to, not including, 2025-04-01 |
+| `{op: in, value: ["2025-Q1", "2025-07-04"]}` | The first quarter, or 4 July |
+
+`=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`, `between` and `notbetween` take periods, and a period can sit beside an ISO date in a list. Another operator with a period value is `INVALID_FILTER_VALUE`. A value that is not one of these shapes, such as `'2025-01-15'`, is compared as before, and a field that is not a date keeps the value as it is: `Batch = '2025'` compares the string.
 
 !!! info "String contains is dialect-aware"
     The `contains` operator generates different SQL per dialect:

@@ -57,6 +57,8 @@ class RelativeFilterParsed(TypedDict):
     count: int
     direction: str
     include_current: bool
+    calendar: bool
+    to_date: bool
 
 
 def build_filter_expr(col: Expr, qf: QueryFilter, errors: list[SemanticError]) -> Expr | None:
@@ -189,6 +191,8 @@ def build_filter_expr(col: Expr, qf: QueryFilter, errors: list[SemanticError]) -
                 count=relative["count"],
                 direction=relative["direction"],
                 include_current=relative["include_current"],
+                calendar=relative["calendar"],
+                to_date=relative["to_date"],
             )
         case FilterOperator.EXISTS | FilterOperator.NONEXISTS:
             # exists/nonexists need model + subject_object + qualify_table to
@@ -227,7 +231,7 @@ def parse_relative_filter(
                 code="INVALID_RELATIVE_FILTER",
                 message=(
                     f"Relative filter for '{field}' must be an object "
-                    "with keys {unit, count, direction?, include_current?}"
+                    "with keys {unit, count, direction?, include_current?, calendar?, toDate?}"
                 ),
                 path="filters",
             )
@@ -238,6 +242,8 @@ def parse_relative_filter(
     count = value.get("count")
     direction = value.get("direction", "past")
     include_current = value.get("include_current", value.get("includeCurrent", True))
+    calendar = value.get("calendar", False)
+    to_date = value.get("toDate", value.get("to_date", False))
 
     if not isinstance(unit, str):
         errors.append(
@@ -249,7 +255,7 @@ def parse_relative_filter(
         )
         return None
     unit = unit.lower()
-    if unit not in {"day", "week", "month", "year"}:
+    if unit not in {"day", "week", "month", "quarter", "year"}:
         errors.append(
             SemanticError(
                 code="INVALID_RELATIVE_FILTER",
@@ -286,11 +292,38 @@ def parse_relative_filter(
         )
         return None
 
+    if not isinstance(calendar, bool) or not isinstance(to_date, bool):
+        errors.append(
+            SemanticError(
+                code="INVALID_RELATIVE_FILTER",
+                message=f"Relative filter for '{field}' has non-boolean calendar or toDate",
+                path="filters",
+            )
+        )
+        return None
+    # To date is the current calendar period cut at today: without the
+    # calendar there is no period start, and without the current period, or
+    # looking ahead, there is no today inside it to cut at.
+    if to_date and not (calendar and include_current and direction == "past"):
+        errors.append(
+            SemanticError(
+                code="INVALID_RELATIVE_FILTER",
+                message=(
+                    f"Relative filter for '{field}': toDate needs calendar: true, "
+                    "include_current: true and direction: past"
+                ),
+                path="filters",
+            )
+        )
+        return None
+
     return {
         "unit": unit,
         "count": count,
         "direction": direction,
         "include_current": include_current,
+        "calendar": calendar,
+        "to_date": to_date,
     }
 
 
