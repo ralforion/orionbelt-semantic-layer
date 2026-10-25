@@ -22,6 +22,7 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler import cfl_projection
+from orionbelt.compiler.filter_resolution import conjuncts
 from orionbelt.compiler.filters import static_filter_unreachable_error
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.resolution import (
@@ -321,8 +322,16 @@ def build_existing_pairs_select(
     if best_fact_obj:
         builder.from_(qualify(best_fact_obj), alias=best_fact)
 
-    # Required: all dimension objects + all fact tables
-    all_needed = all_dim_objects | fact_tables | {best_fact}
+    # Required: all dimension objects + all fact tables. With a root, the
+    # objects its filters read too, where it reaches them; one it cannot
+    # reach is another root's (below).
+    filter_objects: set[str] = set()
+    if root:
+        for wf in resolved.where_filters:
+            cfl_projection.collect_table_refs(wf.expression, filter_objects)
+            cfl_projection.collect_correlated_tables(wf.expression, filter_objects)
+        filter_objects &= graph.descendants_without_unnest(root) | {root}
+    all_needed = all_dim_objects | fact_tables | {best_fact} | filter_objects
     joined: set[str] = {best_fact}
     steps = graph.find_join_path(
         {best_fact},
@@ -351,8 +360,29 @@ def build_existing_pairs_select(
             )
             joined.add(new_table)
 
-    # Apply WHERE filters to existing pairs
+    # Apply WHERE filters to existing pairs. A root's combinations take a
+    # condition only on objects it joins: a static filter on another root's
+    # fact is skipped, as in that root's union leg, and refused if enforced.
     for wf in resolved.where_filters:
-        builder.where(wf.expression)
+        if root is None:
+            builder.where(wf.expression)
+            continue
+        for condition in conjuncts(wf.expression):
+            objects: set[str] = set()
+            cfl_projection.collect_table_refs(condition, objects)
+            cfl_projection.collect_correlated_tables(condition, objects)
+            if objects <= joined:
+                builder.where(condition)
+            elif wf.enforced:
+                unreachable = ", ".join(sorted(objects - joined))
+                raise ResolutionError(
+                    [
+                        static_filter_unreachable_error(
+                            f"static filter on '{unreachable}'",
+                            unreachable,
+                            f"the combinations of '{root}'",
+                        )
+                    ]
+                )
 
     return builder.build()

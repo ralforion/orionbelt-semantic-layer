@@ -228,9 +228,14 @@ def resolve_filter_object(
         return False
     reachable = any(obj_name in ctx.graph.descendants(j) for j in list(ctx.joined_objects))
     if not reachable:
-        # The union's legs are rooted at the measures' facts, or in raw mode
-        # at the selected fields' objects.
-        roots = ctx.result.measure_source_objects | {f.object_name for f in ctx.result.fields}
+        # The union's legs are rooted at the measures' facts, at a
+        # dimension-only query's roots, or in raw mode at the selected fields'
+        # objects.
+        roots = (
+            ctx.result.measure_source_objects
+            | set(ctx.result.dimension_roots)
+            | {f.object_name for f in ctx.result.fields}
+        )
         if ctx.result.requires_cfl and any(
             obj_name in ctx.graph.descendants_without_unnest(root) | {root} for root in roots
         ):

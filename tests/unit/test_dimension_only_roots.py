@@ -327,3 +327,42 @@ def test_a_computed_dimension_beside_measures_of_two_facts(
     assert compiled.explain is not None
     assert compiled.explain.planner == "CFL"
     assert _rows(con_countries, compiled) == [("ITALY", 2, 2), (None, 1, 0)]
+
+
+STATIC_FILTER = """filters:
+  - dataObject: Returns
+    column: Return Date
+    operator: gte
+    value: '2025-02-02'
+"""
+
+
+@pytest.mark.parametrize("orders_name", ["Orders", "Sales"])
+def test_a_static_filter_reaches_the_leg_of_its_root(
+    con: duckdb.DuckDBPyConnection, orders_name: str
+) -> None:
+    # The filter leaves r2 (East, Games) and drops r1 (South, Books), in the
+    # Returns leg whichever fact the base would have been.
+    compiled = _compile(
+        {"select": {"dimensions": ["Region", "Category"]}},
+        (MODEL_YAML + STATIC_FILTER).replace("Orders", orders_name),
+    )
+
+    assert _rows(con, compiled) == [
+        ("East", "Games"),
+        ("North", "Books"),
+        ("South", "Games"),
+        (None, "Books"),
+    ]
+
+
+def test_dimensions_exclude_applies_a_static_filter_to_its_root_only(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    compiled = _compile(
+        {"select": {"dimensions": ["Region", "Category"]}, "dimensionsExclude": True},
+        MODEL_YAML + STATIC_FILTER,
+    )
+
+    # r1 (South, Books) is filtered out of the returns, so that pair is missing.
+    assert _rows(con, compiled) == [("East", "Books"), ("North", "Games"), ("South", "Books")]
