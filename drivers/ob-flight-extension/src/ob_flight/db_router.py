@@ -1,25 +1,53 @@
-"""Vendor database routing for Flight SQL query execution."""
+"""Vendor database routing for Flight SQL query execution.
+
+Which database a connection goes to is a :class:`~ob_flight.datasources.DataSource`.
+A dialect name still works wherever one is taken: it means the dialect's
+implicit source, its unprefixed variables, which is how every connection
+worked before named sources.
+"""
 
 from __future__ import annotations
 
 import contextlib
 import importlib
-import os
 import queue
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any
-from urllib.parse import quote
 
+from ob_flight.datasources import (
+    _CREDENTIAL_KEYS,
+    _ENV_ALIASES,
+    _ENV_TO_KWARG,
+    _MOTHERDUCK_PREFIX,
+    _MOTHERDUCK_URI_TOKEN_PARAMS,
+    DataSource,
+    MotherDuckTokenMissingError,
+    _apply_motherduck_token,
+    implicit_datasource,
+)
 
-class MotherDuckTokenMissingError(RuntimeError):
-    """Raised when a ``md:`` database is configured without a token.
-
-    Its own type so callers can distinguish a configuration error from a
-    connection failure — the fix is an env var, not a retry.
-    """
-
+# The names this module exports, the moved credential tables included: callers
+# and tests import them from here, and mypy needs them listed to see them.
+__all__ = [
+    "DataSource",
+    "MotherDuckTokenMissingError",
+    "VENDOR_MAP",
+    "ConnectionPool",
+    "close_all_pools",
+    "connect",
+    "get_connection",
+    "get_credentials",
+    "implicit_datasource",
+    "_CREDENTIAL_KEYS",
+    "_ENV_ALIASES",
+    "_ENV_TO_KWARG",
+    "_MOTHERDUCK_PREFIX",
+    "_MOTHERDUCK_URI_TOKEN_PARAMS",
+    "_apply_motherduck_token",
+]
 
 # Dialect name -> Python module name for the OB driver
 VENDOR_MAP: dict[str, str] = {
@@ -33,214 +61,34 @@ VENDOR_MAP: dict[str, str] = {
     "mysql": "ob_mysql",
 }
 
-# Environment variable prefixes for vendor credentials
-_CREDENTIAL_KEYS: dict[str, list[str]] = {
-    "bigquery": [
-        "BIGQUERY_PROJECT",
-        "BIGQUERY_LOCATION",
-        "BIGQUERY_CREDENTIALS_FILE",
-    ],
-    "duckdb": ["DUCKDB_DATABASE", "MOTHERDUCK_ACCESS_TOKEN"],
-    "postgres": [
-        "POSTGRES_HOST",
-        "POSTGRES_PORT",
-        "POSTGRES_DBNAME",
-        "POSTGRES_USER",
-        "POSTGRES_PASSWORD",
-        "POSTGRES_SCHEMA",
-    ],
-    "snowflake": [
-        "SNOWFLAKE_ACCOUNT",
-        "SNOWFLAKE_USER",
-        "SNOWFLAKE_PASSWORD",
-        "SNOWFLAKE_DATABASE",
-        "SNOWFLAKE_SCHEMA",
-        "SNOWFLAKE_WAREHOUSE",
-    ],
-    "clickhouse": [
-        "CLICKHOUSE_HOST",
-        "CLICKHOUSE_PORT",
-        "CLICKHOUSE_USERNAME",
-        "CLICKHOUSE_PASSWORD",
-        "CLICKHOUSE_DATABASE",
-    ],
-    "dremio": [
-        "DREMIO_HOST",
-        "DREMIO_PORT",
-        "DREMIO_USERNAME",
-        "DREMIO_PASSWORD",
-    ],
-    "databricks": [
-        "DATABRICKS_SERVER_HOSTNAME",
-        "DATABRICKS_HTTP_PATH",
-        "DATABRICKS_ACCESS_TOKEN",
-        "DATABRICKS_CATALOG",
-        "DATABRICKS_SCHEMA",
-    ],
-    "mysql": [
-        "MYSQL_HOST",
-        "MYSQL_PORT",
-        "MYSQL_DATABASE",
-        "MYSQL_USER",
-        "MYSQL_PASSWORD",
-    ],
-}
 
-# Alternate spellings accepted for a credential env var, tried in order when
-# the canonical name is unset.
-#
-# ``DATABRICKS_TOKEN`` is the name Databricks' own CLI and SDK export, so it
-# is what people already have in their environment; ``.env.template`` and
-# ``docs/drivers.md`` document ``DATABRICKS_ACCESS_TOKEN``. Every other
-# consumer in the repo already accepts both (tests, seed and probe scripts) —
-# this router was the sole holdout, which meant an environment written to the
-# Databricks convention produced a connection with no token at all and no
-# indication why.
-_ENV_ALIASES: dict[str, tuple[str, ...]] = {
-    "DATABRICKS_ACCESS_TOKEN": ("DATABRICKS_TOKEN",),
-    # MotherDuck's docs and examples use both ``MOTHERDUCK_TOKEN`` and the
-    # lowercase ``motherduck_token`` (the latter is what the DuckDB extension
-    # reads straight from the environment). Accepting both means an
-    # environment already set up for MotherDuck's own tooling needs no extra
-    # configuration; the ``_ACCESS_`` name stays canonical for consistency
-    # with every other vendor key here.
-    "MOTHERDUCK_ACCESS_TOKEN": (
-        "MOTHERDUCK_TOKEN",
-        "motherduck_token",
-    ),
-}
-
-# A DuckDB database string beginning with this prefix is MotherDuck, not a
-# local file: remote, authenticated, and not subject to the file-lock
-# reasoning behind the read-only default.
-_MOTHERDUCK_PREFIX = "md:"
-
-# Token parameters MotherDuck accepts on the database string. A read-scaling
-# token authenticates against the read replica pool and is spelled
-# differently, so a URI already carrying one must not be treated as tokenless.
-_MOTHERDUCK_URI_TOKEN_PARAMS = ("motherduck_token", "read_scaling_token")
-
-# Env var name -> connect() kwarg name mapping
-_ENV_TO_KWARG: dict[str, str] = {
-    "BIGQUERY_PROJECT": "project",
-    "BIGQUERY_LOCATION": "location",
-    "BIGQUERY_CREDENTIALS_FILE": "credentials_file",
-    "DUCKDB_DATABASE": "database",
-    "MOTHERDUCK_ACCESS_TOKEN": "motherduck_token",
-    "POSTGRES_HOST": "host",
-    "POSTGRES_PORT": "port",
-    "POSTGRES_DBNAME": "dbname",
-    "POSTGRES_USER": "user",
-    "POSTGRES_PASSWORD": "password",
-    "POSTGRES_SCHEMA": "schema",
-    "SNOWFLAKE_ACCOUNT": "account",
-    "SNOWFLAKE_USER": "user",
-    "SNOWFLAKE_PASSWORD": "password",
-    "SNOWFLAKE_DATABASE": "database",
-    "SNOWFLAKE_SCHEMA": "schema",
-    "SNOWFLAKE_WAREHOUSE": "warehouse",
-    "CLICKHOUSE_HOST": "host",
-    "CLICKHOUSE_PORT": "port",
-    "CLICKHOUSE_USERNAME": "username",
-    "CLICKHOUSE_PASSWORD": "password",
-    "CLICKHOUSE_DATABASE": "database",
-    "DREMIO_HOST": "host",
-    "DREMIO_PORT": "port",
-    "DREMIO_USERNAME": "username",
-    "DREMIO_PASSWORD": "password",
-    "DATABRICKS_SERVER_HOSTNAME": "server_hostname",
-    "DATABRICKS_HTTP_PATH": "http_path",
-    "DATABRICKS_ACCESS_TOKEN": "access_token",
-    "DATABRICKS_CATALOG": "catalog",
-    "DATABRICKS_SCHEMA": "schema",
-    "MYSQL_HOST": "host",
-    "MYSQL_PORT": "port",
-    "MYSQL_DATABASE": "database",
-    "MYSQL_USER": "user",
-    "MYSQL_PASSWORD": "password",
-}
+def _source(source: DataSource | str) -> DataSource:
+    """A data source, or the implicit source of a dialect name."""
+    return implicit_datasource(source) if isinstance(source, str) else source
 
 
 def get_credentials(dialect: str, **overrides: Any) -> dict[str, Any]:
-    """Read vendor credentials from environment variables.
+    """Credentials of a dialect's implicit source, as ``connect()`` kwargs.
 
-    ``overrides`` are applied *before* any dialect-specific post-processing,
-    so a caller-supplied value is what that processing sees. This matters for
-    MotherDuck: folding the token into the database string has to happen after
-    an override may have replaced the database, or ``connect()`` would raise
-    for an env-configured ``md:`` that the caller overrode away — and would
-    pass a tokenless ``md:`` when the caller supplied one.
-
-    Returns a dict of kwargs suitable for the vendor's connect() function.
-    Only includes env vars that are actually set. A canonical name that is
-    unset falls back to any alias in :data:`_ENV_ALIASES`, so the canonical
-    spelling always wins when both are present.
+    See :meth:`~ob_flight.datasources.DataSource.credentials`.
     """
-    creds: dict[str, Any] = {}
-    keys = _CREDENTIAL_KEYS.get(dialect, [])
-    for env_key in keys:
-        raw = os.getenv(env_key)
-        if raw is None:
-            for alias in _ENV_ALIASES.get(env_key, ()):
-                raw = os.getenv(alias)
-                if raw is not None:
-                    break
-        if raw is not None:
-            kwarg_name = _ENV_TO_KWARG.get(env_key, env_key.lower())
-            # Convert port to int
-            creds[kwarg_name] = int(raw) if env_key.endswith("_PORT") else raw
-    creds.update(overrides)
-    if dialect == "duckdb":
-        _apply_motherduck_token(creds)
-    return creds
+    return implicit_datasource(dialect).credentials(**overrides)
 
 
-def _apply_motherduck_token(creds: dict[str, Any]) -> None:
-    """Fold a MotherDuck token into the ``md:`` database string, in place.
+def connect(source: DataSource | str, **overrides: Any) -> Any:
+    """Connect to a data source using its dialect's OB driver.
 
-    ``duckdb.connect`` takes no token argument — the token travels as a query
-    parameter on the database string — so the credential is resolved here
-    rather than at each call site. ``db_executor`` opens DuckDB three
-    different ways and all three read their credentials through this
-    function, so this is the one seam that covers them.
+    Credentials come from the source's environment variables, overridden by
+    **kwargs. Returns a PEP 249 Connection object.
 
-    Fails loudly when a ``md:`` database has no token. That is deliberate:
-    the DuckDB extension falls back to *interactive browser authentication*
-    when a token is absent, which on a server does not raise — it **hangs**,
-    presenting as a stuck worker rather than a failed connection. It can also
-    silently pick up an ambient lowercase ``motherduck_token`` and connect to
-    whichever account that belongs to. Passing the token explicitly, always,
-    removes both.
+    Raises KeyError if the dialect is not supported.
     """
-    token = creds.pop("motherduck_token", None)
-    database = creds.get("database")
-    if not isinstance(database, str) or not database.startswith(_MOTHERDUCK_PREFIX):
-        return
-    if any(f"{name}=" in database for name in _MOTHERDUCK_URI_TOKEN_PARAMS):
-        return  # caller embedded a token in DUCKDB_DATABASE already
-    if not token:
-        raise MotherDuckTokenMissingError(
-            f"DUCKDB_DATABASE is {database!r} (MotherDuck) but no token is set. "
-            "Set MOTHERDUCK_ACCESS_TOKEN (or the lowercase motherduck_token that "
-            "MotherDuck's own CLI uses). Without one the DuckDB extension falls "
-            "back to interactive browser auth, which hangs on a server."
-        )
-    sep = "&" if "?" in database else "?"
-    creds["database"] = f"{database}{sep}motherduck_token={quote(str(token), safe='')}"
-
-
-def connect(dialect: str, **overrides: Any) -> Any:
-    """Connect to a vendor database using the appropriate OB driver.
-
-    Credentials come from environment variables, overridden by **kwargs.
-    Returns a PEP 249 Connection object.
-
-    Raises KeyError if dialect is not supported.
-    """
+    datasource = _source(source)
+    dialect = datasource.dialect
     if dialect not in VENDOR_MAP:
         raise KeyError(f"Unsupported dialect: {dialect!r}. Supported: {sorted(VENDOR_MAP)}")
     module = importlib.import_module(VENDOR_MAP[dialect])
-    kwargs = get_credentials(dialect, **overrides)
+    kwargs = datasource.credentials(**overrides)
     # DuckDB: open read-only to avoid cross-process file lock conflicts.
     # MotherDuck is remote, so no local file lock exists to conflict over --
     # but read-only is still correct for a semantic layer that only reads,
@@ -251,20 +99,20 @@ def connect(dialect: str, **overrides: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Connection pool — reuses connections per dialect to avoid connection storms
+# Connection pool — reuses connections per data source to avoid connection storms
 # ---------------------------------------------------------------------------
 
 
 class ConnectionPool:
-    """Thread-safe connection pool for a single dialect.
+    """Thread-safe connection pool for a single data source.
 
     Idle connections are held in a bounded queue.  ``acquire()`` returns a
     pooled connection when available, otherwise creates a new one.
     ``release()`` returns a connection to the pool (or closes it if full).
     """
 
-    def __init__(self, dialect: str, max_size: int = 5) -> None:
-        self._dialect = dialect
+    def __init__(self, source: DataSource | str, max_size: int = 5) -> None:
+        self._source = _source(source)
         self._pool: queue.Queue[Any] = queue.Queue(maxsize=max_size)
 
     def acquire(self, **overrides: Any) -> Any:
@@ -272,7 +120,7 @@ class ConnectionPool:
         try:
             return self._pool.get_nowait()
         except queue.Empty:
-            return connect(self._dialect, **overrides)
+            return connect(self._source, **overrides)
 
     def release(self, conn: Any) -> None:
         """Return a connection to the pool (closes it if pool is full)."""
@@ -287,23 +135,34 @@ _pools: dict[str, ConnectionPool] = {}
 _pools_lock = threading.Lock()
 
 
-def _get_pool(dialect: str) -> ConnectionPool:
-    """Get or create the pool for a given dialect."""
+def _get_pool(source: DataSource) -> ConnectionPool:
+    """Get or create the pool for a data source.
+
+    Keyed by the source's fingerprint, not its name: two names for the same
+    target with the same credentials share a pool, and a changed credential
+    gets a new one rather than handing out connections signed in as before.
+
+    The pool connects with a snapshot of the settings its key was computed
+    from. Bound to the live environment instead, a pool two sources share
+    would open its next connection with the first source's settings after
+    those changed, and serve the other source another database's rows.
+    """
+    pinned = replace(source, environ=dict(source.environ))
+    key = pinned.fingerprint()
     with _pools_lock:
-        if dialect not in _pools:
-            max_size = int(os.getenv("DB_POOL_SIZE", "5"))
-            _pools[dialect] = ConnectionPool(dialect, max_size=max_size)
-        return _pools[dialect]
+        if key not in _pools:
+            _pools[key] = ConnectionPool(pinned, max_size=pinned.pool_size())
+        return _pools[key]
 
 
 @contextmanager
-def get_connection(dialect: str, **overrides: Any) -> Generator[Any, None, None]:
-    """Context manager that acquires a pooled connection.
+def get_connection(source: DataSource | str, **overrides: Any) -> Generator[Any, None, None]:
+    """Context manager that acquires a pooled connection to a data source.
 
-    On clean exit the connection is returned to the pool.
-    On exception the connection is discarded (closed).
+    A dialect name means its implicit source. On clean exit the connection
+    is returned to the pool. On exception the connection is discarded (closed).
     """
-    pool = _get_pool(dialect)
+    pool = _get_pool(_source(source))
     conn = pool.acquire(**overrides)
     ok = False
     try:
