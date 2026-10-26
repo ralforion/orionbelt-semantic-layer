@@ -14,10 +14,10 @@ import queue
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any
 
-# Re-exported: callers and tests import these from here.
-from ob_flight.datasources import (  # noqa: F401
+from ob_flight.datasources import (
     _CREDENTIAL_KEYS,
     _ENV_ALIASES,
     _ENV_TO_KWARG,
@@ -28,6 +28,26 @@ from ob_flight.datasources import (  # noqa: F401
     _apply_motherduck_token,
     implicit_datasource,
 )
+
+# The names this module exports, the moved credential tables included: callers
+# and tests import them from here, and mypy needs them listed to see them.
+__all__ = [
+    "DataSource",
+    "MotherDuckTokenMissingError",
+    "VENDOR_MAP",
+    "ConnectionPool",
+    "close_all_pools",
+    "connect",
+    "get_connection",
+    "get_credentials",
+    "implicit_datasource",
+    "_CREDENTIAL_KEYS",
+    "_ENV_ALIASES",
+    "_ENV_TO_KWARG",
+    "_MOTHERDUCK_PREFIX",
+    "_MOTHERDUCK_URI_TOKEN_PARAMS",
+    "_apply_motherduck_token",
+]
 
 # Dialect name -> Python module name for the OB driver
 VENDOR_MAP: dict[str, str] = {
@@ -121,11 +141,17 @@ def _get_pool(source: DataSource) -> ConnectionPool:
     Keyed by the source's fingerprint, not its name: two names for the same
     target with the same credentials share a pool, and a changed credential
     gets a new one rather than handing out connections signed in as before.
+
+    The pool connects with a snapshot of the settings its key was computed
+    from. Bound to the live environment instead, a pool two sources share
+    would open its next connection with the first source's settings after
+    those changed, and serve the other source another database's rows.
     """
-    key = source.fingerprint()
+    pinned = replace(source, environ=dict(source.environ))
+    key = pinned.fingerprint()
     with _pools_lock:
         if key not in _pools:
-            _pools[key] = ConnectionPool(source, max_size=source.pool_size())
+            _pools[key] = ConnectionPool(pinned, max_size=pinned.pool_size())
         return _pools[key]
 
 

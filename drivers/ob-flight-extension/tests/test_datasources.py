@@ -287,3 +287,35 @@ class TestTwoDuckDBFiles:
                 regions.append(cursor.fetchall()[0][0])
 
         assert regions == ["eu", "us"]
+
+    def test_a_shared_pool_keeps_its_settings_when_one_source_moves(
+        self, tmp_path: Any, fresh_pools: None
+    ) -> None:
+        """Two names share a pool while they point at one file. When the first
+        moves to another file, the shared pool still serves the second its own
+        file, on a new connection too."""
+        duckdb = pytest.importorskip("duckdb")
+        pytest.importorskip("ob_duckdb")
+        for name in ("one", "two"):
+            con = duckdb.connect(str(tmp_path / f"{name}.duckdb"))
+            con.execute(f"CREATE TABLE shop AS SELECT '{name}' AS region")
+            con.close()
+        env = {
+            "OBSL_DATABASES": "a,b",
+            "DB_A_TYPE": "duckdb",
+            "DB_B_TYPE": "duckdb",
+            "DUCKDB_DATABASE": str(tmp_path / "one.duckdb"),
+        }
+        a, b = configured_datasources(env)
+        with db_router.get_connection(a):
+            pass  # the shared pool is created from a's settings
+        env["DB_A_DUCKDB_DATABASE"] = str(tmp_path / "two.duckdb")
+
+        regions = []
+        with db_router.get_connection(b) as first, db_router.get_connection(b) as second:
+            for conn in (first, second):  # the second is a new connection
+                cursor = conn.cursor()
+                cursor.execute("SELECT region FROM shop")
+                regions.append(cursor.fetchall()[0][0])
+
+        assert regions == ["one", "one"]
