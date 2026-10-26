@@ -411,6 +411,70 @@ class TestExportedSqlRuns:
         assert back["metrics"] == obml["metrics"]
 
 
+class TestCumulativeGrouping:
+    """A cumulative window is right only in a query grouped by its time dimension
+    and ``partitionBy``; the export says so in the metric's ``ai_context``."""
+
+    @staticmethod
+    def _instructions(osi: dict[str, Any], name: str) -> str | None:
+        metric = next(m for m in osi["metrics"] if m["name"] == name)
+        return (metric.get("ai_context") or {}).get("instructions")
+
+    def test_cumulative_names_its_grouping(self) -> None:
+        osi, _ = _export()
+        text = self._instructions(osi, "Running Sales")
+        assert text is not None
+        assert "grouped by exactly 'Line Date' and 'Customer Country'" in text
+
+    def test_metric_over_a_cumulative_inherits_it(self) -> None:
+        obml = copy.deepcopy(_MODEL)
+        obml["metrics"]["Running Sales K"] = {"expression": "{[Running Sales]} / 1000"}
+        osi, _ = _export(obml)
+        assert self._instructions(osi, "Running Sales K") == self._instructions(
+            osi, "Running Sales"
+        )
+
+    def test_no_note_without_a_cumulative(self) -> None:
+        osi, _ = _export()
+        assert self._instructions(osi, "Sales") is None
+        assert self._instructions(osi, "US Share Pct") is None
+
+    def test_conflicting_groupings_are_left_out(self) -> None:
+        obml = copy.deepcopy(_MODEL)
+        obml["metrics"]["Running Sales Overall"] = {
+            "type": "cumulative",
+            "measure": "Sales",
+            "timeDimension": "Line Date",
+        }
+        obml["metrics"]["Country Share Of Running"] = {
+            "expression": "{[Running Sales]} / {[Running Sales Overall]}"
+        }
+        osi, warnings = _export(obml)
+        assert "Country Share Of Running" not in _sql(osi)
+        assert any("Country Share Of Running" in w and "different groupings" in w for w in warnings)
+        back = conv.OSItoOBML(osi).convert()
+        assert back["metrics"] == obml["metrics"]
+
+    def test_rolling_over_periods_is_left_out(self) -> None:
+        obml = copy.deepcopy(_MODEL)
+        obml["metrics"]["Sales 3 Periods"] = {
+            "type": "cumulative",
+            "measure": "Sales",
+            "timeDimension": "Line Date",
+            "window": 3,
+        }
+        osi, warnings = _export(obml)
+        assert "Sales 3 Periods" not in _sql(osi)
+        assert any("Sales 3 Periods" in w and "periods of the calendar" in w for w in warnings)
+        back = conv.OSItoOBML(osi).convert()
+        assert back["metrics"]["Sales 3 Periods"] == obml["metrics"]["Sales 3 Periods"]
+
+    def test_the_note_does_not_come_back(self) -> None:
+        osi, _ = _export()
+        back = conv.OSItoOBML(osi).convert()
+        assert back["metrics"]["Running Sales"] == _MODEL["metrics"]["Running Sales"]
+
+
 class TestReferenceCycles:
     def test_indirect_cycle_is_left_out_not_a_crash(self) -> None:
         obml = copy.deepcopy(_MODEL)

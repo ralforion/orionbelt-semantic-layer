@@ -523,6 +523,32 @@ class PortableRenderer:
         finally:
             self._resolving.discard(name)
 
+    def grouping(self, name: str) -> tuple[str, ...] | None:
+        """The dimensions a query must group by, and only those, for *name* to be right.
+
+        OrionBelt splits a cumulative metric by every other dimension of the
+        query, which an expression cannot name: its window is right only in a
+        query grouped by its time dimension and ``partitionBy``. ``None`` when
+        *name* reaches no cumulative metric. Call it once :meth:`metric` has
+        rendered *name*, so a reference cycle has already been refused.
+        """
+        groupings = self._groupings(name)
+        if len(groupings) > 1:
+            raise NotPortableError(
+                f"metric '{name}' combines cumulative metrics that need different groupings, "
+                f"so no query is right for all of them"
+            )
+        return next(iter(groupings), None)
+
+    def _groupings(self, name: str) -> set[tuple[str, ...]]:
+        met = self.metrics.get(name)
+        if met is None:
+            return set()
+        if met.get("type") == "cumulative":
+            return {(met.get("timeDimension", ""), *(met.get("partitionBy") or []))}
+        refs = _MEASURE_REF.findall(met.get("expression") or "")
+        return set().union(*(self._groupings(r) for r in refs))
+
     def _has_window(self, name: str, visiting: frozenset[str] = frozenset()) -> bool:
         """Whether the expression for *name* already contains a window call.
 
@@ -587,6 +613,11 @@ class PortableRenderer:
                 f"metric '{name}' re-aggregates its measure's rows over a span of time "
                 f"ending at each period, which a window over one row per period cannot do"
             )
+        if met.get("window") is not None:
+            raise NotPortableError(
+                f"metric '{name}' rolls over the last {met['window']} periods of the calendar, "
+                f"counting a period without rows, which a frame over the rows that exist cannot do"
+            )
         func = str(met.get("cumulativeType", "sum")).lower()
         if func not in _CUMULATIVE_FUNCS or not met.get("measure"):
             raise NotPortableError(f"metric '{name}' is an incomplete cumulative metric")
@@ -599,8 +630,6 @@ class PortableRenderer:
             if grain not in _GRAIN_TO_DATE:
                 raise NotPortableError(f"metric '{name}' has unknown grainToDate '{grain}'")
             partitions.insert(0, f"DATE_TRUNC({_string_literal(grain)}, {time})")
-        elif met.get("window") is not None:
-            frame = f"ROWS BETWEEN {int(met['window']) - 1} PRECEDING AND CURRENT ROW"
         partition = f"PARTITION BY {', '.join(partitions)} " if partitions else ""
         return f"{func.upper()}({inner}) OVER ({partition}ORDER BY {time} {frame})"
 

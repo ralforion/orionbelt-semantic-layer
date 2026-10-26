@@ -51,6 +51,17 @@ def _stash_concept_links(
         extras[key] = links
 
 
+def _grouping_instructions(grouping: tuple[str, ...]) -> str:
+    """Tell a consumer the one grouping a cumulative window is right in."""
+    time, *partitions = grouping
+    dims = " and ".join(f"'{d}'" for d in (time, *partitions))
+    return (
+        f"Right only in a query grouped by exactly {dims}. The cumulative window "
+        f"is split by no other dimension: grouped by one more, it runs across "
+        f"that dimension's groups and the values are wrong."
+    )
+
+
 class OBMLtoOSI:
     """Convert an OBML semantic model YAML to OSI format."""
 
@@ -760,10 +771,15 @@ class OBMLtoOSI:
         for name, metric in obml_metrics.items():
             try:
                 sql = renderer.metric(name)
+                grouping = renderer.grouping(name)
             except NotPortableError as exc:
                 self._leave_out("metrics", name, metric, str(exc))
                 continue
             osi_metric = self._convert_metric(name, metric, sql)
+            if grouping:
+                osi_metric.setdefault("ai_context", {})["instructions"] = _grouping_instructions(
+                    grouping
+                )
             self._add_ossie_dialect(osi_metric, partial(ossie_renderer.metric, name))
             self._finish_osi_metric("metric", metric, osi_metric)
             osi_metrics.append(osi_metric)

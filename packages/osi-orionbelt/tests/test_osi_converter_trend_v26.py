@@ -128,11 +128,10 @@ class TestObmlToOsiV26:
     def setup_method(self) -> None:
         self.osi = conv.OBMLtoOSI(_OBML_V26).convert()
 
-    def test_partition_by_preserved_on_cumulative(self) -> None:
-        m = _osi_metric(self.osi, "Revenue MA3 by Country")
-        extras = _extras(m)
-        assert extras["obml_metric_type"] == "cumulative"
-        assert extras["obml_partition_by"] == ["Country"]
+    def test_rolling_window_is_not_a_portable_metric(self) -> None:
+        # `window: 3` counts calendar periods; test_cumulative_partition_by_roundtrip
+        # covers the way back.
+        assert "Revenue MA3 by Country" not in {m["name"] for m in self.osi.get("metrics", [])}
 
     def test_window_dense_rank_preserved(self) -> None:
         m = _osi_metric(self.osi, "Revenue Rank")
