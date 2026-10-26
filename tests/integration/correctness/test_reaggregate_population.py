@@ -218,7 +218,7 @@ def test_fact_filter_limits_the_measure_not_the_members(
     counts, one without orders in the range as 0."""
     where = [QueryFilter(field="Sales Date", op=">=", value="2022-01-01")]
     (row,) = run([], ["Clients All", "Avg Client Orders All"], where=where)
-    (orders,) = commerce_db.sql(
+    (orders,) = commerce_db.execute(
         "SELECT COUNT(*) FROM orionbelt_1.sales WHERE salesdate >= DATE '2022-01-01'"
     ).fetchone()
     assert orders > 0
@@ -564,7 +564,7 @@ def test_on_a_member_row_other_values_are_over_no_rows(run: Callable) -> None:
 
 
 def _idle_client(commerce_db: duckdb.DuckDBPyConnection) -> str:
-    (name,) = commerce_db.sql(
+    (name,) = commerce_db.execute(
         "SELECT clientname FROM orionbelt_1.clients "
         "WHERE clientid NOT IN (SELECT salesclient FROM orionbelt_1.sales) "
         "ORDER BY clientname LIMIT 1"
