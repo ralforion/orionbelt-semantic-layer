@@ -235,7 +235,7 @@ class TestEvaluate:
         def execute_sql(
             sql: str, *, dialect: str, tz: Any = None, override_db_tz: bool = False
         ) -> ExecutionResult:
-            return duckdb_execution_result(conn.execute(sql), time.monotonic(), tz=tz)
+            return duckdb_execution_result(conn.sql(sql), time.monotonic(), tz=tz)
 
         settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
         app = create_app(settings=settings)

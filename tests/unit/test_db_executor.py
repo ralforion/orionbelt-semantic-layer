@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
@@ -231,20 +232,15 @@ class TestExecuteSql:
         mock_cursor.close.assert_called_once()
 
     @_needs_ob_flight
-    def test_duckdb_direct_execution(self) -> None:
-        """DuckDB falls back to the PEP 249 path when Arrow is unavailable."""
+    def test_duckdb_direct_execution(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """DuckDB falls back to the PEP 249 path when pyarrow is not loaded."""
+        monkeypatch.delitem(sys.modules, "pyarrow", raising=False)
         mock_result = MagicMock()
         mock_result.fetchall.return_value = [("US", 100)]
         mock_result.description = [("country",), ("revenue",)]
-        # A MagicMock answers every attribute, so it would claim Arrow
-        # support it does not have and route this test down the Arrow
-        # branch. Delete both probed names to model a result without an
-        # Arrow fetch.
-        del mock_result.to_arrow_table
-        del mock_result.fetch_arrow_table
 
         mock_conn = MagicMock()
-        mock_conn.execute.return_value = mock_result
+        mock_conn.sql.return_value = mock_result
 
         with (
             patch(
@@ -281,7 +277,7 @@ class TestExecuteSql:
         mock_result.to_arrow_table.return_value = table
 
         mock_conn = MagicMock()
-        mock_conn.execute.return_value = mock_result
+        mock_conn.sql.return_value = mock_result
 
         with (
             patch(
@@ -298,6 +294,33 @@ class TestExecuteSql:
         assert result.rows == []
         assert [c.name for c in result.columns] == ["country", "revenue"]
         assert [c.type_hint for c in result.columns] == ["string", "number"]
+        mock_result.fetchall.assert_not_called()
+        mock_conn.close.assert_called_once()
+
+    @_needs_ob_flight
+    def test_duckdb_error_while_reading_runs_the_query_once(self) -> None:
+        """A relation runs its query when Arrow is read, so an error raised
+        there is the query's: it surfaces, and the PEP 249 fallback does not
+        run the query a second time."""
+        pytest.importorskip("pyarrow")
+        mock_result = MagicMock()
+        mock_result.to_arrow_table.side_effect = RuntimeError("Invalid Input Error: boom")
+
+        mock_conn = MagicMock()
+        mock_conn.sql.return_value = mock_result
+
+        with (
+            patch(
+                "ob_flight.db_router.get_credentials",
+                return_value={"database": ":memory:"},
+                create=True,
+            ),
+            patch("duckdb.connect", return_value=mock_conn),
+            pytest.raises(ExecutionError, match="boom"),
+        ):
+            execute_sql("SELECT 1", dialect="duckdb")
+
+        mock_result.to_arrow_table.assert_called_once()
         mock_result.fetchall.assert_not_called()
         mock_conn.close.assert_called_once()
 

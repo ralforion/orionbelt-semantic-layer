@@ -303,7 +303,7 @@ class TestTheAdvertisedWidthHoldsEveryValue:
         sql = CompilationPipeline().compile(query, model, "duckdb").sql
         con = duckdb.connect()
         con.execute("CREATE TABLE orders (units_held DECIMAL(19, 0))")
-        table = con.execute(sql).to_arrow_table()
+        table = con.sql(sql).to_arrow_table()
         assert table.cast(pa.schema([("Fewest", self._arrow(model, "Fewest"))]))[0][0].as_py() == (
             Decimal("0.5")
         )
