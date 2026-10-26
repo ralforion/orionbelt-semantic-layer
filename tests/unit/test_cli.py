@@ -1213,3 +1213,48 @@ def test_rules_evaluate_remote_unknown_rule(monkeypatch):
     assert result.exit_code == 1
     assert "Unknown rule(s): Nope" in result.output
     assert all(method == "GET" for method, _ in calls)
+
+
+def test_values_remote(monkeypatch):
+    from orionbelt.cli import _remote
+
+    seen: dict = {}
+
+    def fake_search(self, dimension, search, dialect, limit):
+        seen.update(dimension=dimension, search=search, limit=limit)
+        return {
+            "dimension": dimension,
+            "values": [{"value": "Germany", "match": "prefix", "score": None}],
+            "truncated": False,
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(_remote.RemoteClient, "search_values", fake_search)
+    result = runner.invoke(
+        app, ["values", "Country", "--search", "germ", "-s", "http://example", "-f", "csv"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert seen == {"dimension": "Country", "search": "germ", "limit": 20}
+    assert "Germany,prefix" in result.stdout
+
+
+def test_values_range_remote(monkeypatch):
+    from orionbelt.cli import _remote
+
+    def fake_search(self, dimension, search, dialect, limit):
+        return {
+            "dimension": dimension,
+            "values": [],
+            "minimum": "2022-01-01",
+            "maximum": "2025-01-15",
+        }
+
+    monkeypatch.setattr(_remote.RemoteClient, "search_values", fake_search)
+    result = runner.invoke(app, ["values", "Order Date", "-s", "http://example", "-f", "csv"])
+    assert result.exit_code == 0
+    assert "2022-01-01,2025-01-15" in result.stdout
+
+
+def test_values_local_requires_model():
+    result = runner.invoke(app, ["values", "Country"])
+    assert result.exit_code != 0

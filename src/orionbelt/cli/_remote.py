@@ -218,6 +218,17 @@ class RemoteClient:
             "dict[str, Any]", self._post("/query/execute", self._query_body(query), params=params)
         )
 
+    def search_values(
+        self, dimension: str, search: str | None, dialect: str | None, limit: int
+    ) -> dict[str, Any]:
+        """List or search a dimension's values on the server's curated model."""
+        body: dict[str, Any] = {"dimension": dimension, "limit": limit}
+        if search:
+            body["search"] = search
+        if dialect:
+            body["dialect"] = dialect
+        return cast("dict[str, Any]", self._post("/values", body))
+
     def _obsql_body(self, sql: str, dialect: str | None) -> dict[str, Any]:
         body: dict[str, Any] = {"sql": sql}
         if dialect:

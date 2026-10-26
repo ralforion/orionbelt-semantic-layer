@@ -250,6 +250,12 @@ obsl:DimensionShape a sh:NodeShape ;
         sh:datatype xsd:string ;
         sh:name "path name" ;
         sh:message "A dimension names at most one join path."
+    ] ;
+    sh:property [
+        sh:path obsl:valueSearch ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:boolean ;
+        sh:name "value search"
     ] .
 
 # -----------------------------------------------------------------------------

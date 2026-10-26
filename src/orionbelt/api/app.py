@@ -63,6 +63,7 @@ from orionbelt.cache.factory import build_cache
 from orionbelt.service import db_executor
 from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.session_manager import SessionManager
+from orionbelt.service.value_search import ValueSearchConfig
 from orionbelt.settings import Settings
 
 logger = logging.getLogger("orionbelt.api")
@@ -371,6 +372,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             max_parallelism=settings.oneshot_batch_max_parallelism,
             default_timeout_ms=settings.oneshot_batch_default_timeout_ms,
             batch_timeout_ms=settings.oneshot_batch_batch_timeout_ms,
+        ),
+        value_search_config=ValueSearchConfig(
+            enabled=settings.value_search_enabled,
+            max_limit=settings.value_search_max_limit,
+            fuzzy_domain_max=settings.value_search_fuzzy_domain_max,
+            timeout_ms=settings.value_search_timeout_ms,
         ),
         cache=cache,
         cache_config=cache_config,

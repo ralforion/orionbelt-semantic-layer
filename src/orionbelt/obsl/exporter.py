@@ -380,6 +380,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.expressionSource,
         OBSL.filterExpression,
         OBSL.pathName,
+        OBSL.valueSearch,
         OBSL.joinRequired,
         OBSL.defaultValue,
         OBSL.synonym,
@@ -634,6 +635,9 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             g.add((dim_uri, OBSL.owner, Literal(dim.owner)))
         if dim.format:
             g.add((dim_uri, OBSL["format"], Literal(dim.format)))
+        # Only the opt-out is stated: listing values is the default.
+        if not dim.value_search:
+            g.add((dim_uri, OBSL.valueSearch, Literal(False)))
         for syn in dim.synonyms:
             g.add((dim_uri, OBSL.synonym, Literal(syn)))
         _emit_custom_extensions(g, dim_uri, getattr(dim, "custom_extensions", []))

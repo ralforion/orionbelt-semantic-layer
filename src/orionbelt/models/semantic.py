@@ -1036,6 +1036,12 @@ class Dimension(BaseModel):
     """
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
+    value_search: bool = Field(True, alias="valueSearch")
+    """Whether the value search (``/values``) may list this dimension's values.
+
+    A query may still filter on it; ``false`` only keeps its values from being
+    enumerated, for a column such as an email address or a national ID.
+    """
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
     external_concept_mappings: list[ExternalConceptMapping] = Field(
         default_factory=list, alias="externalConceptMappings"

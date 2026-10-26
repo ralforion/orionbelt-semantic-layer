@@ -404,3 +404,37 @@ class TestCountSynthesisKnobs:
         assert "exposeCounts" not in result
         assert "countLabelPattern" not in result
         assert "countable" not in result["dataObjects"]["Sales"]
+
+
+class TestDimensionValueSearchRoundtrip:
+    """``valueSearch: false`` keeps a dimension's values from being listed; the
+    opt-out survives OBML -> OSI -> OBML, for the primary dimension of a column
+    and for a second one over the same column."""
+
+    _OBML = {
+        "version": 1.0,
+        "dataObjects": {
+            "Customers": {
+                "code": "CUSTOMERS",
+                "database": "W",
+                "schema": "P",
+                "columns": {
+                    "Email": {"code": "EMAIL", "abstractType": "string"},
+                    "Country": {"code": "COUNTRY", "abstractType": "string"},
+                },
+            }
+        },
+        "dimensions": {
+            "Email": {"dataObject": "Customers", "column": "Email", "valueSearch": False},
+            "Email Copy": {"dataObject": "Customers", "column": "Email", "valueSearch": False},
+            "Country": {"dataObject": "Customers", "column": "Country"},
+        },
+    }
+
+    def test_the_opt_out_roundtrips(self):
+        dims = _roundtrip(self._OBML)["dimensions"]
+        assert dims["Email"].get("valueSearch") is False
+        assert dims["Email Copy"].get("valueSearch") is False
+
+    def test_the_default_is_not_written(self):
+        assert "valueSearch" not in _roundtrip(self._OBML)["dimensions"]["Country"]

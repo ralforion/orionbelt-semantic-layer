@@ -509,6 +509,7 @@ Full, two-sided comparisons, including where each of these tools is ahead: [dbt]
 - **Query Plan Endpoint** — `POST /query/plan` returns the planner's understanding (planner choice, physical tables, join path, `would_compile`) without compiling SQL or executing; opt-in `include_database_explain` adds the warehouse's raw EXPLAIN
 - **Structured Warnings** — every `warnings` list across the API uses a stable `{code, severity, message, path, hint, context}` shape with a documented code taxonomy; agents branch on codes instead of parsing messages
 - **Fuzzy `/find` Recovery** — when a search produces no exact or synonym hits, deterministic Levenshtein + trigram fallback returns near-miss candidates with scores and reasons
+- **Dimension-Value Search**: `POST /v1/values` lists or searches the values a dimension holds (exact, prefix, contains, then fuzzy), so an agent grounds a filter value in the data instead of guessing; the model's static filters apply, and `valueSearch: false` keeps a column's values private
 - **Model Examples** — optional OBML `examples:` block of canonical queries; `GET /examples` (with `?intent=` filtering) gives agents one-round-trip discovery of what a model is designed to answer
 
 ### Freshness-Driven Result Cache
