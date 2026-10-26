@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.36.0] - 2026-10-26
+
 ### Added
 
 - **Moving aggregates over rows: `frame` on window metrics.** A cumulative `window: 3` counts calendar periods, so a three-row moving average over the months that have orders, skipping an empty one, could not be written. Window metrics now take `windowFunction: sum | avg | min | max | count` with `frame: {preceding: N}`: the base measure over the current row and the N rows before it, `ROWS BETWEEN N PRECEDING AND CURRENT ROW`, ordered by `timeDimension` ascending and partitioned like a cumulative metric, by the query's other dimensions and `partitionBy`. As for every window metric, the frame reads the rows the query returns. `frame` is required for the five functions and refused for the others, which take no `offset`, `buckets`, `defaultValue` or `orderDirection` beside it; the time dimension must be selected, and ROLLUP / CUBE is refused (`WINDOW_FRAME_NOT_SUPPORTED`). In the JSON schema, the OBSL graph (`obsl:windowFramePreceding`), the OSI converter (`obml_window_frame`, ships in osi-orionbelt 0.6.0), which leaves it out of the portable SQL: its partitions depend on the query's other dimensions, which one expression cannot name.
@@ -24,8 +26,13 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 - **DuckDB 2.0.** The FinOps notebook and its showcase test filtered with the `x -> x.Value` lambda, which DuckDB 2.0 refuses; they use `lambda x: x.Value`, which DuckDB reads since 1.3. `ob-duckdb` type-checks against both 1.x and 2.0, whose stubs no longer carry `fetch_arrow_table` (the driver already calls `to_arrow_table` first). Compiled SQL is unchanged.
 - **A table joined only on the way is a cache dependency.** A query reading Customers through Orders -> Customer Links listed `orders` and `customers` in its physical tables but not `customer_links`, so a change there invalidated nothing and the cached result was served. Every table a join path walks now counts, in each leg of a multi-fact query too.
 - **A computed dimension beside measures of independent facts joins what it reads.** A dimension computed from another data object's column (`upper({[Countries].[Name]})` on Customers) was selected in each fact's leg without that object being joined, and the database refused the query. Each leg now joins the objects its dimensions read.
-
 - **`dimensionsExclude` runs on BigQuery.** The anti-join rendered a bare `EXCEPT`, which BigQuery refuses ("EXCEPT must be followed by ALL, DISTINCT"). It is now `EXCEPT DISTINCT` there.
+- **ER diagrams render in VS Code notebooks.** VS Code's Jupyter view loads RequireJS, whose global `define` made the date library bundled in mermaid register with it, so `show_mermaid` in `examples/notebook_setup.py` failed with `extend is not a function` and the ER diagram of the quickstart and FinOps notebooks stayed empty. The helper loads mermaid with `define` hidden, once per page.
+
+### Docs
+
+- **Comparisons cover moving aggregates over rows and `windowSpan`.** The dbt, Cube, LookML, Malloy and AtScale pages and the overview compare row frames and time spans with each tool's documented route, and every OBML example compiles. The Cube page covers empty periods.
+- **The README leads with portable answers, Ossie interop and lineage.**
 
 ## [2.35.1] - 2026-10-24
 
