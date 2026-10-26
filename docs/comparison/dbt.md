@@ -56,29 +56,31 @@ Four patterns supported, three of them dbt-equivalent:
 ```yaml
 metrics:
   # 1. Running total (unbounded cumulative sum)
-  - name: revenue_running_total
+  revenue_running_total:
     type: cumulative
     measure: revenue
     timeDimension: order_date
     cumulativeType: sum
 
   # 2. Rolling over the last N periods of the query's grain (e.g. last 3 months)
-  - name: revenue_3m_avg
+  revenue_3m_avg:
     type: cumulative
     measure: revenue
     timeDimension: order_date
     cumulativeType: avg
     window: 3
 
-  # 3. Rolling over a span of time (e.g. last 90 days), at any grain (dbt: window: 90 days)
-  - name: revenue_90d
+  # 3. Rolling over a span of time (e.g. last 90 days), at any grain. dbt: window: 90 days;
+  #    at a coarser grain than the day, with period_agg: last (dbt's default, first, reads
+  #    the window ending at the period's first day; OBSL's ends with the period)
+  revenue_90d:
     type: cumulative
     measure: revenue
     timeDimension: order_date
     windowSpan: { count: 90, unit: day }
 
   # 4. Grain-to-date (e.g. month-to-date, resets each month)
-  - name: revenue_mtd
+  revenue_mtd:
     type: cumulative
     measure: revenue
     timeDimension: order_date
@@ -101,13 +103,14 @@ Grains for grain-to-date: `year`, `quarter`, `month`, `week` (`GrainToDate`).
 **`partitionBy` extension (OBSL-only):** add a per-dimension partition to any rolling window:
 
 ```yaml
-- name: revenue_ma12_by_country
-  type: cumulative
-  measure: revenue
-  timeDimension: order_month
-  cumulativeType: avg
-  window: 12
-  partitionBy: [country] # 12-month MA computed independently per country
+metrics:
+  revenue_ma12_by_country:
+    type: cumulative
+    measure: revenue
+    timeDimension: order_date
+    cumulativeType: avg
+    window: 12
+    partitionBy: [country] # 12-month MA computed independently per country
 ```
 
 dbt SL has no native partition-by surface on cumulative metrics; users would step outside the metric DSL and write window-function SQL by hand.
@@ -121,7 +124,7 @@ OBSL ships `MetricType.WINDOW` for the window-function family — `RANK`, `DENSE
 ```yaml
 metrics:
   # Rank revenue within each quarter
-  - name: revenue_rank_by_quarter
+  revenue_rank_by_quarter:
     type: window
     windowFunction: dense_rank
     measure: revenue
@@ -129,7 +132,7 @@ metrics:
     partitionBy: [quarter]
 
   # Prior-month revenue side by side with the current row
-  - name: revenue_prior_month
+  revenue_prior_month:
     type: window
     windowFunction: lag
     measure: revenue
@@ -138,7 +141,7 @@ metrics:
     partitionBy: [country]
 
   # Three-row moving average over the periods that have data
-  - name: revenue_moving_avg
+  revenue_moving_avg:
     type: window
     windowFunction: avg
     measure: revenue
@@ -175,10 +178,11 @@ OBSL exposes PoP as a **first-class metric type** with a comparison-mode enum, w
 
 ```yaml
 metrics:
-  - name: revenue_yoy
+  revenue_yoy:
     type: period_over_period
-    measure: revenue
+    expression: "{[revenue]}"
     periodOverPeriod:
+      timeDimension: order_date
       grain: month                # bucket grain
       offset: -1                  # compare vs. previous period
       offsetGrain: year           # one year earlier

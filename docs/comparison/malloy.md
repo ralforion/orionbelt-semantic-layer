@@ -57,17 +57,14 @@ run: flights -> by_carrier + {
 ### OBSL
 
 ```yaml
-# Model
-metrics:
-  - name: flight_count
-    type: derived
-    expr: "{[Flights].[Count]}"
+# Model: the row count needs no declaration. Every countable data object
+# yields one, named after it: "Flights Count"
 ```
 
 ```json
 // Query
 {
- "select": { "dimensions": ["Carrier"], "measures": ["flight_count"] },
+ "select": { "dimensions": ["Carrier"], "measures": ["Flights Count"] },
  "where": [{ "field": "Distance", "op": ">", "value": 1000 }],
  "limit": 10
 }
