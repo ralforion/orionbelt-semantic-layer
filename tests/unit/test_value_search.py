@@ -271,3 +271,21 @@ async def test_fuzzy_scoring_leaves_the_event_loop_free(model: SemanticModel) ->
     await task
     # On the event loop, the scoring would have run with no tick in between.
     assert ticks > 5
+
+
+async def test_one_long_comparison_stops_at_the_deadline(model: SemanticModel) -> None:
+    import time
+
+    # A single 1,500-character candidate against a long term: one edit-distance
+    # table of over two million cells, which took 364 ms where 50 were allowed.
+    config = ValueSearchConfig(timeout_ms=50)
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await search_values(
+            model,
+            "Country",
+            run=_domain_runner(["y" * 1500]),
+            config=config,
+            search="Germny" * 250,
+        )
+    assert time.monotonic() - start < 0.2

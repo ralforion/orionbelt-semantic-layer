@@ -300,10 +300,12 @@ def _score(term: str, texts: list[str], deadline: float) -> list[tuple[float, st
     """Fuzzy matches of *term*, best first; raises ``TimeoutError`` past *deadline*."""
     scored: list[tuple[float, str]] = []
     for text in texts:
-        if time.monotonic() > deadline:
-            raise TimeoutError("value search fuzzy scoring passed its deadline")
-        score, _ = fuzzy_score(term, text)
+        # Checked inside each comparison too: one long value is enough to
+        # run past the budget.
+        score, _ = fuzzy_score(term, text, deadline=deadline)
         if score >= FUZZY_THRESHOLD:
             scored.append((round(score, 3), text))
+    if time.monotonic() > deadline:
+        raise TimeoutError("value search fuzzy scoring passed its deadline")
     scored.sort(key=lambda item: (-item[0], item[1]))
     return scored

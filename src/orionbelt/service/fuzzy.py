@@ -6,6 +6,7 @@ Phase B (semantic embeddings) is deferred per ``design/PLAN_agent_api_improvemen
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 
@@ -19,8 +20,13 @@ class FuzzyMatch:
     reason: str
 
 
-def _levenshtein(a: str, b: str) -> int:
-    """Pure-Python Levenshtein distance — small inputs only."""
+def _levenshtein(a: str, b: str, deadline: float | None = None) -> int:
+    """Pure-Python Levenshtein distance — small inputs only.
+
+    With a *deadline* (``time.monotonic()``), each row of the table checks it
+    and raises ``TimeoutError`` once past, so one long comparison cannot run
+    on beyond a caller's budget.
+    """
     if a == b:
         return 0
     if not a:
@@ -29,6 +35,8 @@ def _levenshtein(a: str, b: str) -> int:
         return len(a)
     prev = list(range(len(b) + 1))
     for i, ca in enumerate(a, 1):
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("fuzzy edit distance passed its deadline")
         curr = [i]
         for j, cb in enumerate(b, 1):
             curr.append(
@@ -65,31 +73,32 @@ def _trigram_score(query: str, candidate: str) -> float:
     return len(overlap) / len(union)
 
 
-def _edit_score(query: str, candidate: str) -> float:
+def _edit_score(query: str, candidate: str, deadline: float | None = None) -> float:
     """Normalized edit-distance score: 1 = identical, 0 = totally different."""
     qn = _normalize(query)
     cn = _normalize(candidate)
     if not qn or not cn:
         return 0.0
-    dist = _levenshtein(qn, cn)
+    dist = _levenshtein(qn, cn, deadline)
     longest = max(len(qn), len(cn))
     return 1.0 - (dist / longest)
 
 
-def fuzzy_score(query: str, candidate: str) -> tuple[float, str]:
+def fuzzy_score(query: str, candidate: str, *, deadline: float | None = None) -> tuple[float, str]:
     """Compute the combined fuzzy score and the dominant reason.
 
     Weighted blend: trigram overlap (0.6) + edit-distance score (0.4).
-    Reason is the contributor that scored highest.
+    Reason is the contributor that scored highest. A *deadline* bounds the
+    edit-distance work (see :func:`_levenshtein`).
     """
     tri = _trigram_score(query, candidate)
-    edit = _edit_score(query, candidate)
+    edit = _edit_score(query, candidate, deadline)
     score = 0.6 * tri + 0.4 * edit
     if tri >= edit:
         reason = "trigram overlap"
     else:
         qn, cn = _normalize(query), _normalize(candidate)
-        dist = _levenshtein(qn, cn)
+        dist = _levenshtein(qn, cn, deadline)
         reason = f"edit distance: {dist}"
     return score, reason
 
