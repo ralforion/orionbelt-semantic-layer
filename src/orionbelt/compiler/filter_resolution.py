@@ -594,7 +594,8 @@ def resolve_order_by_field(
         SemanticError(
             code="UNKNOWN_ORDER_BY_FIELD",
             message=(
-                f"ORDER BY field '{field_name}' is not a dimension or measure in the query's SELECT"
+                f"ORDER BY field '{field_name}' is not a dimension in the query's SELECT, "
+                "or a measure or metric of the model"
             ),
             path="orderBy",
         )

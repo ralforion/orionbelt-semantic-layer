@@ -49,6 +49,7 @@ from orionbelt.compiler.having_hoist import (
 )
 from orionbelt.compiler.late_window import late_window_applies, wrap_with_late_window
 from orionbelt.compiler.metric_expansion import metric_leaf_components
+from orionbelt.compiler.order_only import wrap_order_only
 from orionbelt.compiler.pop_wrap import wrap_with_pop
 from orionbelt.compiler.reaggregate_wrap import (
     capture_reaggregate_components,
@@ -81,6 +82,7 @@ PASS_WINDOW = "window"
 PASS_FILL = "fill"
 PASS_HAVING_WINDOW = "having_over_window"
 PASS_HAVING_CLEANUP = "having_projection_cleanup"
+PASS_ORDER_ONLY = "order_only"
 
 
 @dataclass(frozen=True)
@@ -280,6 +282,14 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
             run=lambda ast, ctx: apply_having_hoist(
                 ast, hoisted_predicates(ctx.resolved, ctx.model), cte_name="having_window"
             ),
+        ),
+        # Sorts the rows every pass above finished. Before the HAVING cleanup,
+        # so a HAVING-only measure is still a column to sort by; the cleanup
+        # then drops it from this pass's projection.
+        CompilerPass(
+            name=PASS_ORDER_ONLY,
+            applies=lambda r: bool(r.order_only_measures),
+            run=wrap_order_only,
         ),
         CompilerPass(
             name=PASS_HAVING_CLEANUP,

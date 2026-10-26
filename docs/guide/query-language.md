@@ -889,7 +889,7 @@ A column of the target wins over a same-named dimension, so adding a dimension t
 
 ## Ordering
 
-Sort results by dimension or measure names from the query's SELECT, or by numeric position:
+Sort results by dimension or measure names from the query's SELECT, by a measure or metric the query does not select, or by numeric position:
 
 ```yaml
 orderBy:
@@ -903,10 +903,28 @@ orderBy:
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `field` | string | — | Dimension or measure name from the query's SELECT, or a numeric position (e.g. `"1"`) |
+| `field` | string | — | Dimension or measure name from the query's SELECT, any measure or metric of the model, or a numeric position (e.g. `"1"`) |
 | `direction` | enum | `asc` | `asc` or `desc` |
+| `nulls` | enum | engine default | `first` or `last` |
 
-The `field` must reference a dimension or measure that appears in the query's `select`. It cannot reference fields outside the SELECT. Alternatively, use a numeric string to reference the SELECT column by position (1-based).
+A dimension must appear in the query's `select`. A numeric string references a returned column by position (1-based).
+
+### Sorting by a Measure the Query Does Not Return
+
+A measure or metric can be sorted by without being selected: the three customers with the most revenue, showing only their names.
+
+```yaml
+select:
+  dimensions: [Customer Name]
+orderBy:
+  - field: Revenue
+    direction: desc
+limit: 3
+```
+
+The rows are the query's own. The sort measure is computed in a query of its own over the same dimensions and `where` filters, joined onto the rows by their dimensions, and sorted on; it is not returned. Selecting it would have changed the rows: a customer without orders is a row of `Customer Name` alone but not of `Customer Name, Revenue`. Here that customer keeps the row and sorts as NULL (put such rows last with `nulls: last`).
+
+Any measure or metric works, cumulative, window and derived ones included. A dimension the query does not select is `UNKNOWN_ORDER_BY_FIELD`: the query's grain holds no single value of it. Beside ROLLUP / CUBE it is `ORDER_BY_COMBINATION_NOT_SUPPORTED`, since a subtotal row has no value at the detail grain; select the measure to sort by it there.
 
 ## Limit
 
@@ -932,7 +950,8 @@ Invalid queries return error responses:
 | `FILTER_ADMITS_ROWS_WITHOUT` | 400 | WHERE on the many side of the measures' objects could hold for a row with no matching rows there, and the query's shape cannot add those rows (several one-side objects under ROLLUP / CUBE, a nested object, `allowFanOut`); use `exists` / `nonexists` |
 | `FILTER_ON_CONFORMED_OBJECT` | 400 | WHERE filter reads a fact an anchored measure conforms together with the anchor's side (an `OR` across both); see [Filters on a conformed fact](compilation.md#filters-on-a-conformed-fact) |
 | `STATIC_FILTER_UNREACHABLE` | 400 | A static model filter declared `enforce: always` names a data object the query, or one measure's fact, cannot reach |
-| `UNKNOWN_ORDER_BY_FIELD` | 400 | ORDER BY field not in query's SELECT |
+| `UNKNOWN_ORDER_BY_FIELD` | 400 | ORDER BY field is neither a dimension in the query's SELECT nor a measure or metric of the model |
+| `ORDER_BY_COMBINATION_NOT_SUPPORTED` | 400 | ORDER BY a measure or metric the query does not select, beside ROLLUP / CUBE |
 | `INVALID_ORDER_BY_POSITION` | 400 | Numeric ORDER BY position out of range |
 | `INVALID_FILTER_OPERATOR` | 400 | Unrecognized filter operator |
 | `INVALID_RELATIVE_FILTER` | 400 | Malformed relative time filter |
