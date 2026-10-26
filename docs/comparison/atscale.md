@@ -11,7 +11,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **AtScale**
 ## TL;DR
 
 - **AtScale wins on**: enterprise OLAP capabilities (true hierarchies, parent-child, ragged, time-intelligence), **native MDX support** for Excel pivot tables and SSAS-protocol clients (no other peer in this comparison set has this), **DAX support** for Power BI live connections, **autonomous aggregates** (machine-learned auto-rollups similar to Cube pre-aggregations but more automated), enterprise governance (RLS, perspectives, lineage), and broad legacy/cloud warehouse coverage.
-- **OBSL wins on**: being **source-available (BUSL-1.1) and self-hostable for production with no licensing tier** (AtScale offers a free Developer Community Edition for evaluation, but production multi-user deployments require an enterprise license), a **simple JSON Query API** consumable by any client, **first-class declarative metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value), **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*), an **RDF/SPARQL graph view** of the model, **named secondary join paths**, **multi-rooted DAG topology with the CFL planner**, an **interactive ontology-graph playground**, **OSI v0.2 ↔ OBML format conversion**, and a much smaller operational footprint.
+- **OBSL wins on**: being **source-available (BUSL-1.1) and self-hostable for production with no licensing tier** (AtScale offers a free Developer Community Edition for evaluation, but production multi-user deployments require an enterprise license), a **simple JSON Query API** consumable by any client, **first-class declarative metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value, moving sum / avg / min / max / count over a row frame), **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*), an **RDF/SPARQL graph view** of the model, **named secondary join paths**, **multi-rooted DAG topology with the CFL planner**, an **interactive ontology-graph playground**, **OSI v0.2 ↔ OBML format conversion**, and a much smaller operational footprint.
 - **Different niches**: AtScale is "the enterprise OLAP semantic layer for Excel/PowerBI/Tableau shops that need MDX." OBSL is "the source-available, embeddable semantic compiler for apps, agents, and modern BI tools that speak Arrow Flight SQL or REST."
 
 AtScale is the only peer in this comparison set that natively speaks **MDX**, the OLAP wire protocol that Excel and SSAS clients use. That's a real moat for organizations standardized on Microsoft BI tooling. OBSL doesn't compete on that axis.
@@ -119,9 +119,9 @@ Caller-level authentication is a separate axis and does exist: `AUTH_MODE=api_ke
 | OBSL | AtScale | Notes |
 |---|---|---|
 | `Metric` `type: derived` | Calculated members (MDX expressions) | Both first-class |
-| `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy`**) | Time-intelligence MDX: <pre><code>Aggregate(<br> YTD([Date].CurrentMember),<br> [Sales]<br>)</code></pre> — idiomatic OLAP | Both expressive; OBSL is YAML-declarative, AtScale is MDX-declarative |
+| `Metric` `type: cumulative` (running, rolling over N periods or a `windowSpan` of time, grain-to-date, **per-dimension `partitionBy`**) | Time-intelligence MDX: <pre><code>Aggregate(<br> YTD([Date].CurrentMember),<br> [Sales]<br>)</code></pre> — idiomatic OLAP | Both expressive; OBSL is YAML-declarative, AtScale is MDX-declarative |
 | `Metric` `type: period_over_period` (4 comparison modes) | Calculated members using `ParallelPeriod` / `Lag` MDX functions | Both expressive; AtScale is more flexible (full MDX), OBSL is more turnkey |
-| `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | MDX `Rank()`, `Lag()`, `Lead()` in calculated members | OBSL exposes these as declarative metric types; AtScale expresses them via MDX |
+| `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value`,<br>`sum` / `avg` / `min` / `max` / `count` over a row `frame` | MDX `Rank()`, `Lag()`, `Lead()` in calculated members | OBSL exposes these as declarative metric types; AtScale expresses them via MDX |
 | Reusable filter context / filtered measures | Named sets, perspectives | Comparable |
 | Hierarchical aggregation | Limited (use grains) | First-class via hierarchies and `Aggregate()` |
 
@@ -234,8 +234,8 @@ The free **Developer Community Edition** lowers AtScale's barrier for evaluation
 | Multi-rooted DAG modeling | ✅ via CFL | ❌ (cube-rooted) |
 | Named secondary join paths (per-query) | ✅ | Role-playing dimensions are model-time, not query-time |
 | First-class declarative PoP metric type | ✅ | Via MDX (more flexible but less turnkey) |
-| First-class declarative cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy`) | Via MDX time intelligence |
-| First-class declarative window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ | Via MDX calculated members |
+| First-class declarative cumulative metric type | ✅ (running, rolling over N periods or a `windowSpan` of time, grain-to-date, `partitionBy`) | Via MDX time intelligence |
+| First-class declarative window metric type (rank / lag / lead / ntile / first_value / last_value, moving sum / avg / min / max / count over a row frame) | ✅ | Via MDX calculated members |
 | First-class statistical / regression aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) as measure types | ✅ 9 declarative aggregations | Via MDX calculated members — not first-class measure types |
 | Semi-additive measures (last/first non-empty) | ✅ composed: a `last` / `first` measure reaggregated with `sum` per member (closing / opening balance), `carryForward` for last non-empty across periods without a snapshot; only periods with some snapshot are rows | ✅ first-class OLAP |
 | Apache Arrow Flight SQL | ✅ | ❌ |
