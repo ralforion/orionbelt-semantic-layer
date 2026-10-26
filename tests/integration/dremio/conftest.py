@@ -31,6 +31,10 @@ import pytest
 DREMIO_REST_URL = os.environ.get("DREMIO_REST_URL", "http://localhost:19047")
 OBSL_PGWIRE_HOST = os.environ.get("OBSL_PGWIRE_HOST", "obsl")  # docker network alias
 OBSL_PGWIRE_PORT = int(os.environ.get("OBSL_PGWIRE_PORT", "5432"))
+# The same OBSL container's REST API, host side. Dremio reaches OBSL over the
+# docker network, which the host cannot probe, so the fixtures ask this port
+# which models OBSL serves before registering it as a source.
+OBSL_REST_URL = os.environ.get("OBSL_REST_URL", "http://localhost:18080")
 # Defaults to the model **this directory's** stack serves. The compose file
 # beside this conftest sets ``MODEL_FILES: orionbelt_1_commerce.yaml,...``, so
 # that is what these tests find when nobody says otherwise.
@@ -116,6 +120,34 @@ def _bootstrap_first_user(client: httpx.Client) -> str:
     return str(login.json()["token"])
 
 
+def _require_obsl_model() -> None:
+    """Skip unless the OBSL this suite registers in Dremio is up and serves the model.
+
+    Dremio answering on :19047 does not mean this directory's stack is up:
+    the demo stack in ``demo/dremio/`` publishes the same port, serves a model
+    named ``commerce`` and may run without its OBSL container. Registering the
+    source then fails inside Dremio, and every test errors with "Could not
+    connect", which reads like a pgwire regression rather than a wrong stack.
+    """
+
+    hint = "bring this suite's stack up with `tests/integration/dremio/run.sh`"
+    try:
+        resp = httpx.get(f"{OBSL_REST_URL}/v1/models", timeout=5.0)
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        pytest.skip(
+            f"Dremio is up at {DREMIO_REST_URL} but OBSL is not reachable at "
+            f"{OBSL_REST_URL} ({exc}). The demo stack in demo/dremio/ uses the same "
+            f"Dremio port; {hint}."
+        )
+    served = sorted(m["name"] for m in resp.json().get("models", []))
+    if OBSL_MODEL_NAME not in served:
+        pytest.skip(
+            f"OBSL at {OBSL_REST_URL} serves {served}, not {OBSL_MODEL_NAME!r}. "
+            f"If it is the demo stack, export OBSL_MODEL_NAME=commerce; otherwise {hint}."
+        )
+
+
 def _ensure_postgres_source(client: httpx.Client, token: str) -> None:
     """Create the OBSL Postgres source if it doesn't already exist."""
 
@@ -199,6 +231,7 @@ def dremio_admin_token() -> str:
 def dremio_session(dremio_admin_token: str) -> Iterator[DremioSession]:
     """Wait for Dremio + OBSL, bootstrap the admin user, register the source."""
 
+    _require_obsl_model()
     with httpx.Client(base_url=DREMIO_REST_URL) as client:
         _ensure_postgres_source(client, dremio_admin_token)
 

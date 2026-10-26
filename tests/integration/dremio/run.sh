@@ -26,6 +26,15 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -z "${NO_BUILD:-}" ]]; then
+    # The image bakes the commerce DuckDB seed in only when the file exists
+    # (the Dockerfile COPY makes it optional for the public image), so a
+    # missing seed builds an OBSL with the model and no data. The seed is
+    # gitignored; regenerate it (reproducible synthetic data) before building.
+    if [[ ! -f examples/orionbelt_1_commerce.duckdb ]]; then
+        echo "Generating demo DuckDB seed (examples/orionbelt_1_commerce.duckdb)..."
+        uv run python scripts/build_demo_duckdb.py
+    fi
+
     echo "Building OBSL image..."
     docker compose -f "$COMPOSE_FILE" build
 fi
