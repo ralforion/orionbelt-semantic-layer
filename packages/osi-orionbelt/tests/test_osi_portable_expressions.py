@@ -440,6 +440,23 @@ class TestNotPortableIsLeftOut:
         assert name not in _sql(osi)
         assert any(name in w and reason in w for w in warnings)
 
+    def test_moving_aggregate_window_metric_is_left_out(self) -> None:
+        # Its frame is split by every other dimension of the query, which the
+        # expression cannot name; the custom extension still carries it back.
+        obml = copy.deepcopy(_MODEL)
+        obml["metrics"]["Sales Moving Avg"] = {
+            "type": "window",
+            "windowFunction": "avg",
+            "measure": "Sales",
+            "timeDimension": "Line Date",
+            "frame": {"preceding": 2},
+        }
+        osi, warnings = _export(obml)
+        assert "Sales Moving Avg" not in _sql(osi)
+        assert any("Sales Moving Avg" in w and "every other dimension" in w for w in warnings)
+        back = conv.OSItoOBML(osi).convert()
+        assert back["metrics"]["Sales Moving Avg"] == obml["metrics"]["Sales Moving Avg"]
+
     def test_unknown_measure_reference_is_left_out(self) -> None:
         obml = copy.deepcopy(_MODEL)
         obml["metrics"] = {"Broken": {"expression": "{[Nope]} * 2"}}

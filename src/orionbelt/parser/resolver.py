@@ -1250,6 +1250,8 @@ class ReferenceResolver:
                     )
                 if metric_type != MetricType.CUMULATIVE and "windowSpan" in raw_metric:
                     raise ValueError("'windowSpan' is only valid on cumulative metrics")
+                if metric_type != MetricType.WINDOW and "frame" in raw_metric:
+                    raise ValueError("'frame' is only valid on window metrics")
                 concept_links = _parse_concept_mappings(
                     raw_metric, f"metrics.{name}", prefixes, errors, source_map
                 )
@@ -1472,8 +1474,15 @@ class ReferenceResolver:
                         window_function=raw_metric.get("windowFunction"),
                         offset=raw_metric.get("offset"),
                         buckets=raw_metric.get("buckets"),
-                        order_direction=raw_metric.get("orderDirection", "desc"),
+                        # Passed only when written, so a frame metric can
+                        # refuse a direction it would not use.
+                        **(
+                            {"order_direction": raw_metric["orderDirection"]}
+                            if "orderDirection" in raw_metric
+                            else {}
+                        ),
                         default_value=raw_metric.get("defaultValue"),
+                        frame=raw_metric.get("frame"),
                         partition_by=list(raw_metric.get("partitionBy", []) or []),
                         data_type=raw_metric.get("dataType"),
                         description=raw_metric.get("description"),

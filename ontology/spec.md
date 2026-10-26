@@ -36,10 +36,10 @@ OBSL-Core is not intended to represent:
 - joins (with optional secondary-path naming)
 - dimensions (with optional `via` for role-playing paths, and `pathName` to pin a dimension to one named join from `via`)
 - measures (with optional grain override, filter context, LISTAGG `delimiter` + `withinGroup` ordering, which is also the key of `first` / `last`, `percentile` fraction)
-- metrics — five types: derived, cumulative, period-over-period, **window** (`rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value`), **reaggregate**
+- metrics — five types: derived, cumulative, period-over-period, **window** (`rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value`, and the moving aggregates `sum`, `avg`, `min`, `max`, `count` over a row frame), **reaggregate**
 - cumulative metric metadata (time dimension, window, grain-to-date, optional `partitionBy`)
 - period-over-period metric metadata (time dimension, offset, comparison)
-- window metric metadata (window function, offset, buckets, order direction, default value, `partitionBy`)
+- window metric metadata (window function, offset, buckets, order direction, default value, `partitionBy`, and a moving aggregate's `obsl:windowFramePreceding`)
 - reaggregate metric metadata (`per` dimensions, second-stage aggregation)
 - canonical example queries (`ModelExample` with name, description, query payload, intent tags)
 - vendor-keyed `CustomExtension` blocks attached to any modeling element (model, data object, column, dimension, measure, metric)
@@ -664,6 +664,7 @@ Core datatype properties:
 - `obsl:window` (functional)
 - `obsl:grainToDate` (functional)
 - `obsl:windowSpan` (functional)
+- `obsl:windowFramePreceding` (functional)
 - `obsl:offset` (functional)
 - `obsl:offsetGrain` (functional)
 - `obsl:comparison` (functional)

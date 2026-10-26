@@ -1001,6 +1001,7 @@ class OBMLtoOSI:
                 "offset": "obml_window_offset",
                 "buckets": "obml_window_buckets",
                 "defaultValue": "obml_window_default_value",
+                "frame": "obml_window_frame",
             }
             for obml_key, ext_key in optional.items():
                 if metric.get(obml_key) is not None:

@@ -68,7 +68,7 @@ enums:
     values: ['year', 'quarter', 'month', 'week', 'day', 'hour', 'minute', 'second']
   WindowFunctionKind:
     python: orionbelt.models.semantic.WindowFunctionKind
-    values: ['rank', 'dense_rank', 'row_number', 'ntile', 'lag', 'lead', 'first_value', 'last_value']
+    values: ['rank', 'dense_rank', 'row_number', 'ntile', 'lag', 'lead', 'first_value', 'last_value', 'sum', 'avg', 'min', 'max', 'count']
   ExternalConceptRelation:
     python: orionbelt.models.semantic.ExternalConceptRelation
     values: ['exact', 'close', 'broader', 'narrower', 'related']
@@ -972,6 +972,12 @@ classes:
         json_schema: true
         ontology_property: windowDefaultValue
         osi_roundtrip: true
+      frame:
+        alias: frame
+        type: "RowFrame | None"
+        json_schema: true
+        ontology_property: windowFramePreceding
+        osi_roundtrip: true
       per:
         alias: per
         type: "list[str]"
@@ -1199,6 +1205,18 @@ classes:
       unit:
         alias: unit
         type: "TimeGrain"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  RowFrame:
+    python: orionbelt.models.semantic.RowFrame
+    json_schema_def: rowFrame
+    # Carried by the metric's obsl:windowFramePreceding as one integer.
+    ontology_class: null
+    fields:
+      preceding:
+        alias: preceding
+        type: "int"
         json_schema: true
         ontology_property: null
         osi_roundtrip: true

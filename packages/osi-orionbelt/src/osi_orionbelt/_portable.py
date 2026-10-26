@@ -65,6 +65,7 @@ _WINDOW_FUNCS = {
     "lead",
     "first_value",
     "last_value",
+    *_CUMULATIVE_FUNCS,
 }
 
 # Filter operators whose OSSIE_SQL_2026 form differs from the ANSI one.
@@ -608,6 +609,11 @@ class PortableRenderer:
         func = str(met.get("windowFunction", "")).lower()
         if func not in _WINDOW_FUNCS:
             raise NotPortableError(f"metric '{name}' has unknown windowFunction '{func}'")
+        if func in _CUMULATIVE_FUNCS:
+            raise NotPortableError(
+                f"metric '{name}' aggregates a frame of rows split by every other dimension "
+                f"of the query, which one expression cannot name"
+            )
         direction = "DESC" if str(met.get("orderDirection", "desc")).lower() == "desc" else "ASC"
         inner = self._windowed(name, met["measure"]) if met.get("measure") else None
         time = self._dimension(met["timeDimension"]) if met.get("timeDimension") else None

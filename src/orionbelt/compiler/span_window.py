@@ -64,6 +64,7 @@ from orionbelt.compiler.time_lookback import (
     rename_cte_sources,
     time_filters,
 )
+from orionbelt.compiler.window_wrap import group_dimensions
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import DataType, TimeGrain
@@ -220,7 +221,6 @@ def _span_value(
     base_name: str,
 ) -> tuple[str, list[CTE], list[ResolvedMeasure]]:
     from orionbelt.compiler.cfl import CFLPlanner
-    from orionbelt.compiler.cumulative_wrap import _group_dimensions
 
     span = m.cumulative_window_span
     assert span is not None and m.cumulative_time_dimension is not None
@@ -249,7 +249,7 @@ def _span_value(
     # column (``Order Date:year``) is a position on the time axis, not a group:
     # January's 90 days still reach into December.
     row_grain = _row_grain(period, span.unit)
-    groups = set(_group_dimensions(resolved, time_name))
+    groups = set(group_dimensions(resolved, time_name))
     dimensions: list[str] = [
         d.dimension if d.grain is None else f"{d.dimension}:{d.grain.value}"
         for d in resolved.dimensions

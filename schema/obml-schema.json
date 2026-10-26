@@ -989,7 +989,7 @@
       ]
     },
     "windowFunctionKind": {
-      "description": "SQL window-function family for MetricType.WINDOW",
+      "description": "SQL window-function family for MetricType.WINDOW. sum, avg, min, max and count aggregate over a frame of the result's rows and require frame.",
       "enum": [
         "rank",
         "dense_rank",
@@ -998,8 +998,28 @@
         "lag",
         "lead",
         "first_value",
-        "last_value"
+        "last_value",
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "count"
       ]
+    },
+    "rowFrame": {
+      "description": "The rows a moving aggregate reads: the current row and the preceding rows before it, in the result ordered by time.",
+      "type": "object",
+      "properties": {
+        "preceding": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Rows before the current one (2 is a three-row moving aggregate)"
+        }
+      },
+      "required": [
+        "preceding"
+      ],
+      "additionalProperties": false
     },
     "periodOverPeriod": {
       "type": "object",
@@ -1117,6 +1137,10 @@
         },
         "defaultValue": {
           "description": "Default value for LAG/LEAD (NULL when omitted)"
+        },
+        "frame": {
+          "$ref": "#/definitions/rowFrame",
+          "description": "Window metrics with windowFunction sum, avg, min, max or count (required there, refused elsewhere): a moving aggregate over the current row and frame.preceding rows before it, per group of the query's other dimensions and partitionBy, ordered by timeDimension ascending. It counts the rows the query returns, not calendar periods."
         },
         "per": {
           "type": "array",

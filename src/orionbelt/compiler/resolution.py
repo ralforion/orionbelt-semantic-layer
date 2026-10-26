@@ -822,6 +822,9 @@ class ResolvedMeasure:
     window_buckets: int | None = None
     window_order_direction: str = "desc"
     window_default_value: str | int | float | bool | None = None
+    window_frame_preceding: int | None = None
+    """For an aggregating window metric, the rows before the current one its
+    frame reads (``frame.preceding``)."""
     # A window over a reaggregate metric: computed after the reaggregate pass,
     # over its finished rows (``late_window``), not by the window pass.
     window_over_reaggregate: bool = False
