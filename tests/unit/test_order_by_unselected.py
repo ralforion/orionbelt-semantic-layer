@@ -470,3 +470,18 @@ def test_a_filter_the_sort_fact_cannot_apply_is_reported(bridged: SemanticModel)
     )
     # January's customers, ranked by all their returns: Bob 1, Ann none.
     assert con.execute(compiled.sql).fetchall() == [("Bob", 50.0), ("Ann", 10.0)]
+
+
+def test_a_having_only_measure_is_planning_context_of_the_sort(
+    bridged: SemanticModel,
+) -> None:
+    # Revenue, read only by HAVING, keeps the Orders fact in the plan the sort
+    # values come from, as it does when Returned is selected.
+    query = {
+        "select": {"dimensions": ["Customer Name"]},
+        "where": JANUARY,
+        "having": [{"field": "Revenue", "op": ">", "value": 0}],
+        "orderBy": [_by("Returned", "desc")],
+    }
+    compiled = _compile(bridged, query)
+    assert "FILTER_NOT_APPLIED" in [w.code for w in compiled.warnings]

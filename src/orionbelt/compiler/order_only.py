@@ -67,11 +67,12 @@ def wrap_order_only(ast: Select, ctx: CompileContext) -> Select:
     if aliases is None:
         return ast
     # The sort values are the ones the measures would show selected in this
-    # query: beside its selected measures, so the same plan reads them (a
-    # filter one fact cannot reach is skipped there and said so), with the
-    # same filters and join paths, a cumulative metric as of the same date,
-    # and the filled periods carrying theirs.
-    measures = list(dict.fromkeys([*query.select.measures, *hidden]))
+    # query: beside its selected and HAVING-only measures, so the same plan
+    # reads them (a filter one fact cannot reach is skipped there and said
+    # so), with the same filters and join paths, a cumulative metric as of
+    # the same date, and the filled periods carrying theirs.
+    having_only = sorted(ctx.resolved.having_only_measures)
+    measures = list(dict.fromkeys([*query.select.measures, *having_only, *hidden]))
     sort_query = QueryObject(
         select=QuerySelect(dimensions=list(query.select.dimensions), measures=measures),
         where=list(query.where),
