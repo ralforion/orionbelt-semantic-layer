@@ -12,6 +12,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 - **DuckDB results go straight to Arrow.** A query on DuckDB was executed, held as rows and then copied into an Arrow table, which DuckDB 2.0 warns about on every query ("Arrow output on a DB-API result makes an extra copy of the rows"). REST, pgwire and the UI now read the result as a relation that builds the table directly. An error raised while the result is read surfaces once, without running the query a second time. The session timezone probe runs on its own cursor, as DuckDB 2.0 refuses a query on a connection whose previous result was not read to the end. Flight SQL reads through the `ob-duckdb` cursor, which keeps the copy: a PEP 249 cursor runs its query in `execute()`, and DuckDB has no copy-free Arrow read of an executed result.
 
+### Fixed
+
+- **The driver packages are published with OBSL and carry its version.** Nothing published the ten packages under `drivers/` since 2.6.1, so `pip install "orionbelt-semantic-layer[flight]"` installed `ob-flight-extension` 2.6.1 and the database drivers 2.1.0, without anything fixed since: ADBC client authentication, Flight's Arrow schemas, TLS, `ob-mysql` on ADBC, `ob-duckdb` on DuckDB 2.0. Docker images and installs from the repository built them from source and were not affected. The packages are now versioned with OBSL, starting at 2.36.0 (the code OBSL 2.36.0 shipped), published by the release tag's workflow, and required at that version or later by the `flight` extras and by each other. `scripts/release.sh` refuses a release whose drivers carry another version.
+
 ## [2.36.0] - 2026-10-26
 
 ### Added

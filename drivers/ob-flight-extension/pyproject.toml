@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ob-flight-extension"
-version = "2.6.1"
+version = "2.36.0"
 description = "Arrow Flight SQL server extension for orionbelt-api (DBeaver, Tableau, Power BI)"
 license = "BUSL-1.1"
 license-files = ["LICENSE"]
@@ -15,23 +15,23 @@ requires-python = ">=3.12"
 dependencies = [
     "pyarrow>=16.0",
     "pyyaml>=6.0",
-    "ob-driver-core>=0.1",
+    "ob-driver-core>=2.36.0",
 ]
 
 [project.optional-dependencies]
-duckdb      = ["ob-duckdb>=0.1"]
-snowflake   = ["ob-snowflake>=0.1"]
-postgres    = ["ob-postgres>=0.1"]
-clickhouse  = ["ob-clickhouse>=0.1"]
-dremio      = ["ob-dremio>=0.1"]
-databricks  = ["ob-databricks>=0.1"]
+duckdb      = ["ob-duckdb>=2.36.0"]
+snowflake   = ["ob-snowflake>=2.36.0"]
+postgres    = ["ob-postgres>=2.36.0"]
+clickhouse  = ["ob-clickhouse>=2.36.0"]
+dremio      = ["ob-dremio>=2.36.0"]
+databricks  = ["ob-databricks>=2.36.0"]
 all = [
-    "ob-duckdb>=0.1",
-    "ob-snowflake>=0.1",
-    "ob-postgres>=0.1",
-    "ob-clickhouse>=0.1",
-    "ob-dremio>=0.1",
-    "ob-databricks>=0.1",
+    "ob-duckdb>=2.36.0",
+    "ob-snowflake>=2.36.0",
+    "ob-postgres>=2.36.0",
+    "ob-clickhouse>=2.36.0",
+    "ob-dremio>=2.36.0",
+    "ob-databricks>=2.36.0",
 ]
 dev = [
     "pytest>=8.0",
