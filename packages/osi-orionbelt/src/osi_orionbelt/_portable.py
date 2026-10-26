@@ -581,6 +581,11 @@ class PortableRenderer:
         return [self._dimension(d) for d in met.get("partitionBy") or []]
 
     def _cumulative(self, name: str, met: dict[str, Any]) -> str:
+        if met.get("windowSpan"):
+            raise NotPortableError(
+                f"metric '{name}' re-aggregates its measure's rows over a span of time "
+                f"ending at each period, which a window over one row per period cannot do"
+            )
         func = str(met.get("cumulativeType", "sum")).lower()
         if func not in _CUMULATIVE_FUNCS or not met.get("measure"):
             raise NotPortableError(f"metric '{name}' is an incomplete cumulative metric")

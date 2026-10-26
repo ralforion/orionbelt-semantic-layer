@@ -1072,13 +1072,14 @@ All artefacts (data objects, dimensions, measures, metrics) have unique names. A
 
 ### Cumulative Metrics
 
-A **cumulative metric** applies a window function to an existing measure, ordered by a time dimension. Three patterns are supported:
+A **cumulative metric** applies a window function to an existing measure, ordered by a time dimension. Four patterns are supported:
 
 | Pattern | Configuration | SQL |
 |---------|--------------|-----------|
 | Running total | (default — no `window` or `grainToDate`) | `ROWS UNBOUNDED PRECEDING` |
 | Rolling window | `window: N` | the N periods ending at each period: a self-join on `date_diff(grain, prior, current) <= N-1` |
 | Grain-to-date | `grainToDate: month` | `PARTITION BY DATE_TRUNC('month', ...)` + unbounded |
+| Rolling time span | `windowSpan: {count: 90, unit: day}` | the measure over its rows in the span ending at each period's end: a range join on the rows |
 
 ```yaml
 metrics:
@@ -1118,7 +1119,17 @@ metrics:
     timeDimension: Order Date
     cumulativeType: max
     window: 30
+
+  # Distinct customers in the 90 days up to the end of each period
+  Customers 90d:
+    type: cumulative
+    measure: Customer Count
+    timeDimension: Order Date
+    windowSpan: {count: 90, unit: day}
 ```
+
+!!! tip "A rolling time span re-aggregates the rows"
+ `window: N` combines the values the query computed per period: summed monthly distinct customers count a customer once for every month. `windowSpan: {count, unit}` instead evaluates the measure over its source rows whose time falls in the span ending at the end of each period: over `Order Month`, `{count: 90, unit: day}` for March reads the rows from 90 days before 1 April up to 31 March. Any aggregation is right: a distinct count counts a customer once in the span, an average weighs every row, `first` / `last` read the earliest or latest row, and the span need not be whole periods. `unit` is any time grain (`day`, `week`, `month`, ...). Time filters pick the periods shown and do not clip the span; every other filter applies to the rows, and other selected dimensions give each group its own window. `windowSpan` is exclusive with `window`, `grainToDate`, `cumulativeType` and `partitionBy`, and the query must select the time dimension, without `grouping: rollup` / `cube` (`WINDOW_SPAN_NOT_SUPPORTED`). A measure deduplicated per row of a join (a one-side measure read through a many-side join) is refused, as is a coalesce dimension beside it.
 
 !!! note "Without the time dimension: as of one period"
  A query that does not select the `timeDimension` evaluates the metric *as of* one period, per group of its other dimensions: `Region, Revenue YTD` gives each region the year-to-date its row for that month would show with `Order Month` selected. The period is the one holding the query's [`asOf`](query-language.md#as-of-date-asof) date, or else the latest period with data under the query's filters, so a filter `Order Month < 2025-07-01` evaluates year-to-date as of June. A period without data of its own still reads the periods before it. Two cases still require the time dimension in the SELECT: `grouping: rollup` / `cube`, and another dimension over the same date column (`Order Year` beside a metric over `Order Month`).

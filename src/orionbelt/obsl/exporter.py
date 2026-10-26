@@ -31,6 +31,8 @@ from orionbelt.models.semantic import (
     MeasureFilterItem,
     MetricType,
     SemanticModel,
+    TimeGrain,
+    WindowSpan,
 )
 
 # ---------------------------------------------------------------------------
@@ -230,6 +232,24 @@ def _serialize_measure_filters(filters: list[MeasureFilterItem]) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+_DURATION_PARTS: dict[TimeGrain, tuple[str, int]] = {
+    TimeGrain.SECOND: ("PT{}S", 1),
+    TimeGrain.MINUTE: ("PT{}M", 1),
+    TimeGrain.HOUR: ("PT{}H", 1),
+    TimeGrain.DAY: ("P{}D", 1),
+    TimeGrain.WEEK: ("P{}D", 7),
+    TimeGrain.MONTH: ("P{}M", 1),
+    TimeGrain.QUARTER: ("P{}M", 3),
+    TimeGrain.YEAR: ("P{}Y", 1),
+}
+
+
+def _span_duration(span: WindowSpan) -> Literal:
+    """A window span as an ``xsd:duration``, which has no weeks or quarters."""
+    pattern, factor = _DURATION_PARTS[span.unit]
+    return Literal(pattern.format(span.count * factor), datatype=XSD.duration)
+
+
 def export_obsl(model: SemanticModel, model_id: str) -> Graph:
     """Export a ``SemanticModel`` as an OBSL-Core 0.2 RDF graph.
 
@@ -321,6 +341,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.cumulativeType,
         OBSL.window,
         OBSL.grainToDate,
+        OBSL.windowSpan,
         OBSL.offset,
         OBSL.offsetGrain,
         OBSL.comparison,
@@ -402,6 +423,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.cumulativeType,
         OBSL.window,
         OBSL.grainToDate,
+        OBSL.windowSpan,
         OBSL.offset,
         OBSL.offsetGrain,
         OBSL.comparison,
@@ -790,7 +812,11 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             g.add((met_uri, RDF.type, OBSL.CumulativeMetric))
             if met.time_dimension:
                 g.add((met_uri, OBSL.timeDimension, _dimension_uri(model_id, met.time_dimension)))
-            g.add((met_uri, OBSL.cumulativeType, Literal(met.cumulative_type.value)))
+            if met.window_span is not None:
+                # The span re-aggregates the measure's rows: no cumulativeType.
+                g.add((met_uri, OBSL.windowSpan, _span_duration(met.window_span)))
+            else:
+                g.add((met_uri, OBSL.cumulativeType, Literal(met.cumulative_type.value)))
             if met.window is not None:
                 g.add((met_uri, OBSL.window, Literal(met.window)))
             if met.grain_to_date is not None:

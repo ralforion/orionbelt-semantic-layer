@@ -266,6 +266,7 @@ Additional required:
 Optional:
 - `obsl:window` (rolling window size; absent means running total)
 - `obsl:grainToDate` (grain-to-date reset; mutually exclusive with `window`)
+- `obsl:windowSpan` (`xsd:duration`, e.g. `P90D`: a rolling window over a span of time, evaluated over the measure's rows; exclusive with `window`, `grainToDate` and `cumulativeType`, which is then not stated)
 
 ### 5.9 PeriodOverPeriodMetric (subclass of Metric)
 Represents a metric that compares values across consecutive time periods.
@@ -524,6 +525,7 @@ Any of model, data object, dimension, measure, metric:
 - `cumulativeType` -> `obsl:cumulativeType`
 - `window` -> `obsl:window`
 - `grainToDate` -> `obsl:grainToDate`
+- `windowSpan: {count, unit}` -> `obsl:windowSpan` as an `xsd:duration` (a week as 7 days, a quarter as 3 months)
 
 ### 10.9 Period-over-Period Metrics (type: period_over_period → rdf:type obsl:PeriodOverPeriodMetric)
 - `periodOverPeriod.timeDimension` -> `obsl:timeDimension`
@@ -568,7 +570,7 @@ Properties constrained to at most one value are declared `owl:FunctionalProperty
 - Identifier properties: `obsl:code`, `obsl:database`, `obsl:schema`, `obsl:physicalName`
 - Type properties: `obsl:resultType`, `obsl:aggregation`, `obsl:metricType`, `obsl:cardinality`
 - Expression: `obsl:expressionSource`, `obsl:filterExpression`
-- Cumulative: `obsl:cumulativeType`, `obsl:window`, `obsl:grainToDate`
+- Cumulative: `obsl:cumulativeType`, `obsl:window`, `obsl:grainToDate`, `obsl:windowSpan`
 - Period-over-period: `obsl:offset`, `obsl:offsetGrain`, `obsl:comparison`
 - External concept mapping: `obsl:sourceObject`, `obsl:targetConcept`, `obsl:authoredConcept`, `obsl:mappingRelation`, `obsl:mappingJustification`, `obsl:mappingSource`, `obsl:ontologyVersion`, `obsl:confidence`, `obsl:mappingComment`
 - Rule: `obsl:ruleType`, `obsl:ruleSeverity`, `obsl:ruleLevel`, `obsl:ruleCondition`
@@ -661,6 +663,7 @@ Core datatype properties:
 - `obsl:cumulativeType` (functional)
 - `obsl:window` (functional)
 - `obsl:grainToDate` (functional)
+- `obsl:windowSpan` (functional)
 - `obsl:offset` (functional)
 - `obsl:offsetGrain` (functional)
 - `obsl:comparison` (functional)

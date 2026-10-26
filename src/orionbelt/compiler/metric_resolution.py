@@ -440,6 +440,24 @@ def resolve_cumulative_metric(
         )
         return None
 
+    # A span window is evaluated per shown period from the measure's rows: it
+    # needs the period, and a rolled-up subtotal row has none.
+    if metric.window_span is not None and (
+        metric.time_dimension not in dim_names or ctx.result.grouping is not None
+    ):
+        ctx.errors.append(
+            SemanticError(
+                code="WINDOW_SPAN_NOT_SUPPORTED",
+                message=(
+                    f"Cumulative metric '{name}' has a windowSpan, which is evaluated "
+                    f"for each period of '{metric.time_dimension}': select it, "
+                    "without ROLLUP / CUBE"
+                ),
+                path=f"metrics.{name}.windowSpan",
+            )
+        )
+        return None
+
     # Validate partitionBy dimensions
     if not resolver._validate_partition_dimensions(
         ctx, name, metric.partition_by, "metrics.{}.partitionBy"
@@ -471,6 +489,7 @@ def resolve_cumulative_metric(
         cumulative_type=metric.cumulative_type,
         cumulative_window=metric.window,
         cumulative_grain_to_date=metric.grain_to_date,
+        cumulative_window_span=metric.window_span,
         cumulative_partition_by=list(metric.partition_by),
     )
 

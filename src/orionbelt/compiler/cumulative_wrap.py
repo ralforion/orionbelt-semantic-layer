@@ -51,6 +51,7 @@ from orionbelt.ast.nodes import (
 from orionbelt.compiler.count_zero import counts, zero_if_missing
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.span_window import span_value_ctes
 from orionbelt.compiler.time_lookback import lookback_query, null_safe_eq, time_filters
 from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
@@ -298,16 +299,34 @@ def wrap_with_cumulative(
     # ``_value_ctes`` repoints a metric whose windows read a look-back copy.
     resolved.cumulative_sources.update((m.name, cte_name) for m in cumulative_measures)
     base_cte = CTE(name=cte_name, query=_base_query(ast, resolved, model, dialect, over_cte))
+    # A span window re-aggregates the measure's rows (``span_window.py``)
+    # rather than windowing the per-period values.
+    spans = [m for m in cumulative_measures if m.cumulative_window_span is not None]
     value_ctes = _value_ctes(
         ast,
         resolved,
-        cumulative_measures,
+        [m for m in cumulative_measures if m not in spans],
         model,
         dialect,
         cte_name,
         over_cte,
-        joined=bool(as_of_measures),
+        joined=bool(as_of_measures or spans),
     )
+    if spans:
+        if model is None or dialect is None or qualify_table is None or query is None:
+            raise ValueError(
+                "A windowSpan metric needs the model, dialect, table qualifier and query "
+                "to plan the rows its windows read"
+            )
+        value_ctes += span_value_ctes(
+            resolved,
+            spans,
+            model=model,
+            dialect=dialect,
+            qualify_table=qualify_table,
+            query=query,
+            base_name=cte_name,
+        )
     if as_of_measures:
         if model is None or dialect is None or qualify_table is None or query is None:
             raise ValueError(

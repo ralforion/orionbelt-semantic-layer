@@ -77,6 +77,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
     TimeGrain,
     WindowFunctionKind,
+    WindowSpan,
     grain_derives,
     held_grain_cost,
     result_type_holds_grain,
@@ -798,6 +799,9 @@ class ResolvedMeasure:
     cumulative_type: CumulativeAggType = CumulativeAggType.SUM
     cumulative_window: int | None = None
     cumulative_grain_to_date: GrainToDate | None = None
+    cumulative_window_span: WindowSpan | None = None
+    """A rolling window over a span of time, evaluated over the measure's rows
+    (``span_window.py``) rather than over the per-period values."""
     cumulative_partition_by: list[str] = field(default_factory=list)
     # Period-over-period metric fields
     is_pop: bool = False

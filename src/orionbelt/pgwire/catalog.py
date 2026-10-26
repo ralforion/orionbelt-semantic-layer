@@ -1366,6 +1366,10 @@ def _metric_formula(metric: object) -> str:
         window = getattr(metric, "window", None)
         grain_to_date = getattr(metric, "grain_to_date", None)
         time_dim = getattr(metric, "time_dimension", "") or ""
+        span = getattr(metric, "window_span", None)
+        if span is not None:
+            formula = f"{base} over the {span.count} {span.unit.value}(s) ending at each period"
+            return f"{formula} of {time_dim}" if time_dim else formula
         if window:
             qualifier = f" rolling {window}"
         elif grain_to_date:

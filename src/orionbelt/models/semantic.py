@@ -1512,6 +1512,27 @@ _REAGGREGATE_FIELDS = frozenset(
 )
 
 
+class WindowSpan(BaseModel):
+    """The span of time a rolling cumulative metric covers, ending at each period's end.
+
+    ``{count: 90, unit: day}``: for the month of March, the 90 days up to the end
+    of March. The metric's measure is evaluated over its source rows in that
+    span, so any aggregation is right, a distinct count included.
+    """
+
+    count: int
+    unit: TimeGrain
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+    @field_validator("count")
+    @classmethod
+    def _positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("'windowSpan.count' must be >= 1")
+        return value
+
+
 class Metric(BaseModel):
     """A metric: derived expression, cumulative window, or period-over-period comparison.
 
@@ -1535,6 +1556,10 @@ class Metric(BaseModel):
     cumulative_type: CumulativeAggType = Field(CumulativeAggType.SUM, alias="cumulativeType")
     window: int | None = None
     grain_to_date: GrainToDate | None = Field(None, alias="grainToDate")
+    window_span: WindowSpan | None = Field(None, alias="windowSpan")
+    """A rolling window over a span of time (``{count: 90, unit: day}``) rather
+    than ``window`` periods: the measure over its rows in the span ending at
+    each period's end. Cumulative metrics only."""
     # Per-dimension partitioning for cumulative + window metrics. Each entry
     # must be a model dimension reachable from the measure's source object.
     partition_by: list[str] = Field(default_factory=list, alias="partitionBy")
@@ -1583,6 +1608,8 @@ class Metric(BaseModel):
 
     @model_validator(mode="after")
     def _validate_metric_type(self) -> Metric:
+        if self.window_span is not None and self.type != MetricType.CUMULATIVE:
+            raise ValueError("'windowSpan' is only valid on cumulative metrics")
         if self.type == MetricType.REAGGREGATE:
             self._validate_reaggregate()
             return self
@@ -1614,6 +1641,18 @@ class Metric(BaseModel):
                 raise ValueError("'window' and 'grainToDate' are mutually exclusive")
             if self.window is not None and self.window < 1:
                 raise ValueError("'window' must be >= 1")
+            if self.window_span is not None:
+                # The span re-aggregates the measure's rows: there is no
+                # per-period value to combine, and the groups are the query's.
+                if self.window is not None or self.grain_to_date is not None:
+                    raise ValueError("'windowSpan' is exclusive with 'window' and 'grainToDate'")
+                if "cumulative_type" in self.model_fields_set:
+                    raise ValueError(
+                        "'cumulativeType' does not apply with 'windowSpan': the measure's "
+                        "own aggregation is evaluated over the span"
+                    )
+                if self.partition_by:
+                    raise ValueError("'partitionBy' does not apply with 'windowSpan'")
         elif self.type == MetricType.PERIOD_OVER_PERIOD:
             if not self.expression:
                 raise ValueError("Period-over-period metrics require 'expression'")

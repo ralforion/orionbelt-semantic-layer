@@ -450,6 +450,13 @@ obsl:CumulativeMetricShape a sh:NodeShape ;
             [ sh:property [ sh:path obsl:grainToDate ; sh:minCount 1 ] ]
         ) ;
         sh:message "obsl:window and obsl:grainToDate are mutually exclusive."
+    ] ;
+    sh:property [
+        sh:path obsl:windowSpan ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:duration ;
+        sh:name "window span" ;
+        sh:message "Cumulative metrics must have at most one obsl:windowSpan."
     ] .
 
 # -----------------------------------------------------------------------------

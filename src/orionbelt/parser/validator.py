@@ -2402,6 +2402,8 @@ class SemanticValidator:
                 metric.type is not MetricType.CUMULATIVE
                 or metric.cumulative_type is not CumulativeAggType.SUM
                 or metric.measure is None
+                # A span re-aggregates the measure's rows: nothing is summed.
+                or metric.window_span is not None
             ):
                 continue
             measure = model.effective_measures.get(metric.measure)

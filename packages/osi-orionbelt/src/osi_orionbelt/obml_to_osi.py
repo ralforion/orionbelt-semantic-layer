@@ -987,6 +987,8 @@ class OBMLtoOSI:
                 ext_data["obml_cumulative_window"] = metric["window"]
             if metric.get("grainToDate"):
                 ext_data["obml_cumulative_grain_to_date"] = metric["grainToDate"]
+            if metric.get("windowSpan"):
+                ext_data["obml_cumulative_window_span"] = metric["windowSpan"]
         elif kind == "window":
             ext_data = {
                 "obml_metric_type": "window",

@@ -1248,6 +1248,8 @@ class ReferenceResolver:
                         "'per', 'aggregation', 'having', 'percentile', 'population' and "
                         "'carryForward' are only valid on reaggregate metrics"
                     )
+                if metric_type != MetricType.CUMULATIVE and "windowSpan" in raw_metric:
+                    raise ValueError("'windowSpan' is only valid on cumulative metrics")
                 concept_links = _parse_concept_mappings(
                     raw_metric, f"metrics.{name}", prefixes, errors, source_map
                 )
@@ -1290,9 +1292,16 @@ class ReferenceResolver:
                         type=MetricType.CUMULATIVE,
                         measure=raw_metric.get("measure"),
                         time_dimension=raw_metric.get("timeDimension"),
-                        cumulative_type=raw_metric.get("cumulativeType", "sum"),
+                        # Passed only when written, so a windowSpan can tell
+                        # an explicit cumulativeType from the default.
+                        **(
+                            {"cumulative_type": raw_metric["cumulativeType"]}
+                            if "cumulativeType" in raw_metric
+                            else {}
+                        ),
                         window=raw_metric.get("window"),
                         grain_to_date=raw_metric.get("grainToDate"),
+                        window_span=raw_metric.get("windowSpan"),
                         partition_by=list(raw_metric.get("partitionBy", []) or []),
                         data_type=raw_metric.get("dataType"),
                         description=raw_metric.get("description"),

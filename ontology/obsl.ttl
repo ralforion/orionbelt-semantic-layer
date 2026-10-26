@@ -517,6 +517,12 @@ obsl:window a owl:DatatypeProperty ;
     rdfs:domain obsl:CumulativeMetric ;
     rdfs:range xsd:integer .
 
+obsl:windowSpan a owl:DatatypeProperty ;
+    rdfs:label "window span" ;
+    rdfs:comment "A rolling window over a span of time ending at each period's end (90 days: P90D), evaluated over the measure's rows rather than the per-period values, so any aggregation holds.  A week is written as 7 days, a quarter as 3 months.  Exclusive with window, grainToDate and cumulativeType." ;
+    rdfs:domain obsl:CumulativeMetric ;
+    rdfs:range xsd:duration .
+
 obsl:grainToDate a owl:DatatypeProperty ;
     rdfs:label "grain to date" ;
     rdfs:comment "Grain-to-date reset boundary for a cumulative metric: year, quarter, month, week.  Mutually exclusive with window." ;
@@ -895,6 +901,7 @@ obsl:filterContextMode a owl:FunctionalProperty .
 obsl:cumulativeType a owl:FunctionalProperty .
 obsl:window a owl:FunctionalProperty .
 obsl:grainToDate a owl:FunctionalProperty .
+obsl:windowSpan a owl:FunctionalProperty .
 obsl:offset a owl:FunctionalProperty .
 obsl:offsetGrain a owl:FunctionalProperty .
 obsl:comparison a owl:FunctionalProperty .

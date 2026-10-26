@@ -924,6 +924,12 @@ classes:
         json_schema: true
         ontology_property: grainToDate
         osi_roundtrip: true
+      window_span:
+        alias: windowSpan
+        type: "WindowSpan | None"
+        json_schema: true
+        ontology_property: windowSpan
+        osi_roundtrip: true
       partition_by:
         alias: partitionBy
         type: "list[str]"
@@ -1175,6 +1181,24 @@ classes:
       prefixes:
         alias: prefixes
         type: "dict[str, str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  WindowSpan:
+    python: orionbelt.models.semantic.WindowSpan
+    json_schema_def: windowSpan
+    # Carried by the metric's obsl:windowSpan as one xsd:duration (P90D).
+    ontology_class: null
+    fields:
+      count:
+        alias: count
+        type: "int"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      unit:
+        alias: unit
+        type: "TimeGrain"
         json_schema: true
         ontology_property: null
         osi_roundtrip: true
