@@ -751,7 +751,7 @@ def _make_execute_sql(conn: duckdb.DuckDBPyConnection):
     def execute_sql(
         sql: str, *, dialect: str, tz: Any = None, override_db_tz: bool = False
     ) -> ExecutionResult:
-        return duckdb_execution_result(conn.execute(sql), time.monotonic(), tz=tz)
+        return duckdb_execution_result(conn.sql(sql), time.monotonic(), tz=tz)
 
     return execute_sql
 

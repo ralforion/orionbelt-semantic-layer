@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **DuckDB results go straight to Arrow.** A query on DuckDB was executed, held as rows and then copied into an Arrow table, which DuckDB 2.0 warns about on every query ("Arrow output on a DB-API result makes an extra copy of the rows"). REST, pgwire and the UI now read the result as a relation that builds the table directly. An error raised while the result is read surfaces once, without running the query a second time. The session timezone probe runs on its own cursor, as DuckDB 2.0 refuses a query on a connection whose previous result was not read to the end. Flight SQL reads through the `ob-duckdb` cursor, which keeps the copy: a PEP 249 cursor runs its query in `execute()`, and DuckDB has no copy-free Arrow read of an executed result.
+
 ## [2.36.0] - 2026-10-26
 
 ### Added

@@ -849,32 +849,27 @@ def _hint(exc: Exception) -> str:
 
 
 def _duckdb_fetch_arrow(result: Any) -> Any:
-    """Arrow fetch for a DuckDB result, or ``None``.
+    """Arrow fetch for a DuckDB relation, or ``None`` without pyarrow.
 
-    DuckDB deprecated ``fetch_arrow_table()`` in favour of
-    ``to_arrow_table()``; calling the old name emits a
-    ``DeprecationWarning`` on every query. Prefer the new name and fall
-    back to :func:`_try_fetch_arrow` for older ``duckdb`` releases
-    (``pyproject`` allows ``>=1.0``), which also keeps the
-    "pyarrow must already be imported" guard in one place.
+    A relation runs its query here, so an error raised while it runs is the
+    query's own and propagates: swallowing it would fall back to
+    ``fetchall()``, which runs the query a second time.
     """
     import sys
 
     if "pyarrow" not in sys.modules:
         return None
-    fetch_fn = getattr(result, "to_arrow_table", None)
-    if fetch_fn is not None:
-        try:
-            return fetch_fn()
-        except Exception:  # noqa: BLE001 — never fail a query on a fetch probe
-            return None
-    return _try_fetch_arrow(result)
+    return result.to_arrow_table()
 
 
 def duckdb_execution_result(
     result: Any, t0: float, *, tz: ZoneInfo | None = None
 ) -> ExecutionResult:
-    """Build an :class:`ExecutionResult` from an executed DuckDB result.
+    """Build an :class:`ExecutionResult` from a DuckDB relation (``conn.sql(sql)``).
+
+    A relation builds the Arrow table straight from the query. An executed
+    result (``conn.execute(sql)``) holds the rows first and copies them into
+    Arrow, which DuckDB 2.0 warns about on every query.
 
     Prefers an Arrow-native fetch, like :func:`_fetch_result` does for the
     pooled drivers. DuckDB already holds the result columnar, so
@@ -953,9 +948,24 @@ def _execute_duckdb(
         if override_db_tz and tz is not None:
             effective_tz = tz
         else:
-            db_tz = _detect_db_timezone(conn, "duckdb")
+            # On a cursor of its own: the probe reads one row and leaves its
+            # result unfinished, which DuckDB 2.0 holds against the query
+            # that follows on the same connection.
+            probe = conn.cursor()
+            try:
+                db_tz = _detect_db_timezone(probe, "duckdb")
+            finally:
+                probe.close()
             effective_tz = db_tz or tz
-        return duckdb_execution_result(conn.execute(sql), t0, tz=effective_tz)
+        relation = conn.sql(sql)
+        if relation is None:
+            # DuckDB 1.x runs a statement without a result set at once and
+            # returns no relation; 2.0 returns one.
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            return ExecutionResult(
+                columns=[], raw_rows=[], row_count=0, execution_time_ms=round(elapsed_ms, 2)
+            )
+        return duckdb_execution_result(relation, t0, tz=effective_tz)
     finally:
         conn.close()
 
