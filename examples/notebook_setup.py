@@ -439,6 +439,8 @@ def show_mermaid(mermaid_src: str, height: int = 800) -> None:
     the UMD libraries bundled in mermaid (dayjs) register with it instead of
     with mermaid, which then fails with ``extend is not a function`` and
     renders nothing. The import hides ``define`` while mermaid evaluates.
+    Every output on the page shares that one import, so two diagrams loading
+    at once cannot save the hidden ``define`` and restore it as undefined.
     """
     import hashlib
 
@@ -449,15 +451,22 @@ def show_mermaid(mermaid_src: str, height: int = 800) -> None:
 <div id="{uid}" style="background:#1e1e1e; border-radius:6px;
      padding:16px; min-height:{height}px; overflow:auto;"></div>
 <script type="module">
-const amdDefine = window.define;
-window.define = undefined;
-let mermaid;
-try {{
-  mermaid = (await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')).default;
-}} finally {{
-  window.define = amdDefine;
-}}
-mermaid.initialize({{ startOnLoad: false, theme: 'dark' }});
+window.obslMermaid ??= (async () => {{
+  const amdDefine = window.define;
+  window.define = undefined;
+  try {{
+    const {{ default: mermaid }} = await import(
+      'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+    mermaid.initialize({{ startOnLoad: false, theme: 'dark' }});
+    return mermaid;
+  }} finally {{
+    window.define = amdDefine;
+  }}
+}})().catch((err) => {{
+  window.obslMermaid = undefined;
+  throw err;
+}});
+const mermaid = await window.obslMermaid;
 const {{ svg }} = await mermaid.render('{uid}_svg', `{mermaid_src}`);
 document.getElementById('{uid}').innerHTML = svg;
 </script>
