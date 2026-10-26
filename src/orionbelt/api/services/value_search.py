@@ -19,7 +19,7 @@ from orionbelt.api.deps import (
     get_value_search_config,
     is_query_execute_enabled,
 )
-from orionbelt.api.query_cache import execute_query_with_cache
+from orionbelt.api.query_cache import execute_query_with_cache, execution_result_from_data
 from orionbelt.api.schemas import ValueMatchItem, ValueSearchRequest, ValueSearchResponse
 from orionbelt.api.services.query_compilation import _resolve_dialect, compile_query_or_raise
 from orionbelt.models.query import QueryObject
@@ -29,16 +29,25 @@ from orionbelt.service.db_executor import (
     resolve_timezone,
 )
 from orionbelt.service.model_store import ModelStore
-from orionbelt.service.result_schema import declared_arrow_types
+from orionbelt.service.result_schema import declared_arrow_types, reconcile_to_declared
 from orionbelt.service.value_search import QueryRun, ValueSearchError, search_values
 
 
-def _first_column(cached: Any) -> list[Any]:
-    """The first column of a cached execution, fresh or a cache hit."""
+def _first_column(cached: Any, tz: Any, declared: dict[str, Any]) -> list[Any]:
+    """The first column of a cached execution, fresh or a cache hit.
+
+    A hit is rebuilt the way ``/query/execute`` rebuilds one: reconciled to the
+    model's declared types, then read in the model's time zone, so both paths
+    return the same values.
+    """
     if cached.exec_result is not None:
         return [row[0] for row in cached.exec_result.rows]
-    if cached.data_table is not None and cached.data_table.num_columns:
-        return list(cached.data_table.column(0).to_pylist())
+    if cached.data_table is not None:
+        table, _ = reconcile_to_declared(cached.data_table, declared)
+        hit = execution_result_from_data(
+            table, execution_time_ms=0.0, tz=tz, columns=cached.hit_columns
+        )
+        return [row[0] for row in hit.rows]
     return []
 
 
@@ -71,6 +80,7 @@ async def run_value_search(
         compiled = compile_query_or_raise(
             store=store, model_id=model_id, query=query, dialect=dialect
         )
+        declared = declared_arrow_types(model, query)
         try:
             cached = await execute_query_with_cache(
                 store=store,
@@ -83,7 +93,7 @@ async def run_value_search(
                 tz=tz,
                 override_db_tz=bool(settings and settings.override_database_timezone),
                 cacheable=getattr(cache, "backend_name", "noop") != "noop",
-                declared_types=declared_arrow_types(model, query),
+                declared_types=declared,
                 query=query,
             )
         except ExecutionUnavailableError as exc:
@@ -91,7 +101,7 @@ async def run_value_search(
         except ExecutionError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from None
         return QueryRun(
-            values=_first_column(cached),
+            values=_first_column(cached, tz, declared),
             sql=compiled.sql,
             warnings=[w.message for w in compiled.warnings],
         )

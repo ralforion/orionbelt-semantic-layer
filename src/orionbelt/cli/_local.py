@@ -287,6 +287,8 @@ def search_values(
         )
     except ValueSearchError as exc:
         raise CliError(f"[{exc.code}] {exc.message}") from None
+    except TimeoutError:
+        raise CliError("Value search took longer than its time budget") from None
 
 
 def describe(model_yaml: str) -> ModelDescription:

@@ -27,6 +27,8 @@ its values.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -42,7 +44,10 @@ from orionbelt.models.query import (
     SortDirection,
 )
 from orionbelt.models.semantic import DATE_BEARING_TYPES, DataType, Dimension, SemanticModel
-from orionbelt.service.fuzzy import fuzzy_search
+from orionbelt.service.fuzzy import fuzzy_score
+
+#: Similarity a fuzzy match must reach, as ``/find`` uses.
+FUZZY_THRESHOLD = 0.5
 
 #: The candidates the database returns for ranking, at least, per search.
 CANDIDATE_MIN = 100
@@ -153,9 +158,11 @@ _RANK = {"exact": 0, "prefix": 1, "contains": 2}
 class _Search:
     """One value search, collecting the SQL and warnings of the queries it runs."""
 
-    def __init__(self, dimension: str, run: Runner) -> None:
+    def __init__(self, dimension: str, run: Runner, timeout_ms: int) -> None:
         self.result = ValueSearchResult(dimension=dimension)
         self._run = run
+        #: When the whole search must have ended; the fuzzy scoring checks it.
+        self.deadline = time.monotonic() + timeout_ms / 1000
 
     async def run(self, query: QueryObject) -> list[Any]:
         executed = await self._run(query)
@@ -182,7 +189,7 @@ async def search_values(
     dim = _dimension(model, dimension)
     filters = list(where or [])
     term = (search or "").strip()
-    state = _Search(dimension, run)
+    state = _Search(dimension, run, config.timeout_ms)
 
     if dim.time_grain is not None or dim.result_type in _RANGE_TYPES:
         if term:
@@ -277,5 +284,26 @@ async def _fuzzy(
         return []
     seen = {str(m.value) for m in found}
     by_text = {str(v): v for v in domain if v is not None and str(v) not in seen}
-    matches = fuzzy_search(term, [(text, "value", []) for text in by_text], max_results=wanted)
-    return [ValueMatch(value=by_text[m.name], match="fuzzy", score=m.score) for m in matches]
+    # Edit distance is pure-Python CPU work: off the event loop, and bounded
+    # by the search's own deadline, which a thread cannot be cancelled from.
+    scored = await asyncio.to_thread(_score, term, list(by_text), state.deadline)
+    # One more than wanted shows whether there were more matches than room.
+    if len(scored) > wanted:
+        state.result.truncated = True
+    return [
+        ValueMatch(value=by_text[text], match="fuzzy", score=score)
+        for score, text in scored[:wanted]
+    ]
+
+
+def _score(term: str, texts: list[str], deadline: float) -> list[tuple[float, str]]:
+    """Fuzzy matches of *term*, best first; raises ``TimeoutError`` past *deadline*."""
+    scored: list[tuple[float, str]] = []
+    for text in texts:
+        if time.monotonic() > deadline:
+            raise TimeoutError("value search fuzzy scoring passed its deadline")
+        score, _ = fuzzy_score(term, text)
+        if score >= FUZZY_THRESHOLD:
+            scored.append((round(score, 3), text))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return scored

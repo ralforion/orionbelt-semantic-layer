@@ -216,3 +216,58 @@ def test_the_opt_out_reaches_the_graph_and_an_inheriting_model(model: SemanticMo
     raw = ModelStore._model_to_raw(model)
     assert raw["dimensions"]["Email"]["valueSearch"] is False  # type: ignore[index]
     assert "valueSearch" not in raw["dimensions"]["Country"]  # type: ignore[index]
+
+
+def _domain_runner(domain: list[str]):
+    """A runner whose candidate query finds nothing and whose domain is *domain*."""
+
+    async def run(query: QueryObject) -> QueryRun:
+        is_candidates = any(getattr(f, "op", None) == "ilike" for f in query.where)
+        return QueryRun(values=[] if is_candidates else domain, sql="--")
+
+    return run
+
+
+async def test_more_fuzzy_matches_than_room_is_truncated(model: SemanticModel) -> None:
+    run = _domain_runner(["North Korea", "South Korea", "France"])
+    result = await search_values(
+        model, "Country", run=run, config=ValueSearchConfig(), search="Sorth Korea", limit=1
+    )
+    assert len(result.values) == 1 and result.values[0].match == "fuzzy"
+    assert result.truncated
+
+
+async def test_fuzzy_scoring_stops_at_the_deadline(model: SemanticModel) -> None:
+    long_values = [f"{i:04d}" + "x" * 500 for i in range(2000)]
+    config = ValueSearchConfig(timeout_ms=50)
+    with pytest.raises(TimeoutError):
+        await search_values(
+            model, "Country", run=_domain_runner(long_values), config=config, search="Germny"
+        )
+
+
+async def test_fuzzy_scoring_leaves_the_event_loop_free(model: SemanticModel) -> None:
+    import asyncio
+
+    ticks = 0
+    done = False
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not done:
+            ticks += 1
+            await asyncio.sleep(0.001)
+
+    long_values = [f"{i:04d}" + "x" * 200 for i in range(1500)]
+    task = asyncio.create_task(ticker())
+    await search_values(
+        model,
+        "Country",
+        run=_domain_runner(long_values),
+        config=ValueSearchConfig(timeout_ms=60000),
+        search="Germny",
+    )
+    done = True
+    await task
+    # On the event loop, the scoring would have run with no tick in between.
+    assert ticks > 5
