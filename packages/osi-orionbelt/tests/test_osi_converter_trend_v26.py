@@ -157,10 +157,9 @@ class TestObmlToOsiV26:
         assert extras["obml_window_function"] == "ntile"
         assert extras["obml_window_buckets"] == 4
 
-    def test_window_frame_preserved(self) -> None:
-        extras = _extras(_osi_metric(self.osi, "Revenue Moving Avg"))
-        assert extras["obml_window_function"] == "avg"
-        assert extras["obml_window_frame"] == {"preceding": 2}
+    def test_window_frame_is_not_a_portable_metric(self) -> None:
+        # Its partitions depend on the query; test_window_frame_roundtrip covers the way back.
+        assert "Revenue Moving Avg" not in {m["name"] for m in self.osi.get("metrics", [])}
 
     def test_corr_measure_emits_two_columns(self) -> None:
         # Find Revenue Spend Corr in OSI metrics

@@ -609,22 +609,18 @@ class PortableRenderer:
         func = str(met.get("windowFunction", "")).lower()
         if func not in _WINDOW_FUNCS:
             raise NotPortableError(f"metric '{name}' has unknown windowFunction '{func}'")
+        if func in _CUMULATIVE_FUNCS:
+            raise NotPortableError(
+                f"metric '{name}' aggregates a frame of rows split by every other dimension "
+                f"of the query, which one expression cannot name"
+            )
         direction = "DESC" if str(met.get("orderDirection", "desc")).lower() == "desc" else "ASC"
         inner = self._windowed(name, met["measure"]) if met.get("measure") else None
         time = self._dimension(met["timeDimension"]) if met.get("timeDimension") else None
 
         args: list[str] = []
         order: str | None = None
-        frame = ""
-        if func in _CUMULATIVE_FUNCS:
-            # A moving aggregate over the rows ordered by time, ascending.
-            preceding = (met.get("frame") or {}).get("preceding")
-            if inner is None or time is None or preceding is None:
-                raise NotPortableError(f"metric '{name}' needs a measure, timeDimension and frame")
-            args = [inner]
-            order = f"{time} ASC"
-            frame = f" ROWS BETWEEN {int(preceding)} PRECEDING AND CURRENT ROW"
-        elif func in ("lag", "lead"):
+        if func in ("lag", "lead"):
             if inner is None or time is None:
                 raise NotPortableError(f"metric '{name}' needs a measure and a timeDimension")
             args = [inner, str(int(met.get("offset") or 1))]
@@ -649,5 +645,5 @@ class PortableRenderer:
         if partitions:
             clauses.append(f"PARTITION BY {', '.join(partitions)}")
         if order:
-            clauses.append(f"ORDER BY {order}{frame}")
+            clauses.append(f"ORDER BY {order}")
         return f"{func.upper()}({', '.join(args)}) OVER ({' '.join(clauses)})"

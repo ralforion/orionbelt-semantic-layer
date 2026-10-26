@@ -358,3 +358,11 @@ def test_the_graph_carries_the_frame(model: SemanticModel) -> None:
     }
     assert len(values) == len(FUNCTIONS) + 2
     assert {v for _, v in values} == {1, 2}
+
+
+def test_the_graph_orders_frames_ascending(model: SemanticModel) -> None:
+    graph = export_obsl(model, "window_frame")
+    framed = set(graph.subjects(OBSL.windowFramePreceding, None))
+    assert framed
+    for subject in framed:
+        assert [o.toPython() for o in graph.objects(subject, OBSL.orderDirection)] == ["asc"]
