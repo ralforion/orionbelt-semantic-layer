@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -4310,11 +4310,11 @@ wheels = [
 
 [[package]]
 name = "types-networkx"
-version = "3.6.1.20261006"
+version = "3.6.1.20261021"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fb/a9/a55d05982aafa8777530b287c3dbcc6127914bd1e5f2343b17a5c9def1f0/types_networkx-3.6.1.20261006.tar.gz", hash = "sha256:6c27cc7b49c8b49c4ac7ca2460299a5b43c4dad221e558eb4a9b59c78f19709d", size = 76482, upload-time = "2026-10-06T08:15:37.926Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2d/1f/ec8836bb6ee5ccfcbf53ad1ca38e134fce7ad6129494cc50b13a89e3a383/types_networkx-3.6.1.20261021.tar.gz", hash = "sha256:ecb79d5adb46e547c6459795933ce555dda0db87c1b8067ecee63ea481a6e654", size = 76718, upload-time = "2026-10-21T06:41:57.135Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2b/d0/81f49b8450029396433262c1b036f1928fa073e578991bd9e22ebeb54a60/types_networkx-3.6.1.20261006-py3-none-any.whl", hash = "sha256:8e2fedb83bb906c0d37a6ae020da3adc4abbd6bd999d8dd3d3266216bd6fae07", size = 167424, upload-time = "2026-10-06T08:15:36.734Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/b6/56396952996c19ca84c9ab15ccd23d8e027d7750eeaa50c8c368cb1f0fd2/types_networkx-3.6.1.20261021-py3-none-any.whl", hash = "sha256:1abf2f9bf11bee4375bae95103bdf038447bd40f652834482a15cf7914916850", size = 167525, upload-time = "2026-10-21T06:41:55.707Z" },
 ]
 
 [[package]]
