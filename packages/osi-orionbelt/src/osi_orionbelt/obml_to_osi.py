@@ -53,8 +53,8 @@ def _stash_concept_links(
 
 def _grouping_instructions(grouping: tuple[str, ...]) -> str:
     """Tell a consumer the one grouping a cumulative window is right in."""
-    time, *partitions = grouping
-    dims = " and ".join(f"'{d}'" for d in (time, *partitions))
+    *rest, last = (f"'{d}'" for d in grouping)
+    dims = f"{', '.join(rest)} and {last}" if rest else last
     return (
         f"Right only in a query grouped by exactly {dims}. The cumulative window "
         f"is split by no other dimension: grouped by one more, it runs across "

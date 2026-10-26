@@ -528,9 +528,10 @@ class PortableRenderer:
 
         OrionBelt splits a cumulative metric by every other dimension of the
         query, which an expression cannot name: its window is right only in a
-        query grouped by its time dimension and ``partitionBy``. ``None`` when
-        *name* reaches no cumulative metric. Call it once :meth:`metric` has
-        rendered *name*, so a reference cycle has already been refused.
+        query grouped by its time dimension and ``partitionBy``, in any order.
+        Sorted; ``None`` when *name* reaches no cumulative metric. Call it once
+        :meth:`metric` has rendered *name*, so a reference cycle has already
+        been refused.
         """
         groupings = self._groupings(name)
         if len(groupings) > 1:
@@ -538,14 +539,14 @@ class PortableRenderer:
                 f"metric '{name}' combines cumulative metrics that need different groupings, "
                 f"so no query is right for all of them"
             )
-        return next(iter(groupings), None)
+        return tuple(sorted(next(iter(groupings)))) if groupings else None
 
-    def _groupings(self, name: str) -> set[tuple[str, ...]]:
+    def _groupings(self, name: str) -> set[frozenset[str]]:
         met = self.metrics.get(name)
         if met is None:
             return set()
         if met.get("type") == "cumulative":
-            return {(met.get("timeDimension", ""), *(met.get("partitionBy") or []))}
+            return {frozenset([met.get("timeDimension", ""), *(met.get("partitionBy") or [])])}
         refs = _MEASURE_REF.findall(met.get("expression") or "")
         return set().union(*(self._groupings(r) for r in refs))
 

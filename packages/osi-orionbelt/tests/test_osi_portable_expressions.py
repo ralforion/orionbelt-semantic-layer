@@ -424,7 +424,7 @@ class TestCumulativeGrouping:
         osi, _ = _export()
         text = self._instructions(osi, "Running Sales")
         assert text is not None
-        assert "grouped by exactly 'Line Date' and 'Customer Country'" in text
+        assert "grouped by exactly 'Customer Country' and 'Line Date'" in text
 
     def test_metric_over_a_cumulative_inherits_it(self) -> None:
         obml = copy.deepcopy(_MODEL)
@@ -438,6 +438,26 @@ class TestCumulativeGrouping:
         osi, _ = _export()
         assert self._instructions(osi, "Sales") is None
         assert self._instructions(osi, "US Share Pct") is None
+
+    def test_partition_order_does_not_change_the_grouping(self) -> None:
+        obml = copy.deepcopy(_MODEL)
+        obml["dimensions"]["Status"] = {
+            "dataObject": "Order Lines",
+            "column": "Status",
+            "resultType": "string",
+        }
+        running = {"type": "cumulative", "measure": "Sales", "timeDimension": "Line Date"}
+        obml["metrics"]["Running A"] = {**running, "partitionBy": ["Customer Country", "Status"]}
+        obml["metrics"]["Running B"] = {**running, "partitionBy": ["Status", "Customer Country"]}
+        obml["metrics"]["A Minus B"] = {"expression": "{[Running A]} - {[Running B]}"}
+        osi, _ = _export(obml)
+        assert "A Minus B" in _sql(osi)
+        assert self._instructions(osi, "A Minus B") == (
+            "Right only in a query grouped by exactly 'Customer Country', 'Line Date' "
+            "and 'Status'. The cumulative window is split by no other dimension: "
+            "grouped by one more, it runs across that dimension's groups and the "
+            "values are wrong."
+        )
 
     def test_conflicting_groupings_are_left_out(self) -> None:
         obml = copy.deepcopy(_MODEL)
