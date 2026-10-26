@@ -44,6 +44,7 @@ tests/integration/dremio/run.sh
 Manual, if you want to keep the stack up between iterations:
 
 ```bash
+uv run python scripts/build_demo_duckdb.py   # once; run.sh does this for you
 docker compose -f tests/integration/dremio/docker-compose.yml up -d --build
 uv run pytest -m dremio tests/integration/dremio/
 docker compose -f tests/integration/dremio/docker-compose.yml down -v
@@ -71,6 +72,7 @@ The fixtures honour the following env vars for CI or non-default ports:
 | `DREMIO_REST_URL` | `http://localhost:19047` |
 | `OBSL_PGWIRE_HOST` | `obsl` (the docker network alias) |
 | `OBSL_PGWIRE_PORT` | `5432` |
+| `OBSL_REST_URL` | `http://localhost:18080` (the fixtures check here that OBSL is up and serves `OBSL_MODEL_NAME` before registering it in Dremio, and skip if not) |
 | `OBSL_MODEL_NAME` | `orionbelt_1_commerce` (what the compose stack in this directory serves). Export `commerce` to point the suite at the separate `demo/dremio/` stack instead |
 | `DREMIO_FLIGHT_HOST` | `localhost` (the `ob-dremio` suite connects from the host) |
 | `DREMIO_FLIGHT_PORT` | `32010` |
