@@ -1267,6 +1267,26 @@ class ReferenceResolver:
                         errors.append(
                             _metric_input_error("Cumulative", name, ref_measure, raw_metrics, span)
                         )
+                    elif "windowSpan" in raw_metric and _is_reaggregate(
+                        raw_metrics.get(ref_measure)
+                    ):
+                        # A span re-aggregates source rows; a reaggregate
+                        # metric's values exist only per period, after both
+                        # of its stages.
+                        errors.append(
+                            SemanticError(
+                                code="WINDOW_SPAN_NOT_SUPPORTED",
+                                message=(
+                                    f"Cumulative metric '{name}' has a windowSpan over the "
+                                    f"reaggregate metric '{ref_measure}', whose values exist "
+                                    "only per period; use window: N, or a measure"
+                                ),
+                                path=f"metrics.{name}.windowSpan",
+                                span=source_map.get(f"metrics.{name}.windowSpan")
+                                if source_map
+                                else None,
+                            )
+                        )
 
                     # Validate timeDimension references a known dimension
                     cum_time_dim = raw_metric.get("timeDimension", "")

@@ -38,6 +38,7 @@ from orionbelt.compiler.cumulative_wrap import (
     _rolling_query,
     _window_for,
 )
+from orionbelt.compiler.span_window import span_select
 from orionbelt.compiler.time_lookback import null_safe_eq
 
 if TYPE_CHECKING:
@@ -68,13 +69,24 @@ def cumulative_on_rows(
     value under its name, beside the dimensions.
     """
     by_source: dict[str, list[ResolvedMeasure]] = {}
-    for m in resolved.measures:
-        source = resolved.cumulative_sources.get(m.name)
-        if source is not None and m.cumulative_time_dimension == time_name:
-            by_source.setdefault(source, []).append(m)
     names = [d.name for d in resolved.dimensions]
     ctes: list[CTE] = []
     values: dict[str, str] = {}
+    for m in resolved.measures:
+        source = resolved.cumulative_sources.get(m.name)
+        if source is None or m.cumulative_time_dimension != time_name:
+            continue
+        span_rows = resolved.span_rows.get(m.name)
+        if span_rows is not None:
+            # A span re-aggregates the measure's rows in the span ending at
+            # each row's period, whether or not the period had data.
+            name = f"{prefix}_span_{len(values) + 1}"
+            ctes.append(
+                CTE(name=name, query=span_select(span_rows, rows, names, time_name, m.name))
+            )
+            values[m.name] = name
+            continue
+        by_source.setdefault(source, []).append(m)
     for index, (source, metrics) in enumerate(by_source.items(), 1):
         suffix = "" if index == 1 else f"_{index}"
         union_name = f"{prefix}_source{suffix}"

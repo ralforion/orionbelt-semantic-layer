@@ -133,6 +133,20 @@ def _run(target: VendorTarget, model: SemanticModel, dimensions: list[str]) -> d
     return got
 
 
+def _filled_late(target: VendorTarget, model: SemanticModel) -> dict[date, float | None]:
+    query = QueryObject(
+        select={"dimensions": ["Order Date:month"], "measures": ["Revenue 90d"]},
+        where=[{"field": "Status", "op": "=", "value": "late"}],
+        fill=True,
+    )
+    sql = CompilationPipeline().compile(query, model, target.dialect).sql
+    got = {}
+    for row in target.execute(sql):
+        month, revenue = row.values()
+        got[date.fromisoformat(str(month)[:10])] = None if revenue is None else float(revenue)
+    return got
+
+
 def _assert_all(target: VendorTarget) -> None:
     model = _prepare(target)
     for dimensions, by_status in (
@@ -146,6 +160,15 @@ def _assert_all(target: VendorTarget) -> None:
             assert got[key][0] == pytest.approx(revenue), key
             assert got[key][1] == pytest.approx(average), key
             assert got[key][2] == customers, key
+
+    # Late orders fall in December and March; fill adds January and February,
+    # whose 90 days still reach December's 40.
+    assert _filled_late(target, model) == {
+        date(2024, 12, 1): 40.0,
+        date(2025, 1, 1): 40.0,
+        date(2025, 2, 1): 40.0,
+        date(2025, 3, 1): 160.0,
+    }
 
 
 def test_duckdb_window_span(vendor_duckdb: VendorTarget) -> None:

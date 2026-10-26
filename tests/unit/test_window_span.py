@@ -349,3 +349,60 @@ def test_a_year_beside_the_month_does_not_split_the_window(
     by_month = {r[1]: r[2] for r in _rows(model, con, query)}
     # January 2025's 90 days reach back into 2024: 20 + 40 + 80.
     assert by_month[date(2025, 1, 1)] == 140.0
+
+
+def test_a_filled_period_reads_its_span(model: SemanticModel) -> None:
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders (id VARCHAR, customer_id VARCHAR, status VARCHAR,"
+        " order_date DATE, amount DOUBLE)"
+    )
+    # No order in February: fill adds the month, and its 90 days still hold
+    # December's and January's orders.
+    con.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?, ?, ?)", [o for o in ORDERS if o[0] != "o5"]
+    )
+    query = {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue 90d"]},
+        "fill": True,
+    }
+    by_month = dict(_rows(model, con, query))
+    assert by_month[date(2025, 2, 1)] == 120.0
+    assert by_month[date(2025, 3, 1)] == 240.0
+
+
+def test_a_span_over_a_reaggregate_metric_is_refused_at_load() -> None:
+    yaml_text = (
+        MODEL_YAML
+        + """
+  Avg Per Order:
+    type: reaggregate
+    measure: Revenue
+    per: [Status]
+    aggregation: avg
+  Bad:
+    type: cumulative
+    measure: Avg Per Order
+    timeDimension: Order Date
+    windowSpan: {count: 90, unit: day}
+"""
+    )
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    _, result = ReferenceResolver().resolve(raw, source_map)
+    assert "WINDOW_SPAN_NOT_SUPPORTED" in [e.code for e in result.errors]
+
+
+def test_a_span_over_a_filter_context_measure_is_refused() -> None:
+    yaml_text = MODEL_YAML.replace(
+        "  Revenue:\n    columns: [{dataObject: Orders, column: Amount}]\n    aggregation: sum\n",
+        "  Revenue:\n    columns: [{dataObject: Orders, column: Amount}]\n    aggregation: sum\n"
+        "    filterContext: {mode: FIXED}\n",
+    )
+    assert "filterContext" in yaml_text
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    fixed, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = {"select": {"dimensions": ["Order Date:month"], "measures": ["Revenue 90d"]}}
+    with pytest.raises(ResolutionError) as excinfo:
+        CompilationPipeline().compile(QueryObject(**query), fixed, "duckdb")
+    assert [e.code for e in excinfo.value.errors] == ["WINDOW_SPAN_NOT_SUPPORTED"]

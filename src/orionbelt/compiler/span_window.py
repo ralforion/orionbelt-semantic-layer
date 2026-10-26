@@ -34,6 +34,7 @@ Every other filter applies to the rows.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
@@ -69,7 +70,81 @@ from orionbelt.models.semantic import DataType, TimeGrain
 
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
-    from orionbelt.models.semantic import DataObject, SemanticModel
+    from orionbelt.models.semantic import DataObject, SemanticModel, WindowSpan
+
+
+@dataclass(frozen=True)
+class SpanRows:
+    """What a span metric's windows read, for any rows to be evaluated at.
+
+    The cumulative pass evaluates the metric at the query's own rows; a pass
+    adding rows later (``fill``'s empty periods) evaluates it at those, over
+    the same row CTE (``cumulative_rows.py``).
+    """
+
+    source: str
+    """The CTE holding the measure's rows, one per row-grain time and group."""
+    alias: str
+    """The alias the aggregate's column references are qualified with."""
+    time: str
+    """The rows' time column, at the row grain."""
+    groups: list[str]
+    """The group dimensions, under the same name in the rows and the keys."""
+    period: TimeGrain
+    span: WindowSpan
+    aggregate: Expr
+    """The measure's aggregate over the rows, as the multi-fact planner's
+    outer query rebuilds it."""
+    keyed: bool
+    """Add an always-true equality for an engine refusing a range-only join."""
+
+
+def span_select(rows: SpanRows, keys: str, names: list[str], time_name: str, name: str) -> Select:
+    """The metric *name* for each row of *keys*: its measure over the rows in the
+    span ending at the end of the row's period, grouped by *names*."""
+
+    def key(column: str) -> ColumnRef:
+        return ColumnRef(table=keys, name=column)
+
+    def row(column: str) -> ColumnRef:
+        return ColumnRef(table=rows.alias, name=column)
+
+    end = FunctionCall(
+        name="date_add",
+        args=[Literal.string(rows.period.value), Literal.number(1), key(time_name)],
+    )
+    start = FunctionCall(
+        name="date_add",
+        args=[Literal.string(rows.span.unit.value), Literal.number(-rows.span.count), end],
+    )
+    on: Expr = BinaryOp(
+        left=BinaryOp(left=row(rows.time), op=">=", right=start),
+        op="AND",
+        right=BinaryOp(left=row(rows.time), op="<", right=end),
+    )
+    for group in rows.groups:
+        on = BinaryOp(left=on, op="AND", right=null_safe_eq(key(group), row(group)))
+    if not rows.groups and rows.keyed:
+        # True whenever the range holds: both times are then non-NULL.
+        on = BinaryOp(
+            left=on,
+            op="AND",
+            right=BinaryOp(
+                left=IsNull(expr=key(time_name), negated=True),
+                op="=",
+                right=IsNull(expr=row(rows.time), negated=True),
+            ),
+        )
+    return Select(
+        columns=[
+            *(AliasedExpr(expr=key(n), alias=n) for n in names),
+            AliasedExpr(expr=rows.aggregate, alias=name),
+        ],
+        from_=From(source=keys, alias=keys),
+        joins=[Join(join_type=JoinType.LEFT, source=rows.source, alias=rows.alias, on=on)],
+        group_by=[key(n) for n in names],
+    )
+
 
 #: Grains finer than a day: a span or period in these needs rows at that grain.
 _FINER_THAN_A_DAY = (TimeGrain.HOUR, TimeGrain.MINUTE, TimeGrain.SECOND)
@@ -190,6 +265,14 @@ def _span_value(
         allow_fan_out=query.allow_fan_out,
     )
     rows = QueryResolver().resolve(rows_query, model, qualify_table=qualify_table)
+    if rows.has_filter_context:
+        # Planned in a pass of its own, with its own filters, which the rows
+        # read here do not go through.
+        raise _refuse(
+            f"Cumulative metric '{m.name}' has a windowSpan over '{m.cumulative_measure}', "
+            "which has a filterContext",
+            m.name,
+        )
     if detect_dedup_measures(rows, model).measures:
         raise _refuse(
             f"Cumulative metric '{m.name}' has a windowSpan over '{m.cumulative_measure}', "
@@ -244,61 +327,22 @@ def _span_value(
         ),
     )
 
-    def key(name: str) -> ColumnRef:
-        return ColumnRef(table=keys_name, name=name)
-
-    def row(name: str) -> ColumnRef:
-        return ColumnRef(table=rows_alias, name=name)
-
-    end = FunctionCall(
-        name="date_add", args=[Literal.string(period.value), Literal.number(1), key(time_name)]
-    )
-    start = FunctionCall(
-        name="date_add", args=[Literal.string(span.unit.value), Literal.number(-span.count), end]
-    )
-    on: Expr = BinaryOp(
-        left=BinaryOp(left=row(row_time), op=">=", right=start),
-        op="AND",
-        right=BinaryOp(left=row(row_time), op="<", right=end),
-    )
-    others = [d.name for d in rows.dimensions if d.name != row_time]
-    for other in others:
-        on = BinaryOp(left=on, op="AND", right=null_safe_eq(key(other), row(other)))
-    if not others and not dialect.capabilities.supports_range_only_outer_join:
-        # True whenever the range holds: both times are then non-NULL.
-        on = BinaryOp(
-            left=on,
-            op="AND",
-            right=BinaryOp(
-                left=IsNull(expr=key(time_name), negated=True),
-                op="=",
-                right=IsNull(expr=row(row_time), negated=True),
-            ),
-        )
-
     aggregate = next(
         c.expr
         for c in ast.columns
         if isinstance(c, AliasedExpr) and c.alias == m.cumulative_measure
     )
-    name = f"span_value_{index}"
-    value = CTE(
-        name=name,
-        query=Select(
-            columns=[
-                *(AliasedExpr(expr=key(n), alias=n) for n in group_names),
-                AliasedExpr(expr=aggregate, alias=m.name),
-            ],
-            from_=From(source=keys_name, alias=keys_name),
-            joins=[
-                Join(
-                    join_type=JoinType.LEFT,
-                    source=renamed[rows_source.source],
-                    alias=rows_alias,
-                    on=on,
-                )
-            ],
-            group_by=[key(n) for n in group_names],
-        ),
+    span_rows = SpanRows(
+        source=renamed[rows_source.source],
+        alias=rows_alias,
+        time=row_time,
+        groups=[d.name for d in rows.dimensions if d.name != row_time],
+        period=period,
+        span=span,
+        aggregate=aggregate,
+        keyed=not dialect.capabilities.supports_range_only_outer_join,
     )
+    resolved.span_rows[m.name] = span_rows
+    name = f"span_value_{index}"
+    value = CTE(name=name, query=span_select(span_rows, keys_name, group_names, time_name, m.name))
     return name, [*row_ctes, keys, value], [m]

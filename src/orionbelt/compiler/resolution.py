@@ -86,6 +86,7 @@ from orionbelt.models.types import DecimalType, parse_data_type
 from orionbelt.models.warnings import WarningCode, warning
 
 if TYPE_CHECKING:
+    from orionbelt.compiler.span_window import SpanRows
     from orionbelt.dialect.base import Dialect
 
 
@@ -1002,6 +1003,11 @@ class ResolvedQuery:
     leg, flags the first row of each object row per group there, and the outer
     aggregate reads its input only on flagged rows (see
     :func:`~orionbelt.compiler.cfl_projection.composite_aliases`)."""
+
+    span_rows: dict[str, SpanRows] = field(default_factory=dict)
+    """Span metrics (``windowSpan``) mapped to the rows their windows read.
+    Also in :attr:`cumulative_sources`, which marks the metrics a pass adding
+    rows has to evaluate; for these it range-joins the rows instead."""
 
     cumulative_sources: dict[str, str] = field(default_factory=dict)
     """Cumulative metrics the cumulative pass computes, mapped to the CTE its
