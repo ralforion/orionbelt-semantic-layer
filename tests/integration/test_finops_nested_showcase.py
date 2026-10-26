@@ -100,7 +100,7 @@ def test_a_parent_measure_is_not_double_counted(model: SemanticModel, con: Any) 
     truth = float(
         con.execute(
             "SELECT SUM(BilledCost) FROM focus.charges "
-            "WHERE list_contains(list_transform(Labels, x -> x.Value), 'worker')"
+            "WHERE list_contains(list_transform(Labels, lambda x: x.Value), 'worker')"
         ).fetchone()[0]
     )
     naive = float(
@@ -148,7 +148,7 @@ def test_two_grains_in_one_result(model: SemanticModel, con: Any) -> None:
     truth = float(
         con.execute(
             "SELECT SUM(BilledCost) FROM focus.charges "
-            "WHERE list_contains(list_transform(Credits, x -> x.Type), "
+            "WHERE list_contains(list_transform(Credits, lambda x: x.Type), "
             "'COMMITTED_USAGE_DISCOUNT')"
         ).fetchone()[0]
     )
