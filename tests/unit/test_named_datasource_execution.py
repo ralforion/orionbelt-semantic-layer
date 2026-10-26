@@ -8,6 +8,7 @@ as every connection did before, with the same cache keys.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -86,6 +87,84 @@ class TestExecution:
             execute_sql("SELECT 1", dialect="duckdb", source=source)
 
         assert {f"duckdb:{source.fingerprint()}" for source in shops} == db_executor._DB_TZ_DETECTED
+
+
+class TestOlderDriver:
+    def test_a_query_without_a_source_needs_no_data_source_api(
+        self, shops: list[DataSource], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ob-flight-extension 2.36.0 on PyPI predates the data-source API and
+        satisfies the requirement: a query without a source must run on what
+        its router offers, get_credentials and get_connection by dialect."""
+        import sys
+        import types
+
+        published = types.ModuleType("ob_flight.db_router")
+        published.get_credentials = lambda dialect, **_: {  # type: ignore[attr-defined]
+            "database": shops[0].getenv("DUCKDB_DATABASE")
+        }
+        monkeypatch.setitem(sys.modules, "ob_flight.db_router", published)
+
+        assert execute_sql("SELECT region FROM shop", dialect="duckdb").rows == [["eu"]]
+
+
+class TestCacheRace:
+    async def test_a_source_changing_during_the_lookup_cannot_cache_other_rows(
+        self, tmp_path: Any
+    ) -> None:
+        """Sources a and b share a fingerprint, and so a cache scope. a moves to
+        another file while its cache lookup awaits: the query must still run on
+        the settings its key came from, or b would be served a's new rows."""
+        from orionbelt.api import query_cache
+
+        for name in ("one", "two"):
+            con = duckdb.connect(str(tmp_path / f"{name}.duckdb"))
+            con.execute(f"CREATE TABLE shop AS SELECT '{name}' AS region")
+            con.close()
+        env = {
+            "OBSL_DATABASES": "a,b",
+            "DB_A_TYPE": "duckdb",
+            "DB_B_TYPE": "duckdb",
+            "DUCKDB_DATABASE": str(tmp_path / "one.duckdb"),
+        }
+        a, b = configured_datasources(env)
+
+        async def lookup_while_a_moves(_cache: Any, _key: str) -> None:
+            env["DB_A_DUCKDB_DATABASE"] = str(tmp_path / "two.duckdb")
+
+        def plan(**kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                datasource=kwargs["datasource"],
+                cache_key="k",
+                ttl_outcome=SimpleNamespace(ttl=SimpleNamespace(seconds=60)),
+            )
+
+        stored: dict[str, Any] = {}
+
+        async def store(**kwargs: Any) -> None:
+            stored.update(kwargs)
+
+        with (
+            patch.object(query_cache, "resolve_cache_plan", side_effect=plan),
+            patch.object(query_cache, "try_cache_get", side_effect=lookup_while_a_moves),
+            patch.object(query_cache, "try_cache_set", side_effect=store),
+            patch.object(query_cache, "build_result_columns", return_value=[]),
+        ):
+            result = await query_cache.execute_query_with_cache(
+                store=None,
+                model=None,
+                compile_result=SimpleNamespace(
+                    sql="SELECT region FROM shop", physical_tables=["shop"]
+                ),
+                model_id="m",
+                dialect="duckdb",
+                cache=MagicMock(),
+                cache_config=MagicMock(),
+                source=a,
+            )
+
+        assert result.exec_result.rows == [["one"]]
+        assert stored["datasource"] == datasource_key_for(b)
 
 
 class TestCacheScope:

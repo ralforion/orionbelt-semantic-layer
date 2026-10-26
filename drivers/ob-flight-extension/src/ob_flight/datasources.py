@@ -29,7 +29,7 @@ import json
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import quote
 
@@ -260,6 +260,15 @@ class DataSource:
     def named(self) -> bool:
         """Whether it was declared by name rather than configured by dialect."""
         return bool(self.prefix)
+
+    def snapshot(self) -> DataSource:
+        """The source with its settings as they are now, unaffected by later changes.
+
+        A query keyed (cache, pool) by the fingerprint of these settings must
+        also connect with them: read live, a change in between would store or
+        serve another database's rows under the old key.
+        """
+        return replace(self, environ=dict(self.environ))
 
     def getenv(self, variable: str) -> str | None:
         """A setting for this source.

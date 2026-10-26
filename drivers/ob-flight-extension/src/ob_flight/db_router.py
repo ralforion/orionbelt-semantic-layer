@@ -14,7 +14,6 @@ import queue
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import replace
 from typing import Any
 
 from ob_flight.datasources import (
@@ -147,7 +146,7 @@ def _get_pool(source: DataSource) -> ConnectionPool:
     would open its next connection with the first source's settings after
     those changed, and serve the other source another database's rows.
     """
-    pinned = replace(source, environ=dict(source.environ))
+    pinned = source.snapshot()
     key = pinned.fingerprint()
     with _pools_lock:
         if key not in _pools:

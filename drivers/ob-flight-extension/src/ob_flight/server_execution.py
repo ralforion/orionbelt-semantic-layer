@@ -477,9 +477,15 @@ def build_cache_meta(
     # datasource (the dialect today), NOT the session, so all three surfaces
     # share one entry per compiled query. Non-deterministic SQL (RAND/NOW/
     # CURRENT_DATE/TABLESAMPLE/...) is rejected inside resolve_cache_plan.
-    from orionbelt.cache import datasource_key_for
     from orionbelt.service.query_execution import resolve_cache_plan
 
+    datasource: str | None = None
+    if source is not None:
+        # Imported only with a source: an orionbelt older than named sources
+        # has no datasource_key_for, and a query without one does not need it.
+        from orionbelt.cache import datasource_key_for
+
+        datasource = datasource_key_for(source)
     plan = resolve_cache_plan(
         store=store,
         model_id=model_id,
@@ -488,7 +494,7 @@ def build_cache_meta(
         physical_tables=physical_tables,
         cache=server._cache,
         cache_config=server._cache_config,
-        datasource=datasource_key_for(source) if source is not None else None,
+        datasource=datasource,
     )
     ttl_result = plan.ttl_outcome.ttl
     if plan.cache_key is None or ttl_result is None:

@@ -417,6 +417,10 @@ async def execute_query_with_cache(
     :func:`~orionbelt.cache.key.datasource_key_for`). Any session resolving
     to the same data source, model, dialect and compiled SQL shares entries.
     """
+    if source is not None:
+        # One set of settings for the key and the query: the source's
+        # environment may change while the cache lookup awaits.
+        source = source.snapshot()
     ds = datasource or (
         datasource_key_for(source) if source is not None else build_datasource_key(dialect)
     )

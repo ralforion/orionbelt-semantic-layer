@@ -36,21 +36,24 @@ class ExecutionError(Exception):
     """Raised when database execution fails."""
 
 
-def _datasource(dialect: str, source: DataSource | None) -> DataSource:
-    """The data source a statement runs on: the one given, else the dialect's own.
+def _target(dialect: str, source: DataSource | None) -> DataSource | str:
+    """What a statement connects to: the data source given, else the dialect.
 
-    A dialect's implicit source reads its unprefixed variables, which is how
-    every connection worked before named sources.
+    ``ob_flight.db_router`` reads a dialect name as that dialect's implicit
+    source, its unprefixed variables, which is how every connection worked
+    before named sources. Only a given source uses the data-source API, so a
+    published ``ob-flight-extension`` older than it still runs every query
+    without one.
 
     Raises:
         ImportError: ob-flight-extension is not installed.
         ExecutionUnavailableError: ``source`` is of another dialect than the
             SQL was compiled for.
     """
-    from ob_flight.db_router import implicit_datasource
+    import ob_flight.db_router  # noqa: F401  (ImportError: the extension is missing)
 
     if source is None:
-        return implicit_datasource(dialect)
+        return dialect
     if source.dialect != dialect:
         raise ExecutionUnavailableError(
             f"Data source '{source.name}' is {source.dialect}, but the query was "
@@ -59,12 +62,23 @@ def _datasource(dialect: str, source: DataSource | None) -> DataSource:
     return source
 
 
-def _tz_key(source: DataSource) -> str:
-    """Cache key of a source's session timezone: the dialect, for an implicit source.
+def _credentials(target: DataSource | str) -> dict[str, Any]:
+    """``connect()`` kwargs of a data source, or of a dialect's implicit source."""
+    if isinstance(target, str):
+        from ob_flight.db_router import get_credentials
+
+        return get_credentials(target)
+    return target.credentials()
+
+
+def _tz_key(target: DataSource | str) -> str:
+    """Cache key of a session timezone: the dialect, unless a named source is given.
 
     Two named sources of one dialect can run in different session timezones.
     """
-    return f"{source.dialect}:{source.fingerprint()}" if source.named else source.dialect
+    if isinstance(target, str):
+        return target
+    return f"{target.dialect}:{target.fingerprint()}" if target.named else target.dialect
 
 
 class ColumnMeta:
@@ -569,7 +583,7 @@ def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo
     same state ``_detect_db_timezone`` would on failure.
     """
     try:
-        datasource = _datasource(dialect, source)
+        datasource = _target(dialect, source)
         key = _tz_key(datasource)
         if key in _DB_TZ_DETECTED:
             return _DB_SESSION_TZ.get(key)
@@ -577,7 +591,7 @@ def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo
         if dialect == "duckdb":
             import duckdb
 
-            database = datasource.credentials().get("database", ":memory:")
+            database = _credentials(datasource).get("database", ":memory:")
             conn = duckdb.connect(database=database, read_only=True)
             try:
                 return _detect_db_timezone(conn, "duckdb", key)
@@ -830,7 +844,7 @@ def execute_sql(
         ExecutionError: if the database connection or query fails.
     """
     try:
-        datasource = _datasource(dialect, source)
+        datasource = _target(dialect, source)
     except ImportError:
         raise ExecutionUnavailableError(
             "ob-flight-extension package is not installed. Install with: uv sync --extra flight"
@@ -965,7 +979,7 @@ def duckdb_execution_result(
 
 def _execute_duckdb(
     sql: str,
-    source: DataSource,
+    source: DataSource | str,
     t0: float,
     *,
     tz: ZoneInfo | None = None,
@@ -979,7 +993,7 @@ def _execute_duckdb(
     """
     import duckdb
 
-    database = source.credentials().get("database", ":memory:")
+    database = _credentials(source).get("database", ":memory:")
     conn = duckdb.connect(database=database, read_only=True)
     try:
         effective_tz: ZoneInfo | None
@@ -1065,7 +1079,7 @@ def explain_sql(sql: str, *, dialect: str, source: DataSource | None = None) -> 
         ExecutionError: warehouse rejected the EXPLAIN.
     """
     try:
-        datasource = _datasource(dialect, source)
+        datasource = _target(dialect, source)
     except ImportError:
         raise ExecutionUnavailableError(
             "ob-flight-extension package is not installed. Install with: uv sync --extra flight"
@@ -1076,7 +1090,7 @@ def explain_sql(sql: str, *, dialect: str, source: DataSource | None = None) -> 
         if dialect == "duckdb":
             import duckdb
 
-            database = datasource.credentials().get("database", ":memory:")
+            database = _credentials(datasource).get("database", ":memory:")
             conn = duckdb.connect(database=database, read_only=True)
             try:
                 rows = conn.execute(explain_stmt).fetchall()
