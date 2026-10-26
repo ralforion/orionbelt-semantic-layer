@@ -113,17 +113,13 @@ class TestOBMLtoOSICumulative:
         assert "obml_cumulative_window" not in ext
         assert "obml_cumulative_grain_to_date" not in ext
 
-    def test_rolling_window_exported(self) -> None:
-        osi, _ = self._convert()
-        m = self._find_metric(osi, "Rolling 7d Revenue")
-        assert m is not None
-
-        expr = m["expression"]["dialects"][0]["expression"]
-        assert "6 PRECEDING" in expr
-
-        ext = self._get_cumulative_ext(m)
-        assert ext["obml_cumulative_window"] == 7
-        assert "obml_cumulative_grain_to_date" not in ext
+    def test_rolling_window_left_out(self) -> None:
+        # `window: 7` counts the last seven periods of the calendar, a period
+        # without rows included; a ROWS frame would count the rows that exist.
+        # test_rolling_window_reconstructed covers the way back.
+        osi, warnings = self._convert()
+        assert self._find_metric(osi, "Rolling 7d Revenue") is None
+        assert any("Rolling 7d Revenue" in w and "periods of the calendar" in w for w in warnings)
 
     def test_grain_to_date_exported(self) -> None:
         osi, _ = self._convert()
@@ -317,10 +313,10 @@ class TestCumulativeEdgeCases:
         osi = converter.convert()
         metric_names = [m["name"] for m in osi["metrics"]]
 
-        # All four should be present: Revenue (measure), Running Revenue,
-        # Rolling 7d Revenue, MTD Revenue, Derived Metric
+        # Present: Revenue (measure), Running Revenue, MTD Revenue, Derived
+        # Metric; Rolling 7d Revenue has no portable form
         assert "Revenue" in metric_names  # measure → OSI metric
         assert "Running Revenue" in metric_names
-        assert "Rolling 7d Revenue" in metric_names
+        assert "Rolling 7d Revenue" not in metric_names  # no portable form
         assert "MTD Revenue" in metric_names
         assert "Derived Metric" in metric_names
