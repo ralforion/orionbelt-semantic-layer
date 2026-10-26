@@ -1374,6 +1374,10 @@ class OSItoOBML:
             metric_def["orderDirection"] = order_dir
         if extras.get("obml_window_default_value") is not None:
             metric_def["defaultValue"] = extras["obml_window_default_value"]
+        # Opaque foreign data: only a well-shaped {preceding} is restored.
+        frame = extras.get("obml_window_frame")
+        if isinstance(frame, dict) and "preceding" in frame:
+            metric_def["frame"] = {"preceding": frame["preceding"]}
         if extras.get("obml_partition_by"):
             metric_def["partitionBy"] = list(extras["obml_partition_by"])
         if description:

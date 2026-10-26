@@ -248,6 +248,7 @@ _NAME_REMAP = {
     "window_function": "windowFunction",
     "windowFunction": "windowFunction",
     "buckets": "windowBuckets",
+    "frame": "windowFramePreceding",
     "order_direction": "orderDirection",
     "orderDirection": "orderDirection",
     "default_value": "windowDefaultValue",

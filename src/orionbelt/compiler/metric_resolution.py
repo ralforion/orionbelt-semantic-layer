@@ -285,6 +285,21 @@ def resolve_window_metric(
     ):
         return None
 
+    # A frame reads the rows before each one in time; under ROLLUP / CUBE the
+    # subtotal rows would be read as periods of their own.
+    if metric.frame is not None and ctx.result.grouping is not None:
+        ctx.errors.append(
+            SemanticError(
+                code="WINDOW_FRAME_NOT_SUPPORTED",
+                message=(
+                    f"Window metric '{name}' aggregates a frame of the result's rows, "
+                    "which is not supported with ROLLUP / CUBE"
+                ),
+                path=f"metrics.{name}.frame",
+            )
+        )
+        return None
+
     return ResolvedMeasure(
         name=name,
         aggregation=base_aggregation,
@@ -311,6 +326,7 @@ def resolve_window_metric(
         window_buckets=metric.buckets,
         window_order_direction=metric.order_direction.lower(),
         window_default_value=metric.default_value,
+        window_frame_preceding=metric.frame.preceding if metric.frame is not None else None,
         window_over_reaggregate=over_reaggregate,
     )
 

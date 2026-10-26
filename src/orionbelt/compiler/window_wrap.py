@@ -1,13 +1,14 @@
-"""Wrapper CTE for ``MetricType.WINDOW`` — rank, lag, lead, ntile, first/last value.
+"""Wrapper CTE for ``MetricType.WINDOW``: rank, lag, lead, ntile, first/last
+value, and moving aggregates (sum, avg, min, max, count) over a row frame.
 
-These are single-row-output window functions (no aggregation frame). The wrap
-mirrors :mod:`orionbelt.compiler.cumulative_wrap`: the planner output becomes
-a base CTE, and the outer query applies the window functions over the
-already-aggregated rows.
+The wrap mirrors :mod:`orionbelt.compiler.cumulative_wrap`: the planner
+output becomes a base CTE, and the outer query applies the window functions
+over the already-aggregated rows.
 
 Window metrics never resize the result set — every row gets one ranking,
-prior-value, or bucket assignment. They compose naturally with ``DERIVED``
-metrics, so the outer query exposes them by their declared metric name.
+prior-value, bucket assignment or moving aggregate. They compose naturally
+with ``DERIVED`` metrics, so the outer query exposes them by their declared
+metric name.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
     Select,
+    WindowFrame,
     WindowFunction,
 )
 from orionbelt.compiler.metric_expansion import (
@@ -36,7 +38,7 @@ from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
 )
-from orionbelt.models.semantic import DataType, WindowFunctionKind
+from orionbelt.models.semantic import FRAME_WINDOW_FUNCTIONS, DataType, WindowFunctionKind
 
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
@@ -106,6 +108,33 @@ def axis_dimensions(resolved: ResolvedQuery, time_dim_name: str) -> list[str]:
     return [d.name for d in sorted(same, key=lambda d: -_GRAIN_RANK[d.grain] if d.grain else 1)]
 
 
+def group_dimensions(resolved: ResolvedQuery, time_dim_name: str) -> list[str]:
+    """The query's dimensions that split the result into groups for a cumulative or
+    framed window metric.
+
+    Every selected dimension except the time dimension itself and dimensions
+    over the same date column at another grain (``Sales Year`` next to
+    ``Sales Month``): those are positions on the time axis, and partitioning
+    by them would restart a running total at each year. "Same column" is the
+    logical column reached the same way: the physical name is empty for every
+    computed column, and one calendar column reached through two join paths
+    (``via``) is two time axes.
+    """
+    time_dim = next((d for d in resolved.dimensions if d.name == time_dim_name), None)
+    groups: list[str] = []
+    for dim in resolved.dimensions:
+        if dim.name == time_dim_name:
+            continue
+        if time_dim is not None and (dim.object_name, dim.column_name, dim.via) == (
+            time_dim.object_name,
+            time_dim.column_name,
+            time_dim.via,
+        ):
+            continue
+        groups.append(dim.name)
+    return groups
+
+
 def _build_window_call(
     measure: ResolvedMeasure,
     resolved: ResolvedQuery,
@@ -119,6 +148,8 @@ def _build_window_call(
     month, the months of a year are not ties."""
     assert measure.window_function is not None
     kind = measure.window_function
+    if kind in FRAME_WINDOW_FUNCTIONS:
+        return _framed_window_call(measure, resolved, model, dialect)
     func_name = _WINDOW_FUNCTION_NAMES[kind]
 
     base_ref: Expr | None = (
@@ -176,6 +207,45 @@ def _build_window_call(
         args=args,
         partition_by=partition_keys(measure.window_partition_by, model, dialect),
         order_by=order_by,
+    )
+
+
+def _framed_window_call(
+    measure: ResolvedMeasure,
+    resolved: ResolvedQuery,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> WindowFunction:
+    """A moving aggregate: the base measure over the current row and the
+    ``frame.preceding`` rows before it.
+
+    Partitioned and ordered as a cumulative metric's window is
+    (``cumulative_wrap._build_cumulative_window``): per group of the query's other
+    dimensions and ``partitionBy``, by time ascending and then the query's
+    other dimensions on the time's date column, NULLs last, so the frame does
+    not depend on the order the rows arrived in. The frame counts the result's
+    rows, not calendar periods: a period with no rows is not in the result.
+    """
+    assert measure.window_function is not None and measure.window_base_measure is not None
+    assert measure.window_time_dimension is not None
+    assert measure.window_frame_preceding is not None
+    time_name = measure.window_time_dimension
+    partitions = list(
+        dict.fromkeys([*group_dimensions(resolved, time_name), *measure.window_partition_by])
+    )
+    return WindowFunction(
+        func_name=measure.window_function.value.upper(),
+        args=[ColumnRef(name=measure.window_base_measure)],
+        partition_by=partition_keys(partitions, model, dialect),
+        order_by=[
+            OrderByItem(expr=ColumnRef(name=n), nulls_last=True)
+            for n in [time_name, *axis_dimensions(resolved, time_name)]
+        ],
+        frame=WindowFrame(
+            mode="ROWS",
+            start=f"{measure.window_frame_preceding} PRECEDING",
+            end="CURRENT ROW",
+        ),
     )
 
 

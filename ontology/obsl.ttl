@@ -78,7 +78,7 @@ obsl:PeriodOverPeriodMetric a owl:Class ;
 obsl:WindowMetric a owl:Class ;
     rdfs:subClassOf obsl:Metric ;
     rdfs:label "Window Metric" ;
-    rdfs:comment "A metric that applies a single-row-output SQL window function (RANK, DENSE_RANK, ROW_NUMBER, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE) optionally partitioned and ordered." .
+    rdfs:comment "A metric that applies a SQL window function over the result's rows, optionally partitioned and ordered: a single-row function (RANK, DENSE_RANK, ROW_NUMBER, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE) or a moving aggregate (SUM, AVG, MIN, MAX, COUNT) over a row frame." .
 
 obsl:ReaggregateMetric a owl:Class ;
     rdfs:subClassOf obsl:Metric ;
@@ -557,7 +557,7 @@ obsl:partitionBy a owl:DatatypeProperty ;
 # Window-metric properties: the function family and its arguments.
 obsl:windowFunction a owl:DatatypeProperty ;
     rdfs:label "window function" ;
-    rdfs:comment "Window function family for a window metric: rank, dense_rank, row_number, ntile, lag, lead, first_value, last_value." ;
+    rdfs:comment "Window function family for a window metric: rank, dense_rank, row_number, ntile, lag, lead, first_value, last_value, or the moving aggregates sum, avg, min, max, count." ;
     rdfs:domain obsl:WindowMetric ;
     rdfs:range xsd:string .
 
@@ -570,6 +570,12 @@ obsl:windowOffset a owl:DatatypeProperty ;
 obsl:windowBuckets a owl:DatatypeProperty ;
     rdfs:label "window buckets" ;
     rdfs:comment "Bucket count for NTILE window metrics (>= 2)." ;
+    rdfs:domain obsl:WindowMetric ;
+    rdfs:range xsd:integer .
+
+obsl:windowFramePreceding a owl:DatatypeProperty ;
+    rdfs:label "window frame preceding" ;
+    rdfs:comment "For a moving-aggregate window metric (sum, avg, min, max, count): the rows before the current one its frame reads, in the result ordered by time (>= 1)." ;
     rdfs:domain obsl:WindowMetric ;
     rdfs:range xsd:integer .
 
@@ -902,6 +908,7 @@ obsl:cumulativeType a owl:FunctionalProperty .
 obsl:window a owl:FunctionalProperty .
 obsl:grainToDate a owl:FunctionalProperty .
 obsl:windowSpan a owl:FunctionalProperty .
+obsl:windowFramePreceding a owl:FunctionalProperty .
 obsl:offset a owl:FunctionalProperty .
 obsl:offsetGrain a owl:FunctionalProperty .
 obsl:comparison a owl:FunctionalProperty .

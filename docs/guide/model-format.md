@@ -1204,7 +1204,7 @@ For a detailed guide on PoP metrics, including CTE architecture, filter push-dow
 
 ### Window Metrics
 
-A **window metric** wraps a single-row SQL window function — `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`. Use `partitionBy:` to scope to subgroups and `orderDirection:` to flip ranking direction.
+A **window metric** wraps a single-row SQL window function — `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE` — or a moving aggregate — `SUM`, `AVG`, `MIN`, `MAX`, `COUNT` over a `frame` of rows. Use `partitionBy:` to scope to subgroups and `orderDirection:` to flip ranking direction.
 
 ```yaml
 metrics:
@@ -1232,7 +1232,18 @@ metrics:
     measure: Revenue
     buckets: 4
     partitionBy: [Year]
+
+  # Three-row moving average: this row and the two before it in time
+  Revenue Moving Avg 3:
+    type: window
+    windowFunction: avg
+    measure: Revenue
+    timeDimension: Order Date
+    frame: {preceding: 2}
 ```
+
+!!! tip "Rows, not calendar periods"
+    A `frame` counts the rows the query returns, ordered by `timeDimension` (required, selected) ascending, per group of the query's other dimensions and `partitionBy`: a month with no rows is not in the frame, where a cumulative metric's `window: 3` counts three calendar months. The frame is required for `sum`, `avg`, `min`, `max` and `count` and refused for the other functions, which also means no `offset`, `buckets`, `defaultValue` or `orderDirection` beside it. It is refused with ROLLUP / CUBE (`WINDOW_FRAME_NOT_SUPPORTED`) and, like every window metric, with `fill`.
 
 Window metrics compose freely with derived metrics — `expression: '{[Revenue]} - {[Revenue Prior Month]}'` yields a MoM delta without writing any SQL.
 
@@ -1457,7 +1468,8 @@ Rules:
 | `population` | `"facts"` \| `"dimension"` | `"facts"` | Where the stage-1 groups come from: the measure's rows, or every member of the `per` dimensions (reaggregate only) |
 | `carryForward` | boolean | `false` | With `population: dimension`, a member with no row in a period takes its latest earlier value: a balance carried between snapshots (reaggregate only; see [Semi-additive measures](#semi-additive-measures)) |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
-| `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics) |
+| `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` \| `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` | — | Window function family (required for window metrics) |
+| `frame` | `{preceding: N}` | — | Rows before the current one a `sum` / `avg` / `min` / `max` / `count` window metric aggregates over, N >= 1 (required for those, refused otherwise) |
 | `offset` | integer | — | Row offset for `lag` / `lead` (>= 1) |
 | `buckets` | integer | — | Bucket count for `ntile` (>= 2) |
 | `orderDirection` | `"asc"` \| `"desc"` | `"desc"` | Window `ORDER BY` direction |

@@ -398,10 +398,26 @@ metrics:
     measure: Revenue
     buckets: 4
     partitionBy: [Year]
+
+  Revenue Moving Avg 3:
+    type: window
+    windowFunction: avg
+    measure: Revenue
+    timeDimension: Order Date
+    frame: {preceding: 2}
 ```
 
 - `windowFunction:` one of `rank | dense_rank | row_number | ntile |
-  lag | lead | first_value | last_value` (required)
+  lag | lead | first_value | last_value | sum | avg | min | max | count`
+  (required)
+- `frame: {preceding: N}`: required for `sum | avg | min | max | count`
+  (refused otherwise): a moving aggregate over the current row and the N
+  rows before it, per group of the query's other dimensions, ordered by
+  `timeDimension` (required, selected) ascending. It counts the rows the
+  query returns, not calendar periods, and reads only rows the query's
+  filters keep; for calendar windows use a cumulative metric
+  (`window: N`, `windowSpan`). No `offset`, `buckets`, `defaultValue` or
+  `orderDirection`; refused with ROLLUP / CUBE and with `fill`.
 - `measure:` base measure (required except for ROW_NUMBER / NTILE that
   rank over time alone)
 - `partitionBy:` dimensions to partition by (optional, default `[]`)

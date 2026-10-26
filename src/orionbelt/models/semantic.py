@@ -365,10 +365,11 @@ class MetricType(StrEnum):
 class WindowFunctionKind(StrEnum):
     """SQL window-function family for ``MetricType.WINDOW``.
 
-    Single-row-output window functions (no aggregation):
-    ranking, offsetting, and positional. Aggregating window
-    functions (SUM/AVG over a frame) belong to
-    ``MetricType.CUMULATIVE``.
+    Ranking, offsetting and positional functions read one row each. The
+    aggregating ones (``sum``, ``avg``, ``min``, ``max``, ``count``) read a
+    ``frame`` of the result's rows: a moving aggregate over the rows the query
+    returns, ordered by time, where ``MetricType.CUMULATIVE`` windows count
+    calendar periods.
     """
 
     RANK = "rank"
@@ -379,6 +380,23 @@ class WindowFunctionKind(StrEnum):
     LEAD = "lead"
     FIRST_VALUE = "first_value"
     LAST_VALUE = "last_value"
+    SUM = "sum"
+    AVG = "avg"
+    MIN = "min"
+    MAX = "max"
+    COUNT = "count"
+
+
+#: The window functions that aggregate over a ``frame`` of rows.
+FRAME_WINDOW_FUNCTIONS = frozenset(
+    {
+        WindowFunctionKind.SUM,
+        WindowFunctionKind.AVG,
+        WindowFunctionKind.MIN,
+        WindowFunctionKind.MAX,
+        WindowFunctionKind.COUNT,
+    }
+)
 
 
 class PeriodOverPeriodComparison(StrEnum):
@@ -1533,6 +1551,27 @@ class WindowSpan(BaseModel):
         return value
 
 
+class RowFrame(BaseModel):
+    """The rows an aggregating window metric reads: the current row and the
+    ``preceding`` rows before it, in the result ordered by time.
+
+    ``{preceding: 2}`` is ``ROWS BETWEEN 2 PRECEDING AND CURRENT ROW``: a
+    three-row moving aggregate. It counts the rows the query returns, so a
+    period with no rows is skipped rather than counted.
+    """
+
+    preceding: int
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+    @field_validator("preceding")
+    @classmethod
+    def _positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("'frame.preceding' must be >= 1")
+        return value
+
+
 class Metric(BaseModel):
     """A metric: derived expression, cumulative window, or period-over-period comparison.
 
@@ -1571,6 +1610,9 @@ class Metric(BaseModel):
     buckets: int | None = None
     order_direction: str = Field("desc", alias="orderDirection")
     default_value: str | int | float | bool | None = Field(None, alias="defaultValue")
+    frame: RowFrame | None = None
+    """The rows a ``sum`` / ``avg`` / ``min`` / ``max`` / ``count`` window
+    metric aggregates over. Window metrics only."""
     # Reaggregate metrics: dimensions added to the query grain for the first
     # stage (``name`` or ``name:grain``), and the second-stage aggregation.
     per: list[str] = Field(default_factory=list)
@@ -1610,6 +1652,8 @@ class Metric(BaseModel):
     def _validate_metric_type(self) -> Metric:
         if self.window_span is not None and self.type != MetricType.CUMULATIVE:
             raise ValueError("'windowSpan' is only valid on cumulative metrics")
+        if self.frame is not None and self.type != MetricType.WINDOW:
+            raise ValueError("'frame' is only valid on window metrics")
         if self.type == MetricType.REAGGREGATE:
             self._validate_reaggregate()
             return self
@@ -1701,9 +1745,42 @@ class Metric(BaseModel):
                 self.buckets is None or self.buckets < 2
             ):
                 raise ValueError("Window metric with function 'ntile' requires 'buckets' >= 2")
+            self._validate_frame(self.window_function)
             if self.order_direction.lower() not in {"asc", "desc"}:
                 raise ValueError("'orderDirection' must be 'asc' or 'desc'")
         return self
+
+    def _validate_frame(self, function: WindowFunctionKind) -> None:
+        if function not in FRAME_WINDOW_FUNCTIONS:
+            if self.frame is not None:
+                raise ValueError(
+                    f"'frame' applies to the aggregating window functions "
+                    f"(sum, avg, min, max, count), not '{function.value}'"
+                )
+            return
+        if self.frame is None:
+            raise ValueError(f"Window metric with function '{function.value}' requires 'frame'")
+        if not self.time_dimension:
+            raise ValueError(
+                f"Window metric with function '{function.value}' requires 'timeDimension'"
+            )
+        # Settings of the single-row functions would have no effect here.
+        written = [
+            alias
+            for alias, value in (
+                ("offset", self.offset),
+                ("buckets", self.buckets),
+                ("defaultValue", self.default_value),
+            )
+            if value is not None
+        ]
+        if "order_direction" in self.model_fields_set:
+            written.append("orderDirection")
+        if written:
+            raise ValueError(
+                f"Window metric with function '{function.value}' does not take "
+                f"{', '.join(written)}: its frame is ordered by time, ascending"
+            )
 
     def _validate_reaggregate(self) -> None:
         if not self.measure:

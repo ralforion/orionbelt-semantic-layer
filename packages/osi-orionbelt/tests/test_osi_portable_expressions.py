@@ -328,6 +328,22 @@ class TestSemanticsSpelledOut:
             f"RANK() OVER (PARTITION BY {COUNTRY} ORDER BY SUM({AMT}) DESC)"
         )
 
+    def test_moving_aggregate_window_metric(self) -> None:
+        obml = copy.deepcopy(_MODEL)
+        obml["metrics"]["Sales Moving Avg"] = {
+            "type": "window",
+            "windowFunction": "avg",
+            "measure": "Sales",
+            "timeDimension": "Line Date",
+            "frame": {"preceding": 2},
+            "partitionBy": ["Customer Country"],
+        }
+        osi, _ = _export(obml)
+        assert _sql(osi)["Sales Moving Avg"] == (
+            f"AVG(SUM({AMT})) OVER (PARTITION BY {COUNTRY} "
+            f"ORDER BY {MONTH} ASC ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)"
+        )
+
     def test_databricks_delegation_is_tagged_databricks(self) -> None:
         obml = copy.deepcopy(_MODEL)
         obml["measures"] = {"Delegated": {"aggregation": "measure"}}

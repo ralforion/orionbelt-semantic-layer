@@ -57,7 +57,12 @@ from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
 )
-from orionbelt.compiler.window_wrap import axis_dimensions, partition_keys, wraps_a_cte
+from orionbelt.compiler.window_wrap import (
+    axis_dimensions,
+    group_dimensions,
+    partition_keys,
+    wraps_a_cte,
+)
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import CumulativeAggType, GrainToDate, TimeGrain
@@ -106,7 +111,7 @@ def _build_cumulative_window(
 ) -> Expr:
     """Build the window function expression for a cumulative metric.
 
-    ``group_dims`` (the query's other dimensions, see :func:`_group_dimensions`)
+    ``group_dims`` (the query's other dimensions, see :func:`group_dimensions`)
     and ``cumulative_partition_by`` are ``PARTITION BY`` keys, after the
     implicit ``DATE_TRUNC(grain, time)`` partition for grain-to-date. They are
     dimension names: the underlying ``base`` CTE exposes them as bare aliases.
@@ -186,32 +191,6 @@ def _build_cumulative_window(
             end="CURRENT ROW",
         ),
     )
-
-
-def _group_dimensions(resolved: ResolvedQuery, time_dim_name: str) -> list[str]:
-    """The query's dimensions that split the result into groups for a cumulative metric.
-
-    Every selected dimension except the time dimension itself and dimensions
-    over the same date column at another grain (``Sales Year`` next to
-    ``Sales Month``): those are positions on the time axis, and partitioning
-    by them would restart a running total at each year. "Same column" is the
-    logical column reached the same way: the physical name is empty for every
-    computed column, and one calendar column reached through two join paths
-    (``via``) is two time axes.
-    """
-    time_dim = next((d for d in resolved.dimensions if d.name == time_dim_name), None)
-    groups: list[str] = []
-    for dim in resolved.dimensions:
-        if dim.name == time_dim_name:
-            continue
-        if time_dim is not None and (dim.object_name, dim.column_name, dim.via) == (
-            time_dim.object_name,
-            time_dim.column_name,
-            time_dim.via,
-        ):
-            continue
-        groups.append(dim.name)
-    return groups
 
 
 def _component_base_column(
@@ -478,7 +457,7 @@ def _window_for(
         m,
         m.cumulative_time_dimension,
         dialect,
-        _group_dimensions(resolved, m.cumulative_time_dimension),
+        group_dimensions(resolved, m.cumulative_time_dimension),
         model,
         axis_dimensions(resolved, m.cumulative_time_dimension),
     )
@@ -640,7 +619,7 @@ def _as_of_ctes(
         # would come back NULL.
         on_axis = sorted(
             {d.name for d in resolved.dimensions}
-            - set(_group_dimensions(periods_resolved, time_dim_name))
+            - set(group_dimensions(periods_resolved, time_dim_name))
         )
         if on_axis:
             raise ResolutionError(
@@ -769,7 +748,7 @@ def _is_rolling(m: ResolvedMeasure) -> bool:
 def _partition_names(m: ResolvedMeasure, resolved: ResolvedQuery) -> list[str]:
     """The dimensions a cumulative metric accumulates within, as in the window."""
     assert m.cumulative_time_dimension is not None
-    groups = _group_dimensions(resolved, m.cumulative_time_dimension)
+    groups = group_dimensions(resolved, m.cumulative_time_dimension)
     return list(dict.fromkeys([*groups, *m.cumulative_partition_by]))
 
 

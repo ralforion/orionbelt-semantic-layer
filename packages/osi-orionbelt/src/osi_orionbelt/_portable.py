@@ -65,6 +65,7 @@ _WINDOW_FUNCS = {
     "lead",
     "first_value",
     "last_value",
+    *_CUMULATIVE_FUNCS,
 }
 
 # Filter operators whose OSSIE_SQL_2026 form differs from the ANSI one.
@@ -614,7 +615,16 @@ class PortableRenderer:
 
         args: list[str] = []
         order: str | None = None
-        if func in ("lag", "lead"):
+        frame = ""
+        if func in _CUMULATIVE_FUNCS:
+            # A moving aggregate over the rows ordered by time, ascending.
+            preceding = (met.get("frame") or {}).get("preceding")
+            if inner is None or time is None or preceding is None:
+                raise NotPortableError(f"metric '{name}' needs a measure, timeDimension and frame")
+            args = [inner]
+            order = f"{time} ASC"
+            frame = f" ROWS BETWEEN {int(preceding)} PRECEDING AND CURRENT ROW"
+        elif func in ("lag", "lead"):
             if inner is None or time is None:
                 raise NotPortableError(f"metric '{name}' needs a measure and a timeDimension")
             args = [inner, str(int(met.get("offset") or 1))]
@@ -639,5 +649,5 @@ class PortableRenderer:
         if partitions:
             clauses.append(f"PARTITION BY {', '.join(partitions)}")
         if order:
-            clauses.append(f"ORDER BY {order}")
+            clauses.append(f"ORDER BY {order}{frame}")
         return f"{func.upper()}({', '.join(args)}) OVER ({' '.join(clauses)})"

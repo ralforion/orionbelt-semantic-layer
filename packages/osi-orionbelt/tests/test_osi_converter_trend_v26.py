@@ -3,7 +3,7 @@
 Validates that:
 - ``partitionBy`` survives OBML → OSI → OBML on cumulative metrics
 - ``MetricType.WINDOW`` round-trips (function, offset, buckets, partitionBy,
-  orderDirection, defaultValue)
+  orderDirection, defaultValue, frame)
 - Statistical aggregations (two-column ``CORR`` / ``COVAR_*``) preserve
   column order through the SQL serialization
 """
@@ -99,6 +99,13 @@ _OBML_V26: dict[str, Any] = {
             "buckets": 4,
             "partitionBy": ["Country"],
         },
+        "Revenue Moving Avg": {
+            "type": "window",
+            "windowFunction": "avg",
+            "measure": "Revenue",
+            "timeDimension": "Order Date",
+            "frame": {"preceding": 2},
+        },
     },
 }
 
@@ -149,6 +156,11 @@ class TestObmlToOsiV26:
         extras = _extras(m)
         assert extras["obml_window_function"] == "ntile"
         assert extras["obml_window_buckets"] == 4
+
+    def test_window_frame_preserved(self) -> None:
+        extras = _extras(_osi_metric(self.osi, "Revenue Moving Avg"))
+        assert extras["obml_window_function"] == "avg"
+        assert extras["obml_window_frame"] == {"preceding": 2}
 
     def test_corr_measure_emits_two_columns(self) -> None:
         # Find Revenue Spend Corr in OSI metrics
@@ -210,3 +222,8 @@ class TestOsiToObmlV26:
         m = self.obml["metrics"]["Revenue Quartile"]
         assert m["windowFunction"] == "ntile"
         assert m["buckets"] == 4
+
+    def test_window_frame_roundtrip(self) -> None:
+        assert (
+            self.obml["metrics"]["Revenue Moving Avg"] == _OBML_V26["metrics"]["Revenue Moving Avg"]
+        )

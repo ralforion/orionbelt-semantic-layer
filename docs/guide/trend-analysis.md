@@ -98,8 +98,8 @@ clipping the span, and `cumulativeType`, `window`, `grainToDate` and
 ## 2. Window metrics — RANK, LAG, LEAD, NTILE, FIRST/LAST VALUE
 
 A new `MetricType.WINDOW` covers the single-row-output window functions
-(ranking, offsetting, positional). The `windowFunction:` field
-discriminates.
+(ranking, offsetting, positional) and moving aggregates over a frame of
+rows. The `windowFunction:` field discriminates.
 
 ### Rank within a partition
 
@@ -155,6 +155,45 @@ metrics:
     partitionBy: [Year]
 ```
 
+### Moving aggregates over rows: `frame`
+
+`sum`, `avg`, `min`, `max` and `count` aggregate the base measure over a
+frame of the result's rows: the current row and the `preceding` rows before
+it, ordered by the time dimension.
+
+```yaml
+metrics:
+  Revenue Moving Avg 3:
+    type: window
+    windowFunction: avg
+    measure: Revenue
+    timeDimension: order_month
+    frame: {preceding: 2}
+```
+
+```sql
+AVG("Revenue") OVER (
+  PARTITION BY "Country"            -- the query's other dimensions
+  ORDER BY "order_month" ASC NULLS LAST
+  ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+) AS "Revenue Moving Avg 3"
+```
+
+The frame counts rows, not calendar periods: with no orders in February,
+March's three rows are December, January and March. A cumulative metric
+with `window: 3` counts calendar months instead (January to March), and
+`windowSpan` the source rows in a span of time. Like a cumulative metric,
+the frame is partitioned by the query's other dimensions and `partitionBy`,
+and a dimension over the same date column at another grain orders the rows
+rather than partitioning them.
+
+Like every window metric, the frame reads the rows the query returns: a
+`where` on the time dimension clips the frame, so the first month shown
+averages over itself alone. `timeDimension` is required and must be
+selected; `offset`, `buckets`, `defaultValue` and `orderDirection` do not
+apply, and the frame is refused with ROLLUP / CUBE (`WINDOW_FRAME_NOT_SUPPORTED`)
+and with `fill`.
+
 ### Composition — moving-average crossover
 
 The killer feature is composing window metrics through `DERIVED`:
@@ -190,6 +229,8 @@ No new compiler logic — `DERIVED` already composes any metric by name.
 | `partitionBy:` entry must resolve to a model dimension in SELECT | `UNKNOWN_PARTITION_DIMENSION` |
 | `lag` / `lead` require `offset >= 1` and `timeDimension:` | `INVALID_LAG_LEAD` |
 | `ntile` requires `buckets >= 2` | `INVALID_NTILE_BUCKETS` |
+| `sum` / `avg` / `min` / `max` / `count` require `frame` and `timeDimension`; `frame` is refused elsewhere | model load error |
+| A `frame` with ROLLUP / CUBE | `WINDOW_FRAME_NOT_SUPPORTED` |
 
 ## 3. Statistical aggregates on Measure { #statistical-aggregates-on-measure }
 

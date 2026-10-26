@@ -342,6 +342,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.window,
         OBSL.grainToDate,
         OBSL.windowSpan,
+        OBSL.windowFramePreceding,
         OBSL.offset,
         OBSL.offsetGrain,
         OBSL.comparison,
@@ -424,6 +425,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.window,
         OBSL.grainToDate,
         OBSL.windowSpan,
+        OBSL.windowFramePreceding,
         OBSL.offset,
         OBSL.offsetGrain,
         OBSL.comparison,
@@ -844,6 +846,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
                 g.add((met_uri, OBSL.windowOffset, Literal(met.offset)))
             if met.buckets is not None:
                 g.add((met_uri, OBSL.windowBuckets, Literal(met.buckets)))
+            if met.frame is not None:
+                g.add((met_uri, OBSL.windowFramePreceding, Literal(met.frame.preceding)))
             g.add((met_uri, OBSL.orderDirection, Literal(met.order_direction)))
             if met.default_value is not None:
                 g.add((met_uri, OBSL.windowDefaultValue, Literal(str(met.default_value))))
