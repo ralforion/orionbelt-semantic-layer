@@ -18,8 +18,12 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+if TYPE_CHECKING:
+    # ob_flight is an optional extra: imported for the annotation only.
+    from ob_flight.datasources import DataSource
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,37 @@ class ExecutionUnavailableError(Exception):
 
 class ExecutionError(Exception):
     """Raised when database execution fails."""
+
+
+def _datasource(dialect: str, source: DataSource | None) -> DataSource:
+    """The data source a statement runs on: the one given, else the dialect's own.
+
+    A dialect's implicit source reads its unprefixed variables, which is how
+    every connection worked before named sources.
+
+    Raises:
+        ImportError: ob-flight-extension is not installed.
+        ExecutionUnavailableError: ``source`` is of another dialect than the
+            SQL was compiled for.
+    """
+    from ob_flight.db_router import implicit_datasource
+
+    if source is None:
+        return implicit_datasource(dialect)
+    if source.dialect != dialect:
+        raise ExecutionUnavailableError(
+            f"Data source '{source.name}' is {source.dialect}, but the query was "
+            f"compiled for {dialect}"
+        )
+    return source
+
+
+def _tz_key(source: DataSource) -> str:
+    """Cache key of a source's session timezone: the dialect, for an implicit source.
+
+    Two named sources of one dialect can run in different session timezones.
+    """
+    return f"{source.dialect}:{source.fingerprint()}" if source.named else source.dialect
 
 
 class ColumnMeta:
@@ -468,23 +503,25 @@ _TZ_QUERIES: dict[str, str | None] = {
 }
 
 
-def _detect_db_timezone(executor: Any, dialect: str) -> ZoneInfo | None:
+def _detect_db_timezone(executor: Any, dialect: str, key: str | None = None) -> ZoneInfo | None:
     """Detect and cache the database session timezone.
 
-    Issues a one-time lightweight query per dialect. Subsequent calls return
-    the cached result. Returns None if detection fails or is unsupported.
+    Issues a one-time lightweight query per ``key`` (the data source, see
+    :func:`_tz_key`; the dialect by default). Subsequent calls return the
+    cached result. Returns None if detection fails or is unsupported.
 
     For Arrow Flight: the detection happens on the same connection before
     fetching results, so Flight-served results get the correct TZ applied.
     """
-    if dialect in _DB_TZ_DETECTED:
-        return _DB_SESSION_TZ.get(dialect)
+    key = key or dialect
+    if key in _DB_TZ_DETECTED:
+        return _DB_SESSION_TZ.get(key)
 
-    _DB_TZ_DETECTED.add(dialect)
+    _DB_TZ_DETECTED.add(key)
 
     if dialect == "bigquery":
         tz = ZoneInfo("UTC")
-        _DB_SESSION_TZ[dialect] = tz
+        _DB_SESSION_TZ[key] = tz
         logger.info("Database session timezone for %s: UTC (fixed)", dialect)
         return tz
 
@@ -500,7 +537,7 @@ def _detect_db_timezone(executor: Any, dialect: str) -> ZoneInfo | None:
             tz_name = str(row[0]).strip()
             if tz_name and tz_name != "SYSTEM":
                 zi = ZoneInfo(tz_name)
-                _DB_SESSION_TZ[dialect] = zi
+                _DB_SESSION_TZ[key] = zi
                 logger.info("Database session timezone for %s: %s", dialect, tz_name)
                 return zi
     except (ZoneInfoNotFoundError, KeyError, ValueError):
@@ -517,8 +554,10 @@ def _reset_db_tz_cache() -> None:
     _DB_TZ_DETECTED.clear()
 
 
-def warm_db_tz_cache(dialect: str) -> ZoneInfo | None:
-    """Probe the DB session timezone for ``dialect`` and cache the result.
+def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo | None:
+    """Probe the DB session timezone of a data source and cache the result.
+
+    ``source`` defaults to the dialect's implicit source.
 
     Idempotent: returns the cached value if detection has already run.
     Opens a short-lived connection (DuckDB read-only or pooled connection
@@ -529,29 +568,29 @@ def warm_db_tz_cache(dialect: str) -> ZoneInfo | None:
     established or the detection query fails — leaves the cache in the
     same state ``_detect_db_timezone`` would on failure.
     """
-    if dialect in _DB_TZ_DETECTED:
-        return _DB_SESSION_TZ.get(dialect)
-
     try:
+        datasource = _datasource(dialect, source)
+        key = _tz_key(datasource)
+        if key in _DB_TZ_DETECTED:
+            return _DB_SESSION_TZ.get(key)
+
         if dialect == "duckdb":
             import duckdb
-            from ob_flight.db_router import get_credentials
 
-            creds = get_credentials("duckdb")
-            database = creds.get("database", ":memory:")
+            database = datasource.credentials().get("database", ":memory:")
             conn = duckdb.connect(database=database, read_only=True)
             try:
-                return _detect_db_timezone(conn, "duckdb")
+                return _detect_db_timezone(conn, "duckdb", key)
             finally:
                 with contextlib.suppress(Exception):
                     conn.close()
 
         from ob_flight.db_router import get_connection
 
-        with get_connection(dialect) as conn:
+        with get_connection(datasource) as conn:
             cursor = conn.cursor()
             try:
-                return _detect_db_timezone(cursor, dialect)
+                return _detect_db_timezone(cursor, dialect, key)
             finally:
                 with contextlib.suppress(Exception):
                     cursor.close()
@@ -766,10 +805,11 @@ def execute_sql(
     sql: str,
     *,
     dialect: str,
+    source: DataSource | None = None,
     tz: ZoneInfo | None = None,
     override_db_tz: bool = False,
 ) -> ExecutionResult:
-    """Execute SQL against the configured vendor database.
+    """Execute SQL against a data source: ``source``, else the dialect's implicit one.
 
     Uses connection pooling (via ``get_connection``) and tries Arrow-native
     fetch when the cursor supports it (e.g. DuckDB ``fetch_arrow_table``).
@@ -790,7 +830,7 @@ def execute_sql(
         ExecutionError: if the database connection or query fails.
     """
     try:
-        from ob_flight.db_router import get_credentials
+        datasource = _datasource(dialect, source)
     except ImportError:
         raise ExecutionUnavailableError(
             "ob-flight-extension package is not installed. Install with: uv sync --extra flight"
@@ -799,20 +839,18 @@ def execute_sql(
     t0 = time.monotonic()
     try:
         if dialect == "duckdb":
-            return _execute_duckdb(
-                sql, get_credentials(dialect), t0, tz=tz, override_db_tz=override_db_tz
-            )
+            return _execute_duckdb(sql, datasource, t0, tz=tz, override_db_tz=override_db_tz)
         # Non-DuckDB: use the full ob driver via db_router
         from ob_flight.db_router import get_connection
 
-        with get_connection(dialect) as conn:
+        with get_connection(datasource) as conn:
             cursor = conn.cursor()
             try:
                 effective_tz: ZoneInfo | None
                 if override_db_tz and tz is not None:
                     effective_tz = tz
                 else:
-                    db_tz = _detect_db_timezone(cursor, dialect)
+                    db_tz = _detect_db_timezone(cursor, dialect, _tz_key(datasource))
                     effective_tz = db_tz or tz
                 cursor.execute(sql)
                 return _fetch_result(cursor, t0, tz=effective_tz)
@@ -927,7 +965,7 @@ def duckdb_execution_result(
 
 def _execute_duckdb(
     sql: str,
-    creds: dict[str, Any],
+    source: DataSource,
     t0: float,
     *,
     tz: ZoneInfo | None = None,
@@ -941,7 +979,7 @@ def _execute_duckdb(
     """
     import duckdb
 
-    database = creds.get("database", ":memory:")
+    database = source.credentials().get("database", ":memory:")
     conn = duckdb.connect(database=database, read_only=True)
     try:
         effective_tz: ZoneInfo | None
@@ -953,7 +991,7 @@ def _execute_duckdb(
             # that follows on the same connection.
             probe = conn.cursor()
             try:
-                db_tz = _detect_db_timezone(probe, "duckdb")
+                db_tz = _detect_db_timezone(probe, "duckdb", _tz_key(source))
             finally:
                 probe.close()
             effective_tz = db_tz or tz
@@ -1013,8 +1051,10 @@ def _fetch_result(cursor: Any, t0: float, *, tz: ZoneInfo | None = None) -> Exec
     )
 
 
-def explain_sql(sql: str, *, dialect: str) -> str:
-    """Run ``EXPLAIN <sql>`` against the configured warehouse and return raw text.
+def explain_sql(sql: str, *, dialect: str, source: DataSource | None = None) -> str:
+    """Run ``EXPLAIN <sql>`` on a data source and return raw text.
+
+    ``source`` defaults to the dialect's implicit source.
 
     Returns the dialect-native EXPLAIN output as opaque text (newline-joined
     rows). OBSL does not normalize across dialects — callers should treat
@@ -1025,7 +1065,7 @@ def explain_sql(sql: str, *, dialect: str) -> str:
         ExecutionError: warehouse rejected the EXPLAIN.
     """
     try:
-        from ob_flight.db_router import get_credentials
+        datasource = _datasource(dialect, source)
     except ImportError:
         raise ExecutionUnavailableError(
             "ob-flight-extension package is not installed. Install with: uv sync --extra flight"
@@ -1036,8 +1076,7 @@ def explain_sql(sql: str, *, dialect: str) -> str:
         if dialect == "duckdb":
             import duckdb
 
-            creds = get_credentials(dialect)
-            database = creds.get("database", ":memory:")
+            database = datasource.credentials().get("database", ":memory:")
             conn = duckdb.connect(database=database, read_only=True)
             try:
                 rows = conn.execute(explain_stmt).fetchall()
@@ -1047,7 +1086,7 @@ def explain_sql(sql: str, *, dialect: str) -> str:
 
         from ob_flight.db_router import get_connection
 
-        with get_connection(dialect) as conn:
+        with get_connection(datasource) as conn:
             cursor = conn.cursor()
             try:
                 cursor.execute(explain_stmt)

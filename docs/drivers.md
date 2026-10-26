@@ -308,7 +308,7 @@ POSTGRES_PASSWORD=secret
 | ------------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `duckdb`     | ob-duckdb     | `DUCKDB_DATABASE` (a file, `:memory:`, or `md:<db>` for MotherDuck), `MOTHERDUCK_ACCESS_TOKEN` (required for `md:`)           |
 | `postgres`   | ob-postgres   | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DBNAME`, `POSTGRES_USER`, `POSTGRES_PASSWORD`                                    |
-| `snowflake`  | ob-snowflake  | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE` |
+| `snowflake`  | ob-snowflake  | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_ROLE` |
 | `clickhouse` | ob-clickhouse | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`                    |
 | `dremio`     | ob-dremio     | `DREMIO_HOST`, `DREMIO_PORT`, `DREMIO_USERNAME`, `DREMIO_PASSWORD`                                                           |
 | `databricks` | ob-databricks | `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_ACCESS_TOKEN` (or `DATABRICKS_TOKEN`)                       |

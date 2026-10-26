@@ -749,7 +749,12 @@ def _make_execute_sql(conn: duckdb.DuckDBPyConnection):
     from orionbelt.service.db_executor import duckdb_execution_result
 
     def execute_sql(
-        sql: str, *, dialect: str, tz: Any = None, override_db_tz: bool = False
+        sql: str,
+        *,
+        dialect: str,
+        source: Any = None,
+        tz: Any = None,
+        override_db_tz: bool = False,
     ) -> ExecutionResult:
         return duckdb_execution_result(conn.sql(sql), time.monotonic(), tz=tz)
 

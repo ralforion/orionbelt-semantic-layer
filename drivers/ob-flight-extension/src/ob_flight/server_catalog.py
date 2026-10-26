@@ -47,6 +47,7 @@ from ob_flight.flight_sql import (
 )
 
 if TYPE_CHECKING:
+    from ob_flight.datasources import DataSource
     from ob_flight.server import OBFlightServer
 
 logger = logging.getLogger("ob_flight.server")
@@ -327,8 +328,12 @@ def query_virtual_table(
     return flight.RecordBatchStream(table)
 
 
-def probe_schema(server: OBFlightServer, sql: str, dialect: str) -> pa.Schema:
+def probe_schema(
+    server: OBFlightServer, sql: str, dialect: str, source: DataSource | None = None
+) -> pa.Schema:
     """Probe the database to determine the result schema for a query.
+
+    It runs on ``source``, else on the dialect's implicit source.
 
     Executes the query, peeks at a small batch for accurate type inference
     (UNION ALL queries may have NULL-padded columns in early rows).
@@ -342,7 +347,7 @@ def probe_schema(server: OBFlightServer, sql: str, dialect: str) -> pa.Schema:
     # that patch ``ob_flight.server.db_connect`` take effect.
     from ob_flight.server import db_connect
 
-    conn = db_connect(dialect)
+    conn = db_connect(source or dialect)
     try:
         cursor = conn.cursor()
         cursor.execute(sql)

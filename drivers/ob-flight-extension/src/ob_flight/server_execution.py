@@ -21,6 +21,7 @@ from pyarrow import flight
 from ob_flight.converters import rows_to_batch, schema_from_description
 
 if TYPE_CHECKING:
+    from ob_flight.datasources import DataSource
     from ob_flight.server import OBFlightServer
 
 logger = logging.getLogger("ob_flight.server")
@@ -433,8 +434,12 @@ def build_cache_meta(
     dialect: str,
     context: flight.ServerCallContext | None,
     physical_tables: list[str],
+    source: DataSource | None = None,
 ) -> dict[str, Any] | None:
     """Compute cache key + TTL for a semantic Flight query.
+
+    The key is scoped to ``source``, else to the dialect's implicit source,
+    as REST and pgwire scope it.
 
     Returns ``None`` when the cache backend is disabled or the TTL
     resolver decides the query isn't cacheable (no refresh contracts
@@ -472,6 +477,7 @@ def build_cache_meta(
     # datasource (the dialect today), NOT the session, so all three surfaces
     # share one entry per compiled query. Non-deterministic SQL (RAND/NOW/
     # CURRENT_DATE/TABLESAMPLE/...) is rejected inside resolve_cache_plan.
+    from orionbelt.cache import datasource_key_for
     from orionbelt.service.query_execution import resolve_cache_plan
 
     plan = resolve_cache_plan(
@@ -482,6 +488,7 @@ def build_cache_meta(
         physical_tables=physical_tables,
         cache=server._cache,
         cache_config=server._cache_config,
+        datasource=datasource_key_for(source) if source is not None else None,
     )
     ttl_result = plan.ttl_outcome.ttl
     if plan.cache_key is None or ttl_result is None:
@@ -695,8 +702,11 @@ def execute_sql(
     dialect: str,
     cache_meta: dict[str, Any] | None = None,
     result_schema: pa.Schema | None = None,
+    source: DataSource | None = None,
 ) -> flight.RecordBatchStream:
-    """Execute SQL on the vendor database and stream results.
+    """Execute SQL on a data source and stream results.
+
+    It runs on ``source``, else on the dialect's implicit source.
 
     Note: table name rewriting is already handled by ``_prepare_sql``
     during the ``get_flight_info`` phase — no need to rewrite here.
@@ -732,7 +742,7 @@ def execute_sql(
     # that patch ``ob_flight.server.db_connect`` take effect.
     from ob_flight.server import db_connect
 
-    conn = db_connect(dialect)
+    conn = db_connect(source or dialect)
     try:
         cursor = conn.cursor()
         cursor.execute(sql)

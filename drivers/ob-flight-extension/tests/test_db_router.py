@@ -41,6 +41,13 @@ class TestGetCredentials:
         assert creds["account"] == "xy12345"
         assert creds["user"] == "svc"
 
+    def test_snowflake_role_is_passed(self, monkeypatch):
+        """The driver took a role the router never passed, so a connection
+        signed in with the user's default role whatever SNOWFLAKE_ROLE said."""
+        monkeypatch.setenv("SNOWFLAKE_ACCOUNT", "acct")
+        monkeypatch.setenv("SNOWFLAKE_ROLE", "REPORTING")
+        assert get_credentials("snowflake")["role"] == "REPORTING"
+
     def test_missing_env_vars_omitted(self, monkeypatch):
         # Clear all postgres env vars
         for key in [

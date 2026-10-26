@@ -17,7 +17,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from orionbelt.api.schemas import (
     ColumnMetadata,
@@ -25,7 +25,7 @@ from orionbelt.api.schemas import (
     ExplainJoinResponse,
     ExplainPlanResponse,
 )
-from orionbelt.cache import build_datasource_key
+from orionbelt.cache import build_datasource_key, datasource_key_for
 from orionbelt.cache.protocol import Cache
 from orionbelt.cache.result_codec import decode_data, encode_data, encode_table
 from orionbelt.cache.ttl import TtlResult
@@ -39,6 +39,10 @@ from orionbelt.service.db_executor import (
     execute_sql,
 )
 from orionbelt.service.query_execution import resolve_cache_plan, resolve_effective_ttl
+
+if TYPE_CHECKING:
+    # ob_flight is an optional extra: imported for the annotation only.
+    from ob_flight.datasources import DataSource
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +391,7 @@ async def execute_query_with_cache(
     cache: Cache,
     cache_config: Any,
     datasource: str | None = None,
+    source: DataSource | None = None,
     tz: Any = None,
     override_db_tz: bool = False,
     cacheable: bool = True,
@@ -406,11 +411,15 @@ async def execute_query_with_cache(
     the returned :class:`CachedExecution` carries ``payload_blob`` and a ``None``
     ``envelope``. Every other surface leaves it True and gets the decoded rows.
 
-    The cache is scoped to the ``datasource`` (defaults to the dialect, since
-    connections are global per dialect today). Any session resolving to the
-    same data source, model, dialect and compiled SQL shares entries.
+    The query runs on ``source`` (``ob_flight.datasources.DataSource``),
+    else on the dialect's implicit source. The cache is scoped to
+    ``datasource`` if given, else to that source (see
+    :func:`~orionbelt.cache.key.datasource_key_for`). Any session resolving
+    to the same data source, model, dialect and compiled SQL shares entries.
     """
-    ds = datasource or build_datasource_key(dialect)
+    ds = datasource or (
+        datasource_key_for(source) if source is not None else build_datasource_key(dialect)
+    )
     cache_key: str | None = None
     ttl_outcome: TtlResult | None = None
 
@@ -462,6 +471,7 @@ async def execute_query_with_cache(
         execute_sql,
         compile_result.sql,
         dialect=dialect,
+        source=source,
         tz=tz,
         override_db_tz=override_db_tz,
     )

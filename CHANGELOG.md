@@ -14,6 +14,7 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Fixed
 
+- **`SNOWFLAKE_ROLE` is used.** The Snowflake driver takes a role, but the connection router never passed one, so OBSL signed in with the user's default role whatever `SNOWFLAKE_ROLE` said. It is now passed, for a named data source as `DB_<NAME>_SNOWFLAKE_ROLE` too.
 - **The driver packages are published with OBSL and carry its version.** Nothing published the ten packages under `drivers/` since 2.6.1, so `pip install "orionbelt-semantic-layer[flight]"` installed `ob-flight-extension` 2.6.1 and the database drivers 2.1.0, without anything fixed since: ADBC client authentication, Flight's Arrow schemas, TLS, `ob-mysql` on ADBC, `ob-duckdb` on DuckDB 2.0. Docker images and installs from the repository built them from source and were not affected. The packages are now versioned with OBSL, starting at 2.36.0 (the code OBSL 2.36.0 shipped), published by the release tag's workflow, and required at that version or later by the `flight` extras and by each other. `scripts/release.sh` refuses a release whose drivers carry another version.
 
 ## [2.36.0] - 2026-10-26

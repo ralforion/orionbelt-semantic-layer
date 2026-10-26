@@ -75,6 +75,7 @@ _CREDENTIAL_KEYS: dict[str, list[str]] = {
         "SNOWFLAKE_DATABASE",
         "SNOWFLAKE_SCHEMA",
         "SNOWFLAKE_WAREHOUSE",
+        "SNOWFLAKE_ROLE",
     ],
     "clickhouse": [
         "CLICKHOUSE_HOST",
@@ -172,6 +173,7 @@ _ENV_TO_KWARG: dict[str, str] = {
     "SNOWFLAKE_DATABASE": "database",
     "SNOWFLAKE_SCHEMA": "schema",
     "SNOWFLAKE_WAREHOUSE": "warehouse",
+    "SNOWFLAKE_ROLE": "role",
     "CLICKHOUSE_HOST": "host",
     "CLICKHOUSE_PORT": "port",
     "CLICKHOUSE_USERNAME": "username",
