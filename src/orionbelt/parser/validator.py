@@ -1844,12 +1844,12 @@ class SemanticValidator:
         return errors
 
     @staticmethod
-    def _unit_literal(argument: str) -> str | None:
-        """The time unit a source argument names, or ``None`` if it names none."""
+    def _unit_literal(argument: str, units: tuple[str, ...] = TIME_UNITS) -> str | None:
+        """The unit of *units* a source argument names, or ``None`` if it names none."""
         text = argument.strip()
         if len(text) >= 2 and text.startswith("'") and text.endswith("'"):
             inner = text[1:-1].lower()
-            if inner in TIME_UNITS:
+            if inner in units:
                 return inner
         return None
 
@@ -1948,14 +1948,14 @@ class SemanticValidator:
                 if spec is None or spec.unit_argument is None or not spec.accepts(call.arg_count):
                     continue
                 argument = call.arguments[spec.unit_argument]
-                if self._unit_literal(argument) is not None:
+                if self._unit_literal(argument, spec.units) is not None:
                     continue
                 errors.append(
                     SemanticError(
                         code="UNKNOWN_TIME_UNIT",
                         message=(
                             f"{subject} calls '{call.name}' with unit {argument}, "
-                            f"which is not one of {', '.join(TIME_UNITS)}"
+                            f"which is not one of {', '.join(spec.units)}"
                         ),
                         path=path,
                         hint=(
@@ -1965,7 +1965,7 @@ class SemanticValidator:
                         context={
                             "function": spec.name,
                             "unit": argument,
-                            "units": list(TIME_UNITS),
+                            "units": list(spec.units),
                         },
                     )
                 )

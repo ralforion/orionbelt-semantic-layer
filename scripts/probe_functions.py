@@ -296,6 +296,21 @@ CANDIDATES: list[tuple[str, str, str]] = [
     ("ilike", "native sharp s", "'STRASSE' ILIKE 'straße'"),
     ("ilike", "CH function", "ilike('Mexico', 'mex%')"),
     ("ilike", "plain LIKE (MySQL collation)", "'Mexico' LIKE 'mex%'"),
+    # ISO day of week, Monday 1 to Sunday 7: 2026-08-16 is a Sunday, where the
+    # Sunday-first numberings answer 1 and the zero-based ones 0 or 6.
+    ("dow", "EXTRACT ISODOW", "EXTRACT(ISODOW FROM DATE '2026-08-16')"),
+    ("dow", "EXTRACT DOW", "EXTRACT(DOW FROM DATE '2026-08-16')"),
+    ("dow", "EXTRACT DAYOFWEEK", "EXTRACT(DAYOFWEEK FROM DATE '2026-08-16')"),
+    ("dow", "EXTRACT DAYOFWEEKISO", "EXTRACT(DAYOFWEEKISO FROM DATE '2026-08-16')"),
+    ("dow", "EXTRACT DAYOFWEEK_ISO", "EXTRACT(DAYOFWEEK_ISO FROM DATE '2026-08-16')"),
+    ("dow", "DAYOFWEEKISO()", "DAYOFWEEKISO(DATE '2026-08-16')"),
+    ("dow", "WEEKDAY() + 1", "WEEKDAY(DATE '2026-08-16') + 1"),
+    ("dow", "toDayOfWeek()", "toDayOfWeek(DATE '2026-08-16')"),
+    ("dow", "BQ shifted", "MOD(EXTRACT(DAYOFWEEK FROM DATE '2026-08-16') + 5, 7) + 1"),
+    ("dow", "Monday check", "EXTRACT(ISODOW FROM DATE '2026-08-10')"),
+    ("dow", "Monday toDayOfWeek", "toDayOfWeek(DATE '2026-08-10')"),
+    ("dow", "Monday WEEKDAY + 1", "WEEKDAY(DATE '2026-08-10') + 1"),
+    ("dow", "Monday BQ shifted", "MOD(EXTRACT(DAYOFWEEK FROM DATE '2026-08-10') + 5, 7) + 1"),
 ]
 
 

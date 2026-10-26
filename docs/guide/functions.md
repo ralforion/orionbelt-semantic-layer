@@ -173,7 +173,7 @@ since Dremio is the one dialect that puts them in identifier position.
 | `date_trunc(unit, x)` | timestamp | Start of the unit; a **week starts Monday** (ISO 8601) |
 | `date_add(unit, n, x)` | timestamp | Negative `n` subtracts, so there is no `date_sub` |
 | `date_diff(unit, start, end)` | int | **Boundaries crossed**, signed — not complete units elapsed |
-| `extract(unit, x)` | int | **ISO week numbering**; an integer, not a numeric |
+| `extract(unit, x)` | int | **ISO week numbering**, and `'day_of_week'` as **ISO, Monday 1 to Sunday 7**; an integer, not a numeric |
 | `last_day(x)` | date | Last day of `x`'s month |
 | `current_date()` | date | Today, per the database session |
 | `json_value(x, path)` | string | Scalar at a **literal JSONPath**; NULL when absent or when the path resolves to an object or array |
@@ -316,8 +316,8 @@ past both `expressionMode: portable` and a dialect's unsupported-function
 guard.
 
 The date/time entries take a **literal unit** from a closed vocabulary — `year`,
-`quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` — and it has to be
-a literal, not an expression: every dialect switches on it to render the call at
+`quarter`, `month`, `week`, `day`, `hour`, `minute`, `second`, plus `day_of_week`
+for `extract` alone — and it has to be a literal, not an expression: every dialect switches on it to render the call at
 all (a keyword on BigQuery and ClickHouse, a quoted string on Snowflake, an
 interval qualifier on MySQL, a different expression per unit on Postgres). A unit
 outside the vocabulary, or one that is not a literal, is rejected with
@@ -355,6 +355,12 @@ so every engine gives the catalog's answer:
   two are not disagreeing about the date: ISO puts week 1 on the week containing
   the first Thursday, so 2026-01-01 (a Thursday) is already week 1, while the
   Sunday convention calls 1–3 January *week 0* and every later week is one lower.
+- `extract('day_of_week', DATE '2026-08-16')` is 7: ISO numbers Monday 1 to Sunday 7.
+  BigQuery's and Dremio's day of week is Sunday 1 and MySQL's `WEEKDAY` Monday 0,
+  so all three are shifted; Snowflake and Databricks spell the ISO unit
+  `DAYOFWEEKISO` and `DAYOFWEEK_ISO`. `day_of_week` is a unit of `extract` only:
+  it is a number of a date, not a span, so `date_trunc('day_of_week', …)` is
+  `UNKNOWN_TIME_UNIT`.
 - `date_diff('week', DATE '2026-08-09', DATE '2026-08-15')` is 1 — one Monday
   separates that Sunday from that Saturday. ClickHouse, Snowflake and BigQuery
   agree; DuckDB and MySQL count whole seven-day spans and answer 0, and Postgres

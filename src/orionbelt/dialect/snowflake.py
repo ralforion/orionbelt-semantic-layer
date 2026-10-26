@@ -269,3 +269,7 @@ class SnowflakeDialect(Dialect):
     def compile_union_all(self, node: UnionAll) -> str:
         """Snowflake uses UNION ALL BY NAME to match columns by name."""
         return "\nUNION ALL BY NAME\n".join(self.compile_select(q) for q in node.queries)
+
+    def _render_iso_day_of_week(self, value: Expr) -> str:
+        """Snowflake has no ``ISODOW``; ``DAYOFWEEKISO`` is Monday 1 to Sunday 7."""
+        return f"EXTRACT(DAYOFWEEKISO FROM {self.compile_expr(value)})"

@@ -47,6 +47,12 @@ EXTRACT(QUARTER FROM CAST('2026-08-15' AS Nullable(Date)));
 EXTRACT(WEEK FROM CAST('2026-08-15' AS Nullable(Date)));
 --   extract('day', DATE '2026-08-15') = 15
 EXTRACT(DAY FROM CAST('2026-08-15' AS Nullable(Date)));
+--   extract('day_of_week', DATE '2026-08-15') = 6
+EXTRACT(ISODOW FROM CAST('2026-08-15' AS Nullable(Date)));
+--   extract('day_of_week', DATE '2026-08-16') = 7
+EXTRACT(ISODOW FROM CAST('2026-08-16' AS Nullable(Date)));
+--   extract('day_of_week', DATE '2026-08-10') = 1
+EXTRACT(ISODOW FROM CAST('2026-08-10' AS Nullable(Date)));
 
 -- last_day(x)
 --   last_day(DATE '2026-08-15') = '2026-08-31'

@@ -359,3 +359,7 @@ class DatabricksDialect(Dialect):
         pat_sql = self.compile_expr(Literal.string(pattern))
         op = "NOT RLIKE" if negated else "RLIKE"
         return f"({col_sql} {op} {pat_sql})"
+
+    def _render_iso_day_of_week(self, value: Expr) -> str:
+        """Databricks has no ``ISODOW``; ``DAYOFWEEK_ISO`` is Monday 1 to Sunday 7."""
+        return f"EXTRACT(DAYOFWEEK_ISO FROM {self.compile_expr(value)})"

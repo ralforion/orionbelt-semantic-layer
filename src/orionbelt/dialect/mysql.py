@@ -819,3 +819,7 @@ class MySQLDialect(Dialect):
         pat_sql = self.compile_expr(Literal.string(pattern))
         op = "NOT REGEXP" if negated else "REGEXP"
         return f"({col_sql} {op} {pat_sql})"
+
+    def _render_iso_day_of_week(self, value: Expr) -> str:
+        """MySQL's EXTRACT has no day of week; ``WEEKDAY`` is Monday 0."""
+        return f"(WEEKDAY({self.compile_expr(value)}) + 1)"
