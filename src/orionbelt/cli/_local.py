@@ -7,6 +7,7 @@ converter) so the CLI's local output matches the server byte-for-byte.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import os
 import types
@@ -42,6 +43,7 @@ from orionbelt.service.model_store import (
 if TYPE_CHECKING:
     from orionbelt.obsl.sparql import SPARQLResult
     from orionbelt.service.lineage import Lineage
+    from orionbelt.service.value_search import ValueSearchResult
 
 
 class CliError(Exception):
@@ -238,6 +240,53 @@ def execute_obsql(
     """Translate an OBSQL string and execute it against the warehouse."""
     store, model_id, model = _load(model_yaml)
     return _execute_loaded(store, model_id, model, _translate(model, sql), dialect, limit=limit)
+
+
+def search_values(
+    model_yaml: str,
+    dimension: str,
+    *,
+    search: str | None,
+    dialect: str | None,
+    limit: int,
+) -> ValueSearchResult:
+    """List or search a dimension's values against the configured warehouse.
+
+    Each step is compiled and executed like ``execute``, so the model's static
+    filters restrict the values; a ``ValueSearchError`` becomes a ``CliError``.
+    """
+    from orionbelt.service.value_search import (
+        QueryRun,
+        ValueSearchConfig,
+        ValueSearchError,
+    )
+    from orionbelt.service.value_search import search_values as run_search
+
+    store, model_id, model = _load(model_yaml)
+    resolved = resolve_dialect(model, dialect)
+
+    async def run(query: QueryObject) -> QueryRun:
+        compiled = _compile(store, model_id, query, resolved)
+        executed = _run_compiled(model, compiled, resolved)
+        return QueryRun(
+            values=[row[0] for row in executed.rows],
+            sql=compiled.sql,
+            warnings=[w.message for w in compiled.warnings],
+        )
+
+    try:
+        return asyncio.run(
+            run_search(
+                model,
+                dimension,
+                run=run,
+                config=ValueSearchConfig(),
+                search=search,
+                limit=limit,
+            )
+        )
+    except ValueSearchError as exc:
+        raise CliError(f"[{exc.code}] {exc.message}") from None
 
 
 def describe(model_yaml: str) -> ModelDescription:

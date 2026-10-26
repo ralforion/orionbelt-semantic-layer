@@ -36,6 +36,7 @@ obsl --version
 | `obsl validate MODEL` | Validate a model; exits `1` on error | local or `--server` |
 | `obsl compile [MODEL] -q QUERY` | Compile a query to SQL | local or `--server` |
 | `obsl execute [MODEL] -q QUERY` | Compile and run a query | local or `--server` |
+| `obsl values DIMENSION [MODEL]` | List or search a dimension's values, to ground a filter value | local or `--server` |
 | `obsl describe MODEL` | Structured overview of artefacts | local |
 | `obsl diagram [MODEL]` | Mermaid ER diagram, raw or as Markdown | local or `--server` |
 | `obsl graph [MODEL]` | OBSL-Core RDF graph, the model's ontology export (Turtle) | local or `--server` |
@@ -188,6 +189,25 @@ obsl execute -q query.json --server https://your-host --api-key "$OBSL_API_KEY" 
 `--limit` (default 1000) applies when the query carries no limit of its own. It
 covers `-q` queries and local `--sql`; for remote `--sql`, put `LIMIT n` in the
 SQL (the CLI warns if you pass `--limit` there).
+
+## Values
+
+`values` lists the values a dimension holds, or searches them, so a filter
+value can be checked against the data rather than guessed. Like `execute`, it
+runs ordinary queries against the warehouse, so the model's static filters
+apply.
+
+```bash
+obsl values "Customer Country" model.yaml                  # the values, in order
+obsl values "Customer Country" model.yaml --search germ    # exact, prefix, contains
+obsl values "Customer Country" model.yaml --search Germny  # misspellings: fuzzy match
+obsl values "Order Date" model.yaml                        # a date: its minimum and maximum
+obsl values "Customer Country" --search germ --server https://your-host  # remote
+```
+
+A dimension declaring `valueSearch: false` is refused. See
+[the value search endpoint](../api/endpoints.md#post-v1sessionssession_idmodelsmodel_idvalues)
+for the matching rules.
 
 ## Describe, diagram, graph
 

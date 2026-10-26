@@ -26,6 +26,7 @@ from orionbelt.auth import init_auth, reset_auth
 from orionbelt.cache.noop import NoopCache
 from orionbelt.cache.protocol import Cache
 from orionbelt.service.session_manager import SessionManager
+from orionbelt.service.value_search import ValueSearchConfig
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,7 @@ class AppRuntime:
     query_default_limit: int = 1000
     default_locale: str = ""
     oneshot_batch_config: OneshotBatchConfig = field(default_factory=OneshotBatchConfig)
+    value_search_config: ValueSearchConfig = field(default_factory=ValueSearchConfig)
     cache: Cache = field(default_factory=NoopCache)
     cache_config: CacheRuntimeConfig = field(default_factory=CacheRuntimeConfig)
 
@@ -127,6 +129,7 @@ def init_session_manager(
     query_default_limit: int = 1000,
     default_locale: str = "",
     oneshot_batch_config: OneshotBatchConfig | None = None,
+    value_search_config: ValueSearchConfig | None = None,
     cache: Cache | None = None,
     cache_config: CacheRuntimeConfig | None = None,
     auth_mode: str = "none",
@@ -157,6 +160,7 @@ def init_session_manager(
         query_default_limit=query_default_limit,
         default_locale=default_locale,
         oneshot_batch_config=oneshot_batch_config or OneshotBatchConfig(),
+        value_search_config=value_search_config or ValueSearchConfig(),
         cache=cache if cache is not None else NoopCache(),
         cache_config=cache_config or CacheRuntimeConfig(),
     )
@@ -246,6 +250,11 @@ def get_default_locale() -> str:
 def get_oneshot_batch_config() -> OneshotBatchConfig:
     """Return the configured one-shot batch limits."""
     return _active_runtime().oneshot_batch_config
+
+
+def get_value_search_config() -> ValueSearchConfig:
+    """Return the configured value-search limits."""
+    return _active_runtime().value_search_config
 
 
 def get_cache() -> Cache:

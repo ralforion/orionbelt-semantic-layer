@@ -921,6 +921,7 @@ class ReferenceResolver:
                     format=raw_dim.get("format"),
                     owner=raw_dim.get("owner"),
                     synonyms=raw_dim.get("synonyms", []),
+                    value_search=raw_dim.get("valueSearch", True),
                     custom_extensions=_parse_extensions(raw_dim),
                     external_concept_mappings=_parse_concept_mappings(
                         raw_dim, f"dimensions.{name}", prefixes, errors, source_map

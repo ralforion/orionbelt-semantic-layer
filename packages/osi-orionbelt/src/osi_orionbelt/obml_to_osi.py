@@ -547,6 +547,9 @@ class OBMLtoOSI:
                     ext_data["obml_dimension_via"] = dim_obj["via"]
                 if dim_obj.get("pathName"):
                     ext_data["obml_dimension_path_name"] = dim_obj["pathName"]
+                # Only the opt-out is stored: true is the default.
+                if dim_obj.get("valueSearch") is False:
+                    ext_data["obml_dimension_value_search"] = False
                 # The dimension's own synonyms and vendor extensions have no
                 # native OSI slot (OSI has no dimension entity), so preserve them
                 # authoritatively here for the reverse trip. The customExtensions
@@ -571,6 +574,8 @@ class OBMLtoOSI:
                 ):
                     if dim_obj.get(prop):
                         descriptor[prop] = dim_obj[prop]
+                if dim_obj.get("valueSearch") is False:
+                    descriptor["valueSearch"] = False
                 # Carry the extra dimension's own synonyms and vendor extensions
                 # too, so it round-trips with the same fidelity as the primary.
                 if dim_obj.get("synonyms"):

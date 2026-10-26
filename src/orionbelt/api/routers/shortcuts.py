@@ -76,7 +76,10 @@ from orionbelt.api.schemas import (
     UnmappedObjectsResponse,
     ValidateRequest,
     ValidateResponse,
+    ValueSearchRequest,
+    ValueSearchResponse,
 )
+from orionbelt.api.services.value_search import run_value_search
 from orionbelt.api.warnings_adapter import error_info_to_detail, semantic_error_to_warning
 from orionbelt.cache import Cache
 from orionbelt.compiler.fanout import FanoutError
@@ -302,6 +305,16 @@ async def shortcut_find(
     """Search model artefacts (auto-resolves session/model)."""
     _, _, model = _resolve_single_model(mgr)
     return _build_search_response(model, body.query, body.types)
+
+
+@router.post("/values", response_model=ValueSearchResponse, tags=["model-discovery"])
+async def shortcut_search_values(
+    body: ValueSearchRequest,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ValueSearchResponse:
+    """List or search the values a dimension holds (auto-resolves session/model)."""
+    store, model_id = _resolve_store_and_model(mgr)
+    return await run_value_search(store, model_id, body)
 
 
 @router.get("/join-graph", response_model=JoinGraphResponse, tags=["model-discovery"])

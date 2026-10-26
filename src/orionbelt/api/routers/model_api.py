@@ -35,7 +35,10 @@ from orionbelt.api.schemas import (
     SearchResultItem,
     SemanticObjectRefResponse,
     UnmappedObjectsResponse,
+    ValueSearchRequest,
+    ValueSearchResponse,
 )
+from orionbelt.api.services.value_search import run_value_search
 from orionbelt.models.concept_links import ConceptIriError
 from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import (
@@ -139,6 +142,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
             format=dim.format,
             owner=dim.owner,
             synonyms=dim.synonyms,
+            value_search=dim.value_search,
             external_concept_mappings=_concept_mappings(dim.external_concept_mappings),
         )
         for name, dim in model.dimensions.items()
@@ -629,6 +633,26 @@ async def find_artefacts(
     """
     model = _get_model(session_id, model_id, mgr)
     return _build_search_response(model, body.query, body.types)
+
+
+@router.post(
+    "/{session_id}/models/{model_id}/values",
+    response_model=ValueSearchResponse,
+    tags=["model-discovery"],
+)
+async def search_dimension_values(
+    session_id: str,
+    model_id: str,
+    body: ValueSearchRequest,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ValueSearchResponse:
+    """List or search the values a dimension holds, to ground a filter value.
+
+    Each step is a dimension-only query, compiled and executed like any other,
+    so the model's static filters restrict the values. Requires query
+    execution. A dimension declaring ``valueSearch: false`` is refused (403).
+    """
+    return await run_value_search(_get_store(session_id, mgr), model_id, body)
 
 
 @router.get(

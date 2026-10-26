@@ -508,6 +508,80 @@ def execute(
 
 
 @app.command()
+def values(
+    dimension: Annotated[
+        str, typer.Argument(metavar="DIMENSION", help="The dimension whose values are listed.")
+    ],
+    model: ModelArgOpt = None,
+    search: Annotated[
+        str | None,
+        typer.Option(
+            "--search",
+            help="Term to look for: exact, prefix and contains matches, then misspellings.",
+        ),
+    ] = None,
+    dialect: DialectOpt = None,
+    limit: Annotated[int, typer.Option("--limit", help="Values to return.")] = 20,
+    fmt: FormatOpt = OutputFormat.table,
+    server: ServerOpt = None,
+    api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
+) -> None:
+    """List or search the values a dimension holds, to ground a filter value.
+
+    Locally, MODEL is required and a database must be configured. With
+    --server the search runs against the server's curated model.
+    """
+    from orionbelt.cli._local import CliError
+
+    if server and not model:
+        client = _remote_client(server, api_key, client_cert, client_key, ca_cert)
+        try:
+            data = client.search_values(dimension, search, dialect, limit)
+        except CliError as exc:
+            raise _fail(str(exc)) from None
+    else:
+        from orionbelt.cli import _local
+        from orionbelt.service.db_executor import ExecutionError, ExecutionUnavailableError
+        from orionbelt.service.model_store import ModelValidationError
+
+        if not model:
+            raise _fail("MODEL is required locally (or omit MODEL with --server).")
+        try:
+            result = _local.search_values(
+                _io.read_text(model), dimension, search=search, dialect=dialect, limit=limit
+            )
+        except ModelValidationError as exc:
+            raise _model_invalid(exc) from None
+        except (ExecutionUnavailableError, ExecutionError, CliError) as exc:
+            raise _fail(str(exc)) from None
+        data = {
+            "dimension": result.dimension,
+            "values": [
+                {"value": m.value, "match": m.match, "score": m.score} for m in result.values
+            ],
+            "truncated": result.truncated,
+            "minimum": result.minimum,
+            "maximum": result.maximum,
+            "warnings": result.warnings,
+        }
+
+    if fmt is OutputFormat.json:
+        _render.emit_json(data)
+        return
+    _emit_warnings(data.get("warnings") or [])
+    if data.get("minimum") is not None or data.get("maximum") is not None:
+        _render.emit_table(["minimum", "maximum"], [[data["minimum"], data["maximum"]]], fmt)
+        return
+    rows = [[v["value"], v["match"], v.get("score")] for v in data.get("values") or []]
+    _render.emit_table(["value", "match", "score"], rows, fmt)
+    if data.get("truncated"):
+        _render.note(f"more values than the {limit} shown")
+
+
+@app.command()
 def describe(
     model: ModelArg,
     fmt: FormatOpt = OutputFormat.table,

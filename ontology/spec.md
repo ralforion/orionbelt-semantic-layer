@@ -173,6 +173,7 @@ Optional:
 - `obsl:timeGrain`
 - `obsl:via`
 - `obsl:pathName`: the named join from `obsl:via` the dimension reads through (a role)
+- `obsl:valueSearch`: `false` when the value search must not list the dimension's values; stated only for that opt-out
 - `obsl:synonym`
 - `rdfs:comment`
 
@@ -183,6 +184,7 @@ Cardinality:
 - exactly one `obsl:resultType`
 - at most one `obsl:timeGrain`
 - at most one `obsl:pathName`; when present, `obsl:via` SHOULD be present
+- at most one `obsl:valueSearch`
 
 ### 5.6 Measure
 Represents an aggregated analytic field.
@@ -496,6 +498,7 @@ Any of model, data object, dimension, measure, metric:
 - `timeGrain` -> `obsl:timeGrain`
 - `via` -> `obsl:via`
 - `pathName` -> `obsl:pathName`
+- `valueSearch: false` -> `obsl:valueSearch false`
 
 ### 10.6 Measures
 - `columns[]` -> `obsl:sourceColumn`

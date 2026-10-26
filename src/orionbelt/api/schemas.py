@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from orionbelt.models.query import QueryObject
+from orionbelt.models.query import QueryFilterItem, QueryObject
 from orionbelt.models.semantic import ExpressionMode, WeekStart
 
 
@@ -1254,6 +1254,9 @@ class DimensionDetail(BaseModel):
     format: str | None = None
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
+    value_search: bool = Field(
+        True, description="Whether POST /values may list this dimension's values."
+    )
     external_concept_mappings: list[ConceptMappingDetail] = Field(default_factory=list)
 
 
@@ -1681,3 +1684,51 @@ class OneshotBatchResponse(BaseModel):
     )
     results: list[OneshotBatchQueryResult] = Field(default_factory=list)
     batch_warnings: list[StructuredWarning] = Field(default_factory=list)
+
+
+class ValueSearchRequest(BaseModel):
+    """Request body for POST /values: the values a dimension holds."""
+
+    dimension: str = Field(description="The dimension whose values are listed or searched")
+    search: str | None = Field(
+        default=None,
+        description=(
+            "Term to look for (case-insensitive). Ranked exact, prefix, contains, then "
+            "fuzzy (misspellings) where the dimension has few enough values. Omitted, "
+            "the values are listed in order; a date or number dimension returns its "
+            "range instead."
+        ),
+    )
+    where: list[QueryFilterItem] = Field(
+        default_factory=list, description="Query filters that narrow the values"
+    )
+    limit: int = Field(
+        default=20, description="Values to return (server cap VALUE_SEARCH_MAX_LIMIT)"
+    )
+    dialect: str | None = Field(
+        default=None,
+        description=(
+            "SQL dialect. Resolution: explicit value -> model.settings.defaultDialect -> "
+            "DB_VENDOR env -> 'postgres'."
+        ),
+    )
+
+
+class ValueMatchItem(BaseModel):
+    """A value and why it was returned."""
+
+    value: Any
+    match: str = Field(description="exact, prefix, contains, fuzzy, or listed (no search)")
+    score: float | None = Field(default=None, description="Similarity of a fuzzy match")
+
+
+class ValueSearchResponse(BaseModel):
+    """Response for POST /values."""
+
+    dimension: str
+    values: list[ValueMatchItem] = Field(default_factory=list)
+    truncated: bool = Field(default=False, description="More values match than were returned")
+    minimum: Any = Field(default=None, description="Smallest value of a date or number dimension")
+    maximum: Any = Field(default=None, description="Largest value of a date or number dimension")
+    sql: list[str] = Field(default_factory=list, description="The SQL of each query run")
+    warnings: list[str] = Field(default_factory=list)

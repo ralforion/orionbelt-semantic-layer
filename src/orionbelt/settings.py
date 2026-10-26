@@ -149,6 +149,12 @@ class Settings(BaseSettings):
     oneshot_batch_default_timeout_ms: int = 30000  # per-query
     oneshot_batch_batch_timeout_ms: int = 120000  # whole batch
 
+    # Dimension-value search (POST /v1/values). See design/PLAN_dimension_value_search.md.
+    value_search_enabled: bool = True
+    value_search_max_limit: int = 200  # values per request
+    value_search_fuzzy_domain_max: int = 10000  # largest domain ranked by fuzzy match
+    value_search_timeout_ms: int = 30000  # whole search
+
     # Freshness-driven result cache. See design/PLAN_freshness_driven_cache.md.
     cache_backend: str = "noop"  # "noop" or "file"
     cache_dir: str = "./cache"

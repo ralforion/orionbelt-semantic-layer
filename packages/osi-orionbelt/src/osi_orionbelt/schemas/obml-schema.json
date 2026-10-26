@@ -558,6 +558,11 @@
             "type": "string"
           }
         },
+        "valueSearch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether the value search (/values) may list this dimension's values (default true). A query may still filter on it; false only keeps its values from being enumerated, e.g. an email address or a national ID."
+        },
         "customExtensions": {
           "type": "array",
           "description": "Vendor-keyed extension data",

@@ -1000,6 +1000,62 @@ The `types` filter is optional. Valid types: `dimension`, `measure`, `metric`, `
 
 `fuzzy_matches` is empty when the query produced exact or synonym hits, and also when nothing scored above the 0.5 threshold (truly no match).
 
+### `POST /v1/sessions/{session_id}/models/{model_id}/values`
+
+List or search the values a dimension holds, so an agent can ground a filter value (`Germany`, `DE` or `GERMANY`?) against the data instead of guessing. Shortcut: `POST /v1/values` (single loaded model).
+
+Each step is an ordinary dimension-only query, compiled and executed through the same cache-aware pipeline as `query/execute`, so the model's static filters (a tenant filter included) restrict the values, and repeated lookups are served from the result cache. Requires `QUERY_EXECUTE=true` (**503** otherwise).
+
+**Request:**
+
+```json
+{
+ "dimension": "Customer Country",
+ "search": "germ",
+ "where": [{"field": "Customer Segment", "op": "=", "value": "SMB"}],
+ "limit": 20
+}
+```
+
+`search`, `where` (ordinary query filters that narrow the values), `limit` (default 20) and `dialect` are optional.
+
+**Response (200):**
+
+```json
+{
+ "dimension": "Customer Country",
+ "values": [
+ { "value": "Germany", "match": "prefix", "score": null },
+ { "value": "East Germany", "match": "contains", "score": null }
+ ],
+ "truncated": false,
+ "minimum": null,
+ "maximum": null,
+ "sql": ["SELECT ... WHERE ... ILIKE '%germ%' ..."],
+ "warnings": []
+}
+```
+
+How values are found and ranked:
+
+| Case | Result |
+|---|---|
+| No `search` | The values in order (`match: listed`), up to `limit`; `truncated` when there are more. NULL is a value too |
+| `search` on a string dimension | Case-insensitive `ilike '%term%'` in the database, ranked `exact`, `prefix`, `contains`, then alphabetically |
+| Fewer than `limit` found | Fuzzy pass over the whole domain (`match: fuzzy` with a `score`), so a misspelling such as `Germny` finds `Germany`; only when the dimension has at most `VALUE_SEARCH_FUZZY_DOMAIN_MAX` values, else a warning says it was skipped |
+| Date, time or number dimension | `minimum` and `maximum` instead of values; a `search` is **400** `VALUE_SEARCH_NOT_SUPPORTED` |
+
+**Errors:** **403** `VALUE_SEARCH_DISABLED` for a dimension declaring `valueSearch: false` (its values are never listed; queries may still filter on it). **400** `UNKNOWN_DIMENSION`, `INVALID_LIMIT` (outside 1 to `VALUE_SEARCH_MAX_LIMIT`). **503** when value search or query execution is disabled. **504** after `VALUE_SEARCH_TIMEOUT_MS`.
+
+**Settings:**
+
+| Setting | Default |
+|---|---|
+| `VALUE_SEARCH_ENABLED` | `true` |
+| `VALUE_SEARCH_MAX_LIMIT` | 200 |
+| `VALUE_SEARCH_FUZZY_DOMAIN_MAX` | 10000 |
+| `VALUE_SEARCH_TIMEOUT_MS` | 30000 (whole search) |
+
 ### `GET /v1/sessions/{session_id}/models/{model_id}/join-graph`
 
 Return the join graph as nodes and edges.
@@ -1563,6 +1619,7 @@ Returns **404** if no sessions exist, **409 Conflict** if multiple sessions or m
 | `GET /v1/metrics/{name}` | `GET /v1/sessions/{id}/models/{mid}/metrics/{name}` |
 | `GET /v1/explain/{name}` | `GET /v1/sessions/{id}/models/{mid}/explain/{name}` |
 | `POST /v1/find` | `POST /v1/sessions/{id}/models/{mid}/find` |
+| `POST /v1/values` | `POST /v1/sessions/{id}/models/{mid}/values` |
 | `GET /v1/join-graph` | `GET /v1/sessions/{id}/models/{mid}/join-graph` |
 | `GET /v1/concept-mappings` | `GET /v1/sessions/{id}/models/{mid}/concept-mappings` |
 | `GET /v1/concept-mappings/namespaces` | `GET /v1/sessions/{id}/models/{mid}/concept-mappings/namespaces` |

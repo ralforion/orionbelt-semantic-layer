@@ -587,6 +587,7 @@ dimensions:
 | `pathName` | string | No | Pin the dimension to the join of this `pathName` from `via` to `dataObject` (primary or secondary); each such role is joined under its own alias. Requires `via`. See [Several roles in one query](#several-roles-in-one-query-pathname) |
 | `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
+| `valueSearch` | boolean | No | Whether the [value search](../api/endpoints.md#post-v1sessionssession_idmodelsmodel_idvalues) may list this dimension's values (default `true`). Set `false` for a column whose values must not be enumerated, such as an email address or a national ID; queries may still filter on it |
 | `owner` | string | No | Responsible team or person |
 | `externalConceptMappings` | list | No | Links to concepts in an external ontology; see [External Concept Mappings](concept-mappings.md) |
 

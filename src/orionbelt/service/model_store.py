@@ -567,6 +567,10 @@ class ModelStore:
                 }
                 if dim.time_grain:
                     dd["timeGrain"] = dim.time_grain.value
+                # Carried when off, so an inheriting model does not list the
+                # values of a dimension its parent keeps from being enumerated.
+                if not dim.value_search:
+                    dd["valueSearch"] = False
                 dims[name] = dd
             raw["dimensions"] = dims
         if model.measures:
