@@ -427,11 +427,16 @@ obsl:CumulativeMetricShape a sh:NodeShape ;
     ] ;
     sh:property [
         sh:path obsl:cumulativeType ;
-        sh:minCount 1 ;
         sh:maxCount 1 ;
         sh:name "cumulative type" ;
-        sh:message "Cumulative metrics must specify exactly one obsl:cumulativeType (sum, avg, min, max, count)."
+        sh:message "Cumulative metrics must have at most one obsl:cumulativeType (sum, avg, min, max, count)."
     ] ;
+    # A span re-aggregates the measure's rows and has no cumulativeType.
+    sh:xone (
+        [ sh:property [ sh:path obsl:cumulativeType ; sh:minCount 1 ] ]
+        [ sh:property [ sh:path obsl:windowSpan ; sh:minCount 1 ] ]
+    ) ;
+    sh:message "Cumulative metrics must specify exactly one of obsl:cumulativeType and obsl:windowSpan." ;
     sh:property [
         sh:path obsl:window ;
         sh:maxCount 1 ;
@@ -450,6 +455,13 @@ obsl:CumulativeMetricShape a sh:NodeShape ;
             [ sh:property [ sh:path obsl:grainToDate ; sh:minCount 1 ] ]
         ) ;
         sh:message "obsl:window and obsl:grainToDate are mutually exclusive."
+    ] ;
+    sh:property [
+        sh:path obsl:windowSpan ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:duration ;
+        sh:name "window span" ;
+        sh:message "Cumulative metrics must have at most one obsl:windowSpan."
     ] .
 
 # -----------------------------------------------------------------------------

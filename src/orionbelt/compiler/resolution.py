@@ -77,6 +77,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
     TimeGrain,
     WindowFunctionKind,
+    WindowSpan,
     grain_derives,
     held_grain_cost,
     result_type_holds_grain,
@@ -85,6 +86,7 @@ from orionbelt.models.types import DecimalType, parse_data_type
 from orionbelt.models.warnings import WarningCode, warning
 
 if TYPE_CHECKING:
+    from orionbelt.compiler.span_window import SpanRows
     from orionbelt.dialect.base import Dialect
 
 
@@ -798,6 +800,9 @@ class ResolvedMeasure:
     cumulative_type: CumulativeAggType = CumulativeAggType.SUM
     cumulative_window: int | None = None
     cumulative_grain_to_date: GrainToDate | None = None
+    cumulative_window_span: WindowSpan | None = None
+    """A rolling window over a span of time, evaluated over the measure's rows
+    (``span_window.py``) rather than over the per-period values."""
     cumulative_partition_by: list[str] = field(default_factory=list)
     # Period-over-period metric fields
     is_pop: bool = False
@@ -998,6 +1003,11 @@ class ResolvedQuery:
     leg, flags the first row of each object row per group there, and the outer
     aggregate reads its input only on flagged rows (see
     :func:`~orionbelt.compiler.cfl_projection.composite_aliases`)."""
+
+    span_rows: dict[str, SpanRows] = field(default_factory=dict)
+    """Span metrics (``windowSpan``) mapped to the rows their windows read.
+    Also in :attr:`cumulative_sources`, which marks the metrics a pass adding
+    rows has to evaluate; for these it range-joins the rows instead."""
 
     cumulative_sources: dict[str, str] = field(default_factory=dict)
     """Cumulative metrics the cumulative pass computes, mapped to the CTE its

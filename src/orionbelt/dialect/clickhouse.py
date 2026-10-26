@@ -474,6 +474,7 @@ class ClickHouseDialect(Dialect):
             supports_window_filters=False,
             supports_ilike=True,
             supports_group_by_all=True,
+            supports_range_only_outer_join=False,
             # ClickHouse offers ``simpleLinearRegression(x, y)`` returning a
             # ``(k, b)`` tuple. Composing transparent ``REGR_SLOPE`` /
             # ``REGR_INTERCEPT`` would mean silently tuple-indexing — better

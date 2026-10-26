@@ -50,6 +50,8 @@ METRIC_METADATA_COLUMNS: tuple[str, ...] = (
     "window",
     "grain_to_date",
     "description",
+    # Last, so a reader taking the columns by position keeps the others.
+    "window_span",
 )
 
 
@@ -116,7 +118,16 @@ def build_metric_rows(
     model: Any,
 ) -> list[
     tuple[
-        str, str, str | None, str | None, str | None, str | None, int | None, str | None, str | None
+        str,
+        str,
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+        int | None,
+        str | None,
+        str | None,
+        str | None,
     ]
 ]:
     """Extract one row per metric matching ``METRIC_METADATA_COLUMNS``.
@@ -136,6 +147,7 @@ def build_metric_rows(
             str | None,
             str | None,
             int | None,
+            str | None,
             str | None,
             str | None,
         ]
@@ -162,6 +174,8 @@ def build_metric_rows(
         window: int | None = int(win) if isinstance(win, int) else None
         grain_to_date = _enum_value(getattr(met, "grain_to_date", None))
         description = getattr(met, "description", None)
+        span = getattr(met, "window_span", None)
+        window_span = f"{span.count} {span.unit.value}" if span is not None else None
         rows.append(
             (
                 name,
@@ -173,6 +187,7 @@ def build_metric_rows(
                 window,
                 grain_to_date,
                 description,
+                window_span,
             )
         )
     return rows

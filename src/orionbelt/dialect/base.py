@@ -310,6 +310,11 @@ class DialectCapabilities:
     # because that choice has to be made while the plan is built rather than
     # when it is rendered.
     supports_from_unnest: bool = True
+    # An outer join whose ON holds only inequalities. ClickHouse 26.7 refuses
+    # one over an aggregated input ("Cannot determine join keys"), so a range
+    # join there gets an always-true equality to key on. Elsewhere that key
+    # would turn a range join (DuckDB's IEJoin) into a filtered product.
+    supports_range_only_outer_join: bool = True
     unsupported_aggregations: list[str] = field(default_factory=list)
     # Canonical names from the portable function catalog
     # (``models/functions.py``) this engine has no equivalent for. Empty for

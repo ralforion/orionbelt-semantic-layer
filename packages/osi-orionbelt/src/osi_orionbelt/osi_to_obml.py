@@ -1331,6 +1331,10 @@ class OSItoOBML:
             metric_def["window"] = extras["obml_cumulative_window"]
         if extras.get("obml_cumulative_grain_to_date"):
             metric_def["grainToDate"] = extras["obml_cumulative_grain_to_date"]
+        # Opaque foreign data: only a well-shaped {count, unit} is restored.
+        span = extras.get("obml_cumulative_window_span")
+        if isinstance(span, dict) and {"count", "unit"} <= span.keys():
+            metric_def["windowSpan"] = {"count": span["count"], "unit": span["unit"]}
         if extras.get("obml_partition_by"):
             metric_def["partitionBy"] = list(extras["obml_partition_by"])
         if description:

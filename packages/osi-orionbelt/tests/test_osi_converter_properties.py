@@ -438,3 +438,44 @@ class TestDimensionValueSearchRoundtrip:
 
     def test_the_default_is_not_written(self):
         assert "valueSearch" not in _roundtrip(self._OBML)["dimensions"]["Country"]
+
+
+class TestCumulativeWindowSpanRoundtrip:
+    """A cumulative ``windowSpan`` survives OBML -> OSI -> OBML."""
+
+    _OBML = {
+        "version": 1.0,
+        "dataObjects": {
+            "Orders": {
+                "code": "ORDERS",
+                "database": "W",
+                "schema": "P",
+                "columns": {
+                    "Amount": {"code": "AMT", "abstractType": "float"},
+                    "Order Date": {"code": "ORDER_DATE", "abstractType": "date"},
+                },
+            }
+        },
+        "dimensions": {
+            "Order Date": {"dataObject": "Orders", "column": "Order Date", "resultType": "date"}
+        },
+        "measures": {
+            "Revenue": {
+                "aggregation": "sum",
+                "columns": [{"dataObject": "Orders", "column": "Amount"}],
+            }
+        },
+        "metrics": {
+            "Revenue 90d": {
+                "type": "cumulative",
+                "measure": "Revenue",
+                "timeDimension": "Order Date",
+                "windowSpan": {"count": 90, "unit": "day"},
+            }
+        },
+    }
+
+    def test_the_span_roundtrips(self):
+        metric = _roundtrip(self._OBML)["metrics"]["Revenue 90d"]
+        assert metric["windowSpan"] == {"count": 90, "unit": "day"}
+        assert "cumulativeType" not in metric

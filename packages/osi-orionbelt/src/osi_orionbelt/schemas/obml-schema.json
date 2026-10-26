@@ -950,6 +950,26 @@
         "last"
       ]
     },
+    "windowSpan": {
+      "description": "A span of time: count units (90 day, 3 month).",
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of units"
+        },
+        "unit": {
+          "$ref": "#/definitions/timeGrain",
+          "description": "The unit: second, minute, hour, day, week, month, quarter or year"
+        }
+      },
+      "required": [
+        "count",
+        "unit"
+      ],
+      "additionalProperties": false
+    },
     "grainToDate": {
       "description": "Reset boundary for grain-to-date cumulative metrics",
       "enum": [
@@ -1055,6 +1075,10 @@
         "grainToDate": {
           "$ref": "#/definitions/grainToDate",
           "description": "Reset boundary for grain-to-date (e.g. month for MTD). Mutually exclusive with window."
+        },
+        "windowSpan": {
+          "$ref": "#/definitions/windowSpan",
+          "description": "Cumulative only: a rolling window over a span of time ending at each period's end, evaluated over the measure's rows (any aggregation, a distinct count included). Exclusive with window, grainToDate, cumulativeType and partitionBy."
         },
         "partitionBy": {
           "type": "array",

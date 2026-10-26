@@ -1248,6 +1248,8 @@ class ReferenceResolver:
                         "'per', 'aggregation', 'having', 'percentile', 'population' and "
                         "'carryForward' are only valid on reaggregate metrics"
                     )
+                if metric_type != MetricType.CUMULATIVE and "windowSpan" in raw_metric:
+                    raise ValueError("'windowSpan' is only valid on cumulative metrics")
                 concept_links = _parse_concept_mappings(
                     raw_metric, f"metrics.{name}", prefixes, errors, source_map
                 )
@@ -1264,6 +1266,26 @@ class ReferenceResolver:
                         span = source_map.get(f"metrics.{name}.measure") if source_map else None
                         errors.append(
                             _metric_input_error("Cumulative", name, ref_measure, raw_metrics, span)
+                        )
+                    elif "windowSpan" in raw_metric and _is_reaggregate(
+                        raw_metrics.get(ref_measure)
+                    ):
+                        # A span re-aggregates source rows; a reaggregate
+                        # metric's values exist only per period, after both
+                        # of its stages.
+                        errors.append(
+                            SemanticError(
+                                code="WINDOW_SPAN_NOT_SUPPORTED",
+                                message=(
+                                    f"Cumulative metric '{name}' has a windowSpan over the "
+                                    f"reaggregate metric '{ref_measure}', whose values exist "
+                                    "only per period; use window: N, or a measure"
+                                ),
+                                path=f"metrics.{name}.windowSpan",
+                                span=source_map.get(f"metrics.{name}.windowSpan")
+                                if source_map
+                                else None,
+                            )
                         )
 
                     # Validate timeDimension references a known dimension
@@ -1290,9 +1312,16 @@ class ReferenceResolver:
                         type=MetricType.CUMULATIVE,
                         measure=raw_metric.get("measure"),
                         time_dimension=raw_metric.get("timeDimension"),
-                        cumulative_type=raw_metric.get("cumulativeType", "sum"),
+                        # Passed only when written, so a windowSpan can tell
+                        # an explicit cumulativeType from the default.
+                        **(
+                            {"cumulative_type": raw_metric["cumulativeType"]}
+                            if "cumulativeType" in raw_metric
+                            else {}
+                        ),
                         window=raw_metric.get("window"),
                         grain_to_date=raw_metric.get("grainToDate"),
+                        window_span=raw_metric.get("windowSpan"),
                         partition_by=list(raw_metric.get("partitionBy", []) or []),
                         data_type=raw_metric.get("dataType"),
                         description=raw_metric.get("description"),

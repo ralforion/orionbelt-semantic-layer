@@ -62,6 +62,39 @@ another grain (`order_year` next to `order_month`) are positions on the time
 axis, not groups, and do not partition. `partitionBy` adds keys on top; a key
 the query already selects is not repeated.
 
+### Rolling over a span of time: `windowSpan`
+
+`window: N` combines the per-period values, which is right for a sum and
+wrong for a distinct count: three months of monthly active customers summed
+count a customer once per month. `windowSpan` evaluates the measure over its
+rows in a span of time ending at each period's end instead:
+
+```yaml
+metrics:
+  Active Customers 90d:
+    type: cumulative
+    measure: Customer Count        # count_distinct
+    timeDimension: order_month
+    windowSpan: {count: 90, unit: day}
+```
+
+Each shown month joins the measure's rows by their date (abridged, Postgres):
+
+```sql
+SELECT k."order_month", COUNT(DISTINCT r."Customer Count") AS "Active Customers 90d"
+FROM span_keys_1 AS k
+LEFT JOIN span_1_rows AS r
+  ON r."order_date" >= k."order_month" + INTERVAL '1 month' - INTERVAL '90 day'
+ AND r."order_date" <  k."order_month" + INTERVAL '1 month'
+GROUP BY k."order_month"
+```
+
+Any aggregation works, `avg`, `median` and `first` / `last` included, and
+the span need not be a whole number of periods. Other selected dimensions
+give each group its own window, a time filter picks the months shown without
+clipping the span, and `cumulativeType`, `window`, `grainToDate` and
+`partitionBy` do not apply beside it.
+
 ## 2. Window metrics — RANK, LAG, LEAD, NTILE, FIRST/LAST VALUE
 
 A new `MetricType.WINDOW` covers the single-row-output window functions
