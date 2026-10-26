@@ -175,7 +175,7 @@ def test_the_cast_keeps_a_cent_exact_on_duckdb() -> None:
         return Cast(expr=Literal.string(value), type_name="decimal")
 
     total = dialect.compile_expr(BinaryOp(as_decimal("0.1"), "+", as_decimal("0.2")))
-    assert duckdb.sql(f"SELECT {total}").fetchone() == (Decimal("0.3"),)
+    assert duckdb.sql(f"SELECT {total}").fetchall() == [(Decimal("0.3"),)]
 
 
 def test_bigquery_partitions_by_a_decimal_dimension_as_by_a_float() -> None:
