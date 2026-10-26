@@ -1,6 +1,6 @@
 name: Publish to PyPI
 
-# Publishes both packages to PyPI on every version tag (v*.*.*), using PyPI
+# Publishes the packages to PyPI on every version tag (v*.*.*), using PyPI
 # Trusted Publishing (OIDC) - no API token is stored. workflow_dispatch is also
 # enabled so an existing tag can be backfilled (run the workflow against that
 # tag's ref).
@@ -10,16 +10,22 @@ name: Publish to PyPI
 # the converter is there. osi-orionbelt has an independent version, so
 # skip-existing lets an unchanged version pass without failing the run.
 #
-# PREREQUISITE: a Trusted Publisher must be configured on PyPI for BOTH projects
-# (orionbelt-semantic-layer and osi-orionbelt). For each project add a publisher
-# with: owner `ralforion`, repository `orionbelt-semantic-layer`, workflow
-# `pypi-publish.yml`, environment `pypi`.
+# The ten packages under drivers/ (ob-driver-core, ob-flight-extension and the
+# eight database drivers) carry the main package's version and are published
+# with it. Until 2.36.0 nothing published them, so `pip install
+# "orionbelt-semantic-layer[flight]"` installed driver code from 2.6.1 / 2.1.0.
+#
+# PREREQUISITE: a Trusted Publisher must be configured on PyPI for EVERY project
+# published here: orionbelt-semantic-layer, osi-orionbelt and the ten ob-*
+# packages. For each project add a publisher with: owner `ralforion`,
+# repository `orionbelt-semantic-layer`, workflow `pypi-publish.yml`,
+# environment `pypi`.
 on:
   push:
     tags: ["v*.*.*"]
   workflow_dispatch:
 
-# Read-only by default. Only the two publishing jobs get id-token: write, and
+# Read-only by default. Only the publishing jobs get id-token: write, and
 # they need contents: read spelled out alongside it, because a job-level
 # permissions block replaces the whole set rather than adding to it.
 permissions:
@@ -60,9 +66,44 @@ jobs:
           # already on PyPI, so skip it instead of failing the release.
           skip-existing: true
 
+  publish-drivers:
+    name: Publish the ob-* driver packages
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    environment:
+      name: pypi
+      url: https://pypi.org/project/ob-flight-extension/
+    permissions:
+      contents: read
+      id-token: write # required for Trusted Publishing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: "3.12"
+
+      - name: Build the driver packages
+        run: |
+          for pyproject in drivers/*/pyproject.toml; do
+            name=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$pyproject" | head -1)
+            uv build --package "$name" -o dist/
+          done
+
+      - name: Check artifacts
+        run: uvx twine check dist/*
+
+      - name: Publish the driver packages to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          # Idempotency backstop for re-runs against an already-published tag.
+          skip-existing: true
+
   publish-main:
     name: Publish orionbelt-semantic-layer
-    needs: publish-osi # the main package depends on osi-orionbelt
+    # The main package depends on osi-orionbelt, and its flight extras on the drivers.
+    needs: [publish-osi, publish-drivers]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     environment:
