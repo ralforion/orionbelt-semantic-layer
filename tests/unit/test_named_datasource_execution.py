@@ -237,3 +237,60 @@ class TestFlight:
             )
 
         assert resolve.call_args.kwargs["datasource"] == datasource_key_for(shops[0])
+
+    def test_a_source_changing_between_planning_and_execution_cannot_cache_other_rows(
+        self, tmp_path: Any
+    ) -> None:
+        """Flight keys the cache when it plans a query and runs it when the
+        client fetches. Sources a and b share a target and a key; a moves to
+        another file in between. The query must run on the settings its key
+        came from, or b's cache entry would hold a's new rows."""
+        from ob_flight import server_execution
+
+        for name in ("one", "two"):
+            con = duckdb.connect(str(tmp_path / f"{name}.duckdb"))
+            con.execute(f"CREATE TABLE shop AS SELECT '{name}' AS region")
+            con.close()
+        env = {
+            "OBSL_DATABASES": "a,b",
+            "DB_A_TYPE": "duckdb",
+            "DB_B_TYPE": "duckdb",
+            "DUCKDB_DATABASE": str(tmp_path / "one.duckdb"),
+        }
+        a, b = configured_datasources(env)
+
+        server = MagicMock()
+        server._cache.backend_name = "file"
+        server._selector_from_context.return_value = "sales"
+        server._session_manager.get_store.return_value.list_models.return_value = [
+            SimpleNamespace(model_id="m")
+        ]
+        server._detect_virtual_table.return_value = None
+        server._cache_get_table.return_value = None
+        server._batch_size = 100
+
+        def plan(**kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                datasource=kwargs["datasource"],
+                cache_key="k",
+                ttl_outcome=SimpleNamespace(ttl=SimpleNamespace(seconds=60)),
+            )
+
+        with patch("orionbelt.service.query_execution.resolve_cache_plan", side_effect=plan):
+            meta = server_execution.build_cache_meta(
+                server,
+                compiled_sql="SELECT region FROM shop",
+                dialect="duckdb",
+                context=None,
+                physical_tables=["shop"],
+                source=a,
+            )
+        env["DB_A_DUCKDB_DATABASE"] = str(tmp_path / "two.duckdb")
+
+        server_execution.execute_sql(
+            server, "SELECT region FROM shop", "duckdb", cache_meta=meta, source=a
+        )
+
+        assert meta is not None and meta["datasource"] == datasource_key_for(b)
+        (stored, _meta), _ = server._cache_put_table.call_args
+        assert stored.column("region").to_pylist() == ["one"]

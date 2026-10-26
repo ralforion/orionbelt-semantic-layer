@@ -439,7 +439,11 @@ def build_cache_meta(
     """Compute cache key + TTL for a semantic Flight query.
 
     The key is scoped to ``source``, else to the dialect's implicit source,
-    as REST and pgwire scope it.
+    as REST and pgwire scope it. The returned meta carries the snapshot of
+    ``source`` the key was computed from (``"source"``), which
+    :func:`execute_sql` connects with: read live at execution instead, a
+    source that moved to another database in between would store its new
+    rows under a key another source shares.
 
     Returns ``None`` when the cache backend is disabled or the TTL
     resolver decides the query isn't cacheable (no refresh contracts
@@ -485,6 +489,7 @@ def build_cache_meta(
         # has no datasource_key_for, and a query without one does not need it.
         from orionbelt.cache import datasource_key_for
 
+        source = source.snapshot()
         datasource = datasource_key_for(source)
     plan = resolve_cache_plan(
         store=store,
@@ -507,6 +512,7 @@ def build_cache_meta(
         "physical_tables": physical_tables,
         "dialect": dialect,
         "sql": compiled_sql,
+        "source": source,
     }
 
 
@@ -712,7 +718,9 @@ def execute_sql(
 ) -> flight.RecordBatchStream:
     """Execute SQL on a data source and stream results.
 
-    It runs on ``source``, else on the dialect's implicit source.
+    It runs on the source snapshot in ``cache_meta`` when the cache planned
+    it (see :func:`build_cache_meta`), else on ``source``, else on the
+    dialect's implicit source.
 
     Note: table name rewriting is already handled by ``_prepare_sql``
     during the ``get_flight_info`` phase — no need to rewrite here.
@@ -748,7 +756,8 @@ def execute_sql(
     # that patch ``ob_flight.server.db_connect`` take effect.
     from ob_flight.server import db_connect
 
-    conn = db_connect(source or dialect)
+    planned = cache_meta.get("source") if cache_meta is not None else None
+    conn = db_connect(planned or source or dialect)
     try:
         cursor = conn.cursor()
         cursor.execute(sql)
