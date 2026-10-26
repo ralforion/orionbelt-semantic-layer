@@ -433,7 +433,13 @@ def show_json(data: object) -> str:
 
 
 def show_mermaid(mermaid_src: str, height: int = 800) -> None:
-    """Render a Mermaid diagram via mermaid.js (no extension required)."""
+    """Render a Mermaid diagram via mermaid.js (no extension required).
+
+    VS Code's Jupyter webview loads RequireJS, whose global ``define`` makes
+    the UMD libraries bundled in mermaid (dayjs) register with it instead of
+    with mermaid, which then fails with ``extend is not a function`` and
+    renders nothing. The import hides ``define`` while mermaid evaluates.
+    """
     import hashlib
 
     from IPython.display import HTML, display
@@ -443,7 +449,14 @@ def show_mermaid(mermaid_src: str, height: int = 800) -> None:
 <div id="{uid}" style="background:#1e1e1e; border-radius:6px;
      padding:16px; min-height:{height}px; overflow:auto;"></div>
 <script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+const amdDefine = window.define;
+window.define = undefined;
+let mermaid;
+try {{
+  mermaid = (await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')).default;
+}} finally {{
+  window.define = amdDefine;
+}}
 mermaid.initialize({{ startOnLoad: false, theme: 'dark' }});
 const {{ svg }} = await mermaid.render('{uid}_svg', `{mermaid_src}`);
 document.getElementById('{uid}').innerHTML = svg;
