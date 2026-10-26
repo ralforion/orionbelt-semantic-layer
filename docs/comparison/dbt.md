@@ -11,7 +11,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and the **dbt S
 ## TL;DR
 
 - **dbt SL wins on**: conversion metrics, the `metric_time` virtual dimension, ecosystem maturity, and governance/lineage tied to the dbt transformation pipeline.
-- **OBSL wins on**: being a self-hostable, warehouse-agnostic, transformation-tool-agnostic engine; **richer modeling topologies** (multi-rooted DAG, named alternative join paths) where dbt assumes single-rooted star/snowflake; explicit multi-fact CFL planning; an RDF/SPARQL view of the model; a clean REST surface; a more ergonomic period-over-period metric type; **first-class window metrics** (rank/lag/lead/ntile) and **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*) neither has any analog in dbt SL.
+- **OBSL wins on**: being a self-hostable, warehouse-agnostic, transformation-tool-agnostic engine; **richer modeling topologies** (multi-rooted DAG, named alternative join paths) where dbt assumes single-rooted star/snowflake; explicit multi-fact CFL planning; an RDF/SPARQL view of the model; a clean REST surface; a more ergonomic period-over-period metric type; **first-class window metrics** (rank/lag/lead/ntile, moving aggregates over a row frame) and **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*) neither has any analog in dbt SL.
 - **Different niches**: dbt SL is "metrics on top of your dbt project, served by dbt Cloud." OBSL is "drop-in semantic compiler you can embed anywhere, modeling-tool independent."
 
 ---
@@ -37,13 +37,13 @@ OBSL `MetricType` enum (`src/orionbelt/models/semantic.py`):
 |---|---|---|
 | `Measure` (sum/avg/count/min/max + `any_value` / `median` / `percentile_cont` / `percentile_disc` / `first` / `last` / `mode` / `listagg` + 9 statistical aggs, `total: bool` for grand totals) | `simple` metric over a `measure` (no statistical aggs) | OBSL wins on aggregate surface — see §6 |
 | `Metric` `type: derived` with `{[Measure A]}/{[Measure B]}` expression — nests other derived metrics at any depth | `ratio`, `derived` (both may reference other metrics) | Both first-class and both composable |
-| `Metric` `type: cumulative` (running total, rolling window, grain-to-date, **per-dimension partition**) | `cumulative` (running, period-to-date, rolling — no partition-by) | Both first-class — see §3 |
+| `Metric` `type: cumulative` (running total, rolling over N periods or a `windowSpan` of time, grain-to-date, **per-dimension partition**) | `cumulative` (running, period-to-date, rolling over a `window` of time — no partition-by) | Both first-class — see §3 |
 | `Metric` `type: period_over_period` with 4 comparison modes | Approximated via `offset_window` and `metric_time` | OBSL has a dedicated metric type — see §4 |
-| `Metric` `type: window` (rank / dense_rank / row_number / ntile / lag / lead / first_value / last_value) | — | **Gap in dbt** — no equivalent surface; users would compose raw SQL |
+| `Metric` `type: window` (rank / dense_rank / row_number / ntile / lag / lead / first_value / last_value, and sum / avg / min / max / count over a row `frame`) | — | **Gap in dbt** — no equivalent surface; users would compose raw SQL |
 | `Metric` `type: reaggregate`: a measure aggregated per `per` group, then again (`sum` / `avg` / `min` / `max` / `count` / `median` / `percentile_cont` / `percentile_disc` / `first` / `last`), with a first-stage `having`, `population: dimension` and `carryForward` | — | **Gap in dbt**: no metric type aggregates another metric's per-group values (average revenue per customer, by country); the inner grain becomes a dbt model with its own semantic model. See the [reaggregate metric](../guide/model-format.md#reaggregate-metrics) |
 | — | `conversion` | **Gap in OBSL** |
 
-OBSL coverage: ~95% of dbt's metric expressivity (missing only `conversion`), plus four OBSL-only surfaces dbt SL has no native answer for: `MetricType.WINDOW` (rank/lag/lead/ntile), `MetricType.REAGGREGATE` (an aggregate over per-group values), `partitionBy` on cumulative metrics, and the 9-function statistical-aggregate surface.
+OBSL coverage: ~95% of dbt's metric expressivity (missing only `conversion`), plus four OBSL-only surfaces dbt SL has no native answer for: `MetricType.WINDOW` (rank/lag/lead/ntile, moving aggregates over rows), `MetricType.REAGGREGATE` (an aggregate over per-group values), `partitionBy` on cumulative metrics, and the 9-function statistical-aggregate surface.
 
 ---
 
@@ -51,7 +51,7 @@ OBSL coverage: ~95% of dbt's metric expressivity (missing only `conversion`), pl
 
 Implementation: `src/orionbelt/compiler/cumulative_wrap.py` (~230 lines), pipeline phase placed after PoP wrap so it operates on already-compared data when needed.
 
-Three patterns supported, all dbt-equivalent:
+Four patterns supported, three of them dbt-equivalent:
 
 ```yaml
 metrics:
@@ -62,15 +62,22 @@ metrics:
     timeDimension: order_date
     cumulativeType: sum
 
-  # 2. Rolling window (e.g. last 7 days)
-  - name: revenue_7d_avg
+  # 2. Rolling over the last N periods of the query's grain (e.g. last 3 months)
+  - name: revenue_3m_avg
     type: cumulative
     measure: revenue
     timeDimension: order_date
     cumulativeType: avg
-    cumulativeWindow: 7
+    window: 3
 
-  # 3. Grain-to-date (e.g. month-to-date, resets each month)
+  # 3. Rolling over a span of time (e.g. last 90 days), at any grain (dbt: window: 90 days)
+  - name: revenue_90d
+    type: cumulative
+    measure: revenue
+    timeDimension: order_date
+    windowSpan: { count: 90, unit: day }
+
+  # 4. Grain-to-date (e.g. month-to-date, resets each month)
   - name: revenue_mtd
     type: cumulative
     measure: revenue
@@ -79,13 +86,14 @@ metrics:
     grainToDate: month
 ```
 
-Window functions used:
+SQL produced:
 
 | Pattern | SQL produced |
 |---|---|
-| Running total | `SUM(x) OVER (ORDER BY time)` |
-| Rolling window | `SUM(x) OVER (ORDER BY time ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW)` |
-| Grain-to-date | `SUM(x) OVER (PARTITION BY DATE_TRUNC(grain, time) ORDER BY time)` |
+| Running total | `SUM(x) OVER (ORDER BY time ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)` |
+| Rolling, N periods | Each period joined to the periods at most N-1 before it on the calendar, then aggregated: a period without rows still counts as one of the N |
+| Rolling, `windowSpan` | Each shown period joined to the measure's rows in the span ending with that period, and the measure's aggregation rebuilt over them: a 90-day distinct count is a distinct count over 90 days of rows, not a sum of monthly counts |
+| Grain-to-date | `SUM(x) OVER (PARTITION BY DATE_TRUNC(grain, time) ORDER BY time ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)` |
 
 Aggregations: `sum`, `avg`, `min`, `max`, `count` (`CumulativeAggType`).
 Grains for grain-to-date: `year`, `quarter`, `month`, `week` (`GrainToDate`).
@@ -108,7 +116,7 @@ dbt SL has no native partition-by surface on cumulative metrics; users would ste
 
 ## 3a. Window metrics (OBSL-only)
 
-OBSL ships `MetricType.WINDOW` for the single-row window-function family — `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`. dbt SL has no equivalent; the closest workaround is a derived metric over hand-rolled SQL, which means dropping out of the semantic-model layer entirely.
+OBSL ships `MetricType.WINDOW` for the window-function family — `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE` — and for moving aggregates over a row frame: `SUM`, `AVG`, `MIN`, `MAX`, `COUNT` over the current row and the N rows before it, in time order. Unlike a cumulative `window: N`, a frame counts rows, not calendar periods, so a month without orders is skipped. dbt SL has no equivalent; the closest workaround is a derived metric over hand-rolled SQL, which means dropping out of the semantic-model layer entirely.
 
 ```yaml
 metrics:
@@ -128,6 +136,14 @@ metrics:
     offset: 1
     timeDimension: order_date
     partitionBy: [country]
+
+  # Three-row moving average over the periods that have data
+  - name: revenue_moving_avg
+    type: window
+    windowFunction: avg
+    measure: revenue
+    timeDimension: order_date
+    frame: { preceding: 2 }
 ```
 
 Window metrics compose freely with derived metrics — a `{[Revenue]} - {[Revenue Prior Month]}` MoM delta needs no new SQL. Implementation: `src/orionbelt/compiler/window_wrap.py`, runs after `cumulative_wrap` in the pipeline so window functions can rank cumulative outputs.
