@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ob-duckdb"
-version = "2.6.1"
+version = "2.36.0"
 description = "OrionBelt Semantic Layer driver for DuckDB (DB-API 2.0)"
 license = "BUSL-1.1"
 license-files = ["LICENSE"]
@@ -13,7 +13,7 @@ authors = [{ name = "Ralf Becher", email = "info@orionbelt.ai" }]
 keywords = ["duckdb", "semantic-layer", "obml", "db-api", "orionbelt"]
 requires-python = ">=3.12"
 dependencies = [
-    "ob-driver-core>=0.1",
+    "ob-driver-core>=2.36.0",
     "duckdb>=1.4",
 ]
 

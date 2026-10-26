@@ -141,21 +141,21 @@ osi = [
 ]
 flight = [
     "pyarrow>=16.0,<27.0",
-    "ob-flight-extension>=0.1",
-    "ob-driver-core>=0.1",
-    "ob-bigquery>=0.1",
-    "ob-clickhouse>=0.1",
-    "ob-databricks>=0.1",
-    "ob-dremio>=0.1",
-    "ob-duckdb>=0.1",
+    "ob-flight-extension>=2.36.0",
+    "ob-driver-core>=2.36.0",
+    "ob-bigquery>=2.36.0",
+    "ob-clickhouse>=2.36.0",
+    "ob-databricks>=2.36.0",
+    "ob-dremio>=2.36.0",
+    "ob-duckdb>=2.36.0",
     # The pgwire catalog emulator runs on DuckDB and needs 1.4: macros called
     # with a defaulted argument positionally (pg_get_expr(e, oid, true)), and
     # cursor descriptions that name a list's element type. Declared here too
     # so it applies without waiting for an ob-duckdb release.
     "duckdb>=1.4",
-    "ob-mysql>=0.1",
-    "ob-postgres>=0.1",
-    "ob-snowflake>=0.1",
+    "ob-mysql>=2.36.0",
+    "ob-postgres>=2.36.0",
+    "ob-snowflake>=2.36.0",
     "osi-orionbelt>=0.2",
 ]
 # Minimal subset of `flight` for deployments that only need DuckDB
@@ -164,9 +164,9 @@ flight = [
 # transitives they pull in, shrinking the runtime image substantially.
 flight-duckdb-only = [
     "pyarrow>=16.0,<27.0",
-    "ob-flight-extension>=0.1",
-    "ob-driver-core>=0.1",
-    "ob-duckdb>=0.1",
+    "ob-flight-extension>=2.36.0",
+    "ob-driver-core>=2.36.0",
+    "ob-duckdb>=2.36.0",
     "duckdb>=1.4",  # pgwire catalog emulator, see `flight`
     "osi-orionbelt>=0.2",
 ]
@@ -298,16 +298,16 @@ dev = [
     # Keep in step with the `ui` extra floor (see the note there).
     "gradio>=6.15.1,<7.0",
     "pyarrow>=16.0,<27.0",
-    "ob-flight-extension>=0.1",
-    "ob-driver-core>=0.1",
-    "ob-bigquery>=0.1",
-    "ob-clickhouse>=0.1",
-    "ob-databricks>=0.1",
-    "ob-dremio>=0.1",
-    "ob-duckdb>=0.1",
-    "ob-mysql>=0.1",
-    "ob-postgres>=0.1",
-    "ob-snowflake>=0.1",
+    "ob-flight-extension>=2.36.0",
+    "ob-driver-core>=2.36.0",
+    "ob-bigquery>=2.36.0",
+    "ob-clickhouse>=2.36.0",
+    "ob-databricks>=2.36.0",
+    "ob-dremio>=2.36.0",
+    "ob-duckdb>=2.36.0",
+    "ob-mysql>=2.36.0",
+    "ob-postgres>=2.36.0",
+    "ob-snowflake>=2.36.0",
     "osi-orionbelt>=0.2",
     "adbc-driver-flightsql>=1.0",
 ]

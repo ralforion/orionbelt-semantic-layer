@@ -224,7 +224,13 @@ PYPROJECT_VER=$(grep '^version' "$REPO_ROOT/pyproject.toml" | head -1 | sed 's/.
 INIT_VER=$(grep '__version__' "$REPO_ROOT/src/orionbelt/__init__.py" | sed 's/.*"\(.*\)".*/\1/')
 [[ "$PYPROJECT_VER" == "$VERSION" ]] || fail "pyproject.toml version ($PYPROJECT_VER) != $VERSION"
 [[ "$INIT_VER" == "$VERSION" ]]      || fail "__init__.py version ($INIT_VER) != $VERSION"
-ok "Version consistent (pyproject.toml, __init__.py)"
+# The driver packages under drivers/ are published with the main package and
+# carry its version.
+for driver_pyproject in "$REPO_ROOT"/drivers/*/pyproject.toml; do
+    DRIVER_VER=$(grep '^version' "$driver_pyproject" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    [[ "$DRIVER_VER" == "$VERSION" ]] || fail "$(basename "$(dirname "$driver_pyproject")") version ($DRIVER_VER) != $VERSION"
+done
+ok "Version consistent (pyproject.toml, __init__.py, drivers/*)"
 
 echo "Checking CHANGELOG..."
 grep -q "## \[$VERSION\]" "$REPO_ROOT/CHANGELOG.md" \
