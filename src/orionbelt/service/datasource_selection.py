@@ -12,6 +12,7 @@ database.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from orionbelt.service.db_executor import ExecutionUnavailableError
@@ -24,6 +25,17 @@ if TYPE_CHECKING:
 
 class FederationNotEnabledError(ExecutionUnavailableError):
     """A model's data objects are read from more than one data source."""
+
+
+def source_key(name: str) -> str:
+    """A data source name as the registry compares it.
+
+    Case, spaces, dashes and underscores do not matter: ``Shop EU`` and
+    ``shop-eu`` are one source. The rule is ``ob_flight.datasources``'
+    ``_normalized``, kept here so it holds with a driver older than it; a
+    test checks the two agree.
+    """
+    return re.sub(r"[\s_\-]+", "", name.casefold())
 
 
 def model_datasource_name(model: SemanticModel | None) -> str | None:
@@ -40,14 +52,17 @@ def model_datasource_name(model: SemanticModel | None) -> str | None:
     if model is None:
         return None
     default = model.settings.default_data_source if model.settings else None
-    readers: dict[str | None, list[str]] = {}
+    # Grouped as the registry compares names, shown as first written.
+    readers: dict[str | None, tuple[str | None, list[str]]] = {}
     for name, obj in model.data_objects.items():
         if obj.nested_in is None:
-            readers.setdefault(obj.data_source or default, []).append(name)
+            source = obj.data_source or default
+            key = source_key(source) if source is not None else None
+            readers.setdefault(key, (source, []))[1].append(name)
     if len(readers) > 1:
         listed = "; ".join(
             f"{source or 'no data source'}: {', '.join(objects)}"
-            for source, objects in readers.items()
+            for source, objects in readers.values()
         )
         raise FederationNotEnabledError(
             f"[FEDERATION_NOT_ENABLED] {_model_label(model)} reads its data objects from "
@@ -55,7 +70,7 @@ def model_datasource_name(model: SemanticModel | None) -> str | None:
             "federation, which is not available yet: give every data object the same "
             "data source."
         )
-    return next(iter(readers), default)
+    return next(iter(readers.values()), (default, []))[0]
 
 
 def datasource_errors(model: SemanticModel, execution_dialect: str) -> list[tuple[str, str]]:
@@ -83,14 +98,17 @@ def datasource_errors(model: SemanticModel, execution_dialect: str) -> list[tupl
         try:
             resolve_datasource(model, dialect)
         except ExecutionUnavailableError as exc:
-            path = next(p for p, n in named.items() if n == single)
+            path = next(p for p, n in named.items() if source_key(n) == source_key(single))
             return [(path, str(exc))]
         return []
     try:
         from ob_flight.datasources import DataSourceNotFoundError, find_datasource
     except ImportError:
         return []
-    sources = configured_datasource_list()
+    try:
+        sources = configured_datasource_list()
+    except ExecutionUnavailableError as exc:
+        return [(next(iter(named)), str(exc))]
     errors = []
     for path, name in named.items():
         try:

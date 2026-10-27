@@ -618,3 +618,64 @@ class TestPerObjectSourceRest:
             "Orders": "shop-us",
             "Customers": "shop-us",
         }
+
+
+class TestPerObjectSourceNames:
+    """Source names are compared as the registry compares them."""
+
+    def test_spellings_of_one_source_are_one_source(self, shops: Any) -> None:
+        model = _model(two_object_model("Shop EU", None, default="shop-eu"))
+
+        source = resolve_datasource(model, "duckdb")
+
+        assert source is not None and source.name == "shop-eu"
+
+    def test_a_single_source_model_reports_at_its_path_whatever_the_spelling(
+        self, shops: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DB_SHOP_EU_TYPE", "postgres")
+
+        with pytest.raises(ModelValidationError) as caught:
+            ModelStore().load_model(
+                two_object_model("Shop EU", "shop_eu"), execution_dialect="duckdb"
+            )
+
+        assert [e.path for e in caught.value.errors] == ["dataObjects.Orders.dataSource"]
+
+    def test_the_rule_is_the_registrys(self) -> None:
+        from ob_flight.datasources import _normalized
+
+        from orionbelt.service.datasource_selection import source_key
+
+        for name in ("Shop EU", "shop_eu", "shop-eu", " SHOP\t-_eu ", "crm"):
+            assert source_key(name) == _normalized(name)
+
+    def test_a_broken_registry_fails_a_multi_source_load_cleanly(
+        self, shops: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DB_SHOP_US_TYPE")
+
+        with pytest.raises(ModelValidationError) as caught:
+            ModelStore().load_model(
+                two_object_model("shop-us", "shop-eu"), execution_dialect="duckdb"
+            )
+
+        (error,) = caught.value.errors
+        assert error.code == "DATA_SOURCE_UNAVAILABLE"
+        assert "DB_SHOP_US_TYPE" in error.message
+
+
+class TestBrokenRegistryRest:
+    async def test_a_multi_source_upload_is_a_422(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DB_SHOP_US_TYPE")
+        session = (await client.post("/v1/sessions")).json()["session_id"]
+
+        response = await client.post(
+            f"/v1/sessions/{session}/models",
+            json={"model_yaml": two_object_model("shop-us", "shop-eu")},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"]["errors"][0]["code"] == "DATA_SOURCE_UNAVAILABLE"
