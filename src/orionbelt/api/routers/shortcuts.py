@@ -79,6 +79,7 @@ from orionbelt.api.schemas import (
     ValueSearchRequest,
     ValueSearchResponse,
 )
+from orionbelt.api.services.query_compilation import federation_response
 from orionbelt.api.services.value_search import run_value_search
 from orionbelt.api.warnings_adapter import error_info_to_detail, semantic_error_to_warning
 from orionbelt.cache import Cache
@@ -581,6 +582,7 @@ async def shortcut_compile_query(
         sql_valid=result.sql_valid,
         explain=explain_resp,
         physical_tables=list(result.physical_tables),
+        federation=federation_response(result),
     )
 
 

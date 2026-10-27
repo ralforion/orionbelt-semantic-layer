@@ -110,14 +110,46 @@ dataObjects:
     dataSource: shop-eu
 ```
 
-Until federation ships, all of a model's data objects must be read from one
-source: a query on a model whose objects name different sources, or where some
-name one and others none, is refused with `FEDERATION_NOT_ENABLED`, listing
-which objects read from which source. Such a model still loads, so it can be
-prepared ahead of federation. A data object read through `nestedIn` comes from
-its parent's table and takes the parent's source. Load-time checks cover these
-names too: where queries execute, an unknown one fails the load at
-`dataObjects.<name>.dataSource`.
+A data object read through `nestedIn` comes from its parent's table and takes
+the parent's source. Load-time checks cover these names too: where queries
+execute, an unknown one fails the load at `dataObjects.<name>.dataSource`.
+
+### Queries across data sources (compile only)
+
+A query reading data objects of several sources is **compiled** into one query
+per source, a *leg*, and a DuckDB query combining them. It is **not executed
+yet**: running it is refused with `FEDERATION_NOT_ENABLED`, as is any query on a
+model whose objects name different sources. `query/sql` and `obsl compile` show
+the plan:
+
+- Groups of joined data objects on one source form islands. The island
+  holding the measures is the fact island; every other island is joined to it
+  by a many-to-one join.
+- The fact leg groups by the query's dimensions on its source and by the join
+  keys, and pre-aggregates the measures. Each other leg returns the distinct
+  join keys with the dimensions the query reads there. Each leg is written in
+  its source's dialect; a source not configured where the query is compiled
+  gets the dialect the query is compiled for.
+- The combine query joins the legs on their keys, re-aggregates each measure
+  (`SUM` of sums and counts, `MIN` / `MAX` of minimums and maximums), evaluates
+  derived metrics, and applies HAVING, ORDER BY and LIMIT. An order whose key
+  has no match keeps its values under an empty group, as in one database.
+- A filter on the fact island's dimensions runs in its leg. Any other filter
+  runs in the combine query, after the join. A static model filter on another
+  island joins that island as an inner join, so it drops the rows it excludes,
+  as it does in one database.
+
+What does not split exactly is refused by name rather than answered with a
+different number: measures from more than one source (`FEDERATION_MULTI_FACT`),
+`avg`, `count_distinct` and other aggregations that cannot be combined from
+partial results (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
+another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,
+period-over-period, window and reaggregate metrics (`FEDERATION_UNSUPPORTED_METRIC`),
+joins between sources other than many-to-one from the measures' side
+(`FEDERATION_UNSUPPORTED_JOIN`), relative date and time-grain filters on
+another source (`FEDERATION_UNSUPPORTED_FILTER`), and queries without measures,
+with `exists`, role-playing dimensions, `fill`, `asOf`, `usePathNames` or raw
+mode.
 
 ### One model on several databases
 

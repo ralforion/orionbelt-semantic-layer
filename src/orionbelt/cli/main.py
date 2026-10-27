@@ -354,6 +354,7 @@ def compile(  # noqa: A001 — "compile" is the natural verb for this command
             "warnings": item.get("warnings") or [],
             "physical_tables": item.get("physical_tables") or [],
             "explain": item.get("explain"),
+            "federation": item.get("federation"),
         }
     else:
         from orionbelt.cli import _local
@@ -384,6 +385,7 @@ def compile(  # noqa: A001 — "compile" is the natural verb for this command
             "warnings": [w.message for w in result.warnings],
             "physical_tables": list(result.physical_tables),
             "explain": dataclasses.asdict(result.explain) if result.explain else None,
+            "federation": _local.federation_payload(result, pretty=pretty),
         }
 
     if fmt is OutputFormat.json:
@@ -393,6 +395,15 @@ def compile(  # noqa: A001 — "compile" is the natural verb for this command
     _emit_warnings(payload["warnings"])
     if explain and payload["explain"]:
         _print_explain(payload["explain"])
+    federation = payload.get("federation")
+    if federation:
+        # One block per data source's query, then the query combining them.
+        for leg in federation["legs"]:
+            source = leg["data_source"] or "the dialect's own data source"
+            objects = ", ".join(leg["data_objects"])
+            _render.raw(f"-- {leg['name']}: {source} ({leg['dialect']}), reads {objects}")
+            _render.raw(leg["sql"] + "\n")
+        _render.raw(f"-- combine ({federation['combine_dialect']}), over the legs above")
     _render.raw(payload["sql"] or "")
 
 

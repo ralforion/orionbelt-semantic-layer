@@ -434,6 +434,24 @@ Compile a semantic query against a model loaded in the session.
 }
 ```
 
+For a query reading data objects of several [data sources](../guide/data-sources.md#queries-across-data-sources-compile-only),
+`federation` lists the query each source runs, and `sql` is the DuckDB query
+combining them (`dialect` is then `duckdb`):
+
+```json
+{
+ "sql": "SELECT \"leg_1\".\"Region\" AS \"Region\", ... FROM \"leg_0\" AS \"leg_0\" LEFT JOIN \"leg_1\" ...",
+ "dialect": "duckdb",
+ "federation": {
+ "legs": [
+ {"name": "leg_0", "data_source": "shop", "dialect": "mysql", "sql": "SELECT ...", "data_objects": ["Orders"]},
+ {"name": "leg_1", "data_source": "crm", "dialect": "postgres", "sql": "SELECT ...", "data_objects": ["Customers"]}
+ ],
+ "combine_dialect": "duckdb"
+ }
+}
+```
+
 **Error responses:**
 
 | Status | Cause |

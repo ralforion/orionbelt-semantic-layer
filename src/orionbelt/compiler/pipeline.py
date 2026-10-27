@@ -10,6 +10,7 @@ from orionbelt.ast.nodes import Select
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.fanout import detect_fanout
+from orionbelt.compiler.federation import FederatedPlan, is_federated, plan_federated
 from orionbelt.compiler.grain_dedup import detect_dedup_measures, split_grain_components
 from orionbelt.compiler.graph import JoinStep, reuse_join_graphs
 from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
@@ -154,6 +155,10 @@ class CompilationResult:
     """Deduplicated list of ``DATABASE.SCHEMA.CODE`` triples reached by the
     query. Drives freshness-cache TTL composition and heartbeat
     invalidation. See ``design/PLAN_freshness_driven_cache.md`` §8."""
+    federation: FederatedPlan | None = None
+    """For a query reading data objects of several data sources, the query
+    each source runs and the DuckDB query combining them; ``sql`` is then the
+    combine query. See ``compiler/federation.py``."""
 
 
 def _collect_subquery_objects(items: list[QueryFilterItem]) -> set[str]:
@@ -360,6 +365,11 @@ class CompilationPipeline:
         # Phase 1.5: Fanout detection (skip for CFL — each fact queried independently)
         self.detect_replication(resolved, model)
 
+        # A query reading data objects of several data sources is split into
+        # one query per source and a DuckDB query combining them.
+        if is_federated(resolved, query, model):
+            return self._compile_federated(query, model, dialect_name, resolved)
+
         # Phase 2: Planning (raw / star schema / CFL)
         use_cfl = resolved.requires_cfl or resolved.dimensions_exclude
         if resolved.is_raw:
@@ -459,6 +469,42 @@ class CompilationPipeline:
             warnings=warnings,
             sql_valid=sql_valid,
             explain=explain,
+        )
+
+    def _compile_federated(
+        self,
+        query: QueryObject,
+        model: SemanticModel,
+        dialect_name: str,
+        resolved: ResolvedQuery,
+    ) -> CompilationResult:
+        from orionbelt.service.datasource_selection import source_dialect
+
+        plan = plan_federated(
+            query,
+            model,
+            resolved,
+            dialect_name=dialect_name,
+            compile_leg=lambda q, m, d: self._compile(q, m, d).sql,
+            source_dialect=source_dialect,
+        )
+        validation_errors = validate_sql(plan.combine_sql, plan.combine_dialect)
+        return CompilationResult(
+            sql=plan.combine_sql,
+            dialect=plan.combine_dialect,
+            physical_tables=_compute_physical_tables(resolved, query, model),
+            resolved=ResolvedInfo(
+                fact_tables=resolved.fact_tables,
+                dimensions=[d.name for d in resolved.dimensions],
+                measures=[m.name for m in resolved.measures],
+            ),
+            warnings=resolved.warnings
+            + [
+                warning(code=WarningCode.SQL_VALIDATION, message=f"SQL validation: {e}")
+                for e in validation_errors
+            ],
+            sql_valid=not validation_errors,
+            federation=plan,
         )
 
     @staticmethod
