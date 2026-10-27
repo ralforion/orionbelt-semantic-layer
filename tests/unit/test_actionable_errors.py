@@ -13,8 +13,10 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from orionbelt.api.services.model_loading import _load_obml
 from orionbelt.api.services.query_compilation import compile_query_or_raise
 from orionbelt.cli._local import CliError, _translate
+from orionbelt.cli.main import _fmt_issue
 from orionbelt.compiler.fanout import FanoutError, detect_fanout
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError
 from orionbelt.compiler.pipeline import CompilationPipeline
@@ -23,6 +25,9 @@ from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import Cardinality, SemanticModel
 from orionbelt.models.suggestions import suggest_names
+from orionbelt.parser.resolver import _suggest_similar
+from orionbelt.service.model_store import ModelStore, ModelValidationError
+from tests.conftest import SAMPLE_MODEL_YAML
 from tests.unit.test_fanout import _make_model, _make_resolved
 
 
@@ -186,3 +191,50 @@ class TestCliObsql:
             _translate(sales_model, 'SELECT "Revenu" FROM sales')
         assert "[UNKNOWN_SELECT_ITEM]" in str(excinfo.value)
         assert "Did you mean 'Revenue'" in str(excinfo.value)
+
+
+_BROKEN_MODEL = SAMPLE_MODEL_YAML.replace("dataObject: Customers\n", "dataObject: Customer\n", 1)
+
+
+class TestModelLoadErrors:
+    def test_an_unrelated_name_gets_no_model_suggestion(self) -> None:
+        assert _suggest_similar("Zebra", ["Customers", "Orders"]) == []
+
+    def test_an_overlapping_check_is_reported_once_with_its_suggestion(self) -> None:
+        summary = ModelStore().validate(_BROKEN_MODEL)
+        unknown = [e for e in summary.errors if e.code == "UNKNOWN_DATA_OBJECT"]
+        assert len(unknown) == 1
+        assert unknown[0].suggestions == ["Customers"]
+
+    def test_the_exception_text_carries_path_and_suggestion(self) -> None:
+        with pytest.raises(ModelValidationError) as excinfo:
+            ModelStore().load_model(_BROKEN_MODEL)
+        assert (
+            "[UNKNOWN_DATA_OBJECT] Dimension 'Customer Country' references unknown data "
+            "object 'Customer' (at dimensions.Customer Country) Did you mean 'Customers'?"
+        ) in str(excinfo.value)
+
+    def test_rest_422_keeps_suggestions(self) -> None:
+        with pytest.raises(HTTPException) as excinfo:
+            _load_obml(ModelStore(), _BROKEN_MODEL)
+        detail: Any = excinfo.value.detail
+        assert excinfo.value.status_code == 422
+        (error,) = (e for e in detail["errors"] if e["code"] == "UNKNOWN_DATA_OBJECT")
+        assert error["suggestions"] == ["Customers"]
+        assert error["path"] == "dimensions.Customer Country"
+        assert "Did you mean 'Customers'?" in detail["message"]
+
+    def test_cli_issue_line_shows_the_repair(self) -> None:
+        line = _fmt_issue(
+            {
+                "code": "UNKNOWN_DATA_OBJECT",
+                "message": "unknown data object 'Customer'",
+                "path": "dimensions.Customer Country",
+                "hint": None,
+                "suggestions": ["Customers"],
+            }
+        )
+        assert line == (
+            "[UNKNOWN_DATA_OBJECT] unknown data object 'Customer' "
+            "(at dimensions.Customer Country) Did you mean 'Customers'?"
+        )

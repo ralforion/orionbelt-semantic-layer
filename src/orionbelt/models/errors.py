@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -42,14 +43,34 @@ class SemanticError(BaseModel):
         ),
     )
 
-    def as_text(self) -> str:
+    def as_text(self, *, with_path: bool = False) -> str:
         """One line for text-only surfaces (CLI, pgwire): code, message and remedy."""
-        parts = [f"[{self.code}] {self.message}"]
-        if self.hint:
-            parts.append(f"Hint: {self.hint}")
-        if self.suggestions:
-            parts.append("Did you mean " + " or ".join(f"'{s}'" for s in self.suggestions) + "?")
-        return " ".join(parts)
+        return error_text(
+            self.code,
+            self.message,
+            path=self.path if with_path else None,
+            hint=self.hint,
+            suggestions=self.suggestions,
+        )
+
+
+def error_text(
+    code: str,
+    message: str,
+    *,
+    path: str | None = None,
+    hint: str | None = None,
+    suggestions: Sequence[str] = (),
+) -> str:
+    """``[CODE] message (at path) Hint: ... Did you mean 'a' or 'b'?``, unset parts left out."""
+    parts = [f"[{code}] {message}"]
+    if path:
+        parts.append(f"(at {path})")
+    if hint:
+        parts.append(f"Hint: {hint}")
+    if suggestions:
+        parts.append("Did you mean " + " or ".join(f"'{s}'" for s in suggestions) + "?")
+    return " ".join(parts)
 
 
 class ValidationResult(BaseModel):

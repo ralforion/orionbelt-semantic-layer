@@ -64,6 +64,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
     TimeGrain,
 )
+from orionbelt.models.suggestions import suggest_names
 from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN, count_label, count_pattern_error
 from orionbelt.models.types import default_as_decimal
 from orionbelt.parser.loader import SourceMap
@@ -2540,17 +2541,5 @@ def _average_path(ref: str, measures: dict[str, Measure], raw_metrics: dict[str,
 
 
 def _suggest_similar(name: str, candidates: list[str], max_suggestions: int = 3) -> list[str]:
-    """Suggest similar names for 'did you mean?' messages."""
-    name_lower = name.lower()
-    scored = []
-    for candidate in candidates:
-        # Simple Levenshtein-like scoring
-        candidate_lower = candidate.lower()
-        if name_lower in candidate_lower or candidate_lower in name_lower:
-            scored.append((0, candidate))
-        else:
-            # Count common characters
-            common = sum(1 for c in name_lower if c in candidate_lower)
-            scored.append((len(name) + len(candidate) - 2 * common, candidate))
-    scored.sort(key=lambda x: x[0])
-    return [s[1] for s in scored[:max_suggestions]]
+    """Suggest similar names for 'did you mean?' messages; none when nothing is close."""
+    return suggest_names(name, dict.fromkeys(candidates, ()), limit=max_suggestions)

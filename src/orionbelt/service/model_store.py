@@ -14,6 +14,7 @@ from rdflib import Graph
 from orionbelt.cache.ttl import RefreshContract
 from orionbelt.compiler.health import compute_health
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
+from orionbelt.models.errors import error_text
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import FilterEnforcement, SemanticModel
 from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN
@@ -132,6 +133,16 @@ class ErrorInfo:
     hint: str | None = None
     context: dict[str, object] | None = None
 
+    def as_text(self) -> str:
+        """One line for text-only surfaces: code, message, location and remedy."""
+        return error_text(
+            self.code,
+            self.message,
+            path=self.path,
+            hint=self.hint,
+            suggestions=self.suggestions,
+        )
+
 
 @dataclass
 class FanTrapRiskInfo:
@@ -200,7 +211,7 @@ class ModelValidationError(ValueError):
     def __init__(self, errors: list[ErrorInfo], warnings: list[ErrorInfo]) -> None:
         self.errors = errors
         self.warnings = warnings
-        msgs = "; ".join(e.message for e in errors)
+        msgs = "; ".join(e.as_text() for e in errors)
         super().__init__(f"Model validation failed: {msgs}")
 
 
@@ -489,9 +500,14 @@ class ModelStore:
                 )
             )
 
-        # 3. Semantic validation
+        # 3. Semantic validation. A few checks overlap the resolver's (an
+        # unknown data object, say); the resolver's report carries the
+        # suggestions, so the same issue is not listed twice.
+        reported = {(i.code, i.path, i.message) for i in (*errors, *warnings)}
         sem_errors = self._validator.validate(model)
         for e in sem_errors:
+            if (e.code, e.path, e.message) in reported:
+                continue
             info = ErrorInfo(
                 code=e.code,
                 message=e.message,

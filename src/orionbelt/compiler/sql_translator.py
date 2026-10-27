@@ -131,7 +131,7 @@ class SQLTranslationError(Exception):
                 )
             ]
         self.errors = errors
-        messages = "; ".join(f"[{e.code}] {e.message}" for e in errors)
+        messages = "; ".join(e.as_text() for e in errors)
         super().__init__(messages)
 
 

@@ -43,6 +43,7 @@ from orionbelt.api.schemas import (
     QueryExecuteResponse,
     StructuredWarning,
 )
+from orionbelt.api.services.model_loading import model_validation_http_error
 from orionbelt.api.warnings_adapter import semantic_error_to_detail, semantic_error_to_warning
 from orionbelt.cache import (
     build_cache_key,
@@ -151,21 +152,7 @@ def _resolve_model(
     except ModelCapacityError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from None
     except ModelValidationError as exc:
-        error_lines = "; ".join(
-            f"[{e.code}] {e.message}" + (f" (at {e.path})" if e.path else "") for e in exc.errors
-        )
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": f"Invalid OBML model: {error_lines}",
-                "errors": [
-                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
-                ],
-                "warnings": [
-                    {"code": w.code, "message": w.message, "path": w.path} for w in exc.warnings
-                ],
-            },
-        ) from None
+        raise model_validation_http_error(exc) from None
     return result.model_id, result.model_load
 
 

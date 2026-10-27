@@ -140,7 +140,7 @@ def _load(model_yaml: str, datasource: str | None = None) -> tuple[ModelStore, s
 
     schema_errors = validate_obml_yaml(model_yaml)
     if schema_errors:
-        details = "; ".join(f"[{e.code}] {e.message}" for e in schema_errors)
+        details = "; ".join(e.as_text(with_path=True) for e in schema_errors)
         raise CliError(f"Model failed schema validation: {details}")
 
     store = ModelStore()

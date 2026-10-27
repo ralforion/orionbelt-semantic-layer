@@ -183,7 +183,25 @@ Initial warning code taxonomy: `GRAIN_OVERRIDE_INCOMPATIBLE`, `FILTER_CONTEXT_OV
 
 **Error (403):** Single-model mode: model upload is disabled.
 
-**Error (422):** Model has validation errors.
+**Error (422):** Model has validation errors. `errors` and `warnings` have the shape of the validate endpoint's, each with its `path` in the model and, where they apply, a `hint`, `suggestions` (the names a misspelt reference probably meant) and `context`. `message` repeats them on one line for clients that only print it:
+
+```json
+{
+ "detail": {
+ "message": "Invalid OBML model: [UNKNOWN_DATA_OBJECT] Dimension 'Customer Country' references unknown data object 'Customer' (at dimensions.Customer Country) Did you mean 'Customers'?",
+ "errors": [
+ {
+ "code": "UNKNOWN_DATA_OBJECT",
+ "message": "Dimension 'Customer Country' references unknown data object 'Customer'",
+ "path": "dimensions.Customer Country",
+ "severity": "error",
+ "suggestions": ["Customers"]
+ }
+ ],
+ "warnings": []
+ }
+}
+```
 
 **Error (404):** Session not found.
 
