@@ -48,6 +48,12 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution       |
 | `DB_POOL_SIZE`             | `5`         | Idle connections kept per data source     |
 | `OBSL_DATABASES`           | —           | Comma-separated names of [named data sources](../guide/data-sources.md); each reads `DB_<NAME>_TYPE`, `DB_<NAME>_DESCRIPTION`, `DB_<NAME>_POOL_SIZE` and its dialect's variables behind the `DB_<NAME>_` prefix. A model picks one with `settings.defaultDataSource` |
+| `FEDERATION_MAX_CONCURRENT` | `4`       | [Queries across data sources](../guide/data-sources.md#running-a-federated-query) running at once per process; the others wait in order of arrival |
+| `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `30` | How long a federated query waits for a slot before `FEDERATION_BUSY` (503) |
+| `FEDERATION_LEG_THREADS`   | `16`        | Legs of federated queries fetched at once per process |
+| `FEDERATION_MAX_LEG_ROWS`  | `1000000`   | Most rows one leg may return; a larger leg is refused with `FEDERATION_LEG_TOO_LARGE` |
+| `FEDERATION_COMBINE_THREADS` | `2`       | DuckDB threads of each federated query's combine step |
+| `FEDERATION_COMBINE_MEMORY_LIMIT` | `512MB` | DuckDB `memory_limit` of each combine step |
 | `VALUE_SEARCH_ENABLED`     | `true`      | Enable `POST /v1/values` (dimension-value search; also needs query execution) |
 | `VALUE_SEARCH_MAX_LIMIT`   | `200`       | Most values one value search returns      |
 | `VALUE_SEARCH_FUZZY_DOMAIN_MAX` | `10000` | Largest number of values a dimension may have for the fuzzy (misspelling) stage |

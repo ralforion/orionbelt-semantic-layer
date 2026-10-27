@@ -184,6 +184,14 @@ class QueryExecuteResponse(BaseModel):
         default=None,
         description="Physical table whose contract drove the effective TTL.",
     )
+    federation: FederationResponse | None = Field(
+        default=None,
+        description=(
+            "Set when the query read data objects of several data sources: the "
+            "query each ran, while `sql` is the DuckDB query that combined them. "
+            "Each leg's result is cached on its own; `cached` is always false."
+        ),
+    )
 
 
 class SessionQueryExecuteRequest(BaseModel):

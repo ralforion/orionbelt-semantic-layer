@@ -456,7 +456,7 @@ Compile a semantic query against a model loaded in the session.
 }
 ```
 
-For a query reading data objects of several [data sources](../guide/data-sources.md#queries-across-data-sources-compile-only),
+For a query reading data objects of several [data sources](../guide/data-sources.md#queries-across-data-sources),
 `federation` lists the query each source runs, and `sql` is the DuckDB query
 combining them (`dialect` is then `duckdb`):
 
@@ -697,8 +697,13 @@ UK	9.870,00
 | 400 | Unsupported dialect |
 | 404 | Model or session not found |
 | 422 | Resolution error |
-| 502 | Database execution failed |
-| 503 | Query execution not available (`FLIGHT_ENABLED` not set) |
+| 502 | Database execution failed; for a federated query, the error names the failing leg's data source |
+| 503 | Query execution not available (`FLIGHT_ENABLED` not set), or `FEDERATION_BUSY` |
+
+A query reading data objects of several [data sources](../guide/data-sources.md#running-a-federated-query)
+runs each source's leg on that source and combines the results in DuckDB. The
+response then carries `federation`, the legs as `query/sql` shows them, and
+`sql` is the combine query.
 
 **Top-level shortcut:** `POST /v1/query/execute` — auto-resolves session/model, auto-detects dialect from `DB_VENDOR`.
 

@@ -25,7 +25,8 @@ Only what splits exactly is planned. Everything else is refused with a named
 ``FEDERATION_*`` error rather than answered with a different number; see
 ``design/PLAN_federation.md`` §5.5 for which shapes come later.
 
-This module plans and compiles; it executes nothing.
+This module plans and compiles; ``service/federated_executor.py`` runs the
+plan.
 """
 
 from __future__ import annotations
@@ -87,6 +88,10 @@ class FederatedLeg:
         dialect: The dialect its SQL is written in.
         sql: The leg's query.
         data_objects: The model's data objects it reads.
+        columns: Each column it returns, with the OBML type the combine step
+            reads it as.
+        physical_tables: The ``DATABASE.SCHEMA.CODE`` tables it reads, which
+            decide how long its result may be cached.
     """
 
     name: str
@@ -94,6 +99,8 @@ class FederatedLeg:
     dialect: str
     sql: str
     data_objects: tuple[str, ...]
+    columns: tuple[tuple[str, str], ...] = ()
+    physical_tables: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +155,19 @@ def is_federated(resolved: ResolvedQuery, query: QueryObject, model: SemanticMod
     return len({sources.get(o) for o in query_objects(resolved, query) if o in sources}) > 1
 
 
+def query_source(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> str | None:
+    """The data source a query on one source reads, for a model read from several.
+
+    As the model writes it; ``None`` when the model reads one source, or when
+    the query reads the objects that name none.
+    """
+    sources = object_sources(model)
+    if len(set(sources.values())) < 2:
+        return None
+    read = sorted(o for o in query_objects(resolved, query) if o in sources)
+    return _source_name(model, read[0]) if read else None
+
+
 def plan_federated(
     query: QueryObject,
     model: SemanticModel,
@@ -156,6 +176,7 @@ def plan_federated(
     dialect_name: str,
     compile_leg: Callable[[QueryObject, SemanticModel, str], str],
     source_dialect: Callable[[str | None], str | None],
+    leg_row_limit: int | None = None,
 ) -> FederatedPlan:
     """Split a query reading several data sources into legs and a combine step.
 
@@ -168,12 +189,16 @@ def plan_federated(
         compile_leg: Compiles a query against a model for a dialect, returning
             SQL; the pipeline's own compile, for single-source queries.
         source_dialect: The dialect of a configured data source, or ``None``.
+        leg_row_limit: The most rows a leg may return. Each leg asks for one
+            more, so the executor can tell a leg that reached the limit from
+            one that fits it and refuse the first rather than combine a part.
 
     Raises:
         ResolutionError: A ``FEDERATION_*`` error for a query that does not
             split exactly.
     """
     planner = _Planner(query, model, resolved, dialect_name)
+    leg_limit = leg_row_limit + 1 if leg_row_limit is not None else None
     planner.check_query_shape()
     islands = planner.islands()
     fact = planner.fact_island(islands)
@@ -198,16 +223,25 @@ def plan_federated(
     fact_query = QueryObject(
         select=QuerySelect(dimensions=[*fact_dims, *fact_keys], measures=sorted(measures)),
         where=leg_filters,
+        limit=leg_limit,
     )
-    with partial_sums():
-        legs.append(
-            planner.leg("leg_0", islands[fact], fact_query, fact_model, compile_leg, source_dialect)
-        )
     fact_columns = [
         *[_dimension_column(model, DimensionRef.parse(d).name) for d in fact_dims],
         *[_key_column(model, name, obj, col) for name, (obj, col) in fact_keys.items()],
         *[_measure_column(model, m) for m in sorted(measures)],
     ]
+    with partial_sums():
+        legs.append(
+            planner.leg(
+                "leg_0",
+                islands[fact],
+                fact_query,
+                fact_model,
+                fact_columns,
+                compile_leg,
+                source_dialect,
+            )
+        )
     fact_joins: list[DataObjectJoin] = []
     for d in fact_dims:
         name = DimensionRef.parse(d).name
@@ -236,25 +270,27 @@ def plan_federated(
         dim_model = planner.island_model(
             island, {**keys, **static_columns}, set(), static_filters=False
         )
-        dim_query = QueryObject(select=QuerySelect(dimensions=[*dims, *keys, *static_columns]))
+        dim_query = QueryObject(
+            select=QuerySelect(dimensions=[*dims, *keys, *static_columns]), limit=leg_limit
+        )
+        dim_columns = [
+            *[_dimension_column(model, DimensionRef.parse(d).name) for d in dims],
+            *[
+                _key_column(model, name, obj, col)
+                for name, (obj, col) in {**keys, **static_columns}.items()
+            ],
+        ]
         legs.append(
-            planner.leg(leg_name, island, dim_query, dim_model, compile_leg, source_dialect)
+            planner.leg(
+                leg_name, island, dim_query, dim_model, dim_columns, compile_leg, source_dialect
+            )
         )
         combine_objects[leg_name] = DataObject(
             name=leg_name,
             code=leg_name,
             database="",
             schema_name="",
-            columns={
-                c.name: c
-                for c in [
-                    *[_dimension_column(model, DimensionRef.parse(d).name) for d in dims],
-                    *[
-                        _key_column(model, name, obj, col)
-                        for name, (obj, col) in {**keys, **static_columns}.items()
-                    ],
-                ]
-            },
+            columns={c.name: c for c in dim_columns},
             countable=False,
         )
         combine_filters_static.extend(
@@ -715,6 +751,7 @@ class _Planner:
         island: set[str],
         query: QueryObject,
         model: SemanticModel,
+        columns: list[DataObjectColumn],
         compile_leg: Callable[[QueryObject, SemanticModel, str], str],
         source_dialect: Callable[[str | None], str | None],
     ) -> FederatedLeg:
@@ -726,7 +763,20 @@ class _Planner:
             dialect=dialect,
             sql=compile_leg(query, model, dialect),
             data_objects=tuple(sorted(island)),
+            columns=tuple((c.name, c.abstract_type.value) for c in columns),
+            physical_tables=_physical_tables(self.model, island),
         )
+
+
+def _physical_tables(model: SemanticModel, objects: Iterable[str]) -> tuple[str, ...]:
+    """The distinct ``DATABASE.SCHEMA.CODE`` tables *objects* read."""
+    tables: dict[str, None] = {}
+    for name in sorted(objects):
+        obj = model.data_objects[model.unnest_root(name)]
+        parts = [str(p) for p in (obj.database, obj.schema_name, obj.code) if p]
+        if parts:
+            tables[".".join(parts)] = None
+    return tuple(tables)
 
 
 def _dimension_column(model: SemanticModel, name: str) -> DataObjectColumn:

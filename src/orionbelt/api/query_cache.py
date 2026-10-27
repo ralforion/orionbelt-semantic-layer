@@ -14,8 +14,10 @@ the pgwire layer adapts it into an ``ExecutionResult`` for wire encoding.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
+from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -33,6 +35,7 @@ from orionbelt.compiler.type_resolver import governed_measure_data_type
 from orionbelt.compiler.validator import format_sql
 from orionbelt.service.db_executor import (
     ColumnMeta,
+    ExecutionError,
     ExecutionResult,
     ExecutionUnavailableError,
     coarse_hint_from_type_name,
@@ -43,6 +46,8 @@ from orionbelt.service.query_execution import resolve_cache_plan, resolve_effect
 if TYPE_CHECKING:
     # ob_flight is an optional extra: imported for the annotation only.
     from ob_flight.datasources import DataSource
+
+    from orionbelt.compiler.federation import FederatedLeg
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +403,7 @@ async def execute_query_with_cache(
     decode_payload: bool = True,
     declared_types: dict[str, Any] | None = None,
     query: Any = None,
+    executor: Executor | None = None,
 ) -> CachedExecution:
     """Run a compiled query through the result cache, executing on a miss.
 
@@ -416,6 +422,8 @@ async def execute_query_with_cache(
     ``datasource`` if given, else to that source (see
     :func:`~orionbelt.cache.key.datasource_key_for`). Any session resolving
     to the same data source, model, dialect and compiled SQL shares entries.
+
+    The query runs on ``executor``, else on the event loop's default one.
     """
     if source is not None:
         # One set of settings for the key and the query: the source's
@@ -471,13 +479,16 @@ async def execute_query_with_cache(
                     row_count=entry.row_count,
                 )
 
-    exec_result = await asyncio.to_thread(
-        execute_sql,
-        compile_result.sql,
-        dialect=dialect,
-        source=source,
-        tz=tz,
-        override_db_tz=override_db_tz,
+    exec_result = await asyncio.get_running_loop().run_in_executor(
+        executor,
+        functools.partial(
+            execute_sql,
+            compile_result.sql,
+            dialect=dialect,
+            source=source,
+            tz=tz,
+            override_db_tz=override_db_tz,
+        ),
     )
     # Reconcile to the declared types *first*. ``rows`` below materialises the
     # Arrow table and frees it, and reconciliation needs that table - so doing
@@ -533,6 +544,107 @@ async def execute_query_with_cache(
         fetch_elapsed_ms=None,
         declared_skips=declared_skips,
     )
+
+
+# --- federated execution ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _LegQuery:
+    """A leg as :func:`execute_query_with_cache` reads a compiled query."""
+
+    sql: str
+    physical_tables: list[str]
+
+
+async def execute_federated_with_cache(
+    *,
+    store: Any,
+    model: Any,
+    compile_result: Any,
+    model_id: str,
+    cache: Cache,
+    cache_config: Any,
+    tz: Any = None,
+    override_db_tz: bool = False,
+    cacheable: bool = True,
+) -> ExecutionResult:
+    """Run a federated query: its legs on their sources at once, then the combine.
+
+    Each leg goes through the result cache on its own, keyed by its data
+    source and SQL, so a query changing only what the combine step does
+    still reuses the legs it shares with an earlier one. The combined result
+    is not cached: it is computed from the legs in milliseconds.
+
+    The query first waits for a federation slot; see
+    ``service/federated_executor.py`` for the bounds it runs within.
+
+    Raises:
+        ExecutionUnavailableError: No slot freed within the wait
+            (``FEDERATION_BUSY``), or a leg's data source cannot be used.
+        ExecutionError: A leg or the combine step failed; a leg's error names
+            its data source.
+    """
+    from orionbelt.service import federated_executor as federation
+    from orionbelt.service.datasource_selection import resolve_named_source
+
+    plan = compile_result.federation
+    limits = federation.federation_limits()
+    gate = federation.admission_gate()
+    ticket = gate.request()
+    try:
+        await asyncio.wait_for(asyncio.wrap_future(ticket), limits.queue_timeout_seconds)
+    except (TimeoutError, asyncio.CancelledError) as exc:
+        gate.withdraw(ticket)
+        if isinstance(exc, TimeoutError):
+            raise federation.busy_error(limits) from None
+        raise
+    try:
+        pool = federation.leg_executor()
+
+        async def run_leg(leg: FederatedLeg) -> Any:
+            try:
+                source = resolve_named_source(leg.data_source, leg.dialect, model)
+                ran = await execute_query_with_cache(
+                    store=store,
+                    model=model,
+                    compile_result=_LegQuery(leg.sql, list(leg.physical_tables)),
+                    model_id=model_id,
+                    dialect=leg.dialect,
+                    source=source,
+                    cache=cache,
+                    cache_config=cache_config,
+                    tz=tz,
+                    override_db_tz=override_db_tz,
+                    cacheable=cacheable,
+                    executor=pool,
+                )
+            except ExecutionUnavailableError as exc:
+                raise ExecutionUnavailableError(f"{federation.leg_label(leg)}: {exc}") from exc
+            except ExecutionError as exc:
+                raise federation.FederatedLegError(
+                    f"{federation.leg_label(leg)} failed: {exc}"
+                ) from exc
+            if ran.cached:
+                return federation.normalize_leg(leg, ran.data_table)
+            assert ran.exec_result is not None
+            return federation.leg_table(leg, ran.exec_result)
+
+        # Every leg runs to its end before an error is raised, so a failed
+        # query does not give up its slot while its other legs still hold
+        # connections.
+        outcomes = await asyncio.gather(
+            *(run_leg(leg) for leg in plan.legs), return_exceptions=True
+        )
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
+        tables = {leg.name: table for leg, table in zip(plan.legs, outcomes, strict=True)}
+        return await asyncio.get_running_loop().run_in_executor(
+            pool, federation.combine, plan, tables, tz
+        )
+    finally:
+        gate.release()
 
 
 # --- data-table adapters (cache-hit reconstruction) -------------------------
@@ -622,6 +734,7 @@ __all__ = [
     "build_type_map",
     "exec_columns_from_sidecar",
     "exec_columns_from_table",
+    "execute_federated_with_cache",
     "execute_query_with_cache",
     "execution_result_from_data",
     "RESULT_TYPE_TO_HINT",

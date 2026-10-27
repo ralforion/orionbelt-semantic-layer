@@ -470,8 +470,7 @@ dimensions:
 
 
 class TestPerObjectSource:
-    """A data object may name its own source; until federation ships, all of a
-    model's objects must be read from one."""
+    """A data object may name its own source."""
 
     def test_the_name_is_read(self) -> None:
         model = _model(two_object_model("shop-us", "shop-us"))
@@ -578,26 +577,11 @@ class TestPerObjectSource:
 
 
 class TestPerObjectSourceRest:
-    async def test_a_model_of_two_sources_is_refused_at_execution(
+    async def test_a_query_on_one_source_of_two_runs_on_that_source(
         self, client: AsyncClient
     ) -> None:
-        session = (await client.post("/v1/sessions")).json()["session_id"]
-        loaded = await client.post(
-            f"/v1/sessions/{session}/models",
-            json={"model_yaml": two_object_model("shop-us", "shop-eu")},
-        )
-        assert loaded.status_code == 201, loaded.text
-
-        response = await client.post(
-            f"/v1/sessions/{session}/query/execute",
-            json={
-                "model_id": loaded.json()["model_id"],
-                "query": REGION.model_dump(by_alias=True, exclude_none=True),
-            },
-        )
-
-        assert response.status_code == 503
-        assert "FEDERATION_NOT_ENABLED" in response.json()["detail"]
+        assert await _regions(client, two_object_model("shop-us", "shop-eu")) == [["us"]]
+        assert await _regions(client, two_object_model("shop-eu", "shop-us")) == [["eu"]]
 
     async def test_objects_naming_one_source_are_answered_from_it(
         self, client: AsyncClient
