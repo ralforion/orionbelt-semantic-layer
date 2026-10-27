@@ -19,7 +19,7 @@ from orionbelt.api.schemas import (
     SemanticQLCompileResponse,
     StructuredWarning,
 )
-from orionbelt.api.warnings_adapter import semantic_error_to_warning
+from orionbelt.api.warnings_adapter import semantic_error_details, semantic_error_to_warning
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.sql_translator import SQLTranslationError
@@ -60,9 +60,7 @@ def _obsql_translation_errors(exc: SQLTranslationError) -> HTTPException:
         status_code=400,
         detail={
             "error": "OrionBelt Semantic QL translation failed",
-            "errors": [
-                {"code": e.code, "message": e.message, "context": e.context} for e in exc.errors
-            ],
+            "errors": semantic_error_details(exc.errors),
         },
     )
 
@@ -101,15 +99,17 @@ def compile_query_or_raise(*, store: ModelStore, model_id: str, query: Any, dial
             status_code=422,
             detail={
                 "error": "Query resolution failed",
-                "errors": [
-                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
-                ],
+                "errors": semantic_error_details(exc.errors),
             },
         ) from None
     except FanoutError as exc:
         raise HTTPException(
             status_code=422,
-            detail={"error": "Query fanout detected", "message": exc.message},
+            detail={
+                "error": "Query fanout detected",
+                "message": exc.message,
+                "errors": semantic_error_details(exc.errors),
+            },
         ) from None
     except UnsupportedAggregationError as exc:
         raise HTTPException(
@@ -234,13 +234,7 @@ def compile_query_for_plan(
     except FanoutError as exc:
         return None, QueryPlanResponse(
             status="error",
-            warnings=[
-                StructuredWarning(
-                    code="FANOUT_ERROR",
-                    severity="error",
-                    message=exc.message,
-                )
-            ],
+            warnings=[semantic_error_to_warning(e) for e in exc.errors],
             would_compile=False,
         )
     except UnsupportedAggregationError as exc:

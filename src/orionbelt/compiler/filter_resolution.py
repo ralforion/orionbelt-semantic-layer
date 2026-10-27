@@ -32,7 +32,13 @@ from orionbelt.models.query import (
     QueryFilterGroup,
     QueryFilterItem,
 )
-from orionbelt.models.semantic import FilterEnforcement, ModelFilter
+from orionbelt.models.semantic import FilterEnforcement, ModelFilter, SemanticModel
+from orionbelt.models.suggestions import (
+    artefact_kind,
+    dimension_names,
+    measure_names,
+    suggest_names,
+)
 from orionbelt.models.warnings import WarningCode, warning
 
 if TYPE_CHECKING:
@@ -447,13 +453,7 @@ def resolve_filter(
         date_bearing = column_is_date_bearing(ctx.model, obj_name, col_name)
 
     else:
-        ctx.errors.append(
-            SemanticError(
-                code="UNKNOWN_FILTER_FIELD",
-                message=f"Unknown filter field '{qf.field}'",
-                path=filter_path,
-            )
-        )
+        ctx.errors.append(_unknown_filter_field(ctx.model, qf.field, filter_path, is_having))
         return None
 
     # exists/nonexists need model + subject object + qualify_table to
@@ -601,3 +601,26 @@ def resolve_order_by_field(
         )
     )
     return None
+
+
+def _unknown_filter_field(
+    model: SemanticModel, field: str, filter_path: str, is_having: bool
+) -> SemanticError:
+    """The error for a filter field that names nothing filterable here.
+
+    A measure or metric in ``where`` is the usual mistake, so that gets a hint
+    naming the clause it belongs in.
+    """
+    candidates = dimension_names(model)
+    if is_having:
+        candidates |= measure_names(model)
+    kind = artefact_kind(model, field)
+    misplaced = not is_having and kind in ("measure", "metric")
+    return SemanticError(
+        code="UNKNOWN_FILTER_FIELD",
+        message=f"Unknown filter field '{field}'",
+        path=filter_path,
+        hint=f"'{field}' is a {kind}: filter it under 'having'." if misplaced else None,
+        suggestions=[] if misplaced else suggest_names(field, candidates),
+        context={"field": field},
+    )

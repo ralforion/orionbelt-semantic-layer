@@ -458,7 +458,30 @@ combining them (`dialect` is then `duckdb`):
 |--------|-------|
 | 400 | Unsupported dialect |
 | 404 | Model or session not found |
-| 422 | Resolution error |
+| 422 | Resolution error or fanout refusal |
+
+A 422 lists every error with what it takes to repair the query, so an agent can compile first and correct on refusal rather than check up front. Each error carries a stable `code`, and where they apply a `hint`, `suggestions` (names the query probably meant, matched on names and synonyms) and structured `context`:
+
+```json
+{
+ "detail": {
+ "error": "Query resolution failed",
+ "errors": [
+ {
+ "code": "UNKNOWN_MEASURE",
+ "message": "Unknown measure 'Customer Country'",
+ "path": "select.measures",
+ "severity": "error",
+ "hint": "'Customer Country' is a dimension: list it under select.dimensions.",
+ "context": {"measure": "Customer Country"},
+ "suggestions": []
+ }
+ ]
+ }
+}
+```
+
+A fanout refusal (`"error": "Query fanout detected"`) has the same `errors` list, beside its `message`. Its codes are `FANOUT` (the context names the measure, the join, and the selected dimensions that force it), `NESTED_FANOUT`, `GRAIN_DEDUP_UNSUPPORTED`, `ANCHOR_NOT_CONFORMABLE` and `ANCHORED_FILTER_NOT_SUPPORTED`.
 
 ### `POST /v1/sessions/{session_id}/query/plan`
 
@@ -755,7 +778,7 @@ explicitly closed or expired; retaining a model does not extend it beyond that
 session's lifetime. In admin-curated mode, inline `model_yaml` uploads are rejected;
 use the existing model's `session_id` and `model_id`.
 
-Per-query `status` is `"ok"`, `"error"` (with an `error` envelope: `{code, message, path, hint}`), or `"cancelled"` (only when `fail_fast: true` triggers and remaining queries are short-circuited).
+Per-query `status` is `"ok"`, `"error"` (with an `error` envelope: `{code, message, path, hint, context, suggestions}` for the first error, and `errors` listing every one in the shape `query/sql` reports), or `"cancelled"` (only when `fail_fast: true` triggers and remaining queries are short-circuited).
 
 **Error (422):** Validation failure (duplicate query IDs, both/neither of `model_yaml`/`model_id`, batch over `ONESHOT_BATCH_MAX_QUERIES`, or model load failure).
 

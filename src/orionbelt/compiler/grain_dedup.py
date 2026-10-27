@@ -166,6 +166,8 @@ class GrainDedupUnsupportedError(FanoutError):
     every caller that already handles fanout handles this too.
     """
 
+    code = "GRAIN_DEDUP_UNSUPPORTED"
+
 
 def measure_source_objects(measure: Measure) -> set[str]:
     """Data objects whose columns a measure reads.

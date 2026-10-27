@@ -90,10 +90,11 @@ def _compile(
     except UnsupportedDialectError:
         raise CliError(f"Unsupported dialect: '{dialect}'") from None
     except ResolutionError as exc:
-        details = "; ".join(f"[{e.code}] {e.message}" for e in exc.errors)
+        details = "; ".join(e.as_text() for e in exc.errors)
         raise CliError(f"Query resolution failed: {details}") from None
     except FanoutError as exc:
-        raise CliError(f"Query fanout detected: {exc.message}") from None
+        details = "; ".join(e.as_text() for e in exc.errors)
+        raise CliError(f"Query fanout detected: {details}") from None
     except (
         AmbiguousTableReferenceError,
         UnsupportedAggregationError,

@@ -53,6 +53,31 @@ if TYPE_CHECKING:
     from orionbelt.compiler.graph import JoinGraph, JoinStep
 
 
+#: Operators a measure filter accepts, in the order ``_build_single_measure_filter`` matches them.
+MEASURE_FILTER_OPERATORS = (
+    "equals",
+    "notequals",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "inlist",
+    "notinlist",
+    "set",
+    "notset",
+    "contains",
+    "notcontains",
+    "starts_with",
+    "ends_with",
+    "like",
+    "notlike",
+    "ilike",
+    "notilike",
+    "between",
+    "notbetween",
+)
+
+
 def _escape_like(val: str) -> str:
     """Escape SQL LIKE wildcard characters (% and _) with backslash."""
     return val.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -501,6 +526,7 @@ def _build_single_measure_filter(
                     code="INVALID_MEASURE_FILTER_OPERATOR",
                     message=f"Unsupported measure filter operator '{mf.operator}'",
                     path="measures",
+                    hint=f"Use one of: {', '.join(MEASURE_FILTER_OPERATORS)}.",
                 )
             )
             return None

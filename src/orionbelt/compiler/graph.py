@@ -719,6 +719,11 @@ class JoinGraph:
                         code="AMBIGUOUS_JOIN",
                         message=f"Multiple join paths between '{u}' and '{v}'",
                         path=f"dataObjects.{u}.joins",
+                        hint=(
+                            "Keep one primary join; mark each other one secondary: true "
+                            "with a pathName unique for this pair."
+                        ),
+                        context={"from": u, "to": v},
                     )
                 )
         return errors

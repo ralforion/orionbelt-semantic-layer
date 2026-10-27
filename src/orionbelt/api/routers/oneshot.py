@@ -43,7 +43,7 @@ from orionbelt.api.schemas import (
     QueryExecuteResponse,
     StructuredWarning,
 )
-from orionbelt.api.warnings_adapter import semantic_error_to_warning
+from orionbelt.api.warnings_adapter import semantic_error_to_detail, semantic_error_to_warning
 from orionbelt.cache import (
     build_cache_key,
     build_datasource_key,
@@ -64,6 +64,7 @@ from orionbelt.dialect.base import (
     UnsupportedNestedAccessError,
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
+from orionbelt.models.errors import SemanticError
 from orionbelt.service.datasource_selection import resolve_datasource
 from orionbelt.service.db_executor import (
     ExecutionError,
@@ -168,6 +169,22 @@ def _resolve_model(
     return result.model_id, result.model_load
 
 
+def _batch_error(errors: list[SemanticError]) -> OneshotBatchQueryError:
+    """Envelope for compile errors: the first one up top, all of them in ``errors``."""
+    if not errors:
+        return OneshotBatchQueryError(code="RESOLUTION_ERROR", message="Query resolution failed")
+    first = errors[0]
+    return OneshotBatchQueryError(
+        code=first.code,
+        message=first.message,
+        path=first.path,
+        hint=first.hint,
+        context=first.context,
+        suggestions=list(first.suggestions),
+        errors=[semantic_error_to_detail(e) for e in errors],
+    )
+
+
 def _compile(
     *,
     store: ModelStore,
@@ -195,15 +212,8 @@ def _compile(
             code="UNSUPPORTED_DIALECT",
             message=f"Unsupported dialect: '{dialect}'",
         )
-    except ResolutionError as exc:
-        first = exc.errors[0] if exc.errors else None
-        return OneshotBatchQueryError(
-            code=first.code if first else "RESOLUTION_ERROR",
-            message=first.message if first else "Query resolution failed",
-            path=first.path if first else None,
-        )
-    except FanoutError as exc:
-        return OneshotBatchQueryError(code="FANOUT", message=exc.message)
+    except (ResolutionError, FanoutError) as exc:
+        return _batch_error(exc.errors)
     except UnsupportedAggregationError as exc:
         return OneshotBatchQueryError(
             code="UNSUPPORTED_AGGREGATION",

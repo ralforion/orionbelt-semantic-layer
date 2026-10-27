@@ -81,6 +81,8 @@ class AnchorNotConformableError(FanoutError):
     that already surface fanout as a 422 surface this the same way.
     """
 
+    code = "ANCHOR_NOT_CONFORMABLE"
+
     def __init__(self, measure_name: str, anchor: str, foreign: str) -> None:
         super().__init__(
             f"Measure '{measure_name}' is anchored on '{anchor}' and reads "
@@ -89,7 +91,8 @@ class AnchorNotConformableError(FanoutError):
             f"'{foreign}' to '{anchor}' needs one, since the aggregated result "
             f"has to be joined back onto '{anchor}'. Join both to a common data "
             f"object on the same columns, or anchor the measure on a data "
-            f"object that reaches '{foreign}'."
+            f"object that reaches '{foreign}'.",
+            context={"measure": measure_name, "anchor": anchor, "foreignObject": foreign},
         )
 
 
@@ -107,6 +110,8 @@ class AnchoredFilterNotSupportedError(FanoutError):
     already surface fanout as a 422 surface this the same way.
     """
 
+    code = "ANCHORED_FILTER_NOT_SUPPORTED"
+
     def __init__(self, measure_name: str, objects: list[str]) -> None:
         listed = ", ".join(f"'{name}'" for name in objects)
         super().__init__(
@@ -114,7 +119,8 @@ class AnchoredFilterNotSupportedError(FanoutError):
             f"reaches only by conforming, together with the anchor's own side. A "
             f"filter on {listed} alone is applied before they are aggregated to the "
             f"shared key; one reading both sides has no such place. Split it into a "
-            f"condition on {listed} and one on the anchor's data objects."
+            f"condition on {listed} and one on the anchor's data objects.",
+            context={"measure": measure_name, "dataObjects": objects},
         )
 
 
