@@ -145,6 +145,7 @@ nav:
       - External Concept Mappings: guide/concept-mappings.md
       - Freshness Contracts: guide/freshness-contracts.md
       - Result Cache: guide/result-cache.md
+      - Data Sources: guide/data-sources.md
       - Command-Line Interface: guide/cli.md
       - Gradio UI: guide/ui.md
       - AI Integrations: guide/integrations.md

@@ -26,6 +26,14 @@ docker run -p 7860:7860 \
 
 See [Drivers & Flight SQL](../drivers.md) for Flight SQL configuration and BI tool setup (DBeaver, Tableau, Power BI).
 
+The `.env` passed with `--env-file` carries the database credentials. The API
+image carries the DuckDB driver only; the Flight image carries all eight
+(`docker build --build-arg OB_EXTRA=flight .` builds an API image with them). To serve
+several databases from one container, two of one dialect included, declare
+them as [named data sources](../guide/data-sources.md) (`OBSL_DATABASES`); the
+same page shows how to pass them, and their secrets, on
+[Cloud Run](../guide/data-sources.md#deployment).
+
 ## Build from Source
 
 Two separate images — API-only (fast) and UI (with Gradio):
