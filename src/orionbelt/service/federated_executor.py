@@ -321,8 +321,10 @@ def _decimal_from_text(leg: FederatedLeg, name: str, column: Any) -> Any:
         _, digits, exponent = value.as_tuple()
         assert isinstance(exponent, int)  # finite
         scale = max(scale, -exponent)
-        # A value below one needs no integer digit: 1E-38 fits decimal128(38, 38).
-        integer_digits = max(integer_digits, len(digits) + exponent)
+        # Zero, or a value below one, needs no integer digit: 0 and 1E-38 both
+        # fit decimal128(38, 38).
+        if any(digits):
+            integer_digits = max(integer_digits, len(digits) + exponent)
     if integer_digits + scale > _DECIMAL128_MAX_PRECISION:
         raise _too_wide(leg, name)
     return column.cast(pa.decimal128(_DECIMAL128_MAX_PRECISION, scale))

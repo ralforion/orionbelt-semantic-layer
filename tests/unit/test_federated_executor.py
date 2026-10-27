@@ -333,6 +333,53 @@ class TestCachedLegs:
         with pytest.raises(FederatedLegError, match="FEDERATION_LEG_TOO_LARGE"):
             await run(reordered)
 
+    async def test_a_result_from_cached_legs_expires_with_them(
+        self, sources: dict[str, str], tmp_path: Any
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from orionbelt.api.query_cache import execute_federated_with_cache
+
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        clock = {"now": start}
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz: Any = None) -> Any:
+                return clock["now"]
+
+        store, model_id, (compiled, reordered) = compiled_federated(
+            REVENUE_BY_REGION,
+            {**REVENUE_BY_REGION, "orderBy": [{"field": "Region", "direction": "desc"}]},
+        )
+        cache = FileCache(
+            cache_dir=str(tmp_path / "legs"),
+            max_value_bytes=10 * 1024 * 1024,
+            max_disk_bytes=50 * 1024 * 1024,
+            max_ttl_seconds=3600,
+            sweep_interval_seconds=3600,
+        )
+        # Every entry lives 300 seconds.
+        config = CacheRuntimeConfig(backend="file", min_ttl_seconds=1, unknown_policy="default_ttl")
+
+        async def run(query: Any) -> Any:
+            return await execute_federated_with_cache(
+                store=store,
+                model=store.get_model(model_id),
+                compile_result=query,
+                model_id=model_id,
+                cache=cache,
+                cache_config=config,
+            )
+
+        with patch("orionbelt.cache.file.datetime", Clock):
+            await run(compiled)
+            clock["now"] = start + timedelta(seconds=299)
+            assert not (await run(reordered)).cached
+            # The legs have expired, so the result built from them has too.
+            clock["now"] = start + timedelta(seconds=301)
+            assert not (await run(reordered)).cached
+
 
 class TestCancellation:
     async def test_a_cancelled_query_keeps_its_slot_until_its_legs_finish(
@@ -478,6 +525,14 @@ class TestNormalizeLeg:
 
         assert out.schema.field("Rate").type == pa.decimal128(38, 38)
         assert out.column("Rate").to_pylist() == [Decimal("1E-38"), Decimal("-0.5")]
+
+    def test_zero_needs_no_integer_digit(self) -> None:
+        table = pa.table({"Rate": ["0.00000000000000000000000000000000000001", "0"]})
+
+        out = federation.normalize_leg(leg(("Rate", "decimal")), table)
+
+        assert out.schema.field("Rate").type == pa.decimal128(38, 38)
+        assert out.column("Rate").to_pylist() == [Decimal("1E-38"), Decimal("0")]
 
     def test_a_value_no_decimal_holds_is_refused(self) -> None:
         table = pa.table({"Revenue": ["1", "NaN"]})
