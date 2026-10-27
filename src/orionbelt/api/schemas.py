@@ -1269,6 +1269,9 @@ class DataObjectDetail(BaseModel):
     description: str | None = None
     comment: str | None = None
     owner: str | None = None
+    data_source: str | None = Field(
+        default=None, description="Data source the object's table is read from (dataSource)"
+    )
     synonyms: list[str] = Field(default_factory=list)
     external_concept_mappings: list[ConceptMappingDetail] = Field(default_factory=list)
 

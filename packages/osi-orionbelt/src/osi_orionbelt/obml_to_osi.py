@@ -312,6 +312,9 @@ class OBMLtoOSI:
             do_extras["obml_owner"] = do_obj["owner"]
         if do_obj.get("comment"):
             do_extras["obml_comment"] = do_obj["comment"]
+        # Where the table is read from: a deployment name, not portable SQL.
+        if do_obj.get("dataSource"):
+            do_extras["obml_data_source"] = do_obj["dataSource"]
         # OBML-only freshness contract — round-tripped through OSI
         # custom_extensions since OSI has no native equivalent. See
         # design/PLAN_freshness_driven_cache.md §5.

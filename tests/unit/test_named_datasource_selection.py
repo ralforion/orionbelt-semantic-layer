@@ -434,3 +434,187 @@ class TestFlight:
         us = resolve_datasource(model, "duckdb")
         assert us is not None and meta is not None
         assert meta["datasource"] == datasource_key_for(us)
+
+
+def two_object_model(orders: str | None, customers: str | None, default: str | None = None) -> str:
+    """Orders and Customers, each optionally naming its own data source."""
+
+    def source(name: str | None) -> str:
+        return f"    dataSource: {name}\n" if name else ""
+
+    named = f"  defaultDataSource: {default}\n" if default else ""
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+{named}dataObjects:
+  Orders:
+    code: shop
+{source(orders)}    columns:
+      Region:
+        code: region
+        abstractType: string
+  Customers:
+    code: shop
+{source(customers)}    columns:
+      Customer Region:
+        code: region
+        abstractType: string
+dimensions:
+  Region:
+    dataObject: Orders
+    column: Region
+    resultType: string
+"""
+
+
+class TestPerObjectSource:
+    """A data object may name its own source; until federation ships, all of a
+    model's objects must be read from one."""
+
+    def test_the_name_is_read(self) -> None:
+        model = _model(two_object_model("shop-us", "shop-us"))
+
+        assert model.data_objects["Orders"].data_source == "shop-us"
+
+    def test_an_empty_name_is_refused(self) -> None:
+        raw, source_map = TrackedLoader().load_string(two_object_model('""', None))
+        _, result = ReferenceResolver().resolve(raw, source_map)
+
+        (parse_error,) = [e for e in result.errors if e.code == "DATA_OBJECT_PARSE_ERROR"]
+        assert parse_error.path == "dataObjects.Orders"
+        assert "dataSource must be a data source name" in parse_error.message
+
+    def test_objects_naming_one_source_run_on_it(self, shops: Any) -> None:
+        source = resolve_datasource(_model(two_object_model("shop-us", "shop-us")), "duckdb")
+
+        assert source is not None and source.name == "shop-us"
+
+    def test_an_objects_source_wins_over_the_models(self, shops: Any) -> None:
+        model = _model(two_object_model("shop-us", "shop-us", default="shop-eu"))
+
+        source = resolve_datasource(model, "duckdb")
+
+        assert source is not None and source.name == "shop-us"
+
+    def test_objects_of_two_sources_are_refused_naming_each(self, shops: Any) -> None:
+        from orionbelt.service.datasource_selection import FederationNotEnabledError
+
+        model = _model(two_object_model("shop-us", None, default="shop-eu"))
+
+        with pytest.raises(FederationNotEnabledError) as caught:
+            resolve_datasource(model, "duckdb")
+
+        assert "FEDERATION_NOT_ENABLED" in str(caught.value)
+        assert "shop-us: Orders; shop-eu: Customers" in str(caught.value)
+
+    def test_an_object_naming_none_beside_one_naming_a_source_is_two_sources(
+        self, shops: Any
+    ) -> None:
+        from orionbelt.service.datasource_selection import FederationNotEnabledError
+
+        with pytest.raises(FederationNotEnabledError, match="no data source: Customers"):
+            resolve_datasource(_model(two_object_model("shop-us", None)), "duckdb")
+
+    def test_a_nested_object_is_read_from_its_parents_source(self, shops: Any) -> None:
+        from orionbelt.models.semantic import NestedSource
+
+        model = _model(two_object_model("shop-us", None))
+        nested = model.data_objects["Customers"].model_copy(
+            update={"nested_in": NestedSource(data_object="Orders", column="Region")}
+        )
+        model = model.model_copy(
+            update={"data_objects": {**model.data_objects, "Customers": nested}}
+        )
+
+        source = resolve_datasource(model, "duckdb")
+
+        assert source is not None and source.name == "shop-us"
+
+    def test_an_unknown_object_source_fails_the_load_at_its_path(self, shops: Any) -> None:
+        with pytest.raises(ModelValidationError) as caught:
+            ModelStore().load_model(
+                two_object_model("shop-asia", "shop-eu"), execution_dialect="duckdb"
+            )
+
+        assert [(e.code, e.path) for e in caught.value.errors] == [
+            ("DATA_SOURCE_UNAVAILABLE", "dataObjects.Orders.dataSource")
+        ]
+
+    def test_a_model_of_two_known_sources_loads(self, shops: Any) -> None:
+        loaded = ModelStore().load_model(
+            two_object_model("shop-us", "shop-eu"), execution_dialect="duckdb"
+        )
+
+        assert loaded.model_id
+
+    def test_inheritance_keeps_it(self) -> None:
+        store = ModelStore()
+        parent = store.load_model(two_object_model("shop-us", "shop-us")).model_id
+
+        child = store.load_model("version: 1.0\n", inherits_model_id=parent).model_id
+
+        assert store.get_model(child).data_objects["Orders"].data_source == "shop-us"
+
+    def test_the_graph_carries_it(self) -> None:
+        store = ModelStore()
+        model_id = store.load_model(two_object_model("shop-us", "shop-us")).model_id
+
+        assert '"shop-us"' in store.get_graph(model_id).turtle
+        assert "obsl:dataSource" in store.get_graph(model_id).turtle
+
+    def test_osi_round_trips_it(self) -> None:
+        import yaml
+        from osi_orionbelt.obml_to_osi import OBMLtoOSI
+        from osi_orionbelt.osi_to_obml import OSItoOBML
+
+        obml = yaml.safe_load(two_object_model("shop-us", None))
+
+        back = OSItoOBML(OBMLtoOSI(obml).convert()).convert()
+
+        assert back["dataObjects"]["Orders"]["dataSource"] == "shop-us"
+        assert "dataSource" not in back["dataObjects"]["Customers"]
+
+
+class TestPerObjectSourceRest:
+    async def test_a_model_of_two_sources_is_refused_at_execution(
+        self, client: AsyncClient
+    ) -> None:
+        session = (await client.post("/v1/sessions")).json()["session_id"]
+        loaded = await client.post(
+            f"/v1/sessions/{session}/models",
+            json={"model_yaml": two_object_model("shop-us", "shop-eu")},
+        )
+        assert loaded.status_code == 201, loaded.text
+
+        response = await client.post(
+            f"/v1/sessions/{session}/query/execute",
+            json={
+                "model_id": loaded.json()["model_id"],
+                "query": REGION.model_dump(by_alias=True, exclude_none=True),
+            },
+        )
+
+        assert response.status_code == 503
+        assert "FEDERATION_NOT_ENABLED" in response.json()["detail"]
+
+    async def test_objects_naming_one_source_are_answered_from_it(
+        self, client: AsyncClient
+    ) -> None:
+        assert await _regions(client, two_object_model("shop-us", "shop-us")) == [["us"]]
+
+    async def test_the_schema_api_shows_it(self, client: AsyncClient) -> None:
+        session = (await client.post("/v1/sessions")).json()["session_id"]
+        model_id = (
+            await client.post(
+                f"/v1/sessions/{session}/models",
+                json={"model_yaml": two_object_model("shop-us", "shop-us")},
+            )
+        ).json()["model_id"]
+
+        schema = (await client.get(f"/v1/sessions/{session}/models/{model_id}/schema")).json()
+
+        assert {o["name"]: o["data_source"] for o in schema["data_objects"]} == {
+            "Orders": "shop-us",
+            "Customers": "shop-us",
+        }

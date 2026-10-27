@@ -1,8 +1,10 @@
 """Which data source a model's queries run on.
 
-A model names its source in ``settings.defaultDataSource``; the server's
-environment (``OBSL_DATABASES``, see ``ob_flight.datasources``) says where that
-source is. A model that names none runs on the sole source of its dialect.
+A model names its source in ``settings.defaultDataSource``, and a data object
+may name its own in ``dataSource``; the server's environment
+(``OBSL_DATABASES``, see ``ob_flight.datasources``) says where each source is.
+A model that names none runs on the sole source of its dialect. Until
+federation ships, a model's data objects must all be read from one source.
 Every surface that executes a model's query asks :func:`resolve_datasource`,
 so REST, Flight SQL, pgwire and the CLI send the same model to the same
 database.
@@ -20,10 +22,82 @@ if TYPE_CHECKING:
     from orionbelt.models.semantic import SemanticModel
 
 
+class FederationNotEnabledError(ExecutionUnavailableError):
+    """A model's data objects are read from more than one data source."""
+
+
 def model_datasource_name(model: SemanticModel | None) -> str | None:
-    """The data source a model names, if any."""
-    settings = model.settings if model is not None else None
-    return settings.default_data_source if settings is not None else None
+    """The data source a model's data objects are read from, if they name one.
+
+    Each object's ``dataSource``, else ``settings.defaultDataSource``. An
+    object read through ``nestedIn`` comes from its parent's table and has no
+    source of its own.
+
+    Raises:
+        FederationNotEnabledError: The objects are read from more than one
+            source; an object naming none counts as the dialect's own.
+    """
+    if model is None:
+        return None
+    default = model.settings.default_data_source if model.settings else None
+    readers: dict[str | None, list[str]] = {}
+    for name, obj in model.data_objects.items():
+        if obj.nested_in is None:
+            readers.setdefault(obj.data_source or default, []).append(name)
+    if len(readers) > 1:
+        listed = "; ".join(
+            f"{source or 'no data source'}: {', '.join(objects)}"
+            for source, objects in readers.items()
+        )
+        raise FederationNotEnabledError(
+            f"[FEDERATION_NOT_ENABLED] {_model_label(model)} reads its data objects from "
+            f"more than one data source ({listed}). Queries across data sources need "
+            "federation, which is not available yet: give every data object the same "
+            "data source."
+        )
+    return next(iter(readers), default)
+
+
+def datasource_errors(model: SemanticModel, execution_dialect: str) -> list[tuple[str, str]]:
+    """Where queries execute, the data sources a model names that cannot serve it.
+
+    ``(path, message)`` pairs: a name that is not configured, or, for a model
+    read from one source, a source of another dialect than the model's
+    (``defaultDialect``, else ``execution_dialect``). A model read from
+    several sources loads; its queries are refused until federation ships.
+    """
+    named = {}
+    if model.settings and model.settings.default_data_source:
+        named["settings.defaultDataSource"] = model.settings.default_data_source
+    for name, obj in model.data_objects.items():
+        if obj.data_source:
+            named[f"dataObjects.{name}.dataSource"] = obj.data_source
+    if not named:
+        return []
+    try:
+        single = model_datasource_name(model)
+    except FederationNotEnabledError:
+        single = None
+    if single is not None:
+        dialect = (model.settings.default_dialect if model.settings else None) or execution_dialect
+        try:
+            resolve_datasource(model, dialect)
+        except ExecutionUnavailableError as exc:
+            path = next(p for p, n in named.items() if n == single)
+            return [(path, str(exc))]
+        return []
+    try:
+        from ob_flight.datasources import DataSourceNotFoundError, find_datasource
+    except ImportError:
+        return []
+    sources = configured_datasource_list()
+    errors = []
+    for path, name in named.items():
+        try:
+            find_datasource(name, sources)
+        except DataSourceNotFoundError as exc:
+            errors.append((path, f"{_model_label(model)}: {exc}"))
+    return errors
 
 
 def named_source_dialect(model: SemanticModel | None) -> str | None:
@@ -32,7 +106,10 @@ def named_source_dialect(model: SemanticModel | None) -> str | None:
     ``None`` when it names none, or one that is not configured: what to say
     about that is :func:`resolve_datasource`'s to decide.
     """
-    name = model_datasource_name(model)
+    try:
+        name = model_datasource_name(model)
+    except FederationNotEnabledError:
+        return None
     if name is None:
         return None
     try:
@@ -99,6 +176,8 @@ def resolve_datasource(model: SemanticModel | None, dialect: str) -> DataSource 
         ExecutionUnavailableError: The named source is not configured or is of
             another dialect, or several sources of ``dialect`` are configured
             and the model names none of them.
+        FederationNotEnabledError: The model's data objects are read from more
+            than one source.
     """
     name = model_datasource_name(model)
     label = _model_label(model)

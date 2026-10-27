@@ -524,6 +524,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             g.add((obj_uri, RDFS.comment, Literal(obj.description)))
         if obj.owner:
             g.add((obj_uri, OBSL.owner, Literal(obj.owner)))
+        if obj.data_source:
+            g.add((obj_uri, OBSL.dataSource, Literal(obj.data_source)))
         for syn in obj.synonyms:
             g.add((obj_uri, OBSL.synonym, Literal(syn)))
         _emit_custom_extensions(g, obj_uri, getattr(obj, "custom_extensions", []))

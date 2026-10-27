@@ -57,6 +57,7 @@ class DataObjectInfo:
     join_targets: list[str]
     synonyms: list[str]
     owner: str | None = None
+    data_source: str | None = None
 
 
 @dataclass
@@ -181,27 +182,13 @@ class GraphArtifact:
 
 
 def _named_source_errors(model: SemanticModel, execution_dialect: str) -> list[ErrorInfo]:
-    """Why the data source a model names cannot run its queries, if it cannot."""
-    from orionbelt.service.datasource_selection import (
-        model_datasource_name,
-        resolve_datasource,
-    )
-    from orionbelt.service.db_executor import ExecutionUnavailableError
+    """Why the data sources a model names cannot run its queries, if they cannot."""
+    from orionbelt.service.datasource_selection import datasource_errors
 
-    if model_datasource_name(model) is None:
-        return []
-    dialect = (model.settings.default_dialect if model.settings else None) or execution_dialect
-    try:
-        resolve_datasource(model, dialect)
-    except ExecutionUnavailableError as exc:
-        return [
-            ErrorInfo(
-                code="DATA_SOURCE_UNAVAILABLE",
-                message=str(exc),
-                path="settings.defaultDataSource",
-            )
-        ]
-    return []
+    return [
+        ErrorInfo(code="DATA_SOURCE_UNAVAILABLE", message=message, path=path)
+        for path, message in datasource_errors(model, execution_dialect)
+    ]
 
 
 class ModelValidationError(ValueError):
@@ -588,6 +575,8 @@ class ModelStore:
                     obj_raw["joins"] = joins
                 # Carry count-synthesis knobs when non-default so inheritance
                 # does not silently re-enable a suppressed count.
+                if obj.data_source is not None:
+                    obj_raw["dataSource"] = obj.data_source
                 if not obj.countable:
                     obj_raw["countable"] = False
                 if obj.count_label is not None:
@@ -896,6 +885,7 @@ class ModelStore:
                 join_targets=[j.join_to for j in obj.joins],
                 synonyms=obj.synonyms,
                 owner=obj.owner,
+                data_source=obj.data_source,
             )
             for obj in model.data_objects.values()
         ]
