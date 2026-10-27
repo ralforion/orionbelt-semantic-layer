@@ -9,6 +9,7 @@ behind a ``DB_<NAME>_`` prefix. Ported from OrionBelt Analytics'
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -319,3 +320,133 @@ class TestTwoDuckDBFiles:
                 regions.append(cursor.fetchall()[0][0])
 
         assert regions == ["one", "one"]
+
+
+def limited(name: str, limit: int, timeout: float = 5.0) -> DataSource:
+    """A named MySQL source allowing ``limit`` connections in use at once."""
+    upper = name.upper()
+    env = {
+        "OBSL_DATABASES": name,
+        f"DB_{upper}_TYPE": "mysql",
+        f"DB_{upper}_MYSQL_HOST": f"{name}.internal",
+        f"DB_{upper}_MAX_CONNECTIONS": str(limit),
+        f"DB_{upper}_ACQUIRE_TIMEOUT_SECONDS": str(timeout),
+    }
+    return configured_datasources(env)[0]
+
+
+class TestConnectionLimit:
+    """A source's connections in use at once are bounded; past the bound a query
+    waits its turn, then is refused by name. The pool used to open a new
+    connection whenever none was idle, so N queries meant N connections."""
+
+    def test_the_limit_and_the_wait_are_read_per_source(self) -> None:
+        env = {
+            "OBSL_DATABASES": "big",
+            "DB_BIG_TYPE": "mysql",
+            "DB_BIG_MAX_CONNECTIONS": "40",
+            "DB_ACQUIRE_TIMEOUT_SECONDS": "2.5",
+        }
+        big = configured_datasources(env)[0]
+
+        assert (big.max_connections(), big.acquire_timeout_seconds()) == (40, 2.5)
+        default = implicit_datasource("mysql", {})
+        assert (default.max_connections(), default.acquire_timeout_seconds()) == (10, 30.0)
+        assert implicit_datasource("mysql", {"DB_MAX_CONNECTIONS": "0"}).max_connections() == 0
+
+    def test_a_query_past_the_limit_waits_for_a_connection_to_free(self, fresh_pools: None) -> None:
+        source = limited("shop", 1)
+        held = threading.Event()
+        free = threading.Event()
+        opened: list[str] = []
+
+        def first() -> None:
+            with db_router.get_connection(source):
+                opened.append("first")
+                held.set()
+                free.wait(5)
+
+        def second() -> None:
+            with db_router.get_connection(source):
+                opened.append("second")
+
+        with patch("importlib.import_module", return_value=MagicMock()):
+            one = threading.Thread(target=first)
+            one.start()
+            held.wait(5)
+            two = threading.Thread(target=second)
+            two.start()
+            two.join(0.2)
+            assert opened == ["first"]
+            assert two.is_alive()
+            free.set()
+            one.join(5)
+            two.join(5)
+
+        assert opened == ["first", "second"]
+
+    def test_a_query_still_waiting_at_the_timeout_is_refused_by_name(
+        self, fresh_pools: None
+    ) -> None:
+        source = limited("shop", 1, timeout=0.05)
+        module = MagicMock()
+        with (
+            patch("importlib.import_module", return_value=module),
+            db_router.get_connection(source),
+            pytest.raises(db_router.DataSourceBusyError) as refused,
+            db_router.get_connection(source),
+        ):
+            pass
+
+        assert "[DATA_SOURCE_BUSY] Data source 'shop' has all 1" in str(refused.value)
+        assert "DB_SHOP_MAX_CONNECTIONS" in str(refused.value)
+        assert module.connect.call_count == 1
+
+    def test_waiting_queries_are_served_in_order_of_arrival(self, fresh_pools: None) -> None:
+        slots = db_router.ConnectionPool(limited("shop", 1), max_connections=1).slots
+        served: list[int] = []
+        slots.acquire()
+
+        def wait(n: int) -> None:
+            slots.acquire()
+            served.append(n)
+            slots.release()
+
+        threads = []
+        for n in range(5):
+            thread = threading.Thread(target=wait, args=(n,))
+            thread.start()
+            threads.append(thread)
+            # Each in line before the next arrives.
+            while len(slots._waiters) <= n:
+                threading.Event().wait(0.001)
+        slots.release()
+        for thread in threads:
+            thread.join(5)
+
+        assert served == [0, 1, 2, 3, 4]
+        assert slots.in_use == 0
+
+    def test_a_connection_opened_outside_the_pool_counts_too(self, fresh_pools: None) -> None:
+        source = limited("shop", 1, timeout=0.05)
+        with (
+            patch("importlib.import_module", return_value=MagicMock()),
+            db_router.connection_slot(source),
+            pytest.raises(db_router.DataSourceBusyError),
+            db_router.get_connection(source),
+        ):
+            pass
+
+        with db_router.connection_slot(source):
+            pass
+
+    def test_no_limit_when_set_to_zero(self, fresh_pools: None) -> None:
+        source = limited("shop", 0, timeout=0.05)
+        with patch("importlib.import_module", return_value=MagicMock()):
+            with db_router.get_connection(source), db_router.get_connection(source):
+                pass
+
+    def test_idle_connections_kept_never_exceed_the_limit(self) -> None:
+        pool = db_router.ConnectionPool(limited("shop", 2), max_size=5, max_connections=2)
+
+        assert pool._pool.maxsize == 2

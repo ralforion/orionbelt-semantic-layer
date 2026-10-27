@@ -291,6 +291,26 @@ class TestDoGet:
         assert ticket_id not in server._pending
         mock_conn.close.assert_called_once()
 
+    def test_a_query_waits_for_its_sources_connection_limit(self, monkeypatch) -> None:
+        """Flight opens its connection outside the pool; it still counts
+        against the source's MAX_CONNECTIONS."""
+        from ob_flight import db_router
+
+        monkeypatch.setenv("DB_MAX_CONNECTIONS", "1")
+        monkeypatch.setenv("DB_ACQUIRE_TIMEOUT_SECONDS", "0.05")
+        db_router.close_all_pools()
+        server = _make_server(dialect="postgres")
+        try:
+            with (
+                patch("ob_flight.server.db_connect") as db_connect,
+                db_router.connection_slot("postgres"),
+                pytest.raises(db_router.DataSourceBusyError),
+            ):
+                server._execute_sql("SELECT 1", "postgres")
+            db_connect.assert_not_called()
+        finally:
+            db_router.close_all_pools()
+
     def test_prefers_the_driver_arrow_table(self, monkeypatch) -> None:
         """The driver's schema, not one inferred from sampled values.
 

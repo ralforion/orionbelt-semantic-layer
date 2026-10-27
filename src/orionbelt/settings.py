@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     query_execute: bool = False  # enable POST /v1/query/execute
     query_default_limit: int = 1000  # max rows when query has no LIMIT
     db_pool_size: int = 5  # connection pool size per dialect
+    # Connections of one data source in use at once (0: no limit), and how long
+    # a query waits in line for one before DATA_SOURCE_BUSY (503). Read by
+    # ob_flight.db_router per source (DB_<NAME>_ overrides).
+    db_max_connections: int = 10
+    db_acquire_timeout_seconds: float = 30.0
 
     # Queries across data sources (service/federated_executor.py). Bounds per
     # process: queries running at once (the rest wait in order, then 503),

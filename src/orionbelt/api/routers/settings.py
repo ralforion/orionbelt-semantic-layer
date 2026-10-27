@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -203,8 +204,10 @@ async def get_settings(
     # configured. Without this, the first /v1/settings after a restart
     # sees an empty cache and falls through to host/UTC, which is wrong
     # whenever the DB has a non-default timezone.
+    # In a worker thread: the probe connects to the database, which must not
+    # hold up the event loop and every other request with it.
     if is_query_execute_enabled() and db_vendor and db_vendor not in _DB_TZ_DETECTED:
-        warm_db_tz_cache(db_vendor)
+        await asyncio.to_thread(warm_db_tz_cache, db_vendor)
     host_tz = _get_host_timezone()
     db_tz = _DB_SESSION_TZ.get(db_vendor)
     effective_tz_name = _resolve_effective_timezone(settings_block, db_vendor)

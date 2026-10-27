@@ -317,8 +317,21 @@ class DataSource:
 
     def pool_size(self) -> int:
         """Idle connections to keep: ``DB_<NAME>_POOL_SIZE``, then ``DB_POOL_SIZE``."""
-        raw = self.environ.get(f"{self.prefix}POOL_SIZE") if self.prefix else None
-        return int(raw if raw is not None else self.environ.get("DB_POOL_SIZE", "5"))
+        return int(self._pool_setting("POOL_SIZE", "5"))
+
+    def max_connections(self) -> int:
+        """Connections in use at once: ``DB_<NAME>_MAX_CONNECTIONS``, then
+        ``DB_MAX_CONNECTIONS``, then 10; 0 for no limit."""
+        return int(self._pool_setting("MAX_CONNECTIONS", "10"))
+
+    def acquire_timeout_seconds(self) -> float:
+        """How long a query waits for a connection: ``DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS``,
+        then ``DB_ACQUIRE_TIMEOUT_SECONDS``, then 30."""
+        return float(self._pool_setting("ACQUIRE_TIMEOUT_SECONDS", "30"))
+
+    def _pool_setting(self, setting: str, default: str) -> str:
+        raw = self.environ.get(f"{self.prefix}{setting}") if self.prefix else None
+        return raw if raw is not None else self.environ.get(f"DB_{setting}", default)
 
     def fingerprint(self) -> str:
         """Who connects to what, as 16 hex characters.

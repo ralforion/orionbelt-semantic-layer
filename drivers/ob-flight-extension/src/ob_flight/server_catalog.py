@@ -343,23 +343,28 @@ def probe_schema(
     if vt is not None:
         return VIRTUAL_TABLES[vt]
 
+    from ob_flight.db_router import connection_slot
+
     # Resolve ``db_connect`` through the ``ob_flight.server`` module so tests
     # that patch ``ob_flight.server.db_connect`` take effect.
     from ob_flight.server import db_connect
 
-    conn = db_connect(source or dialect)
-    try:
-        cursor = conn.cursor()
-        cursor.execute(sql)
-        if cursor.description is None:
-            return pa.schema([pa.field("status", pa.utf8())])
-        rows = cursor.fetchmany(64)
-        return schema_from_description(cursor.description, sample_rows=rows)
-    except Exception as exc:
-        logger.debug("Schema probe failed: %s", exc)
-        return pa.schema([pa.field("result", pa.utf8())])
-    finally:
-        conn.close()
+    # The connection counts against the source's MAX_CONNECTIONS while open;
+    # a source that stays busy fails the probe rather than guessing a schema.
+    with connection_slot(source or dialect):
+        conn = db_connect(source or dialect)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            if cursor.description is None:
+                return pa.schema([pa.field("status", pa.utf8())])
+            rows = cursor.fetchmany(64)
+            return schema_from_description(cursor.description, sample_rows=rows)
+        except Exception as exc:
+            logger.debug("Schema probe failed: %s", exc)
+            return pa.schema([pa.field("result", pa.utf8())])
+        finally:
+            conn.close()
 
 
 def resolve_model_for_catalog(

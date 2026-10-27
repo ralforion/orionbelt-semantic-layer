@@ -580,7 +580,9 @@ def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo
 
     Returns ``None`` (without raising) if the connection cannot be
     established or the detection query fails — leaves the cache in the
-    same state ``_detect_db_timezone`` would on failure.
+    same state ``_detect_db_timezone`` would on failure. A source with no
+    connection free is not waited for: the probe is skipped, and a later
+    call tries again.
     """
     try:
         datasource = _target(dialect, source)
@@ -592,16 +594,20 @@ def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo
             import duckdb
 
             database = _credentials(datasource).get("database", ":memory:")
-            conn = duckdb.connect(database=database, read_only=True)
-            try:
-                return _detect_db_timezone(conn, "duckdb", key)
-            finally:
-                with contextlib.suppress(Exception):
-                    conn.close()
+            with _connection_slot(datasource, wait=False):
+                conn = duckdb.connect(database=database, read_only=True)
+                try:
+                    return _detect_db_timezone(conn, "duckdb", key)
+                finally:
+                    with contextlib.suppress(Exception):
+                        conn.close()
 
-        from ob_flight.db_router import get_connection
+        from ob_flight import db_router
 
-        with get_connection(datasource) as conn:
+        # Not with an ob-flight-extension older than the connection slots,
+        # whose get_connection would pass ``wait`` on to the driver.
+        busy_ok = {"wait": False} if hasattr(db_router, "connection_slot") else {}
+        with db_router.get_connection(datasource, **busy_ok) as conn:
             cursor = conn.cursor()
             try:
                 return _detect_db_timezone(cursor, dialect, key)
@@ -875,13 +881,29 @@ def execute_sql(
         raise
     except KeyError as exc:
         raise ExecutionUnavailableError(str(exc)) from None
-    except _config_errors() as exc:
-        # A credential / configuration problem, not a warehouse failure: surfacing it as
-        # ExecutionError would render as a 502 and send the reader looking at
-        # the database instead of at their environment.
+    except _unavailable_errors() as exc:
+        # A credential / configuration problem, or a source with no connection
+        # free, not a warehouse failure: surfacing it as ExecutionError would
+        # render as a 502 and send the reader looking at the database instead
+        # of at their environment.
         raise ExecutionUnavailableError(str(exc)) from None
     except Exception as exc:
         raise ExecutionError(f"Database execution failed: {exc}{_hint(exc)}") from exc
+
+
+def _connection_slot(
+    source: DataSource | str, *, wait: bool = True
+) -> contextlib.AbstractContextManager[None]:
+    """One of the source's connection slots, for a connection opened outside the pool.
+
+    ``wait=False`` refuses at once when none is free. Nothing to hold with
+    an ``ob-flight-extension`` older than the slots.
+    """
+    try:
+        from ob_flight.db_router import connection_slot
+    except ImportError:
+        return contextlib.nullcontext()
+    return connection_slot(source, wait=wait)
 
 
 def _hint(exc: Exception) -> str:
@@ -994,32 +1016,33 @@ def _execute_duckdb(
     import duckdb
 
     database = _credentials(source).get("database", ":memory:")
-    conn = duckdb.connect(database=database, read_only=True)
-    try:
-        effective_tz: ZoneInfo | None
-        if override_db_tz and tz is not None:
-            effective_tz = tz
-        else:
-            # On a cursor of its own: the probe reads one row and leaves its
-            # result unfinished, which DuckDB 2.0 holds against the query
-            # that follows on the same connection.
-            probe = conn.cursor()
-            try:
-                db_tz = _detect_db_timezone(probe, "duckdb", _tz_key(source))
-            finally:
-                probe.close()
-            effective_tz = db_tz or tz
-        relation = conn.sql(sql)
-        if relation is None:
-            # DuckDB 1.x runs a statement without a result set at once and
-            # returns no relation; 2.0 returns one.
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            return ExecutionResult(
-                columns=[], raw_rows=[], row_count=0, execution_time_ms=round(elapsed_ms, 2)
-            )
-        return duckdb_execution_result(relation, t0, tz=effective_tz)
-    finally:
-        conn.close()
+    with _connection_slot(source):
+        conn = duckdb.connect(database=database, read_only=True)
+        try:
+            effective_tz: ZoneInfo | None
+            if override_db_tz and tz is not None:
+                effective_tz = tz
+            else:
+                # On a cursor of its own: the probe reads one row and leaves its
+                # result unfinished, which DuckDB 2.0 holds against the query
+                # that follows on the same connection.
+                probe = conn.cursor()
+                try:
+                    db_tz = _detect_db_timezone(probe, "duckdb", _tz_key(source))
+                finally:
+                    probe.close()
+                effective_tz = db_tz or tz
+            relation = conn.sql(sql)
+            if relation is None:
+                # DuckDB 1.x runs a statement without a result set at once and
+                # returns no relation; 2.0 returns one.
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                return ExecutionResult(
+                    columns=[], raw_rows=[], row_count=0, execution_time_ms=round(elapsed_ms, 2)
+                )
+            return duckdb_execution_result(relation, t0, tz=effective_tz)
+        finally:
+            conn.close()
 
 
 def _fetch_result(cursor: Any, t0: float, *, tz: ZoneInfo | None = None) -> ExecutionResult:
@@ -1091,11 +1114,12 @@ def explain_sql(sql: str, *, dialect: str, source: DataSource | None = None) -> 
             import duckdb
 
             database = _credentials(datasource).get("database", ":memory:")
-            conn = duckdb.connect(database=database, read_only=True)
-            try:
-                rows = conn.execute(explain_stmt).fetchall()
-            finally:
-                conn.close()
+            with _connection_slot(datasource):
+                conn = duckdb.connect(database=database, read_only=True)
+                try:
+                    rows = conn.execute(explain_stmt).fetchall()
+                finally:
+                    conn.close()
             return "\n".join("\t".join("" if c is None else str(c) for c in row) for row in rows)
 
         from ob_flight.db_router import get_connection
@@ -1113,34 +1137,35 @@ def explain_sql(sql: str, *, dialect: str, source: DataSource | None = None) -> 
         raise
     except KeyError as exc:
         raise ExecutionUnavailableError(str(exc)) from None
-    except _config_errors() as exc:
+    except _unavailable_errors() as exc:
         # Same contract as execute_sql: a credential / configuration problem
-        # is not an EXPLAIN failure, and reporting it as one sends the reader
-        # to the database instead of to their environment.
+        # or a busy source is not an EXPLAIN failure, and reporting it as one
+        # sends the reader to the database instead of to their environment.
         raise ExecutionUnavailableError(str(exc)) from None
     except Exception as exc:
         raise ExecutionError(f"EXPLAIN failed: {exc}") from exc
 
 
-_CONFIG_ERROR_TYPES: tuple[type[BaseException], ...] | None = None
+def _unavailable_errors() -> tuple[type[BaseException], ...]:
+    """Exception types that mean "cannot run now", not "the warehouse failed".
 
-
-def _config_errors() -> tuple[type[BaseException], ...]:
-    """Exception types that mean "misconfigured", not "the warehouse failed".
-
-    Resolved lazily and cached: ``ob_flight`` is an optional install, and the
-    core package must not import it at module scope. Returns an empty tuple
-    when it is absent, which makes the ``except`` clause a no-op.
+    A misconfigured source, or one whose connections all stayed in use for
+    the whole wait (``DATA_SOURCE_BUSY``). Looked up when an error is
+    caught: ``ob_flight`` is an optional install, and the core package must
+    not import it at module scope. Empty when it is absent, which makes the
+    ``except`` clause a no-op.
     """
-    global _CONFIG_ERROR_TYPES  # noqa: PLW0603
-    if _CONFIG_ERROR_TYPES is None:
-        try:
-            from ob_flight.db_router import MotherDuckTokenMissingError
+    found: list[type[BaseException]] = []
+    with contextlib.suppress(ImportError):
+        from ob_flight.db_router import MotherDuckTokenMissingError
 
-            _CONFIG_ERROR_TYPES = (MotherDuckTokenMissingError,)
-        except Exception:  # noqa: BLE001 — ob_flight not installed
-            _CONFIG_ERROR_TYPES = ()
-    return _CONFIG_ERROR_TYPES
+        found.append(MotherDuckTokenMissingError)
+    # Not in an ob-flight-extension older than the connection slots.
+    with contextlib.suppress(ImportError):
+        from ob_flight.db_router import DataSourceBusyError
+
+        found.append(DataSourceBusyError)
+    return tuple(found)
 
 
 def ensure_arrow() -> bool:
