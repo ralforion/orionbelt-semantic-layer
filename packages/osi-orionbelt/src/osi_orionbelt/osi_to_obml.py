@@ -577,6 +577,8 @@ class OSItoOBML:
                         do["owner"] = ext_data["obml_owner"]
                     if ext_data.get("obml_comment"):
                         do["comment"] = ext_data["obml_comment"]
+                    if ext_data.get("obml_data_source"):
+                        do["dataSource"] = ext_data["obml_data_source"]
                     if ext_data.get("obml_refresh"):
                         do["refresh"] = ext_data["obml_refresh"]
                     if ext_data.get("obml_countable") is not None:

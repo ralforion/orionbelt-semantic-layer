@@ -818,6 +818,7 @@ class ReferenceResolver:
                     description=raw_obj.get("description"),
                     comment=raw_obj.get("comment"),
                     owner=raw_obj.get("owner"),
+                    data_source=raw_obj.get("dataSource"),
                     countable=raw_obj.get("countable", True),
                     count_label=raw_obj.get("countLabel"),
                     synonyms=raw_obj.get("synonyms", []),

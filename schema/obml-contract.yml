@@ -176,6 +176,12 @@ classes:
         json_schema: true
         ontology_property: owner
         osi_roundtrip: true
+      data_source:
+        alias: dataSource
+        type: "str | None"
+        json_schema: true
+        ontology_property: dataSource
+        osi_roundtrip: true
       countable:
         alias: countable
         type: "bool"

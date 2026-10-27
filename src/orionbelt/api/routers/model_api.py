@@ -124,6 +124,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
                 description=obj.description,
                 comment=obj.comment,
                 owner=obj.owner,
+                data_source=obj.data_source,
                 synonyms=obj.synonyms,
                 external_concept_mappings=_concept_mappings(obj.external_concept_mappings),
             )

@@ -93,6 +93,12 @@ obsl:DataObjectShape a sh:NodeShape ;
         sh:message "Every data object must have exactly one obsl:schema."
     ] ;
     sh:property [
+        sh:path obsl:dataSource ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "data source"
+    ] ;
+    sh:property [
         sh:path obsl:countable ;
         sh:maxCount 1 ;
         sh:datatype xsd:boolean ;

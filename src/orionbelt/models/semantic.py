@@ -915,6 +915,16 @@ class DataObject(BaseModel):
     description: str | None = None
     comment: str | None = None
     owner: str | None = None
+    data_source: str | None = Field(
+        None,
+        alias="dataSource",
+        description=(
+            "Name of the configured data source (OBSL_DATABASES) this data object's "
+            "table is read from, overriding ``settings.defaultDataSource``. A name "
+            "only, never credentials. A query reaching data objects of more than one "
+            "data source is refused until federation ships."
+        ),
+    )
     countable: bool = Field(
         True,
         description=(
@@ -1025,6 +1035,13 @@ class DataObject(BaseModel):
                 stacklevel=2,
             )
         return self
+
+    @field_validator("data_source", mode="before")
+    @classmethod
+    def _validate_data_source(cls, v: str | None) -> str | None:
+        if v is not None and (not isinstance(v, str) or not v.strip()):
+            raise ValueError(f"dataSource must be a data source name, got {v!r}")
+        return v.strip() if isinstance(v, str) else v
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 

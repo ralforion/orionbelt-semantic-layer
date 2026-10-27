@@ -137,6 +137,7 @@ dataObjects:
 | `comment` | string | No | Documentation |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
+| `dataSource` | string | No | Name of the configured [data source](data-sources.md) the object's table is read from, overriding `settings.defaultDataSource`. Until federation ships, a query on a model whose objects are read from more than one source is refused (`FEDERATION_NOT_ENABLED`) |
 | `countable` | bool | No | Synthesize a row-count measure for this object (default `true`); see [Row-Count Measures](#row-count-measures-auto-synthesized) |
 | `countLabel` | string | No | Name/label for this object's synthesized count measure (overrides `countLabelPattern`) |
 | `externalConceptMappings` | list | No | Links to concepts in an external ontology; see [External Concept Mappings](concept-mappings.md) |

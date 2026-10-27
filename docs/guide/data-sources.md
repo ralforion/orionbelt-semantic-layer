@@ -98,6 +98,27 @@ configured, or one of another dialect, fails to load with
 `DATA_SOURCE_UNAVAILABLE`. For `MODEL_FILES` that is at startup, so a typo in a
 name stops the deployment instead of failing its first query.
 
+### A data object's own source
+
+A data object can name its source in `dataSource`, which wins over the model's
+`settings.defaultDataSource`:
+
+```yaml
+dataObjects:
+  Orders:
+    code: orders
+    dataSource: shop-eu
+```
+
+Until federation ships, all of a model's data objects must be read from one
+source: a query on a model whose objects name different sources, or where some
+name one and others none, is refused with `FEDERATION_NOT_ENABLED`, listing
+which objects read from which source. Such a model still loads, so it can be
+prepared ahead of federation. A data object read through `nestedIn` comes from
+its parent's table and takes the parent's source. Load-time checks cover these
+names too: where queries execute, an unknown one fails the load at
+`dataObjects.<name>.dataSource`.
+
 ### One model on several databases
 
 [Model load](../api/endpoints.md#post-v1sessionssession_idmodels) takes a
@@ -109,7 +130,8 @@ curl -X POST "$OBSL/v1/sessions/$SESSION/models" -H 'Content-Type: application/j
 ```
 
 The same YAML loaded with another source is another model, with its own
-`model_id` and its own result-cache entries. With `MODEL_FILES`, keep one file
+`model_id` and its own result-cache entries. The override replaces the model's
+default only: a data object naming its own `dataSource` keeps it. With `MODEL_FILES`, keep one file
 per source, each with its own `name:` and `defaultDataSource`, so BI tools pick
 `sales_eu` or `sales_us` by their database field.
 
