@@ -10,6 +10,8 @@ from orionbelt.api.schemas import (
     ExplainCflLegResponse,
     ExplainJoinResponse,
     ExplainPlanResponse,
+    FederatedLegResponse,
+    FederationResponse,
     JoinPathStep,
     QueryCompileResponse,
     QueryPlanResponse,
@@ -205,6 +207,7 @@ def build_compile_response(result: Any) -> QueryCompileResponse:
         sql_valid=result.sql_valid,
         explain=explain_resp,
         physical_tables=list(result.physical_tables),
+        federation=federation_response(result),
     )
 
 
@@ -325,4 +328,25 @@ def build_semantic_ql_compile_response(result: Any, query: Any) -> SemanticQLCom
         sql_valid=result.sql_valid,
         explain=_build_explain_response(result),
         physical_tables=list(result.physical_tables),
+        federation=federation_response(result),
+    )
+
+
+def federation_response(result: Any) -> FederationResponse | None:
+    """The legs of a federated compile result, each formatted in its dialect."""
+    plan = getattr(result, "federation", None)
+    if plan is None:
+        return None
+    return FederationResponse(
+        legs=[
+            FederatedLegResponse(
+                name=leg.name,
+                data_source=leg.data_source,
+                dialect=leg.dialect,
+                sql=format_sql(leg.sql, leg.dialect),
+                data_objects=list(leg.data_objects),
+            )
+            for leg in plan.legs
+        ],
+        combine_dialect=plan.combine_dialect,
     )

@@ -125,9 +125,13 @@ def named_source_dialect(model: SemanticModel | None) -> str | None:
     about that is :func:`resolve_datasource`'s to decide.
     """
     try:
-        name = model_datasource_name(model)
+        return source_dialect(model_datasource_name(model))
     except FederationNotEnabledError:
         return None
+
+
+def source_dialect(name: str | None) -> str | None:
+    """The dialect of the configured data source *name*; ``None`` if unknown here."""
     if name is None:
         return None
     try:

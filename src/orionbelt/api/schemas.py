@@ -75,6 +75,27 @@ class ExplainPlanResponse(BaseModel):
     cfl_legs: list[ExplainCflLegResponse] = Field(default_factory=list)
 
 
+class FederatedLegResponse(BaseModel):
+    """One data source's query in a federated query."""
+
+    name: str = Field(description="The relation the combine query reads it as (leg_0, ...)")
+    data_source: str | None = Field(description="The data source it runs on")
+    dialect: str
+    sql: str
+    data_objects: list[str] = Field(default_factory=list)
+
+
+class FederationResponse(BaseModel):
+    """How a query reading several data sources is split.
+
+    Each leg runs on its data source; ``sql`` of the response is the combine
+    query, which joins and re-aggregates the legs' results in DuckDB.
+    """
+
+    legs: list[FederatedLegResponse]
+    combine_dialect: str
+
+
 class QueryCompileResponse(BaseModel):
     """Response body for POST /query/sql."""
 
@@ -89,6 +110,13 @@ class QueryCompileResponse(BaseModel):
         description=(
             "Deduplicated DATABASE.SCHEMA.CODE strings the query touches. "
             "Drives freshness-cache TTL composition and heartbeat invalidation."
+        ),
+    )
+    federation: FederationResponse | None = Field(
+        default=None,
+        description=(
+            "Set when the query reads data objects of several data sources: the "
+            "query each runs, while `sql` is the DuckDB query combining them."
         ),
     )
 
@@ -215,6 +243,7 @@ class SemanticQLCompileResponse(BaseModel):
     sql_valid: bool = True
     explain: ExplainPlanResponse | None = None
     physical_tables: list[str] = Field(default_factory=list)
+    federation: FederationResponse | None = None
 
 
 class ValidateRequest(BaseModel):

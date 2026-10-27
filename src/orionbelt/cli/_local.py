@@ -212,6 +212,26 @@ def _run_compiled(
     )
 
 
+def federation_payload(result: CompilationResult, *, pretty: bool) -> dict[str, Any] | None:
+    """The legs of a federated compile result, as the REST response shows them."""
+    plan = result.federation
+    if plan is None:
+        return None
+    return {
+        "legs": [
+            {
+                "name": leg.name,
+                "data_source": leg.data_source,
+                "dialect": leg.dialect,
+                "sql": format_sql(leg.sql, leg.dialect) if pretty else leg.sql,
+                "data_objects": list(leg.data_objects),
+            }
+            for leg in plan.legs
+        ],
+        "combine_dialect": plan.combine_dialect,
+    }
+
+
 def compile_query(
     model_yaml: str, query: QueryObject, dialect: str | None, *, pretty: bool = True
 ) -> CompilationResult:
