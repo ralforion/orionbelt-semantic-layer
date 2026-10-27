@@ -165,7 +165,9 @@ search, the database `EXPLAIN` of `query/plan`, online validation, Arrow Flight
 SQL, PostgreSQL wire and the CLI.
 
 Online validation (`validate --online`, `POST .../validate?online=true`) probes
-the source the model names; an explicit `dialect` still chooses another.
+the source the model names. An explicit `dialect` cannot point the probe at
+another source: one that differs from the named source's dialect is reported as
+`DATASOURCE_UNAVAILABLE`, naming both dialects.
 
 A Flight query runs on the source it was planned with: the ticket is fetched by
 a later call, which need not name the model again.
@@ -218,10 +220,15 @@ docker run -p 8080:8080 -p 8815:8815 --env-file .env ralforion/orionbelt-semanti
 
 **Cloud Run:** pass the settings as environment variables and the secrets from
 Secret Manager. `OBSL_DATABASES` holds commas, so give `--set-env-vars` another
-delimiter (`^;^` makes `;` separate the variables):
+delimiter (`^;^` makes `;` separate the variables).
+
+Pick an image with the drivers your sources need. The published API image
+(`orionbelt-semantic-layer-api`) carries the DuckDB driver only; the Flight
+image (`orionbelt-semantic-layer-flight`) carries all eight, and so does an API
+image built with `docker build --build-arg OB_EXTRA=flight .`:
 
 ```bash
-gcloud run deploy orionbelt-api --image ralforion/orionbelt-semantic-layer-api \
+gcloud run deploy orionbelt-api --image ralforion/orionbelt-semantic-layer-flight \
   --set-env-vars "^;^QUERY_EXECUTE=true;OBSL_DATABASES=crm,shop-eu;DB_CRM_TYPE=postgres;DB_CRM_POSTGRES_HOST=10.0.0.5;DB_CRM_POSTGRES_DBNAME=crm;DB_SHOP_EU_TYPE=mysql;DB_SHOP_EU_MYSQL_HOST=10.0.0.6" \
   --set-secrets "DB_CRM_POSTGRES_PASSWORD=crm-postgres-password:latest,MYSQL_PASSWORD=shop-mysql-password:latest"
 ```
@@ -230,6 +237,9 @@ A changed source takes a restart (on Cloud Run, a new revision), like any
 other setting. `/health` never connects to a database, so a slow or
 unreachable warehouse cannot fail it.
 
-There is no per-request choice of source: a model is bound to its source when
-it is loaded, which keeps a client from pointing a governed model at another
-database.
+There is no per-request choice of source. A model that names one, in
+`settings.defaultDataSource` or with `datasource` at load, is bound to it: a
+request cannot point it at another database, and a request for another dialect
+is refused. A model that names none is not bound: each query runs on the source
+of its dialect, the model's `defaultDialect` or a dialect the request asks for.
+Name the source to bind a governed model.
