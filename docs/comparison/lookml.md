@@ -209,6 +209,7 @@ Looker is broader on enterprise legacy databases; OBSL is competitive on modern 
 | | OBSL | LookML / Looker |
 |---|---|---|
 | Natural SQL surface | **OrionBelt Semantic QL (OBSQL)** — `SELECT "dim", "measure" FROM <model>` (or no FROM); `MEASURE()` marker; aggregate-wrap matching; `WITH ROLLUP` / `WITH CUBE` first-class. Routes BI-tool SQL through the same compiler as the JSON API. | Looker has a "SQL Runner" that runs raw warehouse SQL bypassing LookML — useful for inspection but not governed by the semantic layer. The semantic surface itself is reached only through the Looker UI or Looker API. |
+| Dimension-value search | `POST /v1/values`, `obsl values`: exact, prefix and contains matches, then fuzzy for misspellings; min / max for a date or number; static and tenant filters apply; `valueSearch: false` opts a column out | ✅ filter suggestions: a `SELECT DISTINCT` on the field, matched against the typed term (API `model_fieldname_suggestions`, `term` evaluated as `%term%`); `full_suggestions: yes` applies the Explore's joins, `sql_always_where` and `access_filter`; `suggestable: no` turns a field off |
 | Catalog discovery from BI tools | `SHOW TABLES`, `DESCRIBE`, `information_schema.*`, `pg_catalog.*` answered from the model in-process — BI tools browse the catalog without warehouse round-trips | n/a (Looker is the BI tool — no catalog endpoint to expose) |
 | Governance | **Closed by design** — raw warehouse SQL and DDL/DML always reject (`RAW_SQL_REJECTED` / `WRITE_OPERATION_REJECTED`). No env flag to bypass. | SQL Runner is intentionally a hole; access grants gate the *Looker* surface, not raw SQL |
 | REST API | Yes — first-party FastAPI service | Yes — Looker API (rich, mature, but proprietary) |
@@ -328,6 +329,8 @@ A common hybrid: ship Looker for the human BI audience and run OBSL alongside it
 
 ## References
 
+- Looker filter suggestions: https://docs.cloud.google.com/looker/docs/changing-filter-suggestions
+- Looker API `model_fieldname_suggestions`: https://docs.cloud.google.com/looker/docs/reference/looker-api/latest/methods/Metadata/model_fieldname_suggestions
 - Looker lineage in Knowledge Catalog (Looker Google Cloud core, Preview): https://docs.cloud.google.com/looker/docs/looker-core-lineage
 - LookML `test` parameter (data tests): https://cloud.google.com/looker/docs/reference/param-model-test
 - LookML `tags` parameter: https://docs.cloud.google.com/looker/docs/reference/param-field-tags

@@ -222,6 +222,7 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 |---|---|---|
 | Query language | **OBSQL** (BI-style SQL: `SELECT "dim", "measure" FROM <model>` or no FROM) **+** native JSON `QueryObject` | **Malloy DSL** — language-defined query syntax (`run: source -> { group_by: x, aggregate: y }`) |
 | Natural SQL surface | **OrionBelt Semantic QL (OBSQL)** through the same Flight SQL endpoint BI tools use; aggregate-wrap matching against declared aggregation; `WITH ROLLUP` / `WITH CUBE` first-class | No — Malloy is its own language; BI tools speak SQL, not Malloy |
+| Dimension-value search | `POST /v1/values`, `obsl values`: exact, prefix and contains matches, then fuzzy for misspellings; min / max for a date or number; static and tenant filters apply; `valueSearch: false` opts a column out | ✅ the `index` query operator builds a search index of field / value pairs weighted by cardinality, optionally `sample:`d, searched with a regular expression on `fieldValue`; documented for filter suggestions and LLMs |
 | Catalog discovery from BI tools | `SHOW TABLES`, `DESCRIBE`, `information_schema.*`, `pg_catalog.*` answered from the model in-process | n/a (Malloy clients call the Malloy language) |
 | Governance | **Closed by design** — `RAW_SQL_REJECTED` / `WRITE_OPERATION_REJECTED`. No env flag to bypass. | n/a |
 | REST API | Yes — first-party FastAPI service in this repo | Yes — via the **Publisher** companion project (`malloydata/publisher`) |
@@ -328,6 +329,7 @@ It's plausible to use both: Malloy as the analyst-facing modeling/exploration la
 
 ## References
 
+- Malloy dimensional search indexes (`index`): https://docs.malloydata.dev/documentation/patterns/dim_index
 - Malloy documentation (no lineage feature documented): https://docs.malloydata.dev/documentation/
 - Malloy tags and annotations: https://docs.malloydata.dev/documentation/language/tags
 - OBSL `MetricType` enum: `src/orionbelt/models/semantic.py`

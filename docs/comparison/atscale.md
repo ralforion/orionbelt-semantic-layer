@@ -184,6 +184,7 @@ AtScale wins on legacy and enterprise (Synapse, Hive, Iceberg lakehouse). OBSL i
 
 | | OBSL | AtScale |
 |---|---|---|
+| Dimension-value search | `POST /v1/values`, `obsl values`: exact, prefix and contains matches, then fuzzy for misspellings; min / max for a date or number; static and tenant filters apply; `valueSearch: false` opts a column out | Excel add-in: member values match as you type in Filter by Values; no value search API found in the documentation |
 | REST API | Yes — first-party FastAPI service | Yes — REST API for model management and queries |
 | MCP | Yes — first-party server | Yes — first-party AtScale MCP Server (containerized service; exposes models, hierarchies, metrics, and enforces role-based access) |
 | GraphQL | No | No |
@@ -312,6 +313,7 @@ In a Microsoft-stack enterprise: AtScale serves the human BI audience (Excel, Po
 
 ## References
 
+- AtScale Excel add-in, what's new (Filter by Values search): https://documentation.atscale.com/container/connecting-to-atscale-from-business-intelligence-software/using-atscale-with-microsoft-excel-on-windows/excel-add-in/whats-new
 - AtScale Design Center Lineage panel: https://documentation.atscale.com/container/creating-and-sharing-cubes/navigating-the-cube-designer-canvas/lineage
 - AtScale Queries page (attributes and metrics a query used): https://documentation.atscale.com/container/managing-atscale/monitoring-queries/using-the-queries-tab
 - AtScale SML overview: https://documentation.atscale.com/container/creating-and-sharing-cubes/working-with-models-programmatically/sml
