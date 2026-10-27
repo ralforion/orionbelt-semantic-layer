@@ -190,6 +190,16 @@ obsl execute -q query.json --server https://your-host --api-key "$OBSL_API_KEY" 
 covers `-q` queries and local `--sql`; for remote `--sql`, put `LIMIT n` in the
 SQL (the CLI warns if you pass `--limit` there).
 
+A model runs on the data source its `settings.defaultDataSource` names, or on the
+sole one of its dialect. `--datasource <name>` picks another for a local run;
+`obsl datasources` lists the configured ones (name, dialect, description and the
+database each reads, never credentials), locally or with `--server`:
+
+```bash
+obsl datasources
+obsl execute model.yaml -q query.json --datasource shop-us
+```
+
 ## Values
 
 `values` lists the values a dimension holds, or searches them, so a filter

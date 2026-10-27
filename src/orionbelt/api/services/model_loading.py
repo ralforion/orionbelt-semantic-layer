@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from orionbelt.api.deps import get_db_vendor, is_query_execute_enabled
 from orionbelt.api.warnings_adapter import (
     error_info_to_warning,
     health_summary_to_response,
@@ -22,10 +23,12 @@ def _load_obml(store: ModelStore, yaml_str: str | None = None, **kwargs: Any) ->
     """Load OBML into the store, mapping store errors to HTTP responses.
 
     Shared by the plain OBML upload and the OSI-converted upload so both
-    surface capacity (429) and validation (422) failures identically.
+    surface capacity (429) and validation (422) failures identically. Where
+    queries execute, a data source the model names must be configured.
     """
+    execution_dialect = get_db_vendor() if is_query_execute_enabled() else None
     try:
-        return store.load_model(yaml_str, **kwargs)
+        return store.load_model(yaml_str, execution_dialect=execution_dialect, **kwargs)
     except ModelCapacityError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from None
     except ModelValidationError as exc:

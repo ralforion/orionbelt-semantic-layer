@@ -118,6 +118,12 @@ Load an OBML semantic model into a session. The model is parsed, validated, and 
 | `extends` | array | — | Inline YAML fragments to merge; see [Composing Models](../guide/model-format.md#composing-models-extends-and-inherits) for how each key merges. |
 | `inherits` | string | — | Parent model_id to inherit from. |
 | `dedup` | bool | `true` | When true, identical OBML content already loaded in this session reuses the existing `model_id`. Set `false` to force a fresh parse. |
+| `datasource` | string | — | Name of a configured data source ([`GET /v1/datasources`](#get-v1datasources)) to run this model's queries on, replacing its `settings.defaultDataSource`. The same YAML loaded with another data source is another model, with its own `model_id` and cache entries. |
+
+Where queries execute (`QUERY_EXECUTE=true` or Flight), a model that names a data source, in
+`settings.defaultDataSource` or with `datasource`, must name a configured one of the model's
+dialect, or the load fails with **422** and `DATA_SOURCE_UNAVAILABLE` at
+`settings.defaultDataSource`.
 
 **Response (201):**
 
@@ -1727,7 +1733,7 @@ Return public configuration for API clients (UI, MCP, etc.).
 | `timezone` | object \| null | Timezone resolution chain (single-model mode) |
 | `dialect` | object | SQL dialect resolution chain (always present) |
 
-**`model_settings`** mirrors the OBML `settings:` block in camelCase — `defaultNumericDataType`, `defaultTimezone`, `overrideDatabaseTimezone`, `defaultDialect`, `defaultLocale`, `queryTimezone`, `weekStart`, `expressionMode`. It reports the settings **in force**, not the keys the YAML wrote: a setting with a default (`overrideDatabaseTimezone`, `weekStart`, `expressionMode`) reports that default whether the model stated it or not, because a client asking which calendar or expression mode applies wants the answer, and an absent key cannot distinguish "unset" from "unsupported by this server". Settings with no default (`defaultTimezone`, `defaultDialect`, `defaultLocale`, `defaultNumericDataType`, `queryTimezone`) are absent when unset. A test asserts this mirror carries every field `ModelSettings` declares, with the same defaults, so a setting cannot be added to the model and go missing or disagree here.
+**`model_settings`** mirrors the OBML `settings:` block in camelCase — `defaultNumericDataType`, `defaultTimezone`, `overrideDatabaseTimezone`, `defaultDialect`, `defaultDataSource`, `defaultLocale`, `queryTimezone`, `weekStart`, `expressionMode`. It reports the settings **in force**, not the keys the YAML wrote: a setting with a default (`overrideDatabaseTimezone`, `weekStart`, `expressionMode`) reports that default whether the model stated it or not, because a client asking which calendar or expression mode applies wants the answer, and an absent key cannot distinguish "unset" from "unsupported by this server". Settings with no default (`defaultTimezone`, `defaultDialect`, `defaultDataSource`, `defaultLocale`, `defaultNumericDataType`, `queryTimezone`) are absent when unset. A test asserts this mirror carries every field `ModelSettings` declares, with the same defaults, so a setting cannot be added to the model and go missing or disagree here.
 
 **`timezone`** is the chain `db_executor.resolve_timezone()` walks at execute time. Always present so clients can show the wall clock even without a loaded model:
 
@@ -1739,6 +1745,44 @@ The endpoint never probes the database — `database` is `null` until a query ha
 **`dialect`** mirrors how the planner resolves the dialect when the request body omits `dialect`: `model.defaultDialect` → `DB_VENDOR` env → `postgres`. `effective` is what would be used for a dialect-less request.
 
 ---
+
+## Data Sources
+
+### `GET /v1/datasources`
+
+List the data sources a model can run on: the named sources of `OBSL_DATABASES` in their
+declared order, then each dialect configured without a name. A model picks one with
+`settings.defaultDataSource`; one that names none runs on the sole data source of its
+dialect, and fails to execute when several are configured.
+
+Each entry shows the name, dialect, description and `target`, the database, catalog, schema or
+project it reads. Never a host, user, password or token: what may be shown is listed per
+dialect, so a credential variable added later cannot appear here. A DuckDB source shows no
+target, as a MotherDuck database string can carry its token.
+
+**Response (200):**
+
+```json
+{
+  "datasources": [
+    {
+      "name": "shop-eu",
+      "dialect": "mysql",
+      "description": "EU web shop",
+      "target": {"database": "shop_eu"}
+    },
+    {
+      "name": "postgres",
+      "dialect": "postgres",
+      "description": null,
+      "target": {"dbname": "analytics", "schema": "public"}
+    }
+  ]
+}
+```
+
+**503** when the data sources in the environment are not usable as written (a name declared
+twice, or a missing or unknown `DB_<NAME>_TYPE`); the detail says which.
 
 ## Dialects
 

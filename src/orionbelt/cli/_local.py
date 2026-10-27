@@ -27,6 +27,7 @@ from orionbelt.dialect.base import (
 from orionbelt.dialect.registry import DialectRegistry, UnsupportedDialectError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
+from orionbelt.service.datasource_selection import describe_datasources, resolve_datasource
 from orionbelt.service.db_executor import (
     ExecutionResult,
     ensure_arrow,
@@ -58,6 +59,11 @@ class CliError(Exception):
 def list_dialects() -> list[str]:
     """Return the registered SQL dialect names."""
     return DialectRegistry.available()
+
+
+def list_datasources() -> list[dict[str, Any]]:
+    """The configured data sources, as much of each as may be shown."""
+    return describe_datasources()
 
 
 def resolve_dialect(model: SemanticModel, explicit: str | None) -> str:
@@ -111,7 +117,7 @@ def validate(
     return ModelStore().validate(model_yaml, datasource_dialect=probe_dialect)
 
 
-def _load(model_yaml: str) -> tuple[ModelStore, str, SemanticModel]:
+def _load(model_yaml: str, datasource: str | None = None) -> tuple[ModelStore, str, SemanticModel]:
     """Load a model into a fresh store, returning the store, id and model.
 
     The CLI is an external ingestion boundary, so it enforces the published
@@ -134,7 +140,7 @@ def _load(model_yaml: str) -> tuple[ModelStore, str, SemanticModel]:
         raise CliError(f"Model failed schema validation: {details}")
 
     store = ModelStore()
-    result = store.load_model(model_yaml, dedup=False)
+    result = store.load_model(model_yaml, dedup=False, datasource=datasource)
     return store, result.model_id, store.get_model(result.model_id)
 
 
@@ -194,7 +200,13 @@ def _run_compiled(
     # driver's Arrow path, and the result's columns get typed by inference over
     # the values rather than from the driver's schema.
     ensure_arrow()
-    return execute_sql(compiled.sql, dialect=dialect, tz=tz, override_db_tz=override)
+    return execute_sql(
+        compiled.sql,
+        dialect=dialect,
+        source=resolve_datasource(model, dialect),
+        tz=tz,
+        override_db_tz=override,
+    )
 
 
 def compile_query(
@@ -219,14 +231,16 @@ def execute_query(
     dialect: str | None,
     *,
     limit: int | None = None,
+    datasource: str | None = None,
 ) -> tuple[CompilationResult, ExecutionResult]:
     """Compile and execute a query against the configured warehouse.
 
     When the query carries no ``limit`` and ``limit`` is supplied, it is
     applied before compilation so a local ``execute`` doesn't pull an
-    unbounded result set by accident.
+    unbounded result set by accident. ``datasource`` replaces the model's
+    ``settings.defaultDataSource``.
     """
-    store, model_id, model = _load(model_yaml)
+    store, model_id, model = _load(model_yaml, datasource)
     return _execute_loaded(store, model_id, model, query, dialect, limit=limit)
 
 
@@ -236,9 +250,10 @@ def execute_obsql(
     dialect: str | None,
     *,
     limit: int | None = None,
+    datasource: str | None = None,
 ) -> tuple[CompilationResult, ExecutionResult]:
     """Translate an OBSQL string and execute it against the warehouse."""
-    store, model_id, model = _load(model_yaml)
+    store, model_id, model = _load(model_yaml, datasource)
     return _execute_loaded(store, model_id, model, _translate(model, sql), dialect, limit=limit)
 
 

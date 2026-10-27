@@ -85,6 +85,7 @@ from orionbelt.api.warnings_adapter import (
 from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.sql_translator import SQLTranslationError, translate_sql_to_query
 from orionbelt.parser.loader import pin_decimal_digits
+from orionbelt.service.datasource_selection import resolve_datasource
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
@@ -253,6 +254,7 @@ async def load_model(
         extends_yaml=body.extends,
         inherits_model_id=body.inherits,
         dedup=body.dedup,
+        datasource=body.datasource,
     )
     return ModelLoadResponse(**_model_load_fields(result))
 
@@ -576,7 +578,12 @@ async def plan_query(
 
     if body.include_database_explain:
         try:
-            raw = await asyncio.to_thread(explain_sql, result.sql, dialect=dialect)
+            raw = await asyncio.to_thread(
+                explain_sql,
+                result.sql,
+                dialect=dialect,
+                source=resolve_datasource(model, dialect),
+            )
             response.database_explain = DatabaseExplain(
                 dialect=dialect,
                 compiled_sql=result.sql,

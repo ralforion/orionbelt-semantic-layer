@@ -274,6 +274,10 @@ class RemoteClient:
             ),
         )
 
+    def datasources(self) -> list[dict[str, Any]]:
+        data = self._get("/datasources")
+        return list(data.get("datasources", []))
+
     def dialects(self) -> list[str]:
         data = self._get("/dialects")
         return [d["name"] for d in data.get("dialects", [])]

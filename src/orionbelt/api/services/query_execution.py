@@ -29,6 +29,7 @@ from orionbelt.api.warnings_adapter import semantic_error_to_warning
 from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.validator import format_sql
 from orionbelt.models.warnings import WarningCode
+from orionbelt.service.datasource_selection import resolve_datasource
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
@@ -518,6 +519,7 @@ async def _run_with_cache(
             compile_result=compile_result,
             model_id=model_id,
             dialect=dialect,
+            source=resolve_datasource(model, dialect),
             cache=cache,
             cache_config=cache_config,
             tz=tz,

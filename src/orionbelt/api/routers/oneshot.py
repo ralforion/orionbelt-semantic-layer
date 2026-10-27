@@ -48,6 +48,7 @@ from orionbelt.cache import (
     build_cache_key,
     build_datasource_key,
     compute_effective_ttl,
+    datasource_key_for,
     is_nondeterministic_sql,
 )
 from orionbelt.cache.protocol import Cache
@@ -63,6 +64,7 @@ from orionbelt.dialect.base import (
     UnsupportedNestedAccessError,
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
+from orionbelt.service.datasource_selection import resolve_datasource
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
@@ -286,6 +288,20 @@ async def _run_query(
             )
 
         model = store.get_model(model_id)
+        try:
+            source = resolve_datasource(model, dialect)
+        except ExecutionUnavailableError as exc:
+            return OneshotBatchQueryResult(
+                id=item.id,
+                status="error",
+                error=OneshotBatchQueryError(code="EXECUTION_UNAVAILABLE", message=str(exc)),
+            )
+        if source is not None:
+            # One set of settings for the cache key and the query.
+            source = source.snapshot()
+        datasource = (
+            datasource_key_for(source) if source is not None else build_datasource_key(dialect)
+        )
         model_default_tz: str | None = None
         override_db_tz = False
         if model.settings:
@@ -314,7 +330,7 @@ async def _run_query(
             )
         else:
             cache_key = build_cache_key(
-                datasource=build_datasource_key(dialect),
+                datasource=datasource,
                 model_id=model_id,
                 dialect=dialect,
                 sql=compile_result.sql,
@@ -397,6 +413,7 @@ async def _run_query(
                     execute_sql,
                     compile_result.sql,
                     dialect=dialect,
+                    source=source,
                     tz=tz,
                     override_db_tz=override_db_tz,
                 ),
@@ -460,7 +477,7 @@ async def _run_query(
                 key=cache_key,
                 envelope=envelope,
                 ttl_seconds=ttl_outcome.ttl.seconds,
-                datasource=build_datasource_key(dialect),
+                datasource=datasource,
                 model_id=model_id,
                 dialect=dialect,
                 physical_tables=physical_tables,

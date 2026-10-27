@@ -420,6 +420,14 @@ def execute(
             "Applies to -q queries and local --sql; not to remote --sql (put LIMIT in the SQL).",
         ),
     ] = None,
+    datasource: Annotated[
+        str | None,
+        typer.Option(
+            "--datasource",
+            help="Data source to run on (obsl datasources), replacing the model's "
+            "settings.defaultDataSource. Local execution only.",
+        ),
+    ] = None,
     fmt: FormatOpt = OutputFormat.table,
     server: ServerOpt = None,
     api_key: ApiKeyOpt = None,
@@ -441,6 +449,11 @@ def execute(
     from orionbelt.cli._local import CliError
 
     if server and not model:
+        if datasource is not None:
+            raise _fail(
+                "--datasource applies to local execution; a deployment's model runs on the "
+                "data source it was loaded with."
+            )
         if sql and limit is not None:
             _render.warn(
                 "--limit cannot be applied to --sql in remote mode; include LIMIT in the "
@@ -479,12 +492,12 @@ def execute(
         try:
             if sql:
                 compiled, executed = _local.execute_obsql(
-                    model_yaml, sql, dialect, limit=effective_limit
+                    model_yaml, sql, dialect, limit=effective_limit, datasource=datasource
                 )
             else:
                 assert q is not None  # guaranteed by _require_one_query_input
                 compiled, executed = _local.execute_query(
-                    model_yaml, q, dialect, limit=effective_limit
+                    model_yaml, q, dialect, limit=effective_limit, datasource=datasource
                 )
         except ModelValidationError as exc:
             raise _model_invalid(exc) from None
@@ -918,6 +931,46 @@ def convert(
         output = yaml.dump(result, sort_keys=False, allow_unicode=True, width=120)
     _emit_warnings(warnings)
     _render.raw(output)
+
+
+@app.command()
+def datasources(
+    fmt: FormatOpt = OutputFormat.table,
+    server: ServerOpt = None,
+    api_key: ApiKeyOpt = None,
+    client_cert: ClientCertOpt = None,
+    client_key: ClientKeyOpt = None,
+    ca_cert: CaCertOpt = None,
+) -> None:
+    """List the configured data sources a model can run on (never their secrets)."""
+    from orionbelt.cli._local import CliError
+
+    if server:
+        try:
+            listed = _remote_client(server, api_key, client_cert, client_key, ca_cert).datasources()
+        except CliError as exc:
+            raise _fail(str(exc)) from None
+    else:
+        from orionbelt.cli import _local
+        from orionbelt.service.db_executor import ExecutionUnavailableError
+
+        try:
+            listed = _local.list_datasources()
+        except ExecutionUnavailableError as exc:
+            raise _fail(str(exc)) from None
+    if fmt is OutputFormat.json:
+        _render.emit_json(listed)
+        return
+    rows = [
+        [
+            d.get("name", ""),
+            d.get("dialect", ""),
+            d.get("description") or "",
+            ", ".join(f"{k}={v}" for k, v in (d.get("target") or {}).items()),
+        ]
+        for d in listed
+    ]
+    _render.emit_table(["name", "dialect", "description", "target"], rows, fmt)
 
 
 @app.command()

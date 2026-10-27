@@ -59,6 +59,7 @@ from orionbelt.pgwire.types import (
     encode_value,
     oid_for_type_hint,
 )
+from orionbelt.service.datasource_selection import resolve_datasource
 from orionbelt.service.db_executor import (
     ColumnMeta,
     ExecutionError,
@@ -326,6 +327,7 @@ class SemanticRouter:
         logger.info("pgwire compiled SQL (dialect=%s):\n%s", dialect, compile_result.sql)
 
         try:
+            source = resolve_datasource(target.model, dialect)
             if self._cache is not None:
                 cached = await execute_query_with_cache(
                     store=target.store,
@@ -337,6 +339,7 @@ class SemanticRouter:
                     # database) it connected with -- and shares with REST too.
                     model_id=target.model_id,
                     dialect=dialect,
+                    source=source,
                     cache=self._cache,
                     cache_config=self._cache_config,
                     cacheable=getattr(self._cache, "backend_name", "noop") != "noop",
@@ -371,7 +374,7 @@ class SemanticRouter:
                 # surface, not of whether a cache happens to be attached, so it
                 # has to happen here too or a declared boolean comes back as
                 # OID 701 with values 1/0 on exactly this path.
-                result = execute_sql(compile_result.sql, dialect=dialect)
+                result = execute_sql(compile_result.sql, dialect=dialect, source=source)
                 result.reconcile_to_declared(declared_arrow_types(target.model, query))
         except ExecutionUnavailableError as exc:
             return protocol.build_error_response(

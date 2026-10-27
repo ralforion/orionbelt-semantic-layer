@@ -307,6 +307,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         dialect: str,
         context: flight.ServerCallContext | None,
         physical_tables: list[str],
+        source: DataSource | None = None,
     ) -> dict[str, Any] | None:
         return server_execution.build_cache_meta(
             self,
@@ -314,7 +315,12 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             dialect=dialect,
             context=context,
             physical_tables=physical_tables,
+            source=source,
         )
+
+    @staticmethod
+    def _source_for(model: Any, dialect: str) -> DataSource | None:
+        return server_execution.source_for(model, dialect)
 
     @staticmethod
     def _reject_write_operation(sql: str) -> None:
@@ -472,7 +478,9 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                     schema = (
                         schema_hint
                         if schema_hint is not None
-                        else self._probe_schema(prepared_sql, dialect)
+                        else self._probe_schema(
+                            prepared_sql, dialect, self._source_for(prep_model, dialect)
+                        )
                     )
                     # Stash the advertised schema so a cache hit in do_get can
                     # be cast back to it (an empty result's cached blob decodes
@@ -566,7 +574,9 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             schema = (
                 schema_hint
                 if schema_hint is not None
-                else self._probe_schema(prepared_sql, dialect)
+                else self._probe_schema(
+                    prepared_sql, dialect, self._source_for(prep_model, dialect)
+                )
             )
             # Advertised schema rides along so a cache hit can be cast to it.
             self._store_pending(ticket_id, ("sql", prepared_sql, dialect, cache_meta, schema))
@@ -791,7 +801,9 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 schema = (
                     schema_hint
                     if schema_hint is not None
-                    else self._probe_schema(prepared_sql, dialect)
+                    else self._probe_schema(
+                        prepared_sql, dialect, self._source_for(prep_model, dialect)
+                    )
                 )
                 handle = uuid.uuid4().bytes
                 handle_hex = handle.hex()

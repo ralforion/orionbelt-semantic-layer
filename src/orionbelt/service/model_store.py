@@ -180,6 +180,30 @@ class GraphArtifact:
 # ---------------------------------------------------------------------------
 
 
+def _datasource_errors(model: SemanticModel, execution_dialect: str) -> list[ErrorInfo]:
+    """Why the data source a model names cannot run its queries, if it cannot."""
+    from orionbelt.service.datasource_selection import (
+        model_datasource_name,
+        resolve_datasource,
+    )
+    from orionbelt.service.db_executor import ExecutionUnavailableError
+
+    if model_datasource_name(model) is None:
+        return []
+    dialect = (model.settings.default_dialect if model.settings else None) or execution_dialect
+    try:
+        resolve_datasource(model, dialect)
+    except ExecutionUnavailableError as exc:
+        return [
+            ErrorInfo(
+                code="DATA_SOURCE_UNAVAILABLE",
+                message=str(exc),
+                path="settings.defaultDataSource",
+            )
+        ]
+    return []
+
+
 class ModelValidationError(ValueError):
     """Raised when model loading fails validation.
 
@@ -333,14 +357,19 @@ class ModelStore:
         )
 
     @staticmethod
-    def _content_hash(yaml_str: str) -> str:
+    def _content_hash(yaml_str: str, datasource: str | None = None) -> str:
         """SHA-256 of the OBML body, with surrounding whitespace stripped.
 
         Stripping at the boundary makes a trailing newline difference
         invisible to dedup; everything else (key order, comments, internal
-        whitespace) still produces a different hash.
+        whitespace) still produces a different hash. A data source given at
+        load is part of the content: the same YAML on another source is
+        another model, with its own id and cache entries.
         """
-        return hashlib.sha256(yaml_str.strip().encode("utf-8")).hexdigest()
+        content = yaml_str.strip()
+        if datasource is not None:
+            content = f"{content}\0defaultDataSource={datasource}"
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     def _parse_and_validate(
         self,
@@ -349,11 +378,13 @@ class ModelStore:
         raw_dict: dict[str, object] | None = None,
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
+        datasource: str | None = None,
     ) -> tuple[SemanticModel, dict[str, object], list[ErrorInfo], list[ErrorInfo]]:
         """Parse YAML (or accept pre-parsed dict), resolve references, validate.
 
         Returns ``(model, merged_raw, errors, warnings)``.
-        Provide either ``yaml_str`` or ``raw_dict``, not both.
+        Provide either ``yaml_str`` or ``raw_dict``, not both. ``datasource``
+        replaces the model's ``settings.defaultDataSource``.
 
         ``merged_raw`` is the fully-merged raw dict the resolver consumed
         (after extends/inherits processing) — callers store it so future
@@ -426,6 +457,11 @@ class ModelStore:
                 )
             )
             return SemanticModel(), {}, errors, warnings
+
+        # 1c. A data source chosen at load replaces the one the model names.
+        settings = raw.get("settings")
+        if datasource is not None and (settings is None or isinstance(settings, dict)):
+            raw = {**raw, "settings": {**(settings or {}), "defaultDataSource": datasource}}
 
         # 2. Resolve references
         model, resolution = self._resolver.resolve(raw, source_map)
@@ -632,6 +668,8 @@ class ModelStore:
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
         dedup: bool = True,
+        datasource: str | None = None,
+        execution_dialect: str | None = None,
     ) -> LoadResult:
         """Parse, validate, and store a model.  Returns id + summary.
 
@@ -646,6 +684,12 @@ class ModelStore:
         ``inherits_model_id`` is supplied the load always runs fresh, since
         the effective content depends on inputs not captured by the YAML
         bytes alone.
+
+        ``datasource`` names the data source the model's queries run on,
+        replacing its ``settings.defaultDataSource``. ``execution_dialect``,
+        given where queries execute, is the dialect of a model that sets no
+        ``defaultDialect``; a data source the model names must then be
+        configured, and of the model's dialect, or the load fails.
         """
         # Dedup is meaningful only for a stand-alone YAML body. The other
         # input shapes either skip the YAML stage (raw_dict) or fold in
@@ -659,7 +703,7 @@ class ModelStore:
         )
         content_hash: str | None = None
         if dedup_eligible:
-            content_hash = self._content_hash(yaml_str or "")
+            content_hash = self._content_hash(yaml_str or "", datasource)
             with self._lock:
                 existing_id = self._content_hash_index.get(content_hash)
                 if existing_id is not None and existing_id in self._models:
@@ -709,7 +753,10 @@ class ModelStore:
             raw_dict=raw_dict,
             extends_yaml=extends_yaml,
             inherits_model_id=inherits_model_id,
+            datasource=datasource,
         )
+        if not errors and execution_dialect is not None:
+            errors = _datasource_errors(model, execution_dialect)
         if errors:
             raise ModelValidationError(errors, warnings)
 
