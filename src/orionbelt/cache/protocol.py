@@ -18,7 +18,8 @@ class CachedResult:
     ``row_count`` are stored alongside the blob so a caller can rebuild the
     response envelope — and serve a raw-arrow hit verbatim — without decoding
     the payload. ``cached_at`` is when the entry was first written;
-    ``ttl_remaining_seconds`` is the time left before expiry on ``get``.
+    ``ttl_remaining_seconds`` is the time left before expiry on ``get``, and
+    ``expires_at`` the moment it expires, where the backend knows it.
     """
 
     payload: bytes
@@ -27,6 +28,7 @@ class CachedResult:
     physical_tables: list[str]
     row_count: int = 0
     columns: list[dict[str, Any]] | None = None
+    expires_at: datetime | None = None
 
 
 @dataclass
@@ -67,12 +69,15 @@ class Cache(Protocol):
         dialect: str,
         row_count: int,
         columns_json: str | None = None,
+        expires_by: datetime | None = None,
     ) -> None:
         """Store an entry, replacing any prior content for the same key.
 
         ``columns_json`` is the result's column schema (``[{name, type,
         format}]``) as a JSON string, stored alongside the payload so a hit can
-        rebuild the response without decoding the blob.
+        rebuild the response without decoding the blob. ``expires_by`` caps
+        the entry's expiry: a result computed from cached entries expires no
+        later than they do, and is not stored once that moment has passed.
         """
 
     async def delete(self, key: str) -> None:

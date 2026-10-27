@@ -20,6 +20,7 @@ import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from orionbelt.api.schemas import (
@@ -220,7 +221,7 @@ class CachedEntry:
     cached_at_iso: str
     columns: list[dict[str, Any]] | None
     row_count: int
-    ttl_remaining_seconds: int
+    expires_at: datetime | None
     data_table: Any | None = None
     payload_blob: bytes | None = None
 
@@ -250,7 +251,7 @@ async def try_cache_get(cache: Cache, key: str) -> CachedEntry | None:
         cached_at_iso=_cached_at_iso(result),
         columns=result.columns,
         row_count=result.row_count,
-        ttl_remaining_seconds=result.ttl_remaining_seconds,
+        expires_at=result.expires_at,
         data_table=table,
     )
 
@@ -274,7 +275,7 @@ async def try_cache_get_raw(cache: Cache, key: str) -> CachedEntry | None:
         cached_at_iso=_cached_at_iso(result),
         columns=result.columns,
         row_count=result.row_count,
-        ttl_remaining_seconds=result.ttl_remaining_seconds,
+        expires_at=result.expires_at,
         payload_blob=result.payload,
     )
 
@@ -298,6 +299,7 @@ async def try_cache_set(
     ttl_seconds: int,
     datasource: str,
     model_id: str,
+    expires_by: datetime | None = None,
 ) -> None:
     """Encode and store the row data + column schema. Failures are logged.
 
@@ -347,6 +349,7 @@ async def try_cache_set(
             dialect=dialect,
             row_count=row_count,
             columns_json=columns_json,
+            expires_by=expires_by,
         )
     except Exception:
         logger.debug("cache.set error", exc_info=True)
@@ -383,8 +386,8 @@ class CachedExecution:
     # hit frames the verbatim blob without decoding it.
     hit_columns: list[dict[str, Any]] | None = None
     row_count: int | None = None
-    # Seconds the hit's entry has left before it expires.
-    ttl_remaining_seconds: int | None = None
+    # When the hit's entry expires, where the backend knows it.
+    expires_at: datetime | None = None
     # Columns reconciliation could not cast to their declared type, as
     # ``(column, reason)``. Carried rather than recomputed because
     # reconciliation happens here - before the cache write - and is a no-op by
@@ -413,7 +416,7 @@ async def execute_query_with_cache(
     key_sql: str | None = None,
     run: Callable[[], Awaitable[ExecutionResult]] | None = None,
     check_rows: Callable[[int], None] | None = None,
-    max_ttl_seconds: Callable[[], int | None] | None = None,
+    expires_by: Callable[[], datetime | None] | None = None,
 ) -> CachedExecution:
     """Run a compiled query through the result cache, executing on a miss.
 
@@ -441,9 +444,10 @@ async def execute_query_with_cache(
     :func:`execute_federated_with_cache`). ``check_rows`` is called with the
     result's row count, on a hit and before a miss is stored, and may raise
     to refuse it: a result it refuses is never cached nor served.
-    ``max_ttl_seconds``, asked just before the result is stored, caps how long
-    it is cached: a result read from cached inputs expires no later than they
-    do, and one whose inputs expired while it was computed is not stored.
+    ``expires_by``, asked once the result is computed, is the moment the
+    cached result must expire by: a result read from cached inputs expires no
+    later than they do. The backend enforces it as it writes, so one whose
+    inputs expired while it was computed or encoded is not stored.
     """
     if source is not None:
         # One set of settings for the key and the query: the source's
@@ -503,7 +507,7 @@ async def execute_query_with_cache(
                     cached_at_iso=entry.cached_at_iso,
                     hit_columns=entry.columns,
                     row_count=entry.row_count,
-                    ttl_remaining_seconds=entry.ttl_remaining_seconds,
+                    expires_at=entry.expires_at,
                 )
 
     if run is not None:
@@ -546,12 +550,12 @@ async def execute_query_with_cache(
     # and ``timestamp[us]`` when Flight did.
     arrow_table = exec_result.arrow_table
 
-    ttl_seconds = ttl_outcome.ttl.seconds if ttl_outcome and ttl_outcome.ttl else None
-    if ttl_seconds is not None and max_ttl_seconds is not None:
-        cap = max_ttl_seconds()
-        if cap is not None:
-            ttl_seconds = min(ttl_seconds, cap)
-    if cacheable and cache_key is not None and ttl_seconds is not None and ttl_seconds > 0:
+    if (
+        cacheable
+        and cache_key is not None
+        and ttl_outcome is not None
+        and ttl_outcome.ttl is not None
+    ):
         await try_cache_set(
             cache=cache,
             key=cache_key,
@@ -562,9 +566,10 @@ async def execute_query_with_cache(
             dialect=dialect,
             physical_tables=compile_result.physical_tables,
             row_count=exec_result.row_count,
-            ttl_seconds=ttl_seconds,
+            ttl_seconds=ttl_outcome.ttl.seconds,
             datasource=ds,
             model_id=model_id,
+            expires_by=expires_by() if expires_by is not None else None,
         )
 
     return CachedExecution(
@@ -668,15 +673,9 @@ async def execute_federated_with_cache(
         ]
     )
 
-    # When each leg served from the cache expires (``time.monotonic()``): the
-    # result expires with the first of them.
-    leg_deadlines: list[float] = []
-
-    def time_left_on_legs() -> int | None:
-        """Whole seconds until the first cached leg expires, as the result is stored."""
-        if not leg_deadlines:
-            return None
-        return max(0, int(min(leg_deadlines) - time.monotonic()))
+    # When each leg served from the cache expires, as its backend recorded
+    # it: the result expires with the first of them.
+    leg_expiries: list[datetime] = []
 
     async def run_legs() -> ExecutionResult:
         limits = federation.federation_limits()
@@ -718,8 +717,8 @@ async def execute_federated_with_cache(
                         f"{federation.leg_label(leg)} failed: {exc}"
                     ) from exc
                 if ran.cached:
-                    if ran.ttl_remaining_seconds is not None:
-                        leg_deadlines.append(time.monotonic() + ran.ttl_remaining_seconds)
+                    if ran.expires_at is not None:
+                        leg_expiries.append(ran.expires_at)
                     return federation.normalize_leg(leg, ran.data_table)
                 assert ran.exec_result is not None
                 return federation.leg_table(leg, ran.exec_result)
@@ -764,7 +763,7 @@ async def execute_federated_with_cache(
         query=query,
         key_sql=key_sql,
         run=run_legs,
-        max_ttl_seconds=time_left_on_legs,
+        expires_by=lambda: min(leg_expiries, default=None),
     )
 
 

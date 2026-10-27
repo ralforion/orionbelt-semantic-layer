@@ -380,10 +380,17 @@ class TestCachedLegs:
             clock["now"] = start + timedelta(seconds=301)
             assert not (await run(reordered)).cached
 
-    async def test_a_result_whose_legs_expire_while_it_combines_is_not_cached(
-        self, sources: dict[str, str], tmp_path: Any
+    @pytest.mark.parametrize(
+        ("step", "target"),
+        [
+            ("reading the cached legs", "orionbelt.cache.file._read_bytes"),
+            ("combining", "orionbelt.service.federated_executor.combine"),
+            ("encoding the result", "orionbelt.api.query_cache.encode_table"),
+        ],
+    )
+    async def test_a_result_whose_legs_expire_while_it_is_made_is_not_cached(
+        self, sources: dict[str, str], tmp_path: Any, step: str, target: str
     ) -> None:
-        import time
         from datetime import UTC, datetime, timedelta
 
         from orionbelt.api.query_cache import execute_federated_with_cache
@@ -396,15 +403,13 @@ class TestCachedLegs:
             def now(cls, tz: Any = None) -> Any:
                 return clock["now"]
 
-        def monotonic() -> float:
-            return (clock["now"] - start).total_seconds()
+        module, _, name = target.rpartition(".")
+        original = getattr(__import__(module, fromlist=[name]), name)
 
-        combine = federation.combine
-
-        def slow_combine(*args: Any) -> Any:
-            # Two seconds pass while the legs combine.
-            clock["now"] += timedelta(seconds=2)
-            return combine(*args)
+        def slow(*args: Any) -> Any:
+            # Six seconds pass in this step.
+            clock["now"] += timedelta(seconds=6)
+            return original(*args)
 
         store, model_id, (compiled, reordered) = compiled_federated(
             REVENUE_BY_REGION,
@@ -430,16 +435,13 @@ class TestCachedLegs:
                 cache_config=config,
             )
 
-        with (
-            patch("orionbelt.cache.file.datetime", Clock),
-            patch("orionbelt.api.query_cache.time", wraps=time) as fake_time,
-        ):
-            fake_time.monotonic.side_effect = monotonic
+        with patch("orionbelt.cache.file.datetime", Clock):
             await run(compiled)
-            clock["now"] = start + timedelta(seconds=299)
-            with patch.object(federation, "combine", slow_combine):
+            clock["now"] = start + timedelta(seconds=295)
+            with patch(target, slow):
                 assert not (await run(reordered)).cached
-            # The legs expired at 300 s, while the result was combined.
+            # The legs expired at 300 s, while the result was being made.
+            assert clock["now"] > start + timedelta(seconds=300), step
             assert not (await run(reordered)).cached
 
 
