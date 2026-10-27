@@ -302,6 +302,27 @@ class DialectListResponse(BaseModel):
     dialects: list[DialectInfo] = Field(default_factory=list)
 
 
+class DataSourceInfo(BaseModel):
+    """A configured data source, without anything secret."""
+
+    name: str = Field(description="What models and requests call it (settings.defaultDataSource).")
+    dialect: str
+    description: str | None = Field(default=None, description="What it holds.")
+    target: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The database, catalog, schema or project it reads. Never a host, user, "
+            "password or token."
+        ),
+    )
+
+
+class DataSourceListResponse(BaseModel):
+    """Response for GET /datasources."""
+
+    datasources: list[DataSourceInfo] = Field(default_factory=list)
+
+
 class HealthResponse(BaseModel):
     """Health check response."""
 
@@ -459,6 +480,11 @@ class ModelSettingsInfo(BaseModel):
         default=None,
         alias="defaultDialect",
         description="SQL dialect used when callers omit `dialect` on query requests",
+    )
+    default_data_source: str | None = Field(
+        default=None,
+        alias="defaultDataSource",
+        description="Configured data source (GET /v1/datasources) the model's queries run on",
     )
     default_locale: str | None = Field(
         default=None,
@@ -685,6 +711,15 @@ class ModelLoadRequest(BaseModel):
             "When True (default), identical OBML content already loaded in this session "
             "reuses the existing model_id (response.model_load == 'reused'). "
             "When False, always loads fresh."
+        ),
+    )
+    datasource: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Name of a configured data source (GET /v1/datasources) to run this "
+            "model's queries on, replacing its settings.defaultDataSource. The "
+            "same YAML loaded with another data source is another model."
         ),
     )
 

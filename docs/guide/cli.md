@@ -139,7 +139,8 @@ actually query:
 ```
 
 `-d/--dialect` picks which configured datasource to probe. Note that it defaults
-to `DB_VENDOR` rather than to the model's `defaultDialect`, unlike the `--dialect`
+to the dialect of the data source the model names (`defaultDataSource`), then to
+`DB_VENDOR`, rather than to the model's `defaultDialect`, unlike the `--dialect`
 on `compile` and `execute`: here it selects a *connection to open*, and the model's
 declared dialect says what SQL to generate, not what server is reachable.
 
@@ -189,6 +190,16 @@ obsl execute -q query.json --server https://your-host --api-key "$OBSL_API_KEY" 
 `--limit` (default 1000) applies when the query carries no limit of its own. It
 covers `-q` queries and local `--sql`; for remote `--sql`, put `LIMIT n` in the
 SQL (the CLI warns if you pass `--limit` there).
+
+A model runs on the data source its `settings.defaultDataSource` names, or on the
+sole one of its dialect. `--datasource <name>` picks another for a local run;
+`obsl datasources` lists the configured ones (name, dialect, description and the
+database each reads, never credentials), locally or with `--server`:
+
+```bash
+obsl datasources
+obsl execute model.yaml -q query.json --datasource shop-us
+```
 
 ## Values
 

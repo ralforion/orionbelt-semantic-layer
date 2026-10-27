@@ -752,7 +752,9 @@ class TestPgwireReconcilesWithoutACache:
 
         root = pathlib.Path(__file__).resolve().parents[2] / "src" / "orionbelt"
         source = (root / "pgwire" / "router.py").read_text()
-        after_else = source.split("result = execute_sql(compile_result.sql, dialect=dialect)")[1]
+        after_else = source.split(
+            "result = execute_sql(compile_result.sql, dialect=dialect, source=source)"
+        )[1]
         assert "reconcile_to_declared" in after_else[:400], "the no-cache path must reconcile too"
 
     def test_both_branches_use_the_same_declared_types(self) -> None:

@@ -1868,6 +1868,11 @@
             "snowflake"
           ]
         },
+        "defaultDataSource": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the configured data source (OBSL_DATABASES) the model's queries run on. A name only, never credentials: the server's environment says where that source is and how to connect. Unset, a query runs on the sole data source of its dialect."
+        },
         "expressionMode": {
           "type": "string",
           "enum": [

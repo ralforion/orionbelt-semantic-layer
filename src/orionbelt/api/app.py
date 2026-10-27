@@ -41,6 +41,7 @@ from orionbelt.api.routers import (
     cache_stats,
     composables,
     convert,
+    datasources,
     dialects,
     graph,
     heartbeat,
@@ -257,7 +258,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # already failed startup by this point.
     for name, yaml_str in named_preloads:
         store = mgr.get_or_create_named(name)
-        store.load_model(yaml_str)
+        # Where queries execute, a data source the model names must exist.
+        store.load_model(
+            yaml_str,
+            execution_dialect=settings.db_vendor if query_execute_enabled else None,
+        )
         logger.info("Loaded model '%s' into protected session", name)
     if named_preloads:
         logger.info(
@@ -692,6 +697,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(shortcuts.router, tags=["model-discovery"])
     v1.include_router(convert.router, prefix="/convert", tags=["convert"])
     v1.include_router(dialects.router, tags=["dialects"])
+    v1.include_router(datasources.router, tags=["datasources"])
     v1.include_router(oneshot.router, prefix="/oneshot", tags=["oneshot"])
     v1.include_router(reference.router, tags=["reference"])
     v1.include_router(models_router.router, tags=["models"])

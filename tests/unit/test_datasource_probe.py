@@ -88,7 +88,7 @@ class FakeExecutor:
         self.outcomes = list(outcomes)
         self.sql: list[str] = []
 
-    def __call__(self, sql: str, *, dialect: str) -> Any:
+    def __call__(self, sql: str, *, dialect: str, source: Any = None) -> Any:
         self.sql.append(sql)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):

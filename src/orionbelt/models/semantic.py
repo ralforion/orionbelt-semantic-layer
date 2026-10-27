@@ -1810,6 +1810,16 @@ class ModelSettings(BaseModel):
     default_timezone: str | None = Field(None, alias="defaultTimezone")
     override_database_timezone: bool = Field(False, alias="overrideDatabaseTimezone")
     default_dialect: str | None = Field(None, alias="defaultDialect")
+    default_data_source: str | None = Field(
+        None,
+        alias="defaultDataSource",
+        description=(
+            "Name of the configured data source (OBSL_DATABASES) the model's "
+            "queries run on. A name only, never credentials: the server's "
+            "environment says where that source is and how to connect. Unset, "
+            "a query runs on the sole data source of its dialect."
+        ),
+    )
     expression_mode: ExpressionMode = Field(
         ExpressionMode.PERMISSIVE,
         alias="expressionMode",
@@ -1898,6 +1908,13 @@ class ModelSettings(BaseModel):
         if v not in registered:
             raise ValueError(f"defaultDialect must be one of: {', '.join(registered)} — got '{v}'")
         return v
+
+    @field_validator("default_data_source", mode="before")
+    @classmethod
+    def _validate_default_data_source(cls, v: str | None) -> str | None:
+        if v is not None and (not isinstance(v, str) or not v.strip()):
+            raise ValueError(f"defaultDataSource must be a data source name, got {v!r}")
+        return v.strip() if isinstance(v, str) else v
 
     @field_validator("default_locale", mode="before")
     @classmethod

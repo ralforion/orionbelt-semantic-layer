@@ -40,6 +40,8 @@ from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import DataType
 
 if TYPE_CHECKING:
+    from ob_flight.datasources import DataSource
+
     from orionbelt.models.semantic import DataObject, DataObjectColumn, SemanticModel
 
 logger = logging.getLogger(__name__)
@@ -384,7 +386,7 @@ def _column_findings(
 
 
 def _probe_object(
-    dialect: Any, dialect_name: str, obj_name: str, obj: DataObject
+    dialect: Any, dialect_name: str, obj_name: str, obj: DataObject, source: DataSource | None
 ) -> list[SemanticError]:
     """Probe one data object. Raises ``ExecutionUnavailableError`` to the caller."""
     from orionbelt.service.db_executor import ExecutionError, execute_sql
@@ -396,13 +398,15 @@ def _probe_object(
         # question - a data object whose columns are all computed still has
         # to come FROM somewhere.
         try:
-            execute_sql(_select_star(dialect, obj), dialect=dialect_name)
+            execute_sql(_select_star(dialect, obj), dialect=dialect_name, source=source)
         except ExecutionError as exc:
             return [_table_missing(obj_name, obj, str(exc))]
         return []
 
     try:
-        result = execute_sql(_select_columns(dialect, obj, columns), dialect=dialect_name)
+        result = execute_sql(
+            _select_columns(dialect, obj, columns), dialect=dialect_name, source=source
+        )
     except ExecutionError as exc:
         projection_error = str(exc)
     else:
@@ -411,7 +415,7 @@ def _probe_object(
     # The projection failed. A second probe separates a missing table from a
     # missing column, and returns the column list needed to say which.
     try:
-        star = execute_sql(_select_star(dialect, obj), dialect=dialect_name)
+        star = execute_sql(_select_star(dialect, obj), dialect=dialect_name, source=source)
     except ExecutionError as exc:
         return [_table_missing(obj_name, obj, str(exc))]
 
@@ -422,6 +426,18 @@ def _probe_object(
         [col.name for col in star.columns],
         _families(star),
         projection_error,
+    )
+
+
+def _unavailable(dialect: str, exc: Exception) -> SemanticError:
+    return SemanticError(
+        code="DATASOURCE_UNAVAILABLE",
+        message=f"The datasource check could not run: {exc}",
+        hint=(
+            "Configure the vendor connection (DB_VENDOR and its credentials), "
+            "or validate without the datasource check."
+        ),
+        context={"dialect": dialect, "error": str(exc)},
     )
 
 
@@ -456,6 +472,7 @@ def probe_datasource(model: SemanticModel, *, dialect: str) -> list[SemanticErro
     codes against the fallback ``code`` table would report drift that is not
     there.
     """
+    from orionbelt.service.datasource_selection import resolve_datasource
     from orionbelt.service.db_executor import ExecutionUnavailableError, ensure_arrow
 
     ensure_arrow()
@@ -471,27 +488,22 @@ def probe_datasource(model: SemanticModel, *, dialect: str) -> list[SemanticErro
             )
         ]
 
+    try:
+        source = resolve_datasource(model, dialect)
+    except ExecutionUnavailableError as exc:
+        return [_unavailable(dialect, exc)]
+
     findings: list[SemanticError] = []
     for obj_name, obj in model.data_objects.items():
         if obj.nested_in is not None:
             continue
         try:
-            findings.extend(_probe_object(impl, dialect, obj_name, obj))
+            findings.extend(_probe_object(impl, dialect, obj_name, obj, source))
         except ExecutionUnavailableError as exc:
             # No connection, no driver, or no credentials. Every remaining
             # object would fail the same way, so stop rather than repeat it
             # once per data object, and say plainly that the check did not run.
-            findings.append(
-                SemanticError(
-                    code="DATASOURCE_UNAVAILABLE",
-                    message=f"The datasource check could not run: {exc}",
-                    hint=(
-                        "Configure the vendor connection (DB_VENDOR and its credentials), "
-                        "or validate without the datasource check."
-                    ),
-                    context={"dialect": dialect, "error": str(exc)},
-                )
-            )
+            findings.append(_unavailable(dialect, exc))
             break
         except Exception as exc:  # noqa: BLE001 - a probe must not fail validation
             # Anything else - a dialect that refuses to render the reference,

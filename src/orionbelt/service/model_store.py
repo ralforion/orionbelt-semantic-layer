@@ -180,6 +180,30 @@ class GraphArtifact:
 # ---------------------------------------------------------------------------
 
 
+def _named_source_errors(model: SemanticModel, execution_dialect: str) -> list[ErrorInfo]:
+    """Why the data source a model names cannot run its queries, if it cannot."""
+    from orionbelt.service.datasource_selection import (
+        model_datasource_name,
+        resolve_datasource,
+    )
+    from orionbelt.service.db_executor import ExecutionUnavailableError
+
+    if model_datasource_name(model) is None:
+        return []
+    dialect = (model.settings.default_dialect if model.settings else None) or execution_dialect
+    try:
+        resolve_datasource(model, dialect)
+    except ExecutionUnavailableError as exc:
+        return [
+            ErrorInfo(
+                code="DATA_SOURCE_UNAVAILABLE",
+                message=str(exc),
+                path="settings.defaultDataSource",
+            )
+        ]
+    return []
+
+
 class ModelValidationError(ValueError):
     """Raised when model loading fails validation.
 
@@ -333,14 +357,31 @@ class ModelStore:
         )
 
     @staticmethod
-    def _content_hash(yaml_str: str) -> str:
+    def _check_named_source(model: SemanticModel, execution_dialect: str | None) -> None:
+        """Refuse a model already compiled once whose data source cannot run it.
+
+        A reused or shared model skips parsing, but not this: it may have been
+        loaded where nothing executes, or before the environment changed.
+        """
+        if execution_dialect is not None:
+            errors = _named_source_errors(model, execution_dialect)
+            if errors:
+                raise ModelValidationError(errors, [])
+
+    @staticmethod
+    def _content_hash(yaml_str: str, datasource: str | None = None) -> str:
         """SHA-256 of the OBML body, with surrounding whitespace stripped.
 
         Stripping at the boundary makes a trailing newline difference
         invisible to dedup; everything else (key order, comments, internal
-        whitespace) still produces a different hash.
+        whitespace) still produces a different hash. A data source given at
+        load is part of the content: the same YAML on another source is
+        another model, with its own id and cache entries.
         """
-        return hashlib.sha256(yaml_str.strip().encode("utf-8")).hexdigest()
+        content = yaml_str.strip()
+        if datasource is not None:
+            content = f"{content}\0defaultDataSource={datasource}"
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     def _parse_and_validate(
         self,
@@ -349,11 +390,13 @@ class ModelStore:
         raw_dict: dict[str, object] | None = None,
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
+        datasource: str | None = None,
     ) -> tuple[SemanticModel, dict[str, object], list[ErrorInfo], list[ErrorInfo]]:
         """Parse YAML (or accept pre-parsed dict), resolve references, validate.
 
         Returns ``(model, merged_raw, errors, warnings)``.
-        Provide either ``yaml_str`` or ``raw_dict``, not both.
+        Provide either ``yaml_str`` or ``raw_dict``, not both. ``datasource``
+        replaces the model's ``settings.defaultDataSource``.
 
         ``merged_raw`` is the fully-merged raw dict the resolver consumed
         (after extends/inherits processing) — callers store it so future
@@ -426,6 +469,11 @@ class ModelStore:
                 )
             )
             return SemanticModel(), {}, errors, warnings
+
+        # 1c. A data source chosen at load replaces the one the model names.
+        settings = raw.get("settings")
+        if datasource is not None and (settings is None or isinstance(settings, dict)):
+            raw = {**raw, "settings": {**(settings or {}), "defaultDataSource": datasource}}
 
         # 2. Resolve references
         model, resolution = self._resolver.resolve(raw, source_map)
@@ -632,6 +680,8 @@ class ModelStore:
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
         dedup: bool = True,
+        datasource: str | None = None,
+        execution_dialect: str | None = None,
     ) -> LoadResult:
         """Parse, validate, and store a model.  Returns id + summary.
 
@@ -646,6 +696,12 @@ class ModelStore:
         ``inherits_model_id`` is supplied the load always runs fresh, since
         the effective content depends on inputs not captured by the YAML
         bytes alone.
+
+        ``datasource`` names the data source the model's queries run on,
+        replacing its ``settings.defaultDataSource``. ``execution_dialect``,
+        given where queries execute, is the dialect of a model that sets no
+        ``defaultDialect``; a data source the model names must then be
+        configured, and of the model's dialect, or the load fails.
         """
         # Dedup is meaningful only for a stand-alone YAML body. The other
         # input shapes either skip the YAML stage (raw_dict) or fold in
@@ -659,13 +715,14 @@ class ModelStore:
         )
         content_hash: str | None = None
         if dedup_eligible:
-            content_hash = self._content_hash(yaml_str or "")
+            content_hash = self._content_hash(yaml_str or "", datasource)
             with self._lock:
                 existing_id = self._content_hash_index.get(content_hash)
                 if existing_id is not None and existing_id in self._models:
                     summary = self._summaries.get(existing_id)
                     if summary is not None:
                         existing_model = self._models[existing_id]
+                        self._check_named_source(existing_model, execution_dialect)
                         existing_health = self._health_for(existing_model)
                         return LoadResult(
                             model_id=existing_id,
@@ -688,6 +745,11 @@ class ModelStore:
         if dedup_eligible and self._shared_cache is not None and content_hash is not None:
             shared = self._shared_cache.acquire(content_hash)
             if shared is not None:
+                try:
+                    self._check_named_source(shared.model, execution_dialect)
+                except ModelValidationError:
+                    self._shared_cache.release(shared.model_id)
+                    raise
                 self._adopt_shared(shared)
                 return LoadResult(
                     model_id=shared.model_id,
@@ -709,7 +771,10 @@ class ModelStore:
             raw_dict=raw_dict,
             extends_yaml=extends_yaml,
             inherits_model_id=inherits_model_id,
+            datasource=datasource,
         )
+        if not errors and execution_dialect is not None:
+            errors = _named_source_errors(model, execution_dialect)
         if errors:
             raise ModelValidationError(errors, warnings)
 
@@ -962,6 +1027,7 @@ class ModelStore:
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
         datasource_dialect: str | None = None,
+        follow_model_source: bool = False,
     ) -> ValidationSummary:
         """Validate a model without storing it.  Accepts YAML string or raw dict.
 
@@ -975,7 +1041,9 @@ class ModelStore:
         — a dropped table, a renamed column, a column whose type no longer
         matches ``abstractType`` — is reported as an error alongside the
         offline ones. Left as ``None``, validation stays entirely offline and
-        opens no connection.
+        opens no connection. With ``follow_model_source``, ``datasource_dialect``
+        is only a default: a model naming a configured data source is probed
+        with that source's dialect, the connection its queries open.
         """
         _model, raw, errors, warnings = self._parse_and_validate(
             yaml_str,
@@ -991,6 +1059,10 @@ class ModelStore:
         if not any(e.code in fatal for e in errors):
             errors = self._schema_errors(raw) + errors
         if datasource_dialect:
+            if follow_model_source:
+                from orionbelt.service.datasource_selection import named_source_dialect
+
+                datasource_dialect = named_source_dialect(_model) or datasource_dialect
             errors = errors + self._datasource_errors(_model, datasource_dialect)
         return ValidationSummary(
             valid=len(errors) == 0,

@@ -85,6 +85,8 @@ _EXCLUDED_FIELDS = frozenset(
         "overrideDatabaseTimezone",
         "default_dialect",
         "defaultDialect",
+        "default_data_source",
+        "defaultDataSource",
         "default_locale",
         "defaultLocale",
         "week_start",

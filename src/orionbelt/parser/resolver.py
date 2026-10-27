@@ -386,6 +386,7 @@ def _parse_settings(
     default_tz = raw.get("defaultTimezone")
     override_db_tz = raw.get("overrideDatabaseTimezone", False)
     default_dialect = raw.get("defaultDialect")
+    default_data_source = raw.get("defaultDataSource")
     default_locale = raw.get("defaultLocale")
     week_start = raw.get("weekStart")
     query_timezone = raw.get("queryTimezone")
@@ -400,6 +401,7 @@ def _parse_settings(
             "defaultTimezone",
             "overrideDatabaseTimezone",
             "defaultDialect",
+            "defaultDataSource",
             "defaultLocale",
             "weekStart",
             "queryTimezone",
@@ -412,6 +414,7 @@ def _parse_settings(
         "default_timezone": default_tz,
         "override_database_timezone": override_db_tz,
         "default_dialect": default_dialect,
+        "default_data_source": default_data_source,
         "default_locale": default_locale,
         "query_timezone": query_timezone,
     }

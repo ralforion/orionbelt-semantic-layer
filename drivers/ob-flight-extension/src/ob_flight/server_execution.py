@@ -328,10 +328,10 @@ def prepare_sql(
     """Resolve model, classify SQL, translate / compile / route.
 
     Returns ``(final_sql_or_token, dialect, model, schema_hint, mode,
-    cache_meta)``. ``cache_meta`` is a dict with ``key``, ``ttl``,
-    ``session_id``, ``model_id``, ``physical_tables`` when the semantic
-    query is cacheable; ``None`` otherwise (catalog mode, no cache
-    backend, OBML, or oversize-skip).
+    cache_meta)``. ``cache_meta`` is what execution needs from planning
+    (:func:`build_cache_meta`): the data source snapshot, and ``key``,
+    ``ttl``, ``model_id``, ``physical_tables`` when the semantic query is
+    cacheable; ``None`` in catalog mode, or with neither.
 
     * ``mode == _MODE_SEMANTIC`` — ``final_sql_or_token`` is compiled
       warehouse SQL; ``schema_hint`` is the result schema computed
@@ -382,6 +382,7 @@ def prepare_sql(
             dialect=dialect,
             context=context,
             physical_tables=list(getattr(compiled, "physical_tables", [])),
+            source=server._source_for(model, dialect),
         )
         # And the same declared schema. Without it the OBML path fell back to
         # probing the rows, so a model-declared ``timestamp`` streamed with
@@ -409,6 +410,7 @@ def prepare_sql(
             dialect=dialect,
             context=context,
             physical_tables=list(getattr(compiled, "physical_tables", [])),
+            source=server._source_for(model, dialect),
         )
         return sql, dialect, model, schema_hint, _MODE_SEMANTIC, cache_meta
 
@@ -427,6 +429,26 @@ def prepare_sql(
     )
 
 
+def source_for(model: Any, dialect: str) -> DataSource | None:
+    """The data source a model's query runs on, as REST and pgwire pick it.
+
+    See :func:`orionbelt.service.datasource_selection.resolve_datasource`;
+    ``None`` runs on the dialect's own variables. So does every query with an
+    orionbelt older than named data sources, which has no resolver: none of
+    its models can name a source.
+    """
+    try:
+        from orionbelt.service.datasource_selection import resolve_datasource
+    except ImportError:
+        return None
+    from orionbelt.service.db_executor import ExecutionUnavailableError
+
+    try:
+        return resolve_datasource(model, dialect)
+    except ExecutionUnavailableError as exc:
+        raise flight.FlightUnavailableError(str(exc)) from None
+
+
 def build_cache_meta(
     server: OBFlightServer,
     *,
@@ -436,25 +458,30 @@ def build_cache_meta(
     physical_tables: list[str],
     source: DataSource | None = None,
 ) -> dict[str, Any] | None:
-    """Compute cache key + TTL for a semantic Flight query.
+    """What a semantic Flight query carries from planning to execution.
 
-    The key is scoped to ``source``, else to the dialect's implicit source,
-    as REST and pgwire scope it. The returned meta carries the snapshot of
-    ``source`` the key was computed from (``"source"``), which
-    :func:`execute_sql` connects with: read live at execution instead, a
+    A snapshot of ``source`` (``"source"``), which :func:`execute_sql`
+    connects with, so a query runs on the source it was planned for: the
+    ticket is fetched later, by a call that need not name the model again.
+    When the query is cacheable, also its cache key and TTL (``"key"`` and
+    the rest), scoped to that snapshot, else to the dialect's implicit
+    source, as REST and pgwire scope it. Read live at execution instead, a
     source that moved to another database in between would store its new
     rows under a key another source shares.
 
-    Returns ``None`` when the cache backend is disabled or the TTL
-    resolver decides the query isn't cacheable (no refresh contracts
-    + ``no_cache`` unknown policy). The caller drops the cache_meta
-    and runs the warehouse query directly.
+    Without a cache plan (backend disabled, or the TTL resolver decides the
+    query isn't cacheable: no refresh contracts + ``no_cache`` unknown
+    policy) it carries the source alone, and ``None`` when there is no
+    source either.
     """
+    if source is not None:
+        source = source.snapshot()
+    uncached = {"source": source} if source is not None else None
     if server._cache is None or server._cache_config is None:
-        return None
+        return uncached
     backend = getattr(server._cache, "backend_name", "noop")
     if backend == "noop":
-        return None
+        return uncached
 
     # Resolve session_id from the selector header. Falls back to the
     # __default__ slot for legacy single-model deployments — matches
@@ -469,10 +496,10 @@ def build_cache_meta(
         store = server._session_manager.get_store(selector)
         models = store.list_models()
         if not models:
-            return None
+            return uncached
         model_id = models[0].model_id
     except Exception:
-        return None
+        return uncached
 
     # Delegate key + TTL derivation to the shared, layer-clean core so Flight,
     # REST, and pgwire key and TTL the same compiled query identically (issue
@@ -489,7 +516,6 @@ def build_cache_meta(
         # has no datasource_key_for, and a query without one does not need it.
         from orionbelt.cache import datasource_key_for
 
-        source = source.snapshot()
         datasource = datasource_key_for(source)
     plan = resolve_cache_plan(
         store=store,
@@ -503,7 +529,7 @@ def build_cache_meta(
     )
     ttl_result = plan.ttl_outcome.ttl
     if plan.cache_key is None or ttl_result is None:
-        return None
+        return uncached
     return {
         "key": plan.cache_key,
         "ttl": int(ttl_result.seconds),
@@ -718,15 +744,15 @@ def execute_sql(
 ) -> flight.RecordBatchStream:
     """Execute SQL on a data source and stream results.
 
-    It runs on the source snapshot in ``cache_meta`` when the cache planned
-    it (see :func:`build_cache_meta`), else on ``source``, else on the
-    dialect's implicit source.
+    It runs on the source snapshot in ``cache_meta`` (see
+    :func:`build_cache_meta`), else on ``source``, else on the dialect's
+    implicit source.
 
     Note: table name rewriting is already handled by ``_prepare_sql``
     during the ``get_flight_info`` phase — no need to rewrite here.
 
-    When ``cache_meta`` is set (semantic mode + cache backend
-    enabled), the function consults the freshness-driven result
+    When ``cache_meta`` carries a cache key (semantic mode + cache
+    backend enabled), the function consults the freshness-driven result
     cache first: on hit it decodes the cached Arrow payload and
     returns it directly; on miss it executes against the warehouse
     and writes the resulting ``pa.Table`` back to the cache under
@@ -743,7 +769,9 @@ def execute_sql(
         return server._query_virtual_table(vt)
 
     # Cache lookup — only when the prepare step gave us a key + ttl.
-    if cache_meta is not None and server._cache is not None:
+    cached = cache_meta is not None and "key" in cache_meta and server._cache is not None
+    if cached:
+        assert cache_meta is not None
         cached_table = server._cache_get_table(cache_meta["key"])
         if cached_table is not None:
             cached_table = align_cached_table(cached_table, result_schema)
@@ -779,7 +807,8 @@ def execute_sql(
         # Cache populate — write back after a successful warehouse run. Storing
         # the aligned table keeps the cached decimal type consistent with the
         # REST/pgwire writers and with a subsequent Flight cache hit.
-        if cache_meta is not None and server._cache is not None:
+        if cached:
+            assert cache_meta is not None
             server._cache_put_table(table, cache_meta)
 
         return flight.RecordBatchStream(table)
