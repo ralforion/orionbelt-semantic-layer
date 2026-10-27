@@ -86,6 +86,16 @@ class Settings(BaseSettings):
     query_default_limit: int = 1000  # max rows when query has no LIMIT
     db_pool_size: int = 5  # connection pool size per dialect
 
+    # Queries across data sources (service/federated_executor.py). Bounds per
+    # process: queries running at once (the rest wait in order, then 503),
+    # legs fetched at once, rows per leg, and each DuckDB combine step's size.
+    federation_max_concurrent: int = 4
+    federation_queue_timeout_seconds: float = 30.0
+    federation_leg_threads: int = 16
+    federation_max_leg_rows: int = 1_000_000
+    federation_combine_threads: int = 2
+    federation_combine_memory_limit: str = "512MB"
+
     # Default locale for /v1/query/execute?format_values=true (and TSV output).
     # Used when the request omits the ``locale`` query param. BCP-47 tag
     # (e.g. "de", "en-US"). Empty → en-style separators ("," / ".").

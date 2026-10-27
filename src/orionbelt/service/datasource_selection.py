@@ -3,8 +3,10 @@
 A model names its source in ``settings.defaultDataSource``, and a data object
 may name its own in ``dataSource``; the server's environment
 (``OBSL_DATABASES``, see ``ob_flight.datasources``) says where each source is.
-A model that names none runs on the sole source of its dialect. Until
-federation ships, a model's data objects must all be read from one source.
+A model that names none runs on the sole source of its dialect. A model whose
+data objects are read from several sources runs each query on the source it
+reads, or federated across them (``service/federated_executor.py``); only the
+REST API does that yet.
 Every surface that executes a model's query asks :func:`resolve_datasource`,
 so REST, Flight SQL, pgwire and the CLI send the same model to the same
 database.
@@ -106,9 +108,9 @@ def model_datasource_name(model: SemanticModel | None) -> str | None:
         )
         raise FederationNotEnabledError(
             f"[FEDERATION_NOT_ENABLED] {_model_label(model)} reads its data objects from "
-            f"more than one data source ({listed}). Queries across data sources need "
-            "federation, which is not available yet: give every data object the same "
-            "data source."
+            f"more than one data source ({listed}). Only the REST API's query execution "
+            "runs queries on such a model yet: use it, or give every data object the "
+            "same data source."
         )
     return next(iter(readers.values()), (default, []))[0]
 
@@ -119,7 +121,7 @@ def datasource_errors(model: SemanticModel, execution_dialect: str) -> list[Sema
     One error per offending path: a name that is not configured, or, for a model
     read from one source, a source of another dialect than the model's
     (``defaultDialect``, else ``execution_dialect``). A model read from
-    several sources loads; its queries are refused until federation ships.
+    several sources loads; each of its queries runs on the sources it reads.
     """
     named = {}
     if model.settings and model.settings.default_data_source:
@@ -243,7 +245,45 @@ def resolve_datasource(model: SemanticModel | None, dialect: str) -> DataSource 
         FederationNotEnabledError: The model's data objects are read from more
             than one source.
     """
-    name = model_datasource_name(model)
+    return resolve_named_source(model_datasource_name(model), dialect, model)
+
+
+def resolve_query_source(model: SemanticModel | None, result: Any) -> DataSource | None:
+    """The data source a compiled single-source query runs on.
+
+    A model read from several data sources runs each query on the source it
+    reads (``result.data_source``); any other model on its own source, as
+    :func:`resolve_datasource` finds it.
+
+    Raises:
+        ExecutionUnavailableError: As :func:`resolve_datasource`.
+    """
+    if reads_several_sources(model):
+        return resolve_named_source(result.data_source, result.dialect, model)
+    return resolve_datasource(model, result.dialect)
+
+
+def reads_several_sources(model: SemanticModel | None) -> bool:
+    """Whether a model's data objects are read from more than one data source."""
+    try:
+        model_datasource_name(model)
+    except FederationNotEnabledError:
+        return True
+    return False
+
+
+def resolve_named_source(
+    name: str | None, dialect: str, model: SemanticModel | None = None
+) -> DataSource | None:
+    """The configured data source *name*, for a query compiled for ``dialect``.
+
+    *name* as a model writes it; ``None`` for the sole named source of
+    ``dialect``, else none (the dialect's own variables). *model* only names
+    the model in errors.
+
+    Raises:
+        ExecutionUnavailableError: As :func:`resolve_datasource`.
+    """
     label = _model_label(model)
     if name is None:
         named = [s for s in configured_datasource_list() if s.named and s.dialect == dialect]

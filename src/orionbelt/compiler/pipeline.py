@@ -10,7 +10,12 @@ from orionbelt.ast.nodes import Select
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.fanout import detect_fanout
-from orionbelt.compiler.federation import FederatedPlan, is_federated, plan_federated
+from orionbelt.compiler.federation import (
+    FederatedPlan,
+    is_federated,
+    plan_federated,
+    query_source,
+)
 from orionbelt.compiler.grain_dedup import detect_dedup_measures, split_grain_components
 from orionbelt.compiler.graph import JoinStep, reuse_join_graphs
 from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
@@ -159,6 +164,10 @@ class CompilationResult:
     """For a query reading data objects of several data sources, the query
     each source runs and the DuckDB query combining them; ``sql`` is then the
     combine query. See ``compiler/federation.py``."""
+    data_source: str | None = None
+    """For a model read from several data sources, the one this query reads
+    when it reads only one; ``sql`` is then written in that source's dialect
+    where it is configured here."""
 
 
 def _collect_subquery_objects(items: list[QueryFilterItem]) -> set[str]:
@@ -342,6 +351,7 @@ class CompilationPipeline:
         # downstream takes from a data object's name (see ``models.roles``).
         # The explain maps an alias back to the declared join it stands for.
         roles = {alias: key for key, alias in role_object_names(model).items()}
+        declared = model
         model = expand_role_objects(model)
         # Create dialect first so resolution and planning share one
         # ``qualify_table`` — the EXISTS filter operator needs it during
@@ -369,6 +379,15 @@ class CompilationPipeline:
         # one query per source and a DuckDB query combining them.
         if is_federated(resolved, query, model):
             return self._compile_federated(query, model, dialect_name, resolved)
+        # A query on one source of a model reading several is that source's to
+        # run, so it is written in that source's dialect.
+        data_source = query_source(resolved, query, model)
+        if data_source is not None:
+            from orionbelt.service.datasource_selection import source_dialect
+
+            source_dialect_name = source_dialect(data_source)
+            if source_dialect_name is not None and source_dialect_name != dialect_name:
+                return self._compile(query, declared, source_dialect_name)
 
         # Phase 2: Planning (raw / star schema / CFL)
         use_cfl = resolved.requires_cfl or resolved.dimensions_exclude
@@ -469,6 +488,7 @@ class CompilationPipeline:
             warnings=warnings,
             sql_valid=sql_valid,
             explain=explain,
+            data_source=data_source,
         )
 
     def _compile_federated(
@@ -479,6 +499,7 @@ class CompilationPipeline:
         resolved: ResolvedQuery,
     ) -> CompilationResult:
         from orionbelt.service.datasource_selection import source_dialect
+        from orionbelt.service.federated_executor import federation_limits
 
         plan = plan_federated(
             query,
@@ -487,6 +508,7 @@ class CompilationPipeline:
             dialect_name=dialect_name,
             compile_leg=lambda q, m, d: self._compile(q, m, d).sql,
             source_dialect=source_dialect,
+            leg_row_limit=federation_limits().max_leg_rows,
         )
         validation_errors = validate_sql(plan.combine_sql, plan.combine_dialect)
         return CompilationResult(

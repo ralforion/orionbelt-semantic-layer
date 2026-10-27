@@ -117,13 +117,20 @@ A data object read through `nestedIn` comes from its parent's table and takes
 the parent's source. Load-time checks cover these names too: where queries
 execute, an unknown one fails the load at `dataObjects.<name>.dataSource`.
 
-### Queries across data sources (compile only)
+### Queries across data sources
 
-A query reading data objects of several sources is **compiled** into one query
-per source, a *leg*, and a DuckDB query combining them. It is **not executed
-yet**: running it is refused with `FEDERATION_NOT_ENABLED`, as is any query on a
-model whose objects name different sources. `query/sql` and `obsl compile` show
-the plan:
+A query reading data objects of several sources is compiled into one query per
+source, a *leg*, and a DuckDB query combining them. The REST API's
+`query/execute` runs it: each leg on its own source, all at once, then the
+combine query in an in-memory DuckDB inside OBSL. Flight SQL, pgwire, OBSQL and
+`obsl execute` do not run queries on a model read from several sources yet;
+they refuse them with `FEDERATION_NOT_ENABLED`. `query/sql` and `obsl compile`
+show the plan, and the execute response lists the legs in `federation`.
+
+A query on such a model that reads only one source is not split: it runs on
+that source, written in its dialect.
+
+How a query is split:
 
 - Groups of joined data objects on one source form islands. The island
   holding the measures is the fact island; every other island is joined to it
@@ -161,6 +168,24 @@ joins between sources other than many-to-one from the measures' side
 another source (`FEDERATION_UNSUPPORTED_FILTER`), and queries without measures,
 with `exists`, role-playing dimensions, `fill`, `asOf`, `usePathNames` or raw
 mode.
+
+#### Running a federated query
+
+| What | How |
+|---|---|
+| Caching | The result is cached like any query's. Its key covers the combine query and every leg's SQL with the data source it runs on, its TTL is the shortest of all the tables the legs read, and a change to any of them invalidates it; a hit runs nothing. A result computed from legs served from the cache expires no later than the first of them, so it is never older than its legs. Each leg is also cached on its own, keyed by its data source and SQL, so a query that changes only what the combine step does (a filter on another source, HAVING, ORDER BY, LIMIT) reuses the legs an earlier query fetched |
+| Legs | Run at once, each on its own source |
+| Types | Each leg's columns are made exact for DuckDB before combining: Postgres `numeric`, which arrives as text, becomes a decimal at the scale its values carry, and a decimal wider than 38 digits narrows when its values fit. A value no decimal holds (`NaN`, more than 38 digits) is refused with `FEDERATION_LEG_TYPE`, never rounded |
+| Errors | A leg that fails fails the query, and the error names the leg's data source and dialect (HTTP 502) |
+| Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 1,000,000). Each leg's SQL asks for one more row, so a larger leg is refused with `FEDERATION_LEG_TOO_LARGE` rather than combined in part |
+| Concurrency | At most `FEDERATION_MAX_CONCURRENT` federated queries run at once per process (default 4). The others wait in order of arrival for up to `FEDERATION_QUEUE_TIMEOUT_SECONDS` (default 30), then get `FEDERATION_BUSY` (HTTP 503). Legs run on a pool of `FEDERATION_LEG_THREADS` threads (default 16) |
+| Combine | A fresh in-memory DuckDB per query, with `FEDERATION_COMBINE_THREADS` threads (default 2) and `FEDERATION_COMBINE_MEMORY_LIMIT` (default `512MB`) instead of DuckDB's defaults of every core and 80% of RAM per instance |
+
+The legs read their sources at slightly different moments: there is no
+snapshot across databases. Naive timestamps are combined as each source
+returns them, so sources whose sessions run in different time zones can
+disagree; and strings compare by DuckDB's binary collation in the combine
+step, where MySQL's default compares case-insensitively.
 
 ### One model on several databases
 

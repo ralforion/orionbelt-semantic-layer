@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from orionbelt.cache.protocol import Cache, CachedResult, CacheStats
 
 
@@ -30,6 +32,7 @@ class NoopCache(Cache):
         dialect: str,
         row_count: int,
         columns_json: str | None = None,
+        expires_by: datetime | None = None,
     ) -> None:
         return None
 

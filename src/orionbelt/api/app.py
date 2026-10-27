@@ -63,6 +63,8 @@ from orionbelt.api.schemas import HealthResponse
 from orionbelt.cache.factory import build_cache
 from orionbelt.service import db_executor
 from orionbelt.service.compilation_cache import CompilationCache
+from orionbelt.service.federated_executor import FederationLimits
+from orionbelt.service.federated_executor import configure as configure_federation
 from orionbelt.service.session_manager import SessionManager
 from orionbelt.service.value_search import ValueSearchConfig
 from orionbelt.settings import Settings
@@ -251,6 +253,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # query/execute is available when explicitly enabled OR when Flight is enabled
     query_execute_enabled = settings.query_execute or settings.flight_enabled
+    configure_federation(
+        FederationLimits(
+            max_concurrent=settings.federation_max_concurrent,
+            queue_timeout_seconds=settings.federation_queue_timeout_seconds,
+            leg_threads=settings.federation_leg_threads,
+            max_leg_rows=settings.federation_max_leg_rows,
+            combine_threads=settings.federation_combine_threads,
+            combine_memory_limit=settings.federation_combine_memory_limit,
+        )
+    )
 
     # Each MODEL_FILES entry goes into its own protected named session.
     # JSON Schema validation already happened in ``_read_and_validate_model_file``

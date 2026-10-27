@@ -259,6 +259,7 @@ class FileCache(Cache):
             physical_tables=physical_tables,
             row_count=int(row_count) if row_count is not None else 0,
             columns=columns,
+            expires_at=expires_at,
         )
 
     async def set(
@@ -274,6 +275,7 @@ class FileCache(Cache):
         dialect: str,
         row_count: int,
         columns_json: str | None = None,
+        expires_by: datetime | None = None,
     ) -> None:
         if ttl_seconds <= 0:
             return
@@ -295,6 +297,11 @@ class FileCache(Cache):
         now = datetime.now(UTC)
         ttl = min(ttl_seconds, self._max_ttl_seconds)
         expires_at = now + timedelta(seconds=ttl)
+        if expires_by is not None:
+            if expires_by <= now:
+                self._unlink(file_path)
+                return
+            expires_at = min(expires_at, expires_by)
         size_bytes = len(payload)
 
         try:

@@ -14,9 +14,13 @@ the pgwire layer adapts it into an ``ExecutionResult`` for wire encoding.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
+from collections.abc import Awaitable, Callable
+from concurrent.futures import Executor
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from orionbelt.api.schemas import (
@@ -33,6 +37,7 @@ from orionbelt.compiler.type_resolver import governed_measure_data_type
 from orionbelt.compiler.validator import format_sql
 from orionbelt.service.db_executor import (
     ColumnMeta,
+    ExecutionError,
     ExecutionResult,
     ExecutionUnavailableError,
     coarse_hint_from_type_name,
@@ -43,6 +48,8 @@ from orionbelt.service.query_execution import resolve_cache_plan, resolve_effect
 if TYPE_CHECKING:
     # ob_flight is an optional extra: imported for the annotation only.
     from ob_flight.datasources import DataSource
+
+    from orionbelt.compiler.federation import FederatedLeg
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +221,7 @@ class CachedEntry:
     cached_at_iso: str
     columns: list[dict[str, Any]] | None
     row_count: int
+    expires_at: datetime | None
     data_table: Any | None = None
     payload_blob: bytes | None = None
 
@@ -243,6 +251,7 @@ async def try_cache_get(cache: Cache, key: str) -> CachedEntry | None:
         cached_at_iso=_cached_at_iso(result),
         columns=result.columns,
         row_count=result.row_count,
+        expires_at=result.expires_at,
         data_table=table,
     )
 
@@ -266,6 +275,7 @@ async def try_cache_get_raw(cache: Cache, key: str) -> CachedEntry | None:
         cached_at_iso=_cached_at_iso(result),
         columns=result.columns,
         row_count=result.row_count,
+        expires_at=result.expires_at,
         payload_blob=result.payload,
     )
 
@@ -289,6 +299,7 @@ async def try_cache_set(
     ttl_seconds: int,
     datasource: str,
     model_id: str,
+    expires_by: datetime | None = None,
 ) -> None:
     """Encode and store the row data + column schema. Failures are logged.
 
@@ -338,6 +349,7 @@ async def try_cache_set(
             dialect=dialect,
             row_count=row_count,
             columns_json=columns_json,
+            expires_by=expires_by,
         )
     except Exception:
         logger.debug("cache.set error", exc_info=True)
@@ -374,6 +386,8 @@ class CachedExecution:
     # hit frames the verbatim blob without decoding it.
     hit_columns: list[dict[str, Any]] | None = None
     row_count: int | None = None
+    # When the hit's entry expires, where the backend knows it.
+    expires_at: datetime | None = None
     # Columns reconciliation could not cast to their declared type, as
     # ``(column, reason)``. Carried rather than recomputed because
     # reconciliation happens here - before the cache write - and is a no-op by
@@ -398,6 +412,11 @@ async def execute_query_with_cache(
     decode_payload: bool = True,
     declared_types: dict[str, Any] | None = None,
     query: Any = None,
+    executor: Executor | None = None,
+    key_sql: str | None = None,
+    run: Callable[[], Awaitable[ExecutionResult]] | None = None,
+    check_rows: Callable[[int], None] | None = None,
+    expires_by: Callable[[], datetime | None] | None = None,
 ) -> CachedExecution:
     """Run a compiled query through the result cache, executing on a miss.
 
@@ -416,6 +435,19 @@ async def execute_query_with_cache(
     ``datasource`` if given, else to that source (see
     :func:`~orionbelt.cache.key.datasource_key_for`). Any session resolving
     to the same data source, model, dialect and compiled SQL shares entries.
+
+    The query runs on ``executor``, else on the event loop's default one.
+
+    ``key_sql`` is what the key is built from when the compiled SQL alone
+    does not identify the result, and ``run`` computes the result in place of
+    executing that SQL: a federated query uses both (see
+    :func:`execute_federated_with_cache`). ``check_rows`` is called with the
+    result's row count, on a hit and before a miss is stored, and may raise
+    to refuse it: a result it refuses is never cached nor served.
+    ``expires_by``, asked once the result is computed, is the moment the
+    cached result must expire by: a result read from cached inputs expires no
+    later than they do. The backend enforces it as it writes, so one whose
+    inputs expired while it was computed or encoded is not stored.
     """
     if source is not None:
         # One set of settings for the key and the query: the source's
@@ -435,7 +467,7 @@ async def execute_query_with_cache(
             store=store,
             model_id=model_id,
             dialect=dialect,
-            sql=compile_result.sql,
+            sql=key_sql if key_sql is not None else compile_result.sql,
             physical_tables=compile_result.physical_tables,
             cache=cache,
             cache_config=cache_config,
@@ -457,6 +489,12 @@ async def execute_query_with_cache(
                 else await try_cache_get_raw(cache, cache_key)
             )
             if entry is not None:
+                if check_rows is not None:
+                    check_rows(
+                        entry.data_table.num_rows
+                        if entry.data_table is not None
+                        else entry.row_count or 0
+                    )
                 return CachedExecution(
                     cached=True,
                     cache_key=cache_key,
@@ -469,16 +507,23 @@ async def execute_query_with_cache(
                     cached_at_iso=entry.cached_at_iso,
                     hit_columns=entry.columns,
                     row_count=entry.row_count,
+                    expires_at=entry.expires_at,
                 )
 
-    exec_result = await asyncio.to_thread(
-        execute_sql,
-        compile_result.sql,
-        dialect=dialect,
-        source=source,
-        tz=tz,
-        override_db_tz=override_db_tz,
-    )
+    if run is not None:
+        exec_result = await run()
+    else:
+        exec_result = await asyncio.get_running_loop().run_in_executor(
+            executor,
+            functools.partial(
+                execute_sql,
+                compile_result.sql,
+                dialect=dialect,
+                source=source,
+                tz=tz,
+                override_db_tz=override_db_tz,
+            ),
+        )
     # Reconcile to the declared types *first*. ``rows`` below materialises the
     # Arrow table and frees it, and reconciliation needs that table - so doing
     # this later is doing it never, and the cache would additionally store the
@@ -490,6 +535,8 @@ async def execute_query_with_cache(
     # clients: a declared boolean cast to Arrow ``bool`` reports the coarse
     # hint "string", and pgwire's OID moved 701 (FLOAT8) -> 25 (TEXT) without
     # anyone choosing it. A surface opts in by passing its declared types.
+    if check_rows is not None:
+        check_rows(exec_result.row_count)
     declared_skips = (
         exec_result.reconcile_to_declared(declared_types) if declared_types is not None else []
     )
@@ -522,6 +569,7 @@ async def execute_query_with_cache(
             ttl_seconds=ttl_outcome.ttl.seconds,
             datasource=ds,
             model_id=model_id,
+            expires_by=expires_by() if expires_by is not None else None,
         )
 
     return CachedExecution(
@@ -532,6 +580,190 @@ async def execute_query_with_cache(
         columns=columns,
         fetch_elapsed_ms=None,
         declared_skips=declared_skips,
+    )
+
+
+# --- federated execution ------------------------------------------------------
+
+
+# Admitted federated queries still running, held so a task whose caller was
+# cancelled is not garbage-collected before it ends and frees its slot.
+_admitted: set[asyncio.Future[Any]] = set()
+
+
+def _admitted_done(gate: Any, work: asyncio.Future[Any]) -> None:
+    """Free an admitted query's slot once its work has ended, however it ended."""
+    _admitted.discard(work)
+    gate.release()
+    if not work.cancelled():
+        # Retrieved so an error nobody waits for any more is not logged as
+        # never retrieved; the caller still waiting has it raised.
+        work.exception()
+
+
+@dataclass(frozen=True)
+class _LegQuery:
+    """A leg as :func:`execute_query_with_cache` reads a compiled query."""
+
+    sql: str
+    physical_tables: list[str]
+
+
+async def execute_federated_with_cache(
+    *,
+    store: Any,
+    model: Any,
+    compile_result: Any,
+    model_id: str,
+    cache: Cache,
+    cache_config: Any,
+    tz: Any = None,
+    override_db_tz: bool = False,
+    cacheable: bool = True,
+    decode_payload: bool = True,
+    declared_types: dict[str, Any] | None = None,
+    query: Any = None,
+) -> CachedExecution:
+    """Run a federated query through the result cache: legs at once, then the combine.
+
+    The result is cached like any query's. Its key covers the combine query
+    and every leg's SQL with the data source it runs on, since the combine
+    query alone (``... FROM leg_0 ...``) reads the same over any legs; its
+    freshness comes from every table the legs read, so it lasts as long as the
+    shortest-lived of them, and a change to any one invalidates it. A hit
+    reads nothing else and runs nothing. A result computed from cached legs
+    expires no later than the first of them, so it is never served after a
+    fresh read of its legs would have changed it.
+
+    On a miss the query waits for a federation slot (see
+    ``service/federated_executor.py`` for the bounds it runs within), then
+    each leg goes through the cache on its own, keyed by its source and SQL:
+    a query that changes only the combine step - a filter on another source,
+    HAVING, ORDER BY, LIMIT - still reuses the legs an earlier one fetched.
+
+    Raises:
+        ExecutionUnavailableError: No slot freed within the wait
+            (``FEDERATION_BUSY``), or a leg's data source cannot be used.
+        ExecutionError: A leg or the combine step failed; a leg's error names
+            its data source.
+    """
+    from orionbelt.service import federated_executor as federation
+    from orionbelt.service.datasource_selection import resolve_named_source
+
+    plan = compile_result.federation
+    sources: list[DataSource | None] = []
+    for leg in plan.legs:
+        try:
+            source = resolve_named_source(leg.data_source, leg.dialect, model)
+        except ExecutionUnavailableError as exc:
+            raise ExecutionUnavailableError(f"{federation.leg_label(leg)}: {exc}") from exc
+        # One set of settings for the key and the legs that run under it.
+        sources.append(source.snapshot() if source is not None else None)
+    leg_keys = [
+        datasource_key_for(source) if source is not None else build_datasource_key(leg.dialect)
+        for leg, source in zip(plan.legs, sources, strict=True)
+    ]
+    key_sql = "\n;\n".join(
+        [
+            plan.combine_sql,
+            *(
+                f"-- {leg.name} on {key}\n{leg.sql}"
+                for leg, key in zip(plan.legs, leg_keys, strict=True)
+            ),
+        ]
+    )
+
+    # When each leg served from the cache expires, as its backend recorded
+    # it: the result expires with the first of them.
+    leg_expiries: list[datetime] = []
+
+    async def run_legs() -> ExecutionResult:
+        limits = federation.federation_limits()
+        gate = federation.admission_gate()
+        ticket = gate.request()
+        try:
+            await asyncio.wait_for(asyncio.wrap_future(ticket), limits.queue_timeout_seconds)
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            gate.withdraw(ticket)
+            if isinstance(exc, TimeoutError):
+                raise federation.busy_error(limits) from None
+            raise
+        pool = federation.leg_executor()
+
+        async def run_admitted() -> ExecutionResult:
+            async def run_leg(leg: FederatedLeg, source: DataSource | None) -> Any:
+                try:
+                    ran = await execute_query_with_cache(
+                        store=store,
+                        model=model,
+                        compile_result=_LegQuery(leg.sql, list(leg.physical_tables)),
+                        model_id=model_id,
+                        dialect=leg.dialect,
+                        source=source,
+                        cache=cache,
+                        cache_config=cache_config,
+                        tz=tz,
+                        override_db_tz=override_db_tz,
+                        cacheable=cacheable,
+                        executor=pool,
+                        check_rows=functools.partial(federation.check_leg_rows, leg),
+                    )
+                except federation.FederatedLegError:
+                    raise
+                except ExecutionUnavailableError as exc:
+                    raise ExecutionUnavailableError(f"{federation.leg_label(leg)}: {exc}") from exc
+                except ExecutionError as exc:
+                    raise federation.FederatedLegError(
+                        f"{federation.leg_label(leg)} failed: {exc}"
+                    ) from exc
+                if ran.cached:
+                    if ran.expires_at is not None:
+                        leg_expiries.append(ran.expires_at)
+                    return federation.normalize_leg(leg, ran.data_table)
+                assert ran.exec_result is not None
+                return federation.leg_table(leg, ran.exec_result)
+
+            # Every leg runs to its end before an error is raised, so a failed
+            # query does not give up its slot while its other legs still hold
+            # connections.
+            outcomes = await asyncio.gather(
+                *(run_leg(leg, source) for leg, source in zip(plan.legs, sources, strict=True)),
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+            tables = {leg.name: table for leg, table in zip(plan.legs, outcomes, strict=True)}
+            return await asyncio.get_running_loop().run_in_executor(
+                pool, federation.combine, plan, tables, tz
+            )
+
+        # The work runs as a task of its own, and the slot is released when it
+        # ends rather than when the caller stops waiting: cancelling a request
+        # does not stop a leg or a combine already running in a thread, and
+        # their connections and memory stay held until they finish.
+        work = asyncio.ensure_future(run_admitted())
+        _admitted.add(work)
+        work.add_done_callback(functools.partial(_admitted_done, gate))
+        return await asyncio.shield(work)
+
+    return await execute_query_with_cache(
+        store=store,
+        model=model,
+        compile_result=compile_result,
+        model_id=model_id,
+        dialect=plan.combine_dialect,
+        datasource="federation:" + ",".join(leg_keys),
+        cache=cache,
+        cache_config=cache_config,
+        tz=tz,
+        cacheable=cacheable,
+        decode_payload=decode_payload,
+        declared_types=declared_types,
+        query=query,
+        key_sql=key_sql,
+        run=run_legs,
+        expires_by=lambda: min(leg_expiries, default=None),
     )
 
 
@@ -622,6 +854,7 @@ __all__ = [
     "build_type_map",
     "exec_columns_from_sidecar",
     "exec_columns_from_table",
+    "execute_federated_with_cache",
     "execute_query_with_cache",
     "execution_result_from_data",
     "RESULT_TYPE_TO_HINT",

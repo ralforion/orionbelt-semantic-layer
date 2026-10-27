@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -46,6 +46,41 @@ class TestFileCacheBasics:
         assert got.payload == payload
         assert "WH.PUB.ORDERS" in got.physical_tables
         assert got.ttl_remaining_seconds > 0
+
+    async def test_an_entry_expires_by_the_moment_it_is_given(self, cache: FileCache) -> None:
+        by = datetime.now(UTC) + timedelta(seconds=60)
+        await cache.set(
+            "k1",
+            b"x",
+            ttl_seconds=300,
+            physical_tables=["t"],
+            datasource="s",
+            model_id="m",
+            query_hash="h",
+            dialect="d",
+            row_count=0,
+            expires_by=by,
+        )
+        got = await cache.get("k1")
+        assert got is not None
+        assert got.expires_at == by
+        assert got.ttl_remaining_seconds <= 60
+
+    async def test_an_entry_past_its_expiry_is_not_stored(self, cache: FileCache) -> None:
+        await cache.set(
+            "k1",
+            b"x",
+            ttl_seconds=300,
+            physical_tables=["t"],
+            datasource="s",
+            model_id="m",
+            query_hash="h",
+            dialect="d",
+            row_count=0,
+            expires_by=datetime.now(UTC) - timedelta(seconds=1),
+        )
+        assert await cache.get("k1") is None
+        assert (await cache.stats()).entry_count == 0
 
     async def test_zero_ttl_skips_cache(self, cache: FileCache) -> None:
         await cache.set(

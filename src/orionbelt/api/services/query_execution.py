@@ -15,6 +15,7 @@ from orionbelt.api.query_cache import (
     build_format_map,
     build_type_map,
     exec_columns_from_table,
+    execute_federated_with_cache,
     execute_query_with_cache,
     execution_result_from_data,
 )
@@ -25,11 +26,12 @@ from orionbelt.api.schemas import (
     ResolvedInfoResponse,
     StructuredWarning,
 )
+from orionbelt.api.services.query_compilation import federation_response
 from orionbelt.api.warnings_adapter import semantic_error_to_warning
 from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.validator import format_sql
 from orionbelt.models.warnings import WarningCode
-from orionbelt.service.datasource_selection import resolve_datasource
+from orionbelt.service.datasource_selection import resolve_query_source
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
@@ -513,22 +515,38 @@ async def _run_with_cache(
     )
 
     try:
-        cached = await execute_query_with_cache(
-            store=store,
-            model=model,
-            compile_result=compile_result,
-            model_id=model_id,
-            dialect=dialect,
-            source=resolve_datasource(model, dialect),
-            cache=cache,
-            cache_config=cache_config,
-            tz=tz,
-            override_db_tz=override_db_tz,
-            cacheable=cacheable,
-            decode_payload=decode_payload,
-            declared_types=declared_for_query,
-            query=query,
-        )
+        if compile_result.federation is not None:
+            cached = await execute_federated_with_cache(
+                store=store,
+                model=model,
+                compile_result=compile_result,
+                model_id=model_id,
+                cache=cache,
+                cache_config=cache_config,
+                tz=tz,
+                override_db_tz=override_db_tz,
+                cacheable=cacheable,
+                decode_payload=decode_payload,
+                declared_types=declared_for_query,
+                query=query,
+            )
+        else:
+            cached = await execute_query_with_cache(
+                store=store,
+                model=model,
+                compile_result=compile_result,
+                model_id=model_id,
+                dialect=compile_result.dialect,
+                source=resolve_query_source(model, compile_result),
+                cache=cache,
+                cache_config=cache_config,
+                tz=tz,
+                override_db_tz=override_db_tz,
+                cacheable=cacheable,
+                decode_payload=decode_payload,
+                declared_types=declared_for_query,
+                query=query,
+            )
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except ExecutionError as exc:
@@ -624,6 +642,8 @@ async def _run_with_cache(
             cached=True,
             cached_at=cached.cached_at_iso,
         )
+        if isinstance(response, QueryExecuteResponse):
+            response.federation = federation_response(compile_result)
         if (
             isinstance(response, QueryExecuteResponse)
             and cached.ttl_outcome is not None
@@ -642,6 +662,8 @@ async def _run_with_cache(
         accept_encoding=accept_encoding,
         declared_skips=cached.declared_skips,
     )
+    if isinstance(response, QueryExecuteResponse):
+        response.federation = federation_response(compile_result)
     ttl_outcome = cached.ttl_outcome
     if (
         cacheable
