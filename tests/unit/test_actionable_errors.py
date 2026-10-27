@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 
 from orionbelt.api.services.query_compilation import compile_query_or_raise
+from orionbelt.cli._local import CliError, _translate
 from orionbelt.compiler.fanout import FanoutError, detect_fanout
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError
 from orionbelt.compiler.pipeline import CompilationPipeline
@@ -177,3 +178,11 @@ class TestRestErrorDetail:
         assert detail["message"] == "inflated"
         assert detail["errors"][0]["code"] == "FANOUT"
         assert detail["errors"][0]["context"] == {"measure": "Revenue"}
+
+
+class TestCliObsql:
+    def test_translation_failure_keeps_the_suggestion(self, sales_model: SemanticModel) -> None:
+        with pytest.raises(CliError) as excinfo:
+            _translate(sales_model, 'SELECT "Revenu" FROM sales')
+        assert "[UNKNOWN_SELECT_ITEM]" in str(excinfo.value)
+        assert "Did you mean 'Revenue'" in str(excinfo.value)

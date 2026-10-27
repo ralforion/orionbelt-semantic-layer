@@ -155,7 +155,7 @@ def _translate(model: SemanticModel, sql: str) -> QueryObject:
     try:
         return translate_sql_to_query(sql, model)
     except SQLTranslationError as exc:
-        details = "; ".join(f"[{e.code}] {e.message}" for e in exc.errors)
+        details = "; ".join(e.as_text() for e in exc.errors)
         raise CliError(f"OBSQL translation failed: {details}") from None
 
 
