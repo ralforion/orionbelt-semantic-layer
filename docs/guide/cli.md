@@ -139,7 +139,8 @@ actually query:
 ```
 
 `-d/--dialect` picks which configured datasource to probe. Note that it defaults
-to `DB_VENDOR` rather than to the model's `defaultDialect`, unlike the `--dialect`
+to the dialect of the data source the model names (`defaultDataSource`), then to
+`DB_VENDOR`, rather than to the model's `defaultDialect`, unlike the `--dialect`
 on `compile` and `execute`: here it selects a *connection to open*, and the model's
 declared dialect says what SQL to generate, not what server is reachable.
 

@@ -26,6 +26,25 @@ def model_datasource_name(model: SemanticModel | None) -> str | None:
     return settings.default_data_source if settings is not None else None
 
 
+def named_source_dialect(model: SemanticModel | None) -> str | None:
+    """The dialect of the configured source the model names, if it names one.
+
+    ``None`` when it names none, or one that is not configured: what to say
+    about that is :func:`resolve_datasource`'s to decide.
+    """
+    name = model_datasource_name(model)
+    if name is None:
+        return None
+    try:
+        from ob_flight.datasources import DataSourceNotFoundError, find_datasource
+    except ImportError:
+        return None
+    try:
+        return find_datasource(name, configured_datasource_list()).dialect
+    except (DataSourceNotFoundError, ExecutionUnavailableError):
+        return None
+
+
 def configured_datasource_list() -> list[DataSource]:
     """Every configured data source; none when the driver extension predates them.
 

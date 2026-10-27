@@ -186,6 +186,51 @@ class TestLoad:
     def test_without_execution_any_name_loads(self, shops: Any) -> None:
         assert ModelStore().load_model(shop_model("shop-asia")).model_id
 
+    def test_a_reused_model_is_checked_too(self, shops: Any) -> None:
+        """Loaded once where nothing executes, the same bytes are not let
+        through unchecked where queries do."""
+        store = ModelStore()
+        store.load_model(shop_model("shop-asia"))
+
+        with pytest.raises(ModelValidationError) as caught:
+            store.load_model(shop_model("shop-asia"), execution_dialect="duckdb")
+
+        assert caught.value.errors[0].code == "DATA_SOURCE_UNAVAILABLE"
+
+    def test_a_model_shared_by_another_session_is_checked_too(self, shops: Any) -> None:
+        from orionbelt.service.model_cache import ModelCache
+
+        shared = ModelCache()
+        ModelStore(shared_cache=shared).load_model(shop_model("shop-asia"))
+
+        with pytest.raises(ModelValidationError):
+            ModelStore(shared_cache=shared).load_model(
+                shop_model("shop-asia"), execution_dialect="duckdb"
+            )
+
+
+class TestOnlineValidation:
+    """The probe opens the connection the model's queries open: its source."""
+
+    def test_the_probe_follows_the_models_source(
+        self, shops: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from orionbelt.cli import _local
+
+        monkeypatch.setenv("DB_VENDOR", "postgres")
+
+        summary = _local.validate(shop_model("shop-us"), online=True)
+
+        assert summary.valid, summary.errors
+
+    def test_an_explicit_dialect_still_decides(self, shops: Any) -> None:
+        from orionbelt.cli import _local
+
+        summary = _local.validate(shop_model("shop-us"), online=True, dialect="postgres")
+
+        assert [e.code for e in summary.errors] == ["DATASOURCE_UNAVAILABLE"]
+        assert "which is duckdb" in summary.errors[0].message
+
 
 @pytest.fixture
 async def client(shops: Any) -> AsyncIterator[AsyncClient]:
@@ -251,6 +296,18 @@ class TestRest:
         assert response.status_code == 200
         assert [d["name"] for d in response.json()["datasources"]] == ["shop-eu", "shop-us"]
 
+    async def test_online_validation_probes_the_models_source(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("orionbelt.api.deps.get_db_vendor", lambda: "postgres")
+        session = (await client.post("/v1/sessions")).json()["session_id"]
+
+        for path in (f"/v1/sessions/{session}/validate", "/v1/validate"):
+            response = await client.post(
+                path, params={"online": "true"}, json={"model_yaml": shop_model("shop-us")}
+            )
+            assert response.json()["valid"], (path, response.json())
+
     async def test_the_settings_mirror_reports_it(self, client: AsyncClient) -> None:
         session = (await client.post("/v1/sessions")).json()["session_id"]
         model_id = (
@@ -295,6 +352,16 @@ class TestCli:
 
 
 class TestFlight:
+    def test_an_older_orionbelt_runs_on_the_dialects_variables(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """orionbelt 2.36.0 has no resolver, and none of its models a source."""
+        from ob_flight import server_execution
+
+        monkeypatch.setitem(sys.modules, "orionbelt.service.datasource_selection", None)
+
+        assert server_execution.source_for(_model(shop_model()), "duckdb") is None
+
     def _server(self, model: Any) -> Any:
         from unittest.mock import MagicMock
 

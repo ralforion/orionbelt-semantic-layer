@@ -307,12 +307,14 @@ was renamed. The first thing to say so is the warehouse, at query time.
 | Query param | Default | Meaning |
 |---|---|---|
 | `online` | `false` | Probe the datasource for every data object's table and declared columns |
-| `dialect` | `DB_VENDOR` | Which configured datasource to probe |
+| `dialect` | the model's data source, then `DB_VENDOR` | Which configured datasource to probe |
 
-`dialect` here selects a *connection to open*, which is why it falls back to
-`DB_VENDOR` rather than to the model's `settings.defaultDialect` — a model
-declaring `defaultDialect: snowflake` on a DuckDB deployment would otherwise be
-probed by opening a Snowflake connection that does not exist.
+`dialect` here selects a *connection to open*. A model that names a configured
+data source (`settings.defaultDataSource`) is probed on that source, the one its
+queries open; otherwise the probe falls back to `DB_VENDOR` rather than to the
+model's `settings.defaultDialect` — a model declaring `defaultDialect: snowflake`
+on a DuckDB deployment would otherwise be probed by opening a Snowflake
+connection that does not exist.
 
 Each data object costs one round trip: a `SELECT <declared columns> FROM <table>
 LIMIT 0`, quoted exactly as a compiled query would quote it. That plans without

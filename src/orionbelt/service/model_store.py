@@ -180,7 +180,7 @@ class GraphArtifact:
 # ---------------------------------------------------------------------------
 
 
-def _datasource_errors(model: SemanticModel, execution_dialect: str) -> list[ErrorInfo]:
+def _named_source_errors(model: SemanticModel, execution_dialect: str) -> list[ErrorInfo]:
     """Why the data source a model names cannot run its queries, if it cannot."""
     from orionbelt.service.datasource_selection import (
         model_datasource_name,
@@ -355,6 +355,18 @@ class ModelStore:
             unreachable_dimensions=h.unreachable_dimensions,
             warnings_count=h.warnings_count,
         )
+
+    @staticmethod
+    def _check_named_source(model: SemanticModel, execution_dialect: str | None) -> None:
+        """Refuse a model already compiled once whose data source cannot run it.
+
+        A reused or shared model skips parsing, but not this: it may have been
+        loaded where nothing executes, or before the environment changed.
+        """
+        if execution_dialect is not None:
+            errors = _named_source_errors(model, execution_dialect)
+            if errors:
+                raise ModelValidationError(errors, [])
 
     @staticmethod
     def _content_hash(yaml_str: str, datasource: str | None = None) -> str:
@@ -710,6 +722,7 @@ class ModelStore:
                     summary = self._summaries.get(existing_id)
                     if summary is not None:
                         existing_model = self._models[existing_id]
+                        self._check_named_source(existing_model, execution_dialect)
                         existing_health = self._health_for(existing_model)
                         return LoadResult(
                             model_id=existing_id,
@@ -732,6 +745,11 @@ class ModelStore:
         if dedup_eligible and self._shared_cache is not None and content_hash is not None:
             shared = self._shared_cache.acquire(content_hash)
             if shared is not None:
+                try:
+                    self._check_named_source(shared.model, execution_dialect)
+                except ModelValidationError:
+                    self._shared_cache.release(shared.model_id)
+                    raise
                 self._adopt_shared(shared)
                 return LoadResult(
                     model_id=shared.model_id,
@@ -756,7 +774,7 @@ class ModelStore:
             datasource=datasource,
         )
         if not errors and execution_dialect is not None:
-            errors = _datasource_errors(model, execution_dialect)
+            errors = _named_source_errors(model, execution_dialect)
         if errors:
             raise ModelValidationError(errors, warnings)
 
@@ -1009,6 +1027,7 @@ class ModelStore:
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
         datasource_dialect: str | None = None,
+        follow_model_source: bool = False,
     ) -> ValidationSummary:
         """Validate a model without storing it.  Accepts YAML string or raw dict.
 
@@ -1022,7 +1041,9 @@ class ModelStore:
         — a dropped table, a renamed column, a column whose type no longer
         matches ``abstractType`` — is reported as an error alongside the
         offline ones. Left as ``None``, validation stays entirely offline and
-        opens no connection.
+        opens no connection. With ``follow_model_source``, ``datasource_dialect``
+        is only a default: a model naming a configured data source is probed
+        with that source's dialect, the connection its queries open.
         """
         _model, raw, errors, warnings = self._parse_and_validate(
             yaml_str,
@@ -1038,6 +1059,10 @@ class ModelStore:
         if not any(e.code in fatal for e in errors):
             errors = self._schema_errors(raw) + errors
         if datasource_dialect:
+            if follow_model_source:
+                from orionbelt.service.datasource_selection import named_source_dialect
+
+                datasource_dialect = named_source_dialect(_model) or datasource_dialect
             errors = errors + self._datasource_errors(_model, datasource_dialect)
         return ValidationSummary(
             valid=len(errors) == 0,

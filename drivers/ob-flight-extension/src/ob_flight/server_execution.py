@@ -433,9 +433,14 @@ def source_for(model: Any, dialect: str) -> DataSource | None:
     """The data source a model's query runs on, as REST and pgwire pick it.
 
     See :func:`orionbelt.service.datasource_selection.resolve_datasource`;
-    ``None`` runs on the dialect's own variables.
+    ``None`` runs on the dialect's own variables. So does every query with an
+    orionbelt older than named data sources, which has no resolver: none of
+    its models can name a source.
     """
-    from orionbelt.service.datasource_selection import resolve_datasource
+    try:
+        from orionbelt.service.datasource_selection import resolve_datasource
+    except ImportError:
+        return None
     from orionbelt.service.db_executor import ExecutionUnavailableError
 
     try:

@@ -110,11 +110,14 @@ def validate(
 
     ``online`` additionally probes the configured datasource for every data
     object's table and declared columns. The dialect selects the *connection*
-    to open, so it falls back to ``DB_VENDOR`` rather than to the model's
-    ``defaultDialect`` — see ``api.routers.sessions._probe_dialect``.
+    to open, so it falls back to the dialect of the data source the model
+    names, then to ``DB_VENDOR``, rather than to the model's ``defaultDialect``
+    — see ``api.routers.sessions._probe_dialect``.
     """
     probe_dialect = (dialect or os.getenv("DB_VENDOR") or "duckdb") if online else None
-    return ModelStore().validate(model_yaml, datasource_dialect=probe_dialect)
+    return ModelStore().validate(
+        model_yaml, datasource_dialect=probe_dialect, follow_model_source=dialect is None
+    )
 
 
 def _load(model_yaml: str, datasource: str | None = None) -> tuple[ModelStore, str, SemanticModel]:

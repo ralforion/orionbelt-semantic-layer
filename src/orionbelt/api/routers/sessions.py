@@ -479,9 +479,10 @@ async def validate_model(
     With ``online=true`` the model is additionally checked against the
     configured datasource: each data object is probed for its table and its
     declared columns, and drift is reported as an error. ``dialect`` selects
-    the datasource to probe and defaults to ``DB_VENDOR`` — it names a
-    connection to open, not SQL to generate, so unlike the ``dialect`` on the
-    query endpoints it does not fall back to the model's
+    the datasource to probe and defaults to the dialect of the data source
+    the model names (``settings.defaultDataSource``), then ``DB_VENDOR`` — it
+    names a connection to open, not SQL to generate, so unlike the ``dialect``
+    on the query endpoints it does not fall back to the model's
     ``settings.defaultDialect``.
     """
     if not body.model_yaml and not body.model_json:
@@ -493,6 +494,7 @@ async def validate_model(
         extends_yaml=body.extends,
         inherits_model_id=body.inherits,
         datasource_dialect=_probe_dialect(online, dialect),
+        follow_model_source=dialect is None,
     )
     return ValidateResponse(
         valid=summary.valid,

@@ -234,7 +234,8 @@ ProbeDialectOpt = Annotated[
     typer.Option(
         "--dialect",
         "-d",
-        help="Datasource to probe with --online (defaults to DB_VENDOR).",
+        help="Datasource to probe with --online (defaults to the dialect of the model's "
+        "data source, then DB_VENDOR).",
     ),
 ]
 
