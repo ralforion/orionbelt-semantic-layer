@@ -173,7 +173,8 @@ mode.
 
 | What | How |
 |---|---|
-| Legs | Run at once, each through the result cache on its own: the key is the leg's data source and SQL, and its tables decide its freshness TTL. A query that changes only what the combine step does (a filter on another source, HAVING, ORDER BY, LIMIT) reuses the cached legs. The combined result itself is not cached, so `cached` is always `false` |
+| Caching | The result is cached like any query's. Its key covers the combine query and every leg's SQL with the data source it runs on, its TTL is the shortest of all the tables the legs read, and a change to any of them invalidates it; a hit runs nothing. Each leg is also cached on its own, keyed by its data source and SQL, so a query that changes only what the combine step does (a filter on another source, HAVING, ORDER BY, LIMIT) reuses the legs an earlier query fetched |
+| Legs | Run at once, each on its own source |
 | Types | Each leg's columns are made exact for DuckDB before combining: Postgres `numeric`, which arrives as text, becomes a decimal at the scale its values carry, and a decimal wider than 38 digits narrows when its values fit. A value no decimal holds (`NaN`, more than 38 digits) is refused with `FEDERATION_LEG_TYPE`, never rounded |
 | Errors | A leg that fails fails the query, and the error names the leg's data source and dialect (HTTP 502) |
 | Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 1,000,000). Each leg's SQL asks for one more row, so a larger leg is refused with `FEDERATION_LEG_TOO_LARGE` rather than combined in part |

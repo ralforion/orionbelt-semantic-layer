@@ -11,7 +11,6 @@ from orionbelt.api.deps import (
     get_default_locale,
 )
 from orionbelt.api.query_cache import (
-    CachedExecution,
     build_explain_response,
     build_format_map,
     build_type_map,
@@ -517,8 +516,7 @@ async def _run_with_cache(
 
     try:
         if compile_result.federation is not None:
-            # A federated query caches its legs, not the combined result.
-            federated = await execute_federated_with_cache(
+            cached = await execute_federated_with_cache(
                 store=store,
                 model=model,
                 compile_result=compile_result,
@@ -528,16 +526,9 @@ async def _run_with_cache(
                 tz=tz,
                 override_db_tz=override_db_tz,
                 cacheable=cacheable,
-            )
-            skips = federated.reconcile_to_declared(declared_for_query)
-            cached = CachedExecution(
-                cached=False,
-                cache_key=None,
-                ttl_outcome=None,
-                exec_result=federated,
-                columns=None,
-                fetch_elapsed_ms=None,
-                declared_skips=skips,
+                decode_payload=decode_payload,
+                declared_types=declared_for_query,
+                query=query,
             )
         else:
             cached = await execute_query_with_cache(
@@ -651,6 +642,8 @@ async def _run_with_cache(
             cached=True,
             cached_at=cached.cached_at_iso,
         )
+        if isinstance(response, QueryExecuteResponse):
+            response.federation = federation_response(compile_result)
         if (
             isinstance(response, QueryExecuteResponse)
             and cached.ttl_outcome is not None

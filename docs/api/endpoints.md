@@ -703,7 +703,7 @@ UK	9.870,00
 A query reading data objects of several [data sources](../guide/data-sources.md#running-a-federated-query)
 runs each source's leg on that source and combines the results in DuckDB. The
 response then carries `federation`, the legs as `query/sql` shows them, and
-`sql` is the combine query.
+`sql` is the combine query. The result is cached like any other (`cached`).
 
 **Top-level shortcut:** `POST /v1/query/execute` — auto-resolves session/model, auto-detects dialect from `DB_VENDOR`.
 

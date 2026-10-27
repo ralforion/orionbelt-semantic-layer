@@ -160,7 +160,38 @@ class TestRestExecution:
         assert [leg["data_source"] for leg in federation_info["legs"]] == ["shop", "crm"]
         assert response.json()["dialect"] == "duckdb"
 
-    async def test_each_leg_is_cached_on_its_own(self, client: AsyncClient) -> None:
+    async def test_a_repeated_query_is_served_whole_from_the_cache(
+        self, client: AsyncClient
+    ) -> None:
+        from orionbelt.api import query_cache
+
+        calls: list[str] = []
+        combines: list[str] = []
+        real_execute, real_combine = query_cache.execute_sql, federation.combine
+
+        def counting_execute(sql: str, **kwargs: Any) -> ExecutionResult:
+            calls.append(kwargs["source"].name)
+            return real_execute(sql, **kwargs)
+
+        def counting_combine(plan: Any, *args: Any) -> ExecutionResult:
+            combines.append(plan.combine_sql)
+            return real_combine(plan, *args)
+
+        with (
+            patch.object(query_cache, "execute_sql", counting_execute),
+            patch.object(federation, "combine", counting_combine),
+        ):
+            first = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+            again = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+
+        assert first.json()["cached"] is False and again.json()["cached"] is True
+        assert again.json()["rows"] == first.json()["rows"]
+        assert again.json()["federation"] == first.json()["federation"]
+        assert calls == ["shop", "crm"] and len(combines) == 1
+
+    async def test_a_query_changing_only_the_combine_step_reuses_the_legs(
+        self, client: AsyncClient
+    ) -> None:
         from orionbelt.api import query_cache
 
         calls: list[str] = []
@@ -176,14 +207,29 @@ class TestRestExecution:
         }
         with patch.object(query_cache, "execute_sql", counting):
             first = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
-            again = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
             # A filter on the other source runs in the combine step, so the
-            # legs' SQL is unchanged and both are still served from the cache.
+            # legs' SQL is unchanged and both are served from the cache.
             narrowed = await execute(client, model_yaml(federated=True), filtered)
 
+        assert narrowed.json()["cached"] is False
         assert calls == ["shop", "crm"]
-        assert again.json()["rows"] == first.json()["rows"]
         assert narrowed.json()["rows"] == [r for r in first.json()["rows"] if r[0] == "EU"]
+
+    async def test_the_same_query_over_other_sources_is_another_entry(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch, sources: dict[str, str]
+    ) -> None:
+        first = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+        # ``crm`` now reads the single file: same legs' SQL, same combine
+        # query, another database behind one leg.
+        monkeypatch.setenv("DB_CRM_DUCKDB_DATABASE", sources["all"])
+        con = duckdb.connect(sources["all"])
+        con.execute("UPDATE customers SET region = 'APAC' WHERE region = 'US'")
+        con.close()
+
+        moved = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+
+        assert first.json()["cached"] is False and moved.json()["cached"] is False
+        assert "APAC" in [row[0] for row in moved.json()["rows"]]
 
     async def test_a_failing_leg_is_named_by_its_source(
         self, client: AsyncClient, sources: dict[str, str]
