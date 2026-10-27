@@ -54,6 +54,18 @@ def build_datasource_key(dialect: str, principal: str | None = None) -> str:
     return dialect if principal is None else f"{dialect}{_DS_SEP}{principal}"
 
 
+def datasource_key_for(source: Any) -> str:
+    """The cache scope of an ``ob_flight.datasources.DataSource``.
+
+    An implicit source (a dialect configured without a name) keeps the bare
+    dialect, so the keys written before named sources still match. A named
+    source adds its fingerprint: two names for one target with the same
+    credentials share entries, and a source with other credentials never
+    reads them. Typed ``Any`` because ob_flight is an optional extra.
+    """
+    return build_datasource_key(source.dialect, source.fingerprint() if source.named else None)
+
+
 _WHITESPACE_RE = re.compile(r"\s+")
 
 # Match any quoted region — single-quoted string literal, double-quoted

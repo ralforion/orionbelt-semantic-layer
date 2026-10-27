@@ -19,6 +19,7 @@ from orionbelt.compiler.sql_translator import (
 from pyarrow import flight
 
 from ob_flight import server_catalog, server_execution, server_routing
+from ob_flight.datasources import DataSource
 from ob_flight.db_router import connect as db_connect
 from ob_flight.flight_sql import (
     ACTION_CLOSE_PREPARED_STATEMENT,
@@ -328,8 +329,9 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         dialect: str,
         cache_meta: dict[str, Any] | None = None,
         result_schema: pa.Schema | None = None,
+        source: DataSource | None = None,
     ) -> flight.RecordBatchStream:
-        return server_execution.execute_sql(self, sql, dialect, cache_meta, result_schema)
+        return server_execution.execute_sql(self, sql, dialect, cache_meta, result_schema, source)
 
     def _cache_get_table(self, key: str) -> pa.Table | None:
         return server_execution.cache_get_table(self, key)
@@ -373,8 +375,8 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
     ) -> flight.RecordBatchStream:
         return server_catalog.query_virtual_table(self, vt_name, context)
 
-    def _probe_schema(self, sql: str, dialect: str) -> pa.Schema:
-        return server_catalog.probe_schema(self, sql, dialect)
+    def _probe_schema(self, sql: str, dialect: str, source: DataSource | None = None) -> pa.Schema:
+        return server_catalog.probe_schema(self, sql, dialect, source)
 
     def _resolve_model_for_catalog(
         self,
