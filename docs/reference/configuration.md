@@ -46,6 +46,8 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `FLIGHT_TLS_KEY`           | —           | PEM private key. Both or neither                  |
 | `FLIGHT_TLS_CLIENT_CA`     | —           | PEM CA for client certificates; turns on mutual TLS |
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution       |
+| `DB_POOL_SIZE`             | `5`         | Idle connections kept per data source     |
+| `OBSL_DATABASES`           | —           | Comma-separated names of [named data sources](../guide/data-sources.md); each reads `DB_<NAME>_TYPE`, `DB_<NAME>_DESCRIPTION`, `DB_<NAME>_POOL_SIZE` and its dialect's variables behind the `DB_<NAME>_` prefix. A model picks one with `settings.defaultDataSource` |
 | `VALUE_SEARCH_ENABLED`     | `true`      | Enable `POST /v1/values` (dimension-value search; also needs query execution) |
 | `VALUE_SEARCH_MAX_LIMIT`   | `200`       | Most values one value search returns      |
 | `VALUE_SEARCH_FUZZY_DOMAIN_MAX` | `10000` | Largest number of values a dimension may have for the fuzzy (misspelling) stage |
