@@ -124,6 +124,10 @@ Where queries execute (`QUERY_EXECUTE=true` or Flight), a model that names a dat
 `settings.defaultDataSource` or with `datasource`, must name a configured one of the model's
 dialect, or the load fails with **422** and `DATA_SOURCE_UNAVAILABLE` at
 `settings.defaultDataSource`.
+`context.reason` says which case it is: `unknownSource` (with `suggestions` for a
+misspelt name and the configured names in `context.dataSources`), `dialectMismatch`
+(`context.sourceDialect` and `context.dialect`), `ambiguousSource`,
+`invalidConfiguration` or `extensionOutdated`.
 
 **Response (201):**
 

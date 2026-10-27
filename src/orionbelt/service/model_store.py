@@ -197,8 +197,15 @@ def _named_source_errors(model: SemanticModel, execution_dialect: str) -> list[E
     from orionbelt.service.datasource_selection import datasource_errors
 
     return [
-        ErrorInfo(code="DATA_SOURCE_UNAVAILABLE", message=message, path=path)
-        for path, message in datasource_errors(model, execution_dialect)
+        ErrorInfo(
+            code=e.code,
+            message=e.message,
+            path=e.path,
+            suggestions=e.suggestions,
+            hint=e.hint,
+            context=e.context,
+        )
+        for e in datasource_errors(model, execution_dialect)
     ]
 
 
