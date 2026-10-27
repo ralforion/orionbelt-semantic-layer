@@ -34,8 +34,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
-from orionbelt.compiler.type_resolver import resolve_measure_cast_type, resolve_measure_data_type
-from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION
+from orionbelt.compiler.type_resolver import partial_sums, resolve_measure_cast_type
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
     DimensionRef,
@@ -200,9 +199,10 @@ def plan_federated(
         select=QuerySelect(dimensions=[*fact_dims, *fact_keys], measures=sorted(measures)),
         where=leg_filters,
     )
-    legs.append(
-        planner.leg("leg_0", islands[fact], fact_query, fact_model, compile_leg, source_dialect)
-    )
+    with partial_sums():
+        legs.append(
+            planner.leg("leg_0", islands[fact], fact_query, fact_model, compile_leg, source_dialect)
+        )
     fact_columns = [
         *[_dimension_column(model, DimensionRef.parse(d).name) for d in fact_dims],
         *[_key_column(model, name, obj, col) for name, (obj, col) in fact_keys.items()],
@@ -680,7 +680,7 @@ class _Planner:
         Measures are partial results: no ``total``, no ``defaultValue`` (an
         empty group's default would become an input to the combined
         aggregate), and a sum at a width that does not round before the
-        partials are added (:func:`_partial_measure`).
+        partials are added (:func:`_partial_measure`, ``partial_sums``).
         """
         model = self.model
         objects = {
@@ -699,7 +699,7 @@ class _Planner:
             update={
                 "data_objects": objects,
                 "dimensions": dimensions,
-                "measures": {m: _partial_measure(effective[m], model) for m in measures},
+                "measures": {m: _partial_measure(effective[m]) for m in measures},
                 "metrics": {},
                 "filters": (
                     [f for f in model.filters if f.data_object in island] if static_filters else []
@@ -754,49 +754,28 @@ def _combine_dimension(model: SemanticModel, name: str, leg: str) -> Dimension:
     )
 
 
-# Decimal places a partial sum keeps when the measure's own type would keep
-# fewer: the scale BigQuery's NUMERIC holds, and few sources store more.
-_PARTIAL_SCALE = 9
-# The most a partial keeps, leaving 20 integer digits in a DECIMAL(38, s).
-_PARTIAL_SCALE_MAX = 18
-
-
-def _partial_measure(measure: Measure, model: SemanticModel) -> Measure:
+def _partial_measure(measure: Measure) -> Measure:
     """The measure as a leg computes it: a partial result to combine later.
 
-    The output type and the default are the combined measure's to apply.
-    Cast to the measure's own decimal type, every partial would be rounded
-    before the partials are added, and the total would differ from the one
-    database's. A sum is therefore kept at ``DECIMAL(38, s)``, ``s`` the larger
-    of its own scale, its columns' declared scale and nine places; the other
-    aggregates return one of their inputs, or count, and are not cast.
+    The output type and the default are the combined measure's to apply once:
+    no ``dataType``, no ``defaultValue`` (an empty group's default would become
+    an input to the combined aggregate), no ``total``. A sum is also left
+    uncast while the fact leg compiles (``partial_sums``).
     """
-    update: dict[str, object] = {"total": False, "default_value": None, "data_type": None}
-    if measure.aggregation == AggregationType.SUM:
-        resolved = resolve_measure_data_type(measure, model.settings, model)
-        if isinstance(resolved, DecimalType):
-            scales = [resolved.scale, _PARTIAL_SCALE]
-            for ref in measure.columns:
-                column = model.data_objects[ref.view or ""].columns.get(ref.column or "")
-                if column is not None and column.sql_scale is not None:
-                    scales.append(column.sql_scale)
-            scale = min(max(scales), _PARTIAL_SCALE_MAX)
-            update["data_type"] = f"decimal({PORTABLE_DECIMAL_PRECISION}, {scale})"
-        elif measure.data_type:
-            update["data_type"] = measure.data_type
-    return measure.model_copy(update=update)
+    return measure.model_copy(update={"total": False, "default_value": None, "data_type": None})
 
 
 def _combine_measure(model: SemanticModel, name: str) -> Measure:
     """The measure re-aggregated from the fact leg's partial results.
 
     It carries the measure's type, default and ``total``. A count is combined
-    as a ``SUM`` of counts, which over no rows is NULL where a count is 0, so
-    it falls back to 0 unless it declares a default of its own.
+    as a ``SUM`` of counts, which over no rows is NULL where a count is 0: it
+    falls back to 0, whatever default it declares, since a SQL ``COUNT`` never
+    applies one.
     """
     measure = model.effective_measures[name]
     default = measure.default_value
-    if default is None and measure.aggregation == AggregationType.COUNT:
+    if measure.aggregation == AggregationType.COUNT:
         default = 0
     # The type the one database's query casts to, widened for wide sources.
     resolved = resolve_measure_cast_type(measure, model.settings, None, model)

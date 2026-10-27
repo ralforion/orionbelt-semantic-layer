@@ -141,10 +141,11 @@ the plan:
   database, and an `enforce: always` filter applies even when the query reads
   nothing else of that island. A filter on a dimension the query selects at a
   time grain cannot run after the join and is refused.
-- Measures are combined from partial results that are not rounded: a sum is
-  kept at `DECIMAL(38, s)` (at least nine decimal places) until it is combined,
-  and the measure's own type and `defaultValue` apply to the combined value. A
-  count over no rows is 0.
+- Measures are combined from partial results that are neither rounded nor
+  bounded: a leg leaves its sums in the engine's own type, which keeps the
+  input's scale and the engine's range, and the measure's own type and
+  `defaultValue` apply once, to the combined value. A count over no rows is 0,
+  whatever default it declares, as a SQL `COUNT` is.
 
 What does not split exactly is refused by name rather than answered with a
 different number: measures from more than one source (`FEDERATION_MULTI_FACT`),

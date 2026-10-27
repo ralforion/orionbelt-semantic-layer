@@ -607,3 +607,130 @@ class TestIntermediateObjects:
             _compile(chain_yaml("shop", "crm", "shop"), self.QUERY)
 
         assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_JOIN"]
+
+
+TYPED_ORDERS = """
+CREATE TABLE orders AS SELECT * FROM (VALUES
+    (10, 0.60::DECIMAL(38, 20), 0.00000000000000000001::DECIMAL(38, 20),
+        500000000000000000000000000000::DECIMAL(38, 0)),
+    (11, 0.60::DECIMAL(38, 20), 0.00000000000000000001::DECIMAL(38, 20),
+        500000000000000000000000000000::DECIMAL(38, 0))
+) t(customer_id, amount, tiny, big)
+"""
+TYPED_CUSTOMERS = (
+    "CREATE TABLE customers AS SELECT * FROM (VALUES (10, 'EU'), (11, 'EU')) t(customer_id, region)"
+)
+
+
+def typed_yaml(*, federated: bool) -> str:
+    shop = "    dataSource: shop\n" if federated else ""
+    crm = "    dataSource: crm\n" if federated else ""
+
+    def measure(name: str, column: str, data_type: str) -> str:
+        return (
+            f"  {name}: {{columns: [{{dataObject: Orders, column: {column}}}], "
+            f"aggregation: sum, resultType: decimal, dataType: '{data_type}'}}\n"
+        )
+
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Orders:
+    code: orders
+{shop}    columns:
+      Order Customer: {{code: customer_id, abstractType: int}}
+      Amount: {{code: amount, abstractType: decimal}}
+      Tiny: {{code: tiny, abstractType: decimal}}
+      Big: {{code: big, abstractType: decimal}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+  Customers:
+    code: customers
+{crm}    columns:
+      Customer ID: {{code: customer_id, abstractType: int}}
+      Region: {{code: region, abstractType: string}}
+dimensions:
+  Region: {{dataObject: Customers, column: Region, resultType: string}}
+measures:
+{measure("Whole Amount", "Amount", "integer")}{measure("Tiny Sum", "Tiny", "decimal(38, 20)")}\
+{measure("Big Sum", "Big", "decimal(38, 0)")}\
+  Counted:
+    columns: [{{dataObject: Orders, column: Order Customer}}]
+    aggregation: count
+    resultType: int
+    defaultValue: 10
+"""
+
+
+@pytest.fixture(scope="module")
+def typed_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("fed_typed")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+    for name, statements in (
+        ("all", [TYPED_ORDERS, TYPED_CUSTOMERS]),
+        ("shop", [TYPED_ORDERS]),
+        ("crm", [TYPED_CUSTOMERS]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+def _run_typed(files: dict[str, str], query: dict[str, Any], *, federated: bool) -> list[Any]:
+    compiled = _compile(typed_yaml(federated=federated), query)
+    if not federated:
+        con = duckdb.connect(files["all"], read_only=True)
+        try:
+            return _rows(con, compiled.sql)
+        finally:
+            con.close()
+    combine = duckdb.connect()
+    for leg in compiled.federation.legs:
+        con = duckdb.connect(files[leg.data_source], read_only=True)
+        try:
+            combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+        finally:
+            con.close()
+    return _rows(combine, compiled.sql)
+
+
+class TestPartialTypes:
+    """A partial is neither rounded nor bounded before the partials are added."""
+
+    QUERY = {
+        "select": {"dimensions": ["Region"], "measures": ["Whole Amount", "Tiny Sum", "Big Sum"]}
+    }
+
+    def test_the_combined_values_are_the_single_sums(self, typed_files: dict[str, str]) -> None:
+        single = _run_typed(typed_files, self.QUERY, federated=False)
+        federated = _run_typed(typed_files, self.QUERY, federated=True)
+
+        assert federated == single
+        ((_, whole, tiny, big),) = federated
+        assert whole == 1  # 1.20, rounded once; rounding each 0.60 first gave 2
+        assert str(tiny) == "2E-20"  # a fixed partial scale would round this to 0
+        assert big == 10**30  # a fractional partial scale would overflow this
+
+    def test_the_fact_leg_leaves_its_sums_uncast(self) -> None:
+        plan = _compile(typed_yaml(federated=True), self.QUERY).federation
+
+        assert "CAST(SUM" not in plan.legs[0].sql
+        assert "AS INTEGER" in plan.combine_sql
+
+    def test_a_count_declaring_a_default_is_still_zero_over_no_rows(
+        self, typed_files: dict[str, str]
+    ) -> None:
+        query = {
+            "select": {"measures": ["Counted"]},
+            "where": [{"field": "Region", "op": "=", "value": "nowhere"}],
+        }
+
+        assert _run_typed(typed_files, query, federated=True) == [(0,)]
+        assert _run_typed(typed_files, query, federated=False) == [(0,)]

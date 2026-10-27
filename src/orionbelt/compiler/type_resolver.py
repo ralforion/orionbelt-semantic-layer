@@ -18,7 +18,9 @@ Pass-through (no CAST): MIN/MAX, LISTAGG, non-numeric aggregates.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 
 from orionbelt.ast.nodes import BinaryOp, Expr, FunctionCall
@@ -893,6 +895,31 @@ def _reads_integer_columns(measure: Measure, model: SemanticModel | None) -> boo
     return True
 
 
+# Set while a federated query's fact leg compiles: see ``partial_sums``.
+_partial_sums: ContextVar[bool] = ContextVar("partial_sums", default=False)
+
+
+@contextmanager
+def partial_sums() -> Iterator[None]:
+    """Leave every ``SUM`` measure in the engine's own type while the block runs.
+
+    A federated query's fact leg returns partial sums that the combine step
+    adds up and then casts to the measure's type, once, as one database casts
+    its single sum. Cast in the leg, each partial would be rounded or bounded
+    before they are added: a ``dataType: integer`` measure over 0.60 in two
+    groups gave 2 rather than 1, and no fixed decimal width keeps both the
+    range and the scale of every source. The engine's own ``SUM`` keeps both:
+    the input's scale, and the range the engine would compute the single sum
+    in. The exact integer-sum widening still applies, since it rewrites the
+    expression rather than casting it.
+    """
+    token = _partial_sums.set(True)
+    try:
+        yield
+    finally:
+        _partial_sums.reset(token)
+
+
 def resolve_measure_cast_type(
     measure: Measure,
     settings: ModelSettings | None,
@@ -913,7 +940,11 @@ def resolve_measure_cast_type(
     The type therefore follows the **measure and the dialect**, which are known
     everywhere, rather than the shape the expression happens to have at this
     point in the plan.
+
+    ``None`` for a ``SUM`` inside :func:`partial_sums`.
     """
+    if _partial_sums.get() and measure.aggregation.upper() == "SUM":
+        return None
     resolved = resolve_measure_data_type(measure, settings, model)
     if measure.data_type:
         return resolved
