@@ -377,6 +377,7 @@ Cube wins on breadth (especially legacy enterprise sources); OBSL covers modern 
 
 | | OBSL | Cube |
 |---|---|---|
+| Dimension-value search | `POST /v1/values`, `obsl values`: exact, prefix and contains matches, then fuzzy for misspellings; min / max for a date or number; static and tenant filters apply; `valueSearch: false` opts a column out | Via queries: a dimension-only query returns its unique values (the documented recipe for filter dropdowns), narrowed with case-insensitive `contains` / `startsWith` filters; no ranking or fuzzy match |
 | REST API | Yes — first-party FastAPI service | Yes — `/cubejs-api/v1/load`, mature |
 | GraphQL | No | Yes |
 | SQL wire protocol | **PostgreSQL wire** (port 5432) **AND Apache Arrow Flight SQL** (gRPC, columnar) — pick per consumer | **Postgres wire** (port 15432) only |
@@ -508,6 +509,8 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 
 ## References
 
+- Cube recipe, unique values for a field: https://docs.cube.dev/recipes/core-data-api/getting-unique-values-for-a-field
+- Cube REST query format (`contains`, `startsWith`): https://docs.cube.dev/reference/core-data-apis/rest-api/query-format
 - Cube Metadata API lineage (changelog, Aug-Oct 2026): https://cube.dev/changelog
 - Cube Apache Ossie integration (2026-10-16): https://cube.dev/changelog/2026-10-16-changelog-apache-ossie-integration
 - Cube `cube` reference (parameters, `meta`, `ai_context`): https://docs.cube.dev/reference/data-modeling/cube
