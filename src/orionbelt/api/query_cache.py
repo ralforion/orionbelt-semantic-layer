@@ -441,8 +441,9 @@ async def execute_query_with_cache(
     :func:`execute_federated_with_cache`). ``check_rows`` is called with the
     result's row count, on a hit and before a miss is stored, and may raise
     to refuse it: a result it refuses is never cached nor served.
-    ``max_ttl_seconds``, asked once the result is computed, caps how long it
-    is cached: a result read from cached inputs expires no later than they do.
+    ``max_ttl_seconds``, asked just before the result is stored, caps how long
+    it is cached: a result read from cached inputs expires no later than they
+    do, and one whose inputs expired while it was computed is not stored.
     """
     if source is not None:
         # One set of settings for the key and the query: the source's
@@ -667,9 +668,15 @@ async def execute_federated_with_cache(
         ]
     )
 
-    # Seconds each leg served from the cache has left: the result expires with
-    # the first of them.
-    leg_lifetimes: list[int] = []
+    # When each leg served from the cache expires (``time.monotonic()``): the
+    # result expires with the first of them.
+    leg_deadlines: list[float] = []
+
+    def time_left_on_legs() -> int | None:
+        """Whole seconds until the first cached leg expires, as the result is stored."""
+        if not leg_deadlines:
+            return None
+        return max(0, int(min(leg_deadlines) - time.monotonic()))
 
     async def run_legs() -> ExecutionResult:
         limits = federation.federation_limits()
@@ -712,7 +719,7 @@ async def execute_federated_with_cache(
                     ) from exc
                 if ran.cached:
                     if ran.ttl_remaining_seconds is not None:
-                        leg_lifetimes.append(ran.ttl_remaining_seconds)
+                        leg_deadlines.append(time.monotonic() + ran.ttl_remaining_seconds)
                     return federation.normalize_leg(leg, ran.data_table)
                 assert ran.exec_result is not None
                 return federation.leg_table(leg, ran.exec_result)
@@ -757,7 +764,7 @@ async def execute_federated_with_cache(
         query=query,
         key_sql=key_sql,
         run=run_legs,
-        max_ttl_seconds=lambda: min(leg_lifetimes, default=None),
+        max_ttl_seconds=time_left_on_legs,
     )
 
 

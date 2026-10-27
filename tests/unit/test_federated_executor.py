@@ -380,6 +380,68 @@ class TestCachedLegs:
             clock["now"] = start + timedelta(seconds=301)
             assert not (await run(reordered)).cached
 
+    async def test_a_result_whose_legs_expire_while_it_combines_is_not_cached(
+        self, sources: dict[str, str], tmp_path: Any
+    ) -> None:
+        import time
+        from datetime import UTC, datetime, timedelta
+
+        from orionbelt.api.query_cache import execute_federated_with_cache
+
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        clock = {"now": start}
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz: Any = None) -> Any:
+                return clock["now"]
+
+        def monotonic() -> float:
+            return (clock["now"] - start).total_seconds()
+
+        combine = federation.combine
+
+        def slow_combine(*args: Any) -> Any:
+            # Two seconds pass while the legs combine.
+            clock["now"] += timedelta(seconds=2)
+            return combine(*args)
+
+        store, model_id, (compiled, reordered) = compiled_federated(
+            REVENUE_BY_REGION,
+            {**REVENUE_BY_REGION, "orderBy": [{"field": "Region", "direction": "desc"}]},
+        )
+        cache = FileCache(
+            cache_dir=str(tmp_path / "legs"),
+            max_value_bytes=10 * 1024 * 1024,
+            max_disk_bytes=50 * 1024 * 1024,
+            max_ttl_seconds=3600,
+            sweep_interval_seconds=3600,
+        )
+        # Every entry lives 300 seconds.
+        config = CacheRuntimeConfig(backend="file", min_ttl_seconds=1, unknown_policy="default_ttl")
+
+        async def run(query: Any) -> Any:
+            return await execute_federated_with_cache(
+                store=store,
+                model=store.get_model(model_id),
+                compile_result=query,
+                model_id=model_id,
+                cache=cache,
+                cache_config=config,
+            )
+
+        with (
+            patch("orionbelt.cache.file.datetime", Clock),
+            patch("orionbelt.api.query_cache.time", wraps=time) as fake_time,
+        ):
+            fake_time.monotonic.side_effect = monotonic
+            await run(compiled)
+            clock["now"] = start + timedelta(seconds=299)
+            with patch.object(federation, "combine", slow_combine):
+                assert not (await run(reordered)).cached
+            # The legs expired at 300 s, while the result was combined.
+            assert not (await run(reordered)).cached
+
 
 class TestCancellation:
     async def test_a_cancelled_query_keeps_its_slot_until_its_legs_finish(
