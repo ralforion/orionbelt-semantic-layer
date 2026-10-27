@@ -1701,12 +1701,19 @@ class OneshotBatchRequest(BaseModel):
 
 
 class OneshotBatchQueryError(BaseModel):
-    """Error envelope for a single failed query in a batch."""
+    """Error envelope for a single failed query in a batch.
+
+    The top-level fields describe the first error; ``errors`` lists every one
+    when compilation reported several.
+    """
 
     code: str
     message: str
     path: str | None = None
     hint: str | None = None
+    context: dict[str, Any] | None = None
+    suggestions: list[str] = Field(default_factory=list)
+    errors: list[ErrorDetail] = Field(default_factory=list)
 
 
 class OneshotBatchQueryResult(BaseModel):

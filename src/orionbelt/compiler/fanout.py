@@ -2,20 +2,40 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.metric_expansion import metric_leaf_measure_names
 from orionbelt.compiler.resolution import ResolvedQuery
+from orionbelt.models.errors import SemanticError
 from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import Cardinality, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
 
 
 class FanoutError(Exception):
-    """Raised when a join path causes row multiplication (fanout) for a measure."""
+    """Raised when a join path causes row multiplication (fanout) for a measure.
 
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.message = message
+    Carries one :class:`SemanticError` per refused measure, like
+    ``ResolutionError``, so every surface can report a stable ``code`` with its
+    ``hint`` and ``context``. Subclasses set their own class-level ``code``.
+    """
+
+    code = "FANOUT"
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        errors: list[SemanticError] | None = None,
+        hint: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        if errors is None:
+            errors = [SemanticError(code=self.code, message=message, hint=hint, context=context)]
+        self.errors = errors
+        self.message = "; ".join(e.message for e in errors)
+        super().__init__(self.message)
 
 
 def _step_causes_fanout(step: JoinStep) -> bool:
@@ -79,11 +99,20 @@ def _reject_sibling_unnests(resolved: ResolvedQuery, model: SemanticModel) -> No
     listed = ", ".join(f"'{name}'" for name in on_nested)
     objects = ", ".join(f"'{name}'" for name in unnested)
     raise FanoutError(
-        f"Measure(s) {listed} are sourced from a nested data object, and this query "
-        f"unnests {objects} together. Each one's elements are repeated once per element "
-        f"of the other, and a nested object has no key to deduplicate them by — its rows "
-        f"exist only inside its parent's. Query one nested object at a time, or set "
-        f"allowFanOut: true if the multiplication is intended."
+        errors=[
+            SemanticError(
+                code="NESTED_FANOUT",
+                message=(
+                    f"Measure(s) {listed} are sourced from a nested data object, and this "
+                    f"query unnests {objects} together. Each one's elements are repeated "
+                    f"once per element of the other, and a nested object has no key to "
+                    f"deduplicate them by — its rows exist only inside its parent's. Query "
+                    f"one nested object at a time, or set allowFanOut: true if the "
+                    f"multiplication is intended."
+                ),
+                context={"measures": on_nested, "nestedObjects": unnested},
+            )
+        ]
     )
 
 
@@ -171,7 +200,7 @@ def detect_fanout(resolved: ResolvedQuery, model: SemanticModel) -> None:
 
     _reject_sibling_unnests(resolved, model)
 
-    errors: list[str] = []
+    errors: list[SemanticError] = []
 
     # Dimension objects in the query (these become GROUP BY columns)
     dim_objects = {d.object_name for d in resolved.dimensions}
@@ -258,15 +287,43 @@ def detect_fanout(resolved: ResolvedQuery, model: SemanticModel) -> None:
                             )
                         continue
 
+                    forcing = _dimensions_behind(step, resolved)
+                    named = "the dimensions that force that join"
+                    if forcing:
+                        named += " (" + ", ".join(f"'{d}'" for d in forcing) + ")"
                     errors.append(
-                        f"Measure '{measure_name}' would be inflated by the selected "
-                        f"dimensions: reaching them requires a one-to-many join (from "
-                        f"'{step.from_object}' to '{step.to_object}') that duplicates "
-                        "its rows, so its totals would be overcounted. "
-                        f"Remove '{measure_name}' or the dimensions that force that "
-                        "join, or set allowFanOut: true on the measure if the "
-                        "duplication is intended."
+                        SemanticError(
+                            code=FanoutError.code,
+                            message=(
+                                f"Measure '{measure_name}' would be inflated by the selected "
+                                f"dimensions: reaching them requires a one-to-many join (from "
+                                f"'{step.from_object}' to '{step.to_object}') that duplicates "
+                                "its rows, so its totals would be overcounted. "
+                                f"Remove '{measure_name}' or {named}, or set allowFanOut: "
+                                "true on the measure if the duplication is intended."
+                            ),
+                            context={
+                                "measure": measure_name,
+                                "fromObject": step.from_object,
+                                "toObject": step.to_object,
+                                "dimensions": forcing,
+                            },
+                        )
                     )
 
     if errors:
-        raise FanoutError("; ".join(errors))
+        raise FanoutError(errors=errors)
+
+
+def _dimensions_behind(step: JoinStep, resolved: ResolvedQuery) -> list[str]:
+    """Selected dimensions the query can only reach through ``step``.
+
+    Join steps are ordered from the base object outward, so one pass collects
+    every object joined in after ``step`` from the side it brings in.
+    """
+    behind = {step.from_object if step.reversed else step.to_object}
+    for other in resolved.join_steps:
+        origin = other.to_object if other.reversed else other.from_object
+        if origin in behind:
+            behind.add(other.from_object if other.reversed else other.to_object)
+    return [d.name for d in resolved.dimensions if d.object_name in behind]

@@ -42,6 +42,15 @@ class SemanticError(BaseModel):
         ),
     )
 
+    def as_text(self) -> str:
+        """One line for text-only surfaces (CLI, pgwire): code, message and remedy."""
+        parts = [f"[{self.code}] {self.message}"]
+        if self.hint:
+            parts.append(f"Hint: {self.hint}")
+        if self.suggestions:
+            parts.append("Did you mean " + " or ".join(f"'{s}'" for s in self.suggestions) + "?")
+        return " ".join(parts)
+
 
 class ValidationResult(BaseModel):
     """Result of semantic model validation."""

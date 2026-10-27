@@ -45,6 +45,7 @@ from orionbelt.models.query import (
     Subquery,
 )
 from orionbelt.models.semantic import AggregationType, SemanticModel
+from orionbelt.models.suggestions import dimension_names, measure_names, suggest_names
 
 __all__ = ["SQLTranslationError", "translate_sql_to_query"]
 
@@ -278,6 +279,7 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
                     SemanticError(
                         code="UNKNOWN_SELECT_ITEM",
                         message=(f"`{inner_label}` is not a measure or metric of this model."),
+                        suggestions=suggest_names(inner_label, measure_names(model)),
                         context={"item": inner_label},
                     )
                 )
@@ -380,6 +382,7 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
                 SemanticError(
                     code="UNKNOWN_SELECT_ITEM",
                     message=(f"`{name}` is not a dimension, measure, or metric of this model."),
+                    suggestions=suggest_names(name, dimension_names(model) | measure_names(model)),
                     context={"item": name},
                 )
             )

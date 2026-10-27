@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from orionbelt.api.schemas import (
     ErrorDetail,
     FanTrapRisk,
@@ -22,6 +24,28 @@ def semantic_error_to_warning(e: SemanticError) -> StructuredWarning:
         hint=e.hint,
         context=e.context,
     )
+
+
+def semantic_error_to_detail(e: SemanticError) -> ErrorDetail:
+    """Convert a compile error to :class:`ErrorDetail`, keeping its repair fields.
+
+    ``hint``, ``suggestions`` and ``context`` tell an agent how to fix the
+    query. Same shape as the validation endpoint's errors.
+    """
+    return ErrorDetail(
+        code=e.code,
+        message=e.message,
+        path=e.path,
+        severity=e.severity,
+        hint=e.hint,
+        context=e.context,
+        suggestions=list(e.suggestions),
+    )
+
+
+def semantic_error_details(errors: list[SemanticError]) -> list[dict[str, Any]]:
+    """Compile errors as the dicts a 4xx ``detail`` body carries, unset fields omitted."""
+    return [semantic_error_to_detail(e).model_dump(exclude_none=True) for e in errors]
 
 
 def error_info_to_warning(info: ErrorInfo) -> StructuredWarning:

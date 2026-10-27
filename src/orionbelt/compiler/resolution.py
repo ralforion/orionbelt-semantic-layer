@@ -82,6 +82,12 @@ from orionbelt.models.semantic import (
     held_grain_cost,
     result_type_holds_grain,
 )
+from orionbelt.models.suggestions import (
+    artefact_kind,
+    dimension_names,
+    measure_names,
+    suggest_names,
+)
 from orionbelt.models.types import DecimalType, parse_data_type
 from orionbelt.models.warnings import WarningCode, warning
 
@@ -1866,11 +1872,21 @@ class QueryResolver:
         """Resolve a dimension reference to its physical column."""
         dim = ctx.model.dimensions.get(ref.name)
         if dim is None:
+            kind = artefact_kind(ctx.model, ref.name)
             ctx.errors.append(
                 SemanticError(
                     code="UNKNOWN_DIMENSION",
                     message=f"Unknown dimension '{ref.name}'",
                     path="select.dimensions",
+                    hint=(
+                        f"'{ref.name}' is a {kind}: list it under select.measures."
+                        if kind in ("measure", "metric")
+                        else None
+                    ),
+                    suggestions=(
+                        [] if kind else suggest_names(ref.name, dimension_names(ctx.model))
+                    ),
+                    context={"dimension": ref.name},
                 )
             )
             return None
@@ -2043,6 +2059,17 @@ class QueryResolver:
                     code="UNKNOWN_MEASURE",
                     message=f"Unknown measure '{name}'",
                     path="select.measures",
+                    hint=(
+                        f"'{name}' is a dimension: list it under select.dimensions."
+                        if name in ctx.model.dimensions
+                        else None
+                    ),
+                    suggestions=(
+                        []
+                        if name in ctx.model.dimensions
+                        else suggest_names(name, measure_names(ctx.model))
+                    ),
+                    context={"measure": name},
                 )
             )
             return None
@@ -2064,6 +2091,8 @@ class QueryResolver:
                             f"This would cause row multiplication."
                         ),
                         path="select.measures",
+                        hint=f"Add {', '.join(repr(d) for d in bad)} to select.dimensions.",
+                        context={"measure": name, "missingDimensions": bad},
                     )
                 )
         return ResolvedMeasure(

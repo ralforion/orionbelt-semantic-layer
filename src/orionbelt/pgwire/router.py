@@ -293,7 +293,7 @@ class SemanticRouter:
                 message=f"unsupported dialect: {exc}",
             )
         except ResolutionError as exc:
-            message = "; ".join(e.message for e in exc.errors) or "query resolution failed"
+            message = "; ".join(e.as_text() for e in exc.errors) or "query resolution failed"
             return protocol.build_error_response(
                 severity="ERROR",
                 code=SQLSTATE_UNDEFINED_COLUMN,
@@ -303,7 +303,7 @@ class SemanticRouter:
             return protocol.build_error_response(
                 severity="ERROR",
                 code=SQLSTATE_FEATURE_NOT_SUPPORTED,
-                message=exc.message,
+                message="; ".join(e.as_text() for e in exc.errors),
             )
         except (
             AmbiguousTableReferenceError,
@@ -1124,7 +1124,7 @@ def _encode_translation_error(exc: SQLTranslationError) -> bytes:
     # in one pass.
     first = exc.errors[0]
     sqlstate = _translation_code_to_sqlstate(first.code)
-    message = "; ".join(f"[{e.code}] {e.message}" for e in exc.errors)
+    message = "; ".join(e.as_text() for e in exc.errors)
     return protocol.build_error_response(
         severity="ERROR",
         code=sqlstate,

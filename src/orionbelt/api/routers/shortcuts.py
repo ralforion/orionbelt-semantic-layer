@@ -79,21 +79,11 @@ from orionbelt.api.schemas import (
     ValueSearchRequest,
     ValueSearchResponse,
 )
-from orionbelt.api.services.query_compilation import federation_response
+from orionbelt.api.services.query_compilation import compile_query_or_raise, federation_response
 from orionbelt.api.services.value_search import run_value_search
 from orionbelt.api.warnings_adapter import error_info_to_detail, semantic_error_to_warning
 from orionbelt.cache import Cache
-from orionbelt.compiler.fanout import FanoutError
-from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
-from orionbelt.dialect.base import (
-    AmbiguousTableReferenceError,
-    UnsupportedAggregationError,
-    UnsupportedFunctionError,
-    UnsupportedGroupingError,
-    UnsupportedNestedAccessError,
-)
-from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.service.model_store import ModelStore
@@ -468,77 +458,7 @@ async def shortcut_compile_query(
     store, model_id = _resolve_store_and_model(mgr)
     model = store.get_model(model_id)
     dialect = _resolve_dialect(request_dialect=dialect, model=model, fallback=get_db_vendor())
-    try:
-        result = store.compile_query(model_id, body, dialect)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found") from None
-    except UnsupportedDialectError:
-        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
-    except ResolutionError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Query resolution failed",
-                "errors": [
-                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
-                ],
-            },
-        ) from None
-    except FanoutError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "Query fanout detected", "message": exc.message},
-        ) from None
-    except UnsupportedAggregationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported aggregation",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "aggregation": exc.aggregation,
-            },
-        ) from None
-    except UnsupportedGroupingError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported grouping",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "grouping": exc.grouping,
-            },
-        ) from None
-    except UnsupportedNestedAccessError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported nested access",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "dataObject": exc.alias,
-            },
-        ) from None
-    except UnsupportedFunctionError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported function",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "function": exc.function,
-            },
-        ) from None
-    except AmbiguousTableReferenceError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Ambiguous table reference",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "database": exc.database,
-            },
-        ) from None
+    result = compile_query_or_raise(store=store, model_id=model_id, query=body, dialect=dialect)
 
     explain_resp = None
     if result.explain:
@@ -654,77 +574,7 @@ async def shortcut_execute_query(
     if query.limit is None:
         query = query.model_copy(update={"limit": get_query_default_limit()})
 
-    try:
-        result = store.compile_query(model_id, query, dialect)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found") from None
-    except UnsupportedDialectError:
-        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
-    except ResolutionError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Query resolution failed",
-                "errors": [
-                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
-                ],
-            },
-        ) from None
-    except FanoutError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "Query fanout detected", "message": exc.message},
-        ) from None
-    except UnsupportedAggregationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported aggregation",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "aggregation": exc.aggregation,
-            },
-        ) from None
-    except UnsupportedGroupingError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported grouping",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "grouping": exc.grouping,
-            },
-        ) from None
-    except UnsupportedNestedAccessError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported nested access",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "dataObject": exc.alias,
-            },
-        ) from None
-    except UnsupportedFunctionError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported function",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "function": exc.function,
-            },
-        ) from None
-    except AmbiguousTableReferenceError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Ambiguous table reference",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "database": exc.database,
-            },
-        ) from None
+    result = compile_query_or_raise(store=store, model_id=model_id, query=query, dialect=dialect)
 
     # Resolve the session_id that owns the resolved store so the cache key
     # remains scoped per session (matching the session-scoped endpoint).

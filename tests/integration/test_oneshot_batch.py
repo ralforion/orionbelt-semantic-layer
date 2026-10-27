@@ -336,6 +336,26 @@ class TestOneshotBatchHappyPath:
         assert results[1]["status"] == "error"
         assert results[1]["error"]["code"]
 
+    async def test_a_compile_error_reports_every_error_with_its_repair(
+        self, client: AsyncClient
+    ) -> None:
+        query = {
+            "id": "two-bad",
+            "query": {"select": {"dimensions": ["Country"], "measures": ["Total Revenu"]}},
+        }
+        r = await client.post(
+            "/v1/oneshot/batch",
+            json={"model_yaml": SAMPLE_MODEL_YAML, "queries": [query]},
+        )
+        assert r.status_code == 200, r.text
+        error = r.json()["results"][0]["error"]
+        assert error["code"] == "UNKNOWN_DIMENSION"
+        assert error["suggestions"] == ["Customer Country"]
+        assert [(e["code"], e["suggestions"][0]) for e in error["errors"]] == [
+            ("UNKNOWN_DIMENSION", "Customer Country"),
+            ("UNKNOWN_MEASURE", "Total Revenue"),
+        ]
+
     async def test_fail_fast_cancels_remaining(self, client: AsyncClient) -> None:
         bad_queries = [
             {

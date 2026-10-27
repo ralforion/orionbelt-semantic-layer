@@ -241,6 +241,8 @@ def resolve_window_metric(
                         f"'{metric.time_dimension}' to be in the query's selected dimensions"
                     ),
                     path=f"metrics.{name}.timeDimension",
+                    hint=f"Add '{metric.time_dimension}' to select.dimensions.",
+                    context={"metric": name, "timeDimension": metric.time_dimension},
                 )
             )
             return None
@@ -661,6 +663,8 @@ def resolve_pop_metric(
                     f"'{pop.time_dimension}' to be in the query's selected dimensions"
                 ),
                 path=f"metrics.{name}.periodOverPeriod.timeDimension",
+                hint=f"Add '{pop.time_dimension}' to select.dimensions.",
+                context={"metric": name, "timeDimension": pop.time_dimension},
             )
         )
         return None
