@@ -18,6 +18,7 @@ import typer
 from orionbelt import __version__
 from orionbelt.cli import _io, _render
 from orionbelt.cli._render import OutputFormat
+from orionbelt.models.errors import error_text
 
 app = typer.Typer(
     name="obsl",
@@ -297,10 +298,17 @@ def validate(
 
 def _fmt_issue(issue: dict[str, Any]) -> str:
     code = issue.get("code", "")
-    msg = issue.get("message", "")
+    msg = str(issue.get("message", ""))
     path = issue.get("path")
-    head = f"[{code}] {msg}" if code else str(msg)
-    return f"{head} ({path})" if path else head
+    if not code:
+        return f"{msg} ({path})" if path else msg
+    return error_text(
+        code,
+        msg,
+        path=path,
+        hint=issue.get("hint"),
+        suggestions=issue.get("suggestions") or (),
+    )
 
 
 @app.command()
@@ -1303,8 +1311,7 @@ def _model_invalid(exc: Any) -> typer.Exit:
     """Render a ModelValidationError's structured errors and return Exit(1)."""
     _render.error("model validation failed:")
     for e in exc.errors:
-        path = f" ({e.path})" if getattr(e, "path", None) else ""
-        _render.error(f"  [{e.code}] {e.message}{path}")
+        _render.error(f"  {e.as_text()}")
     return typer.Exit(1)
 
 
