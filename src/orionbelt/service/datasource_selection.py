@@ -13,8 +13,11 @@ database.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from orionbelt.models.errors import SemanticError
+from orionbelt.models.suggestions import suggest_names
 from orionbelt.service.db_executor import ExecutionUnavailableError
 
 if TYPE_CHECKING:
@@ -25,6 +28,43 @@ if TYPE_CHECKING:
 
 class FederationNotEnabledError(ExecutionUnavailableError):
     """A model's data objects are read from more than one data source."""
+
+
+class DataSourceUnavailableError(ExecutionUnavailableError):
+    """A data source a model names cannot serve its queries, and what would repair it.
+
+    ``message`` is the finding alone; ``str()`` adds the hint and suggestions
+    for the surfaces that show only text. ``context["reason"]`` tells the
+    cases apart: ``unknownSource``, ``dialectMismatch``, ``ambiguousSource``,
+    ``invalidConfiguration`` or ``extensionOutdated``.
+    """
+
+    code = "DATA_SOURCE_UNAVAILABLE"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        context: dict[str, Any],
+        hint: str | None = None,
+        suggestions: Sequence[str] = (),
+    ) -> None:
+        self.message = message
+        self.hint = hint
+        self.suggestions = list(suggestions)
+        self.context = context
+        super().__init__(self.as_error().as_text().removeprefix(f"[{self.code}] "))
+
+    def as_error(self, path: str | None = None) -> SemanticError:
+        """The finding as a :class:`SemanticError` at ``path``."""
+        return SemanticError(
+            code=self.code,
+            message=self.message,
+            path=path,
+            hint=self.hint,
+            suggestions=self.suggestions,
+            context=self.context,
+        )
 
 
 def source_key(name: str) -> str:
@@ -73,10 +113,10 @@ def model_datasource_name(model: SemanticModel | None) -> str | None:
     return next(iter(readers.values()), (default, []))[0]
 
 
-def datasource_errors(model: SemanticModel, execution_dialect: str) -> list[tuple[str, str]]:
+def datasource_errors(model: SemanticModel, execution_dialect: str) -> list[SemanticError]:
     """Where queries execute, the data sources a model names that cannot serve it.
 
-    ``(path, message)`` pairs: a name that is not configured, or, for a model
+    One error per offending path: a name that is not configured, or, for a model
     read from one source, a source of another dialect than the model's
     (``defaultDialect``, else ``execution_dialect``). A model read from
     several sources loads; its queries are refused until federation ships.
@@ -97,9 +137,9 @@ def datasource_errors(model: SemanticModel, execution_dialect: str) -> list[tupl
         dialect = (model.settings.default_dialect if model.settings else None) or execution_dialect
         try:
             resolve_datasource(model, dialect)
-        except ExecutionUnavailableError as exc:
+        except DataSourceUnavailableError as exc:
             path = next(p for p, n in named.items() if source_key(n) == source_key(single))
-            return [(path, str(exc))]
+            return [exc.as_error(path)]
         return []
     try:
         from ob_flight.datasources import DataSourceNotFoundError, find_datasource
@@ -107,14 +147,14 @@ def datasource_errors(model: SemanticModel, execution_dialect: str) -> list[tupl
         return []
     try:
         sources = configured_datasource_list()
-    except ExecutionUnavailableError as exc:
-        return [(next(iter(named)), str(exc))]
+    except DataSourceUnavailableError as exc:
+        return [exc.as_error(next(iter(named)))]
     errors = []
     for path, name in named.items():
         try:
             find_datasource(name, sources)
         except DataSourceNotFoundError as exc:
-            errors.append((path, f"{_model_label(model)}: {exc}"))
+            errors.append(_unknown_source(model, name, sources, exc).as_error(path))
     return errors
 
 
@@ -158,7 +198,9 @@ def configured_datasource_list() -> list[DataSource]:
     try:
         return configured_datasources()
     except DataSourceConfigError as exc:
-        raise ExecutionUnavailableError(str(exc)) from None
+        raise DataSourceUnavailableError(
+            str(exc), context={"reason": "invalidConfiguration"}
+        ) from None
 
 
 def describe_datasources() -> list[dict[str, Any]]:
@@ -206,31 +248,57 @@ def resolve_datasource(model: SemanticModel | None, dialect: str) -> DataSource 
     if name is None:
         named = [s for s in configured_datasource_list() if s.named and s.dialect == dialect]
         if len(named) > 1:
-            listed = ", ".join(source.name for source in named)
-            raise ExecutionUnavailableError(
+            names = [source.name for source in named]
+            raise DataSourceUnavailableError(
                 f"{label} runs on {dialect}, and {len(named)} {dialect} data sources are "
-                f"configured ({listed}). Set settings.defaultDataSource, or load the "
-                "model with a datasource."
+                f"configured ({', '.join(names)}). Set settings.defaultDataSource, or load "
+                "the model with a datasource.",
+                context={"reason": "ambiguousSource", "dialect": dialect, "dataSources": names},
             )
         return named[0] if named else None
 
     try:
         from ob_flight.datasources import DataSourceNotFoundError, find_datasource
     except ImportError:
-        raise ExecutionUnavailableError(
+        raise DataSourceUnavailableError(
             f"{label} runs on data source '{name}', but the installed ob-flight-extension "
-            "has no named data sources; upgrade it to this OBSL version."
+            "has no named data sources; upgrade it to this OBSL version.",
+            context={"reason": "extensionOutdated", "dataSource": name},
         ) from None
+    sources = configured_datasource_list()
     try:
-        source = find_datasource(name, configured_datasource_list())
+        source = find_datasource(name, sources)
     except DataSourceNotFoundError as exc:
-        raise ExecutionUnavailableError(f"{label}: {exc}") from None
+        raise _unknown_source(model, name, sources, exc) from None
     if source.dialect != dialect:
-        raise ExecutionUnavailableError(
+        raise DataSourceUnavailableError(
             f"{label} runs on data source '{source.name}', which is {source.dialect}, but "
-            f"the query was compiled for {dialect}"
+            f"the query was compiled for {dialect}",
+            hint=(
+                f"Compile for {source.dialect} (settings.defaultDialect), or name a "
+                f"{dialect} data source."
+            ),
+            context={
+                "reason": "dialectMismatch",
+                "dataSource": source.name,
+                "sourceDialect": source.dialect,
+                "dialect": dialect,
+            },
         )
     return source
+
+
+def _unknown_source(
+    model: Any, name: str, sources: Sequence[DataSource], exc: LookupError
+) -> DataSourceUnavailableError:
+    """The error for a data source name no configured source has."""
+    configured = [source.name for source in sources]
+    return DataSourceUnavailableError(
+        f"{_model_label(model)}: {exc}",
+        hint="Configure the source in OBSL_DATABASES, or name one that is configured.",
+        suggestions=suggest_names(name, dict.fromkeys(configured, ())),
+        context={"reason": "unknownSource", "dataSource": name, "dataSources": configured},
+    )
 
 
 def _model_label(model: Any) -> str:

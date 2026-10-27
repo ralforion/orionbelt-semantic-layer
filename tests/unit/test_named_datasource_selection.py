@@ -27,6 +27,7 @@ from orionbelt.models.query import QueryObject  # noqa: E402
 from orionbelt.parser.loader import TrackedLoader  # noqa: E402
 from orionbelt.parser.resolver import ReferenceResolver  # noqa: E402
 from orionbelt.service.datasource_selection import (  # noqa: E402
+    DataSourceUnavailableError,
     describe_datasources,
     resolve_datasource,
 )
@@ -679,3 +680,72 @@ class TestBrokenRegistryRest:
 
         assert response.status_code == 422
         assert response.json()["detail"]["errors"][0]["code"] == "DATA_SOURCE_UNAVAILABLE"
+
+
+class TestRepairDetail:
+    """A data-source error says which case it is and how to repair it."""
+
+    def _load_error(self, model_yaml: str, dialect: str = "duckdb") -> Any:
+        with pytest.raises(ModelValidationError) as caught:
+            ModelStore().load_model(model_yaml, execution_dialect=dialect)
+        (error,) = caught.value.errors
+        return error
+
+    def test_a_misspelt_source_suggests_the_configured_one(self, shops: Any) -> None:
+        error = self._load_error(shop_model("shp-eu"))
+
+        assert error.suggestions == ["shop-eu", "shop-us"]
+        assert error.hint is not None and "OBSL_DATABASES" in error.hint
+        assert error.context == {
+            "reason": "unknownSource",
+            "dataSource": "shp-eu",
+            "dataSources": ["shop-eu", "shop-us"],
+        }
+        assert "Did you mean 'shop-eu' or 'shop-us'?" in error.as_text()
+
+    def test_an_unrelated_name_suggests_nothing(self, shops: Any) -> None:
+        assert self._load_error(shop_model("warehouse")).suggestions == []
+
+    def test_an_object_source_is_reported_the_same_way(self, shops: Any) -> None:
+        error = self._load_error(two_object_model("shp-eu", "shop-eu"))
+
+        assert error.path == "dataObjects.Orders.dataSource"
+        assert error.suggestions[0] == "shop-eu"
+        assert error.context["reason"] == "unknownSource"
+
+    def test_another_dialect_names_both(self, shops: Any) -> None:
+        with pytest.raises(DataSourceUnavailableError) as caught:
+            resolve_datasource(_model(shop_model("shop-eu")), "postgres")
+
+        assert caught.value.context == {
+            "reason": "dialectMismatch",
+            "dataSource": "shop-eu",
+            "sourceDialect": "duckdb",
+            "dialect": "postgres",
+        }
+        assert "Hint: Compile for duckdb" in str(caught.value)
+
+    def test_an_ambiguous_model_lists_the_candidates(self, shops: Any) -> None:
+        with pytest.raises(DataSourceUnavailableError) as caught:
+            resolve_datasource(_model(shop_model()), "duckdb")
+
+        assert caught.value.context == {
+            "reason": "ambiguousSource",
+            "dialect": "duckdb",
+            "dataSources": ["shop-eu", "shop-us"],
+        }
+
+    def test_a_broken_registry_says_so(self, shops: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DB_SHOP_US_TYPE")
+
+        error = self._load_error(two_object_model("shop-us", "shop-eu"))
+
+        assert error.context == {"reason": "invalidConfiguration"}
+
+    async def test_the_422_carries_it(self, client: AsyncClient) -> None:
+        response = await _regions(client, shop_model("shp-eu"))
+
+        (error,) = response.json()["detail"]["errors"]
+        assert error["suggestions"][0] == "shop-eu"
+        assert error["context"]["reason"] == "unknownSource"
+        assert "Did you mean 'shop-eu'" in response.json()["detail"]["message"]

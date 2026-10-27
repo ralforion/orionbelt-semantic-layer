@@ -96,7 +96,10 @@ The source must be of the model's dialect. Where queries execute
 (`QUERY_EXECUTE=true` or Flight), a model naming a source that is not
 configured, or one of another dialect, fails to load with
 `DATA_SOURCE_UNAVAILABLE`. For `MODEL_FILES` that is at startup, so a typo in a
-name stops the deployment instead of failing its first query.
+name stops the deployment instead of failing its first query. The error's `context.reason`
+says which case it is (`unknownSource`, `dialectMismatch`, `ambiguousSource`,
+`invalidConfiguration`, `extensionOutdated`), and a misspelt name is answered with
+the configured names it is close to: *"Did you mean 'shop-eu'?"*
 
 ### A data object's own source
 
