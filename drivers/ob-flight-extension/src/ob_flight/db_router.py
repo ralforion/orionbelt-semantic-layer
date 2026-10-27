@@ -134,8 +134,11 @@ class ConnectionSlots:
         self._waiters: deque[threading.Event] = deque()
         self.in_use = 0
 
-    def acquire(self) -> None:
+    def acquire(self, *, wait: bool = True) -> None:
         """Take a slot, waiting in line for one if all are taken.
+
+        With ``wait=False`` a caller that finds none free is refused at once,
+        for best-effort work that must not hold up its thread.
 
         Raises:
             DataSourceBusyError: No slot was freed within the timeout.
@@ -144,6 +147,8 @@ class ConnectionSlots:
             if self.limit <= 0 or (self.in_use < self.limit and not self._waiters):
                 self.in_use += 1
                 return
+            if not wait:
+                raise DataSourceBusyError(self._source, self.limit, 0)
             turn = threading.Event()
             self._waiters.append(turn)
         if turn.wait(self._timeout):
@@ -234,19 +239,21 @@ def _get_pool(source: DataSource) -> ConnectionPool:
 
 
 @contextmanager
-def connection_slot(source: DataSource | str) -> Generator[None, None, None]:
+def connection_slot(source: DataSource | str, *, wait: bool = True) -> Generator[None, None, None]:
     """Hold one of a data source's connection slots for the block.
 
     For a connection opened outside the pool, so that it counts against the
     source's ``MAX_CONNECTIONS`` like a pooled one: open it inside the block
     and close it before the block ends.
 
+    ``wait=False`` refuses at once when no slot is free.
+
     Raises:
         DataSourceBusyError: No slot was freed within the source's
             ``ACQUIRE_TIMEOUT_SECONDS``.
     """
     slots = _get_pool(_source(source)).slots
-    slots.acquire()
+    slots.acquire(wait=wait)
     try:
         yield
     finally:
@@ -254,19 +261,22 @@ def connection_slot(source: DataSource | str) -> Generator[None, None, None]:
 
 
 @contextmanager
-def get_connection(source: DataSource | str, **overrides: Any) -> Generator[Any, None, None]:
+def get_connection(
+    source: DataSource | str, *, wait: bool = True, **overrides: Any
+) -> Generator[Any, None, None]:
     """Context manager that acquires a pooled connection to a data source.
 
     A dialect name means its implicit source. On clean exit the connection
     is returned to the pool. On exception the connection is discarded (closed).
-    The connection holds one of the source's slots while in use.
+    The connection holds one of the source's slots while in use;
+    ``wait=False`` refuses at once when none is free.
 
     Raises:
         DataSourceBusyError: Every connection the source allows stayed in use
             for its ``ACQUIRE_TIMEOUT_SECONDS``.
     """
     pool = _get_pool(_source(source))
-    pool.slots.acquire()
+    pool.slots.acquire(wait=wait)
     try:
         conn = pool.acquire(**overrides)
         ok = False

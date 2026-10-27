@@ -123,6 +123,90 @@ class TestConnectionLimit:
         finally:
             db_router.close_all_pools()
 
+    def test_the_timezone_warm_up_does_not_wait_for_a_busy_source(self, tmp_path: Any) -> None:
+        """A best-effort probe: it skips a source with no connection free and
+        tries again later, rather than waiting out the acquire timeout."""
+        import time
+
+        from ob_flight import db_router
+
+        (source,) = configured_datasources(
+            {
+                "OBSL_DATABASES": "shop",
+                "DB_SHOP_TYPE": "duckdb",
+                "DB_SHOP_DUCKDB_DATABASE": str(tmp_path / "shop.duckdb"),
+                "DB_SHOP_MAX_CONNECTIONS": "1",
+                "DB_SHOP_ACQUIRE_TIMEOUT_SECONDS": "5",
+            }
+        )
+        duckdb.connect(str(tmp_path / "shop.duckdb")).close()
+        key = f"duckdb:{source.fingerprint()}"
+        db_router.close_all_pools()
+        try:
+            with db_router.connection_slot(source):
+                started = time.monotonic()
+                db_executor.warm_db_tz_cache("duckdb", source)
+                assert time.monotonic() - started < 1
+            assert key not in db_executor._DB_TZ_DETECTED
+
+            db_executor.warm_db_tz_cache("duckdb", source)
+            assert key in db_executor._DB_TZ_DETECTED
+        finally:
+            db_router.close_all_pools()
+
+
+class TestSettingsEndpoint:
+    async def test_the_timezone_warm_up_runs_off_the_event_loop(self) -> None:
+        """/v1/settings probes the database on first use; the event loop, and
+        every other request on it, keeps running while it does."""
+        import asyncio
+        import threading
+
+        from httpx import ASGITransport, AsyncClient
+
+        from orionbelt.api.app import create_app
+        from orionbelt.api.deps import init_session_manager, reset_session_manager
+        from orionbelt.service.session_manager import SessionManager
+        from orionbelt.settings import Settings
+
+        app = create_app(settings=Settings(session_ttl_seconds=3600, session_cleanup_interval=9999))
+        mgr = SessionManager(ttl_seconds=3600, cleanup_interval=9999)
+        init_session_manager(mgr, query_execute_enabled=True, db_vendor="postgres")
+        probing = threading.Event()
+        loop_ran = threading.Event()
+        loop_ran_during_probe: list[bool] = []
+
+        def probe(*_: Any) -> None:
+            # Run on the loop's thread, this waits out its timeout: nothing
+            # else on the loop can run to set the event.
+            probing.set()
+            loop_ran_during_probe.append(loop_ran.wait(5))
+
+        async def tick(done: asyncio.Event) -> None:
+            while not done.is_set():
+                if probing.is_set():
+                    loop_ran.set()
+                await asyncio.sleep(0.005)
+
+        try:
+            with patch(
+                "orionbelt.api.routers.settings.warm_db_tz_cache", side_effect=probe
+            ) as warm:
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    done = asyncio.Event()
+                    ticker = asyncio.create_task(tick(done))
+                    response = await client.get("/v1/settings")
+                    done.set()
+                    await ticker
+            assert response.status_code == 200
+            warm.assert_called_once()
+            assert loop_ran_during_probe == [True]
+        finally:
+            reset_session_manager()
+            mgr.stop()
+
 
 class TestOlderDriver:
     def test_a_query_without_a_source_needs_no_data_source_api(

@@ -580,7 +580,9 @@ def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo
 
     Returns ``None`` (without raising) if the connection cannot be
     established or the detection query fails — leaves the cache in the
-    same state ``_detect_db_timezone`` would on failure.
+    same state ``_detect_db_timezone`` would on failure. A source with no
+    connection free is not waited for: the probe is skipped, and a later
+    call tries again.
     """
     try:
         datasource = _target(dialect, source)
@@ -592,7 +594,7 @@ def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo
             import duckdb
 
             database = _credentials(datasource).get("database", ":memory:")
-            with _connection_slot(datasource):
+            with _connection_slot(datasource, wait=False):
                 conn = duckdb.connect(database=database, read_only=True)
                 try:
                     return _detect_db_timezone(conn, "duckdb", key)
@@ -600,9 +602,12 @@ def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo
                     with contextlib.suppress(Exception):
                         conn.close()
 
-        from ob_flight.db_router import get_connection
+        from ob_flight import db_router
 
-        with get_connection(datasource) as conn:
+        # Not with an ob-flight-extension older than the connection slots,
+        # whose get_connection would pass ``wait`` on to the driver.
+        busy_ok = {"wait": False} if hasattr(db_router, "connection_slot") else {}
+        with db_router.get_connection(datasource, **busy_ok) as conn:
             cursor = conn.cursor()
             try:
                 return _detect_db_timezone(cursor, dialect, key)
@@ -886,16 +891,19 @@ def execute_sql(
         raise ExecutionError(f"Database execution failed: {exc}{_hint(exc)}") from exc
 
 
-def _connection_slot(source: DataSource | str) -> contextlib.AbstractContextManager[None]:
+def _connection_slot(
+    source: DataSource | str, *, wait: bool = True
+) -> contextlib.AbstractContextManager[None]:
     """One of the source's connection slots, for a connection opened outside the pool.
 
-    Nothing to hold with an ``ob-flight-extension`` older than the slots.
+    ``wait=False`` refuses at once when none is free. Nothing to hold with
+    an ``ob-flight-extension`` older than the slots.
     """
     try:
         from ob_flight.db_router import connection_slot
     except ImportError:
         return contextlib.nullcontext()
-    return connection_slot(source)
+    return connection_slot(source, wait=wait)
 
 
 def _hint(exc: Exception) -> str:
