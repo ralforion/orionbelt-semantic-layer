@@ -51,6 +51,8 @@ shops above share a user, password and database name and differ only in host.
 | `DB_<NAME>_TYPE` | Required. One of `bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, `mysql`, `postgres`, `snowflake` (`postgresql` is accepted for `postgres`) |
 | `DB_<NAME>_DESCRIPTION` | Optional. What the source holds, shown wherever sources are listed |
 | `DB_<NAME>_POOL_SIZE` | Optional. Idle connections kept for the source; falls back to `DB_POOL_SIZE`, then 5 |
+| `DB_<NAME>_MAX_CONNECTIONS` | Optional. Connections of the source in use at once, by REST, pgwire, Flight SQL and federated legs together; falls back to `DB_MAX_CONNECTIONS`, then 10. `0` means no limit. A query past it waits its turn, in order of arrival |
+| `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS` | Optional. How long a query waits for one of those connections; falls back to `DB_ACQUIRE_TIMEOUT_SECONDS`, then 30. A query still waiting then is refused with `DATA_SOURCE_BUSY` (HTTP 503), naming the source and the setting to raise |
 | Variable lookup | `DB_<NAME>_<VAR>`, then the unprefixed `<VAR>`, each under its own name before its [alternative spellings](#orionbelt-analytics-variable-names). A source's own value always wins over a shared default |
 | Names | Compared ignoring case, spaces, dashes and underscores, so `Shop EU` means `shop-eu` |
 
@@ -276,6 +278,15 @@ connection settings, secrets included, so:
 
 The fingerprint is a hash and shows nothing of what went into it. For BigQuery
 the content of the key file counts, not only its path.
+
+Each pool also bounds the source's connections in use at once
+(`MAX_CONNECTIONS`, default 10), whether a query runs through REST, pgwire,
+Flight SQL or as a leg of a federated query, and whether its connection is
+pooled or opened for it alone. Two names sharing a pool share that bound, set
+by the first name a query used. Idle connections kept for reuse do not count
+against it; at most `POOL_SIZE` of them are kept, and never more than the
+bound. Waiting queries are served in order of arrival, so a steady stream of
+new ones cannot starve one that came first.
 
 ## OrionBelt Analytics variable names
 

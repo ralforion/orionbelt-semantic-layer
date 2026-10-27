@@ -12,6 +12,7 @@ import contextlib
 import importlib
 import queue
 import threading
+from collections import deque
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -35,8 +36,10 @@ __all__ = [
     "MotherDuckTokenMissingError",
     "VENDOR_MAP",
     "ConnectionPool",
+    "DataSourceBusyError",
     "close_all_pools",
     "connect",
+    "connection_slot",
     "get_connection",
     "get_credentials",
     "implicit_datasource",
@@ -102,17 +105,88 @@ def connect(source: DataSource | str, **overrides: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
+class DataSourceBusyError(TimeoutError):
+    """Every connection a data source allows stayed in use for the whole wait."""
+
+    def __init__(self, source: DataSource, limit: int, timeout: float) -> None:
+        setting = f"{source.prefix or 'DB_'}MAX_CONNECTIONS"
+        super().__init__(
+            f"[DATA_SOURCE_BUSY] Data source '{source.name}' has all {limit} of its "
+            f"connections in use, and none was freed within {timeout:g} s. Retry later, "
+            f"or raise {setting}."
+        )
+
+
+class ConnectionSlots:
+    """At most ``limit`` connections of one data source in use at once.
+
+    A thread that finds every slot taken waits its turn: slots go to waiters
+    in order of arrival, so a steady stream of new queries cannot starve one
+    that came first. A waiter that is not served within ``timeout`` seconds
+    gets :class:`DataSourceBusyError`. ``limit`` 0 means no limit.
+    """
+
+    def __init__(self, source: DataSource, limit: int, timeout: float) -> None:
+        self._source = source
+        self.limit = limit
+        self._timeout = timeout
+        self._lock = threading.Lock()
+        self._waiters: deque[threading.Event] = deque()
+        self.in_use = 0
+
+    def acquire(self) -> None:
+        """Take a slot, waiting in line for one if all are taken.
+
+        Raises:
+            DataSourceBusyError: No slot was freed within the timeout.
+        """
+        with self._lock:
+            if self.limit <= 0 or (self.in_use < self.limit and not self._waiters):
+                self.in_use += 1
+                return
+            turn = threading.Event()
+            self._waiters.append(turn)
+        if turn.wait(self._timeout):
+            return
+        with self._lock:
+            # Handed a slot between the timeout and taking the lock.
+            if turn.is_set():
+                return
+            self._waiters.remove(turn)
+        raise DataSourceBusyError(self._source, self.limit, self._timeout)
+
+    def release(self) -> None:
+        """Free a slot, handing it to the first waiter if there is one."""
+        with self._lock:
+            if self._waiters:
+                # The slot passes on as it is: ``in_use`` does not change.
+                self._waiters.popleft().set()
+            else:
+                self.in_use -= 1
+
+
 class ConnectionPool:
     """Thread-safe connection pool for a single data source.
 
     Idle connections are held in a bounded queue.  ``acquire()`` returns a
     pooled connection when available, otherwise creates a new one.
     ``release()`` returns a connection to the pool (or closes it if full).
+    ``slots`` bounds the connections of the source in use at once, pooled
+    or not (see :func:`connection_slot`).
     """
 
-    def __init__(self, source: DataSource | str, max_size: int = 5) -> None:
+    def __init__(
+        self,
+        source: DataSource | str,
+        max_size: int = 5,
+        max_connections: int = 0,
+        acquire_timeout: float = 30.0,
+    ) -> None:
         self._source = _source(source)
+        if max_connections > 0:
+            max_size = min(max_size, max_connections)
         self._pool: queue.Queue[Any] = queue.Queue(maxsize=max_size)
+        self.slots = ConnectionSlots(self._source, max_connections, acquire_timeout)
 
     def acquire(self, **overrides: Any) -> Any:
         """Get a connection from the pool or create a new one."""
@@ -150,8 +224,33 @@ def _get_pool(source: DataSource) -> ConnectionPool:
     key = pinned.fingerprint()
     with _pools_lock:
         if key not in _pools:
-            _pools[key] = ConnectionPool(pinned, max_size=pinned.pool_size())
+            _pools[key] = ConnectionPool(
+                pinned,
+                max_size=pinned.pool_size(),
+                max_connections=pinned.max_connections(),
+                acquire_timeout=pinned.acquire_timeout_seconds(),
+            )
         return _pools[key]
+
+
+@contextmanager
+def connection_slot(source: DataSource | str) -> Generator[None, None, None]:
+    """Hold one of a data source's connection slots for the block.
+
+    For a connection opened outside the pool, so that it counts against the
+    source's ``MAX_CONNECTIONS`` like a pooled one: open it inside the block
+    and close it before the block ends.
+
+    Raises:
+        DataSourceBusyError: No slot was freed within the source's
+            ``ACQUIRE_TIMEOUT_SECONDS``.
+    """
+    slots = _get_pool(_source(source)).slots
+    slots.acquire()
+    try:
+        yield
+    finally:
+        slots.release()
 
 
 @contextmanager
@@ -160,19 +259,28 @@ def get_connection(source: DataSource | str, **overrides: Any) -> Generator[Any,
 
     A dialect name means its implicit source. On clean exit the connection
     is returned to the pool. On exception the connection is discarded (closed).
+    The connection holds one of the source's slots while in use.
+
+    Raises:
+        DataSourceBusyError: Every connection the source allows stayed in use
+            for its ``ACQUIRE_TIMEOUT_SECONDS``.
     """
     pool = _get_pool(_source(source))
-    conn = pool.acquire(**overrides)
-    ok = False
+    pool.slots.acquire()
     try:
-        yield conn
-        ok = True
+        conn = pool.acquire(**overrides)
+        ok = False
+        try:
+            yield conn
+            ok = True
+        finally:
+            if ok:
+                pool.release(conn)
+            else:
+                with contextlib.suppress(Exception):
+                    conn.close()
     finally:
-        if ok:
-            pool.release(conn)
-        else:
-            with contextlib.suppress(Exception):
-                conn.close()
+        pool.slots.release()
 
 
 def close_all_pools() -> None:

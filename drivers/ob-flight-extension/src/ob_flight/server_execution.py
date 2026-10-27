@@ -780,40 +780,45 @@ def execute_sql(
             )
             return flight.RecordBatchStream(cached_table)
 
+    from ob_flight.db_router import connection_slot
+
     # Resolve ``db_connect`` through the ``ob_flight.server`` module so tests
     # that patch ``ob_flight.server.db_connect`` take effect.
     from ob_flight.server import db_connect
 
     planned = cache_meta.get("source") if cache_meta is not None else None
-    conn = db_connect(planned or source or dialect)
-    try:
-        cursor = conn.cursor()
-        cursor.execute(sql)
+    target = planned or source or dialect
+    # The connection counts against the source's MAX_CONNECTIONS while open.
+    with connection_slot(target):
+        conn = db_connect(target)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql)
 
-        if cursor.description is None:
-            schema = pa.schema([pa.field("status", pa.utf8())])
-            batch = rows_to_batch([("OK",)], schema)
-            table = pa.Table.from_batches([batch])
+            if cursor.description is None:
+                schema = pa.schema([pa.field("status", pa.utf8())])
+                batch = rows_to_batch([("OK",)], schema)
+                table = pa.Table.from_batches([batch])
+                return flight.RecordBatchStream(table)
+
+            table = _result_table(server, cursor)
+
+            # Cast to the schema advertised in FlightInfo so the streamed schema
+            # matches what the client was promised — e.g. a governed DECIMAL column
+            # inferred as decimal128(38, s) narrows to the declared decimal(p, s)
+            # (issue #136). Best-effort: a mismatch leaves the table unchanged.
+            table = align_cached_table(table, result_schema)
+
+            # Cache populate — write back after a successful warehouse run. Storing
+            # the aligned table keeps the cached decimal type consistent with the
+            # REST/pgwire writers and with a subsequent Flight cache hit.
+            if cached:
+                assert cache_meta is not None
+                server._cache_put_table(table, cache_meta)
+
             return flight.RecordBatchStream(table)
-
-        table = _result_table(server, cursor)
-
-        # Cast to the schema advertised in FlightInfo so the streamed schema
-        # matches what the client was promised — e.g. a governed DECIMAL column
-        # inferred as decimal128(38, s) narrows to the declared decimal(p, s)
-        # (issue #136). Best-effort: a mismatch leaves the table unchanged.
-        table = align_cached_table(table, result_schema)
-
-        # Cache populate — write back after a successful warehouse run. Storing
-        # the aligned table keeps the cached decimal type consistent with the
-        # REST/pgwire writers and with a subsequent Flight cache hit.
-        if cached:
-            assert cache_meta is not None
-            server._cache_put_table(table, cache_meta)
-
-        return flight.RecordBatchStream(table)
-    finally:
-        conn.close()
+        finally:
+            conn.close()
 
 
 def cache_get_table(server: OBFlightServer, key: str) -> pa.Table | None:

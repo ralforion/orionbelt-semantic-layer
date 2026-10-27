@@ -89,6 +89,41 @@ class TestExecution:
         assert {f"duckdb:{source.fingerprint()}" for source in shops} == db_executor._DB_TZ_DETECTED
 
 
+class TestConnectionLimit:
+    def test_a_source_with_no_connection_free_is_unavailable_not_failed(
+        self, tmp_path: Any
+    ) -> None:
+        """A busy source is a 503 naming the setting to raise, not a 502
+        sending the reader to look at the database."""
+        from ob_flight import db_router
+
+        con = duckdb.connect(str(tmp_path / "shop.duckdb"))
+        con.execute("CREATE TABLE shop AS SELECT 'eu' AS region")
+        con.close()
+        (source,) = configured_datasources(
+            {
+                "OBSL_DATABASES": "shop",
+                "DB_SHOP_TYPE": "duckdb",
+                "DB_SHOP_DUCKDB_DATABASE": str(tmp_path / "shop.duckdb"),
+                "DB_SHOP_MAX_CONNECTIONS": "1",
+                "DB_SHOP_ACQUIRE_TIMEOUT_SECONDS": "0.05",
+            }
+        )
+        db_router.close_all_pools()
+        try:
+            with (
+                db_router.connection_slot(source),
+                pytest.raises(ExecutionUnavailableError, match=r"\[DATA_SOURCE_BUSY\]"),
+            ):
+                execute_sql("SELECT region FROM shop", dialect="duckdb", source=source)
+
+            assert execute_sql("SELECT region FROM shop", dialect="duckdb", source=source).rows == [
+                ["eu"]
+            ]
+        finally:
+            db_router.close_all_pools()
+
+
 class TestOlderDriver:
     def test_a_query_without_a_source_needs_no_data_source_api(
         self, shops: list[DataSource], monkeypatch: pytest.MonkeyPatch

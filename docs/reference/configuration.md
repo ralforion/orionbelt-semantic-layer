@@ -47,7 +47,9 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `FLIGHT_TLS_CLIENT_CA`     | —           | PEM CA for client certificates; turns on mutual TLS |
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution       |
 | `DB_POOL_SIZE`             | `5`         | Idle connections kept per data source     |
-| `OBSL_DATABASES`           | —           | Comma-separated names of [named data sources](../guide/data-sources.md); each reads `DB_<NAME>_TYPE`, `DB_<NAME>_DESCRIPTION`, `DB_<NAME>_POOL_SIZE` and its dialect's variables behind the `DB_<NAME>_` prefix. A model picks one with `settings.defaultDataSource` |
+| `DB_MAX_CONNECTIONS`       | `10`        | Connections of one data source in use at once, on every surface; `0` for no limit. Queries past it wait in order of arrival |
+| `DB_ACQUIRE_TIMEOUT_SECONDS` | `30`      | How long a query waits for a connection before `DATA_SOURCE_BUSY` (503) |
+| `OBSL_DATABASES`           | —           | Comma-separated names of [named data sources](../guide/data-sources.md); each reads `DB_<NAME>_TYPE`, `DB_<NAME>_DESCRIPTION`, `DB_<NAME>_POOL_SIZE`, `DB_<NAME>_MAX_CONNECTIONS`, `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS` and its dialect's variables behind the `DB_<NAME>_` prefix. A model picks one with `settings.defaultDataSource` |
 | `FEDERATION_MAX_CONCURRENT` | `4`       | [Queries across data sources](../guide/data-sources.md#running-a-federated-query) running at once per process; the others wait in order of arrival |
 | `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `30` | How long a federated query waits for a slot before `FEDERATION_BUSY` (503) |
 | `FEDERATION_LEG_THREADS`   | `16`        | Legs of federated queries fetched at once per process |
