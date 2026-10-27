@@ -135,9 +135,16 @@ the plan:
   derived metrics, and applies HAVING, ORDER BY and LIMIT. An order whose key
   has no match keeps its values under an empty group, as in one database.
 - A filter on the fact island's dimensions runs in its leg. Any other filter
-  runs in the combine query, after the join. A static model filter on another
-  island joins that island as an inner join, so it drops the rows it excludes,
-  as it does in one database.
+  runs in the combine query, after the join. So does a static model filter on
+  another island, on a column that island's leg returns: it drops the rows it
+  excludes and keeps an unmatched row when it holds for NULL, as it does in one
+  database, and an `enforce: always` filter applies even when the query reads
+  nothing else of that island. A filter on a dimension the query selects at a
+  time grain cannot run after the join and is refused.
+- Measures are combined from partial results that are not rounded: a sum is
+  kept at `DECIMAL(38, s)` (at least nine decimal places) until it is combined,
+  and the measure's own type and `defaultValue` apply to the combined value. A
+  count over no rows is 0.
 
 What does not split exactly is refused by name rather than answered with a
 different number: measures from more than one source (`FEDERATION_MULTI_FACT`),

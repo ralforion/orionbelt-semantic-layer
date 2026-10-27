@@ -46,14 +46,18 @@ CREATE TABLE customers AS SELECT * FROM (VALUES
 AMOUNT = "{dataObject: Orders, column: Amount}"
 
 
-def model_yaml(*, federated: bool, tenant_filter: bool = False, extra: str = "") -> str:
+def model_yaml(
+    *,
+    federated: bool,
+    tenant_filter: bool = False,
+    extra: str = "",
+    static: str = "",
+) -> str:
     shop = "    dataSource: shop\n" if federated else ""
     crm = "    dataSource: crm\n" if federated else ""
-    filters = (
-        "filters:\n  - {dataObject: Customers, column: Tenant, operator: equals, value: acme}\n"
-        if tenant_filter
-        else ""
-    )
+    tenant = "  - {dataObject: Customers, column: Tenant, operator: equals, value: acme}\n"
+    lines = (tenant if tenant_filter else "") + static
+    filters = f"filters:\n{lines}" if lines else ""
     return f"""\
 version: 1.0
 settings:
@@ -457,3 +461,149 @@ class TestSurfaces:
         assert "-- leg_0: shop (duckdb), reads Orders" in result.output
         assert "-- leg_1: crm (duckdb), reads Customers" in result.output
         assert result.output.index("-- combine") > result.output.index("-- leg_1")
+
+
+FILTERED_WITH_DEFAULT = """\
+  First Order Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    aggregation: sum
+    resultType: decimal
+    defaultValue: 10
+    filters:
+      - column: {dataObject: Orders, column: Order ID}
+        operator: equals
+        values: [{dataType: int, valueInt: 1}]
+"""
+NARROW = (
+    "  Revenue One Place: {columns: [{dataObject: Orders, column: Amount}], "
+    "aggregation: sum, resultType: decimal, dataType: 'decimal(10, 1)'}\n"
+)
+
+
+class TestReviewFindings:
+    """Each case returned a different number federated than in one database."""
+
+    def test_an_enforced_dimension_side_filter_applies_without_its_dimensions(
+        self, files: dict[str, str]
+    ) -> None:
+        static = (
+            "  - {dataObject: Customers, column: Tenant, operator: equals, value: acme, "
+            "enforce: always}\n"
+        )
+        query = {"select": {"measures": ["Revenue"]}}
+
+        assert_same(files, query, static=static)
+        ((total,),) = run_federated(files, query, static=static)
+        assert float(total) == pytest.approx(194.85)
+
+    def test_a_static_null_filter_keeps_the_orphan_order(self, files: dict[str, str]) -> None:
+        static = "  - {dataObject: Customers, column: Region, operator: is_null}\n"
+        query = {"select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]}}
+
+        assert_same(files, query, static=static)
+        total = sum(float(r[1]) for r in run_federated(files, query, static=static))
+        assert total == pytest.approx(55.10 + 40.00)
+
+    def test_a_default_applies_after_the_partials_are_combined(self, files: dict[str, str]) -> None:
+        query = {"select": {"dimensions": ["Region"], "measures": ["First Order Revenue"]}}
+
+        assert_same(files, query, extra=FILTERED_WITH_DEFAULT)
+        rows = dict(run_federated(files, query, extra=FILTERED_WITH_DEFAULT))
+        assert float(rows["EU"]) == pytest.approx(100.50)
+
+    def test_partials_are_not_rounded_before_they_are_added(self, files: dict[str, str]) -> None:
+        query = {"select": {"dimensions": ["Region"], "measures": ["Revenue One Place"]}}
+
+        assert_same(files, query, extra=NARROW)
+        rows = dict(run_federated(files, query, extra=NARROW))
+        assert float(rows["EU"]) == pytest.approx(123.9)
+
+    def test_a_count_over_no_rows_is_zero(self, files: dict[str, str]) -> None:
+        query = {
+            "select": {"measures": ["Orders Count", "Revenue"]},
+            "where": [{"field": "Region", "op": "=", "value": "nowhere"}],
+        }
+
+        assert_same(files, query)
+        ((count, _),) = run_federated(files, query)
+        assert count == 0
+
+    def test_a_deferred_filter_on_a_dimension_selected_at_a_grain_is_refused(self) -> None:
+        with pytest.raises(ResolutionError) as caught:
+            _compile(
+                model_yaml(federated=True),
+                {
+                    "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+                    "where": [
+                        {
+                            "logic": "or",
+                            "filters": [
+                                {"field": "Region", "op": "=", "value": "US"},
+                                {"field": "Order Date", "op": "<", "value": "2024-01-15"},
+                            ],
+                        }
+                    ],
+                },
+            )
+
+        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_FILTER"]
+
+
+def chain_yaml(shop: str, crm: str, regions: str) -> str:
+    """Orders -> Customers -> Regions, each on the data source given."""
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Orders:
+    code: orders
+    dataSource: {shop}
+    columns:
+      Order Customer: {{code: customer_id, abstractType: int}}
+      Amount: {{code: amount, abstractType: decimal}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+  Customers:
+    code: customers
+    dataSource: {crm}
+    columns:
+      Customer ID: {{code: customer_id, abstractType: int}}
+      Customer Region: {{code: region_id, abstractType: int}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Regions
+        columnsFrom: [Customer Region]
+        columnsTo: [Region ID]
+  Regions:
+    code: regions
+    dataSource: {regions}
+    columns:
+      Region ID: {{code: region_id, abstractType: int}}
+      Region Name: {{code: name, abstractType: string}}
+dimensions:
+  Region Name: {{dataObject: Regions, column: Region Name, resultType: string}}
+measures:
+  Revenue: {{columns: [{AMOUNT}], aggregation: sum, resultType: decimal}}
+"""
+
+
+class TestIntermediateObjects:
+    QUERY = {"select": {"dimensions": ["Region Name"], "measures": ["Revenue"]}}
+
+    def test_an_object_the_join_passes_through_is_planned_on_its_source(self) -> None:
+        plan = _compile(chain_yaml("shop", "shop", "crm"), self.QUERY).federation
+
+        assert [(leg.data_source, leg.data_objects) for leg in plan.legs] == [
+            ("shop", ("Customers", "Orders")),
+            ("crm", ("Regions",)),
+        ]
+
+    def test_a_join_passing_through_another_source_is_federated(self) -> None:
+        with pytest.raises(ResolutionError) as caught:
+            _compile(chain_yaml("shop", "crm", "shop"), self.QUERY)
+
+        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_JOIN"]

@@ -34,6 +34,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
+from orionbelt.compiler.type_resolver import resolve_measure_cast_type, resolve_measure_data_type
+from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
     DimensionRef,
@@ -55,9 +57,11 @@ from orionbelt.models.semantic import (
     Dimension,
     Measure,
     MetricType,
+    ModelFilter,
     ModelSettings,
     SemanticModel,
 )
+from orionbelt.models.types import DecimalType
 
 COMBINE_DIALECT = "duckdb"
 
@@ -129,6 +133,8 @@ def _source_name(model: SemanticModel, obj: str) -> str | None:
 def query_objects(resolved: ResolvedQuery, query: QueryObject) -> set[str]:
     """Every data object a resolved query reads, ``exists`` subqueries included."""
     objects = set(resolved.required_objects) | {resolved.base_object}
+    for step in resolved.join_steps:
+        objects |= {step.from_object, step.to_object}
     objects |= {d.object_name for d in resolved.dimensions}
     objects |= set(resolved.measure_source_objects)
     for item in [*query.where, *query.having]:
@@ -180,6 +186,7 @@ def plan_federated(
     legs: list[FederatedLeg] = []
     combine_objects: dict[str, DataObject] = {}
     combine_dimensions: dict[str, Dimension] = {}
+    combine_filters_static: list[ModelFilter] = []
 
     # The fact leg: the island's dimensions, the edge keys and the measures.
     fact_keys = {
@@ -214,8 +221,22 @@ def plan_federated(
         }
         dims = edge_dims[e - 1]
         island = islands[edge.island]
-        dim_model = planner.island_model(island, keys, set())
-        dim_query = QueryObject(select=QuerySelect(dimensions=[*dims, *keys]))
+        # A static model filter on this island runs in the combine step, on
+        # the column this leg returns for it, as it runs on a left-joined
+        # object in one database: there it drops the fact rows whose object
+        # fails it, and keeps an unmatched one when the predicate holds for
+        # NULL. Applied in the leg instead, a fact row whose object it
+        # removed would come back NULL-joined, and pass ``IS NULL``.
+        static = {
+            f"__sf{e - 1}_{n}": (f.data_object, f.column, f)
+            for n, f in enumerate(model.filters)
+            if f.data_object in island
+        }
+        static_columns = {name: (obj, col) for name, (obj, col, _) in static.items()}
+        dim_model = planner.island_model(
+            island, {**keys, **static_columns}, set(), static_filters=False
+        )
+        dim_query = QueryObject(select=QuerySelect(dimensions=[*dims, *keys, *static_columns]))
         legs.append(
             planner.leg(leg_name, island, dim_query, dim_model, compile_leg, source_dialect)
         )
@@ -228,10 +249,17 @@ def plan_federated(
                 c.name: c
                 for c in [
                     *[_dimension_column(model, DimensionRef.parse(d).name) for d in dims],
-                    *[_key_column(model, name, obj, col) for name, (obj, col) in keys.items()],
+                    *[
+                        _key_column(model, name, obj, col)
+                        for name, (obj, col) in {**keys, **static_columns}.items()
+                    ],
                 ]
             },
             countable=False,
+        )
+        combine_filters_static.extend(
+            f.model_copy(update={"data_object": leg_name, "column": name})
+            for name, (_, _, f) in static.items()
         )
         for d in dims:
             name = DimensionRef.parse(d).name
@@ -242,7 +270,7 @@ def plan_federated(
                 join_to=leg_name,
                 columns_from=list(keys),
                 columns_to=list(keys),
-                required=edge.required or planner.restricted(island),
+                required=edge.required,
             )
         )
 
@@ -264,6 +292,7 @@ def plan_federated(
         dimensions=combine_dimensions,
         measures={m: _combine_measure(model, m) for m in measures},
         metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
+        filters=combine_filters_static,
         expose_counts=False,
     )
     combine_query = query.model_copy(
@@ -611,8 +640,17 @@ class _Planner:
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         wanted = [d for d in self.query.select.dimensions if isinstance(d, str)]
         selected = {DimensionRef.parse(d).name for d in wanted}
+        at_grain = {DimensionRef.parse(d).name for d in wanted if DimensionRef.parse(d).grain}
         for item in combine_filters:
             for field in _filter_fields(item):
+                if field in at_grain:
+                    raise self.refuse(
+                        "UNSUPPORTED_FILTER",
+                        f"The filter on '{field}' runs after the join, where '{field}' is "
+                        "only available at the grain the query selects",
+                        hint="Filter it in a condition of its own data source alone, or "
+                        "select it without a grain.",
+                    )
                 if field not in selected:
                     wanted.append(field)
                     selected.add(field)
@@ -627,15 +665,6 @@ class _Planner:
                 edge_dims[edge_of[island]].append(d)
         return fact_dims, edge_dims
 
-    def restricted(self, island: set[str]) -> bool:
-        """Whether a static model filter restricts the rows of an island.
-
-        In one data source such a filter on a left-joined object also drops
-        the fact rows it excludes. The combine step keeps that by joining the
-        island's leg as an inner join.
-        """
-        return any(f.data_object in island for f in self.model.filters)
-
     # -- legs ---------------------------------------------------------------
 
     def island_model(
@@ -643,8 +672,16 @@ class _Planner:
         island: set[str],
         keys: dict[str, tuple[str, str]],
         measures: set[str],
+        *,
+        static_filters: bool = True,
     ) -> SemanticModel:
-        """The model a leg compiles against: the island alone, keys as dimensions."""
+        """The model a leg compiles against: the island alone, keys as dimensions.
+
+        Measures are partial results: no ``total``, no ``defaultValue`` (an
+        empty group's default would become an input to the combined
+        aggregate), and a sum at a width that does not round before the
+        partials are added (:func:`_partial_measure`).
+        """
         model = self.model
         objects = {
             name: obj.model_copy(update={"joins": [j for j in obj.joins if j.join_to in island]})
@@ -662,9 +699,11 @@ class _Planner:
             update={
                 "data_objects": objects,
                 "dimensions": dimensions,
-                "measures": {m: effective[m].model_copy(update={"total": False}) for m in measures},
+                "measures": {m: _partial_measure(effective[m], model) for m in measures},
                 "metrics": {},
-                "filters": [f for f in model.filters if f.data_object in island],
+                "filters": (
+                    [f for f in model.filters if f.data_object in island] if static_filters else []
+                ),
                 "rules": {},
                 "expose_counts": False,
             }
@@ -715,16 +754,61 @@ def _combine_dimension(model: SemanticModel, name: str, leg: str) -> Dimension:
     )
 
 
+# Decimal places a partial sum keeps when the measure's own type would keep
+# fewer: the scale BigQuery's NUMERIC holds, and few sources store more.
+_PARTIAL_SCALE = 9
+# The most a partial keeps, leaving 20 integer digits in a DECIMAL(38, s).
+_PARTIAL_SCALE_MAX = 18
+
+
+def _partial_measure(measure: Measure, model: SemanticModel) -> Measure:
+    """The measure as a leg computes it: a partial result to combine later.
+
+    The output type and the default are the combined measure's to apply.
+    Cast to the measure's own decimal type, every partial would be rounded
+    before the partials are added, and the total would differ from the one
+    database's. A sum is therefore kept at ``DECIMAL(38, s)``, ``s`` the larger
+    of its own scale, its columns' declared scale and nine places; the other
+    aggregates return one of their inputs, or count, and are not cast.
+    """
+    update: dict[str, object] = {"total": False, "default_value": None, "data_type": None}
+    if measure.aggregation == AggregationType.SUM:
+        resolved = resolve_measure_data_type(measure, model.settings, model)
+        if isinstance(resolved, DecimalType):
+            scales = [resolved.scale, _PARTIAL_SCALE]
+            for ref in measure.columns:
+                column = model.data_objects[ref.view or ""].columns.get(ref.column or "")
+                if column is not None and column.sql_scale is not None:
+                    scales.append(column.sql_scale)
+            scale = min(max(scales), _PARTIAL_SCALE_MAX)
+            update["data_type"] = f"decimal({PORTABLE_DECIMAL_PRECISION}, {scale})"
+        elif measure.data_type:
+            update["data_type"] = measure.data_type
+    return measure.model_copy(update=update)
+
+
 def _combine_measure(model: SemanticModel, name: str) -> Measure:
+    """The measure re-aggregated from the fact leg's partial results.
+
+    It carries the measure's type, default and ``total``. A count is combined
+    as a ``SUM`` of counts, which over no rows is NULL where a count is 0, so
+    it falls back to 0 unless it declares a default of its own.
+    """
     measure = model.effective_measures[name]
+    default = measure.default_value
+    if default is None and measure.aggregation == AggregationType.COUNT:
+        default = 0
+    # The type the one database's query casts to, widened for wide sources.
+    resolved = resolve_measure_cast_type(measure, model.settings, None, model)
     return Measure(
         name=name,
         columns=[DataColumnRef(view="leg_0", column=name)],
         aggregation=_REAGGREGATE[measure.aggregation],
         result_type=measure.result_type,
-        data_type=measure.data_type,
+        data_type=measure.data_type
+        or (resolved.render() if isinstance(resolved, DecimalType) else None),
         total=measure.total,
-        default_value=measure.default_value,
+        default_value=default,
         format=measure.format,
     )
 
