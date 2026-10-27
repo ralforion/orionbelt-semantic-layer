@@ -138,6 +138,15 @@ class Cursor:
         self._check_open()
         return self._native.fetch_arrow_table()
 
+    def fetch_record_batch(self) -> Any:
+        """Stream the remaining rows as a ``pyarrow.RecordBatchReader`` (ADBC native).
+
+        The rows arrive batch by batch rather than as one table, so a caller
+        can write a large result to disk without holding all of it in memory.
+        """
+        self._check_open()
+        return self._native.fetch_record_batch()
+
     def close(self) -> None:
         """Close the cursor."""
         if not self._closed:

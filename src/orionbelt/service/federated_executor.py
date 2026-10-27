@@ -19,6 +19,12 @@ module holds what running that plan needs, whatever the surface:
 * **The combine** runs in a fresh in-memory DuckDB, with its threads and
   memory set rather than DuckDB's defaults (all cores, 80% of RAM, per
   instance).
+* **Spilling** a large leg to disk, when ``FEDERATION_SPILL_DIR`` names one: a
+  leg streamed batch by batch is held in memory up to
+  ``FEDERATION_SPILL_THRESHOLD_MB``, then written to an Arrow IPC file the
+  combine step reads memory-mapped, so the operating system can page it out.
+  Each query writes into a directory of its own, removed when it ends, within
+  ``FEDERATION_SPILL_MAX_MB`` and a process-wide ``FEDERATION_SPILL_BUDGET_MB``.
 
 ``design/PLAN_federation.md`` §7 has the measurements behind these bounds.
 """
@@ -26,6 +32,8 @@ module holds what running that plan needs, whatever the surface:
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 import threading
 import time
 from collections import deque
@@ -46,6 +54,8 @@ if TYPE_CHECKING:
 
     from orionbelt.compiler.federation import FederatedLeg, FederatedPlan
 
+_MB = 1024 * 1024
+
 #: Arrow's widest ``decimal128``, the widest decimal DuckDB reads from Arrow.
 _DECIMAL128_MAX_PRECISION = 38
 
@@ -63,6 +73,12 @@ class FederatedLegError(ExecutionError):
     """A leg of a federated query failed or returned what cannot be combined."""
 
 
+class FederationSpillFullError(ExecutionUnavailableError):
+    """The process's spill budget is taken by the queries running now."""
+
+    code = "FEDERATION_SPILL_FULL"
+
+
 @dataclass(frozen=True)
 class FederationLimits:
     """The bounds a federated query runs within; see the module docstring.
@@ -74,6 +90,12 @@ class FederationLimits:
         max_leg_rows: The most rows one leg may return.
         combine_threads: DuckDB threads per combine step.
         combine_memory_limit: DuckDB ``memory_limit`` per combine step.
+        spill_dir: Where large legs are spilled; ``None`` keeps every leg in
+            memory. It must be real disk: on an in-memory filesystem, such as
+            Cloud Run's, spilling saves nothing.
+        spill_threshold_bytes: A leg past this size is spilled.
+        spill_max_bytes: The most one query may spill.
+        spill_budget_bytes: The most the queries running at once may spill.
     """
 
     max_concurrent: int = 4
@@ -82,6 +104,10 @@ class FederationLimits:
     max_leg_rows: int = 1_000_000
     combine_threads: int = 2
     combine_memory_limit: str = "512MB"
+    spill_dir: str | None = None
+    spill_threshold_bytes: int = 64 * _MB
+    spill_max_bytes: int = 4096 * _MB
+    spill_budget_bytes: int = 16384 * _MB
 
     @classmethod
     def from_environment(cls) -> FederationLimits:
@@ -102,6 +128,10 @@ class FederationLimits:
             combine_threads=number("FEDERATION_COMBINE_THREADS", defaults.combine_threads),
             combine_memory_limit=os.environ.get("FEDERATION_COMBINE_MEMORY_LIMIT")
             or defaults.combine_memory_limit,
+            spill_dir=os.environ.get("FEDERATION_SPILL_DIR") or None,
+            spill_threshold_bytes=number("FEDERATION_SPILL_THRESHOLD_MB", 64) * _MB,
+            spill_max_bytes=number("FEDERATION_SPILL_MAX_MB", 4096) * _MB,
+            spill_budget_bytes=number("FEDERATION_SPILL_BUDGET_MB", 16384) * _MB,
         )
 
 
@@ -163,6 +193,7 @@ class AdmissionGate:
 
 
 _lock = threading.Lock()
+_spilled_bytes = 0  # Spilled by the queries running now, under ``_lock``.
 _limits: FederationLimits | None = None
 _gate: AdmissionGate | None = None
 _leg_pool: ThreadPoolExecutor | None = None
@@ -357,8 +388,130 @@ def _too_wide(leg: FederatedLeg, name: str) -> FederatedLegError:
     )
 
 
-def combine(plan: FederatedPlan, tables: dict[str, Any], tz: ZoneInfo | None) -> ExecutionResult:
+class QuerySpill:
+    """Where one federated query spills its large legs, and how much it wrote.
+
+    A directory of its own under ``spill_dir``, readable by this process
+    alone (``mkdtemp`` creates it ``0700``) and never shared with another
+    query: spilled legs hold the warehouse's rows. :meth:`close` removes it
+    and returns what it wrote to the process's budget, whether the query
+    succeeded or not.
+    """
+
+    def __init__(self, limits: FederationLimits) -> None:
+        """Raises ExecutionUnavailableError when ``spill_dir`` cannot be written."""
+        assert limits.spill_dir is not None
+        try:
+            os.makedirs(limits.spill_dir, exist_ok=True)
+            self.directory = tempfile.mkdtemp(prefix="obsl-federation-", dir=limits.spill_dir)
+        except OSError as exc:
+            raise ExecutionUnavailableError(
+                f"FEDERATION_SPILL_DIR '{limits.spill_dir}' cannot hold spilled legs: {exc}"
+            ) from None
+        self._limits = limits
+        self._written = 0
+        self._lock = threading.Lock()
+
+    def sink(self, leg: FederatedLeg) -> LegSink:
+        """What streams *leg*'s rows in, spilling them past the threshold."""
+        return LegSink(self, leg)
+
+    def reserve(self, leg: FederatedLeg, nbytes: int) -> None:
+        """Account for *nbytes* more written for *leg*.
+
+        Raises:
+            FederatedLegError: The query would spill past ``FEDERATION_SPILL_MAX_MB``.
+            FederationSpillFullError: The process's budget is taken.
+        """
+        global _spilled_bytes  # noqa: PLW0603 - process-wide budget
+        limits = self._limits
+        with self._lock:
+            if self._written + nbytes > limits.spill_max_bytes:
+                raise FederatedLegError(
+                    f"[FEDERATION_SPILL_TOO_LARGE] {leg_label(leg)} takes the query past "
+                    f"{limits.spill_max_bytes // _MB} MB spilled to disk, the most one query "
+                    "may spill (FEDERATION_SPILL_MAX_MB). Filter the query or select fewer "
+                    "dimensions."
+                )
+            with _lock:
+                if _spilled_bytes + nbytes > limits.spill_budget_bytes:
+                    raise FederationSpillFullError(
+                        f"[FEDERATION_SPILL_FULL] The queries across data sources running now "
+                        f"have spilled {_spilled_bytes // _MB} MB to disk, and {leg_label(leg)} "
+                        f"would take them past {limits.spill_budget_bytes // _MB} MB "
+                        "(FEDERATION_SPILL_BUDGET_MB). Retry later."
+                    )
+                _spilled_bytes += nbytes
+            self._written += nbytes
+
+    def close(self) -> None:
+        """Remove the query's spilled files and free its share of the budget."""
+        global _spilled_bytes  # noqa: PLW0603 - process-wide budget
+        shutil.rmtree(self.directory, ignore_errors=True)
+        with self._lock, _lock:
+            _spilled_bytes -= self._written
+            self._written = 0
+
+
+class LegSink:
+    """Streams a leg's record batches into one Arrow table, spilling a large one.
+
+    Batches are held in memory until they pass ``spill_threshold_bytes``; from
+    then on they, and the rest of the stream, go to an Arrow IPC file in the
+    query's directory, and the table returned reads that file memory-mapped.
+    A small leg never touches the disk. ``spilled`` says which happened.
+    """
+
+    def __init__(self, spill: QuerySpill, leg: FederatedLeg) -> None:
+        self._spill = spill
+        self._leg = leg
+        self.spilled = False
+
+    def __call__(self, reader: Any) -> Any:
+        import pyarrow as pa
+
+        threshold = self._spill._limits.spill_threshold_bytes
+        held: list[Any] = []
+        held_bytes = 0
+        for batch in reader:
+            held.append(batch)
+            held_bytes += batch.nbytes
+            if held_bytes > threshold:
+                return self._spill_stream(reader, held)
+        return pa.Table.from_batches(held, schema=reader.schema)
+
+    def _spill_stream(self, reader: Any, held: list[Any]) -> Any:
+        """Write *held* and the rest of *reader* to a file; the file as a table."""
+        import pyarrow as pa
+        from pyarrow import ipc
+
+        self.spilled = True
+        path = os.path.join(self._spill.directory, f"{self._leg.name}.arrow")
+        with pa.OSFile(path, "wb") as sink, ipc.new_file(sink, reader.schema) as writer:
+            for batch in held:
+                self._write(writer, batch)
+            held.clear()
+            for batch in reader:
+                self._write(writer, batch)
+        # Left open: the table's buffers are the mapping. The file goes with
+        # the query's directory; a mapped file outlives its name.
+        return ipc.open_file(pa.memory_map(path, "r")).read_all()
+
+    def _write(self, writer: Any, batch: Any) -> None:
+        self._spill.reserve(self._leg, batch.nbytes)
+        writer.write_batch(batch)
+
+
+def combine(
+    plan: FederatedPlan,
+    tables: dict[str, Any],
+    tz: ZoneInfo | None,
+    temp_directory: str | None = None,
+) -> ExecutionResult:
     """Run the combine query over the legs' tables in a fresh in-memory DuckDB.
+
+    ``temp_directory`` is where DuckDB spills its own join and sort state:
+    the query's spill directory, when it has one.
 
     Raises:
         ExecutionError: The combine query failed.
@@ -367,12 +520,13 @@ def combine(plan: FederatedPlan, tables: dict[str, Any], tz: ZoneInfo | None) ->
 
     limits = federation_limits()
     t0 = time.monotonic()
-    con = duckdb.connect(
-        config={
-            "threads": max(1, limits.combine_threads),
-            "memory_limit": limits.combine_memory_limit,
-        }
-    )
+    config: dict[str, Any] = {
+        "threads": max(1, limits.combine_threads),
+        "memory_limit": limits.combine_memory_limit,
+    }
+    if temp_directory is not None:
+        config["temp_directory"] = temp_directory
+    con = duckdb.connect(config=config)
     try:
         for name, table in tables.items():
             con.register(name, table)
@@ -388,6 +542,9 @@ __all__ = [
     "FederatedLegError",
     "FederationBusyError",
     "FederationLimits",
+    "FederationSpillFullError",
+    "LegSink",
+    "QuerySpill",
     "admission_gate",
     "busy_error",
     "check_leg_rows",

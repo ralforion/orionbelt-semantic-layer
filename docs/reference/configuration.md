@@ -56,6 +56,10 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `FEDERATION_MAX_LEG_ROWS`  | `1000000`   | Most rows one leg may return; a larger leg is refused with `FEDERATION_LEG_TOO_LARGE` |
 | `FEDERATION_COMBINE_THREADS` | `2`       | DuckDB threads of each federated query's combine step |
 | `FEDERATION_COMBINE_MEMORY_LIMIT` | `512MB` | DuckDB `memory_limit` of each combine step |
+| `FEDERATION_SPILL_DIR`     | —           | Directory on real disk where large federated legs are [spilled](../guide/data-sources.md#running-a-federated-query); unset keeps every leg in memory. Not an in-memory filesystem such as Cloud Run's default |
+| `FEDERATION_SPILL_THRESHOLD_MB` | `64`   | A leg past this size goes to a file instead of memory |
+| `FEDERATION_SPILL_MAX_MB`  | `4096`      | Most one federated query may spill; past it, `FEDERATION_SPILL_TOO_LARGE` |
+| `FEDERATION_SPILL_BUDGET_MB` | `16384`   | Most the federated queries running at once may spill together; past it, `FEDERATION_SPILL_FULL` (503) |
 | `VALUE_SEARCH_ENABLED`     | `true`      | Enable `POST /v1/values` (dimension-value search; also needs query execution) |
 | `VALUE_SEARCH_MAX_LIMIT`   | `200`       | Most values one value search returns      |
 | `VALUE_SEARCH_FUZZY_DOMAIN_MAX` | `10000` | Largest number of values a dimension may have for the fuzzy (misspelling) stage |

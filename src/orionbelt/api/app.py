@@ -261,6 +261,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             max_leg_rows=settings.federation_max_leg_rows,
             combine_threads=settings.federation_combine_threads,
             combine_memory_limit=settings.federation_combine_memory_limit,
+            spill_dir=settings.federation_spill_dir or None,
+            spill_threshold_bytes=settings.federation_spill_threshold_mb * 1024 * 1024,
+            spill_max_bytes=settings.federation_spill_max_mb * 1024 * 1024,
+            spill_budget_bytes=settings.federation_spill_budget_mb * 1024 * 1024,
         )
     )
 

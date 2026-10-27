@@ -11,6 +11,7 @@ without a region.
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import AsyncIterator, Iterator
 from decimal import Decimal
@@ -33,7 +34,10 @@ from orionbelt.api.deps import (  # noqa: E402
 from orionbelt.cache.file import FileCache  # noqa: E402
 from orionbelt.compiler.federation import FederatedLeg, FederatedPlan  # noqa: E402
 from orionbelt.service import federated_executor as federation  # noqa: E402
-from orionbelt.service.db_executor import ExecutionResult  # noqa: E402
+from orionbelt.service.db_executor import (  # noqa: E402
+    ExecutionResult,
+    ExecutionUnavailableError,
+)
 from orionbelt.service.federated_executor import (  # noqa: E402
     AdmissionGate,
     FederatedLegError,
@@ -670,3 +674,148 @@ class TestCombine:
         threads, memory = result.rows[0]
         assert int(threads) == 1
         assert memory.replace(" ", "").upper().startswith(("61", "64"))
+
+    def test_the_combine_step_spills_into_the_querys_directory(self, tmp_path: Any) -> None:
+        plan = FederatedPlan(
+            legs=(), combine_sql="SELECT current_setting('temp_directory') AS directory"
+        )
+
+        result = federation.combine(plan, {}, None, str(tmp_path))
+
+        assert result.rows[0][0] == str(tmp_path)
+
+
+def batches(rows: int, per_batch: int = 1000) -> Any:
+    """A record batch reader over *rows* rows of an id and an exact amount."""
+    table = pa.table(
+        {
+            "id": pa.array(range(rows), pa.int64()),
+            "amount": pa.array([Decimal(i) / 100 for i in range(rows)], pa.decimal128(18, 2)),
+        }
+    )
+    return pa.RecordBatchReader.from_batches(table.schema, table.to_batches(per_batch)), table
+
+
+def spilling(tmp_path: Any, **limits: Any) -> FederationLimits:
+    return FederationLimits(spill_dir=str(tmp_path / "spill"), **limits)
+
+
+class TestSpill:
+    def test_a_small_leg_stays_in_memory(self, tmp_path: Any) -> None:
+        spill = federation.QuerySpill(spilling(tmp_path))
+        sink = spill.sink(leg(("Revenue", "decimal")))
+        reader, table = batches(5000)
+
+        out = sink(reader)
+
+        assert out.equals(table)
+        assert not sink.spilled
+        assert os.listdir(spill.directory) == []
+        spill.close()
+
+    def test_a_leg_past_the_threshold_streams_to_a_file_read_mapped(self, tmp_path: Any) -> None:
+        spill = federation.QuerySpill(spilling(tmp_path, spill_threshold_bytes=16 * 1024))
+        sink = spill.sink(leg(("Revenue", "decimal")))
+        reader, table = batches(50_000)
+
+        out = sink(reader)
+
+        assert out.equals(table)
+        assert sink.spilled
+        assert os.listdir(spill.directory) == ["leg_0.arrow"]
+        # Readable by this process alone: spilled legs hold the warehouse's rows.
+        assert os.stat(spill.directory).st_mode & 0o777 == 0o700
+        spill.close()
+        assert not os.path.exists(spill.directory)
+        # The table outlives the file's name: its pages are mapped.
+        assert out.equals(table)
+
+    def test_a_query_spilling_past_its_maximum_is_refused(self, tmp_path: Any) -> None:
+        spill = federation.QuerySpill(
+            spilling(tmp_path, spill_threshold_bytes=1024, spill_max_bytes=64 * 1024)
+        )
+        reader, _ = batches(50_000)
+
+        with pytest.raises(FederatedLegError, match="FEDERATION_SPILL_TOO_LARGE"):
+            spill.sink(leg(("Revenue", "decimal")))(reader)
+        spill.close()
+
+    def test_queries_spilling_past_the_process_budget_are_refused_until_one_ends(
+        self, tmp_path: Any
+    ) -> None:
+        limits = spilling(tmp_path, spill_threshold_bytes=1024, spill_budget_bytes=600 * 1024)
+        first = federation.QuerySpill(limits)
+        first.sink(leg(("Revenue", "decimal")))(batches(20_000)[0])
+        second = federation.QuerySpill(limits)
+
+        with pytest.raises(federation.FederationSpillFullError, match="FEDERATION_SPILL_FULL"):
+            second.sink(leg(("Revenue", "decimal")))(batches(20_000)[0])
+        second.close()
+        first.close()
+
+        third = federation.QuerySpill(limits)
+        assert third.sink(leg(("Revenue", "decimal")))(batches(20_000)[0]).num_rows == 20_000
+        third.close()
+
+    def test_a_spill_directory_that_cannot_be_written_is_named(self, tmp_path: Any) -> None:
+        blocked = tmp_path / "file"
+        blocked.write_text("")
+
+        with pytest.raises(ExecutionUnavailableError, match="FEDERATION_SPILL_DIR"):
+            federation.QuerySpill(FederationLimits(spill_dir=str(blocked / "spill")))
+
+
+class TestSpilledQuery:
+    async def test_spilled_legs_combine_to_what_one_source_returns(
+        self, client: AsyncClient, tmp_path: Any
+    ) -> None:
+        single = await execute(client, single_model(), REVENUE_BY_REGION)
+        federation.configure(spilling(tmp_path, spill_threshold_bytes=1))
+
+        federated = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+
+        assert federated.status_code == 200, federated.text
+        assert federated.json()["rows"] == single.json()["rows"]
+        assert federated.json()["columns"] == single.json()["columns"]
+        # Every query's directory is gone once it ends.
+        assert os.listdir(tmp_path / "spill") == []
+
+    async def test_a_spilled_leg_is_not_cached_but_the_result_is(
+        self, sources: dict[str, str], tmp_path: Any
+    ) -> None:
+        from orionbelt.api.query_cache import execute_federated_with_cache
+
+        store, model_id, compiled = compiled_federated()
+        cache = FileCache(
+            cache_dir=str(tmp_path / "cache"),
+            max_value_bytes=10 * 1024 * 1024,
+            max_disk_bytes=50 * 1024 * 1024,
+            max_ttl_seconds=3600,
+            sweep_interval_seconds=3600,
+        )
+        config = CacheRuntimeConfig(backend="file", min_ttl_seconds=1, unknown_policy="default_ttl")
+        federation.configure(spilling(tmp_path, spill_threshold_bytes=1))
+
+        await execute_federated_with_cache(
+            store=store,
+            model=store.get_model(model_id),
+            compile_result=compiled,
+            model_id=model_id,
+            cache=cache,
+            cache_config=config,
+        )
+
+        # The combined result alone: storing a spilled leg would read it all
+        # back into memory.
+        assert (await cache.stats()).entry_count == 1
+
+    async def test_a_failing_query_removes_what_it_spilled(
+        self, client: AsyncClient, tmp_path: Any
+    ) -> None:
+        federation.configure(spilling(tmp_path, spill_threshold_bytes=1, spill_max_bytes=1))
+
+        response = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+
+        assert response.status_code == 502
+        assert "FEDERATION_SPILL_TOO_LARGE" in response.text
+        assert os.listdir(tmp_path / "spill") == []
