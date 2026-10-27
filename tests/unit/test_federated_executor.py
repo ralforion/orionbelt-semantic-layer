@@ -252,6 +252,19 @@ class TestRestExecution:
         assert "FEDERATION_LEG_TOO_LARGE" in response.json()["detail"]
         assert "leg leg_0 on shop" in response.json()["detail"]
 
+    async def test_a_leg_over_the_row_limit_stays_refused_when_repeated(
+        self, client: AsyncClient
+    ) -> None:
+        # The first run must not leave the cut-short leg in the cache for the
+        # second to combine as if it were whole.
+        federation.configure(FederationLimits(max_leg_rows=2))
+
+        first = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+        again = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+
+        assert (first.status_code, again.status_code) == (502, 502)
+        assert "FEDERATION_LEG_TOO_LARGE" in again.json()["detail"]
+
     async def test_a_query_waiting_past_the_timeout_is_refused_as_busy(
         self, client: AsyncClient
     ) -> None:
@@ -267,6 +280,103 @@ class TestRestExecution:
         assert "FEDERATION_BUSY" in response.json()["detail"]
         assert federation.admission_gate().waiting == 0
         assert federation.admission_gate().active == 0
+
+
+def compiled_federated(*queries: dict[str, Any]) -> tuple[Any, str, Any]:
+    from orionbelt.models.query import QueryObject
+    from orionbelt.service.model_store import ModelStore
+
+    store = ModelStore()
+    model_id = store.load_model(model_yaml(federated=True)).model_id
+    compiled = [
+        store.compile_query(model_id, QueryObject.model_validate(q), "duckdb")
+        for q in queries or (REVENUE_BY_REGION,)
+    ]
+    return store, model_id, compiled[0] if len(compiled) == 1 else compiled
+
+
+class TestCachedLegs:
+    async def test_a_cached_leg_over_the_limit_is_refused(
+        self, sources: dict[str, str], tmp_path: Any
+    ) -> None:
+        from orionbelt.api.query_cache import execute_federated_with_cache
+
+        # Compiled first: the limit is part of each leg's SQL, so these two
+        # share their legs and differ only in the combine step.
+        store, model_id, (compiled, reordered) = compiled_federated(
+            REVENUE_BY_REGION,
+            {**REVENUE_BY_REGION, "orderBy": [{"field": "Region", "direction": "desc"}]},
+        )
+        cache = FileCache(
+            cache_dir=str(tmp_path / "legs"),
+            max_value_bytes=10 * 1024 * 1024,
+            max_disk_bytes=50 * 1024 * 1024,
+            max_ttl_seconds=3600,
+            sweep_interval_seconds=3600,
+        )
+        config = CacheRuntimeConfig(backend="file", min_ttl_seconds=1, unknown_policy="default_ttl")
+
+        async def run(query: Any) -> Any:
+            return await execute_federated_with_cache(
+                store=store,
+                model=store.get_model(model_id),
+                compile_result=query,
+                model_id=model_id,
+                cache=cache,
+                cache_config=config,
+            )
+
+        await run(compiled)
+        federation.configure(FederationLimits(max_leg_rows=2))
+        assert reordered.federation.legs == compiled.federation.legs
+
+        with pytest.raises(FederatedLegError, match="FEDERATION_LEG_TOO_LARGE"):
+            await run(reordered)
+
+
+class TestCancellation:
+    async def test_a_cancelled_query_keeps_its_slot_until_its_legs_finish(
+        self, sources: dict[str, str]
+    ) -> None:
+        import asyncio
+
+        from orionbelt.api import query_cache
+        from orionbelt.cache.noop import NoopCache
+
+        store, model_id, compiled = compiled_federated()
+        started, finish = threading.Event(), threading.Event()
+        real = query_cache.execute_sql
+
+        def slow(sql: str, **kwargs: Any) -> ExecutionResult:
+            started.set()
+            finish.wait(5)
+            return real(sql, **kwargs)
+
+        gate = federation.admission_gate()
+        with patch.object(query_cache, "execute_sql", slow):
+            running = asyncio.ensure_future(
+                query_cache.execute_federated_with_cache(
+                    store=store,
+                    model=store.get_model(model_id),
+                    compile_result=compiled,
+                    model_id=model_id,
+                    cache=NoopCache(),
+                    cache_config=CacheRuntimeConfig(),
+                )
+            )
+            await asyncio.to_thread(started.wait, 5)
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+
+            assert gate.active == 1
+            finish.set()
+            for _ in range(200):
+                if gate.active == 0:
+                    break
+                await asyncio.sleep(0.01)
+
+        assert gate.active == 0
 
 
 class TestAdmissionGate:
@@ -360,6 +470,14 @@ class TestNormalizeLeg:
         out = federation.normalize_leg(leg(("Revenue", "decimal")), table)
 
         assert out.column("Revenue").to_pylist() == [Decimal("1.25"), Decimal("2.50")]
+
+    def test_a_value_below_one_may_use_all_38_digits_for_its_scale(self) -> None:
+        table = pa.table({"Rate": ["0.00000000000000000000000000000000000001", "-0.5"]})
+
+        out = federation.normalize_leg(leg(("Rate", "decimal")), table)
+
+        assert out.schema.field("Rate").type == pa.decimal128(38, 38)
+        assert out.column("Rate").to_pylist() == [Decimal("1E-38"), Decimal("-0.5")]
 
     def test_a_value_no_decimal_holds_is_refused(self) -> None:
         table = pa.table({"Revenue": ["1", "NaN"]})

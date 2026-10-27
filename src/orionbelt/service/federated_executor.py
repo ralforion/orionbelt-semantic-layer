@@ -225,22 +225,32 @@ def leg_label(leg: FederatedLeg) -> str:
     return f"leg {leg.name} on {source} ({leg.dialect})"
 
 
-def leg_table(leg: FederatedLeg, result: ExecutionResult) -> Any:
-    """A leg's rows as Arrow, in the types its declared columns combine as.
+def check_leg_rows(leg: FederatedLeg, row_count: int) -> None:
+    """Refuse a leg that returned more than ``FEDERATION_MAX_LEG_ROWS`` rows.
+
+    Its SQL asks for one row more than the limit, so a leg at the limit plus
+    one was cut short, and combining it would total a part as the whole.
 
     Raises:
-        FederatedLegError: The leg returned more than ``FEDERATION_MAX_LEG_ROWS``
-            rows, or a value no exact type holds.
+        FederatedLegError: ``FEDERATION_LEG_TOO_LARGE``.
     """
-    import pyarrow as pa
-
     limits = federation_limits()
-    if result.row_count > limits.max_leg_rows:
+    if row_count > limits.max_leg_rows:
         raise FederatedLegError(
             f"[FEDERATION_LEG_TOO_LARGE] {leg_label(leg)} returns more than "
             f"{limits.max_leg_rows} rows, the most one leg may return "
             "(FEDERATION_MAX_LEG_ROWS). Filter the query or select fewer dimensions."
         )
+
+
+def leg_table(leg: FederatedLeg, result: ExecutionResult) -> Any:
+    """A leg's rows as Arrow, in the types its declared columns combine as.
+
+    Raises:
+        FederatedLegError: A value no exact type holds.
+    """
+    import pyarrow as pa
+
     table = result.arrow_table
     if table is None:
         rows = result.rows
@@ -295,7 +305,7 @@ def _decimal_from_text(leg: FederatedLeg, name: str, column: Any) -> Any:
     import pyarrow as pa
 
     scale = 0
-    integer_digits = 1
+    integer_digits = 0
     for text in column.to_pylist():
         if text is None:
             continue
@@ -311,6 +321,7 @@ def _decimal_from_text(leg: FederatedLeg, name: str, column: Any) -> Any:
         _, digits, exponent = value.as_tuple()
         assert isinstance(exponent, int)  # finite
         scale = max(scale, -exponent)
+        # A value below one needs no integer digit: 1E-38 fits decimal128(38, 38).
         integer_digits = max(integer_digits, len(digits) + exponent)
     if integer_digits + scale > _DECIMAL128_MAX_PRECISION:
         raise _too_wide(leg, name)
@@ -377,6 +388,7 @@ __all__ = [
     "FederationLimits",
     "admission_gate",
     "busy_error",
+    "check_leg_rows",
     "combine",
     "configure",
     "federation_limits",

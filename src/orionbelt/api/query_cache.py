@@ -407,6 +407,7 @@ async def execute_query_with_cache(
     executor: Executor | None = None,
     key_sql: str | None = None,
     run: Callable[[], Awaitable[ExecutionResult]] | None = None,
+    check_rows: Callable[[int], None] | None = None,
 ) -> CachedExecution:
     """Run a compiled query through the result cache, executing on a miss.
 
@@ -431,7 +432,9 @@ async def execute_query_with_cache(
     ``key_sql`` is what the key is built from when the compiled SQL alone
     does not identify the result, and ``run`` computes the result in place of
     executing that SQL: a federated query uses both (see
-    :func:`execute_federated_with_cache`).
+    :func:`execute_federated_with_cache`). ``check_rows`` is called with the
+    result's row count, on a hit and before a miss is stored, and may raise
+    to refuse it: a result it refuses is never cached nor served.
     """
     if source is not None:
         # One set of settings for the key and the query: the source's
@@ -473,6 +476,12 @@ async def execute_query_with_cache(
                 else await try_cache_get_raw(cache, cache_key)
             )
             if entry is not None:
+                if check_rows is not None:
+                    check_rows(
+                        entry.data_table.num_rows
+                        if entry.data_table is not None
+                        else entry.row_count or 0
+                    )
                 return CachedExecution(
                     cached=True,
                     cache_key=cache_key,
@@ -512,6 +521,8 @@ async def execute_query_with_cache(
     # clients: a declared boolean cast to Arrow ``bool`` reports the coarse
     # hint "string", and pgwire's OID moved 701 (FLOAT8) -> 25 (TEXT) without
     # anyone choosing it. A surface opts in by passing its declared types.
+    if check_rows is not None:
+        check_rows(exec_result.row_count)
     declared_skips = (
         exec_result.reconcile_to_declared(declared_types) if declared_types is not None else []
     )
@@ -558,6 +569,21 @@ async def execute_query_with_cache(
 
 
 # --- federated execution ------------------------------------------------------
+
+
+# Admitted federated queries still running, held so a task whose caller was
+# cancelled is not garbage-collected before it ends and frees its slot.
+_admitted: set[asyncio.Future[Any]] = set()
+
+
+def _admitted_done(gate: Any, work: asyncio.Future[Any]) -> None:
+    """Free an admitted query's slot once its work has ended, however it ended."""
+    _admitted.discard(work)
+    gate.release()
+    if not work.cancelled():
+        # Retrieved so an error nobody waits for any more is not logged as
+        # never retrieved; the caller still waiting has it raised.
+        work.exception()
 
 
 @dataclass(frozen=True)
@@ -641,9 +667,9 @@ async def execute_federated_with_cache(
             if isinstance(exc, TimeoutError):
                 raise federation.busy_error(limits) from None
             raise
-        try:
-            pool = federation.leg_executor()
+        pool = federation.leg_executor()
 
+        async def run_admitted() -> ExecutionResult:
             async def run_leg(leg: FederatedLeg, source: DataSource | None) -> Any:
                 try:
                     ran = await execute_query_with_cache(
@@ -659,7 +685,10 @@ async def execute_federated_with_cache(
                         override_db_tz=override_db_tz,
                         cacheable=cacheable,
                         executor=pool,
+                        check_rows=functools.partial(federation.check_leg_rows, leg),
                     )
+                except federation.FederatedLegError:
+                    raise
                 except ExecutionUnavailableError as exc:
                     raise ExecutionUnavailableError(f"{federation.leg_label(leg)}: {exc}") from exc
                 except ExecutionError as exc:
@@ -685,8 +714,15 @@ async def execute_federated_with_cache(
             return await asyncio.get_running_loop().run_in_executor(
                 pool, federation.combine, plan, tables, tz
             )
-        finally:
-            gate.release()
+
+        # The work runs as a task of its own, and the slot is released when it
+        # ends rather than when the caller stops waiting: cancelling a request
+        # does not stop a leg or a combine already running in a thread, and
+        # their connections and memory stay held until they finish.
+        work = asyncio.ensure_future(run_admitted())
+        _admitted.add(work)
+        work.add_done_callback(functools.partial(_admitted_done, gate))
+        return await asyncio.shield(work)
 
     return await execute_query_with_cache(
         store=store,
