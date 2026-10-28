@@ -165,7 +165,7 @@ Session 4: SQLAlchemy dialect (ob+duckdb:// URL scheme)
 
 ```toml
 [project.dependencies]
-duckdb = ">=1.0"
+duckdb = ">=1.5.6"
 pyyaml = ">=6.0"
 httpx = ">=0.27"
 
