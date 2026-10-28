@@ -136,6 +136,8 @@ class TestArtefactLineage:
                 "kind": "data_object",
                 "name": "Orders",
                 "detail": "EDW.SALES.ORDERS",
+                # The model names no data source.
+                "data_source": None,
             }
         ]
         assert data["mermaid"].startswith("flowchart LR")

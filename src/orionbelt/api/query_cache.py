@@ -794,6 +794,60 @@ async def execute_federated_with_cache(
     )
 
 
+def execute_federated(
+    *,
+    model: Any,
+    compile_result: Any,
+    store: Any = None,
+    model_id: str = "",
+    cache: Cache | None = None,
+    cache_config: Any = None,
+    tz: Any = None,
+    override_db_tz: bool = False,
+    declared_types: dict[str, Any] | None = None,
+    query: Any = None,
+) -> ExecutionResult:
+    """Run a federated query from synchronous code: a Flight handler, the CLI.
+
+    The same run as :func:`execute_federated_with_cache`, on an event loop of
+    its own, so the thread calling it must not be running one. Without a
+    ``cache`` and a ``store`` to resolve freshness from, nothing is cached.
+    A hit comes back table-backed and reconciled, like a miss.
+    """
+    from orionbelt.cache.noop import NoopCache
+
+    backend: Cache = cache if cache is not None else NoopCache()
+    ran = asyncio.run(
+        execute_federated_with_cache(
+            store=store,
+            model=model,
+            compile_result=compile_result,
+            model_id=model_id,
+            cache=backend,
+            cache_config=cache_config,
+            tz=tz,
+            override_db_tz=override_db_tz,
+            cacheable=store is not None and getattr(backend, "backend_name", "noop") != "noop",
+            declared_types=declared_types,
+            query=query,
+        )
+    )
+    if not ran.cached:
+        assert ran.exec_result is not None  # a miss always executed
+        return ran.exec_result
+    table = ran.data_table
+    if declared_types:
+        from orionbelt.service.result_schema import reconcile_to_declared
+
+        table, _ = reconcile_to_declared(table, declared_types)
+    return execution_result_from_data(
+        table,
+        execution_time_ms=ran.fetch_elapsed_ms or 0.0,
+        tz=tz,
+        columns=ran.hit_columns,
+    )
+
+
 # --- data-table adapters (cache-hit reconstruction) -------------------------
 
 
@@ -881,6 +935,7 @@ __all__ = [
     "build_type_map",
     "exec_columns_from_sidecar",
     "exec_columns_from_table",
+    "execute_federated",
     "execute_federated_with_cache",
     "execute_query_with_cache",
     "execution_result_from_data",

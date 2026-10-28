@@ -1443,6 +1443,11 @@ class LineageNodeItem(BaseModel):
         default=None,
         description="Table reference, column's data object, aggregation, metric or rule type",
     )
+    data_source: str | None = Field(
+        default=None,
+        description="For a data object, the data source its table is read from, as the "
+        "model names it (dataSource, else settings.defaultDataSource)",
+    )
 
 
 class LineageEdgeItem(BaseModel):

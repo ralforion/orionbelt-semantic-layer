@@ -377,7 +377,7 @@ class TestFlight:
             types.SimpleNamespace(sql='SELECT region AS "Region" FROM shop', physical_tables=[]),
         )
         server._rewrite_table_names.side_effect = lambda sql, m: sql
-        server._source_for.side_effect = lambda m, d: resolve_datasource(m, d)
+        server._source_for.side_effect = lambda m, d, compiled=None: resolve_datasource(m, d)
         return server
 
     def test_an_uncached_ticket_runs_on_the_source_planned(self, shops: Any) -> None:

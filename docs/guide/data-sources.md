@@ -122,12 +122,16 @@ execute, an unknown one fails the load at `dataObjects.<name>.dataSource`.
 ### Queries across data sources
 
 A query reading data objects of several sources is compiled into one query per
-source, a *leg*, and a DuckDB query combining them. The REST API's
-`query/execute` runs it: each leg on its own source, all at once, then the
-combine query in an in-memory DuckDB inside OBSL. Flight SQL, pgwire, OBSQL and
-`obsl execute` do not run queries on a model read from several sources yet;
-they refuse them with `FEDERATION_NOT_ENABLED`. `query/sql` and `obsl compile`
-show the plan, and the execute response lists the legs in `federation`.
+source, a *leg*, and a DuckDB query combining them. Every surface that executes
+queries runs it the same way: REST `query/execute`, OBSQL (REST
+`query/semantic-ql`, Flight SQL and pgwire) and `obsl execute`. Each leg runs on
+its own source, all at once, then the combine query in an in-memory DuckDB
+inside OBSL, through the result cache the surfaces share, so a query cached by
+one is a hit on the others. `query/sql` and `obsl compile` show the plan, the
+REST execute response lists the legs in `federation`, and lineage names each
+table's data source. The one-shot batch (`oneshot/batch`) and the database
+`EXPLAIN` of `query/plan` run on one source and refuse such a model with
+`FEDERATION_NOT_ENABLED`.
 
 A query on such a model that reads only one source is not split: it runs on
 that source, written in its dialect.

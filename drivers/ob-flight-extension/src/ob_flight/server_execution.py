@@ -374,6 +374,9 @@ def prepare_sql(
         obml = parse_obml(sql)
         logger.info("OBML request:\n%s", sql)
         query, compiled = server._compile_obml(obml, model, dialect)
+        dialect = _compiled_dialect(compiled, dialect)
+        if getattr(compiled, "federation", None) is not None:
+            return _federated(server, compiled, model, query, dialect, context)
         sql = server._rewrite_table_names(compiled.sql, model)
         logger.info("Compiled SQL:\n%s", sql)
         # OBML compiles to deterministic SQL like OBSQL; share the cache.
@@ -382,7 +385,7 @@ def prepare_sql(
             dialect=dialect,
             context=context,
             physical_tables=list(getattr(compiled, "physical_tables", [])),
-            source=server._source_for(model, dialect),
+            source=server._source_for(model, dialect, compiled),
         )
         # And the same declared schema. Without it the OBML path fell back to
         # probing the rows, so a model-declared ``timestamp`` streamed with
@@ -402,6 +405,9 @@ def prepare_sql(
                 f"OrionBelt Semantic QL translation failed: {detail}"
             ) from None
         compiled = _compile(server, CompilationPipeline(), query, model, dialect)
+        dialect = _compiled_dialect(compiled, dialect)
+        if getattr(compiled, "federation", None) is not None:
+            return _federated(server, compiled, model, query, dialect, context)
         sql = server._rewrite_table_names(compiled.sql, model)
         logger.info("Compiled SQL:\n%s", sql)
         schema_hint = server._semantic_result_schema(query, model)
@@ -410,7 +416,7 @@ def prepare_sql(
             dialect=dialect,
             context=context,
             physical_tables=list(getattr(compiled, "physical_tables", [])),
-            source=server._source_for(model, dialect),
+            source=server._source_for(model, dialect, compiled),
         )
         return sql, dialect, model, schema_hint, _MODE_SEMANTIC, cache_meta
 
@@ -429,10 +435,118 @@ def prepare_sql(
     )
 
 
-def source_for(model: Any, dialect: str) -> DataSource | None:
+def _compiled_dialect(compiled: Any, requested: str) -> str:
+    """The dialect a query was compiled for, which it runs and is cached in.
+
+    A query reading one source of a model read from several is written in that
+    source's dialect, not the one requested. An orionbelt whose compile result
+    names no dialect compiled for the one requested.
+    """
+    dialect = getattr(compiled, "dialect", None)
+    return dialect if isinstance(dialect, str) else requested
+
+
+def _federated(
+    server: OBFlightServer,
+    compiled: Any,
+    model: Any,
+    query: Any,
+    dialect: str,
+    context: flight.ServerCallContext | None,
+) -> tuple[str, str, Any, pa.Schema | None, str, dict[str, Any] | None]:
+    """Plan a query that reads more than one data source, for :func:`execute_sql`.
+
+    ``cache_meta`` carries the whole plan under ``"federated"``: its legs run on
+    their own sources, named in the model, and the DuckDB combine joins them,
+    through the cache REST and pgwire share. Table names are not rewritten:
+    each leg's source resolves its own.
+    """
+    logger.info("Federated query, combine SQL:\n%s", compiled.sql)
+    store, model_id = _store_for(server, context)
+    federated = {
+        "compile_result": compiled,
+        "model": model,
+        "query": query,
+        "store": store,
+        "model_id": model_id,
+    }
+    schema_hint = server._semantic_result_schema(query, model)
+    return compiled.sql, dialect, model, schema_hint, _MODE_SEMANTIC, {"federated": federated}
+
+
+def execute_federated(
+    server: OBFlightServer, federated: dict[str, Any], result_schema: pa.Schema | None
+) -> flight.RecordBatchStream:
+    """Run a query :func:`_federated` planned, and stream its result.
+
+    Raises:
+        flight.FlightUnavailableError: No federation slot freed in time, or a
+            leg's data source cannot be used.
+        flight.FlightServerError: A leg or the combine step failed.
+    """
+    from orionbelt.api.query_cache import execute_federated as run_federated
+    from orionbelt.service.db_executor import (
+        ExecutionError,
+        ExecutionUnavailableError,
+        ensure_arrow,
+    )
+    from orionbelt.service.result_schema import declared_arrow_types
+
+    model = federated["model"]
+    ensure_arrow()
+    try:
+        result = run_federated(
+            model=model,
+            compile_result=federated["compile_result"],
+            store=federated["store"],
+            model_id=federated["model_id"],
+            cache=server._cache,
+            cache_config=server._cache_config,
+            declared_types=declared_arrow_types(model, federated["query"]),
+            query=federated["query"],
+        )
+    except ExecutionUnavailableError as exc:
+        raise flight.FlightUnavailableError(str(exc)) from None
+    except ExecutionError as exc:
+        raise flight.FlightServerError(str(exc)) from None
+    table = result.arrow_table
+    assert table is not None  # the combine step always returns Arrow
+    return flight.RecordBatchStream(align_cached_table(table, result_schema))
+
+
+def _store_for(server: OBFlightServer, context: flight.ServerCallContext | None) -> tuple[Any, str]:
+    """The session store and model id a call's model is cached under.
+
+    ``(None, "")`` when there is none (standalone Flight has no session
+    manager), which caches nothing.
+    """
+    # Resolve session_id from the selector header. Falls back to the
+    # __default__ slot for legacy single-model deployments — matches
+    # how the REST endpoints derive session_id for the cache key.
+    selector = server._selector_from_context(context) or ""
+    if not selector:
+        # Use the protected list (auto-resolve) — single-entry path.
+        protected = server._list_available_model_names()
+        selector = protected[0] if len(protected) == 1 else "__default__"
+
+    try:
+        store = server._session_manager.get_store(selector)
+        models = store.list_models()
+    except Exception:
+        return None, ""
+    if not models:
+        return None, ""
+    return store, models[0].model_id
+
+
+def source_for(model: Any, dialect: str, compiled: Any = None) -> DataSource | None:
     """The data source a model's query runs on, as REST and pgwire pick it.
 
-    See :func:`orionbelt.service.datasource_selection.resolve_datasource`;
+    See :func:`orionbelt.service.datasource_selection.resolve_query_source`:
+    with the ``compiled`` query, a model read from several data sources runs
+    it on the one source it reads. Without it, or with an orionbelt that has
+    no per-query resolver, the model's own source
+    (:func:`~orionbelt.service.datasource_selection.resolve_datasource`).
     ``None`` runs on the dialect's own variables. So does every query with an
     orionbelt older than named data sources, which has no resolver: none of
     its models can name a source.
@@ -444,6 +558,13 @@ def source_for(model: Any, dialect: str) -> DataSource | None:
     from orionbelt.service.db_executor import ExecutionUnavailableError
 
     try:
+        if compiled is not None:
+            try:
+                from orionbelt.service.datasource_selection import resolve_query_source
+            except ImportError:
+                pass
+            else:
+                return resolve_query_source(model, compiled)
         return resolve_datasource(model, dialect)
     except ExecutionUnavailableError as exc:
         raise flight.FlightUnavailableError(str(exc)) from None
@@ -483,22 +604,8 @@ def build_cache_meta(
     if backend == "noop":
         return uncached
 
-    # Resolve session_id from the selector header. Falls back to the
-    # __default__ slot for legacy single-model deployments — matches
-    # how the REST endpoints derive session_id for the cache key.
-    selector = server._selector_from_context(context) or ""
-    if not selector:
-        # Use the protected list (auto-resolve) — single-entry path.
-        protected = server._list_available_model_names()
-        selector = protected[0] if len(protected) == 1 else "__default__"
-
-    try:
-        store = server._session_manager.get_store(selector)
-        models = store.list_models()
-        if not models:
-            return uncached
-        model_id = models[0].model_id
-    except Exception:
+    store, model_id = _store_for(server, context)
+    if store is None:
         return uncached
 
     # Delegate key + TTL derivation to the shared, layer-clean core so Flight,
@@ -763,6 +870,9 @@ def execute_sql(
     matches what the client was promised, even for an empty result whose
     cached blob decoded to ``null``-typed columns.
     """
+    if cache_meta is not None and "federated" in cache_meta:
+        return execute_federated(server, cache_meta["federated"], result_schema)
+
     # Virtual metadata tables — served from model, no DB needed
     vt = server._detect_virtual_table(sql)
     if vt is not None:

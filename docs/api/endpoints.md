@@ -1433,7 +1433,7 @@ What a dimension, measure, metric, rule or query is built from, followed down to
 | Rule | `GET /v1/sessions/{session_id}/models/{model_id}/rules/{name}/lineage` |
 | Query | `POST /v1/sessions/{session_id}/query/lineage`, body like `query/sql` |
 
-A query is compiled first, so its lineage includes the joins the planner chose, across every leg of a multi-fact query. An unknown name is a `404`; a query that does not resolve is a `422`, as at `query/sql`.
+A query is compiled first, so its lineage includes the joins the planner chose, across every leg of a multi-fact query. Each data object names the data source its table is read from (`dataSource`, else `settings.defaultDataSource`), so the lineage of a query across data sources shows which table comes from where; the Mermaid label adds `source: <name>`, the Turtle `obsl:dataSource`. An unknown name is a `404`; a query that does not resolve is a `422`, as at `query/sql`.
 
 What each artefact depends on:
 
@@ -1451,7 +1451,7 @@ A computed column depends on the columns its expression reads (`expression`).
 
 | Value | Response |
 |---|---|
-| `json` (default) | `root`, `nodes` (`id`, `kind`, `name`, `detail`), `edges` (`source`, `target`, `label`, `path_name`) and `mermaid`. Node kinds: `data_object`, `column`, `dimension`, `measure`, `metric`, `rule`, `union`, `query` |
+| `json` (default) | `root`, `nodes` (`id`, `kind`, `name`, `detail`, and for a data object `data_source`), `edges` (`source`, `target`, `label`, `path_name`) and `mermaid`. Node kinds: `data_object`, `column`, `dimension`, `measure`, `metric`, `rule`, `union`, `query` |
 | `mermaid` | The Mermaid flowchart as `text/vnd.mermaid` |
 | `turtle` | `text/turtle` over the same IRIs as the model's [OBSL graph](#obsl-graph-sparql), so the two merge; each edge is `target prov:wasDerivedFrom source` (W3C PROV), and a query is derived from the IRI of each declared join it used, secondary joins included, and a query or union is a `prov:Entity`; a query is derived from the joins it used |
 
