@@ -29,6 +29,7 @@ import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 
+from orionbelt.compiler.federation import source_name
 from orionbelt.compiler.pipeline import CompilationResult
 from orionbelt.models.expressions import find_placeholders, find_qualified_refs
 from orionbelt.models.query import (
@@ -81,12 +82,18 @@ class LineageError(Exception):
 
 @dataclass(frozen=True)
 class LineageNode:
-    """One artefact in a lineage graph."""
+    """One artefact in a lineage graph.
+
+    ``data_source`` is the data source a data object's table is read from, as
+    the model names it; ``None`` for other kinds, and for a model that names
+    none.
+    """
 
     id: str
     kind: str
     name: str
     detail: str | None = None
+    data_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +126,8 @@ class Lineage:
             label = _escape(node.name)
             if node.detail:
                 label += f"<br/>{_escape(node.detail)}"
+            if node.data_source:
+                label += f"<br/>source: {_escape(node.data_source)}"
             lines.append(f"    {ids[node.id]}{left}{label}{right}")
         for edge in self.edges:
             text = edge.label or ""
@@ -184,6 +193,8 @@ def to_turtle(lineage: Lineage, model_id: str) -> str:
                 "rule": "Rule",
             }[node.kind]
             graph.add((iri, RDF.type, OBSL[cls]))
+            if node.data_source:
+                graph.add((iri, OBSL.dataSource, Literal(node.data_source)))
         graph.add((iri, RDFS.label, Literal(node.name)))
         iris[node.id] = iri
     root = iris.get(lineage.root)
@@ -257,11 +268,18 @@ class LineageBuilder:
         self._lineage.root = expand()
         return self._lineage
 
-    def _node(self, kind: str, name: str, detail: str | None = None, key: str | None = None) -> str:
+    def _node(
+        self,
+        kind: str,
+        name: str,
+        detail: str | None = None,
+        key: str | None = None,
+        data_source: str | None = None,
+    ) -> str:
         node_id = f"{kind}:{key or name}"
         if node_id not in self._seen_nodes:
             self._seen_nodes.add(node_id)
-            self._lineage.nodes.append(LineageNode(node_id, kind, name, detail))
+            self._lineage.nodes.append(LineageNode(node_id, kind, name, detail, data_source))
         return node_id
 
     def _edge(
@@ -284,9 +302,12 @@ class LineageBuilder:
     def _table(self, data_object: str) -> str:
         obj = self.model.data_objects.get(data_object)
         detail = None
-        if obj is not None and obj.code:
-            detail = ".".join(p for p in (obj.database, obj.schema_name, obj.code) if p)
-        return self._node("data_object", data_object, detail)
+        source = None
+        if obj is not None:
+            if obj.code:
+                detail = ".".join(p for p in (obj.database, obj.schema_name, obj.code) if p)
+            source = source_name(self.model, data_object)
+        return self._node("data_object", data_object, detail, data_source=source)
 
     def _column(self, data_object: str, column: str) -> str:
         node = self._node("column", column, data_object, key=f"{data_object}.{column}")

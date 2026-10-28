@@ -29,10 +29,13 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from orionbelt.api.query_cache import (
+    CachedExecution,
     build_type_map,
+    execute_federated_with_cache,
     execute_query_with_cache,
     execution_result_from_data,
 )
+from orionbelt.cache.noop import NoopCache
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.model_table import (
     expand_model_star,
@@ -59,7 +62,7 @@ from orionbelt.pgwire.types import (
     encode_value,
     oid_for_type_hint,
 )
-from orionbelt.service.datasource_selection import resolve_datasource
+from orionbelt.service.datasource_selection import resolve_query_source
 from orionbelt.service.db_executor import (
     ColumnMeta,
     ExecutionError,
@@ -327,8 +330,23 @@ class SemanticRouter:
         logger.info("pgwire compiled SQL (dialect=%s):\n%s", dialect, compile_result.sql)
 
         try:
-            source = resolve_datasource(target.model, dialect)
-            if self._cache is not None:
+            cached: CachedExecution | None = None
+            if compile_result.federation is not None:
+                # Each leg on its own data source, then the combine, through
+                # the cache REST shares; with none attached, through no cache.
+                cached = await execute_federated_with_cache(
+                    store=target.store,
+                    model=target.model,
+                    compile_result=compile_result,
+                    model_id=target.model_id,
+                    cache=self._cache if self._cache is not None else NoopCache(),
+                    cache_config=self._cache_config,
+                    cacheable=getattr(self._cache, "backend_name", "noop") != "noop",
+                    declared_types=declared_arrow_types(target.model, query),
+                    query=query,
+                )
+            elif self._cache is not None:
+                source = resolve_query_source(target.model, compile_result)
                 cached = await execute_query_with_cache(
                     store=target.store,
                     model=target.model,
@@ -351,31 +369,32 @@ class SemanticRouter:
                     declared_types=declared_arrow_types(target.model, query),
                     query=query,
                 )
-                if cached.cached:
-                    # Reconcile the cached table for the same reason REST does:
-                    # ``execution_result_from_data`` rebuilds with ``raw_rows``,
-                    # so reconciling the rebuilt result would be a no-op, and an
-                    # entry written before this - or by a surface that does not
-                    # reconcile - would come back in the engine's types.
-                    hit_table, _ = reconcile_to_declared(
-                        cached.data_table, declared_arrow_types(target.model, query)
-                    )
-                    result = execution_result_from_data(
-                        hit_table,
-                        execution_time_ms=cached.fetch_elapsed_ms or 0.0,
-                        columns=cached.hit_columns,
-                    )
-                else:
-                    assert cached.exec_result is not None  # a miss always executed
-                    result = cached.exec_result
             else:
                 # No cache configured - ``start_pgwire(cache=None)`` allows it,
                 # and the tests use it. Reconciliation is a property of the
                 # surface, not of whether a cache happens to be attached, so it
                 # has to happen here too or a declared boolean comes back as
                 # OID 701 with values 1/0 on exactly this path.
+                source = resolve_query_source(target.model, compile_result)
                 result = execute_sql(compile_result.sql, dialect=dialect, source=source)
                 result.reconcile_to_declared(declared_arrow_types(target.model, query))
+            if cached is not None and cached.cached:
+                # Reconcile the cached table for the same reason REST does:
+                # ``execution_result_from_data`` rebuilds with ``raw_rows``,
+                # so reconciling the rebuilt result would be a no-op, and an
+                # entry written before this - or by a surface that does not
+                # reconcile - would come back in the engine's types.
+                hit_table, _ = reconcile_to_declared(
+                    cached.data_table, declared_arrow_types(target.model, query)
+                )
+                result = execution_result_from_data(
+                    hit_table,
+                    execution_time_ms=cached.fetch_elapsed_ms or 0.0,
+                    columns=cached.hit_columns,
+                )
+            elif cached is not None:
+                assert cached.exec_result is not None  # a miss always executed
+                result = cached.exec_result
         except ExecutionUnavailableError as exc:
             return protocol.build_error_response(
                 severity="ERROR",

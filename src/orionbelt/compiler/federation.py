@@ -129,7 +129,7 @@ def object_sources(model: SemanticModel) -> dict[str, str | None]:
     return sources
 
 
-def _source_name(model: SemanticModel, obj: str) -> str | None:
+def source_name(model: SemanticModel, obj: str) -> str | None:
     """The data source of *obj* as the model writes it."""
     root = model.data_objects[model.unnest_root(obj)]
     default = model.settings.default_data_source if model.settings else None
@@ -165,7 +165,7 @@ def query_source(resolved: ResolvedQuery, query: QueryObject, model: SemanticMod
     if len(set(sources.values())) < 2:
         return None
     read = sorted(o for o in query_objects(resolved, query) if o in sources)
-    return _source_name(model, read[0]) if read else None
+    return source_name(model, read[0]) if read else None
 
 
 def plan_federated(
@@ -574,7 +574,7 @@ class _Planner:
         return None
 
     def _island_source(self, island: Iterable[str]) -> str:
-        names = {_source_name(self.model, o) for o in island}
+        names = {source_name(self.model, o) for o in island}
         return ", ".join(sorted(n or "no data source" for n in names))
 
     # -- measures -----------------------------------------------------------
@@ -755,7 +755,7 @@ class _Planner:
         compile_leg: Callable[[QueryObject, SemanticModel, str], str],
         source_dialect: Callable[[str | None], str | None],
     ) -> FederatedLeg:
-        source = _source_name(self.model, next(iter(sorted(island))))
+        source = source_name(self.model, next(iter(sorted(island))))
         dialect = source_dialect(source) or self.dialect_name
         return FederatedLeg(
             name=name,

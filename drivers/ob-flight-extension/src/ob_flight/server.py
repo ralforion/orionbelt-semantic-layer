@@ -319,8 +319,8 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         )
 
     @staticmethod
-    def _source_for(model: Any, dialect: str) -> DataSource | None:
-        return server_execution.source_for(model, dialect)
+    def _source_for(model: Any, dialect: str, compiled: Any = None) -> DataSource | None:
+        return server_execution.source_for(model, dialect, compiled)
 
     @staticmethod
     def _reject_write_operation(sql: str) -> None:

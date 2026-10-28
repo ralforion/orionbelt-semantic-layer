@@ -27,7 +27,7 @@ from orionbelt.dialect.base import (
 from orionbelt.dialect.registry import DialectRegistry, UnsupportedDialectError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
-from orionbelt.service.datasource_selection import describe_datasources, resolve_datasource
+from orionbelt.service.datasource_selection import describe_datasources, resolve_query_source
 from orionbelt.service.db_executor import (
     ExecutionResult,
     ensure_arrow,
@@ -204,10 +204,18 @@ def _run_compiled(
     # driver's Arrow path, and the result's columns get typed by inference over
     # the values rather than from the driver's schema.
     ensure_arrow()
+    if compiled.federation is not None:
+        # Each leg on its own data source, then the combine in DuckDB, as the
+        # server runs it. Imported here: only a federated query needs it.
+        from orionbelt.api.query_cache import execute_federated
+
+        return execute_federated(
+            model=model, compile_result=compiled, tz=tz, override_db_tz=override
+        )
     return execute_sql(
         compiled.sql,
         dialect=dialect,
-        source=resolve_datasource(model, dialect),
+        source=resolve_query_source(model, compiled),
         tz=tz,
         override_db_tz=override,
     )

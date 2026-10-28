@@ -23,7 +23,7 @@ from orionbelt.api.query_cache import execute_query_with_cache, execution_result
 from orionbelt.api.schemas import ValueMatchItem, ValueSearchRequest, ValueSearchResponse
 from orionbelt.api.services.query_compilation import _resolve_dialect, compile_query_or_raise
 from orionbelt.models.query import QueryObject
-from orionbelt.service.datasource_selection import resolve_datasource
+from orionbelt.service.datasource_selection import resolve_query_source
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
@@ -89,7 +89,7 @@ async def run_value_search(
                 compile_result=compiled,
                 model_id=model_id,
                 dialect=dialect,
-                source=resolve_datasource(model, dialect),
+                source=resolve_query_source(model, compiled),
                 cache=cache,
                 cache_config=cache_config,
                 tz=tz,
