@@ -86,7 +86,7 @@ All nodes use `{{ $env.ORIONBELT_API_URL }}`. Set this variable in n8n to point 
 
 - Local: `http://localhost:8000`
 - Docker: `http://host.docker.internal:8080`
-- Cloud Run: `http://35.187.174.102`
+- Public demo: `https://orionbelt.ralforion.com`
 
 ### Add More Tools
 
