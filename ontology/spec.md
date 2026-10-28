@@ -90,6 +90,7 @@ Optional:
 - `obsl:hasDimension`
 - `obsl:hasMeasure`
 - `obsl:hasMetric`
+- `obsl:defaultDataSource` (at most one): the configured data source its data objects are read from when they name none; a nested object takes its root parent's
 
 Cardinality:
 - any number of contained resources
@@ -110,6 +111,7 @@ Optional:
 - `obsl:hasJoin`
 - `obsl:synonym`
 - `rdfs:comment`
+- `obsl:dataSource` (at most one): the configured data source its table is read from, overriding the model's `obsl:defaultDataSource`. Ignored on a nested object (`obsl:nestedIn`), which takes the source of the object at the top of its `nestedIn` chain
 
 Cardinality:
 - exactly one `rdfs:label`

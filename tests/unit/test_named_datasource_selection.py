@@ -563,6 +563,120 @@ class TestPerObjectSource:
         assert '"shop-us"' in store.get_graph(model_id).turtle
         assert "obsl:dataSource" in store.get_graph(model_id).turtle
 
+    def test_the_graph_keeps_the_models_default_apart_from_the_objects_own(self) -> None:
+        """Declared on the model node; an object that names none carries none."""
+        from rdflib import Literal
+
+        from orionbelt.obsl.exporter import OBSL, export_obsl
+
+        store = ModelStore()
+        model_id = store.load_model(two_object_model("shop-us", None, default="shop-eu")).model_id
+        graph = export_obsl(store.get_model(model_id), model_id)
+
+        assert list(graph.subject_objects(OBSL.defaultDataSource)) == [
+            (next(graph.subjects(OBSL.hasDataObject, None)), Literal("shop-eu"))
+        ]
+        assert sorted(str(o) for o in graph.objects(None, OBSL.dataSource)) == ["shop-us"]
+
+    @staticmethod
+    def _guide_query() -> str:
+        """The SPARQL query docs/guide/obsl.md gives for each object's source."""
+        from pathlib import Path
+
+        guide = Path(__file__).resolve().parents[2] / "docs" / "guide" / "obsl.md"
+        blocks = guide.read_text().split("```sparql\n")[1:]
+        (query,) = [b.split("```")[0] for b in blocks if "obsl:defaultDataSource" in b]
+        return query
+
+    def test_sparql_reads_each_objects_source(self) -> None:
+        from orionbelt.cli._local import sparql
+
+        result = sparql(two_object_model("shop-us", None, default="shop-eu"), self._guide_query())
+
+        assert [(r["object"], r["source"]) for r in result.results] == [
+            ("Customers", "shop-eu"),
+            ("Orders", "shop-us"),
+        ]
+
+    def test_sparql_gives_a_nested_object_its_root_parents_source(self) -> None:
+        """As the compiler resolves it, whatever the nested object names itself.
+
+        Reading the model's default there would call a model federated that
+        reads one source.
+        """
+        from orionbelt.cli._local import sparql
+        from orionbelt.compiler.federation import object_sources
+        from orionbelt.service.datasource_selection import source_key
+
+        yaml = """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+  defaultDataSource: shop-eu
+dataObjects:
+  Charges:
+    code: charges
+    dataSource: shop-us
+    columns:
+      Charge Key: {code: charge_key, abstractType: string}
+  Charge Labels:
+    nestedIn: {dataObject: Charges, column: Labels}
+    dataSource: shop-eu
+    columns:
+      Label Key: {code: Key, abstractType: string}
+  Label Parts:
+    nestedIn: {dataObject: Charge Labels, column: Parts}
+    columns:
+      Part Name: {code: Name, abstractType: string}
+  Accounts:
+    code: accounts
+    columns:
+      Account Id: {code: account_id, abstractType: string}
+dimensions:
+  Label Key: {dataObject: Charge Labels, column: Label Key}
+"""
+        store = ModelStore()
+        compiled = object_sources(store.get_model(store.load_model(yaml).model_id))
+
+        result = sparql(yaml, self._guide_query())
+
+        graph = {r["object"]: r["source"] for r in result.results}
+        assert graph == {
+            "Accounts": "shop-eu",
+            "Charges": "shop-us",
+            "Charge Labels": "shop-us",
+            "Label Parts": "shop-us",
+        }
+        assert {name: source_key(source) for name, source in graph.items()} == compiled
+
+    def test_without_a_default_the_model_carries_none(self) -> None:
+        from orionbelt.obsl.exporter import OBSL, export_obsl
+
+        store = ModelStore()
+        model_id = store.load_model(two_object_model("shop-us", "shop-eu")).model_id
+
+        graph = export_obsl(store.get_model(model_id), model_id)
+
+        assert list(graph.objects(None, OBSL.defaultDataSource)) == []
+
+    def test_the_shapes_allow_one_default_on_a_model(self) -> None:
+        from pathlib import Path
+
+        from rdflib import Graph, Namespace
+        from rdflib.namespace import XSD
+
+        sh = Namespace("http://www.w3.org/ns/shacl#")
+        obsl = Namespace("https://ralforion.com/ns/obsl#")
+        shapes = Graph().parse(Path(__file__).resolve().parents[2] / "ontology" / "obsl.shacl.ttl")
+
+        (prop,) = [
+            p
+            for p in shapes.objects(obsl.SemanticModelShape, sh.property)
+            if shapes.value(p, sh.path) == obsl.defaultDataSource
+        ]
+        assert shapes.value(prop, sh.maxCount).toPython() == 1
+        assert shapes.value(prop, sh.datatype) == XSD.string
+
     def test_osi_round_trips_it(self) -> None:
         import yaml
         from osi_orionbelt.obml_to_osi import OBMLtoOSI
