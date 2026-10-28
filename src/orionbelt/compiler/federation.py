@@ -869,6 +869,9 @@ def _leg_measures(
     ``float`` one, whose sums are doubles and divide in floating point.
     """
     effective = model.effective_measures
+    # A generated name must not be one the model declares: a declared measure
+    # named like a partial would replace it in the leg.
+    taken = set(effective) | set(model.dimensions)
     measures: dict[str, Measure] = {}
     averages: dict[str, tuple[str, str, int | None]] = {}
     for name in sorted(names):
@@ -876,7 +879,8 @@ def _leg_measures(
         if measure.aggregation != AggregationType.AVG:
             measures[name] = measure
             continue
-        sums, counts = f"__avg{len(averages)}_sum", f"__avg{len(averages)}_count"
+        sums = _unused(f"__avg{len(averages)}_sum", taken)
+        counts = _unused(f"__avg{len(averages)}_count", taken)
         measures[sums] = measure.model_copy(
             update={"name": sums, "aggregation": AggregationType.SUM}
         )
@@ -894,6 +898,14 @@ def _leg_measures(
             scale = None
         averages[name] = (sums, counts, scale)
     return measures, averages
+
+
+def _unused(name: str, taken: set[str]) -> str:
+    """*name*, or it prefixed with underscores until no name in *taken* is it."""
+    while name in taken:
+        name = f"_{name}"
+    taken.add(name)
+    return name
 
 
 def _combine_measure(model: SemanticModel, name: str, sums: str | None = None) -> Measure:

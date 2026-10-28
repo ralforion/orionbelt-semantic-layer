@@ -167,7 +167,8 @@ How a query is split:
   and count, and the combine query divides the summed sums by the summed
   counts. For an integer or decimal measure it divides exactly, in integers,
   and rounds half away from zero to the measure's type, as PostgreSQL,
-  MySQL and Snowflake round their own `AVG`; DuckDB's `/` would divide in
+  MySQL and Snowflake round their own `AVG`; HAVING, ORDER BY and metrics
+  read the average before that rounding, at 18 places or more; DuckDB's `/` would divide in
   floating point, which drifts past fifteen digits. A `float` measure divides
   its sums as doubles, as every engine averages doubles. The decimal sums are
   read at 9 places, the most an engine returns one at (BigQuery `NUMERIC`); a

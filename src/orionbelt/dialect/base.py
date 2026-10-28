@@ -549,11 +549,13 @@ class Dialect(ABC):
     def exact_quotient(
         self, total: Expr, count: Expr, input_scale: int, obml_type: OBMLType
     ) -> Expr | None:
-        """``total / count`` exactly at *obml_type*'s scale, or ``None`` for none.
+        """``total / count`` exactly, unrounded, or ``None`` for no exact route.
 
         Only the dialect a federated query combines in needs it: its ``avg``
         is the sum of the legs' partial sums over the sum of their counts.
-        *total* is an integer, or a decimal at *input_scale*.
+        *total* is an integer, or a decimal at *input_scale*. The quotient is
+        truncated at more places than *obml_type* keeps, so the measure's cast
+        rounds it once, and HAVING and metrics read it as they read ``AVG``.
         """
         return None
 

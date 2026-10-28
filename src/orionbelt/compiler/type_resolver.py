@@ -947,10 +947,12 @@ def combined_averages(dialect: Dialect, parts: dict[str, tuple[str, int | None]]
 def combined_average(measure: Measure, total: Expr, count: Expr) -> Expr | None:
     """``total / count`` for a measure :func:`combined_averages` names, else ``None``.
 
-    Exact for a decimal result (:meth:`Dialect.exact_quotient` at the
-    measure's declared type), floating point for a float one, as every
-    engine's ``AVG`` over doubles is; a zero count is guarded by the division
-    itself (``NULLIF``).
+    Exact for a decimal result (:meth:`Dialect.exact_quotient`), and left
+    unrounded at more places than the measure's declared type keeps: HAVING,
+    ORDER BY and metrics read the average as they read a raw ``AVG``, and the
+    measure's own cast rounds its column once. Floating point for a float
+    result, as every engine's ``AVG`` over doubles is; a zero count is
+    guarded by the division itself (``NULLIF``).
     """
     active = _combined_averages.get()
     if active is None or measure.name not in active[1]:
