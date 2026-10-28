@@ -359,8 +359,8 @@ class TestCountDistinct:
 
         fact = plan.legs[0]
         assert "__distinct0" in dict(fact.columns)
-        assert "COUNT(DISTINCT" not in fact.sql.upper()
-        assert "COUNT(DISTINCT" in plan.combine_sql.upper()
+        # The combine step counts the leg's values, not the leg's own counts.
+        assert 'COUNT(DISTINCT "leg_0"."__distinct0")' in plan.combine_sql
 
 
 class TestPlan:
@@ -880,3 +880,119 @@ class TestPartialTypes:
 
         assert _run_typed(typed_files, query, federated=True) == [(0,)]
         assert _run_typed(typed_files, query, federated=False) == [(0,)]
+
+
+THREE_OBJECTS = """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Orders:
+    code: orders
+{shop}    columns:
+      Order ID: {{code: order_id, abstractType: int}}
+      Order Customer: {{code: customer_id, abstractType: int}}
+      Amount: {{code: amount, abstractType: decimal, numClass: additive}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+  Customers:
+    code: customers
+{shop}    columns:
+      Customer ID: {{code: customer_id, abstractType: int}}
+      Customer Country: {{code: country_id, abstractType: int}}
+      Credit: {{code: credit, abstractType: decimal, numClass: additive}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Countries
+        columnsFrom: [Customer Country]
+        columnsTo: [Country ID]
+  Countries:
+    code: countries
+{crm}    columns:
+      Country ID: {{code: country_id, abstractType: int}}
+      Country: {{code: name, abstractType: string}}
+dimensions:
+  Country: {{dataObject: Countries, column: Country, resultType: string}}
+measures:
+  Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
+  Customers Counted:
+    columns: [{{dataObject: Customers, column: Customer ID}}]
+    aggregation: count_distinct
+    resultType: int
+  Orders Counted:
+    columns: [{{dataObject: Orders, column: Order ID}}]
+    aggregation: count_distinct
+    resultType: int
+  Credit Total: {{columns: [{{dataObject: Customers, column: Credit}}], aggregation: sum}}
+"""
+THREE_DATA = {
+    "orders": "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10, 50.00), (2, 10, 30.00), "
+    "(3, 11, 20.00)) t(order_id, customer_id, amount)",
+    # Customer 12 has no orders, and is the only customer in country 3.
+    "customers": "CREATE TABLE customers AS SELECT * FROM (VALUES (10, 1, 100.00), "
+    "(11, 2, 40.00), (12, 3, 60.00)) t(customer_id, country_id, credit)",
+    "countries": "CREATE TABLE countries AS SELECT * FROM (VALUES (1, 'AT'), (2, 'SI'), "
+    "(3, 'HR')) t(country_id, name)",
+}
+
+
+def three_objects(federated: bool) -> str:
+    shop = "    dataSource: shop\n" if federated else ""
+    crm = "    dataSource: crm\n" if federated else ""
+    return THREE_OBJECTS.format(shop=shop, crm=crm)
+
+
+@pytest.fixture(scope="module")
+def three_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("three")
+    tables = {"all": THREE_DATA, "shop": ("orders", "customers"), "crm": ("countries",)}
+    paths = {name: str(root / f"{name}.duckdb") for name in tables}
+    for name, which in tables.items():
+        con = duckdb.connect(paths[name])
+        for table in which:
+            con.execute(THREE_DATA[table])
+        con.close()
+    return paths
+
+
+class TestCountDistinctBesideOtherObjects:
+    """A count of distinct values beside measures of another data object."""
+
+    def test_alone_it_keeps_the_rows_without_a_match(self, three_files: dict[str, str]) -> None:
+        """Customer 12 has no orders: counted, and its country HR kept."""
+        query = {"select": {"dimensions": ["Country"], "measures": ["Customers Counted"]}}
+        single_compiled = _compile(three_objects(False), query)
+        con = duckdb.connect(three_files["all"], read_only=True)
+        try:
+            single = sorted(_rows(con, single_compiled.sql))
+        finally:
+            con.close()
+        compiled = _compile(three_objects(True), query)
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(three_files[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+
+        assert sorted(_rows(combine, compiled.sql)) == single == [("AT", 1), ("HR", 1), ("SI", 1)]
+
+    @pytest.mark.parametrize(
+        "measures",
+        [["Revenue", "Customers Counted"], ["Credit Total", "Orders Counted"]],
+        ids=["sum_over_orders_and_distinct_customers", "customer_sum_and_distinct_orders"],
+    )
+    def test_with_measures_of_another_object_it_is_refused(self, measures: list[str]) -> None:
+        """Grouping by the counted column would repeat a one-side sum per value,
+        and the rows kept for one measure are not the other's."""
+        with pytest.raises(ResolutionError) as caught:
+            _compile(
+                three_objects(True), {"select": {"dimensions": ["Country"], "measures": measures}}
+            )
+
+        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_AGGREGATION"]
+        assert "its own data object" in caught.value.errors[0].message

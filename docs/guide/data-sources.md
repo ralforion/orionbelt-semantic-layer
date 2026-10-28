@@ -177,13 +177,18 @@ How a query is split:
   per-group counts either: the fact leg also groups by the column it counts,
   and the combine query counts that column's distinct values across all the
   groups they reach. The leg then returns a row per value as well, which
-  `FEDERATION_MAX_LEG_ROWS` bounds; the other measures still combine exactly
-  at that grain.
+  `FEDERATION_MAX_LEG_ROWS` bounds. The query's other measures must read the
+  same data object as the counted column: that object's sums, counts and
+  averages still combine exactly at the finer grain, but a measure of another
+  object would not (a customer-level sum would repeat once per order, and the
+  customers without orders that a count over customers keeps are not the rows
+  a sum over orders keeps).
 
 What does not split exactly is refused by name rather than answered with a
 different number: measures from more than one source (`FEDERATION_MULTI_FACT`),
-a `count_distinct` of an expression, of several columns or under measure
-filters, an `avg` or `count_distinct` with `total: true`, other `distinct`
+a `count_distinct` of an expression, of several columns, under measure
+filters or beside measures of another data object, an `avg` or
+`count_distinct` with `total: true`, other `distinct`
 aggregations, and aggregations that cannot be combined from partial results
 (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,

@@ -696,6 +696,42 @@ class _Planner:
                     "data source than its own",
                 )
 
+        self.check_distinct_counts()
+
+    def check_distinct_counts(self) -> None:
+        """A count of distinct values only beside measures of its own data object.
+
+        The fact leg groups by the counted column as well
+        (:func:`_leg_measures`). Grouping an object's rows by one of its own
+        columns leaves that object's sums, counts, minima and averages exact,
+        since each combines from partial results. A measure of another object
+        does not survive it: a customer-level sum is repeated once per order
+        when the leg groups by order, and the rows the planner keeps for a
+        count over customers - those without orders - are not the rows it
+        keeps for a sum over orders. Combining those needs fact legs
+        aggregated apart, which a federated query does not build yet.
+        """
+        effective = self.model.effective_measures
+        atomic = sorted(self.atomic_measures())
+        distinct = [name for name in atomic if _counts_distinct(effective[name])]
+        if not distinct:
+            return
+        counted = {effective[name].columns[0].view for name in distinct}
+        for name in atomic:
+            measure = effective[name]
+            if measure.source_objects == counted and len(counted) == 1 and not measure.anchor:
+                continue
+            reads = ", ".join(sorted(measure.source_objects)) or "no data object"
+            raise self.refuse(
+                "UNSUPPORTED_AGGREGATION",
+                f"Measure '{distinct[0]}' counts distinct values of "
+                f"{', '.join(sorted(o or '' for o in counted))}, and measure '{name}' reads "
+                f"{reads}: across data sources, a count of distinct values combines only "
+                "with measures of its own data object",
+                hint="Query the count of distinct values apart from measures of other data "
+                "objects.",
+            )
+
     # -- filters ------------------------------------------------------------
 
     def place_filters(
@@ -903,10 +939,12 @@ def _leg_measures(
       (:func:`~orionbelt.compiler.type_resolver.combined_averages`). Both skip
       NULLs, so they cover exactly the rows ``AVG`` would.
     * a count of distinct values: counts of distinct values do not add up, so
-      the leg returns no measure for it but groups by the column it counts,
-      and the combine step counts that column's distinct values across all
-      the groups they reach. The other measures are still exact at that finer
-      grain, since each combines from partial results.
+      the leg groups by the column it counts as well, and the combine step
+      counts that column's distinct values across all the groups they reach.
+      The measure stays in the leg only to keep the rows it keeps; the other
+      measures, of the same data object (:meth:`_Planner.check_distinct_counts`),
+      are still exact at that finer grain, since each combines from partial
+      results.
 
     Returns the leg's measures by name; per ``avg`` the leg columns of its sums
     and its counts, with the scale the sums are read at (0 for an integer
@@ -929,6 +967,10 @@ def _leg_measures(
             ref = measure.columns[0]
             column = _unused(f"__distinct{len(distinct)}", taken)
             distinct[name] = (column, ref.view or "", ref.column or "")
+            # Kept, though the combine step counts the column instead: the
+            # measure is what makes the planner keep the rows a count over
+            # its object keeps, those without a match on the other side.
+            measures[name] = measure
             continue
         if measure.aggregation != AggregationType.AVG:
             measures[name] = measure
