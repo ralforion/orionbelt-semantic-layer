@@ -566,14 +566,20 @@ class Dialect(ABC):
         """
         return None
 
-    def exact_decimal_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+    def exact_decimal_avg(
+        self, arg: Expr, obml_type: OBMLType, source_scale: int | None = None
+    ) -> Expr | None:
         """An exact ``AVG(arg)`` over a decimal column, or ``None`` to keep ``AVG``.
 
         ``None`` - the default - where the engine's own ``AVG`` of a decimal is
         exact: PostgreSQL, MySQL, Snowflake, BigQuery and Databricks, measured.
         DuckDB, ClickHouse and Dremio average a decimal as a double, so they
         override this, each its own way, as they do :meth:`exact_integer_avg`.
-        ``obml_type`` is the decimal the result is cast to.
+        ``obml_type`` is the decimal the result is cast to, *source_scale* the
+        widest scale the column declares (``sqlScale``), if it does. The
+        fraction is read at no fewer places than either, and an engine that
+        cannot divide exactly at that many keeps ``AVG`` rather than round the
+        input.
         """
         return None
 

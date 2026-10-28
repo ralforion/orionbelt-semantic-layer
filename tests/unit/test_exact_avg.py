@@ -39,7 +39,27 @@ dataObjects:
       Qty: {code: qty, abstractType: int}
       Amount: {code: amount, abstractType: float}
       Price: {code: price, abstractType: decimal, numClass: additive}
+      Wide: {code: wide, abstractType: decimal, sqlPrecision: 38, sqlScale: 15}
+      Fine: {code: fine, abstractType: decimal, sqlPrecision: 38, sqlScale: 25}
 measures:
+  Wide Avg:
+    columns: [{dataObject: Charges, column: Wide}]
+    resultType: decimal
+    aggregation: avg
+  Fine Avg:
+    columns: [{dataObject: Charges, column: Fine}]
+    resultType: decimal
+    aggregation: avg
+  Price Avg 19:
+    columns: [{dataObject: Charges, column: Price}]
+    resultType: decimal
+    aggregation: avg
+    dataType: "decimal(38, 19)"
+  Price Avg 76:
+    columns: [{dataObject: Charges, column: Price}]
+    resultType: decimal
+    aggregation: avg
+    dataType: "decimal(76, 76)"
   Price Avg:
     columns: [{dataObject: Charges, column: Price}]
     resultType: decimal
@@ -773,3 +793,51 @@ class TestADecimalAverage:
         ((got,),) = duckdb.sql(sql).fetchall()
 
         assert got == expected
+
+
+def _duckdb_average(measure: str, column: str, kind: str, values: list[str]) -> Decimal:
+    """*measure*'s DuckDB SQL run over one *column* of type *kind* holding *values*."""
+    duckdb = pytest.importorskip("duckdb")
+    rows = " UNION ALL ".join(f"SELECT CAST({v!r} AS {kind}) AS {column}" for v in values)
+    sql = _sql(measure, "duckdb").replace('FROM "charges"', f"FROM ({rows})")
+    sql = re.sub(r"\s+GROUP BY.*", "", sql.replace('"Charges"."day" AS "Day", ', ""), flags=re.S)
+    ((got,),) = duckdb.sql(sql).fetchall()
+    return got
+
+
+class TestADecimalAverageKeepsItsWidths:
+    """The column's and the result's widths, not a fixed one (review of #681)."""
+
+    def test_a_declared_source_width_widens_the_result(self) -> None:
+        """A DECIMAL(38, 15) column averaging 10^17: the default decimal(18, 2)
+        cannot hold it, and the plain average was widened for the declared
+        source; the exact one is cast to the same type."""
+        got = _duckdb_average(
+            "Wide Avg", "wide", "DECIMAL(38, 15)", ["100000000000000000", "100000000000000000"]
+        )
+        assert got == Decimal("100000000000000000")
+
+    def test_a_result_with_more_places_reads_the_fraction_at_them(self) -> None:
+        """A scale-19 result over 9e-19: read at 18 places it became 1e-18."""
+        got = _duckdb_average("Price Avg 19", "price", "DECIMAL(38, 19)", ["0.0000000000000000009"])
+        assert got == Decimal("0.0000000000000000009")
+        assert re.search(r"toDecimal256\(.*, 19\)", _sql("Price Avg 19", "clickhouse"))
+
+    def test_a_wide_physical_scale_does_not_overflow(self) -> None:
+        """DECIMAL(38, 25), not declared: the fraction is narrowed before it is
+        scaled, where multiplying it in its own type overflowed."""
+        got = _duckdb_average("Price Avg", "price", "DECIMAL(38, 25)", ["0.125"])
+        assert got == Decimal("0.13")
+
+    @pytest.mark.parametrize("dialect", ["duckdb", "dremio"])
+    def test_a_declared_scale_past_the_exact_route_keeps_avg(self, dialect: str) -> None:
+        """sqlScale 25: past what DuckDB's long division (19) and Dremio's
+        headroom (14) divide exactly, so the input is not rounded to fit."""
+        sql = _sql("Fine Avg", dialect)
+        assert "AVG(" in sql.upper(), sql
+        assert "TRUNC(SUM(" not in sql and "NULLIF(COUNT(" not in sql, sql
+
+    def test_clickhouse_keeps_avg_with_no_place_past_the_result(self) -> None:
+        """decimal(76, 76) has no 77th place for divideDecimal to divide to."""
+        sql = _sql("Price Avg 76", "clickhouse")
+        assert "divideDecimal" not in sql, sql

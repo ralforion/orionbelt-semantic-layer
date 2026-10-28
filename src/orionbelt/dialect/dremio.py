@@ -14,7 +14,7 @@ from orionbelt.dialect.base import (
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
-from orionbelt.models.types import OBMLType
+from orionbelt.models.types import DecimalType, OBMLType
 
 
 @DialectRegistry.register
@@ -89,7 +89,9 @@ class DremioDialect(Dialect):
         """
         return self._sum_over_widened_argument(arg)
 
-    def exact_decimal_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+    def exact_decimal_avg(
+        self, arg: Expr, obml_type: OBMLType, source_scale: int | None = None
+    ) -> Expr | None:
         """``SUM`` over the decimal at 14 places, divided by ``COUNT``.
 
         Dremio's ``AVG`` of a decimal is a double: 12345678901234.565 came back
@@ -103,10 +105,16 @@ class DremioDialect(Dialect):
         when the digits after the result's last place read 49...9 through the
         14th, which an average of a two-place column needs some 10^9 rows in
         one group to produce.
+
+        A column or result with more places than 14 keeps ``AVG``: summing it
+        at 14 would round every value first.
         """
-        return self._exact_avg_by_sum_over_count(
-            arg, obml_type, input_scale=self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS
-        )
+        places = self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS
+        if not isinstance(obml_type, DecimalType):
+            return None
+        if max(source_scale or 0, obml_type.scale) > places:
+            return None
+        return self._exact_avg_by_sum_over_count(arg, obml_type, input_scale=places)
 
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """Dremio divides decimals exactly, so SUM/COUNT is all it takes.

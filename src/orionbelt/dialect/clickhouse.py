@@ -409,15 +409,24 @@ class ClickHouseDialect(Dialect):
         """
         return self._divided_average(arg, obml_type, "toDecimal128", 0)
 
-    def exact_decimal_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+    def exact_decimal_avg(
+        self, arg: Expr, obml_type: OBMLType, source_scale: int | None = None
+    ) -> Expr | None:
         """The integer route over a ``Decimal256`` sum at 18 places.
 
         ``avg`` of a decimal is Float64 here: 12345678901234.565 came back .56,
         and 9999999999999999.99 as 1E+16. Summed as ``Decimal256`` - room for
         a long total at 18 places, which no decimal column exceeds - and
-        divided with ``divideDecimal``, both are exact, measured.
+        divided with ``divideDecimal``, both are exact, measured. A column or
+        result with more places sums at those instead.
         """
-        return self._divided_average(arg, obml_type, "toDecimal256", 18)
+        if not isinstance(obml_type, DecimalType):
+            return None
+        places = max(18, source_scale or 0, obml_type.scale)
+        return self._divided_average(arg, obml_type, "toDecimal256", places)
+
+    #: The most places a ClickHouse decimal holds, ``Decimal256``'s.
+    _DECIMAL256_MAX_SCALE = 76
 
     def _divided_average(
         self, arg: Expr, obml_type: OBMLType, widen: str, input_scale: int
@@ -431,6 +440,11 @@ class ClickHouseDialect(Dialect):
         what rounding the exact value gives.
         """
         if not isinstance(obml_type, DecimalType):
+            return None
+        if obml_type.scale + 1 > self._DECIMAL256_MAX_SCALE or input_scale > (
+            self._DECIMAL256_MAX_SCALE
+        ):
+            # No place past the result to divide to (decimal(76, 76)): keep AVG.
             return None
         zero = Literal.number(0)
         count: Expr = FunctionCall(name="COUNT", args=[arg])

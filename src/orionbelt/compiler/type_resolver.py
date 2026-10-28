@@ -335,8 +335,15 @@ def rewrite_exact_integer_avg(
         # every engine, which is what it is.
         if not _averages_decimal_columns(measure, model):
             return None
-        decimal = dialect.exact_decimal_avg(aggregate.args[0], resolved)
-        return (rebuild(decimal), resolved) if decimal is not None else None
+        # The type the plain AVG would be cast to, widened for a declared
+        # source width as it is there.
+        target = resolve_measure_cast_type(measure, settings, dialect, model)
+        if not isinstance(target, DecimalType):
+            return None
+        decimal = dialect.exact_decimal_avg(
+            aggregate.args[0], target, _declared_scale(measure, model)
+        )
+        return (rebuild(decimal), target) if decimal is not None else None
     target = resolved if measure.data_type else _integer_avg_target(measure, resolved, model)
     exact = dialect.exact_integer_avg(aggregate.args[0], target)
     if exact is not None:
@@ -365,6 +372,20 @@ def _averages_decimal_columns(measure: Measure, model: SemanticModel | None) -> 
         if column is None or column.abstract_type != DataType.DECIMAL:
             return False
     return True
+
+
+def _declared_scale(measure: Measure, model: SemanticModel | None) -> int | None:
+    """The widest ``sqlScale`` the columns *measure* averages declare, if any does."""
+    if model is None:
+        return None
+    scales = [
+        column.sql_scale
+        for ref in measure.columns
+        if (obj := model.data_objects.get(ref.view or "")) is not None
+        and (column := obj.columns.get(ref.column or "")) is not None
+        and column.sql_scale is not None
+    ]
+    return max(scales) if scales else None
 
 
 def exact_reaggregate_avg(
