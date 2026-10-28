@@ -83,6 +83,12 @@ COPY --from=builder --chown=app:app /app/schema schema/
 # non-empty so the build never fails.
 COPY --chown=app:app examples/orionbelt_1_commerce.yaml examples/orionbelt_1_commerce.duckdb* /app/data/
 
+# Where federated queries spill large legs, when FEDERATION_SPILL_DIR=/app/spill
+# (off by default). Owned by the app user, so a named volume mounted here
+# starts out writable: Docker copies the directory's owner into a new volume.
+#   docker run -v obsl-spill:/app/spill -e FEDERATION_SPILL_DIR=/app/spill ...
+RUN mkdir -p /app/spill && chown app:app /app/spill
+
 USER app
 
 # Cloud Run injects PORT (default 8080)

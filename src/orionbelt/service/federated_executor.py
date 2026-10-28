@@ -487,12 +487,21 @@ class LegSink:
 
         self.spilled = True
         path = os.path.join(self._spill.directory, f"{self._leg.name}.arrow")
-        with pa.OSFile(path, "wb") as sink, ipc.new_file(sink, reader.schema) as writer:
-            for batch in held:
-                self._write(writer, batch)
-            held.clear()
-            for batch in reader:
-                self._write(writer, batch)
+        try:
+            with pa.OSFile(path, "wb") as sink, ipc.new_file(sink, reader.schema) as writer:
+                for batch in held:
+                    self._write(writer, batch)
+                held.clear()
+                for batch in reader:
+                    self._write(writer, batch)
+        except OSError as exc:
+            # The disk, not the database: most often a volume smaller than
+            # the limits allow for.
+            raise FederationSpillFullError(
+                f"[FEDERATION_SPILL_FULL] {leg_label(self._leg)} could not be spilled to "
+                f"FEDERATION_SPILL_DIR '{self._spill._limits.spill_dir}': {exc}. Give the "
+                "directory more space, or lower FEDERATION_SPILL_BUDGET_MB to what it holds."
+            ) from None
         # Left open: the table's buffers are the mapping. The file goes with
         # the query's directory; a mapped file outlives its name.
         return ipc.open_file(pa.memory_map(path, "r")).read_all()
@@ -511,7 +520,8 @@ def combine(
     """Run the combine query over the legs' tables in a fresh in-memory DuckDB.
 
     ``temp_directory`` is where DuckDB spills its own join and sort state:
-    the query's spill directory, when it has one.
+    the query's spill directory, when it has one, within
+    ``FEDERATION_SPILL_MAX_MB``.
 
     Raises:
         ExecutionError: The combine query failed.
@@ -526,6 +536,9 @@ def combine(
     }
     if temp_directory is not None:
         config["temp_directory"] = temp_directory
+        # DuckDB's own spill is bounded too, so the disk a query can take is
+        # known: its legs within the budget, plus this.
+        config["max_temp_directory_size"] = f"{limits.spill_max_bytes // _MB}MiB"
     con = duckdb.connect(config=config)
     try:
         for name, table in tables.items():

@@ -676,13 +676,21 @@ class TestCombine:
         assert memory.replace(" ", "").upper().startswith(("61", "64"))
 
     def test_the_combine_step_spills_into_the_querys_directory(self, tmp_path: Any) -> None:
+        federation.configure(FederationLimits(spill_max_bytes=100 * 1024 * 1024))
         plan = FederatedPlan(
-            legs=(), combine_sql="SELECT current_setting('temp_directory') AS directory"
+            legs=(),
+            combine_sql=(
+                "SELECT current_setting('temp_directory') AS directory, "
+                "current_setting('max_temp_directory_size') AS most"
+            ),
         )
 
         result = federation.combine(plan, {}, None, str(tmp_path))
 
-        assert result.rows[0][0] == str(tmp_path)
+        directory, most = result.rows[0]
+        assert directory == str(tmp_path)
+        # Bounded by the query's spill maximum, in the MiB the limits count.
+        assert most.replace(" ", "") in ("100MiB", "100.0MiB")
 
 
 def batches(rows: int, per_batch: int = 1000) -> Any:
@@ -756,6 +764,25 @@ class TestSpill:
         third = federation.QuerySpill(limits)
         assert third.sink(leg(("Revenue", "decimal")))(batches(20_000)[0]).num_rows == 20_000
         third.close()
+
+    def test_a_disk_that_fills_while_spilling_is_named_not_blamed_on_the_database(
+        self, tmp_path: Any
+    ) -> None:
+        import errno
+
+        spill = federation.QuerySpill(spilling(tmp_path, spill_threshold_bytes=1024))
+        full = OSError(errno.ENOSPC, "No space left on device")
+
+        with (
+            patch("pyarrow.OSFile", side_effect=full),
+            pytest.raises(federation.FederationSpillFullError) as refused,
+        ):
+            spill.sink(leg(("Revenue", "decimal")))(batches(20_000)[0])
+        spill.close()
+
+        assert "[FEDERATION_SPILL_FULL]" in str(refused.value)
+        assert "No space left on device" in str(refused.value)
+        assert "FEDERATION_SPILL_DIR" in str(refused.value)
 
     def test_a_spill_directory_that_cannot_be_written_is_named(self, tmp_path: Any) -> None:
         blocked = tmp_path / "file"

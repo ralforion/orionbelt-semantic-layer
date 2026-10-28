@@ -182,11 +182,14 @@ mode.
 | Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 1,000,000). Each leg's SQL asks for one more row, so a larger leg is refused with `FEDERATION_LEG_TOO_LARGE` rather than combined in part |
 | Concurrency | At most `FEDERATION_MAX_CONCURRENT` federated queries run at once per process (default 4). The others wait in order of arrival for up to `FEDERATION_QUEUE_TIMEOUT_SECONDS` (default 30), then get `FEDERATION_BUSY` (HTTP 503). Legs run on a pool of `FEDERATION_LEG_THREADS` threads (default 16) |
 | Combine | A fresh in-memory DuckDB per query, with `FEDERATION_COMBINE_THREADS` threads (default 2) and `FEDERATION_COMBINE_MEMORY_LIMIT` (default `512MB`) instead of DuckDB's defaults of every core and 80% of RAM per instance |
-| Spill to disk | Off unless `FEDERATION_SPILL_DIR` names a directory. A leg is then read batch by batch and held in memory up to `FEDERATION_SPILL_THRESHOLD_MB` (default 64); past that, it goes to an Arrow IPC file that the combine step reads memory-mapped, so the operating system can page it out, and DuckDB spills its own join and sort state next to it. Each query writes into its own directory, readable by the server alone and removed when the query ends, also when it fails. One query may spill at most `FEDERATION_SPILL_MAX_MB` (default 4096, else `FEDERATION_SPILL_TOO_LARGE`, HTTP 502), and the queries running at once at most `FEDERATION_SPILL_BUDGET_MB` together (default 16384, else `FEDERATION_SPILL_FULL`, HTTP 503). A spilled leg is not stored in the result cache; the combined result is |
+| Spill to disk | Off unless `FEDERATION_SPILL_DIR` names a directory. A leg is then read batch by batch and held in memory up to `FEDERATION_SPILL_THRESHOLD_MB` (default 64); past that, it goes to an Arrow IPC file that the combine step reads memory-mapped, so the operating system can page it out, and DuckDB spills its own join and sort state next to it. Each query writes into its own directory, readable by the server alone and removed when the query ends, also when it fails. One query may spill at most `FEDERATION_SPILL_MAX_MB` (default 4096, else `FEDERATION_SPILL_TOO_LARGE`, HTTP 502), and the queries running at once at most `FEDERATION_SPILL_BUDGET_MB` together (default 16384, else `FEDERATION_SPILL_FULL`, HTTP 503). DuckDB's own spill in the combine step is capped at `FEDERATION_SPILL_MAX_MB` per query as well. A spilled leg is not stored in the result cache; the combined result is |
 
 Spilling needs real disk. On an in-memory filesystem, such as Cloud Run's
 default one, a spilled file takes the same memory it was meant to free; leave
-`FEDERATION_SPILL_DIR` unset there, or point it at a disk-backed volume. A leg
+`FEDERATION_SPILL_DIR` unset there, or point it at a disk-backed volume.
+[Docker](../getting-started/docker.md#spilling-federated-queries-to-disk)
+shows the volume to mount, how large it needs to be, and the same for
+Kubernetes. A leg
 is read batch by batch from DuckDB and Postgres; the other drivers return
 their rows whole, so their legs are not spilled yet and stay within memory
 and `FEDERATION_MAX_LEG_ROWS`.
