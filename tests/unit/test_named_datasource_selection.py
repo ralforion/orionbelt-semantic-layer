@@ -578,29 +578,76 @@ class TestPerObjectSource:
         ]
         assert sorted(str(o) for o in graph.objects(None, OBSL.dataSource)) == ["shop-us"]
 
+    @staticmethod
+    def _guide_query() -> str:
+        """The SPARQL query docs/guide/obsl.md gives for each object's source."""
+        from pathlib import Path
+
+        guide = Path(__file__).resolve().parents[2] / "docs" / "guide" / "obsl.md"
+        blocks = guide.read_text().split("```sparql\n")[1:]
+        (query,) = [b.split("```")[0] for b in blocks if "obsl:defaultDataSource" in b]
+        return query
+
     def test_sparql_reads_each_objects_source(self) -> None:
-        """The query docs/guide/obsl.md gives for it."""
         from orionbelt.cli._local import sparql
 
-        query = """
-            PREFIX obsl: <https://ralforion.com/ns/obsl#>
-            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-            SELECT ?object ?source WHERE {
-                ?model obsl:hasDataObject ?o .
-                ?o rdfs:label ?object .
-                OPTIONAL { ?o obsl:dataSource ?declared }
-                OPTIONAL { ?model obsl:defaultDataSource ?default }
-                BIND(COALESCE(?declared, ?default) AS ?source)
-            }
-            ORDER BY ?source ?object
-        """
-
-        result = sparql(two_object_model("shop-us", None, default="shop-eu"), query)
+        result = sparql(two_object_model("shop-us", None, default="shop-eu"), self._guide_query())
 
         assert [(r["object"], r["source"]) for r in result.results] == [
             ("Customers", "shop-eu"),
             ("Orders", "shop-us"),
         ]
+
+    def test_sparql_gives_a_nested_object_its_root_parents_source(self) -> None:
+        """As the compiler resolves it, whatever the nested object names itself.
+
+        Reading the model's default there would call a model federated that
+        reads one source.
+        """
+        from orionbelt.cli._local import sparql
+        from orionbelt.compiler.federation import object_sources
+        from orionbelt.service.datasource_selection import source_key
+
+        yaml = """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+  defaultDataSource: shop-eu
+dataObjects:
+  Charges:
+    code: charges
+    dataSource: shop-us
+    columns:
+      Charge Key: {code: charge_key, abstractType: string}
+  Charge Labels:
+    nestedIn: {dataObject: Charges, column: Labels}
+    dataSource: shop-eu
+    columns:
+      Label Key: {code: Key, abstractType: string}
+  Label Parts:
+    nestedIn: {dataObject: Charge Labels, column: Parts}
+    columns:
+      Part Name: {code: Name, abstractType: string}
+  Accounts:
+    code: accounts
+    columns:
+      Account Id: {code: account_id, abstractType: string}
+dimensions:
+  Label Key: {dataObject: Charge Labels, column: Label Key}
+"""
+        store = ModelStore()
+        compiled = object_sources(store.get_model(store.load_model(yaml).model_id))
+
+        result = sparql(yaml, self._guide_query())
+
+        graph = {r["object"]: r["source"] for r in result.results}
+        assert graph == {
+            "Accounts": "shop-eu",
+            "Charges": "shop-us",
+            "Charge Labels": "shop-us",
+            "Label Parts": "shop-us",
+        }
+        assert {name: source_key(source) for name, source in graph.items()} == compiled
 
     def test_without_a_default_the_model_carries_none(self) -> None:
         from orionbelt.obsl.exporter import OBSL, export_obsl

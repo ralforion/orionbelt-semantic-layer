@@ -162,13 +162,17 @@ SELECT ?from ?to ?card WHERE {
 
 ```sparql
 # The data source each data object is read from: its own, else the model's.
+# A nested object reads its parent's table, so it takes the source of the
+# object at the top of its nestedIn chain, whatever it names itself.
 # Objects of more than one source mean the model's queries can run federated.
 PREFIX obsl: <https://ralforion.com/ns/obsl#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT ?object ?source WHERE {
     ?model obsl:hasDataObject ?o .
     ?o rdfs:label ?object .
-    OPTIONAL { ?o obsl:dataSource ?declared }
+    ?o (obsl:nestedIn/obsl:nestedInObject)* ?root .
+    FILTER NOT EXISTS { ?root obsl:nestedIn ?parent }
+    OPTIONAL { ?root obsl:dataSource ?declared }
     OPTIONAL { ?model obsl:defaultDataSource ?default }
     BIND(COALESCE(?declared, ?default) AS ?source)
 }
