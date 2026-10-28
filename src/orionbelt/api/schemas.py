@@ -884,6 +884,12 @@ class DatabaseExplain(BaseModel):
     compiled_sql: str
     explain_output: str
     explain_format: str = Field(default="text", description="Format of explain_output")
+    leg: str | None = Field(
+        default=None, description="For a query across data sources, the leg explained"
+    )
+    data_source: str | None = Field(
+        default=None, description="For a query across data sources, the data source it runs on"
+    )
 
 
 class QueryPlanRequest(BaseModel):
@@ -923,6 +929,14 @@ class QueryPlanResponse(BaseModel):
     would_compile: bool = True
     compiled_sql_length_estimate: int = 0
     database_explain: DatabaseExplain | None = None
+    database_explain_legs: list[DatabaseExplain] = Field(
+        default_factory=list,
+        description=(
+            "For a query across data sources, EXPLAIN of each leg on its own data source, "
+            "and no database_explain: the step combining the legs runs in OBSL's in-memory "
+            "DuckDB over their results, not in a warehouse."
+        ),
+    )
 
 
 class ConvertRequest(BaseModel):
@@ -1754,6 +1768,10 @@ class OneshotBatchQueryResult(BaseModel):
     ttl_seconds: int | None = None
     ttl_source: str | None = None
     ttl_limiting_table: str | None = None
+    federation: FederationResponse | None = Field(
+        default=None,
+        description="For a query across data sources, its legs and the step combining them",
+    )
 
 
 class OneshotBatchResponse(BaseModel):

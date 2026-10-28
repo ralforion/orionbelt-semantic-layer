@@ -1936,5 +1936,19 @@ class TestDeclaredTypeReconciliationWiring:
         assert "list(declared_skips or []) +" not in source
 
     def test_oneshot_declares_coalesce_aliases(self) -> None:
-        source = self._source("api/routers/oneshot.py")
-        assert source.count("query=item.query,") == 2
+        """Every response the one-shot batch builds is told the query."""
+        import ast
+
+        tree = ast.parse(self._source("api/routers/oneshot.py"))
+        builds = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_build_execute_response"
+        ]
+        # A cache hit, a miss, and a query across data sources.
+        assert len(builds) == 3
+        for build in builds:
+            query = next(k.value for k in build.keywords if k.arg == "query")
+            assert ast.unparse(query) == "item.query"

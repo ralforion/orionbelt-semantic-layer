@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict
-from typing import Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -85,7 +85,7 @@ from orionbelt.api.warnings_adapter import (
 from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.sql_translator import SQLTranslationError, translate_sql_to_query
 from orionbelt.parser.loader import pin_decimal_digits
-from orionbelt.service.datasource_selection import resolve_datasource
+from orionbelt.service.datasource_selection import resolve_query_source
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
@@ -98,6 +98,10 @@ from orionbelt.service.session_manager import (
     SessionManager,
     SessionNotFoundError,
 )
+
+if TYPE_CHECKING:
+    from orionbelt.compiler.federation import FederatedLeg, FederatedPlan
+    from orionbelt.models.semantic import SemanticModel
 
 logger = logging.getLogger("orionbelt.api.sessions")
 
@@ -578,34 +582,79 @@ async def plan_query(
         compiled_sql_length_estimate=len(result.sql),
     )
 
-    if body.include_database_explain:
+    if body.include_database_explain and result.federation is not None:
+        explains, failed = await _explain_legs(model, result.federation)
+        response.database_explain_legs = explains
+        response.warnings = response.warnings + failed
+    elif body.include_database_explain:
         try:
+            # In the dialect the query was compiled for: one reading one source
+            # of a model read from several is written in that source's.
             raw = await asyncio.to_thread(
                 explain_sql,
                 result.sql,
-                dialect=dialect,
-                source=resolve_datasource(model, dialect),
+                dialect=result.dialect,
+                source=resolve_query_source(model, result),
             )
             response.database_explain = DatabaseExplain(
-                dialect=dialect,
+                dialect=result.dialect,
                 compiled_sql=result.sql,
                 explain_output=raw,
                 explain_format="text",
             )
         except (ExecutionUnavailableError, ExecutionError) as exc:
-            response.warnings = response.warnings + [
-                StructuredWarning(
-                    code="DATABASE_EXPLAIN_FAILED",
-                    severity="warning",
-                    message=str(exc),
-                    hint=(
-                        "Database EXPLAIN is opt-in. Disable include_database_explain "
-                        "or check QUERY_EXECUTE / DB_VENDOR / driver setup."
-                    ),
-                )
-            ]
+            response.warnings = response.warnings + [_explain_failed(str(exc))]
 
     return response
+
+
+def _explain_failed(message: str) -> StructuredWarning:
+    """The warning for a database EXPLAIN that could not run."""
+    return StructuredWarning(
+        code="DATABASE_EXPLAIN_FAILED",
+        severity="warning",
+        message=message,
+        hint=(
+            "Database EXPLAIN is opt-in. Disable include_database_explain "
+            "or check QUERY_EXECUTE / DB_VENDOR / driver setup."
+        ),
+    )
+
+
+async def _explain_legs(
+    model: SemanticModel, plan: FederatedPlan
+) -> tuple[list[DatabaseExplain], list[StructuredWarning]]:
+    """EXPLAIN each leg of a query across data sources on its own source, at once.
+
+    A leg whose EXPLAIN fails is a warning naming it; the others still come
+    back. The step combining the legs runs in OBSL's in-memory DuckDB over
+    their results, so no warehouse has a plan for it.
+    """
+    from orionbelt.service.datasource_selection import resolve_named_source
+    from orionbelt.service.federated_executor import leg_label
+
+    async def explain(leg: FederatedLeg) -> DatabaseExplain:
+        source = resolve_named_source(leg.data_source, leg.dialect, model)
+        raw = await asyncio.to_thread(explain_sql, leg.sql, dialect=leg.dialect, source=source)
+        return DatabaseExplain(
+            dialect=leg.dialect,
+            compiled_sql=leg.sql,
+            explain_output=raw,
+            leg=leg.name,
+            data_source=leg.data_source,
+        )
+
+    outcomes = await asyncio.gather(*(explain(leg) for leg in plan.legs), return_exceptions=True)
+    explains: list[DatabaseExplain] = []
+    failed: list[StructuredWarning] = []
+    for leg, outcome in zip(plan.legs, outcomes, strict=True):
+        if isinstance(outcome, ExecutionUnavailableError | ExecutionError):
+            failed.append(_explain_failed(f"{leg_label(leg)}: {outcome}"))
+        elif isinstance(outcome, BaseException):
+            raise outcome
+        else:
+            explains.append(outcome)
+    return explains, failed
 
 
 @router.post(

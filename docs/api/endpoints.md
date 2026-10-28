@@ -577,6 +577,8 @@ Adds a `database_explain` block. The `explain_output` is opaque text in the dial
 - Resolution / fanout / unsupported-aggregation errors → `status: "error"`, `would_compile: false`, structured `warnings` with the failure cause.
 - `include_database_explain: true` but the warehouse rejects `EXPLAIN` → OBSL plan still returned with a `DATABASE_EXPLAIN_FAILED` warning describing why; `database_explain` is `null`.
 
+**A query across data sources** has no single statement to explain. `database_explain` is `null` and `database_explain_legs` holds one block per leg, explained on its own data source, with `leg` and `data_source` set. The step combining the legs runs in OBSL's in-memory DuckDB over their results, so no warehouse has a plan for it. A leg whose `EXPLAIN` fails is a `DATABASE_EXPLAIN_FAILED` warning naming the leg and its source; the other legs are still returned. A query on such a model that reads one source is explained as usual, in that source's dialect.
+
 The plan endpoint never executes the actual query, even with `include_database_explain: true`.
 
 ### `POST /v1/sessions/{session_id}/query/execute`
@@ -798,6 +800,8 @@ Load (or reference) a model and run multiple independent queries against it in a
 ```
 
 `model_load` is `"fresh"` (parsed and loaded), `"reused"` (matched dedup index), or `"referenced"` (caller supplied `model_id`).
+
+A query across data sources runs as `query/execute` runs it, through the same result cache, and its result carries `federation`: each leg's data source, dialect and SQL, compiled only or executed. `dialect` is the one the query was compiled for: a query reading one source of a model read from several is written in that source's.
 
 A freshly loaded model is removed after the batch unless `persist_model: true`.
 Reused and referenced models remain loaded. The session itself remains until
