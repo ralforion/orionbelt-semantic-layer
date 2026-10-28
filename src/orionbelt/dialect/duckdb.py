@@ -119,6 +119,26 @@ class DuckDBDialect(Dialect):
             else_clause=rescaled,
         )
 
+    #: The scale a decimal column's average reads its fraction at: every
+    #: column up to 18 places converts exactly, and the long division keeps
+    #: its remainders within 128 bits at it.
+    _DECIMAL_AVG_INPUT_SCALE = 18
+
+    def exact_decimal_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """``SUM(x) / COUNT(x)`` in integer arithmetic, as for a combined average.
+
+        DuckDB's ``AVG`` of a decimal is a double: 12345678901234.565 came back
+        .56, and 9999999999999999.99 as 1E+16, which then failed its own
+        ``DECIMAL(18, 2)`` cast. :meth:`exact_quotient` divides the decimal
+        sum exactly, its fraction read at 18 places.
+        """
+        return self.exact_quotient(
+            FunctionCall(name="SUM", args=[arg]),
+            FunctionCall(name="COUNT", args=[arg]),
+            self._DECIMAL_AVG_INPUT_SCALE,
+            obml_type,
+        )
+
     #: The fewest places a combined average keeps before the measure's cast
     #: rounds it; fewer when the measure's integer digits leave no room.
     _MEAN_SCALE = 18

@@ -38,7 +38,15 @@ dataObjects:
       Day: {code: day, abstractType: int}
       Qty: {code: qty, abstractType: int}
       Amount: {code: amount, abstractType: float}
+      Price: {code: price, abstractType: decimal, numClass: additive}
 measures:
+  Price Avg:
+    columns: [{dataObject: Charges, column: Price}]
+    resultType: decimal
+    aggregation: avg
+  Amount Avg Default:
+    columns: [{dataObject: Charges, column: Amount}]
+    aggregation: avg
   Qty Avg:
     columns: [{dataObject: Charges, column: Qty}]
     resultType: int
@@ -697,3 +705,71 @@ class TestDuckDBAssemblesItsAverage:
         value = con.execute(f"SELECT {sql} FROM t").fetchall()[0][0]
         con.close()
         assert str(value) == "0.33333333333333000000"
+
+
+# The three whose AVG of a decimal is a double, and the route each takes.
+DECIMAL_REWRITTEN = {
+    "clickhouse": "SUM(toDecimal256(",
+    "dremio": 'SUM(CAST("Charges"."price" AS DECIMAL(38, 14)))',
+    "duckdb": "TRUNC(SUM(",
+}
+DECIMAL_EXACT = ["bigquery", "databricks", "mysql", "postgres", "snowflake"]
+
+
+class TestADecimalAverage:
+    """A decimal column's average is exact on every dialect, natively or rewritten."""
+
+    @pytest.mark.parametrize(("dialect", "marker"), sorted(DECIMAL_REWRITTEN.items()))
+    def test_is_rewritten_where_avg_is_a_double(self, dialect: str, marker: str) -> None:
+        sql = _sql("Price Avg", dialect)
+        assert marker in sql, f"{dialect} should average a decimal exactly:\n{sql}"
+
+    @pytest.mark.parametrize("dialect", DECIMAL_EXACT)
+    def test_is_left_alone_where_avg_is_exact(self, dialect: str) -> None:
+        sql = _sql("Price Avg", dialect)
+        assert "AVG(" in sql.upper(), sql
+        assert "divideDecimal" not in sql and "TRUNC(SUM(" not in sql, sql
+
+    @pytest.mark.parametrize("dialect", sorted(DECIMAL_REWRITTEN))
+    def test_a_float_column_is_left_alone(self, dialect: str) -> None:
+        """A measure's result type defaults to decimal, but a float column is
+        averaged as a double on every engine: no rewrite for it."""
+        sql = _sql("Amount Avg Default", dialect)
+        assert "divideDecimal" not in sql and "TRUNC(SUM(" not in sql, sql
+        assert "DECIMAL(38, 14)" not in sql, sql
+
+    def test_clickhouse_divides_one_place_past_the_result(self) -> None:
+        """``divideDecimal`` truncates: at the result's own two places 1, 2, 2
+        averaged to 1.66. One place more, and the cast rounds it to 1.67."""
+        assert re.search(r"divideDecimal\(.*, 3\)", _sql("Qty Avg", "clickhouse")), _sql(
+            "Qty Avg", "clickhouse"
+        )
+        assert re.search(r"divideDecimal\(.*, 3\)", _sql("Price Avg", "clickhouse"))
+
+    @pytest.mark.parametrize(
+        ("values", "expected"),
+        [
+            # Past a double's mantissa: .565 is .57; DuckDB's AVG gave .56.
+            (["12345678901234.56", "12345678901234.57"], Decimal("12345678901234.57")),
+            # At the type's width: DuckDB's AVG gave 1E+16, which its cast refused.
+            (["9999999999999999.99", "9999999999999999.99"], Decimal("9999999999999999.99")),
+            (["1.00", "2.00", "2.00"], Decimal("1.67")),
+            (["-2.36", "-2.37"], Decimal("-2.37")),
+            ([None, None], None),
+        ],
+        ids=["tie", "wide", "twothirds", "negativetie", "allnull"],
+    )
+    def test_duckdb_averages_exactly(self, values: list[str | None], expected: Decimal) -> None:
+        duckdb = pytest.importorskip("duckdb")
+        rows = " UNION ALL ".join(
+            f"SELECT CAST({'NULL' if v is None else repr(v)} AS DECIMAL(18, 2)) AS price"
+            for v in values
+        )
+        sql = _sql("Price Avg", "duckdb").replace('FROM "charges"', f"FROM ({rows})")
+        sql = re.sub(
+            r"\s+GROUP BY.*", "", sql.replace('"Charges"."day" AS "Day", ', ""), flags=re.S
+        )
+
+        ((got,),) = duckdb.sql(sql).fetchall()
+
+        assert got == expected

@@ -292,6 +292,13 @@ def rewrite_exact_integer_avg(
     (#316). :meth:`Dialect.exact_integer_avg` says how, and answers ``None``
     for the engines that were exact to begin with.
 
+    A ``decimal`` average is rewritten the same way where the engine's
+    ``AVG`` of a decimal is a double - DuckDB, ClickHouse and Dremio, measured:
+    12345678901234.565 came back .56 and 9999999999999999.99 as 1E+16 (or 0,
+    on Dremio), where the exact engines answer .57 and the value itself
+    (:meth:`Dialect.exact_decimal_avg`). Its type is its own: no integer part
+    to widen for.
+
     The result type has to move with the expression. Left at the
     ``decimal(18, 2)`` default, the exact average would be computed correctly
     and then overflow the cast describing it, so an **inferred** type is
@@ -308,7 +315,10 @@ def rewrite_exact_integer_avg(
     """
     if dialect is None:
         return None
-    if measure.aggregation.upper() != "AVG" or measure.result_type != DataType.INT:
+    if measure.aggregation.upper() != "AVG" or measure.result_type not in (
+        DataType.INT,
+        DataType.DECIMAL,
+    ):
         return None
     aggregate, rebuild = unwrap_default(expr)
     if not isinstance(aggregate, FunctionCall) or aggregate.name != "AVG":
@@ -318,6 +328,15 @@ def rewrite_exact_integer_avg(
     resolved = resolve_measure_data_type(measure, settings, model)
     if not isinstance(resolved, DecimalType):
         return None
+    if measure.result_type == DataType.DECIMAL:
+        # A decimal average needs no wider type than its own; only the
+        # engines whose AVG of a decimal is a double rewrite it, and only over
+        # columns declared decimal. A float column is averaged as a double on
+        # every engine, which is what it is.
+        if not _averages_decimal_columns(measure, model):
+            return None
+        decimal = dialect.exact_decimal_avg(aggregate.args[0], resolved)
+        return (rebuild(decimal), resolved) if decimal is not None else None
     target = resolved if measure.data_type else _integer_avg_target(measure, resolved, model)
     exact = dialect.exact_integer_avg(aggregate.args[0], target)
     if exact is not None:
@@ -334,6 +353,18 @@ def rewrite_exact_integer_avg(
     # arithmetic (#316) - and the branch stays because a new dialect starts
     # here until someone measures it.
     return None
+
+
+def _averages_decimal_columns(measure: Measure, model: SemanticModel | None) -> bool:
+    """Whether every column *measure* averages, in its ``columns:`` form, is declared decimal."""
+    if model is None or measure.expression or not measure.columns:
+        return False
+    for ref in measure.columns:
+        obj = model.data_objects.get(ref.view or "")
+        column = obj.columns.get(ref.column or "") if obj is not None else None
+        if column is None or column.abstract_type != DataType.DECIMAL:
+            return False
+    return True
 
 
 def exact_reaggregate_avg(

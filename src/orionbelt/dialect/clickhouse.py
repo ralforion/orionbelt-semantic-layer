@@ -407,6 +407,29 @@ class ClickHouseDialect(Dialect):
         multi-fact plan hits routinely: a group carrying only another fact's
         rows has no values for this measure at all.
         """
+        return self._divided_average(arg, obml_type, "toDecimal128", 0)
+
+    def exact_decimal_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """The integer route over a ``Decimal256`` sum at 18 places.
+
+        ``avg`` of a decimal is Float64 here: 12345678901234.565 came back .56,
+        and 9999999999999999.99 as 1E+16. Summed as ``Decimal256`` - room for
+        a long total at 18 places, which no decimal column exceeds - and
+        divided with ``divideDecimal``, both are exact, measured.
+        """
+        return self._divided_average(arg, obml_type, "toDecimal256", 18)
+
+    def _divided_average(
+        self, arg: Expr, obml_type: OBMLType, widen: str, input_scale: int
+    ) -> Expr | None:
+        """``divideDecimal(SUM(widen(x)), COUNT(x))``, one place past the result.
+
+        ``divideDecimal`` truncates, so 1, 2 and 2 averaged at two places to
+        1.66. Dividing to one place more and letting the cast round it - the
+        cast rounds a decimal half away from zero from exactly that place -
+        gives 1.67, and rounding a value truncated one place further gives
+        what rounding the exact value gives.
+        """
         if not isinstance(obml_type, DecimalType):
             return None
         zero = Literal.number(0)
@@ -415,10 +438,11 @@ class ClickHouseDialect(Dialect):
             name="divideDecimal",
             args=[
                 FunctionCall(
-                    name="SUM", args=[FunctionCall(name="toDecimal128", args=[arg, zero])]
+                    name="SUM",
+                    args=[FunctionCall(name=widen, args=[arg, Literal.number(input_scale)])],
                 ),
-                FunctionCall(name="toDecimal128", args=[count, zero]),
-                Literal.number(obml_type.scale),
+                FunctionCall(name=widen, args=[count, zero]),
+                Literal.number(obml_type.scale + 1),
             ],
         )
         return FunctionCall(

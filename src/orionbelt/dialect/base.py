@@ -426,7 +426,9 @@ class Dialect(ABC):
     _MAX_DECIMAL_PRECISION = 38
     _SUM_HEADROOM_DIGITS = 24
 
-    def _exact_avg_by_sum_over_count(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+    def _exact_avg_by_sum_over_count(
+        self, arg: Expr, obml_type: OBMLType, input_scale: int = 0
+    ) -> Expr | None:
         """``SUM(x) / COUNT(x)`` in decimal, for engines that divide exactly.
 
         The textbook rewrite, shared by Dremio and Databricks. It is *not*
@@ -449,17 +451,22 @@ class Dialect(ABC):
         An empty group divides to NULL on both engines, measured, so no
         zero-count guard is needed here - unlike ClickHouse, whose
         ``divideDecimal`` raises.
+
+        *input_scale* is the scale the argument is summed at: 0 for an integer
+        column, more for a decimal one, whose fraction would otherwise be cut
+        off by the widening cast. The quotient keeps at least that scale.
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        scale = min(obml_type.scale, self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS)
+        cap = self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS
+        scale = max(min(obml_type.scale, cap), input_scale)
         accumulated = FunctionCall(
             name="SUM",
             args=[
                 Cast(
                     expr=arg,
                     type_name=self.render_obml_type(
-                        DecimalType(precision=self._MAX_DECIMAL_PRECISION, scale=0)
+                        DecimalType(precision=self._MAX_DECIMAL_PRECISION, scale=input_scale)
                     ),
                 )
             ],
@@ -556,6 +563,17 @@ class Dialect(ABC):
         *total* is an integer, or a decimal at *input_scale*. The quotient is
         truncated at more places than *obml_type* keeps, so the measure's cast
         rounds it once, and HAVING and metrics read it as they read ``AVG``.
+        """
+        return None
+
+    def exact_decimal_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """An exact ``AVG(arg)`` over a decimal column, or ``None`` to keep ``AVG``.
+
+        ``None`` - the default - where the engine's own ``AVG`` of a decimal is
+        exact: PostgreSQL, MySQL, Snowflake, BigQuery and Databricks, measured.
+        DuckDB, ClickHouse and Dremio average a decimal as a double, so they
+        override this, each its own way, as they do :meth:`exact_integer_avg`.
+        ``obml_type`` is the decimal the result is cast to.
         """
         return None
 

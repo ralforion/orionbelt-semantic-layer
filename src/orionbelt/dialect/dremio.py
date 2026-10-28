@@ -89,6 +89,25 @@ class DremioDialect(Dialect):
         """
         return self._sum_over_widened_argument(arg)
 
+    def exact_decimal_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """``SUM`` over the decimal at 14 places, divided by ``COUNT``.
+
+        Dremio's ``AVG`` of a decimal is a double: 12345678901234.565 came back
+        1.2345678901234564E13, and 9999999999999999.99 as 1.0E16, which a
+        ``DECIMAL(18, 2)`` cast turned into 0. Summed as a decimal and divided,
+        both are exact, measured.
+
+        14 places is all the integer headroom allows (38 digits less the 24 a
+        large total needs). Dremio rounds a quotient to its scale, so the cast
+        to the measure's type rounds a second time; the two can disagree only
+        when the digits after the result's last place read 49...9 through the
+        14th, which an average of a two-place column needs some 10^9 rows in
+        one group to produce.
+        """
+        return self._exact_avg_by_sum_over_count(
+            arg, obml_type, input_scale=self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS
+        )
+
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """Dremio divides decimals exactly, so SUM/COUNT is all it takes.
 
