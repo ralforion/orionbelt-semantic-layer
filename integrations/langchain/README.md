@@ -67,8 +67,8 @@ All tools are configured via `get_tools(api_base_url)`:
 # Local
 tools = get_tools("http://localhost:8000")
 
-# Cloud Run deployment
-tools = get_tools("http://35.187.174.102")
+# Public demo
+tools = get_tools("https://orionbelt.ralforion.com")
 ```
 
 ## LangGraph StateGraph (Advanced)
