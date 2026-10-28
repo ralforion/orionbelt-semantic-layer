@@ -420,3 +420,21 @@ def test_plain_sql_passthrough() -> None:
         cur.execute("SELECT COUNT(*) FROM orders")
         mock_post.assert_not_called()
         mock_native.cursor().execute.assert_called_once_with("SELECT COUNT(*) FROM orders")
+
+
+def test_cursor_streams_the_native_record_batch_reader() -> None:
+    """A large result can be read batch by batch, not only as one table."""
+    mock_native = _make_mock_native()
+    reader = object()
+    mock_native.cursor().fetch_record_batch.return_value = reader
+    cur = Connection(mock_native).cursor()
+
+    assert cur.fetch_record_batch() is reader
+
+
+def test_streaming_a_closed_cursor_is_refused() -> None:
+    cur = Connection(_make_mock_native()).cursor()
+    cur.close()
+
+    with pytest.raises(ProgrammingError):
+        cur.fetch_record_batch()

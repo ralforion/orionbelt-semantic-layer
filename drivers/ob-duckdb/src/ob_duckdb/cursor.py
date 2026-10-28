@@ -127,20 +127,13 @@ class Cursor:
         Python row objects and is significantly more memory-efficient for
         large result sets.
 
-        DuckDB renamed its own ``fetch_arrow_table`` to ``to_arrow_table`` and
-        deprecated the old name, so calling it emits a ``DeprecationWarning``
-        per query; DuckDB 2.0 removed it. Prefer the new name and fall back
-        for the older releases ``pyproject`` still allows (``duckdb>=1.0``).
-        The PEP 249 name here does not change - it is what every OB driver
-        exposes.
+        DuckDB renamed its own ``fetch_arrow_table`` to ``to_arrow_table``,
+        which every release ``pyproject`` allows (``duckdb>=1.5.6``) has, and
+        2.0 removed the old name. The PEP 249 name here does not change - it
+        is what every OB driver exposes.
         """
         self._check_open()
-        to_arrow = getattr(self._native, "to_arrow_table", None)
-        if to_arrow is not None:
-            return to_arrow()
-        # Absent from DuckDB 2.0's stubs, present in every release that lacks
-        # to_arrow_table.
-        return self._native.fetch_arrow_table()  # type: ignore[attr-defined,unused-ignore]
+        return self._native.to_arrow_table()
 
     def close(self) -> None:
         """Close the cursor."""

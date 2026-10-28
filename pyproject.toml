@@ -92,7 +92,7 @@ dev = [
     "ruff>=0.15",
     "mypy>=1.19",
     "pre-commit>=4.5",
-    "duckdb>=1.4",
+    "duckdb>=1.5.6",
     "testcontainers>=4.0",
     "psycopg2-binary>=2.9",
     "psycopg[binary]>=3.2",
@@ -152,7 +152,7 @@ flight = [
     # with a defaulted argument positionally (pg_get_expr(e, oid, true)), and
     # cursor descriptions that name a list's element type. Declared here too
     # so it applies without waiting for an ob-duckdb release.
-    "duckdb>=1.4",
+    "duckdb>=1.5.6",
     "ob-mysql>=2.36.0",
     "ob-postgres>=2.36.0",
     "ob-snowflake>=2.36.0",
@@ -167,7 +167,7 @@ flight-duckdb-only = [
     "ob-flight-extension>=2.36.0",
     "ob-driver-core>=2.36.0",
     "ob-duckdb>=2.36.0",
-    "duckdb>=1.4",  # pgwire catalog emulator, see `flight`
+    "duckdb>=1.5.6",  # pgwire catalog emulator, see `flight`
     "osi-orionbelt>=0.2",
 ]
 
@@ -281,7 +281,7 @@ dev = [
     "ruff>=0.15",
     "mypy>=1.19",
     "pre-commit>=4.5",
-    "duckdb>=1.4",
+    "duckdb>=1.5.6",
     "testcontainers>=4.0",
     "psycopg2-binary>=2.9",
     "psycopg[binary]>=3.2",

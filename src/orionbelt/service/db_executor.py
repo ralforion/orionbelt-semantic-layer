@@ -22,10 +22,16 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     # ob_flight is an optional extra: imported for the annotation only.
     from ob_flight.datasources import DataSource
 
 logger = logging.getLogger(__name__)
+
+
+#: Rows per batch when a DuckDB result is streamed into a ``sink``.
+STREAM_BATCH_ROWS = 65_536
 
 
 class ExecutionUnavailableError(Exception):
@@ -828,6 +834,7 @@ def execute_sql(
     source: DataSource | None = None,
     tz: ZoneInfo | None = None,
     override_db_tz: bool = False,
+    sink: Callable[[Any], Any] | None = None,
 ) -> ExecutionResult:
     """Execute SQL against a data source: ``source``, else the dialect's implicit one.
 
@@ -843,6 +850,10 @@ def execute_sql(
         override_db_tz: If True, use ``tz`` instead of the detected
             database session timezone (for cases where naive timestamps
             are stored in a known timezone that differs from the DB session).
+        sink: Builds the result's Arrow table from a ``pyarrow.RecordBatchReader``
+            over the rows, where the driver streams them (DuckDB, and drivers
+            whose cursor has ``fetch_record_batch()``); elsewhere the result is
+            fetched whole, as without one. A federated leg spills through it.
 
     Raises:
         ExecutionUnavailableError: if ob-flight-extension or vendor driver
@@ -859,7 +870,9 @@ def execute_sql(
     t0 = time.monotonic()
     try:
         if dialect == "duckdb":
-            return _execute_duckdb(sql, datasource, t0, tz=tz, override_db_tz=override_db_tz)
+            return _execute_duckdb(
+                sql, datasource, t0, tz=tz, override_db_tz=override_db_tz, sink=sink
+            )
         # Non-DuckDB: use the full ob driver via db_router
         from ob_flight.db_router import get_connection
 
@@ -873,11 +886,12 @@ def execute_sql(
                     db_tz = _detect_db_timezone(cursor, dialect, _tz_key(datasource))
                     effective_tz = db_tz or tz
                 cursor.execute(sql)
-                return _fetch_result(cursor, t0, tz=effective_tz)
+                return _fetch_result(cursor, t0, tz=effective_tz, sink=sink)
             finally:
                 with contextlib.suppress(Exception):
                     cursor.close()
-    except ExecutionUnavailableError:
+    except (ExecutionUnavailableError, ExecutionError):
+        # Raised by ``sink``, which says what went wrong itself.
         raise
     except KeyError as exc:
         raise ExecutionUnavailableError(str(exc)) from None
@@ -937,7 +951,11 @@ def _duckdb_fetch_arrow(result: Any) -> Any:
 
 
 def duckdb_execution_result(
-    result: Any, t0: float, *, tz: ZoneInfo | None = None
+    result: Any,
+    t0: float,
+    *,
+    tz: ZoneInfo | None = None,
+    sink: Callable[[Any], Any] | None = None,
 ) -> ExecutionResult:
     """Build an :class:`ExecutionResult` from a DuckDB relation (``conn.sql(sql)``).
 
@@ -958,8 +976,14 @@ def duckdb_execution_result(
     Public (no leading underscore) so integration tests that must run
     against their own DuckDB connection can share this exact code rather
     than reimplementing it and silently drifting from production.
+
+    ``sink``, given a relation, builds the table from its batches instead
+    (see :func:`execute_sql`).
     """
-    arrow_table = _duckdb_fetch_arrow(result)
+    if sink is not None and hasattr(result, "to_arrow_reader"):
+        arrow_table = sink(result.to_arrow_reader(STREAM_BATCH_ROWS))
+    else:
+        arrow_table = _duckdb_fetch_arrow(result)
     if arrow_table is not None:
         arrow_columns = [
             ColumnMeta(
@@ -1006,6 +1030,7 @@ def _execute_duckdb(
     *,
     tz: ZoneInfo | None = None,
     override_db_tz: bool = False,
+    sink: Callable[[Any], Any] | None = None,
 ) -> ExecutionResult:
     """Execute SQL directly via native duckdb.
 
@@ -1040,15 +1065,28 @@ def _execute_duckdb(
                 return ExecutionResult(
                     columns=[], raw_rows=[], row_count=0, execution_time_ms=round(elapsed_ms, 2)
                 )
-            return duckdb_execution_result(relation, t0, tz=effective_tz)
+            return duckdb_execution_result(relation, t0, tz=effective_tz, sink=sink)
         finally:
             conn.close()
 
 
-def _fetch_result(cursor: Any, t0: float, *, tz: ZoneInfo | None = None) -> ExecutionResult:
-    """Fetch query results, preferring Arrow format when available."""
-    # Try Arrow-native fetch first (DuckDB, Snowflake, etc.)
-    arrow_table = _try_fetch_arrow(cursor)
+def _fetch_result(
+    cursor: Any,
+    t0: float,
+    *,
+    tz: ZoneInfo | None = None,
+    sink: Callable[[Any], Any] | None = None,
+) -> ExecutionResult:
+    """Fetch query results, preferring Arrow format when available.
+
+    ``sink`` builds the table from the cursor's batches where it streams them
+    (see :func:`execute_sql`).
+    """
+    if sink is not None and hasattr(cursor, "fetch_record_batch"):
+        arrow_table = sink(cursor.fetch_record_batch())
+    else:
+        # Try Arrow-native fetch first (DuckDB, Snowflake, etc.)
+        arrow_table = _try_fetch_arrow(cursor)
     if arrow_table is not None:
         columns = [
             ColumnMeta(

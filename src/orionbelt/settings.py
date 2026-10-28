@@ -100,6 +100,14 @@ class Settings(BaseSettings):
     federation_max_leg_rows: int = 1_000_000
     federation_combine_threads: int = 2
     federation_combine_memory_limit: str = "512MB"
+    # Spilling large legs to disk: off unless a directory on real disk is
+    # given (an in-memory filesystem, such as Cloud Run's, saves nothing).
+    # A leg past the threshold streams to a file; per query and process-wide
+    # caps on what is spilled.
+    federation_spill_dir: str | None = None
+    federation_spill_threshold_mb: int = 64
+    federation_spill_max_mb: int = 4096
+    federation_spill_budget_mb: int = 16384
 
     # Default locale for /v1/query/execute?format_values=true (and TSV output).
     # Used when the request omits the ``locale`` query param. BCP-47 tag

@@ -417,6 +417,8 @@ async def execute_query_with_cache(
     run: Callable[[], Awaitable[ExecutionResult]] | None = None,
     check_rows: Callable[[int], None] | None = None,
     expires_by: Callable[[], datetime | None] | None = None,
+    sink: Callable[[Any], Any] | None = None,
+    cache_if: Callable[[], bool] | None = None,
 ) -> CachedExecution:
     """Run a compiled query through the result cache, executing on a miss.
 
@@ -448,6 +450,10 @@ async def execute_query_with_cache(
     cached result must expire by: a result read from cached inputs expires no
     later than they do. The backend enforces it as it writes, so one whose
     inputs expired while it was computed or encoded is not stored.
+
+    ``sink`` builds a fresh result's table from its batches (see
+    :func:`~orionbelt.service.db_executor.execute_sql`), and ``cache_if``,
+    asked once the result is computed, may decline to store it.
     """
     if source is not None:
         # One set of settings for the key and the query: the source's
@@ -522,6 +528,8 @@ async def execute_query_with_cache(
                 source=source,
                 tz=tz,
                 override_db_tz=override_db_tz,
+                # Passed only when given: callers' execute_sql need not take it.
+                **({"sink": sink} if sink is not None else {}),
             ),
         )
     # Reconcile to the declared types *first*. ``rows`` below materialises the
@@ -555,6 +563,7 @@ async def execute_query_with_cache(
         and cache_key is not None
         and ttl_outcome is not None
         and ttl_outcome.ttl is not None
+        and (cache_if is None or cache_if())
     ):
         await try_cache_set(
             cache=cache,
@@ -691,7 +700,16 @@ async def execute_federated_with_cache(
         pool = federation.leg_executor()
 
         async def run_admitted() -> ExecutionResult:
+            spill = federation.QuerySpill(limits) if limits.spill_dir else None
+            try:
+                return await run_spilling(spill)
+            finally:
+                if spill is not None:
+                    spill.close()
+
+        async def run_spilling(spill: federation.QuerySpill | None) -> ExecutionResult:
             async def run_leg(leg: FederatedLeg, source: DataSource | None) -> Any:
+                sink = spill.sink(leg) if spill is not None else None
                 try:
                     ran = await execute_query_with_cache(
                         store=store,
@@ -707,6 +725,10 @@ async def execute_federated_with_cache(
                         cacheable=cacheable,
                         executor=pool,
                         check_rows=functools.partial(federation.check_leg_rows, leg),
+                        sink=sink,
+                        # A spilled leg is not cached: storing it would read
+                        # it all back into memory.
+                        cache_if=(lambda: not sink.spilled) if sink is not None else None,
                     )
                 except federation.FederatedLegError:
                     raise
@@ -735,7 +757,12 @@ async def execute_federated_with_cache(
                     raise outcome
             tables = {leg.name: table for leg, table in zip(plan.legs, outcomes, strict=True)}
             return await asyncio.get_running_loop().run_in_executor(
-                pool, federation.combine, plan, tables, tz
+                pool,
+                federation.combine,
+                plan,
+                tables,
+                tz,
+                spill.directory if spill is not None else None,
             )
 
         # The work runs as a task of its own, and the slot is released when it
