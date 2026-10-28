@@ -302,6 +302,9 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
     * An all-NULL column without a type takes its declared one.
     * A date or timestamp that arrived as ISO text - a driver without Arrow
       hands rows over that way - is read back as one when every value parses.
+    * The partial sums an ``avg`` divides (``leg.exact_sums``) become
+      ``decimal128(38, scale)``, the scale the combine query divides them at;
+      one holding more places, or a float, is refused, never rounded.
 
     Other columns pass unchanged: the combine step casts its results to the
     model's types, as a query on one source does.
@@ -311,6 +314,7 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
     from orionbelt.service.result_schema import obml_type_to_arrow
 
     declared = dict(leg.columns)
+    exact = dict(leg.exact_sums)
     columns = []
     for name in table.column_names:
         column = table.column(name)
@@ -328,6 +332,8 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
             column = _temporal_from_text(column, obml_type_to_arrow(kind))
         elif pa.types.is_decimal256(column.type):
             column = _narrow_decimal(leg, name, column)
+        if name in exact:
+            column = _exact_sum(leg, name, column, exact[name])
         columns.append(column)
     return pa.table(columns, names=table.column_names)
 
@@ -380,6 +386,32 @@ def _narrow_decimal(leg: FederatedLeg, name: str, column: Any) -> Any:
         return column.cast(pa.decimal128(_DECIMAL128_MAX_PRECISION, column.type.scale))
     except (pa.ArrowInvalid, ValueError):
         raise _too_wide(leg, name) from None
+
+
+def _exact_sum(leg: FederatedLeg, name: str, column: Any, scale: int) -> Any:
+    """An ``avg``'s partial sums at *scale*, exactly, for the combine's division.
+
+    Every value keeps its digits or the leg is refused: a sum at more places
+    than *scale* would be rounded, and a floating-point sum is not exact to
+    begin with (a ``float`` measure divides its doubles as doubles instead).
+    """
+    import pyarrow as pa
+
+    if pa.types.is_floating(column.type):
+        raise FederatedLegError(
+            f"[FEDERATION_LEG_TYPE] {leg_label(leg)} returns the sums of an average in "
+            f"column '{name}' as floating point, which the combine step cannot divide "
+            "exactly: declare the measure resultType float, or average a fixed-point column"
+        )
+    try:
+        return column.cast(pa.decimal128(_DECIMAL128_MAX_PRECISION, scale))
+    except (pa.ArrowInvalid, ValueError):
+        raise FederatedLegError(
+            f"[FEDERATION_LEG_TYPE] {leg_label(leg)} returns the sums of an average in "
+            f"column '{name}' with more than {scale} decimal places, or more than "
+            f"{_DECIMAL128_MAX_PRECISION} digits, which the combine step does not divide "
+            "exactly"
+        ) from None
 
 
 def _too_wide(leg: FederatedLeg, name: str) -> FederatedLegError:

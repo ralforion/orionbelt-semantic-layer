@@ -39,7 +39,11 @@ from orionbelt.compiler.filters import (
 )
 from orionbelt.compiler.graph import JoinGraph, JoinStep, joined_beneath, path_overrides
 from orionbelt.compiler.null_rejection import can_hold_without
-from orionbelt.compiler.type_resolver import resolve_measure_data_type
+from orionbelt.compiler.type_resolver import (
+    combined_average,
+    combined_average_counts,
+    resolve_measure_data_type,
+)
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.expressions import find_qualified_refs, substitute_placeholders
 from orionbelt.models.query import (
@@ -2120,6 +2124,19 @@ class QueryResolver:
             )
         if measure.expression:
             return self._expand_expression(ctx, measure)
+        counts = combined_average_counts(measure)
+        if counts is not None:
+            # A federated combine's average: the legs' summed sums over their
+            # summed counts, in one expression wherever the query reads it.
+            ref = measure.columns[0]
+            view = ref.view or ""
+            total = FunctionCall(
+                name="SUM", args=[make_column_expr(ctx.model, view, ref.column or "")]
+            )
+            count = FunctionCall(name="SUM", args=[make_column_expr(ctx.model, view, counts)])
+            quotient = combined_average(measure, total, count)
+            assert quotient is not None
+            return self._apply_measure_default(measure, quotient)
 
         # Build column references for all columns. Routes through
         # ``make_column_expr`` so a measure column that points at a

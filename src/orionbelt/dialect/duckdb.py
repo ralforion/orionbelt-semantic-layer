@@ -73,6 +73,27 @@ class DuckDBDialect(Dialect):
         than drifting quietly. The scale is capped for the same arithmetic -
         see below - since it is the other half of the same budget.
         """
+        return self.exact_quotient(
+            FunctionCall(name="SUM", args=[arg]),
+            FunctionCall(name="COUNT", args=[arg]),
+            0,
+            obml_type,
+        )
+
+    def exact_quotient(
+        self, total: Expr, count: Expr, input_scale: int, obml_type: OBMLType
+    ) -> Expr | None:
+        """``total / count`` exactly, at *obml_type*'s scale, ties away from zero.
+
+        :meth:`exact_integer_avg` with the ``SUM`` and ``COUNT`` given rather
+        than built: the combine step of a federated query divides the sum of
+        its legs' partial sums by the sum of their counts this way (``avg``).
+        *total* is an integer, or a decimal at *input_scale*, the scale every
+        leg's partial sum is normalised to; its integer units, ``total *
+        10^input_scale``, are taken as the integer part plus the scaled
+        fraction, so a total the whole ``DECIMAL(38, input_scale)`` range
+        holds converts exactly. ``None`` for a non-decimal result.
+        """
         if not isinstance(obml_type, DecimalType):
             return None
         # The scale is capped for the same reason it is on the engines that
@@ -86,19 +107,25 @@ class DuckDBDialect(Dialect):
         # honest trade the other rewrites make.
         scale = min(obml_type.scale, self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS)
         zero = Literal.number(0)
-        count: Expr = Cast(expr=FunctionCall(name="COUNT", args=[arg]), type_name="HUGEINT")
-        total: Expr = Cast(expr=FunctionCall(name="SUM", args=[arg]), type_name="HUGEINT")
+        count = Cast(expr=count, type_name="HUGEINT")
+        units = _integer_units(total, input_scale)
+        # The divisor, in the units the total is counted in.
+        per_unit: Expr = (
+            count
+            if input_scale == 0
+            else BinaryOp(left=count, op="*", right=Literal.number(10**input_scale))
+        )
 
-        scaled = BinaryOp(left=total, op="*", right=Literal.number(10**scale))
+        scaled = BinaryOp(left=units, op="*", right=Literal.number(10**scale))
         numerator = BinaryOp(
             left=BinaryOp(left=Literal.number(2), op="*", right=scaled),
             op="+",
-            right=BinaryOp(left=FunctionCall(name="SIGN", args=[total]), op="*", right=count),
+            right=BinaryOp(left=FunctionCall(name="SIGN", args=[units]), op="*", right=per_unit),
         )
         quotient = BinaryOp(
             left=numerator,
             op="//",
-            right=BinaryOp(left=Literal.number(2), op="*", right=count),
+            right=BinaryOp(left=Literal.number(2), op="*", right=per_unit),
         )
         # ``* 10^-s`` rather than ``/ 10^s``: multiplication by a decimal
         # constant stays in decimal, division does not.
@@ -295,3 +322,31 @@ class DuckDBDialect(Dialect):
         pat_sql = self.compile_expr(Literal.string(pattern))
         result = f"regexp_matches({col_sql}, {pat_sql})"
         return f"NOT {result}" if negated else result
+
+
+def _integer_units(total: Expr, scale: int) -> Expr:
+    """*total*, a decimal at *scale*, as an integer count of ``10^-scale`` units.
+
+    ``CAST(total * 10^scale AS HUGEINT)`` would multiply in the decimal's own
+    type, which has to keep *scale* places: the product overflows from a total
+    of ``10^(38 - 2 * scale)``. The integer part and the fraction are scaled
+    apart instead, each exactly, so every total ``DECIMAL(38, scale)`` holds
+    converts. ``trunc`` keeps a decimal, and rounds toward zero, so the
+    fraction has the total's sign.
+    """
+    if scale == 0:
+        return Cast(expr=total, type_name="HUGEINT")
+    whole = FunctionCall(name="trunc", args=[total])
+    fraction = BinaryOp(left=total, op="-", right=whole)
+    return BinaryOp(
+        left=BinaryOp(
+            left=Cast(expr=whole, type_name="HUGEINT"),
+            op="*",
+            right=Literal.number(10**scale),
+        ),
+        op="+",
+        right=Cast(
+            expr=BinaryOp(left=fraction, op="*", right=Literal.number(10**scale)),
+            type_name="HUGEINT",
+        ),
+    )

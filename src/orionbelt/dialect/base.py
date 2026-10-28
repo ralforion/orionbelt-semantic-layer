@@ -546,6 +546,17 @@ class Dialect(ABC):
             type(self).exact_integer_avg is not Dialect.exact_integer_avg
         )
 
+    def exact_quotient(
+        self, total: Expr, count: Expr, input_scale: int, obml_type: OBMLType
+    ) -> Expr | None:
+        """``total / count`` exactly at *obml_type*'s scale, or ``None`` for none.
+
+        Only the dialect a federated query combines in needs it: its ``avg``
+        is the sum of the legs' partial sums over the sum of their counts.
+        *total* is an integer, or a decimal at *input_scale*.
+        """
+        return None
+
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """An exact ``AVG(arg)`` over an integer column, or ``None`` for none.
 

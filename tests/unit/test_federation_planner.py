@@ -52,6 +52,7 @@ def model_yaml(
     tenant_filter: bool = False,
     extra: str = "",
     static: str = "",
+    metric: str = "",
 ) -> str:
     shop = "    dataSource: shop\n" if federated else ""
     crm = "    dataSource: crm\n" if federated else ""
@@ -90,7 +91,7 @@ measures:
   Smallest Order: {{columns: [{AMOUNT}], aggregation: min, resultType: decimal}}
 {extra}metrics:
   Revenue per Order: {{expression: "{{[Revenue]}} / {{[Orders Count]}}"}}
-{filters}"""
+{metric}{filters}"""
 
 
 @pytest.fixture(scope="module")
@@ -231,6 +232,74 @@ class TestDifferential:
         assert float(rows[None]) == pytest.approx(55.10 + 40.00)
 
 
+AVG = "  Average Order: {columns: [{dataObject: Orders, column: Amount}], aggregation: avg}\n"
+AVERAGES = (
+    AVG + "  Average Id: {columns: [{dataObject: Orders, column: Order ID}], aggregation: avg, "
+    "resultType: int}\n"
+    + "  Average Float: {columns: [{dataObject: Orders, column: Amount}], aggregation: avg, "
+    "resultType: float}\n"
+)
+AVERAGE_MEASURES = ["Average Order", "Average Id", "Average Float", "Revenue"]
+AVERAGE_QUERIES = {
+    "by_dimension_island": {"select": {"dimensions": ["Region"], "measures": AVERAGE_MEASURES}},
+    "by_both_islands": {
+        "select": {"dimensions": ["Order Date:month", "Region"], "measures": AVERAGE_MEASURES}
+    },
+    "filter_on_dimension_island": {
+        "select": {"dimensions": ["Order Date:month"], "measures": AVERAGE_MEASURES},
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+    "no_dimensions_with_a_filter_on_the_dimension_side": {
+        "select": {"measures": AVERAGE_MEASURES},
+        "where": [{"field": "Region", "op": "in", "value": ["EU", "US"]}],
+    },
+    "having_ordered": {
+        "select": {"dimensions": ["Region"], "measures": ["Average Order"]},
+        "having": [{"field": "Average Order", "op": ">", "value": 10}],
+        "orderBy": [{"field": "Average Order", "direction": "desc"}],
+    },
+}
+
+
+class TestAverage:
+    """An average is the total of the legs' partial sums over the total of their counts."""
+
+    @pytest.mark.parametrize("query", AVERAGE_QUERIES.values(), ids=AVERAGE_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        assert_same(files, query, extra=AVERAGES)
+
+    def test_a_derived_metric_over_an_average(self, files: dict[str, str]) -> None:
+        query = {"select": {"dimensions": ["Region"], "measures": ["Average Share"]}}
+        metric = '  Average Share: {expression: "{[Average Order]} / {[Revenue]}"}\n'
+
+        assert_same(files, query, extra=AVERAGES, metric=metric)
+
+    def test_the_leg_returns_sums_and_counts_not_an_average(self) -> None:
+        plan = _compile(
+            model_yaml(federated=True, extra=AVG),
+            {"select": {"dimensions": ["Region"], "measures": ["Average Order"]}},
+        ).federation
+
+        fact = plan.legs[0]
+        assert "AVG(" not in fact.sql.upper()
+        assert {"__avg0_sum", "__avg0_count"} <= dict(fact.columns).keys()
+        assert fact.exact_sums == (("__avg0_sum", 9),)
+        # Divided in integers, never through DuckDB's floating-point ``/``.
+        assert "HUGEINT" in plan.combine_sql
+        assert "//" in plan.combine_sql
+
+    def test_an_integer_average_divides_at_scale_zero_and_a_float_one_not_exactly(self) -> None:
+        plan = _compile(
+            model_yaml(federated=True, extra=AVERAGES),
+            {"select": {"dimensions": ["Region"], "measures": ["Average Id", "Average Float"]}},
+        ).federation
+
+        # Sorted by measure name: Average Float, then Average Id.
+        assert plan.legs[0].exact_sums == (("__avg1_sum", 0),)
+
+
 class TestPlan:
     def test_a_query_on_one_source_is_not_federated(self) -> None:
         compiled = _compile(
@@ -282,7 +351,6 @@ class TestPlan:
         assert "IS NULL" in plan.combine_sql
 
 
-AVG = "  Average Order: {columns: [{dataObject: Orders, column: Amount}], aggregation: avg}\n"
 DISTINCT = (
     "  Customers Ordering: {columns: [{dataObject: Orders, column: Order Customer}], "
     "aggregation: count_distinct, resultType: int}\n"
@@ -293,8 +361,8 @@ ON_CUSTOMERS = (
 )
 
 REFUSALS = {
-    "avg": (
-        AVG,
+    "avg_with_a_total": (
+        AVG.replace("aggregation: avg}", "aggregation: avg, total: true}"),
         {"select": {"dimensions": ["Region"], "measures": ["Average Order"]}},
         "FEDERATION_UNSUPPORTED_AGGREGATION",
     ),
