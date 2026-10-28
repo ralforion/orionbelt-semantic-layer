@@ -387,8 +387,14 @@ obsl:allowFanOut a owl:DatatypeProperty ;
 
 obsl:dataSource a owl:DatatypeProperty ;
     rdfs:label "data source" ;
-    rdfs:comment "Name of the configured data source a data object's table is read from, overriding the model's settings.defaultDataSource.  A name only, never credentials." ;
+    rdfs:comment "Name of the configured data source a data object's table is read from, overriding the model's obsl:defaultDataSource.  A name only, never credentials." ;
     rdfs:domain obsl:DataObject ;
+    rdfs:range xsd:string .
+
+obsl:defaultDataSource a owl:DatatypeProperty ;
+    rdfs:label "default data source" ;
+    rdfs:comment "Name of the configured data source a model's data objects are read from (settings.defaultDataSource) when they name none of their own with obsl:dataSource.  A data object's source is its obsl:dataSource, else its model's obsl:defaultDataSource.  A name only, never credentials." ;
+    rdfs:domain obsl:SemanticModel ;
     rdfs:range xsd:string .
 
 obsl:countable a owl:DatatypeProperty ;

@@ -563,6 +563,73 @@ class TestPerObjectSource:
         assert '"shop-us"' in store.get_graph(model_id).turtle
         assert "obsl:dataSource" in store.get_graph(model_id).turtle
 
+    def test_the_graph_keeps_the_models_default_apart_from_the_objects_own(self) -> None:
+        """Declared on the model node; an object that names none carries none."""
+        from rdflib import Literal
+
+        from orionbelt.obsl.exporter import OBSL, export_obsl
+
+        store = ModelStore()
+        model_id = store.load_model(two_object_model("shop-us", None, default="shop-eu")).model_id
+        graph = export_obsl(store.get_model(model_id), model_id)
+
+        assert list(graph.subject_objects(OBSL.defaultDataSource)) == [
+            (next(graph.subjects(OBSL.hasDataObject, None)), Literal("shop-eu"))
+        ]
+        assert sorted(str(o) for o in graph.objects(None, OBSL.dataSource)) == ["shop-us"]
+
+    def test_sparql_reads_each_objects_source(self) -> None:
+        """The query docs/guide/obsl.md gives for it."""
+        from orionbelt.cli._local import sparql
+
+        query = """
+            PREFIX obsl: <https://ralforion.com/ns/obsl#>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            SELECT ?object ?source WHERE {
+                ?model obsl:hasDataObject ?o .
+                ?o rdfs:label ?object .
+                OPTIONAL { ?o obsl:dataSource ?declared }
+                OPTIONAL { ?model obsl:defaultDataSource ?default }
+                BIND(COALESCE(?declared, ?default) AS ?source)
+            }
+            ORDER BY ?source ?object
+        """
+
+        result = sparql(two_object_model("shop-us", None, default="shop-eu"), query)
+
+        assert [(r["object"], r["source"]) for r in result.results] == [
+            ("Customers", "shop-eu"),
+            ("Orders", "shop-us"),
+        ]
+
+    def test_without_a_default_the_model_carries_none(self) -> None:
+        from orionbelt.obsl.exporter import OBSL, export_obsl
+
+        store = ModelStore()
+        model_id = store.load_model(two_object_model("shop-us", "shop-eu")).model_id
+
+        graph = export_obsl(store.get_model(model_id), model_id)
+
+        assert list(graph.objects(None, OBSL.defaultDataSource)) == []
+
+    def test_the_shapes_allow_one_default_on_a_model(self) -> None:
+        from pathlib import Path
+
+        from rdflib import Graph, Namespace
+        from rdflib.namespace import XSD
+
+        sh = Namespace("http://www.w3.org/ns/shacl#")
+        obsl = Namespace("https://ralforion.com/ns/obsl#")
+        shapes = Graph().parse(Path(__file__).resolve().parents[2] / "ontology" / "obsl.shacl.ttl")
+
+        (prop,) = [
+            p
+            for p in shapes.objects(obsl.SemanticModelShape, sh.property)
+            if shapes.value(p, sh.path) == obsl.defaultDataSource
+        ]
+        assert shapes.value(prop, sh.maxCount).toPython() == 1
+        assert shapes.value(prop, sh.datatype) == XSD.string
+
     def test_osi_round_trips_it(self) -> None:
         import yaml
         from osi_orionbelt.obml_to_osi import OBMLtoOSI

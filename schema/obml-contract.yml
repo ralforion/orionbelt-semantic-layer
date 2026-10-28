@@ -1165,7 +1165,7 @@ classes:
         alias: defaultDataSource
         type: "str | None"
         json_schema: true
-        ontology_property: null
+        ontology_property: defaultDataSource
         osi_roundtrip: true
       expression_mode:
         alias: expressionMode

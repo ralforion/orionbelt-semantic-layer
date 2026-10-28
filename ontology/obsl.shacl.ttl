@@ -53,6 +53,12 @@ obsl:SemanticModelShape a sh:NodeShape ;
         sh:maxCount 1 ;
         sh:datatype xsd:string ;
         sh:name "count label pattern"
+    ] ;
+    sh:property [
+        sh:path obsl:defaultDataSource ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "default data source"
     ] .
 
 # -----------------------------------------------------------------------------

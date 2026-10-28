@@ -12,8 +12,8 @@ OBSL-Core 0.2 maps every OBML concept to RDF triples using standard vocabularies
 
 | OBML Concept | RDF Class | Key Properties |
 |---|---|---|
-| Model container | `obsl:SemanticModel` | `obsl:hasDataObject`, `obsl:hasDimension`, `obsl:hasMeasure`, `obsl:hasMetric` |
-| Data Object | `obsl:DataObject` | `obsl:code`, `obsl:database`, `obsl:schema`, `obsl:hasColumn`, `obsl:hasJoin` |
+| Model container | `obsl:SemanticModel` | `obsl:hasDataObject`, `obsl:hasDimension`, `obsl:hasMeasure`, `obsl:hasMetric`, `obsl:defaultDataSource` |
+| Data Object | `obsl:DataObject` | `obsl:code`, `obsl:database`, `obsl:schema`, `obsl:hasColumn`, `obsl:hasJoin`, `obsl:dataSource` |
 | Column | `obsl:Column` | `obsl:code`, `obsl:resultType` |
 | Join | `obsl:Join` | `obsl:joinTo`, `obsl:cardinality`, `obsl:columnFrom`, `obsl:columnTo` |
 | Dimension | `obsl:Dimension` | `obsl:dataObject`, `obsl:column`, `obsl:resultType`, `obsl:timeGrain` |
@@ -158,6 +158,21 @@ SELECT ?from ?to ?card WHERE {
        obsl:cardinality ?card .
     ?from obsl:hasJoin ?j .
 }
+```
+
+```sparql
+# The data source each data object is read from: its own, else the model's.
+# Objects of more than one source mean the model's queries can run federated.
+PREFIX obsl: <https://ralforion.com/ns/obsl#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?object ?source WHERE {
+    ?model obsl:hasDataObject ?o .
+    ?o rdfs:label ?object .
+    OPTIONAL { ?o obsl:dataSource ?declared }
+    OPTIONAL { ?model obsl:defaultDataSource ?default }
+    BIND(COALESCE(?declared, ?default) AS ?source)
+}
+ORDER BY ?source ?object
 ```
 
 ```sparql

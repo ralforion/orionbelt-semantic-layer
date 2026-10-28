@@ -497,6 +497,10 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
     g.add((m_uri, OWL.imports, URIRef("https://ralforion.com/ns/obsl#")))
     if model.description:
         g.add((m_uri, RDFS.comment, Literal(model.description)))
+    if model.settings and model.settings.default_data_source:
+        # Read by every data object without an obsl:dataSource of its own; kept
+        # apart from those, so the graph says which source was named where.
+        g.add((m_uri, OBSL.defaultDataSource, Literal(model.settings.default_data_source)))
     _emit_custom_extensions(g, m_uri, getattr(model, "custom_extensions", []))
     _emit_external_concept_mappings(g, m_uri, model.external_concept_mappings, prefixes)
     _emit_model_examples(g, m_uri, getattr(model, "examples", []))
