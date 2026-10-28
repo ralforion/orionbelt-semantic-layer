@@ -327,6 +327,9 @@ class SemanticRouter:
                 message=f"compiler error: {exc}",
             )
 
+        # A query reading one source of a model read from several is written in
+        # that source's dialect, not the model's default: run it in that one.
+        dialect = compile_result.dialect
         logger.info("pgwire compiled SQL (dialect=%s):\n%s", dialect, compile_result.sql)
 
         try:

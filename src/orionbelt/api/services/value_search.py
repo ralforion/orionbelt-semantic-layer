@@ -88,7 +88,8 @@ async def run_value_search(
                 model=model,
                 compile_result=compiled,
                 model_id=model_id,
-                dialect=dialect,
+                # The source's dialect, where the model reads several.
+                dialect=compiled.dialect,
                 source=resolve_query_source(model, compiled),
                 cache=cache,
                 cache_config=cache_config,

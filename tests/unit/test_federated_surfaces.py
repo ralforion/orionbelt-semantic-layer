@@ -45,6 +45,21 @@ def federated_model() -> str:
     return model_yaml(federated=True)
 
 
+def postgres_default() -> str:
+    """The federated model with Postgres as its default dialect.
+
+    Its sources are DuckDB, so a query reading one of them is compiled for
+    DuckDB, not for the dialect the model defaults to.
+    """
+    return federated_model().replace("defaultDialect: duckdb", "defaultDialect: postgres")
+
+
+# Run a query on one source of each: the second has another default dialect.
+ONE_SOURCE_MODELS = pytest.mark.parametrize(
+    "yaml", [federated_model(), postgres_default()], ids=["duckdb default", "postgres default"]
+)
+
+
 def manager_with(yaml: str) -> SessionManager:
     mgr = SessionManager(ttl_seconds=3600, cleanup_interval=9999)
     mgr.get_or_create_named("shop_model").load_model(yaml)
@@ -109,8 +124,9 @@ class TestPgwire:
         assert rows == self.pgwire(single_model())
         assert len(rows) == 3
 
-    def test_a_query_on_one_source(self) -> None:
-        rows = self.pgwire(federated_model(), ONE_SOURCE)
+    @ONE_SOURCE_MODELS
+    def test_a_query_on_one_source(self, yaml: str) -> None:
+        rows = self.pgwire(yaml, ONE_SOURCE)
         assert rows == self.pgwire(single_model(), ONE_SOURCE)
         assert len(rows) == 7
 
@@ -142,7 +158,7 @@ class TestFlight:
 
     def flight(
         self, yaml: str, sql: str = OBSQL
-    ) -> tuple[pa.Table, pa.Schema, dict[str, Any] | None]:
+    ) -> tuple[pa.Table, pa.Schema, dict[str, Any] | None, str]:
         import threading
 
         from ob_flight.server import OBFlightServer
@@ -159,18 +175,21 @@ class TestFlight:
             table = server._execute_sql(sql, dialect, cache_meta=cache_meta, result_schema=schema)
         finally:
             mgr.stop()
-        return table, schema, cache_meta
+        return table, schema, cache_meta, dialect
 
     def test_matches_the_single_source(self) -> None:
-        table, schema, cache_meta = self.flight(federated_model())
+        table, schema, cache_meta, _ = self.flight(federated_model())
         assert cache_meta is not None and "federated" in cache_meta
         assert table.num_rows == 3
         assert table.schema == schema
         assert table.to_pylist() == self.flight(single_model())[0].to_pylist()
 
-    def test_a_query_on_one_source(self) -> None:
-        table, _, cache_meta = self.flight(federated_model(), ONE_SOURCE)
+    @ONE_SOURCE_MODELS
+    def test_a_query_on_one_source(self, yaml: str) -> None:
+        table, _, cache_meta, dialect = self.flight(yaml, ONE_SOURCE)
         assert cache_meta is not None and cache_meta["source"].name == "shop"
+        # Keyed and run in the source's dialect, not the model's default.
+        assert dialect == "duckdb"
         assert table.to_pylist() == self.flight(single_model(), ONE_SOURCE)[0].to_pylist()
         assert table.num_rows == 7
 
@@ -202,8 +221,9 @@ class TestRestValueSearch:
         model_id = loaded.json()["model_id"]
         return await api.post(f"/v1/sessions/{session}/models/{model_id}/values", json=body)
 
-    async def test_a_dimension_on_one_source(self, api: Any) -> None:
-        federated = await self.values(api, federated_model(), dimension="Region")
+    @ONE_SOURCE_MODELS
+    async def test_a_dimension_on_one_source(self, api: Any, yaml: str) -> None:
+        federated = await self.values(api, yaml, dimension="Region")
         single = await self.values(api, single_model(), dimension="Region")
         assert federated.status_code == 200, federated.text
         assert federated.json()["values"] == single.json()["values"]
@@ -231,11 +251,13 @@ class TestCli:
         assert federated.rows == single.rows
         assert len(federated.rows) == 3
 
-    def test_a_query_on_one_source(self) -> None:
+    @ONE_SOURCE_MODELS
+    def test_a_query_on_one_source(self, yaml: str) -> None:
         from orionbelt.cli import _local
 
-        compiled, federated = _local.execute_obsql(federated_model(), ONE_SOURCE, None, limit=None)
+        compiled, federated = _local.execute_obsql(yaml, ONE_SOURCE, None, limit=None)
         assert compiled.federation is None
+        assert compiled.dialect == "duckdb"
         _, single = _local.execute_obsql(single_model(), ONE_SOURCE, None, limit=None)
         assert federated.rows == single.rows
         assert len(federated.rows) == 7

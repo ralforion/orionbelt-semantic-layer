@@ -374,6 +374,7 @@ def prepare_sql(
         obml = parse_obml(sql)
         logger.info("OBML request:\n%s", sql)
         query, compiled = server._compile_obml(obml, model, dialect)
+        dialect = _compiled_dialect(compiled, dialect)
         if getattr(compiled, "federation", None) is not None:
             return _federated(server, compiled, model, query, dialect, context)
         sql = server._rewrite_table_names(compiled.sql, model)
@@ -404,6 +405,7 @@ def prepare_sql(
                 f"OrionBelt Semantic QL translation failed: {detail}"
             ) from None
         compiled = _compile(server, CompilationPipeline(), query, model, dialect)
+        dialect = _compiled_dialect(compiled, dialect)
         if getattr(compiled, "federation", None) is not None:
             return _federated(server, compiled, model, query, dialect, context)
         sql = server._rewrite_table_names(compiled.sql, model)
@@ -431,6 +433,17 @@ def prepare_sql(
         "(3) catalog discovery (SHOW / DESCRIBE / information_schema / "
         "pg_catalog). Arbitrary warehouse SQL is rejected by design."
     )
+
+
+def _compiled_dialect(compiled: Any, requested: str) -> str:
+    """The dialect a query was compiled for, which it runs and is cached in.
+
+    A query reading one source of a model read from several is written in that
+    source's dialect, not the one requested. An orionbelt whose compile result
+    names no dialect compiled for the one requested.
+    """
+    dialect = getattr(compiled, "dialect", None)
+    return dialect if isinstance(dialect, str) else requested
 
 
 def _federated(

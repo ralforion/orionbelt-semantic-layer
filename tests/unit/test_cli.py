@@ -765,7 +765,7 @@ def _fake_execution(monkeypatch):
     from orionbelt.cli import _local
     from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
 
-    def fake_run(model, compiled, dialect):
+    def fake_run(model, compiled):
         return ExecutionResult([ColumnMeta("Name", "str")], raw_rows=[["x"]], row_count=1)
 
     monkeypatch.setattr(_local, "_run_compiled", fake_run)

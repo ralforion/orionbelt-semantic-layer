@@ -188,13 +188,15 @@ def _execute_loaded(
         query = query.model_copy(update={"limit": limit})
     resolved_dialect = resolve_dialect(model, dialect)
     compiled = _compile(store, model_id, query, resolved_dialect)
-    return compiled, _run_compiled(model, compiled, resolved_dialect)
+    return compiled, _run_compiled(model, compiled)
 
 
-def _run_compiled(
-    model: SemanticModel, compiled: CompilationResult, dialect: str
-) -> ExecutionResult:
-    """Execute compiled SQL with the model's timezone settings."""
+def _run_compiled(model: SemanticModel, compiled: CompilationResult) -> ExecutionResult:
+    """Execute compiled SQL with the model's timezone settings.
+
+    In the dialect it was compiled for: a query reading one source of a model
+    read from several is written in that source's, not the model's default.
+    """
     settings = getattr(model, "settings", None)
     tz = resolve_timezone(
         default_timezone=getattr(settings, "default_timezone", None) if settings else None
@@ -214,7 +216,7 @@ def _run_compiled(
         )
     return execute_sql(
         compiled.sql,
-        dialect=dialect,
+        dialect=compiled.dialect,
         source=resolve_query_source(model, compiled),
         tz=tz,
         override_db_tz=override,
@@ -314,7 +316,7 @@ def search_values(
 
     async def run(query: QueryObject) -> QueryRun:
         compiled = _compile(store, model_id, query, resolved)
-        executed = _run_compiled(model, compiled, resolved)
+        executed = _run_compiled(model, compiled)
         return QueryRun(
             values=[row[0] for row in executed.rows],
             sql=compiled.sql,
@@ -448,7 +450,7 @@ def run_rules(
         if not execute:
             continue
         try:
-            executed = _run_compiled(model, compiled, resolved_dialect)
+            executed = _run_compiled(model, compiled)
         except ExecutionError as exc:
             outcome.status, outcome.error = "failed", str(exc)
             continue
