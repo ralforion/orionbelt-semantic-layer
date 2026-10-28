@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
-
 from orionbelt.ast.nodes import (
     BinaryOp,
-    CaseExpr,
     Cast,
     Expr,
     FunctionCall,
@@ -102,7 +99,7 @@ class DremioDialect(Dialect):
     def exact_decimal_avg(
         self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
     ) -> Expr | None:
-        """The decimal summed as it is, divided by :meth:`_rounded_average`.
+        """The decimal summed as it is, divided by :meth:`Dialect._rounded_average`.
 
         Dremio's ``AVG`` of a decimal is a double: 12345678901234.565 came back
         1.2345678901234564E13, and 9999999999999999.99 as 1.0E16, which a
@@ -118,169 +115,14 @@ class DremioDialect(Dialect):
         )
 
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
-        """The integer summed as a decimal, divided by :meth:`_rounded_average`.
+        """The integer summed as a decimal, divided by :meth:`Dialect._rounded_average`.
 
         Widened inside the ``SUM``: a 64-bit total wraps silently on Dremio.
         Measured: ``AVG(x)`` returns 1e+18 for an average of
         1000000000000000003, so the rewrite fixes more than the floating-point
         drift it was written for.
         """
-        if not isinstance(obml_type, DecimalType):
-            return None
-        widened = Cast(
-            expr=arg,
-            type_name=self.render_obml_type(
-                DecimalType(precision=self._MAX_DECIMAL_PRECISION, scale=0)
-            ),
-        )
-        return self._rounded_average(
-            FunctionCall(name="SUM", args=[widened]),
-            arg,
-            obml_type,
-            obml_type.precision - obml_type.scale,
-        )
-
-    #: The integer digits a decimal quotient keeps: Dremio types it
-    #: ``DECIMAL(38, 6)``, and 10^35 divided by 1 came back 0, silently.
-    _QUOTIENT_INTEGER_DIGITS = 32
-
-    #: The most places :meth:`_rounded_average` divides to: its fraction and
-    #: the sum it ends with take two digits more than twice the scale.
-    _MAX_AVERAGE_SCALE = 16
-
-    def _rounded_average(
-        self, total: Expr, arg: Expr, obml_type: OBMLType, integer_digits: int
-    ) -> Expr | None:
-        """*total* / ``COUNT(x)`` rounded once, half away from zero, at the result.
-
-        Not a division and a cast. Every Dremio decimal division rounds its
-        quotient, at ``max(6, scale)`` places, and the cast rounds again, so
-        the two can disagree: 100 rows of 1 and 19901 of 0 average 0.0049997,
-        which rounds to 0.00, but rounded at six places it is 0.005000, and
-        the cast made that 0.01.
-
-        So the average is long division in integers, as on DuckDB. The
-        absolute total ``A``, truncated one place past the result (which keeps
-        every rounding boundary, :meth:`Dialect.exact_decimal_avg`), splits
-        into its integer part ``I`` and its fraction ``F`` in units of that
-        place. ``q = (I - MOD(I, N)) / N`` is the integer part of the average,
-        and ``R = (Y - MOD(Y, 20N)) / 20N`` with
-        ``Y = 2 * (MOD(I, N) * 10^(scale + 1) + F) + 10N`` the fraction in
-        units of the result's last place, rounded half up. Each division
-        divides a multiple of its divisor, so the quotient's rounding never
-        bites. The sign goes on the two integers before they are combined:
-        Dremio's unary minus retypes a decimal, ``-DECIMAL(29, 12)`` as
-        ``DECIMAL(38, 10)``, two places fewer.
-
-        **Every integer is cast to DECIMAL(38, 0).** Dremio narrows the scale
-        of an arithmetic result that reaches 38 digits - ``DECIMAL(38, 8) *
-        BIGINT`` came back ``DECIMAL(38, 6)``, rounded - which costs an
-        integer nothing, and adds a digit to a sum's type for the carry. The
-        fraction is taken with ``MOD(A, 1)``, exact, where ``A -
-        TRUNCATE(A, 0)`` lost places that way (0.99999999 came back 1).
-
-        Limits, past which ``AVG`` is kept: a result of more than 16 places;
-        *integer_digits*, the most the average or a declared value can have,
-        past the quotient's 32, as a larger decimal quotient overflows
-        silently; and those digits plus the scale past 37, the room the final
-        sum has. The total itself has 38 digits, as Dremio's own ``SUM``.
-        """
-        if not isinstance(obml_type, DecimalType):
-            return None
-        scale = obml_type.scale
-        integer_digits = max(integer_digits, 1)
-        if (
-            scale > self._MAX_AVERAGE_SCALE
-            or integer_digits > self._QUOTIENT_INTEGER_DIGITS
-            or integer_digits + scale > self._MAX_DECIMAL_PRECISION - 1
-        ):
-            return None
-
-        def decimal(expr: Expr, precision: int, places: int = 0) -> Expr:
-            return Cast(
-                expr=expr,
-                type_name=self.render_obml_type(DecimalType(precision=precision, scale=places)),
-            )
-
-        def integer(expr: Expr) -> Expr:
-            return decimal(expr, self._MAX_DECIMAL_PRECISION)
-
-        def constant(value: Decimal, precision: int, places: int = 0) -> Expr:
-            return decimal(Literal.string(f"{value:f}"), precision, places)
-
-        def floor_divide(dividend: Expr, divisor: Expr) -> Expr:
-            remainder = FunctionCall(name="MOD", args=[dividend, divisor])
-            return integer(
-                BinaryOp(
-                    left=integer(BinaryOp(left=dividend, op="-", right=remainder)),
-                    op="/",
-                    right=divisor,
-                )
-            )
-
-        places = scale + 1
-        shift = constant(Decimal(10) ** places, places + 1)
-        count = decimal(
-            FunctionCall(
-                name="NULLIF",
-                args=[FunctionCall(name="COUNT", args=[arg]), Literal.number(0)],
-            ),
-            19,
-        )
-        magnitude = FunctionCall(
-            name="TRUNCATE",
-            args=[FunctionCall(name="ABS", args=[total]), Literal.number(places)],
-        )
-        whole = integer(FunctionCall(name="TRUNCATE", args=[magnitude, Literal.number(0)]))
-        fraction = integer(
-            BinaryOp(
-                left=FunctionCall(name="MOD", args=[magnitude, constant(Decimal(1), 1)]),
-                op="*",
-                right=shift,
-            )
-        )
-        remainder = integer(FunctionCall(name="MOD", args=[whole, count]))
-        doubled = integer(
-            BinaryOp(
-                left=integer(
-                    BinaryOp(
-                        left=constant(Decimal(2), 1),
-                        op="*",
-                        right=integer(
-                            BinaryOp(
-                                left=integer(BinaryOp(left=remainder, op="*", right=shift)),
-                                op="+",
-                                right=fraction,
-                            )
-                        ),
-                    )
-                ),
-                op="+",
-                right=integer(BinaryOp(left=constant(Decimal(10), 2), op="*", right=count)),
-            )
-        )
-        units = floor_divide(
-            doubled, integer(BinaryOp(left=constant(Decimal(20), 2), op="*", right=count))
-        )
-        sign = CaseExpr(
-            when_clauses=[
-                (BinaryOp(left=total, op="<", right=Literal.number(0)), constant(Decimal(-1), 1))
-            ],
-            else_clause=constant(Decimal(1), 1),
-        )
-
-        def signed(value: Expr, precision: int) -> Expr:
-            return decimal(integer(BinaryOp(left=value, op="*", right=sign)), precision)
-
-        return BinaryOp(
-            left=signed(floor_divide(whole, count), integer_digits),
-            op="+",
-            right=BinaryOp(
-                left=signed(units, scale + 2),
-                op="*",
-                right=constant(Decimal(1).scaleb(-scale), scale + 1, scale),
-            ),
-        )
+        return self._divided_integer_average(arg, obml_type)
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
         """Dremio: supports multi-level paths via the ``code`` field.

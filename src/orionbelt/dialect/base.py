@@ -426,54 +426,166 @@ class Dialect(ABC):
     _MAX_DECIMAL_PRECISION = 38
     _SUM_HEADROOM_DIGITS = 24
 
-    def _exact_avg_by_sum_over_count(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
-        """``SUM(x) / COUNT(x)`` in decimal, for engines that divide exactly.
+    #: The function cutting a nonnegative decimal to a number of places, as
+    #: :meth:`_rounded_average` needs it.
+    _TRUNCATE_TO_PLACES = "TRUNCATE"
 
-        The textbook rewrite, Databricks'. Dremio rounds each quotient before
-        the cast rounds it again and has its own. It is *not*
-        available on DuckDB, where every division returns DOUBLE whatever the
-        operands - that engine assembles its average from integer arithmetic
-        instead, in its own override (#316).
+    #: The integer digits a decimal quotient keeps where the engine types it
+    #: ``DECIMAL(38, 6)``: Dremio returned 0 past them, silently, Databricks
+    #: raised.
+    _QUOTIENT_INTEGER_DIGITS = 32
 
-        **The cast goes inside the SUM.** ``SUM`` over a 64-bit column
-        accumulates in 64 bits, and casting afterwards only widens a number
-        that has already wrapped: two rows of 9000000000000000000 summed to
-        -446744073709551616 on Dremio, silently, and raise ARITHMETIC_OVERFLOW
-        on Databricks. Both are fixed by widening the argument first.
+    #: The most places :meth:`_rounded_average` divides to: its fraction and
+    #: the sum it ends with take two digits more than twice the scale.
+    _MAX_AVERAGE_SCALE = 16
 
-        The running total then needs integer room the average will not, so the
-        scale is capped to leave ``_SUM_HEADROOM_DIGITS`` for the integer part:
-        38 digits cannot hold both a large total and a long fraction. A result
-        asking for more scale gets the extra places as zeros, which is the
-        honest trade against overflowing on a total the source holds legally.
+    def _rounded_average(
+        self, total: Expr, arg: Expr, obml_type: OBMLType, integer_digits: int
+    ) -> Expr | None:
+        """*total* / ``COUNT(x)`` rounded once, half away from zero, at the result.
 
-        An empty group divides to NULL on both engines, measured, so no
-        zero-count guard is needed here - unlike ClickHouse, whose
-        ``divideDecimal`` raises.
+        For Dremio and Databricks, not a division and a cast. Both round every
+        decimal quotient, at ``max(6, scale)`` places, and the cast rounds
+        again, so the two can disagree: 100 rows of 1 and 19901 of 0 average
+        0.0049997, which rounds to 0.00, but rounded at six places it is
+        0.005000, and the cast made that 0.01 on both.
+
+        So the average is long division in integers, as on DuckDB. The
+        absolute total ``A``, truncated one place past the result (which keeps
+        every rounding boundary, :meth:`Dialect.exact_decimal_avg`), splits
+        into its integer part ``I`` and its fraction ``F`` in units of that
+        place. ``q = (I - MOD(I, N)) / N`` is the integer part of the average,
+        and ``R = (Y - MOD(Y, 20N)) / 20N`` with
+        ``Y = 2 * (MOD(I, N) * 10^(scale + 1) + F) + 10N`` the fraction in
+        units of the result's last place, rounded half up. Each division
+        divides a multiple of its divisor, so the quotient's rounding never
+        bites. The sign goes on the two integers before they are combined:
+        Dremio's unary minus retypes a decimal, ``-DECIMAL(29, 12)`` as
+        ``DECIMAL(38, 10)``, two places fewer.
+
+        **Every integer is cast to DECIMAL(38, 0).** Both narrow the scale of
+        an arithmetic result that reaches 38 digits - ``DECIMAL(38, 8) *
+        BIGINT`` came back ``DECIMAL(38, 6)``, rounded - which costs an
+        integer nothing, and add a digit to a sum's type for the carry. The
+        fraction is taken with ``MOD(A, 1)``, exact, where ``A -
+        TRUNCATE(A, 0)`` lost places that way on Dremio (0.99999999 came
+        back 1). :attr:`_TRUNCATE_TO_PLACES` names the function that cuts
+        the nonnegative total to its places.
+
+        Limits, past which ``AVG`` is kept: a result of more than 16 places;
+        *integer_digits*, the most the average or a declared value can have,
+        past the quotient's 32; and those digits plus the scale past 37, the
+        room the final sum has. The total itself has 38 digits, as the
+        engine's own ``SUM`` of a ``DECIMAL(38, s)``.
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        scale = min(obml_type.scale, self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS)
-        accumulated = FunctionCall(
-            name="SUM",
-            args=[
-                Cast(
-                    expr=arg,
-                    type_name=self.render_obml_type(
-                        DecimalType(precision=self._MAX_DECIMAL_PRECISION, scale=0)
-                    ),
+        scale = obml_type.scale
+        integer_digits = max(integer_digits, 1)
+        if (
+            scale > self._MAX_AVERAGE_SCALE
+            or integer_digits > self._QUOTIENT_INTEGER_DIGITS
+            or integer_digits + scale > self._MAX_DECIMAL_PRECISION - 1
+        ):
+            return None
+
+        def decimal(expr: Expr, precision: int, places: int = 0) -> Expr:
+            return Cast(
+                expr=expr,
+                type_name=self.render_obml_type(DecimalType(precision=precision, scale=places)),
+            )
+
+        def integer(expr: Expr) -> Expr:
+            return decimal(expr, self._MAX_DECIMAL_PRECISION)
+
+        def constant(value: Decimal, precision: int, places: int = 0) -> Expr:
+            return decimal(Literal.string(f"{value:f}"), precision, places)
+
+        def floor_divide(dividend: Expr, divisor: Expr) -> Expr:
+            remainder = FunctionCall(name="MOD", args=[dividend, divisor])
+            return integer(
+                BinaryOp(
+                    left=integer(BinaryOp(left=dividend, op="-", right=remainder)),
+                    op="/",
+                    right=divisor,
                 )
-            ],
-        )
-        return BinaryOp(
-            left=Cast(
-                expr=accumulated,
-                type_name=self.render_obml_type(
-                    DecimalType(precision=self._MAX_DECIMAL_PRECISION, scale=scale)
-                ),
+            )
+
+        places = scale + 1
+        shift = constant(Decimal(10) ** places, places + 1)
+        count = decimal(
+            FunctionCall(
+                name="NULLIF",
+                args=[FunctionCall(name="COUNT", args=[arg]), Literal.number(0)],
             ),
-            op="/",
-            right=FunctionCall(name="COUNT", args=[arg]),
+            19,
+        )
+        magnitude = FunctionCall(
+            name=self._TRUNCATE_TO_PLACES,
+            args=[FunctionCall(name="ABS", args=[total]), Literal.number(places)],
+        )
+        whole = integer(
+            FunctionCall(name=self._TRUNCATE_TO_PLACES, args=[magnitude, Literal.number(0)])
+        )
+        fraction = integer(
+            BinaryOp(
+                left=FunctionCall(name="MOD", args=[magnitude, constant(Decimal(1), 1)]),
+                op="*",
+                right=shift,
+            )
+        )
+        remainder = integer(FunctionCall(name="MOD", args=[whole, count]))
+        doubled = integer(
+            BinaryOp(
+                left=integer(
+                    BinaryOp(
+                        left=constant(Decimal(2), 1),
+                        op="*",
+                        right=integer(
+                            BinaryOp(
+                                left=integer(BinaryOp(left=remainder, op="*", right=shift)),
+                                op="+",
+                                right=fraction,
+                            )
+                        ),
+                    )
+                ),
+                op="+",
+                right=integer(BinaryOp(left=constant(Decimal(10), 2), op="*", right=count)),
+            )
+        )
+        units = floor_divide(
+            doubled, integer(BinaryOp(left=constant(Decimal(20), 2), op="*", right=count))
+        )
+        sign = CaseExpr(
+            when_clauses=[
+                (BinaryOp(left=total, op="<", right=Literal.number(0)), constant(Decimal(-1), 1))
+            ],
+            else_clause=constant(Decimal(1), 1),
+        )
+
+        def signed(value: Expr, precision: int) -> Expr:
+            return decimal(integer(BinaryOp(left=value, op="*", right=sign)), precision)
+
+        return BinaryOp(
+            left=signed(floor_divide(whole, count), integer_digits),
+            op="+",
+            right=BinaryOp(
+                left=signed(units, scale + 2),
+                op="*",
+                right=constant(Decimal(1).scaleb(-scale), scale + 1, scale),
+            ),
+        )
+
+    def _divided_integer_average(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """:meth:`_rounded_average` over :meth:`_sum_over_widened_argument`."""
+        if not isinstance(obml_type, DecimalType):
+            return None
+        return self._rounded_average(
+            self._sum_over_widened_argument(arg),
+            arg,
+            obml_type,
+            obml_type.precision - obml_type.scale,
         )
 
     #: Whether a UNION column whose legs carry different numeric types
@@ -611,9 +723,9 @@ class Dialect(ABC):
     def _sum_over_widened_argument(self, arg: Expr) -> Expr:
         """``SUM(CAST(arg AS DECIMAL(38, 0)))``.
 
-        The plain form of the same move :meth:`_exact_avg_by_sum_over_count`
-        makes, for the engines whose only problem is the accumulator. Dremio
-        uses it; ClickHouse spells the widening ``toDecimal128`` and overrides.
+        The total :meth:`_divided_integer_average` divides, widened inside the
+        ``SUM`` so a 64-bit accumulator cannot wrap. ClickHouse spells the
+        widening ``toDecimal128`` and overrides.
         """
         widened = Cast(
             expr=arg,

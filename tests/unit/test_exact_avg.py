@@ -142,7 +142,7 @@ REWRITTEN = {
     "duckdb": "// (2 * CAST(COUNT(",
     # Measured once its workspace was reachable: AVG over BIGINT returns 1.0E18
     # here too. #318 had left it unrewritten on an assumption (#322).
-    "databricks": "/ NULLIF(COUNT(",
+    "databricks": "MOD(",
 }
 # Postgres, MySQL and Snowflake are already exact, so their *expression* is
 # left alone - but their result type is still widened (#330), because an exact
@@ -316,6 +316,16 @@ class TestTheHazardsAPlainAvgHandlesAndARewriteMustToo:
         """
         assert "AS NUMERIC" in _sql("Qty Avg", "bigquery")
         assert "AS BIGNUMERIC" in _sql_with_default("Qty Avg", "bigquery", "decimal(38, 20)")
+
+    def test_databricks_divides_once_in_integers(self) -> None:
+        """Databricks rounded a ``SUM / COUNT`` quotient at six places and the
+        cast rounded it again: 100 ones among 20001 rows averaged 0.01. It
+        shares Dremio's integer long division, cutting the total with
+        ``floor``, as Spark SQL has no numeric ``TRUNCATE``."""
+        sql = _sql("Qty Avg", "databricks")
+        assert "floor(ABS(SUM(CAST(" in sql, sql
+        assert "TRUNCATE(" not in sql.upper(), sql
+        assert "AVG(" not in sql.upper(), sql
 
     def test_dremio_keeps_avg_past_sixteen_places(self) -> None:
         """Dremio's long division takes two digits more than twice the scale.
