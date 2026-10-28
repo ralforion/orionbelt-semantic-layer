@@ -870,8 +870,9 @@ def _leg_measures(
     """
     effective = model.effective_measures
     # A generated name must not be one the model declares: a declared measure
-    # named like a partial would replace it in the leg.
-    taken = set(effective) | set(model.dimensions)
+    # named like a partial would replace it in the leg. Compared without case,
+    # as DuckDB compares identifiers, quoted or not.
+    taken = {name.casefold() for name in (*effective, *model.dimensions)}
     measures: dict[str, Measure] = {}
     averages: dict[str, tuple[str, str, int | None]] = {}
     for name in sorted(names):
@@ -901,10 +902,10 @@ def _leg_measures(
 
 
 def _unused(name: str, taken: set[str]) -> str:
-    """*name*, or it prefixed with underscores until no name in *taken* is it."""
-    while name in taken:
+    """*name*, prefixed with underscores until it is none of *taken*, which are casefolded."""
+    while name.casefold() in taken:
         name = f"_{name}"
-    taken.add(name)
+    taken.add(name.casefold())
     return name
 
 

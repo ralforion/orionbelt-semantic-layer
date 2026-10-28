@@ -236,3 +236,196 @@ class TestPartialSums:
 
         assert out.schema.field("s").type == pa.decimal128(38, 0)
         assert out.column("s").to_pylist() == [2**62, 2**62]
+
+
+# (group, key, value): one group per edge of the output type.
+EDGES = [
+    ("half", 1, "1"),
+    ("half", 2, "2"),
+    ("negative half", 3, "-1"),
+    ("negative half", 4, "-2"),
+    ("tenths", 5, "0.1"),
+    ("tenths", 6, "0.2"),
+    *[("zeros and ones", 7 + n, str(n % 2)) for n in range(20)],
+]
+
+EDGE_MODEL = (
+    MODEL.split("measures:")[0]
+    .replace("      I: {code: i, abstractType: int}\n", "")
+    .replace("      F: {code: f, abstractType: float}\n", "")
+    + """measures:
+  Avg 0: {columns: [{dataObject: Facts, column: D}], aggregation: avg, dataType: "decimal(38, 0)"}
+  Avg 37: {columns: [{dataObject: Facts, column: D}], aggregation: avg, dataType: "decimal(38, 37)"}
+  Avg 38: {columns: [{dataObject: Facts, column: D}], aggregation: avg, dataType: "decimal(38, 38)"}
+  __AVG0_SUM: {columns: [{dataObject: Facts, column: D}], aggregation: count, resultType: int}
+"""
+)
+
+
+@pytest.fixture(scope="module")
+def edge_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("avg_edges")
+    paths = {"facts": str(root / "facts.duckdb"), "labels": str(root / "labels.duckdb")}
+    con = duckdb.connect(paths["facts"])
+    con.execute("CREATE TABLE facts (k INTEGER, d DECIMAL(18, 2))")
+    con.executemany(
+        "INSERT INTO facts VALUES (?, CAST(? AS DECIMAL(18, 2)))", [(k, d) for _, k, d in EDGES]
+    )
+    con.close()
+    con = duckdb.connect(paths["labels"])
+    con.execute("CREATE TABLE groups (k INTEGER, g VARCHAR)")
+    con.executemany("INSERT INTO groups VALUES (?, ?)", [(k, g) for g, k, _ in EDGES])
+    con.close()
+    return paths
+
+
+def run_edge(files: dict[str, str], measures: list[str], group: str) -> dict[str, Any]:
+    store = ModelStore()
+    model_id = store.load_model(EDGE_MODEL).model_id
+    query = QueryObject.model_validate(
+        {
+            "select": {"dimensions": ["Label"], "measures": measures},
+            "where": [{"field": "Label", "op": "=", "value": group}],
+        }
+    )
+    plan = store.compile_query(model_id, query, "duckdb").federation
+    assert plan is not None
+    tables = {}
+    for leg in plan.legs:
+        con = duckdb.connect(files[leg.data_source], read_only=True)
+        try:
+            tables[leg.name] = normalize_leg(leg, con.sql(leg.sql).to_arrow_table())
+        finally:
+            con.close()
+    (row,) = combine(plan, tables, None).arrow_table.to_pylist()
+    return row
+
+
+class TestOutputScaleEdges:
+    """Where the measure's type leaves no place, or no integer digit, to spare."""
+
+    @pytest.mark.parametrize(
+        ("group", "expected"), [("half", Decimal(2)), ("negative half", Decimal(-2))]
+    )
+    def test_scale_zero_rounds_half_away_from_zero(
+        self, edge_files: dict[str, str], group: str, expected: Decimal
+    ) -> None:
+        """1.5 is 2 and -1.5 is -2: at no places the quotient rounds itself."""
+        assert run_edge(edge_files, ["Avg 0"], group)["Avg 0"] == expected
+
+    def test_a_scale_of_37_does_not_overflow(self, edge_files: dict[str, str]) -> None:
+        """Ten zeros and ten ones: one step of 37 digits would scale the
+        remainder past 128 bits; two steps of at most 19 do not."""
+        assert run_edge(edge_files, ["Avg 37"], "zeros and ones")["Avg 37"] == Decimal("0.5")
+
+    def test_a_scale_of_38_stays_a_type(self, edge_files: dict[str, str]) -> None:
+        """The scaling constant is DECIMAL(38, 38), not the DECIMAL(39, 38)
+        no engine has."""
+        assert run_edge(edge_files, ["Avg 38"], "tenths")["Avg 38"] == Decimal("0.15")
+
+    def test_a_partial_name_differing_only_in_case_is_not_taken(
+        self, edge_files: dict[str, str]
+    ) -> None:
+        """DuckDB reads __AVG0_SUM and __avg0_sum as one identifier."""
+        row = run_edge(edge_files, ["Avg 0", "__AVG0_SUM"], "tenths")
+
+        assert row["Avg 0"] == Decimal(0)
+        assert row["__AVG0_SUM"] == 2
+
+
+def _round_half_away(value: Decimal, places: int) -> Decimal:
+    with localcontext() as ctx:
+        ctx.prec = 120
+        return value.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+
+
+def _truncate(value: Decimal, places: int) -> Decimal:
+    from decimal import ROUND_DOWN
+
+    with localcontext() as ctx:
+        ctx.prec = 120
+        return value.quantize(Decimal(1).scaleb(-places), rounding=ROUND_DOWN)
+
+
+def _cases(seed: int, n: int) -> list[tuple[int, int, int, int, int]]:
+    """``(input_scale, precision, scale, total_units, count)``, each average fitting its type.
+
+    Totals across the whole DECIMAL(38, input_scale) range and counts up to
+    2**63 - 1, in both signs; the type is any of DECIMAL(1, 0) to (38, 38).
+    """
+    import random
+
+    rng = random.Random(seed)
+    cases = []
+    while len(cases) < n:
+        input_scale = rng.choice([0, 9])
+        precision = rng.randint(1, 38)
+        scale = rng.randint(0, precision)
+        count = rng.choice([rng.randint(1, 9), rng.randint(1, 10**6), rng.randint(1, 2**63 - 1)])
+        digits = rng.randint(1, 38)
+        units = rng.randint(-(10**digits) + 1, 10**digits - 1)
+        with localcontext() as ctx:
+            ctx.prec = 120
+            mean = Decimal(units).scaleb(-input_scale) / count
+            rounded = _round_half_away(mean, scale)
+        if abs(rounded) >= Decimal(10) ** (precision - scale):
+            continue  # the average does not fit the type: the cast would refuse it anyway
+        cases.append((input_scale, precision, scale, units, count))
+    return cases
+
+
+class TestExactQuotientProperty:
+    """``exact_quotient`` against exact decimal arithmetic, over the input range."""
+
+    @pytest.mark.parametrize("seed", range(6))
+    def test_matches_exact_arithmetic(self, seed: int) -> None:
+        from orionbelt.ast.nodes import ColumnRef
+        from orionbelt.dialect.duckdb import DuckDBDialect
+        from orionbelt.models.types import DecimalType
+
+        dialect = DuckDBDialect()
+        con = duckdb.connect()
+        for input_scale, precision, scale, units, count in _cases(seed, 100):
+            target = DecimalType(precision=precision, scale=scale)
+            expr = dialect.exact_quotient(
+                ColumnRef(name="t"), ColumnRef(name="c"), input_scale, target
+            )
+            assert expr is not None
+            sql = dialect.compile_expr(expr)
+            total = Decimal(units).scaleb(-input_scale)
+            raw, cast = con.execute(
+                f"SELECT {sql}, CAST({sql} AS DECIMAL({precision}, {scale})) FROM "
+                f"(SELECT CAST(? AS DECIMAL(38, {input_scale})) AS t, CAST(? AS BIGINT) AS c)",
+                [str(total), count],
+            ).fetchone()
+            with localcontext() as ctx:
+                ctx.prec = 120
+                mean = total / count
+            case = (input_scale, precision, scale, units, count)
+            # The measure's column: rounded once, half away from zero.
+            assert cast == _round_half_away(mean, scale), case
+            # What HAVING and metrics read: truncated at more places, or
+            # rounded where the type has none to spare.
+            places = raw.as_tuple().exponent * -1 if raw.as_tuple().exponent < 0 else 0
+            if places > scale:
+                assert raw == _truncate(mean, places), case
+            else:
+                assert raw == _round_half_away(mean, places), case
+
+    def test_an_empty_group_is_null(self) -> None:
+        from orionbelt.ast.nodes import ColumnRef
+        from orionbelt.dialect.duckdb import DuckDBDialect
+        from orionbelt.models.types import DecimalType
+
+        dialect = DuckDBDialect()
+        sql = dialect.compile_expr(
+            dialect.exact_quotient(
+                ColumnRef(name="t"), ColumnRef(name="c"), 9, DecimalType(precision=18, scale=2)
+            )
+        )
+
+        ((value,),) = duckdb.sql(
+            f"SELECT {sql} FROM (SELECT CAST(5 AS DECIMAL(38, 9)) AS t, CAST(0 AS BIGINT) AS c)"
+        ).fetchall()
+
+        assert value is None

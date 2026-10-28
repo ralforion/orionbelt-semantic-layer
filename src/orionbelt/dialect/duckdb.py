@@ -123,36 +123,44 @@ class DuckDBDialect(Dialect):
     #: rounds it; fewer when the measure's integer digits leave no room.
     _MEAN_SCALE = 18
 
+    #: The most decimal digits one long-division step produces: a count is a
+    #: 64-bit integer, below 10^19, so a remainder (below the count) times
+    #: 10^19 stays within 128 bits.
+    _DIGITS_PER_STEP = 19
+
     def exact_quotient(
         self, total: Expr, count: Expr, input_scale: int, obml_type: OBMLType
     ) -> Expr | None:
-        """``total / count`` exactly, truncated at a long scale, for a combined average.
+        """``total / count`` exactly, at a long scale, for a combined average.
 
         The combine step of a federated query divides the sum of its legs'
         partial sums by the sum of their counts this way (``avg``). *total* is
         an integer, or a decimal at *input_scale*, the scale every leg's
         partial sum is normalised to.
 
-        **Truncated, not rounded.** The result is the average itself, for
+        **Unrounded where it can be.** The result is the average itself, for
         HAVING, ORDER BY and the metrics that read it as a raw ``AVG`` would be
-        read: at ``K`` places, the measure's own scale or 18, whichever is more,
-        and fewer only where the measure's integer digits leave no room in
-        ``DECIMAL(38, K)``. The measure's cast then rounds it once, half away
-        from zero; rounding a value truncated at more places than the result
-        keeps gives what rounding the exact value gives, since a tie at the
-        result's last place is a digit the truncation keeps. Where ``K`` is
-        the measure's own scale - ``decimal(38, 18)`` leaves no place to spare
-        - the cast has nothing to round, so the quotient is rounded here
-        instead: rounding twice could disagree with rounding once.
+        read: at ``P`` places, the measure's own scale or 18, whichever is more,
+        fewer only where the measure's integer digits leave no room in
+        ``DECIMAL(38, P)``. With places to spare it is truncated, and the
+        measure's cast rounds it once, half away from zero: rounding a value
+        truncated at more places than the result keeps gives what rounding the
+        exact value gives, since a tie at the result's last place is a digit
+        the truncation keeps. With none to spare - ``decimal(38, 0)``,
+        ``decimal(38, 18)`` - the cast has nothing to round, so the quotient
+        rounds itself, half away from zero, from the division's remainder.
 
-        **Divided in parts**, as :meth:`exact_integer_avg` cannot afford to:
-        scaling the whole total by ``10^K`` before dividing overflows 128 bits
-        from totals of ``10^20`` at 18 places. The integer part is divided
-        first, ``q = W // C`` and ``r = W % C``; only the remainder and the
-        fraction, together less than ``C`` in absolute value, are scaled, so no
-        intermediate exceeds ``C * 10^K``. ``//`` truncates toward zero and
-        ``%`` takes the dividend's sign here, and the whole and the fraction of
-        a total share its sign, so the two parts add up in both signs.
+        **Long division in steps.** Scaling the total by ``10^P`` before
+        dividing overflows 128 bits; so does scaling a remainder by ``10^P`` at
+        a high scale (``decimal(38, 37)``). The integer part is divided first,
+        ``q = W // C`` and ``r = W % C``, and the fraction is produced at most
+        :data:`_DIGITS_PER_STEP` digits at a time from a remainder below the
+        count, so no intermediate exceeds ``C * 10^19``. ``//`` truncates
+        toward zero and ``%`` takes the dividend's sign here, and the whole
+        and the fraction of a total share its sign, so the parts add up in
+        both signs. The result is assembled as one integer of ``10^-P`` units,
+        then scaled by a ``DECIMAL(P, P)`` constant, which keeps every type
+        within 38 digits.
 
         ``None`` for a non-decimal result. An empty group is NULL, as ``AVG``
         over no rows is.
@@ -170,9 +178,10 @@ class DuckDBDialect(Dialect):
             type_name="HUGEINT",
         )
         quotient = BinaryOp(left=whole, op="//", right=divisor)
+        # What is left to divide, in 10^-input_scale units: the integer part's
+        # remainder and the total's fraction, below the count in value.
         remainder: Expr = BinaryOp(left=whole, op="%", right=divisor)
         if input_scale:
-            # The remainder and the total's fraction, in 10^-input_scale units.
             fraction = Cast(
                 expr=BinaryOp(
                     left=BinaryOp(
@@ -188,49 +197,56 @@ class DuckDBDialect(Dialect):
                 op="+",
                 right=fraction,
             )
-        # The fraction's digits, in 10^-places units: the remainder over the
-        # count, both scaled to those units.
-        if places >= input_scale:
-            numerator: Expr = BinaryOp(
-                left=remainder, op="*", right=Literal.number(10 ** (places - input_scale))
-            )
-            denominator: Expr = divisor
+        # The first step brings the remainder to whole units of 10^-first.
+        first = min(places, self._DIGITS_PER_STEP)
+        step_divisor: Expr = divisor
+        if first >= input_scale:
+            dividend: Expr = _times_ten(remainder, first - input_scale)
         else:
-            numerator = remainder
-            denominator = BinaryOp(
-                left=divisor, op="*", right=Literal.number(10 ** (input_scale - places))
+            dividend = remainder
+            step_divisor = BinaryOp(
+                left=divisor, op="*", right=Literal.number(10 ** (input_scale - first))
             )
-        if places > obml_type.scale:
-            # Truncated: the measure's cast rounds it, at fewer places.
-            digits: Expr = BinaryOp(left=numerator, op="//", right=denominator)
-        else:
-            # No place to spare, so nothing after this rounds: round here,
-            # half away from zero, as ``(2n + sign(n)*d) // 2d``.
+        digits: Expr = BinaryOp(left=dividend, op="//", right=step_divisor)
+        left_over: Expr = BinaryOp(left=dividend, op="%", right=step_divisor)
+        if places > first:
+            second = places - first
+            dividend = _times_ten(left_over, second)
             digits = BinaryOp(
-                left=BinaryOp(
-                    left=BinaryOp(left=Literal.number(2), op="*", right=numerator),
-                    op="+",
-                    right=BinaryOp(
-                        left=FunctionCall(name="SIGN", args=[numerator]),
-                        op="*",
-                        right=denominator,
-                    ),
-                ),
-                op="//",
-                right=BinaryOp(left=Literal.number(2), op="*", right=denominator),
+                left=_times_ten(digits, second),
+                op="+",
+                right=BinaryOp(left=dividend, op="//", right=step_divisor),
             )
-        mean: Expr = Cast(expr=quotient, type_name="DECIMAL(38, 0)")
+            left_over = BinaryOp(left=dividend, op="%", right=step_divisor)
+        units: Expr = BinaryOp(left=_times_ten(quotient, places), op="+", right=digits)
+        if places == obml_type.scale:
+            # Half away from zero: up a unit when what is left is at least
+            # half the divisor, in the direction of its sign.
+            half_or_more = BinaryOp(
+                left=BinaryOp(
+                    left=Literal.number(2),
+                    op="*",
+                    right=FunctionCall(name="ABS", args=[left_over]),
+                ),
+                op=">=",
+                right=step_divisor,
+            )
+            units = BinaryOp(
+                left=units,
+                op="+",
+                right=CaseExpr(
+                    when_clauses=[(half_or_more, FunctionCall(name="SIGN", args=[left_over]))],
+                    else_clause=Literal.number(0),
+                ),
+            )
+        mean: Expr = Cast(expr=units, type_name="DECIMAL(38, 0)")
         if places:
             mean = BinaryOp(
                 left=mean,
-                op="+",
-                right=BinaryOp(
-                    left=Cast(expr=digits, type_name="DECIMAL(38, 0)"),
-                    op="*",
-                    right=Cast(
-                        expr=Literal.number(float(f"0.{'0' * (places - 1)}1")),
-                        type_name=f"DECIMAL({places + 1}, {places})",
-                    ),
+                op="*",
+                right=Cast(
+                    expr=Literal.number(float(f"1e-{places}")),
+                    type_name=f"DECIMAL({places}, {places})",
                 ),
             )
         return CaseExpr(
@@ -416,3 +432,8 @@ class DuckDBDialect(Dialect):
         pat_sql = self.compile_expr(Literal.string(pattern))
         result = f"regexp_matches({col_sql}, {pat_sql})"
         return f"NOT {result}" if negated else result
+
+
+def _times_ten(expr: Expr, power: int) -> Expr:
+    """*expr* times ``10^power``; *expr* itself for a power of 0."""
+    return expr if power == 0 else BinaryOp(left=expr, op="*", right=Literal.number(10**power))
