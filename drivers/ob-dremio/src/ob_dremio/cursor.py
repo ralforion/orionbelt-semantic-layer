@@ -6,6 +6,7 @@ to PEP 249 semantics.
 
 Each ``execute()`` fetches the entire result set into memory (client-side
 buffering) and converts the Arrow table to Python tuples on first fetch.
+``execute_stream()`` streams it instead, for a result too large to buffer.
 """
 
 from __future__ import annotations
@@ -51,6 +52,9 @@ class Cursor:
         self._pos: int = 0
         self._description: tuple[tuple[str, Any, None, None, None, None, None], ...] | None = None
         self._rowcount: int = -1
+        # The native statement a streamed result is read from, open until
+        # the reader is done with it: closed by the next statement or close().
+        self._streaming: Any = None
 
     # -- PEP 249 attributes --------------------------------------------------
 
@@ -141,7 +145,46 @@ class Cursor:
             rows.append(tuple(columns[name][i] for name in col_names))
         return rows
 
+    def _end_stream(self) -> None:
+        """Close the native statement of a streamed result, if one is open."""
+        if self._streaming is not None:
+            self._streaming.close()
+            self._streaming = None
+
     # -- PEP 249 execute methods ----------------------------------------------
+
+    def execute_stream(
+        self, operation: str, parameters: Sequence[object] | None = None
+    ) -> pa.RecordBatchReader:
+        """Execute a query and stream its result as a ``pyarrow.RecordBatchReader``.
+
+        Not PEP 249: :meth:`execute` buffers the whole result, which a result
+        too large for memory cannot afford. The reader reads the Flight stream
+        as it is consumed, so its statement stays open until the cursor runs
+        another or is closed. ``description`` is set; ``rowcount`` is -1, as
+        no row has been counted yet, and the ``fetch*()`` methods return
+        nothing.
+        """
+        self._check_open()
+        self._end_stream()
+        sql = self._resolve_sql(operation)
+        native = self._native_connection.cursor()
+        try:
+            if parameters is not None:
+                native.execute(sql, parameters)
+            else:
+                native.execute(sql)
+            reader: pa.RecordBatchReader = native.fetch_record_batch()
+        except BaseException:
+            native.close()
+            raise
+        self._streaming = native
+        self._arrow_table = None
+        self._rows = []
+        self._pos = 0
+        self._rowcount = -1
+        self._build_description(reader.schema)
+        return reader
 
     def execute(self, operation: str, parameters: Sequence[object] | None = None) -> Cursor:
         """Execute a query — OBML YAML or plain SQL.
@@ -152,6 +195,7 @@ class Cursor:
         with a Calcite internal error about ``RexDynamicParam``.
         """
         self._check_open()
+        self._end_stream()
         sql = self._resolve_sql(operation)
         table = self._execute_sql(sql, parameters)
         self._arrow_table = table  # keep Arrow — converted lazily
@@ -179,6 +223,7 @@ class Cursor:
         self._check_open()
         if is_obml(operation):
             raise NotSupportedError("executemany() is not supported for OBML queries.")
+        self._end_stream()
         for params in seq_of_parameters:
             self._execute_sql(operation, params)
         self._description = None
@@ -242,11 +287,13 @@ class Cursor:
         """Close the cursor.
 
         The native statement is already closed — ``_execute_sql`` opens one
-        per execution and releases it as soon as the Arrow table is in hand.
+        per execution and releases it as soon as the Arrow table is in hand —
+        unless a streamed result still reads from it, which is closed here.
         The connection stays open: it is owned by :class:`Connection` and
         shared across cursors.
         """
         if not self._closed:
+            self._end_stream()
             self._closed = True
 
     def __enter__(self) -> Cursor:

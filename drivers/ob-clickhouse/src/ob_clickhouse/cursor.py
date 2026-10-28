@@ -7,7 +7,8 @@ use standard cursor semantics.
 
 Each ``execute()`` uses ``query_arrow()`` to keep data in Arrow columnar
 format.  ``fetch_arrow_table()`` returns the Arrow table directly for
-zero-copy Flight SQL streaming.
+zero-copy Flight SQL streaming.  ``execute_stream()`` streams a result too
+large to buffer.
 """
 
 from __future__ import annotations
@@ -48,6 +49,9 @@ class Cursor:
         self._description: tuple[tuple[str, Any, None, None, None, None, None], ...] | None = None
         self._rowcount: int = -1
         self._arrow_table: Any = None
+        # The HTTP response a streamed result is read from, open until the
+        # reader is done with it: closed by the next statement or close().
+        self._streaming: Any = None
 
     # -- PEP 249 attributes --------------------------------------------------
 
@@ -86,10 +90,10 @@ class Cursor:
             ob_timeout=self._ob_timeout,
         )
 
-    def _build_description_from_arrow(self, table: pa.Table) -> None:
-        """Build PEP 249 description from a PyArrow Table schema."""
+    def _build_description_from_arrow(self, schema: pa.Schema) -> None:
+        """Build PEP 249 description from a PyArrow schema."""
         cols: list[tuple[str, Any, None, None, None, None, None]] = []
-        for field in table.schema:
+        for field in schema:
             if (
                 pa.types.is_integer(field.type)
                 or pa.types.is_floating(field.type)
@@ -116,7 +120,42 @@ class Cursor:
         col_names = list(pydict.keys())
         return [tuple(pydict[c][i] for c in col_names) for i in range(table.num_rows)]
 
+    def _end_stream(self) -> None:
+        """Close the response of a streamed result, if one is open."""
+        if self._streaming is not None:
+            self._streaming.__exit__(None, None, None)
+            self._streaming = None
+
     # -- PEP 249 execute methods ----------------------------------------------
+
+    def execute_stream(self, operation: str, parameters: Any = None) -> pa.RecordBatchReader:
+        """Execute a query and stream its result as a ``pyarrow.RecordBatchReader``.
+
+        Not PEP 249: :meth:`execute` buffers the whole result, which a result
+        too large for memory cannot afford. ``query_arrow_stream()`` reads the
+        HTTP response block by block as the reader is consumed, so the
+        response stays open until the cursor runs another statement or is
+        closed. ``description`` is set; ``rowcount`` is -1, as no row has been
+        counted yet, and the ``fetch*()`` methods return nothing.
+        """
+        self._check_open()
+        self._end_stream()
+        sql = self._resolve_sql(operation)
+        if parameters is not None:
+            stream = self._client.query_arrow_stream(sql, parameters=parameters)
+        else:
+            stream = self._client.query_arrow_stream(sql)
+        stream.__enter__()
+        self._streaming = stream
+        # The stream's generator is the Arrow IPC stream reader itself, which
+        # carries the schema before any block is read.
+        reader: pa.RecordBatchReader = stream.gen
+        self._arrow_table = None
+        self._rows = []
+        self._pos = 0
+        self._rowcount = -1
+        self._build_description_from_arrow(reader.schema)
+        return reader
 
     def execute(self, operation: str, parameters: Any = None) -> Cursor:
         """Execute a query — OBML YAML or plain SQL.
@@ -124,6 +163,7 @@ class Cursor:
         Uses ``query_arrow()`` to keep data in Arrow columnar format.
         """
         self._check_open()
+        self._end_stream()
         sql = self._resolve_sql(operation)
         if parameters is not None:
             table = self._client.query_arrow(sql, parameters=parameters)
@@ -133,7 +173,7 @@ class Cursor:
         self._rows = self._arrow_to_rows(table)
         self._pos = 0
         self._rowcount = table.num_rows
-        self._build_description_from_arrow(table)
+        self._build_description_from_arrow(table.schema)
         return self
 
     def executemany(self, operation: str, seq_of_parameters: Any) -> None:
@@ -144,6 +184,7 @@ class Cursor:
         self._check_open()
         if is_obml(operation):
             raise NotSupportedError("executemany() is not supported for OBML queries.")
+        self._end_stream()
         for params in seq_of_parameters:
             self._client.query(operation, parameters=params)
         self._description = None
@@ -205,9 +246,11 @@ class Cursor:
         """Close the cursor.
 
         Does **not** close the underlying Client — the Client is owned by the
-        Connection and shared across cursors.
+        Connection and shared across cursors. Closes the response a streamed
+        result still reads from.
         """
         if not self._closed:
+            self._end_stream()
             self._closed = True
 
     def __enter__(self) -> Cursor:

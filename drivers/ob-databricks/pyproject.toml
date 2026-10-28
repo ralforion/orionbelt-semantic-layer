@@ -15,6 +15,9 @@ requires-python = ">=3.12"
 dependencies = [
     "ob-driver-core>=2.36.0",
     "databricks-sql-connector>=3.0",
+    # Arrow results (fetchall_arrow, fetchmany_arrow): optional in the
+    # connector since 4.0.
+    "pyarrow>=16.0",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +58,10 @@ ignore = [
 python_version = "3.12"
 strict = true
 files = ["src/ob_databricks"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

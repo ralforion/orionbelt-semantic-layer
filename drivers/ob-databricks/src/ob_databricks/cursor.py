@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from ob_databricks.compiler import compile_obml, is_obml, parse_obml
@@ -126,6 +127,26 @@ class Cursor:
         """
         self._check_open()
         return self._native.fetchall_arrow()
+
+    def fetch_record_batch(self) -> Any:  # noqa: ANN401
+        """Stream the remaining rows as a ``pyarrow.RecordBatchReader``.
+
+        Page by page through the connector's ``fetchmany_arrow``, so a large
+        result is never held whole; every page is held to the first page's
+        types (see :mod:`ob_databricks.arrow_stream`).
+        """
+        self._check_open()
+        from ob_databricks.arrow_stream import BATCH_ROWS, one_schema_reader
+
+        first = self._native.fetchmany_arrow(BATCH_ROWS)
+
+        def pages() -> Iterator[Any]:
+            page = first
+            while page.num_rows:
+                yield page
+                page = self._native.fetchmany_arrow(BATCH_ROWS)
+
+        return one_schema_reader(pages(), first.schema)
 
     def close(self) -> None:
         """Close the cursor."""

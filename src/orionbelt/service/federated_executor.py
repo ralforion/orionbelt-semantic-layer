@@ -21,10 +21,11 @@ module holds what running that plan needs, whatever the surface:
   instance).
 * **Spilling** a large leg to disk, when ``FEDERATION_SPILL_DIR`` names one: a
   leg streamed batch by batch is held in memory up to
-  ``FEDERATION_SPILL_THRESHOLD_MB``, then written to an Arrow IPC file the
-  combine step reads memory-mapped, so the operating system can page it out.
-  Each query writes into a directory of its own, removed when it ends, within
-  ``FEDERATION_SPILL_MAX_MB`` and a process-wide ``FEDERATION_SPILL_BUDGET_MB``.
+  ``FEDERATION_SPILL_THRESHOLD_MB``, then written to a file in the Arrow IPC
+  stream format, which the combine step reads memory-mapped, so the operating
+  system can page it out. Each query writes into a directory of its own,
+  removed when it ends, within ``FEDERATION_SPILL_MAX_MB`` and a process-wide
+  ``FEDERATION_SPILL_BUDGET_MB``.
 
 ``design/PLAN_federation.md`` §7 has the measurements behind these bounds.
 """
@@ -457,8 +458,14 @@ class LegSink:
     """Streams a leg's record batches into one Arrow table, spilling a large one.
 
     Batches are held in memory until they pass ``spill_threshold_bytes``; from
-    then on they, and the rest of the stream, go to an Arrow IPC file in the
-    query's directory, and the table returned reads that file memory-mapped.
+    then on they, and the rest of the stream, go to a file in the query's
+    directory, and the table returned reads that file memory-mapped.
+
+    The file is in the IPC *stream* format, not the file format: a driver may
+    send each batch with a dictionary of its own (ClickHouse does, for
+    ``LowCardinality`` with ``output_format_arrow_low_cardinality_as_dictionary``),
+    and the file format allows one dictionary per column. Read memory-mapped,
+    the stream format still copies nothing.
     A small leg never touches the disk. ``spilled`` says which happened.
     """
 
@@ -486,9 +493,9 @@ class LegSink:
         from pyarrow import ipc
 
         self.spilled = True
-        path = os.path.join(self._spill.directory, f"{self._leg.name}.arrow")
+        path = os.path.join(self._spill.directory, f"{self._leg.name}.arrows")
         try:
-            with pa.OSFile(path, "wb") as sink, ipc.new_file(sink, reader.schema) as writer:
+            with pa.OSFile(path, "wb") as sink, ipc.new_stream(sink, reader.schema) as writer:
                 for batch in held:
                     self._write(writer, batch)
                 held.clear()
@@ -504,7 +511,7 @@ class LegSink:
             ) from None
         # Left open: the table's buffers are the mapping. The file goes with
         # the query's directory; a mapped file outlives its name.
-        return ipc.open_file(pa.memory_map(path, "r")).read_all()
+        return ipc.open_stream(pa.memory_map(path, "r")).read_all()
 
     def _write(self, writer: Any, batch: Any) -> None:
         self._spill.reserve(self._leg, batch.nbytes)

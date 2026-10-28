@@ -16,7 +16,7 @@ from ob_mysql.cursor import Cursor
 from ob_mysql.exceptions import DataError, NotSupportedError, ProgrammingError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     import pyarrow as pa
 
@@ -98,6 +98,20 @@ class _Named:
 
     def __getitem__(self, key: str) -> str:
         return self._literal(self._values[key])
+
+
+def _unreadable(error: Exception) -> DataError:
+    """The ADBC error for a value the driver cannot read, saying how to read it.
+
+    Raised for an error naming :data:`_UNREADABLE_VALUE`.
+    """
+    # Reading it through another client would read it outside this session:
+    # without its uncommitted rows, temporary tables or variables.
+    return DataError(
+        f"The ADBC MySQL driver cannot read this result ({error}). A TIME "
+        "outside 00:00:00-23:59:59 is the known case: select it as "
+        "TIME_TO_SEC(...) or as text, or connect with backend='pymysql'."
+    )
 
 
 @dataclass
@@ -241,17 +255,47 @@ class Connection:
             except adbc_driver_manager.Error as error:
                 if _UNREADABLE_VALUE not in str(error):
                     raise
-                # Reading it through another client would read it outside
-                # this session: without its uncommitted rows, temporary tables
-                # or variables.
-                raise DataError(
-                    f"The ADBC MySQL driver cannot read this result ({error}). A TIME "
-                    "outside 00:00:00-23:59:59 is the known case: select it as "
-                    "TIME_TO_SEC(...) or as text, or connect with backend='pymysql'."
-                ) from error
+                raise _unreadable(error) from error
             return _Result.from_table(normalize_adbc(table))
         finally:
             cursor.close()
+
+    def _stream_adbc(self, sql: str) -> tuple[Any, pa.RecordBatchReader]:
+        """Run *sql* through ADBC and stream its result, normalised batch by batch.
+
+        Returns the native cursor with the reader, which reads from it: the
+        caller closes the cursor once done with the reader. A statement with
+        no result set answers an empty reader, its cursor already closed.
+        """
+        import adbc_driver_manager
+        import pyarrow as pa
+
+        from ob_mysql.arrow_stream import one_schema_reader
+
+        self._check_open()
+        cursor = self._native.cursor()
+        try:
+            cursor.adbc_statement.set_options(**_ZERO_DATETIME_OPTION)
+            cursor.execute(sql)
+            if not cursor.description:
+                cursor.close()
+                return None, pa.RecordBatchReader.from_batches(pa.schema([]), [])
+            native = cursor.fetch_record_batch()
+
+            def pages() -> Iterator[pa.Table]:
+                try:
+                    for batch in native:
+                        yield normalize_adbc(pa.Table.from_batches([batch]))
+                except adbc_driver_manager.Error as error:
+                    if _UNREADABLE_VALUE not in str(error):
+                        raise
+                    raise _unreadable(error) from error
+
+            empty = normalize_adbc(native.schema.empty_table())
+            return cursor, one_schema_reader(pages(), empty.schema)
+        except BaseException:
+            cursor.close()
+            raise
 
     def _execute_pymysql(self, sql: str, parameters: Any) -> _Result:
         # PyMySQL writes a value as the session's sql_mode reads it (it follows

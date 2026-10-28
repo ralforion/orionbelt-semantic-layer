@@ -129,6 +129,27 @@ class Cursor:
 
         return stable_arrow_table(self._native.fetch_arrow_all(), self._native.description)
 
+    def fetch_record_batch(self) -> Any:
+        """Stream the remaining rows as a ``pyarrow.RecordBatchReader``.
+
+        Page by page from the connector's Arrow result, so a large result is
+        never held whole. Each page's integers are widened as in
+        :meth:`fetch_arrow_table`, then held to the first page's types (see
+        :mod:`ob_snowflake.arrow_stream`).
+        """
+        self._check_open()
+        import pyarrow as pa
+
+        from ob_snowflake.arrow_stream import one_schema_reader
+        from ob_snowflake.arrow_types import stable_arrow_table
+
+        description = self._native.description
+        pages = (
+            stable_arrow_table(page, description) for page in self._native.fetch_arrow_batches()
+        )
+        empty = stable_arrow_table(None, description)
+        return one_schema_reader(pages, empty.schema if empty is not None else pa.schema([]))
+
     def close(self) -> None:
         """Close the cursor."""
         if not self._closed:

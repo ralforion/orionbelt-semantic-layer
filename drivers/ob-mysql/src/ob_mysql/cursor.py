@@ -2,7 +2,7 @@
 
 A statement's result is read whole when it runs, through the connection's
 client (see :class:`ob_mysql.connection.Connection`); the fetch methods page
-through it.
+through it. ``execute_stream()`` streams a result too large to buffer.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from ob_mysql.compiler import compile_obml, is_obml, parse_obml
 from ob_mysql.exceptions import NotSupportedError, ProgrammingError
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from ob_mysql.connection import Connection, _Result
 
 
@@ -38,6 +40,9 @@ class Cursor:
         self._ob_timeout = ob_timeout
         self._result: _Result | None = None
         self._position = 0
+        # The native ADBC cursor a streamed result is read from, open until
+        # the reader is done with it: closed by the next statement or close().
+        self._streaming: Any = None
 
     @property
     def description(
@@ -64,9 +69,56 @@ class Cursor:
         if self._closed:
             raise ProgrammingError("Cursor is closed.")
 
+    def _end_stream(self) -> None:
+        """Close the native cursor of a streamed result, if one is open."""
+        if self._streaming is not None:
+            self._streaming.close()
+            self._streaming = None
+
+    def execute_stream(self, operation: str, parameters: Any = None) -> pa.RecordBatchReader:
+        """Execute a query and stream its result as a ``pyarrow.RecordBatchReader``.
+
+        Not PEP 249: :meth:`execute` reads the whole result, which a result too
+        large for memory cannot afford. Over ADBC the reader reads it batch by
+        batch as it is consumed, each batch in the schema :meth:`execute`
+        gives, so its native cursor stays open until this cursor runs another
+        statement or is closed. With parameters, or over PyMySQL, which reads
+        a result whole, the result is read whole and handed over as a reader.
+        ``description`` is set; ``rowcount`` is -1 when streamed, and the
+        ``fetch*()`` methods return nothing.
+        """
+        self._check_open()
+        self._end_stream()
+        import pyarrow as pa
+
+        from ob_mysql.arrow_types import type_object_for
+        from ob_mysql.connection import _Result
+
+        sql = self._resolve_sql(operation)
+        if parameters is not None or self._connection.backend != "adbc":
+            result = self._connection._execute(sql, parameters)
+            table = result.arrow_from(0) if result.names else pa.table({})
+            self._result = _Result(
+                names=result.names,
+                type_objects=result.type_objects,
+                rowcount=result.rowcount,
+                lastrowid=result.lastrowid,
+                rows=[],
+            )
+            return pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
+        self._streaming, reader = self._connection._stream_adbc(sql)
+        self._result = _Result(
+            names=reader.schema.names,
+            type_objects=[type_object_for(f.type) for f in reader.schema],
+            rows=[],
+        )
+        self._position = 0
+        return reader
+
     def execute(self, operation: str, parameters: Any = None) -> Cursor:
         """Execute a query: OBML YAML or plain SQL."""
         self._check_open()
+        self._end_stream()
         sql = self._resolve_sql(operation)
         self._result = self._connection._execute(sql, parameters)
         self._position = 0
@@ -138,7 +190,8 @@ class Cursor:
         return table
 
     def close(self) -> None:
-        """Close the cursor."""
+        """Close the cursor, and the native cursor a streamed result reads from."""
+        self._end_stream()
         self._closed = True
         self._result = None
 
