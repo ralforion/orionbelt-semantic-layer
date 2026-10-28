@@ -235,16 +235,24 @@ def plan_federated(
         for i, column in enumerate(edge.from_columns)
     }
     measures = planner.atomic_measures()
-    leg_measures, averages = _leg_measures(model, measures)
-    fact_model = planner.island_model(islands[fact], fact_keys, leg_measures)
+    leg_measures, averages, distinct = _leg_measures(model, measures)
+    # The values a count of distinct values counts: the fact leg groups by them
+    # too, so the combine step counts them across every group they reach.
+    fact_values = {column: (obj, col) for column, obj, col in distinct.values()}
+    fact_model = planner.island_model(islands[fact], {**fact_keys, **fact_values}, leg_measures)
     fact_query = QueryObject(
-        select=QuerySelect(dimensions=[*fact_dims, *fact_keys], measures=sorted(leg_measures)),
+        select=QuerySelect(
+            dimensions=[*fact_dims, *fact_keys, *fact_values], measures=sorted(leg_measures)
+        ),
         where=leg_filters,
         limit=leg_limit,
     )
     fact_columns = [
         *[_dimension_column(model, DimensionRef.parse(d).name) for d in fact_dims],
-        *[_key_column(model, name, obj, col) for name, (obj, col) in fact_keys.items()],
+        *[
+            _key_column(model, name, obj, col)
+            for name, (obj, col) in {**fact_keys, **fact_values}.items()
+        ],
         *[
             DataObjectColumn(name=n, code=n, abstract_type=m.result_type)
             for n, m in sorted(leg_measures.items())
@@ -350,7 +358,11 @@ def plan_federated(
         data_objects=combine_objects,
         dimensions=combine_dimensions,
         measures={
-            m: _combine_measure(model, m, averages[m][0] if m in averages else None)
+            m: _combine_measure(
+                model,
+                m,
+                averages[m][0] if m in averages else distinct[m][0] if m in distinct else None,
+            )
             for m in measures
         },
         metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
@@ -630,22 +642,45 @@ class _Planner:
         effective = self.model.effective_measures
         for name in sorted(self.atomic_measures()):
             measure = effective[name]
-            combinable = measure.aggregation in _REAGGREGATE or (
-                measure.aggregation == AggregationType.AVG
+            counts_distinct = _counts_distinct(measure)
+            combinable = counts_distinct or (
+                not measure.distinct
+                and (
+                    measure.aggregation in _REAGGREGATE
+                    or measure.aggregation == AggregationType.AVG
+                )
             )
-            if not combinable or measure.distinct:
-                aggregation = "count_distinct" if measure.distinct else measure.aggregation
+            if not combinable:
+                aggregation = (
+                    f"{measure.aggregation} distinct" if measure.distinct else measure.aggregation
+                )
                 raise self.refuse(
                     "UNSUPPORTED_AGGREGATION",
                     f"Measure '{name}' aggregates with {aggregation}, which cannot be "
                     "combined from per-data-source partial results",
-                    hint="sum, count, avg, min, max and any_value combine across data sources.",
+                    hint=(
+                        "sum, count, count_distinct, avg, min, max and any_value combine "
+                        "across data sources."
+                    ),
                 )
-            if measure.aggregation == AggregationType.AVG and measure.total:
+            if measure.total and (counts_distinct or measure.aggregation == AggregationType.AVG):
                 raise self.refuse(
                     "UNSUPPORTED_AGGREGATION",
-                    f"Measure '{name}' averages with total: true, which a federated query "
-                    "does not combine yet",
+                    f"Measure '{name}' aggregates with {measure.aggregation} and total: true, "
+                    "which a federated query does not combine yet",
+                )
+            if counts_distinct and (
+                measure.expression
+                or measure.filters
+                or len(measure.columns) != 1
+                or not measure.columns[0].column
+            ):
+                raise self.refuse(
+                    "UNSUPPORTED_AGGREGATION",
+                    f"Measure '{name}' counts the distinct values of an expression, of "
+                    "several columns or under filters, which a federated query does not "
+                    "combine yet",
+                    hint="A count of the distinct values of one column combines.",
                 )
             if measure.filter_context is not None or measure.grain is not None:
                 raise self.refuse(
@@ -660,6 +695,49 @@ class _Planner:
                     f"Measure '{name}' reads {', '.join(sorted(outside))}, of another "
                     "data source than its own",
                 )
+
+        self.check_distinct_counts()
+
+    def check_distinct_counts(self) -> None:
+        """A count of distinct values only beside measures of its own data object.
+
+        The fact leg groups by the counted column as well
+        (:func:`_leg_measures`). Grouping an object's rows by one of its own
+        columns leaves that object's sums, counts, minima and averages exact,
+        since each combines from partial results. A measure of another object
+        does not survive it: a customer-level sum is repeated once per order
+        when the leg groups by order, and the rows the planner keeps for a
+        count over customers - those without orders - are not the rows it
+        keeps for a sum over orders. Combining those needs fact legs
+        aggregated apart, which a federated query does not build yet. The
+        objects compared are all a measure reads, a computed column's
+        dependencies included: a Customers column computed from Orders makes
+        the counted values per order.
+        """
+        effective = self.model.effective_measures
+        atomic = sorted(self.atomic_measures())
+        distinct = [name for name in atomic if _counts_distinct(effective[name])]
+        if not distinct:
+            return
+        counted = {effective[name].columns[0].view for name in distinct}
+        for name in atomic:
+            measure = effective[name]
+            # Every object a measure reads, the counted ones included: a
+            # computed column, its own or a filter's, reads the objects its
+            # expression names, so "a Customers column" can be per order.
+            objects = measure.source_objects | self.model.measure_join_objects(name)
+            if objects == counted and len(counted) == 1 and not measure.anchor:
+                continue
+            reads = ", ".join(sorted(objects)) or "no data object"
+            raise self.refuse(
+                "UNSUPPORTED_AGGREGATION",
+                f"Measure '{distinct[0]}' counts distinct values of "
+                f"{', '.join(sorted(o or '' for o in counted))}, and measure '{name}' reads "
+                f"{reads}: across data sources, a count of distinct values combines only "
+                "with measures of its own data object",
+                hint="Query the count of distinct values apart from measures of other data "
+                "objects.",
+            )
 
     # -- filters ------------------------------------------------------------
 
@@ -853,20 +931,34 @@ def _partial_measure(measure: Measure) -> Measure:
 
 def _leg_measures(
     model: SemanticModel, names: set[str]
-) -> tuple[dict[str, Measure], dict[str, tuple[str, str, int | None]]]:
-    """The fact leg's partial measures for *names*, and how each ``avg`` splits.
+) -> tuple[
+    dict[str, Measure],
+    dict[str, tuple[str, str, int | None]],
+    dict[str, tuple[str, str, str]],
+]:
+    """The fact leg's partial measures for *names*, and how the others split.
 
-    A measure is computed as itself (:func:`_partial_measure`), except an
-    ``avg``: an average of per-group averages is not the average, so the leg
-    returns its argument's ``SUM`` and ``COUNT`` instead, under the same
-    filters, and the combine step divides their totals
-    (:func:`~orionbelt.compiler.type_resolver.combined_averages`). Both skip
-    NULLs, so they cover exactly the rows ``AVG`` would.
+    A measure is computed as itself (:func:`_partial_measure`), except:
 
-    Returns the leg's measures by name, and per ``avg`` the leg columns of its
-    sums and its counts, with the scale the sums are read at: 0 for an
-    integer measure, :data:`_AVERAGE_SCALE` for a decimal one, ``None`` for a
-    ``float`` one, whose sums are doubles and divide in floating point.
+    * an ``avg``: an average of per-group averages is not the average, so the
+      leg returns its argument's ``SUM`` and ``COUNT`` instead, under the same
+      filters, and the combine step divides their totals
+      (:func:`~orionbelt.compiler.type_resolver.combined_averages`). Both skip
+      NULLs, so they cover exactly the rows ``AVG`` would.
+    * a count of distinct values: counts of distinct values do not add up, so
+      the leg groups by the column it counts as well, and the combine step
+      counts that column's distinct values across all the groups they reach.
+      The measure stays in the leg only to keep the rows it keeps; the other
+      measures, of the same data object (:meth:`_Planner.check_distinct_counts`),
+      are still exact at that finer grain, since each combines from partial
+      results.
+
+    Returns the leg's measures by name; per ``avg`` the leg columns of its sums
+    and its counts, with the scale the sums are read at (0 for an integer
+    measure, :data:`_AVERAGE_SCALE` for a decimal one, ``None`` for a
+    ``float`` one, whose sums are doubles and divide in floating point); and
+    per count of distinct values the leg column of its values, with the data
+    object and column they are read from.
     """
     effective = model.effective_measures
     # A generated name must not be one the model declares: a declared measure
@@ -875,8 +967,18 @@ def _leg_measures(
     taken = {name.casefold() for name in (*effective, *model.dimensions)}
     measures: dict[str, Measure] = {}
     averages: dict[str, tuple[str, str, int | None]] = {}
+    distinct: dict[str, tuple[str, str, str]] = {}
     for name in sorted(names):
         measure = _partial_measure(effective[name])
+        if _counts_distinct(measure):
+            ref = measure.columns[0]
+            column = _unused(f"__distinct{len(distinct)}", taken)
+            distinct[name] = (column, ref.view or "", ref.column or "")
+            # Kept, though the combine step counts the column instead: the
+            # measure is what makes the planner keep the rows a count over
+            # its object keeps, those without a match on the other side.
+            measures[name] = measure
+            continue
         if measure.aggregation != AggregationType.AVG:
             measures[name] = measure
             continue
@@ -898,7 +1000,14 @@ def _leg_measures(
         elif measure.result_type == DataType.FLOAT:
             scale = None
         averages[name] = (sums, counts, scale)
-    return measures, averages
+    return measures, averages, distinct
+
+
+def _counts_distinct(measure: Measure) -> bool:
+    """Whether *measure* counts distinct values: ``count_distinct``, or a distinct ``count``."""
+    return measure.aggregation == AggregationType.COUNT_DISTINCT or (
+        measure.aggregation == AggregationType.COUNT and measure.distinct
+    )
 
 
 def _unused(name: str, taken: set[str]) -> str:
@@ -909,32 +1018,39 @@ def _unused(name: str, taken: set[str]) -> str:
     return name
 
 
-def _combine_measure(model: SemanticModel, name: str, sums: str | None = None) -> Measure:
+def _combine_measure(model: SemanticModel, name: str, column: str | None = None) -> Measure:
     """The measure re-aggregated from the fact leg's partial results.
 
     It carries the measure's type, default and ``total``. A count is combined
     as a ``SUM`` of counts, which over no rows is NULL where a count is 0: it
     falls back to 0, whatever default it declares, since a SQL ``COUNT`` never
-    applies one. An ``avg`` is the ``SUM`` of its leg column *sums*, which the
-    combine compile divides by its counts (:func:`_leg_measures`).
+    applies one. An ``avg`` is the ``SUM`` of its leg *column* of sums, which
+    the combine compile divides by its counts, and a count of distinct values
+    counts its leg *column* of values (:func:`_leg_measures`).
     """
     measure = model.effective_measures[name]
+    counts_distinct = _counts_distinct(measure)
     default = measure.default_value
-    if measure.aggregation == AggregationType.COUNT:
+    if measure.aggregation in (AggregationType.COUNT, AggregationType.COUNT_DISTINCT):
         default = 0
+    if counts_distinct:
+        aggregation = AggregationType.COUNT_DISTINCT
+    elif column is not None:
+        aggregation = AggregationType.SUM
+    else:
+        aggregation = _REAGGREGATE[measure.aggregation]
+    averages = column is not None and not counts_distinct
     # The type the one database's query casts to, widened for wide sources. An
     # average is typed for the dialect that divides it: an integer one takes
     # the widened type every engine's exact integer AVG casts to (#316), where
     # typed without a dialect it would take the narrow default, too small for
     # an average of 64-bit integers.
-    dialect = DialectRegistry.get(COMBINE_DIALECT) if sums is not None else None
+    dialect = DialectRegistry.get(COMBINE_DIALECT) if averages else None
     resolved = resolve_measure_cast_type(measure, model.settings, dialect, model)
     return Measure(
         name=name,
-        columns=[DataColumnRef(view="leg_0", column=sums or name)],
-        aggregation=(
-            AggregationType.SUM if sums is not None else _REAGGREGATE[measure.aggregation]
-        ),
+        columns=[DataColumnRef(view="leg_0", column=column or name)],
+        aggregation=aggregation,
         result_type=measure.result_type,
         data_type=measure.data_type
         or (resolved.render() if isinstance(resolved, DecimalType) else None),

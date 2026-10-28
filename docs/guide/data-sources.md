@@ -173,11 +173,25 @@ How a query is split:
   its sums as doubles, as every engine averages doubles. The decimal sums are
   read at 9 places, the most an engine returns one at (BigQuery `NUMERIC`); a
   sum with more places is refused (`FEDERATION_LEG_TYPE`), never rounded.
+- A `count_distinct` (or a `count` with `distinct: true`) is not a sum of
+  per-group counts either: the fact leg also groups by the column it counts,
+  and the combine query counts that column's distinct values across all the
+  groups they reach. The leg then returns a row per value as well, which
+  `FEDERATION_MAX_LEG_ROWS` bounds. The query's other measures must read the
+  same data object as the counted column, and nothing else, a computed
+  column's dependencies included: that object's sums, counts and
+  averages still combine exactly at the finer grain, but a measure of another
+  object would not (a customer-level sum would repeat once per order, and the
+  customers without orders that a count over customers keeps are not the rows
+  a sum over orders keeps).
 
 What does not split exactly is refused by name rather than answered with a
 different number: measures from more than one source (`FEDERATION_MULTI_FACT`),
-`count_distinct`, an `avg` with `total: true` and other aggregations that cannot
-be combined from partial results (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
+a `count_distinct` of an expression, of several columns, under measure
+filters or beside measures of another data object, an `avg` or
+`count_distinct` with `total: true`, other `distinct`
+aggregations, and aggregations that cannot be combined from partial results
+(`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,
 period-over-period, window and reaggregate metrics (`FEDERATION_UNSUPPORTED_METRIC`),
 joins between sources other than many-to-one from the measures' side
@@ -212,7 +226,11 @@ The legs read their sources at slightly different moments: there is no
 snapshot across databases. Naive timestamps are combined as each source
 returns them, so sources whose sessions run in different time zones can
 disagree; and strings compare by DuckDB's binary collation in the combine
-step, where MySQL's default compares case-insensitively.
+step, where MySQL's default compares case-insensitively. That holds for a
+`count_distinct` too, measured: over a MySQL column, `'a'` and `'A'` (and `'e'`
+and `'é'`) are one value to MySQL and two to the combine step when they reach
+it from different groups; and ClickHouse counts `0.0` and `-0.0` as two values
+where DuckDB counts one. The other six engines count as DuckDB does.
 
 ### One model on several databases
 
