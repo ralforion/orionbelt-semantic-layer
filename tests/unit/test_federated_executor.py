@@ -730,13 +730,46 @@ class TestSpill:
 
         assert out.equals(table)
         assert sink.spilled
-        assert os.listdir(spill.directory) == ["leg_0.arrow"]
+        assert os.listdir(spill.directory) == ["leg_0.arrows"]
         # Readable by this process alone: spilled legs hold the warehouse's rows.
         assert os.stat(spill.directory).st_mode & 0o777 == 0o700
         spill.close()
         assert not os.path.exists(spill.directory)
         # The table outlives the file's name: its pages are mapped.
         assert out.equals(table)
+
+    def test_a_dictionary_replaced_from_batch_to_batch_spills(self, tmp_path: Any) -> None:
+        """ClickHouse sends ``LowCardinality`` with a dictionary per batch.
+
+        The IPC file format refuses that ("Dictionary replacement detected"),
+        so a leg spilled in it failed where the same leg in memory did not.
+        """
+        spill = federation.QuerySpill(spilling(tmp_path, spill_threshold_bytes=1024))
+        sink = spill.sink(leg(("Region", "string")))
+        kind = pa.dictionary(pa.int32(), pa.string())
+        pages = [
+            pa.record_batch(
+                [
+                    pa.DictionaryArray.from_arrays(
+                        pa.array([i % 2 for i in range(500)], pa.int32()),
+                        pa.array([f"r{page}a", f"r{page}b"]),
+                    )
+                ],
+                schema=pa.schema([("Region", kind)]),
+            )
+            for page in range(3)
+        ]
+        reader = pa.RecordBatchReader.from_batches(pages[0].schema, pages)
+
+        out = sink(reader)
+
+        assert sink.spilled
+        assert out.schema.field("Region").type == kind
+        assert (
+            out.column("Region").to_pylist()
+            == pa.Table.from_batches(pages).column("Region").to_pylist()
+        )
+        spill.close()
 
     def test_a_query_spilling_past_its_maximum_is_refused(self, tmp_path: Any) -> None:
         spill = federation.QuerySpill(
