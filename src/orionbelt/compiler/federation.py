@@ -35,7 +35,12 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
-from orionbelt.compiler.type_resolver import partial_sums, resolve_measure_cast_type
+from orionbelt.compiler.type_resolver import (
+    combined_averages,
+    partial_sums,
+    resolve_measure_cast_type,
+)
+from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
     DimensionRef,
@@ -54,6 +59,7 @@ from orionbelt.models.semantic import (
     DataObject,
     DataObjectColumn,
     DataObjectJoin,
+    DataType,
     Dimension,
     Measure,
     MetricType,
@@ -66,8 +72,8 @@ from orionbelt.models.types import DecimalType
 COMBINE_DIALECT = "duckdb"
 
 # Aggregations whose result over the union of groups is computed from the
-# per-group results, and how. ``avg`` is not here yet: its route is SUM / COUNT,
-# which needs an exact decimal division in DuckDB, still to be probed.
+# per-group results, and how. ``avg`` combines from two of them, a sum and a
+# count (:func:`_leg_measures`), so it is not a single re-aggregation here.
 _REAGGREGATE: dict[AggregationType, AggregationType] = {
     AggregationType.SUM: AggregationType.SUM,
     AggregationType.COUNT: AggregationType.SUM,
@@ -75,6 +81,12 @@ _REAGGREGATE: dict[AggregationType, AggregationType] = {
     AggregationType.MAX: AggregationType.MAX,
     AggregationType.ANY_VALUE: AggregationType.ANY_VALUE,
 }
+
+# The decimal scale a decimal ``avg``'s partial sums are normalised to before
+# the combine step divides them: the widest any engine returns one at
+# (BigQuery's NUMERIC has 9 places), so a sum from every engine probed
+# converts exactly, and a sum with more places is refused rather than rounded.
+_AVERAGE_SCALE = 9
 
 
 @dataclass(frozen=True)
@@ -92,6 +104,9 @@ class FederatedLeg:
             reads it as.
         physical_tables: The ``DATABASE.SCHEMA.CODE`` tables it reads, which
             decide how long its result may be cached.
+        exact_sums: The columns of partial sums an ``avg`` is divided from,
+            each with the decimal scale it is read at, so the combine step
+            divides exactly.
     """
 
     name: str
@@ -101,6 +116,7 @@ class FederatedLeg:
     data_objects: tuple[str, ...]
     columns: tuple[tuple[str, str], ...] = ()
     physical_tables: tuple[str, ...] = ()
+    exact_sums: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -219,16 +235,20 @@ def plan_federated(
         for i, column in enumerate(edge.from_columns)
     }
     measures = planner.atomic_measures()
-    fact_model = planner.island_model(islands[fact], fact_keys, measures)
+    leg_measures, averages = _leg_measures(model, measures)
+    fact_model = planner.island_model(islands[fact], fact_keys, leg_measures)
     fact_query = QueryObject(
-        select=QuerySelect(dimensions=[*fact_dims, *fact_keys], measures=sorted(measures)),
+        select=QuerySelect(dimensions=[*fact_dims, *fact_keys], measures=sorted(leg_measures)),
         where=leg_filters,
         limit=leg_limit,
     )
     fact_columns = [
         *[_dimension_column(model, DimensionRef.parse(d).name) for d in fact_dims],
         *[_key_column(model, name, obj, col) for name, (obj, col) in fact_keys.items()],
-        *[_measure_column(model, m) for m in sorted(measures)],
+        *[
+            DataObjectColumn(name=n, code=n, abstract_type=m.result_type)
+            for n, m in sorted(leg_measures.items())
+        ],
     ]
     with partial_sums():
         legs.append(
@@ -240,6 +260,9 @@ def plan_federated(
                 fact_columns,
                 compile_leg,
                 source_dialect,
+                exact_sums=tuple(
+                    (sums, scale) for sums, _, scale in averages.values() if scale is not None
+                ),
             )
         )
     fact_joins: list[DataObjectJoin] = []
@@ -268,7 +291,7 @@ def plan_federated(
         }
         static_columns = {name: (obj, col) for name, (obj, col, _) in static.items()}
         dim_model = planner.island_model(
-            island, {**keys, **static_columns}, set(), static_filters=False
+            island, {**keys, **static_columns}, {}, static_filters=False
         )
         dim_query = QueryObject(
             select=QuerySelect(dimensions=[*dims, *keys, *static_columns]), limit=leg_limit
@@ -326,7 +349,10 @@ def plan_federated(
         ),
         data_objects=combine_objects,
         dimensions=combine_dimensions,
-        measures={m: _combine_measure(model, m) for m in measures},
+        measures={
+            m: _combine_measure(model, m, averages[m][0] if m in averages else None)
+            for m in measures
+        },
         metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
         filters=combine_filters_static,
         expose_counts=False,
@@ -347,7 +373,11 @@ def plan_federated(
             "use_path_names": [],
         }
     )
-    combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
+    with combined_averages(
+        DialectRegistry.get(COMBINE_DIALECT),
+        {m: (counts, scale) for m, (_, counts, scale) in averages.items()},
+    ):
+        combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
     return FederatedPlan(legs=tuple(legs), combine_sql=combine_sql)
 
 
@@ -600,13 +630,22 @@ class _Planner:
         effective = self.model.effective_measures
         for name in sorted(self.atomic_measures()):
             measure = effective[name]
-            if measure.aggregation not in _REAGGREGATE or measure.distinct:
+            combinable = measure.aggregation in _REAGGREGATE or (
+                measure.aggregation == AggregationType.AVG
+            )
+            if not combinable or measure.distinct:
                 aggregation = "count_distinct" if measure.distinct else measure.aggregation
                 raise self.refuse(
                     "UNSUPPORTED_AGGREGATION",
                     f"Measure '{name}' aggregates with {aggregation}, which cannot be "
                     "combined from per-data-source partial results",
-                    hint="sum, count, min, max and any_value combine across data sources.",
+                    hint="sum, count, avg, min, max and any_value combine across data sources.",
+                )
+            if measure.aggregation == AggregationType.AVG and measure.total:
+                raise self.refuse(
+                    "UNSUPPORTED_AGGREGATION",
+                    f"Measure '{name}' averages with total: true, which a federated query "
+                    "does not combine yet",
                 )
             if measure.filter_context is not None or measure.grain is not None:
                 raise self.refuse(
@@ -707,16 +746,16 @@ class _Planner:
         self,
         island: set[str],
         keys: dict[str, tuple[str, str]],
-        measures: set[str],
+        measures: dict[str, Measure],
         *,
         static_filters: bool = True,
     ) -> SemanticModel:
         """The model a leg compiles against: the island alone, keys as dimensions.
 
-        Measures are partial results: no ``total``, no ``defaultValue`` (an
-        empty group's default would become an input to the combined
-        aggregate), and a sum at a width that does not round before the
-        partials are added (:func:`_partial_measure`, ``partial_sums``).
+        *measures* are partial results (:func:`_leg_measures`): no ``total``,
+        no ``defaultValue`` (an empty group's default would become an input to
+        the combined aggregate), and a sum at a width that does not round
+        before the partials are added (``partial_sums``).
         """
         model = self.model
         objects = {
@@ -730,12 +769,11 @@ class _Planner:
             dimensions[key] = Dimension(
                 name=key, view=obj, column=column, result_type=col.abstract_type
             )
-        effective = model.effective_measures
         return model.model_copy(
             update={
                 "data_objects": objects,
                 "dimensions": dimensions,
-                "measures": {m: _partial_measure(effective[m]) for m in measures},
+                "measures": measures,
                 "metrics": {},
                 "filters": (
                     [f for f in model.filters if f.data_object in island] if static_filters else []
@@ -754,6 +792,8 @@ class _Planner:
         columns: list[DataObjectColumn],
         compile_leg: Callable[[QueryObject, SemanticModel, str], str],
         source_dialect: Callable[[str | None], str | None],
+        *,
+        exact_sums: tuple[tuple[str, int], ...] = (),
     ) -> FederatedLeg:
         source = source_name(self.model, next(iter(sorted(island))))
         dialect = source_dialect(source) or self.dialect_name
@@ -765,6 +805,7 @@ class _Planner:
             data_objects=tuple(sorted(island)),
             columns=tuple((c.name, c.abstract_type.value) for c in columns),
             physical_tables=_physical_tables(self.model, island),
+            exact_sums=exact_sums,
         )
 
 
@@ -786,11 +827,6 @@ def _dimension_column(model: SemanticModel, name: str) -> DataObjectColumn:
 def _key_column(model: SemanticModel, name: str, obj: str, column: str) -> DataObjectColumn:
     col = model.data_objects[obj].columns[column]
     return DataObjectColumn(name=name, code=name, abstract_type=col.abstract_type)
-
-
-def _measure_column(model: SemanticModel, name: str) -> DataObjectColumn:
-    measure = model.effective_measures[name]
-    return DataObjectColumn(name=name, code=name, abstract_type=measure.result_type)
 
 
 def _combine_dimension(model: SemanticModel, name: str, leg: str) -> Dimension:
@@ -815,24 +851,90 @@ def _partial_measure(measure: Measure) -> Measure:
     return measure.model_copy(update={"total": False, "default_value": None, "data_type": None})
 
 
-def _combine_measure(model: SemanticModel, name: str) -> Measure:
+def _leg_measures(
+    model: SemanticModel, names: set[str]
+) -> tuple[dict[str, Measure], dict[str, tuple[str, str, int | None]]]:
+    """The fact leg's partial measures for *names*, and how each ``avg`` splits.
+
+    A measure is computed as itself (:func:`_partial_measure`), except an
+    ``avg``: an average of per-group averages is not the average, so the leg
+    returns its argument's ``SUM`` and ``COUNT`` instead, under the same
+    filters, and the combine step divides their totals
+    (:func:`~orionbelt.compiler.type_resolver.combined_averages`). Both skip
+    NULLs, so they cover exactly the rows ``AVG`` would.
+
+    Returns the leg's measures by name, and per ``avg`` the leg columns of its
+    sums and its counts, with the scale the sums are read at: 0 for an
+    integer measure, :data:`_AVERAGE_SCALE` for a decimal one, ``None`` for a
+    ``float`` one, whose sums are doubles and divide in floating point.
+    """
+    effective = model.effective_measures
+    # A generated name must not be one the model declares: a declared measure
+    # named like a partial would replace it in the leg. Compared without case,
+    # as DuckDB compares identifiers, quoted or not.
+    taken = {name.casefold() for name in (*effective, *model.dimensions)}
+    measures: dict[str, Measure] = {}
+    averages: dict[str, tuple[str, str, int | None]] = {}
+    for name in sorted(names):
+        measure = _partial_measure(effective[name])
+        if measure.aggregation != AggregationType.AVG:
+            measures[name] = measure
+            continue
+        sums = _unused(f"__avg{len(averages)}_sum", taken)
+        counts = _unused(f"__avg{len(averages)}_count", taken)
+        measures[sums] = measure.model_copy(
+            update={"name": sums, "aggregation": AggregationType.SUM}
+        )
+        measures[counts] = measure.model_copy(
+            update={
+                "name": counts,
+                "aggregation": AggregationType.COUNT,
+                "result_type": DataType.INT,
+            }
+        )
+        scale: int | None = _AVERAGE_SCALE
+        if measure.result_type == DataType.INT:
+            scale = 0
+        elif measure.result_type == DataType.FLOAT:
+            scale = None
+        averages[name] = (sums, counts, scale)
+    return measures, averages
+
+
+def _unused(name: str, taken: set[str]) -> str:
+    """*name*, prefixed with underscores until it is none of *taken*, which are casefolded."""
+    while name.casefold() in taken:
+        name = f"_{name}"
+    taken.add(name.casefold())
+    return name
+
+
+def _combine_measure(model: SemanticModel, name: str, sums: str | None = None) -> Measure:
     """The measure re-aggregated from the fact leg's partial results.
 
     It carries the measure's type, default and ``total``. A count is combined
     as a ``SUM`` of counts, which over no rows is NULL where a count is 0: it
     falls back to 0, whatever default it declares, since a SQL ``COUNT`` never
-    applies one.
+    applies one. An ``avg`` is the ``SUM`` of its leg column *sums*, which the
+    combine compile divides by its counts (:func:`_leg_measures`).
     """
     measure = model.effective_measures[name]
     default = measure.default_value
     if measure.aggregation == AggregationType.COUNT:
         default = 0
-    # The type the one database's query casts to, widened for wide sources.
-    resolved = resolve_measure_cast_type(measure, model.settings, None, model)
+    # The type the one database's query casts to, widened for wide sources. An
+    # average is typed for the dialect that divides it: an integer one takes
+    # the widened type every engine's exact integer AVG casts to (#316), where
+    # typed without a dialect it would take the narrow default, too small for
+    # an average of 64-bit integers.
+    dialect = DialectRegistry.get(COMBINE_DIALECT) if sums is not None else None
+    resolved = resolve_measure_cast_type(measure, model.settings, dialect, model)
     return Measure(
         name=name,
-        columns=[DataColumnRef(view="leg_0", column=name)],
-        aggregation=_REAGGREGATE[measure.aggregation],
+        columns=[DataColumnRef(view="leg_0", column=sums or name)],
+        aggregation=(
+            AggregationType.SUM if sums is not None else _REAGGREGATE[measure.aggregation]
+        ),
         result_type=measure.result_type,
         data_type=measure.data_type
         or (resolved.render() if isinstance(resolved, DecimalType) else None),

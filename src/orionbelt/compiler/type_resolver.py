@@ -920,6 +920,61 @@ def partial_sums() -> Iterator[None]:
         _partial_sums.reset(token)
 
 
+_combined_averages: ContextVar[tuple[Dialect, dict[str, tuple[str, int | None]]] | None] = (
+    ContextVar("combined_averages", default=None)
+)
+
+
+@contextmanager
+def combined_averages(dialect: Dialect, parts: dict[str, tuple[str, int | None]]) -> Iterator[None]:
+    """Build each named measure as a quotient while the block runs: a combined ``avg``.
+
+    A federated query's combine step re-aggregates an ``avg`` from its fact
+    leg's partial sums and counts. Its combine model declares the measure as
+    the ``SUM`` of the partial sums; *parts* maps its name to the leg column
+    holding the counts and the scale the sums are read at (``None`` for a
+    ``float`` measure, whose sums are doubles). The measure's expression is
+    then the one sum over the other (:func:`combined_average`), wherever the
+    query reads it: its column, HAVING, ORDER BY and the metrics over it.
+    """
+    token = _combined_averages.set((dialect, parts))
+    try:
+        yield
+    finally:
+        _combined_averages.reset(token)
+
+
+def combined_average(measure: Measure, total: Expr, count: Expr) -> Expr | None:
+    """``total / count`` for a measure :func:`combined_averages` names, else ``None``.
+
+    Exact for a decimal result (:meth:`Dialect.exact_quotient`), and left
+    unrounded at more places than the measure's declared type keeps: HAVING,
+    ORDER BY and metrics read the average as they read a raw ``AVG``, and the
+    measure's own cast rounds its column once. Floating point for a float
+    result, as every engine's ``AVG`` over doubles is; a zero count is
+    guarded by the division itself (``NULLIF``).
+    """
+    active = _combined_averages.get()
+    if active is None or measure.name not in active[1]:
+        return None
+    dialect, parts = active
+    _, scale = parts[measure.name]
+    target = parse_data_type(measure.data_type) if measure.data_type else None
+    if scale is not None and target is not None:
+        exact = dialect.exact_quotient(total, count, scale, target)
+        if exact is not None:
+            return exact
+    return BinaryOp(left=total, op="/", right=count)
+
+
+def combined_average_counts(measure: Measure) -> str | None:
+    """The leg column of counts a :func:`combined_averages` measure divides by."""
+    active = _combined_averages.get()
+    if active is None or measure.name not in active[1]:
+        return None
+    return active[1][measure.name][0]
+
+
 def resolve_measure_cast_type(
     measure: Measure,
     settings: ModelSettings | None,

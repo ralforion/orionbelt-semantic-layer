@@ -163,11 +163,21 @@ How a query is split:
   input's scale and the engine's range, and the measure's own type and
   `defaultValue` apply once, to the combined value. A count over no rows is 0,
   whatever default it declares, as a SQL `COUNT` is.
+- An `avg` is not an average of averages: the leg returns its argument's sum
+  and count, and the combine query divides the summed sums by the summed
+  counts. For an integer or decimal measure it divides exactly, in integers,
+  and rounds half away from zero to the measure's type, as PostgreSQL,
+  MySQL and Snowflake round their own `AVG`; HAVING, ORDER BY and metrics
+  read the average before that rounding, at 18 places or more; DuckDB's `/` would divide in
+  floating point, which drifts past fifteen digits. A `float` measure divides
+  its sums as doubles, as every engine averages doubles. The decimal sums are
+  read at 9 places, the most an engine returns one at (BigQuery `NUMERIC`); a
+  sum with more places is refused (`FEDERATION_LEG_TYPE`), never rounded.
 
 What does not split exactly is refused by name rather than answered with a
 different number: measures from more than one source (`FEDERATION_MULTI_FACT`),
-`avg`, `count_distinct` and other aggregations that cannot be combined from
-partial results (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
+`count_distinct`, an `avg` with `total: true` and other aggregations that cannot
+be combined from partial results (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,
 period-over-period, window and reaggregate metrics (`FEDERATION_UNSUPPORTED_METRIC`),
 joins between sources other than many-to-one from the measures' side
