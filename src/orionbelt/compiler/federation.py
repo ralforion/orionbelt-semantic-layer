@@ -709,7 +709,10 @@ class _Planner:
         when the leg groups by order, and the rows the planner keeps for a
         count over customers - those without orders - are not the rows it
         keeps for a sum over orders. Combining those needs fact legs
-        aggregated apart, which a federated query does not build yet.
+        aggregated apart, which a federated query does not build yet. The
+        objects compared are all a measure reads, a computed column's
+        dependencies included: a Customers column computed from Orders makes
+        the counted values per order.
         """
         effective = self.model.effective_measures
         atomic = sorted(self.atomic_measures())
@@ -719,9 +722,13 @@ class _Planner:
         counted = {effective[name].columns[0].view for name in distinct}
         for name in atomic:
             measure = effective[name]
-            if measure.source_objects == counted and len(counted) == 1 and not measure.anchor:
+            # Every object a measure reads, the counted ones included: a
+            # computed column, its own or a filter's, reads the objects its
+            # expression names, so "a Customers column" can be per order.
+            objects = measure.source_objects | self.model.measure_join_objects(name)
+            if objects == counted and len(counted) == 1 and not measure.anchor:
                 continue
-            reads = ", ".join(sorted(measure.source_objects)) or "no data object"
+            reads = ", ".join(sorted(objects)) or "no data object"
             raise self.refuse(
                 "UNSUPPORTED_AGGREGATION",
                 f"Measure '{distinct[0]}' counts distinct values of "

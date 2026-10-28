@@ -904,6 +904,7 @@ dataObjects:
       Customer ID: {{code: customer_id, abstractType: int}}
       Customer Country: {{code: country_id, abstractType: int}}
       Credit: {{code: credit, abstractType: decimal, numClass: additive}}
+      First Order: {{abstractType: int, expression: "{{[Orders].[Order ID]}}"}}
     joins:
       - joinType: many-to-one
         joinTo: Countries
@@ -927,6 +928,10 @@ measures:
     aggregation: count_distinct
     resultType: int
   Credit Total: {{columns: [{{dataObject: Customers, column: Credit}}], aggregation: sum}}
+  First Orders Counted:
+    columns: [{{dataObject: Customers, column: First Order}}]
+    aggregation: count_distinct
+    resultType: int
 """
 THREE_DATA = {
     "orders": "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10, 50.00), (2, 10, 30.00), "
@@ -983,8 +988,17 @@ class TestCountDistinctBesideOtherObjects:
 
     @pytest.mark.parametrize(
         "measures",
-        [["Revenue", "Customers Counted"], ["Credit Total", "Orders Counted"]],
-        ids=["sum_over_orders_and_distinct_customers", "customer_sum_and_distinct_orders"],
+        [
+            ["Revenue", "Customers Counted"],
+            ["Credit Total", "Orders Counted"],
+            ["Credit Total", "First Orders Counted"],
+        ],
+        ids=[
+            "sum_over_orders_and_distinct_customers",
+            "customer_sum_and_distinct_orders",
+            # A Customers column computed from Orders: per order, not per customer.
+            "customer_sum_and_a_customer_column_computed_from_orders",
+        ],
     )
     def test_with_measures_of_another_object_it_is_refused(self, measures: list[str]) -> None:
         """Grouping by the counted column would repeat a one-side sum per value,

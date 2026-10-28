@@ -178,7 +178,8 @@ How a query is split:
   and the combine query counts that column's distinct values across all the
   groups they reach. The leg then returns a row per value as well, which
   `FEDERATION_MAX_LEG_ROWS` bounds. The query's other measures must read the
-  same data object as the counted column: that object's sums, counts and
+  same data object as the counted column, and nothing else, a computed
+  column's dependencies included: that object's sums, counts and
   averages still combine exactly at the finer grain, but a measure of another
   object would not (a customer-level sum would repeat once per order, and the
   customers without orders that a count over customers keeps are not the rows
