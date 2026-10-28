@@ -106,15 +106,27 @@ class DremioDialect(Dialect):
         14th, which an average of a two-place column needs some 10^9 rows in
         one group to produce.
 
-        A column or result with more places than 14 keeps ``AVG``: summing it
-        at 14 would round every value first.
+        The decimal is summed as it is, which is exact, and the total
+        truncated to those 14 places (:meth:`Dialect.exact_decimal_avg` on why
+        truncating the total, and why one place past the result). A column
+        declaring more places than 14, or a result with 14 or more, keeps
+        ``AVG``.
         """
         places = self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS
         if not isinstance(obml_type, DecimalType):
             return None
-        if max(source_scale or 0, obml_type.scale) > places:
+        if max(source_scale or 0, obml_type.scale + 1) > places:
             return None
-        return self._exact_avg_by_sum_over_count(arg, obml_type, input_scale=places)
+        total = Cast(
+            expr=FunctionCall(
+                name="TRUNCATE",
+                args=[FunctionCall(name="SUM", args=[arg]), Literal.number(places)],
+            ),
+            type_name=self.render_obml_type(
+                DecimalType(precision=self._MAX_DECIMAL_PRECISION, scale=places)
+            ),
+        )
+        return BinaryOp(left=total, op="/", right=FunctionCall(name="COUNT", args=[arg]))
 
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """Dremio divides decimals exactly, so SUM/COUNT is all it takes.

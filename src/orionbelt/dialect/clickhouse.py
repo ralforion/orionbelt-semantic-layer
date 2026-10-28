@@ -417,16 +417,27 @@ class ClickHouseDialect(Dialect):
         ``avg`` of a decimal is Float64 here: 12345678901234.565 came back .56,
         and 9999999999999999.99 as 1E+16. Summed as ``Decimal256`` - room for
         a long total at 18 places, which no decimal column exceeds - and
-        divided with ``divideDecimal``, both are exact, measured. A column or
-        result with more places sums at those instead.
+        divided with ``divideDecimal``, both are exact, measured.
+
+        Summed at 38 places whatever the result: every ``Decimal`` of up to 38
+        digits converts exactly, so the total is exact, and 38 integer digits
+        stay for it. Summing at the result's scale instead left two integer
+        digits at ``decimal(76, 74)`` and wrapped 200 rows of 4 silently.
+        ``divideDecimal`` then truncates the exact total's quotient one place
+        past the result. A column declaring more places than 38 keeps ``AVG``.
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        places = max(18, source_scale or 0, obml_type.scale)
-        return self._divided_average(arg, obml_type, "toDecimal256", places)
+        if (source_scale or 0) > self._SUM_SCALE:
+            return None
+        return self._divided_average(arg, obml_type, "toDecimal256", self._SUM_SCALE)
 
-    #: The most places a ClickHouse decimal holds, ``Decimal256``'s.
+    #: The most digits a ClickHouse decimal holds, ``Decimal256``'s.
     _DECIMAL256_MAX_SCALE = 76
+
+    #: The scale a decimal average is summed at: exact for any ``Decimal`` of
+    #: up to 38 digits, with 38 integer digits left for the total.
+    _SUM_SCALE = 38
 
     def _divided_average(
         self, arg: Expr, obml_type: OBMLType, widen: str, input_scale: int
@@ -441,10 +452,10 @@ class ClickHouseDialect(Dialect):
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        if obml_type.scale + 1 > self._DECIMAL256_MAX_SCALE or input_scale > (
-            self._DECIMAL256_MAX_SCALE
-        ):
-            # No place past the result to divide to (decimal(76, 76)): keep AVG.
+        if obml_type.precision + 1 > self._DECIMAL256_MAX_SCALE:
+            # The quotient is Decimal(76, scale + 1): one place more than the
+            # result leaves its integer digits room only up to precision 75.
+            # decimal(76, 75) overflowed, decimal(76, 76) asked for scale 77.
             return None
         zero = Literal.number(0)
         count: Expr = FunctionCall(name="COUNT", args=[arg])

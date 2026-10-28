@@ -60,6 +60,21 @@ measures:
     resultType: decimal
     aggregation: avg
     dataType: "decimal(76, 76)"
+  Price Avg 76 75:
+    columns: [{dataObject: Charges, column: Price}]
+    resultType: decimal
+    aggregation: avg
+    dataType: "decimal(76, 75)"
+  Price Avg 76 74:
+    columns: [{dataObject: Charges, column: Price}]
+    resultType: decimal
+    aggregation: avg
+    dataType: "decimal(76, 74)"
+  Price Avg 3:
+    columns: [{dataObject: Charges, column: Price}]
+    resultType: decimal
+    aggregation: avg
+    dataType: "decimal(18, 3)"
   Price Avg:
     columns: [{dataObject: Charges, column: Price}]
     resultType: decimal
@@ -730,7 +745,7 @@ class TestDuckDBAssemblesItsAverage:
 # The three whose AVG of a decimal is a double, and the route each takes.
 DECIMAL_REWRITTEN = {
     "clickhouse": "SUM(toDecimal256(",
-    "dremio": 'SUM(CAST("Charges"."price" AS DECIMAL(38, 14)))',
+    "dremio": 'TRUNCATE(SUM("Charges"."price"), 14)',
     "duckdb": "TRUNC(SUM(",
 }
 DECIMAL_EXACT = ["bigquery", "databricks", "mysql", "postgres", "snowflake"]
@@ -821,7 +836,8 @@ class TestADecimalAverageKeepsItsWidths:
         """A scale-19 result over 9e-19: read at 18 places it became 1e-18."""
         got = _duckdb_average("Price Avg 19", "price", "DECIMAL(38, 19)", ["0.0000000000000000009"])
         assert got == Decimal("0.0000000000000000009")
-        assert re.search(r"toDecimal256\(.*, 19\)", _sql("Price Avg 19", "clickhouse"))
+        # ClickHouse divides the exact total one place past the result.
+        assert re.search(r"divideDecimal\(.*, 20\)", _sql("Price Avg 19", "clickhouse"))
 
     def test_a_wide_physical_scale_does_not_overflow(self) -> None:
         """DECIMAL(38, 25), not declared: the fraction is narrowed before it is
@@ -837,7 +853,85 @@ class TestADecimalAverageKeepsItsWidths:
         assert "AVG(" in sql.upper(), sql
         assert "TRUNC(SUM(" not in sql and "NULLIF(COUNT(" not in sql, sql
 
-    def test_clickhouse_keeps_avg_with_no_place_past_the_result(self) -> None:
-        """decimal(76, 76) has no 77th place for divideDecimal to divide to."""
-        sql = _sql("Price Avg 76", "clickhouse")
+    @pytest.mark.parametrize("measure", ["Price Avg 76", "Price Avg 76 75", "Price Avg 76 74"])
+    def test_clickhouse_keeps_avg_without_integer_room_past_the_result(self, measure: str) -> None:
+        """The quotient is Decimal(76, scale + 1), so a precision of 76 leaves
+        it no room: decimal(76, 76) asked for scale 77, decimal(76, 75)
+        overflowed averaging 9, and decimal(76, 74), summed at its own scale,
+        wrapped 200 rows of 4."""
+        sql = _sql(measure, "clickhouse")
         assert "divideDecimal" not in sql, sql
+
+    def test_clickhouse_sums_at_38_places_whatever_the_result(self) -> None:
+        sql = _sql("Price Avg 19", "clickhouse")
+        assert 'SUM(toDecimal256("Charges"."price", 38))' in sql, sql
+
+    def test_a_wider_fraction_is_truncated_not_rounded(self) -> None:
+        """DECIMAL(38, 19), not declared: 0.0049999999999999995 is 0.00. Cast
+        to 18 places it rounded to 0.005000000000000000, and then to 0.01."""
+        got = _duckdb_average("Price Avg", "price", "DECIMAL(38, 19)", ["0.0049999999999999995"])
+        assert got == Decimal("0.00")
+
+    def test_the_total_is_narrowed_not_each_value(self) -> None:
+        """Two values past 18 places summing to exactly 0.005: their average
+        0.0025 rounds to 0.003. Truncating each value at 18 places first
+        loses 1e-18 and rounds it to 0.002."""
+        got = _duckdb_average(
+            "Price Avg 3",
+            "price",
+            "DECIMAL(38, 22)",
+            ["0.0025000000000000000005", "0.0024999999999999999995"],
+        )
+        assert got == Decimal("0.003")
+
+
+class TestDuckDBDecimalAverageProperty:
+    """The DuckDB decimal route against exact arithmetic, over undeclared scales.
+
+    Values of a physical DECIMAL(38, s), s from 0 to 25 and not declared to the
+    model, in groups of one to 20 rows of either sign; results DECIMAL(p, k)
+    with k up to 18. Each average is checked against the exact one rounded
+    half away from zero.
+    """
+
+    @pytest.mark.parametrize("seed", range(4))
+    def test_matches_exact_arithmetic(self, seed: int) -> None:
+        import random
+        from decimal import ROUND_HALF_UP, localcontext
+
+        duckdb = pytest.importorskip("duckdb")
+        dialect = DialectRegistry.get("duckdb")
+        rng = random.Random(seed)
+        con = duckdb.connect()
+        checked = 0
+        while checked < 150:
+            physical = rng.randint(0, 25)
+            scale = rng.randint(0, 18)
+            precision = rng.randint(scale + 1, 38)
+            digits = rng.randint(1, 38 - physical)
+            values = [
+                Decimal(rng.randint(-(10**digits) + 1, 10**digits - 1)).scaleb(-physical)
+                for _ in range(rng.randint(1, 20))
+            ]
+            with localcontext() as ctx:
+                ctx.prec = 150
+                total = sum(values)
+                exact = (total / len(values)).quantize(
+                    Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP
+                )
+                fits_result = abs(exact) < Decimal(10) ** (precision - scale)
+                fits_sum = abs(total) < Decimal(10) ** (38 - physical)
+            if not (fits_result and fits_sum):
+                continue
+            target = DecimalType(precision=precision, scale=scale)
+            expr = dialect.exact_decimal_avg(ColumnRef(name="v"), target)
+            assert expr is not None
+            rows = " UNION ALL ".join(
+                f"SELECT CAST('{v}' AS DECIMAL(38, {physical})) AS v" for v in values
+            )
+            ((got,),) = con.sql(
+                f"SELECT CAST({dialect.compile_expr(expr)} AS DECIMAL({precision}, {scale})) "
+                f"FROM ({rows})"
+            ).fetchall()
+            assert got == exact, (physical, precision, scale, [str(v) for v in values])
+            checked += 1

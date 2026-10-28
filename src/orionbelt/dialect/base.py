@@ -426,9 +426,7 @@ class Dialect(ABC):
     _MAX_DECIMAL_PRECISION = 38
     _SUM_HEADROOM_DIGITS = 24
 
-    def _exact_avg_by_sum_over_count(
-        self, arg: Expr, obml_type: OBMLType, input_scale: int = 0
-    ) -> Expr | None:
+    def _exact_avg_by_sum_over_count(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """``SUM(x) / COUNT(x)`` in decimal, for engines that divide exactly.
 
         The textbook rewrite, shared by Dremio and Databricks. It is *not*
@@ -451,22 +449,17 @@ class Dialect(ABC):
         An empty group divides to NULL on both engines, measured, so no
         zero-count guard is needed here - unlike ClickHouse, whose
         ``divideDecimal`` raises.
-
-        *input_scale* is the scale the argument is summed at: 0 for an integer
-        column, more for a decimal one, whose fraction would otherwise be cut
-        off by the widening cast. The quotient keeps at least that scale.
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        cap = self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS
-        scale = max(min(obml_type.scale, cap), input_scale)
+        scale = min(obml_type.scale, self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS)
         accumulated = FunctionCall(
             name="SUM",
             args=[
                 Cast(
                     expr=arg,
                     type_name=self.render_obml_type(
-                        DecimalType(precision=self._MAX_DECIMAL_PRECISION, scale=input_scale)
+                        DecimalType(precision=self._MAX_DECIMAL_PRECISION, scale=0)
                     ),
                 )
             ],
@@ -576,10 +569,15 @@ class Dialect(ABC):
         DuckDB, ClickHouse and Dremio average a decimal as a double, so they
         override this, each its own way, as they do :meth:`exact_integer_avg`.
         ``obml_type`` is the decimal the result is cast to, *source_scale* the
-        widest scale the column declares (``sqlScale``), if it does. The
-        fraction is read at no fewer places than either, and an engine that
-        cannot divide exactly at that many keeps ``AVG`` rather than round the
-        input.
+        widest scale the column declares (``sqlScale``), if it does.
+
+        **Narrow the total, never the values, and only by truncating, to a
+        place past the result.** Rounding the result half away from zero asks
+        only whether the total reaches a boundary that has one place more
+        than the result; a total truncated at that place or further keeps every
+        such boundary, so it rounds as the exact total does. Rounding it, or
+        truncating each value before summing, can cross one. An engine that
+        cannot divide exactly at that many places keeps ``AVG``.
         """
         return None
 

@@ -361,7 +361,7 @@ An average of an integer or decimal column is exact on every dialect, rounded ha
 | ClickHouse | `divideDecimal(SUM(toDecimal128(col, 0)), COUNT, s + 1)`, rounded to `s` | `divideDecimal` over a `Decimal256` sum at 18 places, rounded to `s` |
 | DuckDB | integer arithmetic over `HUGEINT` | integer arithmetic over `HUGEINT`, the fraction read at 18 places |
 
-The fraction is read at the column's declared `sqlScale` or the result's scale where either has more places than shown; where that is more than the exact route divides (DuckDB 19 places, Dremio 14, ClickHouse 75 for the result), the plain `AVG` is kept rather than the input rounded to fit. A `float` column is averaged as a double on every dialect. Dremio rounds a quotient to its 14 places before the cast rounds it to the measure's scale; the two can disagree only when the digits after the result's last place read `49...9` through the 14th, which an average of a two-place column needs some 10^9 rows in one group to produce.
+The exact total is narrowed only by truncating, and never closer than one place past the result, so it rounds as the exact total does. Where the column's declared `sqlScale` or that one extra place needs more than the route divides exactly (DuckDB 19 places, Dremio 14; ClickHouse sums at 38 and needs a result precision of 75 or less), the plain `AVG` is kept rather than the input rounded to fit. A `float` column is averaged as a double on every dialect. Dremio rounds a quotient to its 14 places before the cast rounds it to the measure's scale; the two can disagree only when the digits after the result's last place read `49...9` through the 14th, which an average of a two-place column needs some 10^9 rows in one group to produce.
 
 ### ANY_VALUE
 
