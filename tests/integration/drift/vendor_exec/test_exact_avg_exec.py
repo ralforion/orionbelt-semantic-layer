@@ -47,7 +47,12 @@ dataObjects:
     columns:
       Qty: {code: qty, abstractType: int}
       Amount: {code: amount, abstractType: decimal, numClass: additive}
+      Fine: {code: fine, abstractType: decimal, numClass: additive}
 measures:
+  Fine Avg:
+    columns: [{dataObject: Charges, column: Fine}]
+    resultType: decimal
+    aggregation: avg
   Qty Avg:
     columns: [{dataObject: Charges, column: Qty}]
     resultType: int
@@ -87,13 +92,27 @@ DECIMAL_CASES: list[tuple[str, list[str | None], str | None]] = [
 ]
 
 
-def _decimal_rows(alias: str, column: str, values: list[str | None], dialect: str) -> str:
-    """A FROM-able source of one DECIMAL(18, 2) column holding *values*."""
+# A column with more places than the average's two. One 0.005 is the smallest
+# total that rounds up: ClickHouse's divideDecimal returned 0 for a dividend of
+# under ten units of its result scale, so dividing one place past the result
+# averaged it to 0.00.
+FINE_CASES: list[tuple[str, list[str | None], str | None]] = [
+    ("tinyhalf", ["0.005000"], "0.01"),
+    ("tinynegativehalf", ["-0.005000"], "-0.01"),
+    ("tinybelow", ["0.004999"], "0.00"),
+    ("tinypair", ["0.004999", "0.005001"], "0.01"),
+]
+
+
+def _decimal_rows(
+    alias: str, column: str, values: list[str | None], dialect: str, scale: int = 2
+) -> str:
+    """A FROM-able source of one DECIMAL(18, *scale*) column holding *values*."""
     type_name = {
-        "clickhouse": "Nullable(Decimal(18, 2))",
+        "clickhouse": f"Nullable(Decimal(18, {scale}))",
         # BigQuery takes no parameters in a CAST.
         "bigquery": "NUMERIC",
-    }.get(dialect, "DECIMAL(18, 2)")
+    }.get(dialect, f"DECIMAL(18, {scale})")
     legs = " UNION ALL ".join(
         f"SELECT CAST({'NULL' if v is None else repr(v)} AS {type_name}) AS {column}"
         for v in values
@@ -121,18 +140,31 @@ def _assert_exact_average(target: VendorTarget) -> None:
     alias = dia.quote_identifier("Charges")
     qty = dia.quote_identifier("qty")
     amount = dia.quote_identifier("amount")
-    sources = [
-        (label, _projection(target.dialect), target.rows_of(alias, qty, values), want)
-        for label, values, want in CASES
-    ] + [
-        (
-            f"decimal {label}",
-            _projection(target.dialect, "Amount Avg"),
-            _decimal_rows(alias, amount, values, target.dialect),
-            want,
-        )
-        for label, values, want in DECIMAL_CASES
-    ]
+    fine = dia.quote_identifier("fine")
+    sources = (
+        [
+            (label, _projection(target.dialect), target.rows_of(alias, qty, values), want)
+            for label, values, want in CASES
+        ]
+        + [
+            (
+                f"decimal {label}",
+                _projection(target.dialect, "Amount Avg"),
+                _decimal_rows(alias, amount, values, target.dialect),
+                want,
+            )
+            for label, values, want in DECIMAL_CASES
+        ]
+        + [
+            (
+                f"fine {label}",
+                _projection(target.dialect, "Fine Avg"),
+                _decimal_rows(alias, fine, values, target.dialect, scale=6),
+                want,
+            )
+            for label, values, want in FINE_CASES
+        ]
+    )
 
     mismatches = []
     for label, projection, source, want in sources:

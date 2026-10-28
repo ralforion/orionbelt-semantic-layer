@@ -407,67 +407,82 @@ class ClickHouseDialect(Dialect):
         multi-fact plan hits routinely: a group carrying only another fact's
         rows has no values for this measure at all.
         """
-        return self._divided_average(arg, obml_type, "toDecimal128", 0)
+        if not isinstance(obml_type, DecimalType):
+            return None
+        widened = FunctionCall(name="toDecimal128", args=[arg, Literal.number(0)])
+        return self._divided_average(FunctionCall(name="SUM", args=[widened]), arg, obml_type)
 
     def exact_decimal_avg(
-        self, arg: Expr, obml_type: OBMLType, source_scale: int | None = None
+        self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
     ) -> Expr | None:
-        """The integer route over a ``Decimal256`` sum at 18 places.
+        """The integer route over a ``Decimal256`` sum at the column's own scale.
 
         ``avg`` of a decimal is Float64 here: 12345678901234.565 came back .56,
-        and 9999999999999999.99 as 1E+16. Summed as ``Decimal256`` - room for
-        a long total at 18 places, which no decimal column exceeds - and
-        divided with ``divideDecimal``, both are exact, measured.
+        and 9999999999999999.99 as 1E+16. Summed as ``Decimal256`` and divided
+        with ``divideDecimal``, both are exact, measured.
 
-        Summed at 38 places whatever the result: every ``Decimal`` of up to 38
-        digits converts exactly, so the total is exact, and 38 integer digits
-        stay for it. Summing at the result's scale instead left two integer
-        digits at ``decimal(76, 74)`` and wrapped 200 rows of 4 silently.
-        ``divideDecimal`` then truncates the exact total's quotient one place
-        past the result. A column declaring more places than 38 keeps ``AVG``.
+        Each value is multiplied by a ``Decimal256`` one at scale 0, which
+        widens it at its own scale whatever that is: converting to a fixed
+        scale truncated every value with more places (two values of 40 places
+        summing to 0.005 averaged to 0.002), and left a wide integer part too
+        little room (10^40 from a ``Decimal(50, 2)`` wrapped). The total then
+        has 76 digits less its scale: 38 integer digits to spare over any
+        ``Decimal`` of up to 38. A wider column fills them as ClickHouse's own
+        ``sum`` and ``avg`` do, which wrap at the same point (200 rows of 4
+        in a ``Decimal(76, 74)`` average -1.79 either way), so one whose
+        declared precision leaves fewer than 18 digits of room - 10^18 rows -
+        keeps ``AVG``; an undeclared one is summed as ClickHouse sums it.
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        if (source_scale or 0) > self._SUM_SCALE:
+        if source_type is not None and (
+            source_type.precision + self._ROW_DIGITS > self._DECIMAL256_MAX_PRECISION
+        ):
             return None
-        return self._divided_average(arg, obml_type, "toDecimal256", self._SUM_SCALE)
+        widened = BinaryOp(
+            left=arg,
+            op="*",
+            right=FunctionCall(name="toDecimal256", args=[Literal.number(1), Literal.number(0)]),
+        )
+        return self._divided_average(FunctionCall(name="SUM", args=[widened]), arg, obml_type)
 
     #: The most digits a ClickHouse decimal holds, ``Decimal256``'s.
-    _DECIMAL256_MAX_SCALE = 76
+    _DECIMAL256_MAX_PRECISION = 76
 
-    #: The scale a decimal average is summed at: exact for any ``Decimal`` of
-    #: up to 38 digits, with 38 integer digits left for the total.
-    _SUM_SCALE = 38
+    #: The digits a total is given past its values': room for 10^18 rows.
+    _ROW_DIGITS = 18
 
-    def _divided_average(
-        self, arg: Expr, obml_type: OBMLType, widen: str, input_scale: int
-    ) -> Expr | None:
-        """``divideDecimal(SUM(widen(x)), COUNT(x))``, one place past the result.
+    #: How many places past the result ``divideDecimal`` divides to.
+    _EXTRA_PLACES = 2
+
+    def _divided_average(self, total: Expr, arg: Expr, obml_type: DecimalType) -> Expr | None:
+        """``divideDecimal(total, COUNT(x))``, two places past the result.
 
         ``divideDecimal`` truncates, so 1, 2 and 2 averaged at two places to
-        1.66. Dividing to one place more and letting the cast round it - the
-        cast rounds a decimal half away from zero from exactly that place -
-        gives 1.67, and rounding a value truncated one place further gives
-        what rounding the exact value gives.
+        1.66. Dividing further and letting the cast round it - the cast rounds
+        a decimal half away from zero - gives 1.67: a quotient truncated past
+        the result rounds as the exact one does.
+
+        Two places, not one, because ``divideDecimal`` (ClickHouse 26.7)
+        returns 0 when the dividend is below ten units of the result scale:
+        3 / 1 at scale 0 and 0.000009 / 1 at scale 6 both gave 0, 0.00002 / 1
+        at scale 6 gave 0.00002. One place past the result, a single row of
+        0.005 averaged to 0.00; two places past it, a total that small
+        averages below 0.1 of a unit, which rounds to 0 in any case.
+
+        The quotient is ``Decimal(76, scale + 2)``, so a result precision
+        past 74 leaves its integer digits no room and keeps ``AVG``.
         """
-        if not isinstance(obml_type, DecimalType):
-            return None
-        if obml_type.precision + 1 > self._DECIMAL256_MAX_SCALE:
-            # The quotient is Decimal(76, scale + 1): one place more than the
-            # result leaves its integer digits room only up to precision 75.
-            # decimal(76, 75) overflowed, decimal(76, 76) asked for scale 77.
+        if obml_type.precision + self._EXTRA_PLACES > self._DECIMAL256_MAX_PRECISION:
             return None
         zero = Literal.number(0)
         count: Expr = FunctionCall(name="COUNT", args=[arg])
         quotient: Expr = FunctionCall(
             name="divideDecimal",
             args=[
-                FunctionCall(
-                    name="SUM",
-                    args=[FunctionCall(name=widen, args=[arg, Literal.number(input_scale)])],
-                ),
-                FunctionCall(name=widen, args=[count, zero]),
-                Literal.number(obml_type.scale + 1),
+                total,
+                FunctionCall(name="toDecimal256", args=[count, zero]),
+                Literal.number(obml_type.scale + self._EXTRA_PLACES),
             ],
         )
         return FunctionCall(

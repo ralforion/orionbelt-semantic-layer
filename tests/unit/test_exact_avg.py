@@ -41,7 +41,27 @@ dataObjects:
       Price: {code: price, abstractType: decimal, numClass: additive}
       Wide: {code: wide, abstractType: decimal, sqlPrecision: 38, sqlScale: 15}
       Fine: {code: fine, abstractType: decimal, sqlPrecision: 38, sqlScale: 25}
+      Huge: {code: huge, abstractType: decimal, sqlPrecision: 50, sqlScale: 2}
+      Vast: {code: vast, abstractType: decimal, sqlPrecision: 60, sqlScale: 2}
+      Wide Source: {code: wide_source, abstractType: decimal, sqlPrecision: 38, sqlScale: 2}
+      Broad: {code: broad, abstractType: decimal, sqlPrecision: 30, sqlScale: 2}
 measures:
+  Huge Avg:
+    columns: [{dataObject: Charges, column: Huge}]
+    resultType: decimal
+    aggregation: avg
+  Vast Avg:
+    columns: [{dataObject: Charges, column: Vast}]
+    resultType: decimal
+    aggregation: avg
+  Wide Source Avg:
+    columns: [{dataObject: Charges, column: Wide Source}]
+    resultType: decimal
+    aggregation: avg
+  Broad Avg:
+    columns: [{dataObject: Charges, column: Broad}]
+    resultType: decimal
+    aggregation: avg
   Wide Avg:
     columns: [{dataObject: Charges, column: Wide}]
     resultType: decimal
@@ -115,7 +135,7 @@ dimensions:
 REWRITTEN = {
     "bigquery": "AVG(CAST(",
     "clickhouse": "divideDecimal(",
-    "dremio": "/ NULLIF(COUNT(",
+    "dremio": "MOD(",
     # No exact division at all here, so the average is assembled from integer
     # arithmetic instead: scale, divide with `//`, put the scale back by
     # multiplying (#316).
@@ -213,7 +233,7 @@ class TestTheResultTypeMovesWithTheExpression:
         """An explicit ``dataType`` wins, as the resolution order promises."""
         sql = _sql("Qty Avg Declared", "dremio")
         assert "DECIMAL(30, 4)" in sql, sql
-        assert "/ NULLIF(COUNT(" in sql, sql
+        assert "MOD(" in sql, sql
 
 
 class TestWidening:
@@ -297,17 +317,16 @@ class TestTheHazardsAPlainAvgHandlesAndARewriteMustToo:
         assert "AS NUMERIC" in _sql("Qty Avg", "bigquery")
         assert "AS BIGNUMERIC" in _sql_with_default("Qty Avg", "bigquery", "decimal(38, 20)")
 
-    def test_dremio_keeps_integer_room_for_the_running_total(self) -> None:
-        """A sum is as many digits as its rows make it.
+    def test_dremio_keeps_avg_past_sixteen_places(self) -> None:
+        """Dremio's long division takes two digits more than twice the scale.
 
-        38 digits cannot hold both a large total and a long fraction, so the
-        intermediate scale is capped rather than tracking the result's. At a
-        declared scale of 19 the total would have had 19 integer digits, and
-        two rows of 9000000000000000000 need 20.
+        Its old route capped the scale at 14, padding the rest with zeros, and
+        rounded twice. Past 16 places the exact route has no room, so the
+        engine's own average is kept rather than an inexact one.
         """
         sql = _sql_with_default("Qty Avg", "dremio", "decimal(38, 20)")
-        assert "AS DECIMAL(38, 14))" in sql, sql
-        assert "AS DECIMAL(38, 19))" in sql, sql
+        assert "AVG(" in sql, sql
+        assert "MOD(" not in sql, sql
 
 
 def _sql_with_default(measure: str, dialect: str, numeric_default: str) -> str:
@@ -744,8 +763,8 @@ class TestDuckDBAssemblesItsAverage:
 
 # The three whose AVG of a decimal is a double, and the route each takes.
 DECIMAL_REWRITTEN = {
-    "clickhouse": "SUM(toDecimal256(",
-    "dremio": 'TRUNCATE(SUM("Charges"."price"), 14)',
+    "clickhouse": '"Charges"."price" * toDecimal256(1, 0)',
+    "dremio": 'MOD(TRUNCATE(ABS(SUM("Charges"."price")), 3)',
     "duckdb": "TRUNC(SUM(",
 }
 DECIMAL_EXACT = ["bigquery", "databricks", "mysql", "postgres", "snowflake"]
@@ -846,25 +865,67 @@ class TestADecimalAverageKeepsItsWidths:
         assert got == Decimal("0.13")
 
     @pytest.mark.parametrize("dialect", ["duckdb", "dremio"])
-    def test_a_declared_scale_past_the_exact_route_keeps_avg(self, dialect: str) -> None:
-        """sqlScale 25: past what DuckDB's long division (19) and Dremio's
-        headroom (14) divide exactly, so the input is not rounded to fit."""
+    def test_a_column_of_many_places_is_still_divided_exactly(self, dialect: str) -> None:
+        """sqlScale 25: the total is truncated one place past the result, which
+        rounds as the exact total does, so the column's scale sets no limit."""
         sql = _sql("Fine Avg", dialect)
-        assert "AVG(" in sql.upper(), sql
-        assert "TRUNC(SUM(" not in sql and "NULLIF(COUNT(" not in sql, sql
+        assert "AVG(" not in sql.upper(), sql
+
+    def test_duckdb_averages_a_25_place_column_exactly(self) -> None:
+        """Two values summing to exactly 0.01 average 0.005, which rounds to
+        0.01; each truncated at 18 places first, they would round to 0.00."""
+        got = _duckdb_average(
+            "Fine Avg",
+            "fine",
+            "DECIMAL(38, 25)",
+            ["0.0050000000000000000000005", "0.0049999999999999999999995"],
+        )
+        assert got == Decimal("0.01")
 
     @pytest.mark.parametrize("measure", ["Price Avg 76", "Price Avg 76 75", "Price Avg 76 74"])
     def test_clickhouse_keeps_avg_without_integer_room_past_the_result(self, measure: str) -> None:
-        """The quotient is Decimal(76, scale + 1), so a precision of 76 leaves
-        it no room: decimal(76, 76) asked for scale 77, decimal(76, 75)
-        overflowed averaging 9, and decimal(76, 74), summed at its own scale,
-        wrapped 200 rows of 4."""
+        """The quotient is Decimal(76, scale + 2), so a precision past 74
+        leaves it no room: decimal(76, 76) asked for scale 77 and
+        decimal(76, 75) overflowed averaging 9."""
         sql = _sql(measure, "clickhouse")
         assert "divideDecimal" not in sql, sql
 
-    def test_clickhouse_sums_at_38_places_whatever_the_result(self) -> None:
+    def test_clickhouse_sums_each_value_at_its_own_scale(self) -> None:
+        """Converting to a fixed scale truncated every value with more places:
+        two of 40 places summing to 0.005 averaged to 0.002. Multiplied by a
+        Decimal256 one, a value keeps its own scale, whatever it is."""
         sql = _sql("Price Avg 19", "clickhouse")
-        assert 'SUM(toDecimal256("Charges"."price", 38))' in sql, sql
+        assert 'SUM("Charges"."price" * toDecimal256(1, 0))' in sql, sql
+        assert 'toDecimal256("Charges"."price"' not in sql, sql
+
+    def test_clickhouse_divides_two_places_past_the_result(self) -> None:
+        """divideDecimal returns 0 for a dividend under ten units of its result
+        scale, so one place past the result a single 0.005 averaged to 0.00."""
+        assert re.search(r"divideDecimal\(.*, 4\)", _sql("Price Avg", "clickhouse"))
+
+    def test_clickhouse_wide_declared_column_is_rewritten(self) -> None:
+        """Decimal(50, 2): the total keeps 74 integer digits at the column's
+        scale, where a 38-place conversion left 10^40 wrapping."""
+        assert "divideDecimal" in _sql("Huge Avg", "clickhouse")
+
+    def test_clickhouse_keeps_avg_without_room_for_rows(self) -> None:
+        """Decimal(60, 2): fewer than 18 digits past the values, so 10^18 rows
+        could wrap the total, as ClickHouse's own sum wraps."""
+        assert "divideDecimal" not in _sql("Vast Avg", "clickhouse")
+
+    def test_dremio_keeps_avg_past_the_quotients_integer_digits(self) -> None:
+        """A declared DECIMAL(38, 2) value has 36 integer digits; a Dremio
+        decimal quotient keeps 32 and overflows silently past them, so 10^24
+        did not fit the old DECIMAL(38, 14) step either."""
+        sql = _sql("Wide Source Avg", "dremio")
+        assert "MOD(" not in sql, sql
+
+    def test_dremio_divides_a_declared_width_it_holds(self) -> None:
+        """DECIMAL(30, 2), result widened to it: 28 integer digits fit, and no
+        step narrows them to the old 24."""
+        sql = _sql("Broad Avg", "dremio")
+        assert "MOD(" in sql, sql
+        assert "DECIMAL(38, 14)" not in sql, sql
 
     def test_a_wider_fraction_is_truncated_not_rounded(self) -> None:
         """DECIMAL(38, 19), not declared: 0.0049999999999999995 is 0.00. Cast

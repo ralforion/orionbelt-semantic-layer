@@ -341,7 +341,7 @@ def rewrite_exact_integer_avg(
         if not isinstance(target, DecimalType):
             return None
         decimal = dialect.exact_decimal_avg(
-            aggregate.args[0], target, _declared_scale(measure, model)
+            aggregate.args[0], target, _declared_width(measure, model)
         )
         return (rebuild(decimal), target) if decimal is not None else None
     target = resolved if measure.data_type else _integer_avg_target(measure, resolved, model)
@@ -374,18 +374,26 @@ def _averages_decimal_columns(measure: Measure, model: SemanticModel | None) -> 
     return True
 
 
-def _declared_scale(measure: Measure, model: SemanticModel | None) -> int | None:
-    """The widest ``sqlScale`` the columns *measure* averages declare, if any does."""
+def _declared_width(measure: Measure, model: SemanticModel | None) -> DecimalType | None:
+    """The decimal holding every column *measure* averages, by their declared widths.
+
+    ``None`` unless each column declares both ``sqlPrecision`` and ``sqlScale``:
+    one undeclared column leaves the values' width unknown.
+    """
     if model is None:
         return None
-    scales = [
-        column.sql_scale
-        for ref in measure.columns
-        if (obj := model.data_objects.get(ref.view or "")) is not None
-        and (column := obj.columns.get(ref.column or "")) is not None
-        and column.sql_scale is not None
-    ]
-    return max(scales) if scales else None
+    widths: list[tuple[int, int]] = []
+    for ref in measure.columns:
+        obj = model.data_objects.get(ref.view or "")
+        column = obj.columns.get(ref.column or "") if obj is not None else None
+        if column is None or column.sql_precision is None or column.sql_scale is None:
+            return None
+        widths.append((column.sql_precision - column.sql_scale, column.sql_scale))
+    if not widths:
+        return None
+    integer_digits = max(digits for digits, _ in widths)
+    scale = max(scale for _, scale in widths)
+    return DecimalType(precision=integer_digits + scale, scale=scale)
 
 
 def exact_reaggregate_avg(

@@ -429,7 +429,8 @@ class Dialect(ABC):
     def _exact_avg_by_sum_over_count(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """``SUM(x) / COUNT(x)`` in decimal, for engines that divide exactly.
 
-        The textbook rewrite, shared by Dremio and Databricks. It is *not*
+        The textbook rewrite, Databricks'. Dremio rounds each quotient before
+        the cast rounds it again and has its own. It is *not*
         available on DuckDB, where every division returns DOUBLE whatever the
         operands - that engine assembles its average from integer arithmetic
         instead, in its own override (#316).
@@ -560,7 +561,7 @@ class Dialect(ABC):
         return None
 
     def exact_decimal_avg(
-        self, arg: Expr, obml_type: OBMLType, source_scale: int | None = None
+        self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
     ) -> Expr | None:
         """An exact ``AVG(arg)`` over a decimal column, or ``None`` to keep ``AVG``.
 
@@ -568,8 +569,9 @@ class Dialect(ABC):
         exact: PostgreSQL, MySQL, Snowflake, BigQuery and Databricks, measured.
         DuckDB, ClickHouse and Dremio average a decimal as a double, so they
         override this, each its own way, as they do :meth:`exact_integer_avg`.
-        ``obml_type`` is the decimal the result is cast to, *source_scale* the
-        widest scale the column declares (``sqlScale``), if it does.
+        ``obml_type`` is the decimal the result is cast to, *source_type* the
+        decimal the columns declare (``sqlPrecision``, ``sqlScale``), if they
+        do; an engine whose total can outgrow its arithmetic checks it.
 
         **Narrow the total, never the values, and only by truncating, to a
         place past the result.** Rounding the result half away from zero asks
