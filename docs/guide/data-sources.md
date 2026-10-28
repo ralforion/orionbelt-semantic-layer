@@ -123,15 +123,16 @@ execute, an unknown one fails the load at `dataObjects.<name>.dataSource`.
 
 A query reading data objects of several sources is compiled into one query per
 source, a *leg*, and a DuckDB query combining them. Every surface that executes
-queries runs it the same way: REST `query/execute`, OBSQL (REST
-`query/semantic-ql`, Flight SQL and pgwire) and `obsl execute`. Each leg runs on
+queries runs it the same way: REST `query/execute`, the one-shot batch
+(`oneshot/batch`), OBSQL (REST `query/semantic-ql`, Flight SQL and pgwire) and
+`obsl execute`. Each leg runs on
 its own source, all at once, then the combine query in an in-memory DuckDB
 inside OBSL, through the result cache the surfaces share, so a query cached by
 one is a hit on the others. `query/sql` and `obsl compile` show the plan, the
-REST execute response lists the legs in `federation`, and lineage names each
-table's data source. The one-shot batch (`oneshot/batch`) and the database
-`EXPLAIN` of `query/plan` run on one source and refuse such a model with
-`FEDERATION_NOT_ENABLED`.
+REST execute and one-shot responses list the legs in `federation`, and lineage
+names each table's data source. The database `EXPLAIN` of `query/plan` explains
+each leg on its own source (`database_explain_legs`); the combine query runs in
+OBSL's DuckDB over the legs' results, so no warehouse has a plan for it.
 
 A query on such a model that reads only one source is not split: it runs on
 that source, written in its dialect.

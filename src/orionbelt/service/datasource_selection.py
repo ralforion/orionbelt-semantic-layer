@@ -109,8 +109,9 @@ def model_datasource_name(model: SemanticModel | None) -> str | None:
         raise FederationNotEnabledError(
             f"[FEDERATION_NOT_ENABLED] {_model_label(model)} reads its data objects from "
             f"more than one data source ({listed}), and this runs on one. Query "
-            "execution runs queries on such a model (query/execute, OBSQL, Flight SQL, "
-            "pgwire, obsl execute); here, give every data object the same data source."
+            "execution runs queries on such a model (query/execute, the one-shot batch, "
+            "OBSQL, Flight SQL, pgwire, obsl execute); here, give every data object the "
+            "same data source."
         )
     return next(iter(readers.values()), (default, []))[0]
 

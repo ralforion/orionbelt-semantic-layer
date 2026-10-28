@@ -241,6 +241,127 @@ class TestRestValueSearch:
         assert response.json()["detail"]["errors"][0]["code"] == "FEDERATION_NO_MEASURES"
 
 
+ORDERS_BY_DATE = {
+    "select": {"dimensions": ["Order Date"], "measures": ["Revenue"]},
+    "orderBy": [{"field": "Order Date"}],
+}
+
+
+class TestOneshot:
+    async def batch(self, api: Any, yaml: str, query: dict[str, Any], **body: Any) -> Any:
+        response = await api.post(
+            "/v1/oneshot/batch",
+            json={
+                "model_yaml": yaml,
+                "queries": [{"id": "q", "query": query}],
+                "execute": True,
+                **body,
+            },
+        )
+        assert response.status_code == 200, response.text
+        (result,) = response.json()["results"]
+        assert result["status"] == "ok", result
+        return result
+
+    async def test_runs_across_sources_and_lists_the_legs(self, api: Any) -> None:
+        federated = await self.batch(api, federated_model(), REVENUE_BY_REGION)
+        single = await self.batch(api, single_model(), REVENUE_BY_REGION)
+
+        assert federated["executed"] is True
+        assert federated["rows"] == single["rows"]
+        assert len(federated["rows"]) == 3
+        assert [leg["data_source"] for leg in federated["federation"]["legs"]] == ["shop", "crm"]
+        assert single["federation"] is None
+
+    async def test_a_repeat_is_served_from_the_cache(self, api: Any) -> None:
+        first = await self.batch(api, federated_model(), REVENUE_BY_REGION)
+        again = await self.batch(api, federated_model(), REVENUE_BY_REGION)
+
+        assert first["cached"] is False
+        assert again["cached"] is True
+        assert again["rows"] == first["rows"]
+
+    async def test_compiling_only_lists_the_legs(self, api: Any) -> None:
+        result = await self.batch(api, federated_model(), REVENUE_BY_REGION, execute=False)
+
+        assert result["executed"] is False
+        assert [leg["data_source"] for leg in result["federation"]["legs"]] == ["shop", "crm"]
+
+    @ONE_SOURCE_MODELS
+    async def test_a_query_on_one_source(self, api: Any, yaml: str) -> None:
+        result = await self.batch(api, yaml, ORDERS_BY_DATE)
+        single = await self.batch(api, single_model(), ORDERS_BY_DATE)
+
+        assert result["dialect"] == "duckdb"
+        assert result["federation"] is None
+        assert result["rows"] == single["rows"]
+        assert len(result["rows"]) == 7
+
+
+class TestPlanExplain:
+    async def plan(self, api: Any, yaml: str, query: dict[str, Any]) -> Any:
+        session = (await api.post("/v1/sessions")).json()["session_id"]
+        loaded = await api.post(f"/v1/sessions/{session}/models", json={"model_yaml": yaml})
+        assert loaded.status_code == 201, loaded.text
+        response = await api.post(
+            f"/v1/sessions/{session}/query/plan",
+            json={
+                "model_id": loaded.json()["model_id"],
+                "query": query,
+                "include_database_explain": True,
+            },
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    async def test_each_leg_is_explained_on_its_own_source(self, api: Any) -> None:
+        plan = await self.plan(api, federated_model(), REVENUE_BY_REGION)
+
+        assert plan["database_explain"] is None
+        legs = plan["database_explain_legs"]
+        assert [(leg["leg"], leg["data_source"], leg["dialect"]) for leg in legs] == [
+            ("leg_0", "shop", "duckdb"),
+            ("leg_1", "crm", "duckdb"),
+        ]
+        assert all(leg["explain_output"] for leg in legs)
+        assert "orders" in legs[0]["compiled_sql"]
+        assert "customers" in legs[1]["compiled_sql"]
+        assert not [w for w in plan["warnings"] if w["code"] == "DATABASE_EXPLAIN_FAILED"]
+
+    @ONE_SOURCE_MODELS
+    async def test_a_query_on_one_source(self, api: Any, yaml: str) -> None:
+        plan = await self.plan(api, yaml, ORDERS_BY_DATE)
+
+        assert plan["database_explain_legs"] == []
+        assert plan["database_explain"]["dialect"] == "duckdb"
+        assert plan["database_explain"]["explain_output"]
+        assert not [w for w in plan["warnings"] if w["code"] == "DATABASE_EXPLAIN_FAILED"]
+
+    async def test_a_leg_that_cannot_be_explained_is_named(
+        self, api: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        session = (await api.post("/v1/sessions")).json()["session_id"]
+        loaded = await api.post(
+            f"/v1/sessions/{session}/models", json={"model_yaml": federated_model()}
+        )
+        # Loaded, then the crm database moves out from under it.
+        monkeypatch.setenv("DB_CRM_DUCKDB_DATABASE", str(tmp_path / "gone" / "crm.duckdb"))
+        response = await api.post(
+            f"/v1/sessions/{session}/query/plan",
+            json={
+                "model_id": loaded.json()["model_id"],
+                "query": REVENUE_BY_REGION,
+                "include_database_explain": True,
+            },
+        )
+
+        plan = response.json()
+        assert [leg["data_source"] for leg in plan["database_explain_legs"]] == ["shop"]
+        failed = [w for w in plan["warnings"] if w["code"] == "DATABASE_EXPLAIN_FAILED"]
+        assert len(failed) == 1
+        assert "crm" in failed[0]["message"]
+
+
 @pytest.mark.usefixtures("sources")
 class TestCli:
     def test_obsql(self) -> None:

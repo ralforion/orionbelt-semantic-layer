@@ -24,6 +24,7 @@ from orionbelt.api.deps import (
 )
 from orionbelt.api.query_cache import (
     CachedEntry,
+    execute_federated_with_cache,
     execution_result_from_data,
     try_cache_get,
     try_cache_set,
@@ -44,6 +45,7 @@ from orionbelt.api.schemas import (
     StructuredWarning,
 )
 from orionbelt.api.services.model_loading import model_validation_http_error
+from orionbelt.api.services.query_compilation import federation_response
 from orionbelt.api.warnings_adapter import semantic_error_to_detail, semantic_error_to_warning
 from orionbelt.cache import (
     build_cache_key,
@@ -66,7 +68,7 @@ from orionbelt.dialect.base import (
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.errors import SemanticError
-from orionbelt.service.datasource_selection import resolve_datasource
+from orionbelt.service.datasource_selection import resolve_query_source
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
@@ -263,12 +265,13 @@ async def _run_query(
                 id=item.id,
                 status="ok",
                 sql=sql_str,
-                dialect=dialect,
+                dialect=compile_result.dialect,
                 sql_valid=compile_result.sql_valid,
                 explain=explain,
                 executed=False,
                 warnings=warnings,
                 physical_tables=physical_tables,
+                federation=federation_response(compile_result),
             )
 
         if not is_query_execute_enabled():
@@ -285,8 +288,31 @@ async def _run_query(
             )
 
         model = store.get_model(model_id)
+        model_default_tz: str | None = None
+        override_db_tz = False
+        if model.settings:
+            model_default_tz = model.settings.default_timezone
+            override_db_tz = model.settings.override_database_timezone
+        tz = resolve_timezone(default_timezone=model_default_tz)
+        if compile_result.federation is not None:
+            return await _run_federated(
+                store=store,
+                model_id=model_id,
+                model=model,
+                item=item,
+                compile_result=compile_result,
+                cache=cache,
+                cache_config=cache_config,
+                tz=tz,
+                override_db_tz=override_db_tz,
+                timeout_s=per_query_timeout_s,
+            )
+        # Run, keyed and reported in the dialect it was compiled for: a query
+        # reading one source of a model read from several is written in that
+        # source's, not in the one requested.
+        dialect = compile_result.dialect
         try:
-            source = resolve_datasource(model, dialect)
+            source = resolve_query_source(model, compile_result)
         except ExecutionUnavailableError as exc:
             return OneshotBatchQueryResult(
                 id=item.id,
@@ -299,12 +325,6 @@ async def _run_query(
         datasource = (
             datasource_key_for(source) if source is not None else build_datasource_key(dialect)
         )
-        model_default_tz: str | None = None
-        override_db_tz = False
-        if model.settings:
-            model_default_tz = model.settings.default_timezone
-            override_db_tz = model.settings.override_database_timezone
-        tz = resolve_timezone(default_timezone=model_default_tz)
 
         # Freshness-driven cache lookup. Cacheable here is always True
         # because oneshot batch produces canonical JSON only — but non-
@@ -481,11 +501,7 @@ async def _run_query(
                 table=arrow_table,
             )
         elif ttl_outcome.no_cache_reason is not None:
-            ttl_source = (
-                "no_cache"
-                if ttl_outcome.no_cache_reason.value == "unknown_freshness"
-                else f"no_cache:{ttl_outcome.no_cache_reason.value}"
-            )
+            ttl_source = _no_cache_source(ttl_outcome)
             ttl_limiting_table = ttl_outcome.no_cache_table
 
         return OneshotBatchQueryResult(
@@ -507,6 +523,134 @@ async def _run_query(
             ttl_source=ttl_source,
             ttl_limiting_table=ttl_limiting_table,
         )
+
+
+def _no_cache_source(outcome: TtlResult) -> str:
+    """``ttl_source`` for a result the freshness policy keeps out of the cache."""
+    assert outcome.no_cache_reason is not None
+    reason = outcome.no_cache_reason.value
+    return "no_cache" if reason == "unknown_freshness" else f"no_cache:{reason}"
+
+
+async def _run_federated(
+    *,
+    store: ModelStore,
+    model_id: str,
+    model: Any,
+    item: OneshotBatchQueryItem,
+    compile_result: Any,
+    cache: Cache,
+    cache_config: Any,
+    tz: Any,
+    override_db_tz: bool,
+    timeout_s: float,
+) -> OneshotBatchQueryResult:
+    """Run a query across data sources as ``query/execute`` does, within the timeout.
+
+    Each leg on its own data source, then the DuckDB combine, through the
+    result cache ``query/execute``, Flight and pgwire share (see
+    :func:`~orionbelt.api.query_cache.execute_federated_with_cache`). A query
+    timed out stops being waited for; its legs run to their end, holding their
+    federation slot until then.
+    """
+    declared = declared_arrow_types(model, item.query)
+    try:
+        ran = await asyncio.wait_for(
+            execute_federated_with_cache(
+                store=store,
+                model=model,
+                compile_result=compile_result,
+                model_id=model_id,
+                cache=cache,
+                cache_config=cache_config,
+                tz=tz,
+                override_db_tz=override_db_tz,
+                cacheable=getattr(cache, "backend_name", "noop") != "noop",
+                declared_types=declared,
+                query=item.query,
+            ),
+            timeout=timeout_s,
+        )
+    except TimeoutError:
+        return OneshotBatchQueryResult(
+            id=item.id,
+            status="error",
+            error=OneshotBatchQueryError(
+                code="QUERY_TIMEOUT",
+                message=f"Query exceeded {timeout_s}s execution timeout",
+            ),
+        )
+    except ExecutionUnavailableError as exc:
+        return OneshotBatchQueryResult(
+            id=item.id,
+            status="error",
+            error=OneshotBatchQueryError(code="EXECUTION_UNAVAILABLE", message=str(exc)),
+        )
+    except ExecutionError as exc:
+        return OneshotBatchQueryResult(
+            id=item.id,
+            status="error",
+            error=OneshotBatchQueryError(code="EXECUTION_ERROR", message=str(exc)),
+        )
+
+    if ran.cached:
+        # Reconciled again for its skips, as /query/execute does on a hit.
+        table, skips = reconcile_to_declared(ran.data_table, declared)
+        exec_result = execution_result_from_data(
+            table,
+            execution_time_ms=ran.fetch_elapsed_ms or 0.0,
+            tz=tz,
+            columns=ran.hit_columns,
+        )
+    else:
+        assert ran.exec_result is not None  # a miss always executed
+        exec_result, skips = ran.exec_result, ran.declared_skips
+    envelope = _build_execute_response(
+        compile_result=compile_result,
+        exec_result=exec_result,
+        model=model,
+        declared_skips=skips,
+        query=item.query,
+        response_format="json",
+        format_values=False,
+        locale="",
+        cached=ran.cached,
+        cached_at=ran.cached_at_iso,
+    )
+    assert isinstance(envelope, QueryExecuteResponse)
+
+    ttl_seconds: int | None = None
+    ttl_source: str | None = None
+    ttl_limiting_table: str | None = None
+    outcome = ran.ttl_outcome
+    if outcome is not None and outcome.ttl is not None:
+        ttl_seconds = outcome.ttl.seconds
+        ttl_source = outcome.ttl.source
+        ttl_limiting_table = outcome.ttl.limiting_table
+    elif outcome is not None and outcome.no_cache_reason is not None:
+        ttl_source = _no_cache_source(outcome)
+        ttl_limiting_table = outcome.no_cache_table
+    return OneshotBatchQueryResult(
+        id=item.id,
+        status="ok",
+        sql=envelope.sql,
+        dialect=envelope.dialect,
+        sql_valid=envelope.sql_valid,
+        explain=envelope.explain,
+        columns=envelope.columns,
+        rows=envelope.rows,
+        row_count=envelope.row_count,
+        execution_time_ms=envelope.execution_time_ms,
+        executed=True,
+        warnings=envelope.warnings,
+        physical_tables=list(compile_result.physical_tables),
+        cached=ran.cached,
+        cached_at=envelope.cached_at,
+        ttl_seconds=ttl_seconds,
+        ttl_source=ttl_source,
+        ttl_limiting_table=ttl_limiting_table,
+        federation=federation_response(compile_result),
+    )
 
 
 @router.post(
