@@ -57,7 +57,7 @@ jobs:
       # (e.g. several test_driver.py), so a root-level collection errors on the
       # name clashes. Run each package's suite from its own directory instead,
       # same as osi-orionbelt. Exit code 5 = "no tests collected" is treated as
-      # success so a driver without tests (e.g. ob-bigquery) doesn't fail CI.
+      # success so a driver without tests doesn't fail CI.
       - name: Run driver test suites
         run: |
           rc=0
@@ -160,10 +160,10 @@ jobs:
             echo "::group::$name"
             (
               cd "$pkg"
-              # ob-bigquery ships no tests yet, so lint what exists. Assigned
-              # on its own line: an assignment carries the exit status of its
-              # command substitution, and inside an && chain a missing tests
-              # directory would skip the checks rather than narrow them.
+              # A driver without tests lints what exists. Assigned on its own
+              # line: an assignment carries the exit status of its command
+              # substitution, and inside an && chain a missing tests directory
+              # would skip the checks rather than narrow them.
               paths="src"
               [ -d tests ] && paths="src tests"
               uv run --no-project ruff check $paths \

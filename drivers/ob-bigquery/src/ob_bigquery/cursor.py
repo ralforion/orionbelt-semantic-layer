@@ -2,11 +2,13 @@
 
 ``execute()`` fetches results as an Arrow table via ``RowIterator.to_arrow()``
 for zero-copy Arrow Flight support.  ``fetch_arrow_table()`` returns the
-native Arrow table directly.
+native Arrow table directly.  ``execute_stream()`` streams a result too large
+to buffer.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pyarrow as pa
@@ -78,16 +80,7 @@ class Cursor:
         Arrow Flight support.
         """
         self._check_open()
-        sql = self._resolve_sql(operation)
-        if parameters is not None:
-            query_params = [_to_query_parameter(k, v) for k, v in parameters.items()]
-            from google.cloud.bigquery import QueryJobConfig
-
-            job_config = QueryJobConfig(query_parameters=query_params)
-            self._results = self._native.query(sql, job_config=job_config)
-        else:
-            self._results = self._native.query(sql)
-
+        self._results = self._query(self._resolve_sql(operation), parameters)
         self._arrow_table = self._results.to_arrow()
         pydict = self._arrow_table.to_pydict()
         col_names = list(pydict.keys())
@@ -95,6 +88,46 @@ class Cursor:
         self._rows = [tuple(pydict[c][i] for c in col_names) for i in range(n)]
         self._index = 0
         return self
+
+    def execute_stream(self, operation: str, parameters: Any = None) -> pa.RecordBatchReader:
+        """Execute a query and stream its result as a ``pyarrow.RecordBatchReader``.
+
+        Not PEP 249: :meth:`execute` buffers the whole result, as an Arrow
+        table and as rows, which a result too large for memory cannot afford.
+        The reader downloads the result page by page as it is consumed, each
+        page held to the first page's types (see :mod:`ob_bigquery.arrow_stream`).
+        ``description`` and ``rowcount`` are set; the ``fetch*()`` methods
+        return nothing.
+        """
+        self._check_open()
+        from ob_bigquery.arrow_stream import one_schema_reader
+
+        job = self._query(self._resolve_sql(operation), parameters)
+        rows = job.result()
+        self._results = job
+        self._arrow_table = None
+        self._rows = []
+        self._index = 0
+
+        def pages() -> Iterator[pa.Table]:
+            empty = True
+            for batch in rows.to_arrow_iterable():
+                empty = False
+                yield pa.Table.from_batches([batch])
+            if empty:
+                # No page at all: the whole (empty) result carries the schema.
+                yield job.to_arrow()
+
+        return one_schema_reader(pages(), pa.schema([]))
+
+    def _query(self, sql: str, parameters: Any) -> Any:
+        """Start *sql* as a query job, with *parameters* bound by name."""
+        if parameters is None:
+            return self._native.query(sql)
+        from google.cloud.bigquery import QueryJobConfig
+
+        query_params = [_to_query_parameter(k, v) for k, v in parameters.items()]
+        return self._native.query(sql, job_config=QueryJobConfig(query_parameters=query_params))
 
     def executemany(self, operation: str, seq_of_parameters: Any) -> None:
         """Execute against all parameter sequences.

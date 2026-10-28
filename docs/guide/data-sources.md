@@ -193,10 +193,9 @@ default one, a spilled file takes the same memory it was meant to free; leave
 `FEDERATION_SPILL_DIR` unset there, or point it at a disk-backed volume.
 [Docker](../getting-started/docker.md#spilling-federated-queries-to-disk)
 shows the volume to mount, how large it needs to be, and the same for
-Kubernetes. A leg
-is read batch by batch from DuckDB and Postgres; the other drivers return
-their rows whole, so their legs are not spilled yet and stay within memory
-and `FEDERATION_MAX_LEG_ROWS`.
+Kubernetes. A leg is read batch by batch from every data source, so a leg
+that spills is never held whole in memory; it is still bounded by
+`FEDERATION_MAX_LEG_ROWS`.
 
 The legs read their sources at slightly different moments: there is no
 snapshot across databases. Naive timestamps are combined as each source

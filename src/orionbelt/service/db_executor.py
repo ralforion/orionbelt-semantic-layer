@@ -851,9 +851,11 @@ def execute_sql(
             database session timezone (for cases where naive timestamps
             are stored in a known timezone that differs from the DB session).
         sink: Builds the result's Arrow table from a ``pyarrow.RecordBatchReader``
-            over the rows, where the driver streams them (DuckDB, and drivers
-            whose cursor has ``fetch_record_batch()``); elsewhere the result is
-            fetched whole, as without one. A federated leg spills through it.
+            over the rows, where the driver streams them (DuckDB, drivers
+            whose cursor has ``fetch_record_batch()``, and those that buffer a
+            result in ``execute()`` but stream one from ``execute_stream()``);
+            elsewhere the result is fetched whole, as without one. A federated
+            leg spills through it.
 
     Raises:
         ExecutionUnavailableError: if ob-flight-extension or vendor driver
@@ -885,6 +887,10 @@ def execute_sql(
                 else:
                     db_tz = _detect_db_timezone(cursor, dialect, _tz_key(datasource))
                     effective_tz = db_tz or tz
+                if sink is not None and hasattr(cursor, "execute_stream"):
+                    # The driver buffers what ``execute()`` returns, so asking
+                    # it for batches afterwards would read the result whole.
+                    return _arrow_result(sink(cursor.execute_stream(sql)), t0, tz=effective_tz)
                 cursor.execute(sql)
                 return _fetch_result(cursor, t0, tz=effective_tz, sink=sink)
             finally:
@@ -1070,6 +1076,26 @@ def _execute_duckdb(
             conn.close()
 
 
+def _arrow_result(arrow_table: Any, t0: float, *, tz: ZoneInfo | None) -> ExecutionResult:
+    """An Arrow result, its columns typed from the table's schema."""
+    columns = [
+        ColumnMeta(
+            name=f.name,
+            type_hint=_arrow_type_to_hint(f.type),
+            default_format=_default_format_for_arrow_type(f.type),
+        )
+        for f in arrow_table.schema
+    ]
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    return ExecutionResult(
+        columns=columns,
+        arrow_table=arrow_table,
+        row_count=arrow_table.num_rows,
+        execution_time_ms=round(elapsed_ms, 2),
+        tz=tz,
+    )
+
+
 def _fetch_result(
     cursor: Any,
     t0: float,
@@ -1088,22 +1114,7 @@ def _fetch_result(
         # Try Arrow-native fetch first (DuckDB, Snowflake, etc.)
         arrow_table = _try_fetch_arrow(cursor)
     if arrow_table is not None:
-        columns = [
-            ColumnMeta(
-                name=f.name,
-                type_hint=_arrow_type_to_hint(f.type),
-                default_format=_default_format_for_arrow_type(f.type),
-            )
-            for f in arrow_table.schema
-        ]
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        return ExecutionResult(
-            columns=columns,
-            arrow_table=arrow_table,
-            row_count=arrow_table.num_rows,
-            execution_time_ms=round(elapsed_ms, 2),
-            tz=tz,
-        )
+        return _arrow_result(arrow_table, t0, tz=tz)
 
     # Fallback: PEP 249 fetchall()
     pep_columns: list[ColumnMeta] = []

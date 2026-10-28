@@ -232,6 +232,47 @@ class TestExecuteSql:
         mock_cursor.close.assert_called_once()
 
     @_needs_ob_flight
+    @pytest.mark.parametrize("streams", [True, False], ids=["with a sink", "without"])
+    def test_a_driver_that_buffers_streams_through_execute_stream(self, streams: bool) -> None:
+        """Only for a sink: ``execute()`` would read the whole result first."""
+        import pyarrow as pa
+
+        table = pa.table({"n": [1, 2, 3]})
+        mock_cursor = MagicMock()
+        mock_cursor.execute_stream.return_value = pa.RecordBatchReader.from_batches(
+            table.schema, table.to_batches(max_chunksize=1)
+        )
+        mock_cursor.fetch_arrow_table.return_value = table
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        batches: list[int] = []
+
+        def sink(reader: pa.RecordBatchReader) -> pa.Table:
+            read = list(reader)
+            batches.extend(b.num_rows for b in read)
+            return pa.Table.from_batches(read, schema=reader.schema)
+
+        with patch(
+            "ob_flight.db_router.get_connection",
+            side_effect=_mock_get_connection(mock_conn),
+            create=True,
+        ):
+            result = execute_sql(
+                "SELECT n FROM t", dialect="postgres", sink=sink if streams else None
+            )
+
+        assert result.arrow_table is not None and result.arrow_table.equals(table)
+        ran = [c.args[0] for c in mock_cursor.execute.call_args_list]
+        if streams:
+            mock_cursor.execute_stream.assert_called_once_with("SELECT n FROM t")
+            assert "SELECT n FROM t" not in ran
+            assert batches == [1, 1, 1]
+        else:
+            mock_cursor.execute_stream.assert_not_called()
+            assert "SELECT n FROM t" in ran
+        mock_cursor.close.assert_called_once()
+
+    @_needs_ob_flight
     def test_duckdb_direct_execution(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """DuckDB falls back to the PEP 249 path when pyarrow is not loaded."""
         monkeypatch.delitem(sys.modules, "pyarrow", raising=False)
