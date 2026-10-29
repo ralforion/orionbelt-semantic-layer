@@ -153,9 +153,11 @@ class TestCompile:
         sql = _sql(P90.replace("disc", "cont"), "P90")
         assert "AS DECIMAL" not in sql
 
-    def test_total_refused(self) -> None:
-        with pytest.raises(Exception, match="does not support total"):
-            _sql(P90 + "    total: true\n", "P90")
+    def test_a_total_is_computed_apart(self) -> None:
+        """A percentile of the whole is not a combination of the groups'."""
+        sql = _sql(P90 + "    total: true\n", "P90")
+        assert '"__ob_total_0" AS (' in sql
+        assert 'CROSS JOIN "__ob_total_0"' in sql
 
 
 def _call(name: str, fraction: str = "0.3") -> FunctionCall:

@@ -31,7 +31,7 @@ QueryObject + SemanticModel
          v
 +-----------------+
 |  Phase 2.5-2.6: |
-|  Total Wrap     |  -> CTE + AGG(x) OVER () for total measures
+|  Total Wrap     |  -> CTE + AGG(x) OVER (), or a CTE per grain, for totals
 |  Cumulative Wrap|  -> CTE + window functions for cumulative metrics
 +--------+--------+
          |

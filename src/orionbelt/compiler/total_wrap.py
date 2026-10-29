@@ -1,24 +1,30 @@
-"""Wrapper CTE for total and grain-override measures using window functions.
+"""Wrapper CTE for total and grain-override measures.
 
-When a measure has ``total: true`` or a ``grain`` override, the per-group
-aggregate must be re-aggregated via ``AGG(x) OVER (PARTITION BY ...)``.
-For grand totals the partition is empty (``OVER ()``); for grain overrides
-the partition contains the effective grain dimensions.
+When a measure has ``total: true`` or a ``grain`` override, its value is
+computed over more rows than one group's. Two ways, by aggregation:
 
-Because window functions cannot coexist with ``GROUP BY`` on pre-grouped
-rows, we wrap the planner output in a CTE and apply window functions in
-an outer query.
+* **A window over the grouped rows**, ``AGG(x) OVER (PARTITION BY ...)``, for
+  the aggregations whose total is a combination of per-group values (below).
+  For grand totals the partition is empty (``OVER ()``); for grain overrides
+  it holds the effective grain dimensions. Window functions cannot coexist with
+  ``GROUP BY`` on pre-grouped rows, so the planner output becomes a CTE and the
+  windows run in an outer query.
+* **A CTE of its own** for every other aggregation, and for every total under
+  ``rollup`` or ``cube``: the measure computed again over the plan's own rows,
+  grouped by the total's grain (nothing, for a grand total), and joined back
+  (:func:`computed_apart`). A standard deviation, a distinct count or a median
+  of the whole is not a combination of the groups' values, and a window over
+  ``rollup`` rows also adds the subtotal rows.
 
-Re-aggregation mapping (outer window function per aggregation type):
+Re-aggregation by window:
 
-| Original       | Window Re-agg            | Notes                          |
-|----------------|--------------------------|--------------------------------|
-| SUM            | SUM(x) OVER (...)        | sum of per-group sums          |
-| COUNT          | SUM(x) OVER (...)        | sum of per-group counts        |
-| COUNT_DISTINCT | SUM(x) OVER (...)        | approximation (may overcount)  |
-| MIN            | MIN(x) OVER (...)        | min of per-group mins          |
-| MAX            | MAX(x) OVER (...)        | max of per-group maxes         |
-| AVG            | SUM(s)/SUM(c) OVER (...) | exact via sum+count helpers    |
+| Original | Window re-aggregation    | Notes                       |
+|----------|--------------------------|-----------------------------|
+| SUM      | SUM(x) OVER (...)        | sum of per-group sums       |
+| COUNT    | SUM(x) OVER (...)        | sum of per-group counts     |
+| MIN      | MIN(x) OVER (...)        | min of per-group mins       |
+| MAX      | MAX(x) OVER (...)        | max of per-group maxes      |
+| AVG      | SUM(s)/SUM(c) OVER (...) | exact via sum+count helpers |
 """
 
 from __future__ import annotations
@@ -36,8 +42,12 @@ from orionbelt.ast.nodes import (
     Expr,
     From,
     FunctionCall,
+    IsNull,
+    Join,
+    JoinType,
     Literal,
     Select,
+    Unnest,
     WindowFunction,
 )
 from orionbelt.compiler.having_hoist import apply_having_hoist, grouped_predicates
@@ -46,35 +56,55 @@ from orionbelt.compiler.outer_order_by import remap_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.models.semantic import SemanticModel
 
-_UNSUPPORTED_TOTAL_AGGS = frozenset(
-    {
-        "MEDIAN",
-        "PERCENTILE_CONT",
-        "PERCENTILE_DISC",
-        "FIRST",
-        "LAST",
-        "MODE",
-        "LISTAGG",
-        "ANY_VALUE",
-    }
-)
+# The aggregations a window over the grouped rows re-aggregates exactly, and
+# the window function that does it. ``AVG`` is the sum of its per-group sums
+# over the sum of its counts (:func:`is_avg_total`).
+_WINDOW_REAGGREGATION = {"SUM": "SUM", "COUNT": "SUM", "MIN": "MIN", "MAX": "MAX", "AVG": "SUM"}
 
 
 def _reagg_func(aggregation: str) -> str:
     """Return the outer window function name for a given aggregation."""
-    agg = aggregation.upper()
-    if agg in _UNSUPPORTED_TOTAL_AGGS:
-        raise ValueError(
-            f"Aggregation '{agg}' does not support total: true "
-            "(cannot be re-aggregated via window functions)"
-        )
-    if agg in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG"):
-        return "SUM"
-    if agg == "MIN":
-        return "MIN"
-    if agg == "MAX":
-        return "MAX"
-    return "SUM"
+    return _WINDOW_REAGGREGATION[aggregation.upper()]
+
+
+def computed_apart(measure: ResolvedMeasure, resolved: ResolvedQuery) -> bool:
+    """Whether a total or grain override is computed in a CTE of its own.
+
+    A window over the grouped rows combines per-group values, which is the
+    total only for a sum, a count, a minimum, a maximum and an average (from
+    per-group sums and counts), each over all its values: summed per region, a
+    standard deviation answered the sum of the regions' standard deviations
+    and a distinct count counted a value once per region it appeared in. Under
+    ``rollup`` or ``cube`` the grouped rows include the subtotal rows, so even
+    a sum's total added each row once per level (70 came out 210). Such a
+    measure is computed again over the plan's own rows instead, grouped by
+    its grain, which gives every aggregation its exact value.
+    """
+    if not _needs_window_wrap(measure, resolved.dedup_computed):
+        return False
+    return (
+        resolved.grouping is not None
+        or measure.aggregation.upper() not in _WINDOW_REAGGREGATION
+        or _aggregates_distinct(measure.expression)
+    )
+
+
+def _aggregates_distinct(expr: Expr) -> bool:
+    """Whether *expr* holds an aggregate over distinct values (``SUM(DISTINCT x)``)."""
+    if isinstance(expr, FunctionCall) and expr.distinct:
+        return True
+    if not is_dataclass(expr):
+        return False
+    for field in fields(expr):
+        value = getattr(expr, field.name)
+        for child in value if isinstance(value, (list, tuple)) else (value,):
+            if (
+                is_dataclass(child)
+                and not isinstance(child, type)
+                and _aggregates_distinct(cast(Expr, child))
+            ):
+                return True
+    return False
 
 
 def _needs_window_wrap(measure: ResolvedMeasure, dedup_computed: Container[str]) -> bool:
@@ -216,18 +246,21 @@ def _metrics_with_total_components(resolved: ResolvedQuery) -> set[str]:
 def _substitute_metric_refs(
     expr: Expr,
     resolved: ResolvedQuery,
-    total_names: set[str],
+    apart: dict[str, Expr],
 ) -> Expr:
     """Walk a metric AST and replace ColumnRef placeholders.
 
     Non-total components → ColumnRef (pass-through from base CTE).
-    Total components → WindowFunction (re-aggregation).
+    Total components → WindowFunction (re-aggregation), or the column of the
+    CTE that computes them apart (*apart*, :func:`computed_apart`).
 
     A nested derived metric is expanded in place, so a ``total: true`` component
     it wraps is still re-aggregated rather than read as a per-group value.
     """
 
     def value_of(comp: ResolvedMeasure) -> Expr:
+        if comp.name in apart:
+            return apart[comp.name]
         if _needs_window_wrap(comp, resolved.dedup_computed):
             return _build_total_window(comp, resolved.dedup_computed)
         return ColumnRef(name=comp.name)
@@ -251,6 +284,8 @@ def wrap_with_totals(
     if not total_names and not decompose_metrics:
         return ast
 
+    total_ctes, apart, total_joins = _total_ctes(ast, resolved)
+
     # --- Build base CTE columns from the planner's AST columns ---
     base_columns: list[Expr] = []
     # Track which component measures are already present as direct measures
@@ -262,8 +297,8 @@ def wrap_with_totals(
             # Replace metric column with its individual component columns
             metric = next(m for m in resolved.measures if m.name == alias)
             for comp in metric_leaf_components(metric, resolved.metric_components):
-                if comp.name in direct_measure_names:
-                    continue  # Already present as a direct measure
+                if comp.name in direct_measure_names or comp.name in apart:
+                    continue  # Already present as a direct measure, or computed apart
                 if is_avg_total(comp, resolved.dedup_computed):
                     # AVG total needs sum + count helper columns
                     comp_expr = resolved.projected_expressions.get(comp.name, comp.expression)
@@ -282,6 +317,8 @@ def wrap_with_totals(
                             comp,
                         )
                     )
+        elif alias in apart:
+            continue  # computed apart, in :func:`_total_ctes`
         elif alias and _is_avg_window_wrap_by_name(alias, resolved):
             # AVG total/grain-override direct measure: replace with sum + count helpers
             measure = next(m for m in resolved.measures if m.name == alias)
@@ -294,6 +331,15 @@ def wrap_with_totals(
             base_columns.append(_peel_default(col_node, measure))
         else:
             base_columns.append(col_node)
+
+    if not base_columns:
+        # Only measures computed apart, and no dimensions: the base is still
+        # the one row an aggregate over no groups returns.
+        base_columns.append(
+            AliasedExpr(
+                expr=FunctionCall(name="COUNT", args=[Literal.number(1)]), alias="__ob_rows"
+            )
+        )
 
     # --- Build base CTE: planner's AST with modified columns, no ORDER BY/LIMIT ---
     # No HAVING: a total or grain override sums every group at its grain, so
@@ -329,11 +375,13 @@ def wrap_with_totals(
             # Metric
             if m.name in decompose_metrics:
                 # Rebuild expression with window functions for total components
-                metric_expr = _substitute_metric_refs(m.expression, resolved, total_names)
+                metric_expr = _substitute_metric_refs(m.expression, resolved, apart)
                 outer_columns.append(AliasedExpr(expr=metric_expr, alias=m.name))
             else:
                 # Metric without total components: pass-through
                 outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
+        elif m.name in apart:
+            outer_columns.append(AliasedExpr(expr=apart[m.name], alias=m.name))
         elif _needs_window_wrap(m, resolved.dedup_computed):
             # Total or grain-override measure: window function
             outer_columns.append(
@@ -347,12 +395,12 @@ def wrap_with_totals(
     outer_order_by = remap_order_by(ast.order_by, resolved, model)
 
     # --- Assemble final Select ---
-    all_ctes = list(ast.ctes) + [base_cte]
+    all_ctes = [*ast.ctes, base_cte, *total_ctes]
 
     outer = Select(
         columns=outer_columns,
         from_=_from_cte("base"),
-        joins=[],
+        joins=total_joins,
         where=None,
         group_by=[],
         having=None,
@@ -366,6 +414,100 @@ def wrap_with_totals(
     # The rows a later window wrapper sees are the filtered ones, as before:
     # only the total's own window reads past the HAVING.
     return apply_having_hoist(outer, grouped_predicates(resolved, model), cte_name="totals_having")
+
+
+def _total_ctes(
+    ast: Select, resolved: ResolvedQuery
+) -> tuple[list[CTE], dict[str, Expr], list[Join | Unnest]]:
+    """The CTEs computing the measures :func:`computed_apart` asks for.
+
+    One per grain they are totalled at: the measures computed again over the
+    plan's own FROM, joins and WHERE - the rows its groups were built from,
+    before any HAVING, as a window over every group reads them - grouped by
+    the grain's dimensions, or not at all for a grand total. A grand total is
+    cross joined to every row; a grain override is joined on its dimensions,
+    a NULL member to its own group. Returns the CTEs, the column each measure
+    is read from, and the joins.
+    """
+    measures: dict[str, ResolvedMeasure] = {}
+    for m in resolved.measures:
+        for candidate in [m, *metric_leaf_components(m, resolved.metric_components)]:
+            if candidate.name not in measures and computed_apart(candidate, resolved):
+                measures[candidate.name] = candidate
+    if not measures:
+        return [], {}, []
+    dimensions = {d.name for d in resolved.dimensions}
+    projected = {
+        c.alias: c.expr
+        for c in ast.columns
+        if isinstance(c, AliasedExpr) and (c.alias in dimensions or c.alias in measures)
+    }
+    by_grain: dict[tuple[str, ...], list[ResolvedMeasure]] = {}
+    for measure in measures.values():
+        by_grain.setdefault(tuple(measure.effective_grain or ()), []).append(measure)
+
+    ctes: list[CTE] = []
+    columns_of: dict[str, Expr] = {}
+    joins: list[Join | Unnest] = []
+    for n, (grain, grouped) in enumerate(sorted(by_grain.items())):
+        name = f"__ob_total_{n}"
+        keys = [projected[d] for d in grain]
+        values: list[Expr] = [
+            AliasedExpr(expr=key, alias=f"__ob_grain_{k}") for k, key in enumerate(keys)
+        ]
+        for k, measure in enumerate(grouped):
+            alias = f"__ob_value_{k}"
+            values.append(AliasedExpr(expr=_value_apart(measure, resolved, projected), alias=alias))
+            columns_of[measure.name] = ColumnRef(name=alias, table=name)
+        ctes.append(
+            CTE(
+                name=name,
+                query=Select(
+                    columns=values,
+                    from_=ast.from_,
+                    joins=ast.joins,
+                    where=ast.where,
+                    group_by=keys,
+                ),
+            )
+        )
+        on: Expr | None = None
+        for k, dimension in enumerate(grain):
+            match = _null_safe_eq(
+                ColumnRef(name=dimension, table="base"),
+                ColumnRef(name=f"__ob_grain_{k}", table=name),
+            )
+            on = match if on is None else BinaryOp(left=on, op="AND", right=match)
+        joins.append(
+            Join(
+                join_type=JoinType.LEFT if grain else JoinType.CROSS, source=name, alias=name, on=on
+            )
+        )
+    return ctes, columns_of, joins
+
+
+def _value_apart(
+    measure: ResolvedMeasure, resolved: ResolvedQuery, projected: dict[str, Expr]
+) -> Expr:
+    """*measure*'s aggregate as the plan computes it, typed and defaulted.
+
+    A selected measure is the plan's own column, cast and defaulted already. A
+    metric's component is its aggregate, which the planner inlines into the
+    formula uncast, with its default put back on.
+    """
+    if measure.name in projected:
+        return projected[measure.name]
+    value = resolved.projected_expressions.get(measure.name, measure.expression)
+    return measure.with_default(_peel_default(value, measure))
+
+
+def _null_safe_eq(left: Expr, right: Expr) -> Expr:
+    """``left = right``, also when both are NULL: a NULL member is a group too."""
+    return BinaryOp(
+        left=BinaryOp(left=left, op="=", right=right),
+        op="OR",
+        right=BinaryOp(left=IsNull(expr=left), op="AND", right=IsNull(expr=right)),
+    )
 
 
 def _get_alias(expr: Expr) -> str | None:
