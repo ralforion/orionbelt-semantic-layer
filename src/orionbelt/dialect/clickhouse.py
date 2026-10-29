@@ -412,6 +412,30 @@ class ClickHouseDialect(Dialect):
         widened = FunctionCall(name="toDecimal128", args=[arg, Literal.number(0)])
         return self._divided_average(FunctionCall(name="SUM", args=[widened]), arg, obml_type)
 
+    def equality_key(
+        self, column: Expr, abstract_type: str, *, counted: bool
+    ) -> tuple[Expr, str] | None:
+        """A counted float as its text, which keeps ``-0`` apart from ``0``.
+
+        ClickHouse groups and counts a float by its bits: ``0.0`` and ``-0.0``
+        are two values to its ``GROUP BY`` and ``COUNT(DISTINCT)``, and so are
+        ``nan`` and ``-nan``; DuckDB makes one of each. ``toString`` tells
+        them apart exactly as ``COUNT(DISTINCT)`` does, measured, so a count
+        of distinct values counts the leg's text. A dimension keeps its value:
+        it is shown, and DuckDB groups ``0.0`` and ``-0.0`` together whatever
+        a leg returns, so there the combine step still makes one group.
+        """
+        if not counted or abstract_type != "float":
+            return None
+        return FunctionCall(name="toString", args=[column]), "string"
+
+    def wrap_leg(self, sql: str, projection: list[tuple[str, Expr]], alias: str) -> str:
+        """The leg wrapped, with its ``SETTINGS`` clause kept on the whole statement."""
+        settings = f"\n{STATEMENT_SETTINGS}"
+        inner = sql.removesuffix(settings)
+        wrapped = super().wrap_leg(inner, projection, alias)
+        return f"{wrapped}{settings}" if inner != sql else wrapped
+
     def exact_decimal_avg(
         self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
     ) -> Expr | None:

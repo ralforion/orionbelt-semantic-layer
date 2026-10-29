@@ -34,12 +34,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
     combined_averages,
     partial_sums,
     resolve_measure_cast_type,
 )
+from orionbelt.dialect.base import Dialect
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
@@ -70,6 +72,10 @@ from orionbelt.models.semantic import (
 from orionbelt.models.types import DecimalType
 
 COMBINE_DIALECT = "duckdb"
+
+# The alias a leg's own query is read under when the leg rewrites some of its
+# columns (:meth:`Dialect.equality_key`).
+_LEG_ALIAS = "__leg"
 
 # Aggregations whose result over the union of groups is computed from the
 # per-group results, and how. ``avg`` combines from two of them, a sum and a
@@ -213,7 +219,7 @@ def plan_federated(
         ResolutionError: A ``FEDERATION_*`` error for a query that does not
             split exactly.
     """
-    planner = _Planner(query, model, resolved, dialect_name)
+    planner = _Planner(query, model, resolved, dialect_name, source_dialect)
     leg_limit = leg_row_limit + 1 if leg_row_limit is not None else None
     planner.check_query_shape()
     islands = planner.islands()
@@ -258,6 +264,30 @@ def plan_federated(
             for n, m in sorted(leg_measures.items())
         ],
     ]
+    # Values the combine step groups by or counts are compared there as their
+    # own engine compares them (:meth:`Dialect.equality_key`): the selected
+    # dimensions without a grain, and the values a count of distinct values
+    # counts. A rewritten dimension a combine filter reads keeps its value
+    # too, under a name of its own, so the filter compares what it compared.
+    grouped = {
+        DimensionRef.parse(d).name
+        for d in query.select.dimensions
+        if isinstance(d, str) and not DimensionRef.parse(d).grain
+    }
+    filtered = {f for item in combine_filters for f in _filter_fields(item)}
+    kept = {name: f"__eqv{n}" for n, name in enumerate(sorted(grouped & filtered))}
+    renamed: dict[str, str] = {}
+    fact_columns, fact_rekeyed, fact_kept = _rekeyed(
+        planner.leg_dialect(islands[fact]),
+        fact_columns,
+        {
+            **{DimensionRef.parse(d).name: False for d in fact_dims},
+            **dict.fromkeys(fact_values, True),
+        },
+        grouped,
+        kept,
+    )
+    renamed.update({source: hidden for hidden, source in fact_kept.items()})
     with partial_sums():
         legs.append(
             planner.leg(
@@ -267,16 +297,19 @@ def plan_federated(
                 fact_model,
                 fact_columns,
                 compile_leg,
-                source_dialect,
                 exact_sums=tuple(
                     (sums, scale) for sums, _, scale in averages.values() if scale is not None
                 ),
+                rekeyed=fact_rekeyed,
+                kept=fact_kept,
             )
         )
     fact_joins: list[DataObjectJoin] = []
     for d in fact_dims:
         name = DimensionRef.parse(d).name
         combine_dimensions[name] = _combine_dimension(model, name, "leg_0")
+    for hidden, source in fact_kept.items():
+        combine_dimensions[hidden] = _combine_dimension(model, source, "leg_0", hidden)
 
     # One leg per dimension island: its keys and the dimensions read there.
     for e, edge in enumerate(edges, start=1):
@@ -311,9 +344,24 @@ def plan_federated(
                 for name, (obj, col) in {**keys, **static_columns}.items()
             ],
         ]
+        dim_columns, dim_rekeyed, dim_kept = _rekeyed(
+            planner.leg_dialect(island),
+            dim_columns,
+            {DimensionRef.parse(d).name: False for d in dims},
+            grouped,
+            kept,
+        )
+        renamed.update({source: hidden for hidden, source in dim_kept.items()})
         legs.append(
             planner.leg(
-                leg_name, island, dim_query, dim_model, dim_columns, compile_leg, source_dialect
+                leg_name,
+                island,
+                dim_query,
+                dim_model,
+                dim_columns,
+                compile_leg,
+                rekeyed=dim_rekeyed,
+                kept=dim_kept,
             )
         )
         combine_objects[leg_name] = DataObject(
@@ -331,6 +379,8 @@ def plan_federated(
         for d in dims:
             name = DimensionRef.parse(d).name
             combine_dimensions[name] = _combine_dimension(model, name, leg_name)
+        for hidden, source in dim_kept.items():
+            combine_dimensions[hidden] = _combine_dimension(model, source, leg_name, hidden)
         fact_joins.append(
             DataObjectJoin(
                 join_type=Cardinality.MANY_TO_ONE,
@@ -375,7 +425,7 @@ def plan_federated(
                 dimensions=[DimensionRef.parse(str(d)).name for d in query.select.dimensions],
                 measures=list(query.select.measures),
             ),
-            "where": combine_filters,
+            "where": [_renamed(item, renamed) for item in combine_filters],
             "order_by": [
                 QueryOrderBy(
                     field=DimensionRef.parse(o.field).name, direction=o.direction, nulls=o.nulls
@@ -412,9 +462,11 @@ class _Planner:
         model: SemanticModel,
         resolved: ResolvedQuery,
         dialect_name: str,
+        source_dialect: Callable[[str | None], str | None],
     ) -> None:
         self.query = query
         self.dialect_name = dialect_name
+        self.source_dialect = source_dialect
         self.model = model
         self.resolved = resolved
         self.sources = object_sources(model)
@@ -861,6 +913,11 @@ class _Planner:
             }
         )
 
+    def leg_dialect(self, island: set[str]) -> Dialect:
+        """The dialect the leg of *island* is written in."""
+        source = source_name(self.model, next(iter(sorted(island))))
+        return DialectRegistry.get(self.source_dialect(source) or self.dialect_name)
+
     def leg(
         self,
         name: str,
@@ -869,17 +926,22 @@ class _Planner:
         model: SemanticModel,
         columns: list[DataObjectColumn],
         compile_leg: Callable[[QueryObject, SemanticModel, str], str],
-        source_dialect: Callable[[str | None], str | None],
         *,
         exact_sums: tuple[tuple[str, int], ...] = (),
+        rekeyed: dict[str, tuple[str, bool]] | None = None,
+        kept: dict[str, str] | None = None,
     ) -> FederatedLeg:
+        """One leg; *rekeyed* and *kept* as :func:`_rekeyed` returns them."""
         source = source_name(self.model, next(iter(sorted(island))))
-        dialect = source_dialect(source) or self.dialect_name
+        dialect = self.leg_dialect(island)
+        sql = compile_leg(query, model, dialect.name)
+        if rekeyed:
+            sql = _rewrite_leg(dialect, sql, columns, rekeyed, kept or {})
         return FederatedLeg(
             name=name,
             data_source=source,
-            dialect=dialect,
-            sql=compile_leg(query, model, dialect),
+            dialect=dialect.name,
+            sql=sql,
             data_objects=tuple(sorted(island)),
             columns=tuple((c.name, c.abstract_type.value) for c in columns),
             physical_tables=_physical_tables(self.model, island),
@@ -907,15 +969,86 @@ def _key_column(model: SemanticModel, name: str, obj: str, column: str) -> DataO
     return DataObjectColumn(name=name, code=name, abstract_type=col.abstract_type)
 
 
-def _combine_dimension(model: SemanticModel, name: str, leg: str) -> Dimension:
+def _combine_dimension(
+    model: SemanticModel, name: str, leg: str, column: str | None = None
+) -> Dimension:
+    """*name* as the combine step reads it, from *column* of *leg* (its own name)."""
     dimension = model.dimensions[name]
     return Dimension(
-        name=name,
+        name=column or name,
         view=leg,
-        column=name,
+        column=column or name,
         result_type=dimension.result_type,
         format=dimension.format,
     )
+
+
+def _rekeyed(
+    dialect: Dialect,
+    columns: list[DataObjectColumn],
+    candidates: dict[str, bool],
+    grouped: set[str],
+    kept: dict[str, str],
+) -> tuple[list[DataObjectColumn], dict[str, tuple[str, bool]], dict[str, str]]:
+    """The leg's columns once its engine's equality is applied to them.
+
+    *candidates* maps the leg columns the combine step groups by or counts to
+    whether they are counted; a dimension counts only when *grouped* (selected
+    without a grain). Returns the columns with the type each is then read
+    as, the rewritten ones with their type before and whether counted, and
+    the hidden columns (from *kept*) keeping a rewritten dimension's value
+    for a combine filter, each with the column it copies.
+    """
+    out: list[DataObjectColumn] = []
+    rekeyed: dict[str, tuple[str, bool]] = {}
+    hidden: dict[str, str] = {}
+    copies: list[DataObjectColumn] = []
+    for column in columns:
+        counted = candidates.get(column.name)
+        if counted is None or (not counted and column.name not in grouped):
+            out.append(column)
+            continue
+        kind = column.abstract_type.value
+        key = dialect.equality_key(ColumnRef(name=column.name), kind, counted=counted)
+        if key is None:
+            out.append(column)
+            continue
+        rekeyed[column.name] = (kind, counted)
+        out.append(column.model_copy(update={"abstract_type": DataType(key[1])}))
+        if column.name in kept:
+            name = kept[column.name]
+            hidden[name] = column.name
+            copies.append(column.model_copy(update={"name": name, "code": name}))
+    return [*out, *copies], rekeyed, hidden
+
+
+def _rewrite_leg(
+    dialect: Dialect,
+    sql: str,
+    columns: list[DataObjectColumn],
+    rekeyed: dict[str, tuple[str, bool]],
+    kept: dict[str, str],
+) -> str:
+    """*sql* wrapped so its *rekeyed* columns compare in DuckDB as in their engine."""
+    projection: list[tuple[str, Expr]] = []
+    for column in columns:
+        source = kept.get(column.name, column.name)
+        ref = ColumnRef(name=source, table=_LEG_ALIAS)
+        if column.name in rekeyed:
+            kind, counted = rekeyed[column.name]
+            key = dialect.equality_key(ref, kind, counted=counted)
+            assert key is not None
+            projection.append((column.name, key[0]))
+        else:
+            projection.append((column.name, ref))
+    return dialect.wrap_leg(sql, projection, _LEG_ALIAS)
+
+
+def _renamed(item: QueryFilterItem, names: dict[str, str]) -> QueryFilterItem:
+    """*item* reading each field in *names* from the column named for it."""
+    if isinstance(item, QueryFilterGroup):
+        return item.model_copy(update={"filters": [_renamed(f, names) for f in item.filters]})
+    return item.model_copy(update={"field": names.get(item.field, item.field)})
 
 
 def _partial_measure(measure: Measure) -> Measure:

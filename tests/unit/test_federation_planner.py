@@ -1010,3 +1010,147 @@ class TestCountDistinctBesideOtherObjects:
 
         assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_AGGREGATION"]
         assert "its own data object" in caught.value.errors[0].message
+
+
+EQUALITY = """\
+version: 1.0
+dataObjects:
+  Facts:
+    code: t
+    dataSource: facts
+    columns:
+      Key: {code: k, abstractType: int}
+      Name: {code: n, abstractType: string}
+      F: {code: f, abstractType: float}
+    joins:
+      - {joinType: many-to-one, joinTo: Groups, columnsFrom: [Key], columnsTo: [Group Key]}
+  Groups:
+    code: g
+    dataSource: labels
+    columns:
+      Group Key: {code: k, abstractType: int}
+      Label: {code: l, abstractType: string}
+dimensions:
+  Label: {dataObject: Groups, column: Label, resultType: string}
+  Name: {dataObject: Facts, column: Name, resultType: string}
+measures:
+  Rows: {columns: [{dataObject: Facts, column: Key}], aggregation: count, resultType: int}
+  Names: {columns: [{dataObject: Facts, column: Name}], aggregation: count_distinct}
+  Floats: {columns: [{dataObject: Facts, column: F}], aggregation: count_distinct}
+"""
+
+
+class TestEngineEquality:
+    """Values compared in the combine step compare as their own engine compares them."""
+
+    @pytest.fixture
+    def facts_on(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        pytest.importorskip("ob_flight")
+        monkeypatch.setenv("OBSL_DATABASES", "facts,labels")
+        monkeypatch.setenv("DB_LABELS_TYPE", "postgres")
+
+        def plan(dialect: str, query: dict[str, Any]) -> Any:
+            monkeypatch.setenv("DB_FACTS_TYPE", dialect)
+            return _compile(EQUALITY, query).federation
+
+        return plan
+
+    def test_a_mysql_string_dimension_is_one_member_of_its_class(self, facts_on: Any) -> None:
+        """'a' and 'A' are one value to MySQL: the leg returns the same member
+        for both, so the combine step groups them as one."""
+        plan = facts_on(
+            "mysql", {"select": {"dimensions": ["Label", "Name"], "measures": ["Rows"]}}
+        )
+
+        facts, labels = plan.legs
+        assert (
+            "FIRST_VALUE(`__leg`.`Name`) OVER (PARTITION BY `__leg`.`Name` "
+            "ORDER BY CAST(`__leg`.`Name` AS BINARY) ASC) AS `Name`"
+        ) in facts.sql
+        # Only the compared value is rewritten; keys and measures pass through.
+        assert "`__leg`.`__fk0_0` AS `__fk0_0`" in facts.sql
+        assert "__leg" not in labels.sql
+
+    def test_a_count_of_distinct_mysql_strings_counts_classes(self, facts_on: Any) -> None:
+        plan = facts_on(
+            "mysql", {"select": {"dimensions": ["Label"], "measures": ["Names", "Floats"]}}
+        )
+
+        facts = plan.legs[0]
+        rewritten = [c for c in dict(facts.columns) if f"PARTITION BY `__leg`.`{c}`" in facts.sql]
+        # The counted string, not the counted float: MySQL counts -0.0 as 0.0.
+        assert len(rewritten) == 1
+        assert dict(facts.columns)[rewritten[0]] == "string"
+
+    def test_a_clickhouse_float_is_counted_by_its_text(self, facts_on: Any) -> None:
+        """ClickHouse counts 0.0 and -0.0 as two values, DuckDB as one."""
+        plan = facts_on(
+            "clickhouse", {"select": {"dimensions": ["Label"], "measures": ["Names", "Floats"]}}
+        )
+
+        facts = plan.legs[0]
+        texts = [c for c in dict(facts.columns) if f'toString("__leg"."{c}")' in facts.sql]
+        assert len(texts) == 1
+        assert dict(facts.columns)[texts[0]] == "string"
+
+    def test_a_clickhouse_dimension_is_left_alone(self, facts_on: Any) -> None:
+        plan = facts_on(
+            "clickhouse", {"select": {"dimensions": ["Label", "Name"], "measures": ["Rows"]}}
+        )
+
+        assert "__leg" not in plan.legs[0].sql
+
+    def test_a_combine_filter_reads_the_value_not_its_class(self, facts_on: Any) -> None:
+        """A filter run in the combine step compares the value the leg had,
+        as it did; the dimension shown and grouped is its class."""
+        plan = facts_on(
+            "mysql",
+            {
+                "select": {"dimensions": ["Label", "Name"], "measures": ["Rows"]},
+                "where": [
+                    {
+                        "logic": "or",
+                        "filters": [
+                            {"field": "Label", "op": "=", "value": "x"},
+                            {"field": "Name", "op": "=", "value": "a"},
+                        ],
+                    }
+                ],
+            },
+        )
+
+        facts = plan.legs[0]
+        (kept,) = [c for c in dict(facts.columns) if c.startswith("__eqv")]
+        assert f"`__leg`.`Name` AS `{kept}`" in facts.sql
+        assert dict(facts.columns)[kept] == "string"
+        assert f'"leg_0"."{kept}" = \'a\'' in plan.combine_sql
+        assert '"leg_0"."Name" = \'a\'' not in plan.combine_sql
+        # Label is read from a source comparing as DuckDB: no copy needed.
+        assert all(not c.startswith("__eqv") for c in dict(plan.legs[1].columns))
+
+    def test_a_dimension_only_filtered_is_not_rewritten(self, facts_on: Any) -> None:
+        plan = facts_on(
+            "mysql",
+            {
+                "select": {"dimensions": ["Label"], "measures": ["Rows"]},
+                "where": [
+                    {
+                        "logic": "or",
+                        "filters": [
+                            {"field": "Label", "op": "=", "value": "x"},
+                            {"field": "Name", "op": "=", "value": "a"},
+                        ],
+                    }
+                ],
+            },
+        )
+
+        assert "__leg" not in plan.legs[0].sql
+
+    @pytest.mark.parametrize("dialect", ["postgres", "snowflake", "bigquery", "databricks"])
+    def test_an_engine_comparing_as_duckdb_is_left_alone(self, facts_on: Any, dialect: str) -> None:
+        plan = facts_on(
+            dialect, {"select": {"dimensions": ["Label", "Name"], "measures": ["Names", "Floats"]}}
+        )
+
+        assert all("__leg" not in leg.sql for leg in plan.legs)

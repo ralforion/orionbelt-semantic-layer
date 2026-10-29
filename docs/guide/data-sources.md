@@ -225,12 +225,23 @@ that spills is never held whole in memory; it is still bounded by
 The legs read their sources at slightly different moments: there is no
 snapshot across databases. Naive timestamps are combined as each source
 returns them, so sources whose sessions run in different time zones can
-disagree; and strings compare by DuckDB's binary collation in the combine
-step, where MySQL's default compares case-insensitively. That holds for a
-`count_distinct` too, measured: over a MySQL column, `'a'` and `'A'` (and `'e'`
-and `'é'`) are one value to MySQL and two to the combine step when they reach
-it from different groups; and ClickHouse counts `0.0` and `-0.0` as two values
-where DuckDB counts one. The other six engines count as DuckDB does.
+disagree.
+
+The combine step groups and counts distinct values as their source does.
+DuckDB compares strings bytewise and makes one value of `0.0` and `-0.0`; two
+engines differ, and their legs return what DuckDB then compares as they do:
+
+| Source | Its equality | What the leg returns |
+|---|---|---|
+| MySQL | a string by its column's collation: the default `utf8mb4_0900_ai_ci` makes one value of `'a'` and `'A'`, `'e'` and `'é'`, `'ss'` and `'ß'` | each selected string dimension, and each string a `count_distinct` counts, as one member of its class, the same for all of them: `FIRST_VALUE(x) OVER (PARTITION BY x ORDER BY CAST(x AS BINARY))`. A group shows that member |
+| ClickHouse | a float by its bits: `0.0` and `-0.0` are two values | a float a `count_distinct` counts, as its text (`toString`) |
+
+The other six engines compare as DuckDB does, measured. What still compares
+as DuckDB does: a filter that runs in the combine step (one reading more than
+one source) compares the value a MySQL leg returned, not its class; a
+ClickHouse float dimension makes one group of `0.0` and `-0.0`; a join key
+across sources compares bytewise; and `MIN` or `MAX` of a string orders by
+bytes.
 
 ### One model on several databases
 
