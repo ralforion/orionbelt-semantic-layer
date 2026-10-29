@@ -426,13 +426,206 @@ class Dialect(ABC):
     _MAX_DECIMAL_PRECISION = 38
     _SUM_HEADROOM_DIGITS = 24
 
-    def _exact_avg_by_sum_over_count(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
-        """``SUM(x) / COUNT(x)`` in decimal, for engines that divide exactly.
+    #: The function cutting a nonnegative decimal to a number of places, as
+    #: :meth:`_truncated_average` needs it.
+    _TRUNCATE_TO_PLACES = "TRUNCATE"
 
-        The textbook rewrite, shared by Dremio and Databricks. It is *not*
-        available on DuckDB, where every division returns DOUBLE whatever the
-        operands - that engine assembles its average from integer arithmetic
-        instead, in its own override (#316).
+    #: The fewest places Dremio and Databricks give a decimal quotient: from
+    #: there on it keeps the dividend's scale and rounds once.
+    _MIN_QUOTIENT_SCALE = 6
+
+    #: The integer digits a decimal quotient keeps where the engine types it
+    #: ``DECIMAL(38, 6)``: Dremio returned 0 past them, silently, Databricks
+    #: raised.
+    _QUOTIENT_INTEGER_DIGITS = 32
+
+    #: The most places :meth:`_truncated_average` divides to: a remainder below
+    #: a 64-bit count, times 10^18, still fits 38 digits.
+    _MAX_QUOTIENT_PLACES = 18
+
+    def _truncated_average(
+        self, total: Expr, arg: Expr, obml_type: OBMLType, integer_digits: int
+    ) -> Expr | None:
+        """*total* / ``COUNT(x)``, exact, truncated past the result's places.
+
+        For Dremio, Databricks and Snowflake, not a division and a cast.
+        Dremio and Databricks round every decimal quotient, at ``max(6,
+        scale)`` places, Snowflake's ``AVG`` keeps six or eight, and the cast
+        rounds again, so the two can disagree: 100 rows of 1 and 19901 of 0
+        average 0.0049997, which rounds to 0.00, but rounded at six places it
+        is 0.005000, and the cast made that 0.01.
+
+        So the average is long division in integers, as on DuckDB, to ``P``
+        places, up to 18 and always past the result's: the absolute total
+        ``A``, truncated at ``P``, splits into its integer part ``I`` and its
+        fraction ``F`` in units of 10^-P; ``q = (I - MOD(I, N)) / N`` is the
+        integer part of the average, and ``R = (X - MOD(X, N)) / N`` with
+        ``X = MOD(I, N) * 10^P + F`` its fraction in those units. Each
+        division divides a multiple of its divisor, so the engine's rounding
+        of a quotient never bites. A value truncated past the result keeps
+        every rounding boundary (:meth:`Dialect.exact_decimal_avg`), so the
+        measure's cast rounds it once, and a wrapper reading it before the
+        cast - a period-over-period change, say - reads 18 places, not a
+        rounded average. The sign goes on the two integers before they are
+        combined: Dremio's unary minus retypes a decimal, ``-DECIMAL(29, 12)``
+        as ``DECIMAL(38, 10)``, two places fewer.
+
+        **Every integer is cast to DECIMAL(38, 0).** Dremio and Databricks
+        narrow the scale of an arithmetic result that reaches 38 digits -
+        ``DECIMAL(38, 8) * BIGINT`` came back ``DECIMAL(38, 6)``, rounded -
+        which costs an integer nothing, and add a digit to a sum's type for
+        the carry. The fraction is taken with ``MOD(A, 1)``, exact, where
+        ``A - TRUNCATE(A, 0)`` lost places that way on Dremio (0.99999999
+        came back 1). :attr:`_TRUNCATE_TO_PLACES` names the function that cuts
+        the nonnegative total to its places.
+
+        Limits, past which ``None`` keeps the engine's own ``AVG``: a result
+        of more than 17 places; and *integer_digits*, the most the average or
+        a declared value can have, past the room its integer part has - the
+        quotient's 32 digits, and no more than 36 less the scale, so ``P`` can
+        pass the result. A width the route cannot hold goes to the engine,
+        whose ``AVG`` of a ``DECIMAL(34, 0)`` returns 10^33 where the route
+        would overflow, and not to an error. The total itself has 38 digits,
+        as the engine's own ``SUM`` of a ``DECIMAL(38, s)``.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return None
+        scale = obml_type.scale
+        if scale + 1 > self._MAX_QUOTIENT_PLACES:
+            return None
+        room = min(self._QUOTIENT_INTEGER_DIGITS, self._MAX_DECIMAL_PRECISION - 2 - scale)
+        integer_digits = max(integer_digits, 1)
+        if integer_digits > room:
+            return None
+        places = min(self._MAX_QUOTIENT_PLACES, self._MAX_DECIMAL_PRECISION - 1 - integer_digits)
+
+        def decimal(expr: Expr, precision: int, places: int = 0) -> Expr:
+            return Cast(
+                expr=expr,
+                type_name=self.render_obml_type(DecimalType(precision=precision, scale=places)),
+            )
+
+        def integer(expr: Expr) -> Expr:
+            return decimal(expr, self._MAX_DECIMAL_PRECISION)
+
+        def constant(value: Decimal, precision: int, places: int = 0) -> Expr:
+            return decimal(Literal.string(f"{value:f}"), precision, places)
+
+        def floor_divide(dividend: Expr, divisor: Expr) -> Expr:
+            remainder = FunctionCall(name="MOD", args=[dividend, divisor])
+            return integer(
+                BinaryOp(
+                    left=integer(BinaryOp(left=dividend, op="-", right=remainder)),
+                    op="/",
+                    right=divisor,
+                )
+            )
+
+        shift = constant(Decimal(10) ** places, places + 1)
+        count = decimal(
+            FunctionCall(
+                name="NULLIF",
+                args=[FunctionCall(name="COUNT", args=[arg]), Literal.number(0)],
+            ),
+            19,
+        )
+        magnitude = FunctionCall(
+            name=self._TRUNCATE_TO_PLACES,
+            args=[FunctionCall(name="ABS", args=[total]), Literal.number(places)],
+        )
+        whole = integer(
+            FunctionCall(name=self._TRUNCATE_TO_PLACES, args=[magnitude, Literal.number(0)])
+        )
+        fraction = integer(
+            BinaryOp(
+                left=FunctionCall(name="MOD", args=[magnitude, constant(Decimal(1), 1)]),
+                op="*",
+                right=shift,
+            )
+        )
+        remainder = integer(FunctionCall(name="MOD", args=[whole, count]))
+        units = floor_divide(
+            integer(
+                BinaryOp(
+                    left=integer(BinaryOp(left=remainder, op="*", right=shift)),
+                    op="+",
+                    right=fraction,
+                )
+            ),
+            count,
+        )
+        sign = CaseExpr(
+            when_clauses=[
+                (BinaryOp(left=total, op="<", right=Literal.number(0)), constant(Decimal(-1), 1))
+            ],
+            else_clause=constant(Decimal(1), 1),
+        )
+
+        def signed(value: Expr, precision: int) -> Expr:
+            return decimal(integer(BinaryOp(left=value, op="*", right=sign)), precision)
+
+        return BinaryOp(
+            left=signed(floor_divide(whole, count), integer_digits),
+            op="+",
+            right=BinaryOp(
+                left=signed(units, places),
+                op="*",
+                right=constant(Decimal(1).scaleb(-places), places, places),
+            ),
+        )
+
+    def _divided_integer_average(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """An integer average for Dremio and Databricks, rounded once.
+
+        From six places to 14 their own decimal division rounds once, at the
+        result's scale (:meth:`_exact_avg_by_sum_over_count`). Below six it
+        rounds at six first, and the cast again: the long division of
+        :meth:`_truncated_average` instead, its integer part held to the
+        quotient's 32 digits, which the division it replaces had too. Past 14
+        that division caps its scale and pads zeros, so the long division
+        takes over where its room allows, and the capped division stays where
+        it does not.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return None
+        single_division_scale = self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS
+        if self._MIN_QUOTIENT_SCALE <= obml_type.scale <= single_division_scale:
+            return self._exact_avg_by_sum_over_count(arg, obml_type)
+        divided = self._truncated_average(
+            self._sum_over_widened_argument(arg),
+            arg,
+            obml_type,
+            min(obml_type.precision - obml_type.scale, self._QUOTIENT_INTEGER_DIGITS),
+        )
+        return divided if divided is not None else self._exact_avg_by_sum_over_count(arg, obml_type)
+
+    def _divided_decimal_average(
+        self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None
+    ) -> Expr | None:
+        """A decimal average by :meth:`_truncated_average`, over the column's own ``SUM``.
+
+        The average's integer digits are the result's, or a declared column's
+        where those are fewer; past the room the route has, the engine's own
+        ``AVG`` stays.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return None
+        integer_digits = obml_type.precision - obml_type.scale
+        if source_type is not None:
+            integer_digits = min(integer_digits, source_type.precision - source_type.scale)
+        return self._truncated_average(
+            FunctionCall(name="SUM", args=[arg]), arg, obml_type, integer_digits
+        )
+
+    def _exact_avg_by_sum_over_count(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """``SUM(x) / COUNT(x)`` in decimal, divided once at the result's scale.
+
+        Dremio and Databricks type a decimal quotient at ``max(6, scale)``
+        places and round it there once, so from six places on this division
+        rounds exactly where the measure does, and the cast after it changes
+        nothing up to the 14 places it caps the scale at. Below six places it
+        rounds first at six, and :meth:`_divided_integer_average` takes the
+        long division instead.
 
         **The cast goes inside the SUM.** ``SUM`` over a 64-bit column
         accumulates in 64 bits, and casting afterwards only widens a number
@@ -443,12 +636,9 @@ class Dialect(ABC):
         The running total then needs integer room the average will not, so the
         scale is capped to leave ``_SUM_HEADROOM_DIGITS`` for the integer part:
         38 digits cannot hold both a large total and a long fraction. A result
-        asking for more scale gets the extra places as zeros, which is the
-        honest trade against overflowing on a total the source holds legally.
+        asking for more scale gets the extra places as zeros.
 
-        An empty group divides to NULL on both engines, measured, so no
-        zero-count guard is needed here - unlike ClickHouse, whose
-        ``divideDecimal`` raises.
+        An empty group divides to NULL on both engines, measured.
         """
         if not isinstance(obml_type, DecimalType):
             return None
@@ -506,8 +696,10 @@ class Dialect(ABC):
 
     #: Whether ``AVG`` over a 64-bit integer column is exact natively.
     #:
-    #: True on Postgres (``numeric``), MySQL (``decimal``) and Snowflake, which
-    #: need no rewrite - but still need the **result type** widened, because an
+    #: True on Postgres (``numeric``), MySQL (``decimal``) and Snowflake.
+    #: Snowflake's is exact but rounded at six places, so it rewrites below
+    #: that too (:meth:`exact_integer_avg`), and the flag covers what the
+    #: rewrite leaves. They need no rewrite - but still need the **result type** widened, because an
     #: exact average the declared type cannot hold is no better than an
     #: inexact one. Measured on MySQL, ``CAST(AVG(qty) AS DECIMAL(18, 2))``
     #: returns 9999999999999999.99 for a true 1000000000000000003, saturating
@@ -559,6 +751,29 @@ class Dialect(ABC):
         """
         return None
 
+    def exact_decimal_avg(
+        self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
+    ) -> Expr | None:
+        """An exact ``AVG(arg)`` over a decimal column, or ``None`` to keep ``AVG``.
+
+        ``None`` - the default - where the engine's own ``AVG`` of a decimal is
+        exact: PostgreSQL, MySQL, Snowflake, BigQuery and Databricks, measured.
+        DuckDB, ClickHouse and Dremio average a decimal as a double, so they
+        override this, each its own way, as they do :meth:`exact_integer_avg`.
+        ``obml_type`` is the decimal the result is cast to, *source_type* the
+        decimal the columns declare (``sqlPrecision``, ``sqlScale``), if they
+        do; an engine whose total can outgrow its arithmetic checks it.
+
+        **Narrow the total, never the values, and only by truncating, to a
+        place past the result.** Rounding the result half away from zero asks
+        only whether the total reaches a boundary that has one place more
+        than the result; a total truncated at that place or further keeps every
+        such boundary, so it rounds as the exact total does. Rounding it, or
+        truncating each value before summing, can cross one. An engine that
+        cannot divide exactly at that many places keeps ``AVG``.
+        """
+        return None
+
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """An exact ``AVG(arg)`` over an integer column, or ``None`` for none.
 
@@ -587,9 +802,9 @@ class Dialect(ABC):
     def _sum_over_widened_argument(self, arg: Expr) -> Expr:
         """``SUM(CAST(arg AS DECIMAL(38, 0)))``.
 
-        The plain form of the same move :meth:`_exact_avg_by_sum_over_count`
-        makes, for the engines whose only problem is the accumulator. Dremio
-        uses it; ClickHouse spells the widening ``toDecimal128`` and overrides.
+        The total :meth:`_divided_integer_average` divides, widened inside the
+        ``SUM`` so a 64-bit accumulator cannot wrap. ClickHouse spells the
+        widening ``toDecimal128`` and overrides.
         """
         widened = Cast(
             expr=arg,

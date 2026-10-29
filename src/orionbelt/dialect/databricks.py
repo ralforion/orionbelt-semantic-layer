@@ -13,7 +13,7 @@ from orionbelt.dialect.base import (
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
-from orionbelt.models.types import OBMLType
+from orionbelt.models.types import DecimalType, OBMLType
 
 
 @DialectRegistry.register
@@ -76,17 +76,32 @@ class DatabricksDialect(Dialect):
         true average is 1000000000000000003, so it belongs with BigQuery,
         ClickHouse and Dremio rather than with the engines that are exact.
 
-        It is the only engine so far where **both** routes work - casting the
-        input and rewriting as SUM/COUNT are each sufficient. SUM/COUNT is used
-        because it carries more scale (decimal(38, 6) against the input cast's
-        decimal(38, 4)) and shares Dremio's implementation.
+        ``SUM / COUNT`` was the route, and below six places it rounded twice:
+        the quotient at six, then the cast at the result's, so 100 ones among
+        20001 rows averaged 0.01 where 0.00 is right. There it is now the
+        integer long division Dremio uses (:meth:`Dialect._divided_integer_average`).
 
         Both hazards checked: an empty group divides to NULL, and a sum past 64
         bits is exact once the cast is inside the SUM. Worth noting that a raw
         ``SUM`` over BIGINT raises ARITHMETIC_OVERFLOW here rather than wrapping
         silently as it does on Dremio and ClickHouse.
         """
-        return self._exact_avg_by_sum_over_count(arg, obml_type)
+        return self._divided_integer_average(arg, obml_type)
+
+    def exact_decimal_avg(
+        self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
+    ) -> Expr | None:
+        """The decimal divided by :meth:`Dialect._truncated_average`, rounded once.
+
+        ``AVG`` of a ``DECIMAL(p, s)`` is a ``DECIMAL(p + 4, s + 4)``, rounded
+        there, and the measure's cast rounds it again: 10000 values of 0.01
+        among 20001 rows averaged 0.005000 and then 0.01, where 0.00 is right.
+        """
+        return self._divided_decimal_average(arg, obml_type, source_type)
+
+    #: ``floor`` cuts a nonnegative decimal to its places; Spark SQL has no
+    #: numeric ``TRUNCATE``.
+    _TRUNCATE_TO_PLACES = "floor"
 
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace("`", "``")

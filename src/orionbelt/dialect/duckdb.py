@@ -75,15 +75,12 @@ class DuckDBDialect(Dialect):
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        # The scale is capped for the same reason it is on the engines that
-        # divide (``_exact_avg_by_sum_over_count``), and here it bites harder:
-        # the sum is multiplied by ``10^s`` *before* the division, so a long
-        # fraction spends the same 128 bits the total needs. Measured, an
-        # uncapped scale of 37 overflowed on rows of 5 - a result the declared
-        # type holds comfortably - and a scale of 38 asked for a
-        # ``DECIMAL(39, 38)`` constant, which is not a type. A result asking
-        # for more scale gets the extra places as zeros, which is the same
-        # honest trade the other rewrites make.
+        # The scale is capped because the sum is multiplied by ``10^s``
+        # *before* the division, so a long fraction spends the same 128 bits
+        # the total needs. Measured, an uncapped scale of 37 overflowed on rows
+        # of 5 - a result the declared type holds comfortably - and a scale of
+        # 38 asked for a ``DECIMAL(39, 38)`` constant, which is not a type. A
+        # result asking for more scale gets the extra places as zeros.
         scale = min(obml_type.scale, self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS)
         zero = Literal.number(0)
         count: Expr = Cast(expr=FunctionCall(name="COUNT", args=[arg]), type_name="HUGEINT")
@@ -117,6 +114,37 @@ class DuckDBDialect(Dialect):
         return CaseExpr(
             when_clauses=[(BinaryOp(left=count, op="=", right=zero), Literal.null())],
             else_clause=rescaled,
+        )
+
+    #: The scale a decimal column's average reads its fraction at: every
+    #: column up to 18 places converts exactly, and the long division keeps
+    #: its remainders within 128 bits at it.
+    _DECIMAL_AVG_INPUT_SCALE = 18
+
+    def exact_decimal_avg(
+        self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
+    ) -> Expr | None:
+        """``SUM(x) / COUNT(x)`` in integer arithmetic, as for a combined average.
+
+        DuckDB's ``AVG`` of a decimal is a double: 12345678901234.565 came back
+        .56, and 9999999999999999.99 as 1E+16, which then failed its own
+        ``DECIMAL(18, 2)`` cast. :meth:`exact_quotient` divides the decimal
+        sum exactly, its fraction truncated at 18 places, or one place past
+        the result's where that is more (:meth:`Dialect.exact_decimal_avg`
+        on why truncating is exact). The column's own scale does not matter.
+        Past :data:`_DIGITS_PER_STEP` places the long division leaves 128
+        bits, so a result of 19 places or more keeps ``AVG``.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return None
+        places = max(self._DECIMAL_AVG_INPUT_SCALE, obml_type.scale + 1)
+        if places > self._DIGITS_PER_STEP:
+            return None
+        return self.exact_quotient(
+            FunctionCall(name="SUM", args=[arg]),
+            FunctionCall(name="COUNT", args=[arg]),
+            places,
+            obml_type,
         )
 
     #: The fewest places a combined average keeps before the measure's cast
@@ -182,10 +210,23 @@ class DuckDBDialect(Dialect):
         # remainder and the total's fraction, below the count in value.
         remainder: Expr = BinaryOp(left=whole, op="%", right=divisor)
         if input_scale:
+            # The fraction is truncated to input_scale places before it is
+            # scaled: multiplied in its own type, a total with more places
+            # than 38 less input_scale (DECIMAL(38, 25)) would overflow, and
+            # a cast would round it, which can carry it across the boundary
+            # the result rounds at.
             fraction = Cast(
                 expr=BinaryOp(
-                    left=BinaryOp(
-                        left=total, op="-", right=FunctionCall(name="trunc", args=[total])
+                    left=FunctionCall(
+                        name="trunc",
+                        args=[
+                            BinaryOp(
+                                left=total,
+                                op="-",
+                                right=FunctionCall(name="trunc", args=[total]),
+                            ),
+                            Literal.number(input_scale),
+                        ],
                     ),
                     op="*",
                     right=Literal.number(10**input_scale),

@@ -134,9 +134,25 @@ QUERIES = {
 @pytest.mark.parametrize("dialect", DIALECTS)
 @pytest.mark.parametrize("shape", sorted(QUERIES))
 def test_decimal_compiles_as_float_did(shape: str, dialect: str) -> None:
+    """Except a decimal column's average where the engine's AVG is a double.
+
+    DuckDB, ClickHouse and Dremio average a decimal exactly instead
+    (``test_exact_avg.py``), while a float column still averages as a double,
+    as it does everywhere; so the average alone is left out of the comparison
+    there.
+    """
     query = QUERIES[shape]
+    if dialect in AVERAGED_EXACTLY:
+        measures = [m for m in query.select.measures if m != "Average Order"]
+        query = query.model_copy(
+            update={"select": query.select.model_copy(update={"measures": measures})}
+        )
     pinned = 'settings: {defaultNumericDataType: "decimal(18, 2)"}\n'
     assert _sql("decimal", query, dialect) == _sql("float", query, dialect, pinned)
+
+
+# Where a decimal column's average is rewritten exactly and a float column's is not.
+AVERAGED_EXACTLY = {"bigquery", "clickhouse", "databricks", "dremio", "duckdb", "snowflake"}
 
 
 @pytest.mark.parametrize("dialect", DIALECTS)

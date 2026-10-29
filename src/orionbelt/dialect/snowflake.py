@@ -57,6 +57,35 @@ class SnowflakeDialect(Dialect):
 
     avg_rounds_exact_input = True
 
+    def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """The integer summed as a decimal, divided by :meth:`Dialect._truncated_average`.
+
+        ``AVG`` of an integer is exact but rounded, a ``NUMBER(38, 6)``, and
+        the measure's cast rounds it again: 100 ones among 20001 rows averaged
+        0.005000 and then 0.01, where 0.00 is right. Its integer part has the
+        native quotient's 32 digits; past 17 places, or where the route has
+        less room than that, the native ``AVG`` is kept.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return None
+        return self._truncated_average(
+            self._sum_over_widened_argument(arg),
+            arg,
+            obml_type,
+            min(obml_type.precision - obml_type.scale, self._QUOTIENT_INTEGER_DIGITS),
+        )
+
+    def exact_decimal_avg(
+        self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
+    ) -> Expr | None:
+        """The decimal divided by :meth:`Dialect._truncated_average`, rounded once.
+
+        ``AVG`` of a ``NUMBER(18, 2)`` is a ``NUMBER(36, 8)``, rounded there,
+        and the measure's cast rounds it again: 10^6 values of 0.01 among
+        2000001 rows averaged 0.01, where 0.00 is right.
+        """
+        return self._divided_decimal_average(arg, obml_type, source_type)
+
     backslash_escapes_strings = True
 
     like_needs_escape_clause = True

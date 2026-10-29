@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import BinaryOp, Cast, Expr, FunctionCall, Literal, Unnest
+from orionbelt.ast.nodes import (
+    BinaryOp,
+    Cast,
+    Expr,
+    FunctionCall,
+    Literal,
+    Unnest,
+)
 from orionbelt.dialect.base import (
     Dialect,
     DialectCapabilities,
@@ -14,7 +21,7 @@ from orionbelt.dialect.base import (
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
-from orionbelt.models.types import OBMLType
+from orionbelt.models.types import DecimalType, OBMLType
 
 
 @DialectRegistry.register
@@ -89,15 +96,28 @@ class DremioDialect(Dialect):
         """
         return self._sum_over_widened_argument(arg)
 
-    def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
-        """Dremio divides decimals exactly, so SUM/COUNT is all it takes.
+    def exact_decimal_avg(
+        self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
+    ) -> Expr | None:
+        """The decimal summed as it is, divided by :meth:`Dialect._truncated_average`.
 
-        Measured: ``CAST(SUM(x) AS DECIMAL(38, 2)) / COUNT(x)`` returns
-        1000000000000000003.000000 where ``AVG(x)`` returns 1e+18 - a case
-        where Dremio's own ``AVG`` is wrong too, so the rewrite fixes more than
-        the floating-point drift it was written for.
+        Dremio's ``AVG`` of a decimal is a double: 12345678901234.565 came back
+        1.2345678901234564E13, and 9999999999999999.99 as 1.0E16, which a
+        ``DECIMAL(18, 2)`` cast turned into 0. ``SUM`` of a decimal is exact.
+        Past the room the average's integer part has, ``AVG`` is kept, as on
+        every engine; here a decimal overflow would return 0, not an error.
         """
-        return self._exact_avg_by_sum_over_count(arg, obml_type)
+        return self._divided_decimal_average(arg, obml_type, source_type)
+
+    def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """The integer summed as a decimal, divided once (:meth:`Dialect._divided_integer_average`).
+
+        Widened inside the ``SUM``: a 64-bit total wraps silently on Dremio.
+        Measured: ``AVG(x)`` returns 1e+18 for an average of
+        1000000000000000003, so the rewrite fixes more than the floating-point
+        drift it was written for.
+        """
+        return self._divided_integer_average(arg, obml_type)
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
         """Dremio: supports multi-level paths via the ``code`` field.

@@ -46,10 +46,20 @@ dataObjects:
     code: charges
     columns:
       Qty: {code: qty, abstractType: int}
+      Amount: {code: amount, abstractType: decimal, numClass: additive}
+      Fine: {code: fine, abstractType: decimal, numClass: additive}
 measures:
+  Fine Avg:
+    columns: [{dataObject: Charges, column: Fine}]
+    resultType: decimal
+    aggregation: avg
   Qty Avg:
     columns: [{dataObject: Charges, column: Qty}]
     resultType: int
+    aggregation: avg
+  Amount Avg:
+    columns: [{dataObject: Charges, column: Amount}]
+    resultType: decimal
     aggregation: avg
 """
 
@@ -60,28 +70,64 @@ CASES: list[tuple[str, list[int | None], str | None]] = [
     ("negatives", [-3, -2], "-2.5"),
     ("mixedsign", [-3, 2], "-0.5"),
     ("thirds", [1, 1, 2], "1.33"),
+    # Rounds up: ClickHouse's divideDecimal truncated it to 1.66.
+    ("twothirds", [1, 2, 2], "1.67"),
     ("single", [7], "7"),
     ("small", [10, 21], "15.5"),
     ("allnull", [None, None], None),
 ]
 
-# DuckDB has no exact division at all, so it keeps the plain AVG and a large
-# average overflows the default type rather than returning a wrong number
-# (#316). Executing the same cases there would assert that limitation, which
-# ``test_data_types.py`` already pins closer to the cause.
-NO_EXACT_ROUTE = {"duckdb"}
+# A decimal column's average: a double on DuckDB, ClickHouse and Dremio until
+# each got an exact route. Each value below came back wrong on at least one.
+DECIMAL_CASES: list[tuple[str, list[str | None], str | None]] = [
+    # Past a double's mantissa: .565 rounds to .57; a double gave .56.
+    ("tie", ["12345678901234.56", "12345678901234.57"], "12345678901234.57"),
+    # At the type's width: a double gave 1E+16, which DuckDB's cast refused
+    # and Dremio's turned into 0.
+    ("wide", ["9999999999999999.99", "9999999999999999.99"], "9999999999999999.99"),
+    ("twothirds", ["1.00", "2.00", "2.00"], "1.67"),
+    ("negativetie", ["-2.36", "-2.37"], "-2.37"),
+    ("single", ["7.25"], "7.25"),
+    ("allnull", [None, None], None),
+]
 
 
-def _projection(dialect: str) -> str:
+# A column with more places than the average's two. One 0.005 is the smallest
+# total that rounds up: ClickHouse's divideDecimal returned 0 for a dividend of
+# under ten units of its result scale, so dividing one place past the result
+# averaged it to 0.00.
+FINE_CASES: list[tuple[str, list[str | None], str | None]] = [
+    ("tinyhalf", ["0.005000"], "0.01"),
+    ("tinynegativehalf", ["-0.005000"], "-0.01"),
+    ("tinybelow", ["0.004999"], "0.00"),
+    ("tinypair", ["0.004999", "0.005001"], "0.01"),
+]
+
+
+def _decimal_rows(
+    alias: str, column: str, values: list[str | None], dialect: str, scale: int = 2
+) -> str:
+    """A FROM-able source of one DECIMAL(18, *scale*) column holding *values*."""
+    type_name = {
+        "clickhouse": f"Nullable(Decimal(18, {scale}))",
+        # BigQuery takes no parameters in a CAST.
+        "bigquery": "NUMERIC",
+    }.get(dialect, f"DECIMAL(18, {scale})")
+    legs = " UNION ALL ".join(
+        f"SELECT CAST({'NULL' if v is None else repr(v)} AS {type_name}) AS {column}"
+        for v in values
+    )
+    return f"({legs}) {alias}"
+
+
+def _projection(dialect: str, measure: str = "Qty Avg") -> str:
     """The measure expression OBSL emits, lifted out of its SELECT."""
     raw, sm = TrackedLoader().load_string(MODEL_YAML)
     model, result = ReferenceResolver().resolve(raw, sm)
     assert result.valid, result.errors
     sql = (
         CompilationPipeline()
-        .compile(
-            QueryObject(select=QuerySelect(dimensions=[], measures=["Qty Avg"])), model, dialect
-        )
+        .compile(QueryObject(select=QuerySelect(dimensions=[], measures=[measure])), model, dialect)
         .sql
     )
     match = re.search(r"SELECT (.+?)\s+FROM", sql, re.S)
@@ -90,16 +136,38 @@ def _projection(dialect: str) -> str:
 
 
 def _assert_exact_average(target: VendorTarget) -> None:
-    if target.dialect in NO_EXACT_ROUTE:
-        pytest.skip(f"{target.dialect} has no exact division; see #316")
     dia = DialectRegistry.get(target.dialect)
     alias = dia.quote_identifier("Charges")
-    column = dia.quote_identifier("qty")
-    projection = _projection(target.dialect)
+    qty = dia.quote_identifier("qty")
+    amount = dia.quote_identifier("amount")
+    fine = dia.quote_identifier("fine")
+    sources = (
+        [
+            (label, _projection(target.dialect), target.rows_of(alias, qty, values), want)
+            for label, values, want in CASES
+        ]
+        + [
+            (
+                f"decimal {label}",
+                _projection(target.dialect, "Amount Avg"),
+                _decimal_rows(alias, amount, values, target.dialect),
+                want,
+            )
+            for label, values, want in DECIMAL_CASES
+        ]
+        + [
+            (
+                f"fine {label}",
+                _projection(target.dialect, "Fine Avg"),
+                _decimal_rows(alias, fine, values, target.dialect, scale=6),
+                want,
+            )
+            for label, values, want in FINE_CASES
+        ]
+    )
 
     mismatches = []
-    for label, values, want in CASES:
-        source = target.rows_of(alias, column, values)
+    for label, projection, source, want in sources:
         rows = target.execute(f"SELECT {projection} FROM {source}")
         got = next(iter(rows[0].values()))
         if want is None:
@@ -137,3 +205,7 @@ def test_bigquery_exact_avg(vendor_bigquery: VendorTarget) -> None:
 
 def test_databricks_exact_avg(vendor_databricks: VendorTarget) -> None:
     _assert_exact_average(vendor_databricks)
+
+
+def test_dremio_exact_avg(vendor_dremio: VendorTarget) -> None:
+    _assert_exact_average(vendor_dremio)
