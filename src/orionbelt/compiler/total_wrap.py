@@ -210,6 +210,25 @@ def _unchanged(expr: Expr) -> Expr:
     return expr
 
 
+def _component_value(comp: ResolvedMeasure, resolved: ResolvedQuery) -> Expr:
+    """A metric component's aggregate, bare: no output cast, no default.
+
+    A metric's formula reads its components uncast, as the planner inlines
+    them; the default goes back on where the value is finally read. The
+    multi-fact planner records its re-aggregations already cast
+    (``CAST(AVG(DISTINCT x) AS INTEGER)``), so a component read from there was
+    rounded before the metric used it (200 for 233.3), and a windowed one
+    summed rounded groups (0 for 120). The cast and the default are taken
+    off in whichever order they wrap the aggregate.
+    """
+    value = resolved.projected_expressions.get(comp.name, comp.expression)
+    while True:
+        bare = _peel_default(_peel_cast(value)[0], comp)
+        if bare == value:
+            return value
+        value = bare
+
+
 def _build_total_window(measure: ResolvedMeasure, dedup_computed: Container[str]) -> Expr:
     """Build a window function for a total/grain-override measure's outer column.
 
@@ -348,13 +367,7 @@ def wrap_with_totals(
                     # columns. This CTE reuses the planner's FROM and joins, so
                     # those subqueries are in scope and the foreign fact is not.
                     base_columns.append(
-                        _peel_default(
-                            AliasedExpr(
-                                expr=resolved.projected_expressions.get(comp.name, comp.expression),
-                                alias=comp.name,
-                            ),
-                            comp,
-                        )
+                        AliasedExpr(expr=_component_value(comp, resolved), alias=comp.name)
                     )
         elif alias in apart:
             continue  # computed apart, in :func:`_total_ctes`
@@ -486,10 +499,9 @@ def _total_ctes(
             wanted[(True, m.name)] = (tuple(m.effective_grain or ()), projected[m.name])
         for comp in metric_leaf_components(m, resolved.metric_components):
             if (False, comp.name) not in wanted and computed_apart(comp, resolved):
-                value = resolved.projected_expressions.get(comp.name, comp.expression)
                 wanted[(False, comp.name)] = (
                     tuple(comp.effective_grain or ()),
-                    comp.with_default(_peel_default(value, comp)),
+                    comp.with_default(_component_value(comp, resolved)),
                 )
     by_grain: dict[tuple[str, ...], list[tuple[tuple[bool, str], Expr]]] = {}
     for key, (grain, value) in wanted.items():

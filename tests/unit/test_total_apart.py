@@ -357,3 +357,58 @@ class TestCasts:
 
         assert {v["Price Total"] for v in values.values()} == {2}
         assert [float(v["Scaled Price"]) for v in values.values()] == pytest.approx([160.0] * 3)
+
+
+# The same measures beside a count of a second fact, U, sharing only D: a
+# multi-fact (CFL) plan, whose re-aggregations the planner records cast.
+CASTS_ACROSS_FACTS = CASTS.replace(
+    "      P: {code: p, abstractType: decimal, sqlPrecision: 10, sqlScale: 2}\n",
+    "      P: {code: p, abstractType: decimal, sqlPrecision: 10, sqlScale: 2}\n"
+    "    joins:\n"
+    "      - {joinType: many-to-one, joinTo: D, columnsFrom: [G], columnsTo: [G]}\n"
+    "  U:\n"
+    "    code: u\n"
+    "    columns:\n"
+    "      G: {code: g, abstractType: string}\n"
+    "    joins:\n"
+    "      - {joinType: many-to-one, joinTo: D, columnsFrom: [G], columnsTo: [G]}\n"
+    "  D:\n"
+    "    code: d\n"
+    "    columns:\n"
+    "      G: {code: g, abstractType: string, primaryKey: true}\n",
+).replace("G: {dataObject: T, column: G", "G: {dataObject: D, column: G")
+
+
+@pytest.fixture(scope="module")
+def facts_con() -> Any:
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE t AS SELECT * FROM (VALUES ('a', 1, 0.40), ('a', 2, 0.40), "
+        "('b', 4, 0.40), ('c', 4, 0.40)) v(g, x, p)"
+    )
+    con.execute("CREATE TABLE d AS SELECT * FROM (VALUES ('a'), ('b'), ('c')) v(g)")
+    con.execute("CREATE TABLE u AS SELECT * FROM (VALUES ('a')) v(g)")
+    return con
+
+
+class TestCastsAcrossFacts:
+    @pytest.mark.parametrize(
+        ("measure", "metric", "want"),
+        [("Mean", "Scaled Mean", 700 / 3), ("Price Total", "Scaled Price", 160.0)],
+    )
+    @pytest.mark.parametrize("selected", [False, True])
+    def test_a_metric_reads_the_total_uncast(
+        self, facts_con: Any, measure: str, metric: str, want: float, selected: bool
+    ) -> None:
+        """The planner's CFL aggregate was cast, so the metric read 200 for
+        233.3, and the windowed sum read 0 or 160 by what else was selected."""
+        measures = [metric, "U Count", *([measure] if selected else [])]
+        store = ModelStore()
+        model_id = store.load_model(CASTS_ACROSS_FACTS).model_id
+        query = QueryObject.model_validate({"select": {"dimensions": ["G"], "measures": measures}})
+        sql = store.compile_query(model_id, query, "duckdb").sql
+        assert "UNION ALL" in sql
+
+        got = [float(r[1]) for r in facts_con.sql(sql).fetchall()]
+
+        assert got == pytest.approx([want] * 3)
