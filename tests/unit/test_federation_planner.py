@@ -1293,6 +1293,8 @@ dataObjects:
 dimensions:
   Category: {{dataObject: Products, column: Category, resultType: string}}
   Region: {{dataObject: Regions, column: Name, resultType: string}}
+  Product ID: {{dataObject: Sales, column: Product, resultType: int}}
+  Age: {{dataObject: Customers, column: Age, resultType: int}}
 measures:
   Ages: {{columns: [{{dataObject: Customers, column: Age}}], aggregation: {aggregation}}}
 """
@@ -1345,13 +1347,58 @@ class TestRepeatedRows:
             _repeated(aggregation, query)
 
         assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_AGGREGATION"]
-        assert "counted once per key" in caught.value.errors[0].message
+        assert "the key of the join from 'Sales' to 'Products'" in caught.value.errors[0].message
 
     @pytest.mark.parametrize("aggregation", ["min", "max", "count_distinct"])
     def test_what_repeated_rows_do_not_change_combines(self, aggregation: str) -> None:
         expected, got = _repeated(
             aggregation, {"select": {"dimensions": ["Category"], "measures": ["Ages"]}}
         )
+
+        assert got == expected
+        assert expected
+
+    @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
+    def test_a_filter_after_the_join_on_the_many_side_is_refused(self, aggregation: str) -> None:
+        """The join starts at customers, but the OR runs after the join, so the
+        fact leg groups by the product ID it reads too: customer 1 has two."""
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Ages"]},
+            "where": [
+                {
+                    "logic": "or",
+                    "filters": [
+                        {"field": "Product ID", "op": ">", "value": 0},
+                        {"field": "Region", "op": "=", "value": "nowhere"},
+                    ],
+                }
+            ],
+        }
+
+        with pytest.raises(ResolutionError) as caught:
+            _repeated(aggregation, query)
+
+        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_AGGREGATION"]
+        assert "dimension 'Product ID', which a filter after the join reads" in (
+            caught.value.errors[0].message
+        )
+
+    @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
+    def test_a_filter_after_the_join_on_the_object_itself_combines(self, aggregation: str) -> None:
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Ages", "Sales Count"]},
+            "where": [
+                {
+                    "logic": "or",
+                    "filters": [
+                        {"field": "Age", "op": "<", "value": 30},
+                        {"field": "Region", "op": "=", "value": "south"},
+                    ],
+                }
+            ],
+        }
+
+        expected, got = _repeated(aggregation, query)
 
         assert got == expected
         assert expected

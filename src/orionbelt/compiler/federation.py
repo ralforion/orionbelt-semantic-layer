@@ -250,7 +250,6 @@ def plan_federated(
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
     planner.check_measures(islands[fact])
-    planner.check_deduplicated(edges)
     leg_filters, combine_filters = planner.place_filters(islands, fact)
 
     fact_dims, edge_dims = planner.dimensions_by_island(islands, fact, edges, combine_filters)
@@ -283,6 +282,7 @@ def plan_federated(
     # The values a count of distinct values counts: the fact leg groups by them
     # too, so the combine step counts them across every group they reach.
     fact_values = {column: (obj, col) for column, obj, col in distinct.values()}
+    planner.check_deduplicated(edges, fact_dims, distinct)
     fact_model = planner.island_model(islands[fact], {**fact_keys, **fact_values}, leg_measures)
     fact_query = QueryObject(
         select=QuerySelect(
@@ -839,39 +839,79 @@ class _Planner:
                 f"{dialect.name}",
             )
 
-    def check_deduplicated(self, edges: list[_Edge]) -> None:
-        """A measure counted once per row of its object stays so across the keys.
+    def check_deduplicated(
+        self,
+        edges: list[_Edge],
+        fact_dims: list[str],
+        distinct: dict[str, tuple[str, str, str]],
+    ) -> None:
+        """A measure counted once per row of its object stays so in the fact leg.
 
         One database aggregates a measure of an object the query's joins repeat
-        (customers' ages over their sales) over that object's distinct rows
-        (``grain_dedup``). The fact leg does the same, but within each of its
-        groups, and it groups by the federation keys too: a customer whose
-        sales reach two products is one row in each product's group, and the
-        combine step, adding the groups, counted it twice. Measured, the
+        (customers' ages over their sales) over that object's distinct rows,
+        per group of the query's dimensions (``grain_dedup``). The fact leg
+        does the same, but per group of what *it* groups by, which is more:
+        the federation keys, the dimensions only a filter after the join reads
+        (*fact_dims* beyond the selected ones), and the values a count of
+        distinct values counts (*distinct*, :func:`_leg_measures`). A customer
+        whose sales reach two products is one row in each product's group, and
+        the combine step, adding the groups, counted it twice. Measured, the
         variance of ages 10 and 20 came out 33.3 for 50, their sum 40 for 30.
 
-        Exact when every key is a column of that object, or of one it joins
-        many-to-one, so each of its rows has one key; refused otherwise. An
+        Exact when each of those is read from that object, or from one it joins
+        many-to-one, so each of its rows has one value; refused otherwise. An
         aggregation repeated rows do not change (``min``, ``count_distinct``)
         combines either way.
         """
+        groupings = self._leg_groupings(edges, fact_dims, distinct)
         effective = self.model.effective_measures
-        starts = {edge.from_object for edge in edges}
         for name, target in sorted(self.resolved.dedup_targets.items()):
             measure = effective[name]
             if measure.distinct or measure.aggregation in MULTIPLICITY_SAFE_AGGREGATIONS:
                 continue
-            outside = sorted(starts - self._one_row_each(target))
-            if outside:
+            one = self._one_row_each(target)
+            several = [what for what, objects in groupings.items() if not objects <= one]
+            if several:
                 raise self.refuse(
                     "UNSUPPORTED_AGGREGATION",
                     f"Measure '{name}' counts each row of '{target}' once, which the "
-                    f"query's joins repeat, but the join to another data source starts "
-                    f"from {', '.join(repr(o) for o in outside)}: a '{target}' row "
-                    "reaching several of its keys would be counted once per key",
+                    "query's joins repeat, but across data sources it is also grouped by "
+                    f"{'; '.join(several)}, of which one '{target}' row can have several: "
+                    "it would be counted once per value",
                     hint=f"Join the other data source from '{target}' or an object it "
-                    "joins many-to-one, or query the measure on one data source.",
+                    "joins many-to-one, filter after the join on dimensions of that "
+                    "object, or query the measure on one data source.",
                 )
+
+    def _leg_groupings(
+        self,
+        edges: list[_Edge],
+        fact_dims: list[str],
+        distinct: dict[str, tuple[str, str, str]],
+    ) -> dict[str, set[str]]:
+        """What the fact leg groups by beyond the query's dimensions, with the
+        data objects each reads, a computed column's included."""
+        model = self.model
+        selected = {
+            DimensionRef.parse(d).name for d in self.query.select.dimensions if isinstance(d, str)
+        }
+        groupings: dict[str, set[str]] = {}
+        for edge in edges:
+            groupings[f"the key of the join from '{edge.from_object}' to '{edge.to_object}'"] = {
+                edge.from_object
+            }.union(
+                *(model.column_reference_objects(edge.from_object, c) for c in edge.from_columns)
+            )
+        for name in (DimensionRef.parse(d).name for d in fact_dims):
+            if name not in selected:
+                groupings[f"dimension '{name}', which a filter after the join reads"] = {
+                    model.dimensions[name].view or ""
+                } | model.dimension_join_objects(name)
+        for name, (_, obj, column) in distinct.items():
+            groupings[f"the values '{name}' counts"] = {obj} | model.column_reference_objects(
+                obj, column
+            )
+        return groupings
 
     def _one_row_each(self, target: str) -> set[str]:
         """*target* and the objects of the query with one row per row of it."""

@@ -207,8 +207,10 @@ deviation of floats or of a decimal without a declared width or with more
 places than its engine squares exactly, an `avg`, `count_distinct`, variance
 or standard deviation with `total: true`, a `sum`, `count`, `avg`, variance or
 standard deviation of an object the query's joins repeat (customers' ages
-over their sales) when the join to another source starts from an object on
-its many side, which would count each of its rows once per key, other `distinct`
+over their sales) when the fact leg would group it by more than one value per
+row of that object, which would count each row once per value: a join to
+another source starting on its many side, or a filter after the join reading
+a dimension there, other `distinct`
 aggregations, and aggregations that cannot be combined from partial results
 (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,
