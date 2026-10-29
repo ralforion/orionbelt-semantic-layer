@@ -161,7 +161,7 @@ class TestGrainOverrideHaving:
         assert "WHERE" in tail
         assert '"Class Revenue" > 1000000' in tail
         # The partitioned window is what the predicate now sits above.
-        assert 'SUM("Class Revenue") OVER (PARTITION BY "Class")' in sql
+        assert 'SUM("base"."Class Revenue") OVER (PARTITION BY "Class")' in sql
 
 
 class TestTotalHaving:
@@ -173,7 +173,7 @@ class TestTotalHaving:
     def test_predicate_moves_past_the_grand_total(self, model: SemanticModel) -> None:
         sql = _compile(model, self.QUERY)
         assert "HAVING" not in _cte_body(sql, "base")
-        assert 'SUM("Grand Total") OVER ()' in sql
+        assert 'SUM("base"."Grand Total") OVER ()' in sql
         assert '"Grand Total" > 5' in _tail_after_ctes(sql)
 
 
@@ -236,7 +236,9 @@ class TestDerivedMetricOverWindow:
         sql = _compile(model, self.QUERY)
         assert "HAVING" not in _cte_body(sql, "base")
         # The metric is assembled from the windowed component, not the raw sum.
-        assert 'SUM("Class Revenue") OVER (PARTITION BY "Class")' in _cte_body(sql, "having_window")
+        assert 'SUM("base"."Class Revenue") OVER (PARTITION BY "Class")' in _cte_body(
+            sql, "having_window"
+        )
         assert '"Deviation" > 0.1' in _tail_after_ctes(sql)
 
 
@@ -693,5 +695,5 @@ class TestFilterContextComposition:
 
     def test_it_is_applied_after_the_window(self, composition_model: SemanticModel) -> None:
         sql = _compile(composition_model, self.QUERY)
-        assert 'SUM("Grand Total Quantity") OVER ()' in sql
+        assert 'SUM("base"."Grand Total Quantity") OVER ()' in sql
         assert '"Grand Total Quantity" > 10' in _tail_after_ctes(sql)

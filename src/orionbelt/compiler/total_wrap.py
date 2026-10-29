@@ -29,7 +29,7 @@ Re-aggregation by window:
 
 from __future__ import annotations
 
-from collections.abc import Container
+from collections.abc import Callable, Container
 from dataclasses import fields, is_dataclass, replace
 from typing import cast
 
@@ -177,6 +177,39 @@ def _peel_default(expr: Expr, measure: ResolvedMeasure) -> Expr:
     return expr
 
 
+def _peel_cast(expr: Expr) -> tuple[Expr, Callable[[Expr], Expr]]:
+    """The planner's cast of a base-CTE column, and how to put it back.
+
+    The base CTE feeds a window that re-aggregates the column, so the cast
+    cannot stay inside it either: a measure declared ``dataType: integer``
+    over three groups of 0.40 summed three zeros, 0 for the 1 its total rounds
+    to, and a metric over it read the rounded column only when the measure was
+    selected beside it. The window adds the uncast values and the cast types
+    the total, once. BigQuery rounds a decimal cast it cannot parameterise
+    (``ROUND(CAST(...), scale)``); both forms come back as they were.
+    """
+    if isinstance(expr, Cast):
+        cast_node = expr
+
+        def recast(inner: Expr) -> Expr:
+            return replace(cast_node, expr=inner)
+
+        return cast_node.expr, recast
+    if isinstance(expr, FunctionCall) and expr.name.upper() == "ROUND" and len(expr.args) == 2:
+        rounded, (cast_arg, places) = expr, expr.args
+        if isinstance(cast_arg, Cast):
+
+            def reround(inner: Expr) -> Expr:
+                return replace(rounded, args=[replace(cast_arg, expr=inner), places])
+
+            return cast_arg.expr, reround
+    return expr, _unchanged
+
+
+def _unchanged(expr: Expr) -> Expr:
+    return expr
+
+
 def _build_total_window(measure: ResolvedMeasure, dedup_computed: Container[str]) -> Expr:
     """Build a window function for a total/grain-override measure's outer column.
 
@@ -204,9 +237,13 @@ def _build_total_window_expr(measure: ResolvedMeasure, dedup_computed: Container
             ),
         )
     reagg = _reagg_func(measure.aggregation)
+    # Qualified: the outer column carrying this window is named like the base
+    # column it reads, and ClickHouse resolves a bare name to a SELECT alias, so
+    # a metric's ``SUM("Revenue") OVER ()`` beside the selected measure read
+    # the alias and nested one window inside another.
     return WindowFunction(
         func_name=reagg,
-        args=[ColumnRef(name=measure.name)],
+        args=[ColumnRef(name=measure.name, table="base")],
         partition_by=partition_by,
     )
 
@@ -284,10 +321,12 @@ def wrap_with_totals(
     if not total_names and not decompose_metrics:
         return ast
 
-    total_ctes, apart, total_joins = _total_ctes(ast, resolved)
+    total_ctes, apart, apart_components, total_joins = _total_ctes(ast, resolved)
 
     # --- Build base CTE columns from the planner's AST columns ---
     base_columns: list[Expr] = []
+    # The cast each windowed measure's outer column puts back (:func:`_peel_cast`).
+    recasts: dict[str, Callable[[Expr], Expr]] = {}
     # Track which component measures are already present as direct measures
     direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
 
@@ -297,7 +336,7 @@ def wrap_with_totals(
             # Replace metric column with its individual component columns
             metric = next(m for m in resolved.measures if m.name == alias)
             for comp in metric_leaf_components(metric, resolved.metric_components):
-                if comp.name in direct_measure_names or comp.name in apart:
+                if comp.name in direct_measure_names or comp.name in apart_components:
                     continue  # Already present as a direct measure, or computed apart
                 if is_avg_total(comp, resolved.dedup_computed):
                     # AVG total needs sum + count helper columns
@@ -325,10 +364,12 @@ def wrap_with_totals(
             base_columns.append(_build_avg_helpers_base_col(measure, "sum", col_node))
             base_columns.append(_build_avg_helpers_base_col(measure, "count", col_node))
         elif alias and _is_window_wrapped_by_name(alias, resolved):
-            # A window re-aggregates this column, so the declared default comes
-            # off it here and goes back on around the window.
+            # A window re-aggregates this column, so the planner's cast and the
+            # declared default come off it here and go back on around the window.
+            assert isinstance(col_node, AliasedExpr)
             measure = next(m for m in resolved.measures if m.name == alias)
-            base_columns.append(_peel_default(col_node, measure))
+            uncast, recasts[alias] = _peel_cast(col_node.expr)
+            base_columns.append(AliasedExpr(expr=_peel_default(uncast, measure), alias=alias))
         else:
             base_columns.append(col_node)
 
@@ -375,7 +416,7 @@ def wrap_with_totals(
             # Metric
             if m.name in decompose_metrics:
                 # Rebuild expression with window functions for total components
-                metric_expr = _substitute_metric_refs(m.expression, resolved, apart)
+                metric_expr = _substitute_metric_refs(m.expression, resolved, apart_components)
                 outer_columns.append(AliasedExpr(expr=metric_expr, alias=m.name))
             else:
                 # Metric without total components: pass-through
@@ -384,8 +425,9 @@ def wrap_with_totals(
             outer_columns.append(AliasedExpr(expr=apart[m.name], alias=m.name))
         elif _needs_window_wrap(m, resolved.dedup_computed):
             # Total or grain-override measure: window function
+            window = _build_total_window(m, resolved.dedup_computed)
             outer_columns.append(
-                AliasedExpr(expr=_build_total_window(m, resolved.dedup_computed), alias=m.name)
+                AliasedExpr(expr=recasts.get(m.name, _unchanged)(window), alias=m.name)
             )
         else:
             # Regular measure: pass-through
@@ -418,7 +460,7 @@ def wrap_with_totals(
 
 def _total_ctes(
     ast: Select, resolved: ResolvedQuery
-) -> tuple[list[CTE], dict[str, Expr], list[Join | Unnest]]:
+) -> tuple[list[CTE], dict[str, Expr], dict[str, Expr], list[Join | Unnest]]:
     """The CTEs computing the measures :func:`computed_apart` asks for.
 
     One per grain they are totalled at: the measures computed again over the
@@ -426,44 +468,53 @@ def _total_ctes(
     before any HAVING, as a window over every group reads them - grouped by
     the grain's dimensions, or not at all for a grand total. A grand total is
     cross joined to every row; a grain override is joined on its dimensions,
-    a NULL member to its own group. Returns the CTEs, the column each measure
-    is read from, and the joins.
+    a NULL member to its own group.
+
+    A selected measure is the plan's own column, cast to its type and
+    defaulted. A metric reads its component's aggregate uncast, as the planner
+    inlines it, with its default: a measure both selected and read by a metric
+    gets a column for each, or selecting it would change the metric (a mean of
+    7/3 cast to an integer made the metric 200 for 233.3). Returns the CTEs,
+    the column each selected measure and each metric component is read from,
+    and the joins.
     """
-    measures: dict[str, ResolvedMeasure] = {}
+    projected = {c.alias: c.expr for c in ast.columns if isinstance(c, AliasedExpr)}
+    # (selected or component, name) -> (grain, value)
+    wanted: dict[tuple[bool, str], tuple[tuple[str, ...], Expr]] = {}
     for m in resolved.measures:
-        for candidate in [m, *metric_leaf_components(m, resolved.metric_components)]:
-            if candidate.name not in measures and computed_apart(candidate, resolved):
-                measures[candidate.name] = candidate
-    if not measures:
-        return [], {}, []
-    dimensions = {d.name for d in resolved.dimensions}
-    projected = {
-        c.alias: c.expr
-        for c in ast.columns
-        if isinstance(c, AliasedExpr) and (c.alias in dimensions or c.alias in measures)
-    }
-    by_grain: dict[tuple[str, ...], list[ResolvedMeasure]] = {}
-    for measure in measures.values():
-        by_grain.setdefault(tuple(measure.effective_grain or ()), []).append(measure)
+        if not m.component_measures and computed_apart(m, resolved):
+            wanted[(True, m.name)] = (tuple(m.effective_grain or ()), projected[m.name])
+        for comp in metric_leaf_components(m, resolved.metric_components):
+            if (False, comp.name) not in wanted and computed_apart(comp, resolved):
+                value = resolved.projected_expressions.get(comp.name, comp.expression)
+                wanted[(False, comp.name)] = (
+                    tuple(comp.effective_grain or ()),
+                    comp.with_default(_peel_default(value, comp)),
+                )
+    by_grain: dict[tuple[str, ...], list[tuple[tuple[bool, str], Expr]]] = {}
+    for key, (grain, value) in wanted.items():
+        by_grain.setdefault(grain, []).append((key, value))
 
     ctes: list[CTE] = []
-    columns_of: dict[str, Expr] = {}
+    selected: dict[str, Expr] = {}
+    components: dict[str, Expr] = {}
     joins: list[Join | Unnest] = []
-    for n, (grain, grouped) in enumerate(sorted(by_grain.items())):
+    for n, (grain, values) in enumerate(sorted(by_grain.items())):
         name = f"__ob_total_{n}"
         keys = [projected[d] for d in grain]
-        values: list[Expr] = [
+        columns: list[Expr] = [
             AliasedExpr(expr=key, alias=f"__ob_grain_{k}") for k, key in enumerate(keys)
         ]
-        for k, measure in enumerate(grouped):
-            alias = f"__ob_value_{k}"
-            values.append(AliasedExpr(expr=_value_apart(measure, resolved, projected), alias=alias))
-            columns_of[measure.name] = ColumnRef(name=alias, table=name)
+        for k, ((is_selected, measure), value) in enumerate(values):
+            columns.append(AliasedExpr(expr=value, alias=f"__ob_value_{k}"))
+            (selected if is_selected else components)[measure] = ColumnRef(
+                name=f"__ob_value_{k}", table=name
+            )
         ctes.append(
             CTE(
                 name=name,
                 query=Select(
-                    columns=values,
+                    columns=columns,
                     from_=ast.from_,
                     joins=ast.joins,
                     where=ast.where,
@@ -483,22 +534,7 @@ def _total_ctes(
                 join_type=JoinType.LEFT if grain else JoinType.CROSS, source=name, alias=name, on=on
             )
         )
-    return ctes, columns_of, joins
-
-
-def _value_apart(
-    measure: ResolvedMeasure, resolved: ResolvedQuery, projected: dict[str, Expr]
-) -> Expr:
-    """*measure*'s aggregate as the plan computes it, typed and defaulted.
-
-    A selected measure is the plan's own column, cast and defaulted already. A
-    metric's component is its aggregate, which the planner inlines into the
-    formula uncast, with its default put back on.
-    """
-    if measure.name in projected:
-        return projected[measure.name]
-    value = resolved.projected_expressions.get(measure.name, measure.expression)
-    return measure.with_default(_peel_default(value, measure))
+    return ctes, selected, components, joins
 
 
 def _null_safe_eq(left: Expr, right: Expr) -> Expr:

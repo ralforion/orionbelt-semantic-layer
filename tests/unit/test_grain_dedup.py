@@ -649,7 +649,7 @@ def test_total_on_another_measure_composes_with_a_split_metric() -> None:
             "orderBy": [{"field": "Region"}],
         }
     )
-    assert 'SUM("Grand Total Quantity") OVER ()' in result.sql
+    assert 'SUM("base"."Grand Total Quantity") OVER ()' in result.sql
 
     rows = [(r[0], int(r[1]), float(r[2])) for r in _sales_db().execute(result.sql).fetchall()]
     # The grand total spans both regions; the metric stays per-region.
@@ -1998,7 +1998,7 @@ def test_deduplicated_total_is_not_rewrapped_when_another_total_is_present() -> 
         yaml_text,
     )
     # The base-grain total is a window; the deduplicated one is projected as-is.
-    assert 'SUM("Grand Total Quantity") OVER ()' in result.sql
+    assert 'SUM("base"."Grand Total Quantity") OVER ()' in result.sql
     assert 'SUM("Total Stock On Hand") OVER ()' not in result.sql
 
     rows = sorted((r[0], int(r[1]), int(r[2])) for r in con.execute(result.sql).fetchall())

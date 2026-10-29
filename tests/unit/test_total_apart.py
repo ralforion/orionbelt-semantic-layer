@@ -283,3 +283,77 @@ class TestRewrittenRows:
         rows = _run(con, query)
 
         assert {r[1] for r in rows} == {192}
+
+
+CASTS = """\
+version: 1.0
+dataObjects:
+  T:
+    code: t
+    columns:
+      G: {code: g, abstractType: string}
+      X: {code: x, abstractType: int}
+      P: {code: p, abstractType: decimal, sqlPrecision: 10, sqlScale: 2}
+dimensions:
+  G: {dataObject: T, column: G, resultType: string}
+measures:
+  Mean:
+    columns: [{dataObject: T, column: X}]
+    aggregation: avg
+    distinct: true
+    resultType: float
+    dataType: integer
+    total: true
+  Price Total:
+    columns: [{dataObject: T, column: P}]
+    aggregation: sum
+    dataType: integer
+    total: true
+metrics:
+  Scaled Mean: {expression: "{[Mean]} * 100", dataType: double}
+  Scaled Price: {expression: "{[Price Total]} * 100", dataType: double}
+"""
+
+
+@pytest.fixture(scope="module")
+def cast_con() -> Any:
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE t AS SELECT * FROM (VALUES ('a', 1, 0.40), ('a', 2, 0.40), "
+        "('b', 4, 0.40), ('c', 4, 0.40)) v(g, x, p)"
+    )
+    return con
+
+
+class TestCasts:
+    """A total is cast once, and a metric reads it uncast whatever is selected."""
+
+    def _values(self, con: Any, measures: list[str]) -> dict[str, dict[str, Any]]:
+        store = ModelStore()
+        model_id = store.load_model(CASTS).model_id
+        query = QueryObject.model_validate({"select": {"dimensions": ["G"], "measures": measures}})
+        sql = store.compile_query(model_id, query, "duckdb").sql
+        return {r[0]: dict(zip(measures, r[1:], strict=True)) for r in con.sql(sql).fetchall()}
+
+    @pytest.mark.parametrize(
+        ("measure", "metric"), [("Mean", "Scaled Mean"), ("Price Total", "Scaled Price")]
+    )
+    def test_selecting_the_measure_does_not_change_the_metric(
+        self, cast_con: Any, measure: str, metric: str
+    ) -> None:
+        """A distinct mean of 1, 2 and 4 is 7/3, cast to the integer 2: the
+        metric read 200 for 233.3 when the mean was selected beside it."""
+        alone = self._values(cast_con, [metric])
+        beside = self._values(cast_con, [measure, metric])
+
+        assert {g: float(v[metric]) for g, v in beside.items()} == pytest.approx(
+            {g: float(v[metric]) for g, v in alone.items()}
+        )
+
+    def test_a_windowed_total_is_cast_once(self, cast_con: Any) -> None:
+        """Per group 0.80, 0.40 and 0.40 cast to 1, 0 and 0, which the window
+        summed to 1; the total, 1.60, casts to 2."""
+        values = self._values(cast_con, ["Price Total", "Scaled Price"])
+
+        assert {v["Price Total"] for v in values.values()} == {2}
+        assert [float(v["Scaled Price"]) for v in values.values()] == pytest.approx([160.0] * 3)

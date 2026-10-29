@@ -34,6 +34,7 @@ dataObjects:
       Region: {code: region, abstractType: string}
       City: {code: city, abstractType: string}
       Amount: {code: amount, abstractType: int}
+      Price: {code: price, abstractType: decimal, sqlPrecision: 10, sqlScale: 2}
 dimensions:
   Region: {dataObject: Sales, column: Region, resultType: string}
   City: {dataObject: Sales, column: City, resultType: string}
@@ -53,6 +54,16 @@ measures:
     aggregation: median
     resultType: float
     total: true
+  Price Total:
+    columns: [{dataObject: Sales, column: Price}]
+    aggregation: sum
+    dataType: integer
+    total: true
+  Price Total Places:
+    columns: [{dataObject: Sales, column: Price}]
+    aggregation: sum
+    dataType: "decimal(18, 0)"
+    total: true
   SD Region:
     columns: [{dataObject: Sales, column: Amount}]
     aggregation: stddev
@@ -62,37 +73,41 @@ measures:
     columns: [{dataObject: Sales, column: Amount}]
     aggregation: count_distinct
     grain: {mode: FIXED, keepOnly: [Region]}
+metrics:
+  Scaled Price: {expression: "{[Price Total]} * 100", dataType: double}
 """
 
-# id, region, city, amount: region n spans two cities, NULL is a region of its
-# own, and the amount 10 recurs in another group.
-ROWS: list[tuple[int, str | None, str, int]] = [
-    (1, "n", "a", 10),
-    (2, "n", "b", 20),
-    (3, "s", "c", 40),
-    (4, "n", "b", 60),
-    (5, None, "d", 5),
-    (6, None, "d", 7),
-    (7, "s", "c", 40),
-    (8, "s", "c", 10),
+# id, region, city, amount, price: region n spans two cities, NULL is a region
+# of its own, and the amount 10 recurs in another group. Each region and city
+# sums its prices to 0.40 or 0, which cast to 0 whether an engine rounds or
+# truncates; their total, 1.20, casts to 1 either way.
+ROWS: list[tuple[int, str | None, str, int, str]] = [
+    (1, "n", "a", 10, "0.40"),
+    (2, "n", "b", 20, "0.00"),
+    (3, "s", "c", 40, "0.40"),
+    (4, "n", "b", 60, "0.00"),
+    (5, None, "d", 5, "0.40"),
+    (6, None, "d", 7, "0.00"),
+    (7, "s", "c", 40, "0.00"),
+    (8, "s", "c", 10, "0.00"),
 ]
 
-# int, string
+# int, string, decimal(10, 2)
 TYPES = {
-    "postgres": ("BIGINT", "VARCHAR(10)"),
-    "mysql": ("SIGNED", "CHAR"),
-    "snowflake": ("BIGINT", "VARCHAR"),
-    "bigquery": ("INT64", "STRING"),
-    "clickhouse": ("Nullable(Int64)", "Nullable(String)"),
-    "dremio": ("BIGINT", "VARCHAR"),
-    "databricks": ("BIGINT", "STRING"),
-    "duckdb": ("BIGINT", "VARCHAR"),
+    "postgres": ("BIGINT", "VARCHAR(10)", "NUMERIC(10,2)"),
+    "mysql": ("SIGNED", "CHAR", "DECIMAL(10,2)"),
+    "snowflake": ("BIGINT", "VARCHAR", "NUMBER(10,2)"),
+    "bigquery": ("INT64", "STRING", "NUMERIC"),
+    "clickhouse": ("Nullable(Int64)", "Nullable(String)", "Nullable(Decimal(10,2))"),
+    "dremio": ("BIGINT", "VARCHAR", "DECIMAL(10,2)"),
+    "databricks": ("BIGINT", "STRING", "DECIMAL(10,2)"),
+    "duckdb": ("BIGINT", "VARCHAR", "DECIMAL(10,2)"),
 }
 
 
 def _with_rows(dialect: str, sql: str) -> str:
     """*sql*, a ``WITH`` query, with the rows as a CTE ``t`` ahead of its own."""
-    whole, text = TYPES[dialect]
+    whole, text, money = TYPES[dialect]
     q = DialectRegistry.get(dialect).quote_identifier
 
     def value(v: object, kind: str) -> str:
@@ -100,8 +115,9 @@ def _with_rows(dialect: str, sql: str) -> str:
 
     rows = " UNION ALL ".join(
         f"SELECT {value(i, whole)} AS {q('id')}, {value(region, text)} AS {q('region')}, "
-        f"{value(city, text)} AS {q('city')}, {value(amount, whole)} AS {q('amount')}"
-        for i, region, city, amount in ROWS
+        f"{value(city, text)} AS {q('city')}, {value(amount, whole)} AS {q('amount')}, "
+        f"{value(price, money)} AS {q('price')}"
+        for i, region, city, amount, price in ROWS
     )
     assert sql.startswith("WITH ")
     return f"WITH {q('t')} AS ({rows}), {sql[len('WITH ') :]}"
@@ -126,14 +142,22 @@ def _close(got: Any, want: float | None) -> bool:
 
 
 def _mismatches(target: VendorTarget) -> list[str]:
-    amounts = [a for *_, a in ROWS]
+    amounts = [r[3] for r in ROWS]
     wrong: list[str] = []
     rows = _run(
         target,
         {
             "select": {
                 "dimensions": ["Region", "City"],
-                "measures": ["Revenue Total", "SD Total", "Amounts Total", "Median Total"],
+                "measures": [
+                    "Revenue Total",
+                    "SD Total",
+                    "Amounts Total",
+                    "Median Total",
+                    "Price Total",
+                    "Price Total Places",
+                    "Scaled Price",
+                ],
             }
         },
     )
@@ -148,6 +172,12 @@ def _mismatches(target: VendorTarget) -> list[str]:
             wrong.append(f"amounts total {row['amounts total']}")
         if not _close(row["median total"], statistics.median(amounts)):
             wrong.append(f"median total {row['median total']}")
+        # Cast once, from 1.20; cast per group first, the window summed zeros.
+        for measure in ("price total", "price total places"):
+            if Fraction(str(row[measure])) != 1:
+                wrong.append(f"{measure} {row[measure]}")
+        if not _close(row["scaled price"], 120.0):
+            wrong.append(f"scaled price {row['scaled price']}")
 
     rows = _run(
         target,
