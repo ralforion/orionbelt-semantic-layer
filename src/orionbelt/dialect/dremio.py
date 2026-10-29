@@ -304,6 +304,13 @@ class DremioDialect(Dialect):
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         return f"MEDIAN(CAST({col_sql} AS DOUBLE))"
 
+    #: A product of more than 38 digits keeps at most 6 places, as Spark's
+    #: does: 0.000001 squared in DECIMAL(38, 6) came back 0.000000. A narrower
+    #: operand keeps them, but a value past its width casts to 0 here,
+    #: silently (DECIMAL(18, 6) of 1234567890123456.5 was 0.000000), so a
+    #: square keeps 38 digits and 3 places at most.
+    _EXACT_SQUARE = ("DECIMAL(38, {scale})", 3)
+
     def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
         """Dremio: ``COVAR_SAMP`` over one pair is NULL, where Dremio answers NaN.
 

@@ -297,6 +297,58 @@ class DuckDBDialect(Dialect):
             else_clause=mean,
         )
 
+    def combined_variance(
+        self, count: Expr, total: Expr, squares: Expr, scale: int, *, sample: bool
+    ) -> Expr | None:
+        """The variance from the legs' counts, sums and sums of squares, exactly.
+
+        *count*, *total* and *squares* are the leg's columns, one row per
+        group it returned; *total* and *squares* hold whole numbers of
+        ``10^-scale`` and ``10^-2*scale`` units. Summed over a group as
+        ``HUGEINT`` they are ``N``, ``S1`` and ``S2``, and the spread is
+        ``M2 = S2 - S1^2 / N``, which floating point gets wrong by cancelling
+        (the two terms agree in every digit a double holds once the values are
+        far from zero) and ``N * S2 - S1^2`` overflows 128 bits.
+
+        **Shifted by the integer mean.** With ``q = S1 // N`` and
+        ``r = S1 % N``, ``S1 = qN + r`` and ``S1^2 / N = q(S1 + r) + r^2 / N``,
+        so ``M2 = E - f`` for the integer ``E = S2 - q(S1 + r) - r^2 // N``
+        and the fraction ``f = (r^2 % N) / N`` below one. No term exceeds
+        ``S2``: ``q(S1 + r)`` is at most ``S1^2 / N``, which is at most ``S2``
+        for any values, and ``r^2`` is below ``N^2``.
+
+        **One rounding, to double.** ``E`` is exact; the result is the double
+        nearest ``E`` less ``f``. Where ``M2`` is not 0 it is at least
+        ``(N - 1) / N``, a half or more, since the values are whole units, so
+        losing ``f``'s last bits costs no more than a double's own precision;
+        where it is 0, ``E`` and ``f`` are both 0. The division by ``N`` or
+        ``N - 1`` and by ``10^2*scale`` rounds once more each.
+
+        NULL over no values, and for a sample over one, as ``VAR_SAMP`` is.
+        """
+
+        def summed(column: Expr) -> Expr:
+            return FunctionCall(name="SUM", args=[Cast(expr=column, type_name="HUGEINT")])
+
+        def op(left: Expr, operator: str, right: Expr) -> Expr:
+            return BinaryOp(left=left, op=operator, right=right)
+
+        def double(value: Expr) -> Expr:
+            return Cast(expr=value, type_name="DOUBLE")
+
+        n, s1, s2 = summed(count), summed(total), summed(squares)
+        q = op(s1, "//", n)
+        r = op(s1, "%", n)
+        r_squared = op(r, "*", r)
+        whole = op(op(s2, "-", op(q, "*", op(s1, "+", r))), "-", op(r_squared, "//", n))
+        m2 = op(double(whole), "-", op(double(op(r_squared, "%", n)), "/", double(n)))
+        divisor = op(n, "-", Literal.number(1)) if sample else n
+        variance = op(m2, "/", double(divisor))
+        if scale:
+            variance = op(variance, "/", Literal.number(10 ** (2 * scale)))
+        least = Literal.number(2 if sample else 1)
+        return CaseExpr(when_clauses=[(op(n, ">=", least), variance)])
+
     @property
     def capabilities(self) -> DialectCapabilities:
         return DialectCapabilities(
@@ -402,6 +454,10 @@ class DuckDBDialect(Dialect):
         """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         return f"MEDIAN(CAST({col_sql} AS DOUBLE))"
+
+    #: A product of DECIMAL(38, s) keeps both operands' places and raises
+    #: past 38 digits, which also holds the square of any BIGINT.
+    _EXACT_SQUARE = ("DECIMAL(38, {scale})", 19)
 
     def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
         """DuckDB: a correlation or slope is NULL where it divides by no spread.

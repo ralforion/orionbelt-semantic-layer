@@ -317,6 +317,12 @@ class DatabricksDialect(Dialect):
         pair = f"CASE WHEN {k} IS NOT NULL AND {v} IS NOT NULL THEN struct({k}, {v}) END"
         return f"{function}({v}, {pair})"
 
+    #: A product of more than 38 digits keeps at most 6 places
+    #: (``spark.sql.decimalOperations.allowPrecisionLoss``): 0.000001 squared
+    #: in DECIMAL(38, 6) came back 0.000000. A square keeps 38 digits and 3
+    #: places at most, as on Dremio.
+    _EXACT_SQUARE = ("DECIMAL(38, {scale})", 3)
+
     def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
         """Databricks: ``CORR`` as the covariance over the standard deviations.
 

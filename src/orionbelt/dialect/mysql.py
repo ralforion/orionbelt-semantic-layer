@@ -680,6 +680,13 @@ class MySQLDialect(Dialect):
         """
         return self._render_div_operator(args, "DIV")
 
+    #: A product keeps both operands' places, up to 30, and their digits, up
+    #: to 65; a ``SUM`` adds 22 digits more. Squares of ``DECIMAL(65)`` summed
+    #: to a precision of 87, which no Arrow decimal holds and the driver could
+    #: not read. 27 digits hold any BIGINT, and a value past them saturates at
+    #: the cast, so its square passes the 38 digits a leg is refused beyond.
+    _EXACT_SQUARE = ("DECIMAL(27, {scale})", 15)
+
     #: MySQL's ``STDDEV`` and ``VARIANCE`` are its *population* statistics,
     #: ``STDDEV_POP`` and ``VAR_POP`` under other names. Measured on 8.0: over
     #: 1, 2, 2, 3, 7, 4 they answered 1.95 and 3.81 where the sample statistics

@@ -795,6 +795,41 @@ class Dialect(ABC):
         """
         return None
 
+    #: The type :meth:`exact_square` widens a value to, ``{scale}`` standing
+    #: for its places, and the most places whose square that type keeps; or
+    #: ``None`` where nothing is measured.
+    _EXACT_SQUARE: tuple[str, int] | None = None
+
+    def exact_square(self, arg: Expr, scale: int) -> Expr | None:
+        """``arg * arg`` in a type that keeps every digit, or ``None`` for none.
+
+        A federated query's ``variance`` and ``stddev`` combine from each
+        group's count, sum and sum of squares, all exact. *arg* is an integer
+        (*scale* 0) or a decimal of *scale* places; its square has twice the
+        places and twice the digits, which the column's own type does not
+        hold: a 64-bit square wraps or raises, and engines round a decimal
+        product to fewer places. ``None`` where the engine keeps no type wide
+        enough at *scale* places, which the planner refuses.
+        """
+        if self._EXACT_SQUARE is None:
+            return None
+        wide_type, most_places = self._EXACT_SQUARE
+        if scale > most_places:
+            return None
+        wide = Cast(expr=arg, type_name=wide_type.format(scale=scale))
+        return BinaryOp(left=wide, op="*", right=wide)
+
+    def combined_variance(
+        self, count: Expr, total: Expr, squares: Expr, scale: int, *, sample: bool
+    ) -> Expr | None:
+        """The variance of values from their count, sum and sum of squares.
+
+        Only the dialect a federated query combines in needs it. *total* and
+        *squares* are whole numbers of ``10^-scale`` and ``10^-2*scale`` units.
+        ``None`` here: no other engine combines.
+        """
+        return None
+
     def exact_decimal_avg(
         self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
     ) -> Expr | None:

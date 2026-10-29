@@ -42,6 +42,9 @@ from orionbelt.compiler.null_rejection import can_hold_without
 from orionbelt.compiler.type_resolver import (
     combined_average,
     combined_average_counts,
+    combined_variance,
+    combined_variance_columns,
+    partial_square,
     resolve_measure_data_type,
 )
 from orionbelt.models.errors import SemanticError
@@ -2137,6 +2140,20 @@ class QueryResolver:
             quotient = combined_average(measure, total, count)
             assert quotient is not None
             return self._apply_measure_default(measure, quotient)
+        moments = combined_variance_columns(measure)
+        if moments is not None:
+            # A federated combine's variance or standard deviation: from the
+            # legs' counts, sums and sums of squares, in one expression.
+            ref = measure.columns[0]
+            view = ref.view or ""
+            counts, squares = moments
+            variance = combined_variance(
+                measure,
+                make_column_expr(ctx.model, view, counts),
+                make_column_expr(ctx.model, view, ref.column or ""),
+                make_column_expr(ctx.model, view, squares),
+            )
+            return self._apply_measure_default(measure, variance)
 
         # Build column references for all columns. Routes through
         # ``make_column_expr`` so a measure column that points at a
@@ -2170,6 +2187,8 @@ class QueryResolver:
                     args.append(ColumnRef(name=col_name, table=obj_name))
         if not args:
             args = [Literal.number(1)]
+        # A federated leg's sum of squares squares each value it sums.
+        args = [partial_square(measure, arg) for arg in args]
 
         agg = measure.aggregation.upper()
         distinct = measure.distinct
@@ -2210,6 +2229,7 @@ class QueryResolver:
         # way. Scoping it to the other branch left this one failing.
         if _reads_a_number(measure, ctx.model):
             inner = _flag_as_number(inner)
+        inner = partial_square(measure, inner)
 
         distinct = measure.distinct
         if agg == "COUNT_DISTINCT":

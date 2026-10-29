@@ -384,6 +384,18 @@ class ClickHouseDialect(Dialect):
             name="SUM", args=[FunctionCall(name="toDecimal128", args=[arg, Literal.number(0)])]
         )
 
+    def exact_square(self, arg: Expr, scale: int) -> Expr | None:
+        """``toDecimal256``: 76 digits, and a product keeps both operands' places.
+
+        ``toDecimal256`` rather than ``CAST``, which refuses NULL on a column
+        that is not Nullable; an Int64 or a Decimal of *scale* places converts
+        exactly.
+        """
+        if scale > 38:
+            return None
+        wide = FunctionCall(name="toDecimal256", args=[arg, Literal.number(scale)])
+        return BinaryOp(left=wide, op="*", right=wide)
+
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """ClickHouse needs its own function, and two guards around it.
 

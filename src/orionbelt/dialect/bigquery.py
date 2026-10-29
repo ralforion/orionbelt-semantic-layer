@@ -415,6 +415,10 @@ class BigQueryDialect(Dialect):
             f"ELSE {lower} + {half} END"
         )
 
+    #: ``NUMERIC`` rounds a product to 9 places and overflows past 29 integer
+    #: digits; ``BIGNUMERIC`` keeps 38 places, and a square of any INT64.
+    _EXACT_SQUARE = ("BIGNUMERIC", 19)
+
     def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
         """BigQuery: a correlation of a constant column is NULL, not NaN (0 / 0)."""
         call = super()._compile_statistic(name, args, distinct=distinct)
