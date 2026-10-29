@@ -234,14 +234,27 @@ def plan_federated(
     combine_dimensions: dict[str, Dimension] = {}
     combine_filters_static: list[ModelFilter] = []
 
+    # Every column a leg gets that the model does not declare takes a name no
+    # dimension, measure or metric has, nor another such column: a leg or the
+    # combine model reading two columns of one name returned one for both.
+    # Compared without case, as DuckDB compares identifiers, quoted or not.
+    taken = {
+        name.casefold() for name in (*model.effective_measures, *model.dimensions, *model.metrics)
+    }
+    # The edge keys, one name per key column, the same in both legs it joins.
+    key_names = [
+        [_unused(f"__fk{e}_{i}", taken) for i in range(len(edge.from_columns))]
+        for e, edge in enumerate(edges)
+    ]
+
     # The fact leg: the island's dimensions, the edge keys and the measures.
     fact_keys = {
-        f"__fk{e}_{i}": (edge.from_object, column)
+        key_names[e][i]: (edge.from_object, column)
         for e, edge in enumerate(edges)
         for i, column in enumerate(edge.from_columns)
     }
     measures = planner.atomic_measures()
-    leg_measures, averages, distinct = _leg_measures(model, measures)
+    leg_measures, averages, distinct = _leg_measures(model, measures, taken)
     # The values a count of distinct values counts: the fact leg groups by them
     # too, so the combine step counts them across every group they reach.
     fact_values = {column: (obj, col) for column, obj, col in distinct.values()}
@@ -275,7 +288,7 @@ def plan_federated(
         if isinstance(d, str) and not DimensionRef.parse(d).grain
     }
     filtered = {f for item in combine_filters for f in _filter_fields(item)}
-    kept = {name: f"__eqv{n}" for n, name in enumerate(sorted(grouped & filtered))}
+    kept = {name: _unused(f"__eqv{n}", taken) for n, name in enumerate(sorted(grouped & filtered))}
     renamed: dict[str, str] = {}
     fact_columns, fact_rekeyed, fact_kept = _rekeyed(
         planner.leg_dialect(islands[fact]),
@@ -315,7 +328,8 @@ def plan_federated(
     for e, edge in enumerate(edges, start=1):
         leg_name = f"leg_{e}"
         keys = {
-            f"__fk{e - 1}_{i}": (edge.to_object, column) for i, column in enumerate(edge.to_columns)
+            key_names[e - 1][i]: (edge.to_object, column)
+            for i, column in enumerate(edge.to_columns)
         }
         dims = edge_dims[e - 1]
         island = islands[edge.island]
@@ -326,7 +340,7 @@ def plan_federated(
         # NULL. Applied in the leg instead, a fact row whose object it
         # removed would come back NULL-joined, and pass ``IS NULL``.
         static = {
-            f"__sf{e - 1}_{n}": (f.data_object, f.column, f)
+            _unused(f"__sf{e - 1}_{n}", taken): (f.data_object, f.column, f)
             for n, f in enumerate(model.filters)
             if f.data_object in island
         }
@@ -1063,7 +1077,7 @@ def _partial_measure(measure: Measure) -> Measure:
 
 
 def _leg_measures(
-    model: SemanticModel, names: set[str]
+    model: SemanticModel, names: set[str], taken: set[str]
 ) -> tuple[
     dict[str, Measure],
     dict[str, tuple[str, str, int | None]],
@@ -1091,13 +1105,11 @@ def _leg_measures(
     measure, :data:`_AVERAGE_SCALE` for a decimal one, ``None`` for a
     ``float`` one, whose sums are doubles and divide in floating point); and
     per count of distinct values the leg column of its values, with the data
-    object and column they are read from.
+    object and column they are read from. Each generated column takes a name
+    none of *taken* (casefolded) is, and is added to it: a declared measure
+    named like a partial would replace it in the leg.
     """
     effective = model.effective_measures
-    # A generated name must not be one the model declares: a declared measure
-    # named like a partial would replace it in the leg. Compared without case,
-    # as DuckDB compares identifiers, quoted or not.
-    taken = {name.casefold() for name in (*effective, *model.dimensions)}
     measures: dict[str, Measure] = {}
     averages: dict[str, tuple[str, str, int | None]] = {}
     distinct: dict[str, tuple[str, str, str]] = {}

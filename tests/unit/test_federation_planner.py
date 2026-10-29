@@ -1154,3 +1154,84 @@ class TestEngineEquality:
         )
 
         assert all("__leg" not in leg.sql for leg in plan.legs)
+
+
+class TestGeneratedNames:
+    """A column a leg gets beyond the model's takes a name the model does not use."""
+
+    def test_a_kept_value_does_not_take_a_dimensions_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dimension named ``__eqv0``, an integer, selected beside a MySQL
+        string a combine filter reads: the string's kept value took that name,
+        and the integer column showed strings."""
+        pytest.importorskip("ob_flight")
+        monkeypatch.setenv("OBSL_DATABASES", "facts,labels")
+        monkeypatch.setenv("DB_FACTS_TYPE", "mysql")
+        monkeypatch.setenv("DB_LABELS_TYPE", "postgres")
+        yaml = EQUALITY.replace(
+            "dimensions:\n",
+            "dimensions:\n  __eqv0: {dataObject: Facts, column: Key, resultType: int}\n",
+        )
+
+        plan = _compile(
+            yaml,
+            {
+                # Label filtered, not selected: Name is the only value kept.
+                "select": {"dimensions": ["Name", "__eqv0"], "measures": ["Rows"]},
+                "where": [
+                    {
+                        "logic": "or",
+                        "filters": [
+                            {"field": "Label", "op": "=", "value": "x"},
+                            {"field": "Name", "op": "=", "value": "a"},
+                        ],
+                    }
+                ],
+            },
+        ).federation
+
+        facts = plan.legs[0]
+        names = [name for name, _ in facts.columns]
+        assert len(names) == len(set(names))
+        assert dict(facts.columns)["__eqv0"] == "int"
+        (kept,) = [n for n in names if "eqv" in n and n != "__eqv0"]
+        assert f"`__leg`.`Name` AS `{kept}`" in facts.sql
+        assert f'"leg_0"."{kept}" = \'a\'' in plan.combine_sql
+        assert '"leg_0"."__eqv0" AS "__eqv0"' in plan.combine_sql
+
+    def test_keys_and_static_filters_do_not_take_a_dimensions_name(
+        self, files: dict[str, str]
+    ) -> None:
+        """Dimensions named like the edge key and the static filter's column."""
+
+        def yaml(federated: bool) -> str:
+            return model_yaml(federated=federated, tenant_filter=True).replace(
+                "dimensions:\n",
+                "dimensions:\n"
+                "  __fk0_0: {dataObject: Orders, column: Order ID, resultType: int}\n"
+                "  __sf0_0: {dataObject: Orders, column: Order Date, resultType: date}\n",
+            )
+
+        query = {
+            "select": {"dimensions": ["Region", "__fk0_0", "__sf0_0"], "measures": ["Revenue"]}
+        }
+        single = _compile(yaml(False), query)
+        con = duckdb.connect(files["all"], read_only=True)
+        try:
+            expected = sorted(_rows(con, single.sql), key=repr)
+        finally:
+            con.close()
+        federated = _compile(yaml(True), query)
+        combine = duckdb.connect()
+        for leg in federated.federation.legs:
+            names = [name for name, _ in leg.columns]
+            assert len(names) == len(set(names))
+            con = duckdb.connect(files[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+
+        assert sorted(_rows(combine, federated.sql), key=repr) == expected
+        assert expected
