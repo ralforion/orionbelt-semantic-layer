@@ -99,23 +99,18 @@ class DremioDialect(Dialect):
     def exact_decimal_avg(
         self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
     ) -> Expr | None:
-        """The decimal summed as it is, divided by :meth:`Dialect._rounded_average`.
+        """The decimal summed as it is, divided by :meth:`Dialect._truncated_average`.
 
         Dremio's ``AVG`` of a decimal is a double: 12345678901234.565 came back
         1.2345678901234564E13, and 9999999999999999.99 as 1.0E16, which a
         ``DECIMAL(18, 2)`` cast turned into 0. ``SUM`` of a decimal is exact.
+        Past the room the average's integer part has, ``AVG`` is kept, as on
+        every engine; here a decimal overflow would return 0, not an error.
         """
-        integer_digits = (
-            obml_type.precision - obml_type.scale if isinstance(obml_type, DecimalType) else 0
-        )
-        if source_type is not None:
-            integer_digits = min(integer_digits, source_type.precision - source_type.scale)
-        return self._rounded_average(
-            FunctionCall(name="SUM", args=[arg]), arg, obml_type, integer_digits
-        )
+        return self._divided_decimal_average(arg, obml_type, source_type)
 
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
-        """The integer summed as a decimal, divided by :meth:`Dialect._rounded_average`.
+        """The integer summed as a decimal, divided once (:meth:`Dialect._divided_integer_average`).
 
         Widened inside the ``SUM``: a 64-bit total wraps silently on Dremio.
         Measured: ``AVG(x)`` returns 1e+18 for an average of

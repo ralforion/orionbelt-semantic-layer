@@ -64,17 +64,62 @@ class BigQueryDialect(Dialect):
         This is the cheapest of the three exact routes and, notably, the one
         that does *not* transfer: casting the input leaves DuckDB and
         ClickHouse floating point.
+
+        It is :meth:`_truncated_bignumeric_average`, as a decimal's is.
+        """
+        return self._truncated_bignumeric_average(arg, obml_type)
+
+    def exact_decimal_avg(
+        self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
+    ) -> Expr | None:
+        """``AVG`` of a ``NUMERIC`` is exact but rounded at its nine places.
+
+        :meth:`_truncated_bignumeric_average` instead.
+        """
+        return self._truncated_bignumeric_average(arg, obml_type)
+
+    #: The places a ``NUMERIC`` keeps, and a ``BIGNUMERIC``.
+    _NUMERIC_PLACES = 9
+    _BIGNUMERIC_PLACES = 38
+
+    def _truncated_bignumeric_average(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """``TRUNC(AVG(CAST(x AS BIGNUMERIC)), P)``, P past the result's places.
+
+        An average rounded at a few places and again by the measure's cast can
+        round twice: ``AVG`` of a ``NUMERIC`` rounds at nine places, so 100000
+        ones among 20000001 rows averaged 0.004999999750 to 0.005000000, and
+        the cast made it 0.01, where 0.00 is right, for an integer column and
+        a decimal one alike.
+
+        A ``BIGNUMERIC`` average rounds at 38 places. A column of ``s`` places
+        puts a group's average at least 10^-max(s, k + 1) / N from the nearest
+        boundary a k-place result rounds at, so that rounding can move it
+        across one only past 2 * 10^(37 - max(s, k + 1)) rows: never for an
+        ``INT64`` or ``NUMERIC`` column and a ``NUMERIC`` result, and only for
+        a ``BIGNUMERIC`` column of more than 19 places within 10^18 rows. It
+        is then truncated at ``P``,
+        nine places or one past the result's, which keeps every boundary
+        (:meth:`Dialect.exact_decimal_avg`): the measure's cast,
+        ``ROUND(CAST(x AS NUMERIC), k)``, converts it without rounding and
+        rounds it once. Reversing that cast instead would round a ``FLOAT64``
+        and turn an ``INT64`` into one. ``BIGNUMERIC`` also has 38 integer
+        digits where ``NUMERIC`` has 29.
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        # The same decision as every other decimal here, so the two cannot
-        # disagree: this had its own copy of the rule, and when the rule gained
-        # the integer-digit limit the copy kept the old one - emitting
-        # AVG(CAST(x AS NUMERIC)) under a BIGNUMERIC result for a source the
-        # model declares as 38 integer digits.
-        return FunctionCall(
-            name="AVG", args=[Cast(expr=arg, type_name=self.render_obml_type(obml_type))]
+        places = min(self._BIGNUMERIC_PLACES, max(self._NUMERIC_PLACES, obml_type.scale + 1))
+        average = FunctionCall(
+            name="AVG",
+            args=[
+                Cast(
+                    expr=arg,
+                    type_name=self.render_obml_type(
+                        DecimalType(precision=76, scale=self._BIGNUMERIC_PLACES)
+                    ),
+                )
+            ],
         )
+        return FunctionCall(name="TRUNC", args=[average, Literal.number(places)])
 
     def render_obml_type(self, obml_type: OBMLType) -> str:
         if isinstance(obml_type, DecimalType):

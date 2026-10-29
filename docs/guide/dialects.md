@@ -354,16 +354,17 @@ An average of an integer or decimal column is exact on every dialect, rounded ha
 
 | Dialect | Integer column | Decimal column |
 |---------|----------------|----------------|
-| PostgreSQL, MySQL, Snowflake | `AVG(col)` | `AVG(col)` |
-| BigQuery | `AVG(CAST(col AS NUMERIC))` (BIGNUMERIC past 9 places) | `AVG(col)` |
-| Databricks | long division in `DECIMAL(38, 0)` integers with `MOD`, over `SUM(CAST(col AS DECIMAL(38, 0)))` | `AVG(col)` |
-| Dremio | long division in `DECIMAL(38, 0)` integers with `MOD`, over `SUM(CAST(col AS DECIMAL(38, 0)))` | the same, over `SUM(col)` |
+| PostgreSQL, MySQL | `AVG(col)` | `AVG(col)` |
+| BigQuery | `TRUNC(AVG(CAST(col AS BIGNUMERIC)), P)`, `P` 9 or one past the result's places | the same |
+| Snowflake | long division in `NUMBER(38, 0)` integers with `MOD`, over `SUM(CAST(col AS NUMBER(38, 0)))` | the same, over `SUM(col)` |
+| Databricks, Dremio | below 6 places, long division in `DECIMAL(38, 0)` integers with `MOD`; from 6 to 14, `SUM(CAST(col AS DECIMAL(38, 0)))` cast to the scale and divided by `COUNT(col)` | long division, over `SUM(col)` |
 | ClickHouse | `divideDecimal(SUM(toDecimal128(col, 0)), COUNT, s + 2)`, rounded to `s` | `divideDecimal(SUM(col * toDecimal256(1, 0)), COUNT, s + 2)`, rounded to `s` |
 | DuckDB | integer arithmetic over `HUGEINT` | integer arithmetic over `HUGEINT`, the fraction read at 18 places |
 
 The exact total is narrowed only by truncating, and never closer than one place past the result, so it rounds as the exact total does, whatever the column's scale; each value is summed as it is.
 
-- **Dremio** and **Databricks** round every decimal quotient, at `max(6, scale)` places, so a division followed by the measure's cast rounds twice: 100 ones among 20001 rows average 0.0049997, which is 0.00, but came back 0.01 on both. OBSL therefore divides in integers, where each division is of an exact multiple. It keeps the plain `AVG` past 16 places, and past 32 integer digits in the average or in a declared column, where a decimal quotient overflows: silently on Dremio, with an error on Databricks.
+- **Rounding twice.** An average rounded at a few extra places and then again by the measure's cast can differ from the exact average rounded once: 100 ones among 20001 rows average 0.0049997, which is 0.00, but rounded at six places it is 0.005000, which the cast makes 0.01. Dremio and Databricks round every decimal quotient at `max(6, scale)` places, Snowflake's `AVG` keeps 6 places for an integer and 8 for a `NUMBER(18, 2)`, Databricks' keeps four more than the column, and BigQuery's `NUMERIC` keeps 9, so all four came back 0.01 for groups large enough (20001 rows at 6 places, 20000001 at 9). OBSL divides in integers on the first three, each division of an exact multiple, to 18 places, truncated; BigQuery averages in `BIGNUMERIC`, at 38 places, and truncates that. The measure's cast then rounds once, and a wrapper reading the average before it, such as a period-over-period change, reads those places rather than a rounded value.
+- **Dremio** and **Databricks** divide once at the result's scale from 6 to 14 places, where their quotient keeps that scale and rounds once. The long division keeps the engine's own `AVG` past 17 places, and for an average whose result or declared column has more integer digits than it holds: 32, and at most 36 less the scale. An integer average holds 32 either way, as the division it replaces.
 - **ClickHouse** widens each value by multiplying it with a `Decimal256` one, which keeps the value's own scale. It divides two places past the result because `divideDecimal` returns 0 when the dividend is under ten units of its result scale. It keeps the plain `AVG` past a result precision of 74, and for a declared column of more than 58 digits, where 10^18 rows could fill the total. Its own `sum` and `avg` wrap at the same point.
 - **DuckDB** keeps the plain `AVG` past 18 places.
 

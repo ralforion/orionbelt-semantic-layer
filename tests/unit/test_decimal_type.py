@@ -152,7 +152,7 @@ def test_decimal_compiles_as_float_did(shape: str, dialect: str) -> None:
 
 
 # Where a decimal column's average is rewritten exactly and a float column's is not.
-AVERAGED_EXACTLY = {"clickhouse", "dremio", "duckdb"}
+AVERAGED_EXACTLY = {"bigquery", "clickhouse", "databricks", "dremio", "duckdb", "snowflake"}
 
 
 @pytest.mark.parametrize("dialect", DIALECTS)

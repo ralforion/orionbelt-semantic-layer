@@ -133,7 +133,7 @@ dimensions:
 # input works only on BigQuery, ordinary decimal division only on Dremio, and
 # ClickHouse needs a function of its own.
 REWRITTEN = {
-    "bigquery": "AVG(CAST(",
+    "bigquery": "TRUNC(AVG(CAST(",
     "clickhouse": "divideDecimal(",
     "dremio": "MOD(",
     # No exact division at all here, so the average is assembled from integer
@@ -143,14 +143,16 @@ REWRITTEN = {
     # Measured once its workspace was reachable: AVG over BIGINT returns 1.0E18
     # here too. #318 had left it unrewritten on an assumption (#322).
     "databricks": "MOD(",
+    # Exact, but rounded at six places before the measure's cast rounds again.
+    "snowflake": "MOD(",
 }
-# Postgres, MySQL and Snowflake are already exact, so their *expression* is
-# left alone - but their result type is still widened (#330), because an exact
-# average the declared type cannot hold is no better than an inexact one.
-# The three that need no rewrite because their own AVG is already exact. DuckDB
-# was here too, for the opposite reason - no exact division to rewrite *to* -
-# until one was assembled from integer arithmetic (#316).
-LEFT_ALONE = ["postgres", "mysql", "snowflake"]
+# Postgres and MySQL are already exact, so their *expression* is left alone -
+# but their result type is still widened (#330), because an exact average the
+# declared type cannot hold is no better than an inexact one. DuckDB was here
+# too, for the opposite reason - no exact division to rewrite *to* - until one
+# was assembled from integer arithmetic (#316), and Snowflake, until its
+# six-place rounding was found to round a second time under the cast.
+LEFT_ALONE = ["postgres", "mysql"]
 NATIVELY_EXACT = ["postgres", "mysql", "snowflake"]
 
 
@@ -327,15 +329,60 @@ class TestTheHazardsAPlainAvgHandlesAndARewriteMustToo:
         assert "TRUNCATE(" not in sql.upper(), sql
         assert "AVG(" not in sql.upper(), sql
 
-    def test_dremio_keeps_avg_past_sixteen_places(self) -> None:
-        """Dremio's long division takes two digits more than twice the scale.
+    @pytest.mark.parametrize("dialect", ["dremio", "databricks"])
+    def test_dremio_keeps_integer_room_for_the_running_total(self, dialect: str) -> None:
+        """A sum is as many digits as its rows make it.
 
-        Its old route capped the scale at 14, padding the rest with zeros, and
-        rounded twice. Past 16 places the exact route has no room, so the
-        engine's own average is kept rather than an inexact one.
+        38 digits cannot hold both a large total and a long fraction, so the
+        intermediate scale is capped rather than tracking the result's. At a
+        declared scale of 19 the total would have had 19 integer digits, and
+        two rows of 9000000000000000000 need 20. From six places on, the
+        single division rounds once at its own scale, so it stays.
         """
-        sql = _sql_with_default("Qty Avg", "dremio", "decimal(38, 20)")
-        assert "AVG(" in sql, sql
+        sql = _sql_with_default("Qty Avg", dialect, "decimal(38, 20)")
+        assert "AS DECIMAL(38, 14))" in sql, sql
+        assert "AS DECIMAL(38, 19))" in sql, sql
+
+    @pytest.mark.parametrize("default", ["decimal(38, 2)", "decimal(38, 17)"])
+    def test_databricks_keeps_an_exact_route_at_full_width(self, default: str) -> None:
+        """The long division's limits fell back to a floating-point AVG: a
+        single 1000000000000000003 came back 1000000000000000000.00 at
+        decimal(38, 2) and decimal(38, 17). Below six places the long
+        division holds the integer part to the quotient's 32 digits, as the
+        division it replaced did; from six on the single division stays."""
+        sql = _sql_with_default("Qty Avg", "databricks", default)
+        assert "AVG(" not in sql.upper(), sql
+
+    @pytest.mark.parametrize("dialect", ["dremio", "databricks", "snowflake"])
+    def test_the_long_division_keeps_its_places_for_wrappers(self, dialect: str) -> None:
+        """It truncates at 18 places, past the result's two, and leaves the
+        rounding to the measure's cast. Rounded inside, a period-over-period
+        change would read averages already rounded to two places."""
+        sql = _sql("Price Avg", dialect)
+        assert "AS DECIMAL(18, 18))" in sql or "AS NUMBER(18, 18))" in sql, sql
+        assert "AS DECIMAL(3, 2))" not in sql and "AS NUMBER(3, 2))" not in sql, sql
+
+    def test_bigquery_truncates_one_place_past_a_long_result(self) -> None:
+        """Nine places, or one past the result's: the cast then converts it
+        without rounding and its ROUND rounds once."""
+        assert "TRUNC(AVG(CAST(`Charges`.`price` AS BIGNUMERIC)), 20)" in _sql(
+            "Price Avg 19", "bigquery"
+        )
+
+    @pytest.mark.parametrize("dialect", ["dremio", "databricks", "snowflake"])
+    def test_a_width_past_the_long_division_keeps_the_engines_avg(self, dialect: str) -> None:
+        """A declared DECIMAL(38, 2) has more integer digits than the long
+        division's quotient keeps. Held to that room, a single 10^33 from a
+        DECIMAL(34, 0) overflowed on Databricks, where its own AVG returns it;
+        so the engine's AVG stays, as it was."""
+        sql = _sql("Wide Source Avg", dialect)
+        assert "MOD(" not in sql, sql
+        assert "AVG(" in sql.upper(), sql
+
+    def test_a_wide_result_keeps_databricks_avg_for_a_decimal(self) -> None:
+        """An undeclared decimal column averaged into decimal(38, 2): 36
+        integer digits, past the room, so the engine's AVG stays."""
+        sql = _sql_with_default("Price Avg", "databricks", "decimal(38, 2)")
         assert "MOD(" not in sql, sql
 
 
@@ -774,10 +821,15 @@ class TestDuckDBAssemblesItsAverage:
 # The three whose AVG of a decimal is a double, and the route each takes.
 DECIMAL_REWRITTEN = {
     "clickhouse": '"Charges"."price" * toDecimal256(1, 0)',
-    "dremio": 'MOD(TRUNCATE(ABS(SUM("Charges"."price")), 3)',
+    "dremio": 'MOD(TRUNCATE(ABS(SUM("Charges"."price")), 18)',
     "duckdb": "TRUNC(SUM(",
+    # Exact but rounded, at s + 4 places, NUMBER(36, 8) and NUMERIC's nine,
+    # then rounded again by the cast.
+    "databricks": "MOD(floor(ABS(SUM(`Charges`.`price`)), 18)",
+    "snowflake": 'MOD(TRUNCATE(ABS(SUM("Charges"."price")), 18)',
+    "bigquery": "TRUNC(AVG(CAST(`Charges`.`price` AS BIGNUMERIC)), 9)",
 }
-DECIMAL_EXACT = ["bigquery", "databricks", "mysql", "postgres", "snowflake"]
+DECIMAL_EXACT = ["mysql", "postgres"]
 
 
 class TestADecimalAverage:
