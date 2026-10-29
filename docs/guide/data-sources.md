@@ -209,8 +209,9 @@ or standard deviation with `total: true`, a `sum`, `count`, `avg`, variance or
 standard deviation of an object the query's joins repeat (customers' ages
 over their sales) when the fact leg would group it by more than one value per
 row of that object, which would count each row once per value: a join to
-another source starting on its many side, or a filter after the join reading
-a dimension there, other `distinct`
+another source starting on its many side, a filter after the join reading a
+dimension there, or a `rollup` / `cube` subtotal or a `total: true` adding
+groups across a selected dimension there, other `distinct`
 aggregations, and aggregations that cannot be combined from partial results
 (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,

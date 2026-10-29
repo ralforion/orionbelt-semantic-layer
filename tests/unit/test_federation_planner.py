@@ -1297,6 +1297,10 @@ dimensions:
   Age: {{dataObject: Customers, column: Age, resultType: int}}
 measures:
   Ages: {{columns: [{{dataObject: Customers, column: Age}}], aggregation: {aggregation}}}
+  Ages Total:
+    columns: [{{dataObject: Customers, column: Age}}]
+    aggregation: {aggregation}
+    total: true
 """
 
 REPEATED_TABLES = [
@@ -1402,6 +1406,53 @@ class TestRepeatedRows:
 
         assert got == expected
         assert expected
+
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    @pytest.mark.parametrize("aggregation", ["sum", "variance"])
+    def test_subtotals_across_the_many_side_are_refused(
+        self, grouping: str, aggregation: str
+    ) -> None:
+        """Per region and product the leg's groups are right, but the region's
+        subtotal adds customer 1's two product groups: ages summed to 40 for
+        30, their variance 33.3 for 50."""
+        query = {
+            "select": {"dimensions": ["Region", "Product ID"], "measures": ["Ages"]},
+            "grouping": grouping,
+        }
+
+        with pytest.raises(ResolutionError) as caught:
+            _repeated(aggregation, query)
+
+        assert "which the query's subtotals add across" in caught.value.errors[0].message
+
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    @pytest.mark.parametrize("aggregation", ["sum", "variance"])
+    def test_subtotals_across_the_object_itself_combine(
+        self, grouping: str, aggregation: str
+    ) -> None:
+        query = {
+            "select": {"dimensions": ["Region", "Age"], "measures": ["Ages", "Sales Count"]},
+            "grouping": grouping,
+        }
+
+        expected, got = _repeated(aggregation, query)
+
+        assert got == expected
+        assert expected
+
+    @pytest.mark.parametrize(("dimension", "refused"), [("Product ID", True), ("Age", False)])
+    def test_a_total_across_the_many_side_is_refused(self, dimension: str, refused: bool) -> None:
+        """A total adds every group, as a grand total does: 80 for 70."""
+        query = {"select": {"dimensions": ["Region", dimension], "measures": ["Ages Total"]}}
+
+        if refused:
+            with pytest.raises(ResolutionError) as caught:
+                _repeated("sum", query)
+            assert "which its total adds across" in caught.value.errors[0].message
+        else:
+            expected, got = _repeated("sum", query)
+            assert got == expected
+            assert expected
 
     @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
     def test_keys_of_the_object_itself_combine(self, aggregation: str) -> None:

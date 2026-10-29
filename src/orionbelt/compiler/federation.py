@@ -853,22 +853,57 @@ class _Planner:
         does the same, but per group of what *it* groups by, which is more:
         the federation keys, the dimensions only a filter after the join reads
         (*fact_dims* beyond the selected ones), and the values a count of
-        distinct values counts (*distinct*, :func:`_leg_measures`). A customer
-        whose sales reach two products is one row in each product's group, and
-        the combine step, adding the groups, counted it twice. Measured, the
-        variance of ages 10 and 20 came out 33.3 for 50, their sum 40 for 30.
+        distinct values counts (*distinct*, :func:`_leg_measures`). The
+        selected ones count too where the combine step adds groups across
+        them: a ``rollup`` or ``cube`` subtotal, and a measure's ``total``. A
+        customer whose sales reach two products is one row in each product's
+        group, and the combine step, adding the groups, counted it twice.
+        Measured, the variance of ages 10 and 20 came out 33.3 for 50 and their
+        sum 40 for 30, in a group, a subtotal and a total alike.
 
         Exact when each of those is read from that object, or from one it joins
         many-to-one, so each of its rows has one value; refused otherwise. An
         aggregation repeated rows do not change (``min``, ``count_distinct``)
         combines either way.
         """
-        groupings = self._leg_groupings(edges, fact_dims, distinct)
-        effective = self.model.effective_measures
+        model = self.model
+        selected = {
+            DimensionRef.parse(d).name for d in self.query.select.dimensions if isinstance(d, str)
+        }
+
+        def column_objects(obj: str, column: str) -> set[str]:
+            return {obj} | model.column_reference_objects(obj, column)
+
+        def dimension_objects(name: str) -> set[str]:
+            return {model.dimensions[name].view or ""} | model.dimension_join_objects(name)
+
+        always: dict[str, set[str]] = {}
+        for edge in edges:
+            always[f"the key of the join from '{edge.from_object}' to '{edge.to_object}'"] = (
+                set().union(*(column_objects(edge.from_object, c) for c in edge.from_columns))
+            )
+        fact_names = [DimensionRef.parse(d).name for d in fact_dims]
+        for name in fact_names:
+            if name not in selected:
+                always[f"dimension '{name}', which a filter after the join reads"] = (
+                    dimension_objects(name)
+                )
+        for name, (_, obj, column) in distinct.items():
+            always[f"the values '{name}' counts"] = column_objects(obj, column)
+
+        effective = model.effective_measures
         for name, target in sorted(self.resolved.dedup_targets.items()):
             measure = effective[name]
             if measure.distinct or measure.aggregation in MULTIPLICITY_SAFE_AGGREGATIONS:
                 continue
+            groupings = dict(always)
+            if self.query.grouping is not None or measure.total:
+                adds = "the query's subtotals add" if self.query.grouping else "its total adds"
+                for dimension in fact_names:
+                    if dimension in selected:
+                        groupings[f"dimension '{dimension}', which {adds} across"] = (
+                            dimension_objects(dimension)
+                        )
             one = self._one_row_each(target)
             several = [what for what, objects in groupings.items() if not objects <= one]
             if several:
@@ -879,39 +914,9 @@ class _Planner:
                     f"{'; '.join(several)}, of which one '{target}' row can have several: "
                     "it would be counted once per value",
                     hint=f"Join the other data source from '{target}' or an object it "
-                    "joins many-to-one, filter after the join on dimensions of that "
-                    "object, or query the measure on one data source.",
+                    "joins many-to-one, group and filter after the join by dimensions of "
+                    "that object, or query the measure on one data source.",
                 )
-
-    def _leg_groupings(
-        self,
-        edges: list[_Edge],
-        fact_dims: list[str],
-        distinct: dict[str, tuple[str, str, str]],
-    ) -> dict[str, set[str]]:
-        """What the fact leg groups by beyond the query's dimensions, with the
-        data objects each reads, a computed column's included."""
-        model = self.model
-        selected = {
-            DimensionRef.parse(d).name for d in self.query.select.dimensions if isinstance(d, str)
-        }
-        groupings: dict[str, set[str]] = {}
-        for edge in edges:
-            groupings[f"the key of the join from '{edge.from_object}' to '{edge.to_object}'"] = {
-                edge.from_object
-            }.union(
-                *(model.column_reference_objects(edge.from_object, c) for c in edge.from_columns)
-            )
-        for name in (DimensionRef.parse(d).name for d in fact_dims):
-            if name not in selected:
-                groupings[f"dimension '{name}', which a filter after the join reads"] = {
-                    model.dimensions[name].view or ""
-                } | model.dimension_join_objects(name)
-        for name, (_, obj, column) in distinct.items():
-            groupings[f"the values '{name}' counts"] = {obj} | model.column_reference_objects(
-                obj, column
-            )
-        return groupings
 
     def _one_row_each(self, target: str) -> set[str]:
         """*target* and the objects of the query with one row per row of it."""
