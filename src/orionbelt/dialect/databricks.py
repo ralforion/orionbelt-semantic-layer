@@ -317,6 +317,22 @@ class DatabricksDialect(Dialect):
         pair = f"CASE WHEN {k} IS NOT NULL AND {v} IS NOT NULL THEN struct({k}, {v}) END"
         return f"{function}({v}, {pair})"
 
+    def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
+        """Databricks: ``CORR`` as the covariance over the standard deviations.
+
+        Beside a ``COVAR_*`` or ``REGR_*`` of the same query, ``CORR`` over a
+        constant column raises DIVIDE_BY_ZERO and fails the whole query, where
+        alone it answers NULL. Its definition answers NULL there through
+        ``try_divide``, and its deviations read the rows ``CORR`` reads, those
+        with both values.
+        """
+        if name != "CORR" or distinct:
+            return super()._compile_statistic(name, args, distinct=distinct)
+        x, y = (self.compile_expr(a) for a in args)
+        paired_x = f"CASE WHEN {y} IS NOT NULL THEN {x} END"
+        paired_y = f"CASE WHEN {x} IS NOT NULL THEN {y} END"
+        return f"try_divide(COVAR_POP({x}, {y}), STDDEV_POP({paired_x}) * STDDEV_POP({paired_y}))"
+
     def _compile_percentile(self, name: str, args: list[Expr], fraction: Decimal) -> str:
         """The continuous percentile as the ordered-set aggregate; the discrete
         one read from the sorted values.

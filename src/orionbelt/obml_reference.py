@@ -308,8 +308,9 @@ Dialect coverage:
 | Aggregation | Postgres | Snowflake | BigQuery | Databricks | DuckDB | ClickHouse | MySQL | Dremio |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | stddev, stddev_pop, variance, var_pop | yes | yes | yes | yes | yes | yes | yes | yes |
-| corr, covar_pop, covar_samp | yes | yes | yes | yes | yes | yes | no | yes |
-| regr_slope, regr_intercept | yes | yes | no | yes | yes | no | no | yes |
+| covar_pop, covar_samp | yes | yes | yes | yes | yes | yes | no | yes |
+| corr | yes | yes | yes | yes | yes | yes | no | no |
+| regr_slope, regr_intercept | yes | yes | no | yes | yes | no | no | no |
 | measure (Databricks Metric View) | no | no | no | yes | no | no | no | no |
 
 Unsupported combinations raise `UNSUPPORTED_AGGREGATION_FOR_DIALECT` at

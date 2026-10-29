@@ -60,6 +60,11 @@ class DremioDialect(Dialect):
                 # last: a wrong answer rather than an error.
                 "first",
                 "last",
+                # Not in Dremio's grammar: ``CORR (`` and ``REGR_SLOPE (`` are
+                # parse errors on 26.0, where COVAR_SAMP and COVAR_POP run.
+                "corr",
+                "regr_slope",
+                "regr_intercept",
             ],
         )
 
@@ -298,6 +303,19 @@ class DremioDialect(Dialect):
         """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         return f"MEDIAN(CAST({col_sql} AS DOUBLE))"
+
+    def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
+        """Dremio: ``COVAR_SAMP`` over one pair is NULL, where Dremio answers NaN.
+
+        The sample covariance divides by one less than the pairs, as the
+        sample variance does, which Dremio already answers NULL for.
+        """
+        call = super()._compile_statistic(name, args, distinct=distinct)
+        if name != "COVAR_SAMP" or distinct:
+            return call
+        x, y = (self.compile_expr(a) for a in args)
+        pairs = f"COUNT(CASE WHEN {x} IS NOT NULL AND {y} IS NOT NULL THEN 1 END)"
+        return f"CASE WHEN {pairs} > 1 THEN {call} END"
 
     _percentile_cont_over_doubles = True
 

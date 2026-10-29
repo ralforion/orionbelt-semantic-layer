@@ -403,6 +403,18 @@ class DuckDBDialect(Dialect):
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         return f"MEDIAN(CAST({col_sql} AS DOUBLE))"
 
+    def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
+        """DuckDB: a correlation or slope is NULL where it divides by no spread.
+
+        ``CORR`` and ``REGR_SLOPE`` answer NaN there (0 / 0): over one pair, or
+        a constant column (the second, for the slope). The SQL standard, and
+        Postgres, answer NULL.
+        """
+        call = super()._compile_statistic(name, args, distinct=distinct)
+        if name not in ("CORR", "REGR_SLOPE"):
+            return call
+        return f"CASE WHEN isfinite({call}) THEN {call} END"
+
     _percentile_cont_over_doubles = True
 
     def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:

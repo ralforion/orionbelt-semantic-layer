@@ -415,6 +415,13 @@ class BigQueryDialect(Dialect):
             f"ELSE {lower} + {half} END"
         )
 
+    def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
+        """BigQuery: a correlation of a constant column is NULL, not NaN (0 / 0)."""
+        call = super()._compile_statistic(name, args, distinct=distinct)
+        if name != "CORR":
+            return call
+        return f"IF(IS_NAN({call}), NULL, {call})"
+
     def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:
         """BigQuery: the first of the values ordered by key and value.
 

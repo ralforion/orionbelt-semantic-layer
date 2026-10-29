@@ -680,6 +680,12 @@ class MySQLDialect(Dialect):
         """
         return self._render_div_operator(args, "DIV")
 
+    #: MySQL's ``STDDEV`` and ``VARIANCE`` are its *population* statistics,
+    #: ``STDDEV_POP`` and ``VAR_POP`` under other names. Measured on 8.0: over
+    #: 1, 2, 2, 3, 7, 4 they answered 1.95 and 3.81 where the sample statistics
+    #: are 2.14 and 4.57, and 0 over one value, whose sample statistics are NULL.
+    _STATISTIC_NAMES = {"STDDEV": "STDDEV_SAMP", "VARIANCE": "VAR_SAMP"}
+
     def _compile_median(self, args: list[Expr]) -> str:
         """MySQL: the mean of the middle one or two values of the sorted group.
 

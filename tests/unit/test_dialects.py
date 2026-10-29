@@ -1281,6 +1281,125 @@ class TestModeRendering:
             dialect.compile_expr(expr)
 
 
+class TestStatisticRendering:
+    """The statistical aggregates, each the SQL standard's statistic on every dialect.
+
+    Executed against each engine in ``vendor_exec/test_statistics_exec.py``;
+    these pin the rendering that run measured.
+    """
+
+    X = ColumnRef(name="x")
+    Y = ColumnRef(name="y")
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("STDDEV", "STDDEV_SAMP(`x`)"),
+            ("VARIANCE", "VAR_SAMP(`x`)"),
+            ("STDDEV_POP", "STDDEV_POP(`x`)"),
+            ("VAR_POP", "VAR_POP(`x`)"),
+        ],
+    )
+    def test_mysql_renders_the_sample_statistics(self, name: str, expected: str) -> None:
+        """MySQL's ``STDDEV`` and ``VARIANCE`` are its population statistics."""
+        sql = DialectRegistry.get("mysql").compile_expr(FunctionCall(name=name, args=[self.X]))
+        assert sql == expected
+
+    @pytest.mark.parametrize(
+        ("name", "args", "expected"),
+        [
+            ("STDDEV", ["x"], 'if(count("x") < 2, NULL, stddevSampStable("x"))'),
+            ("VARIANCE", ["x"], 'if(count("x") < 2, NULL, varSampStable("x"))'),
+            ("STDDEV_POP", ["x"], 'if(count("x") < 1, NULL, stddevPopStable("x"))'),
+            ("VAR_POP", ["x"], 'if(count("x") < 1, NULL, varPopStable("x"))'),
+            (
+                "COVAR_SAMP",
+                ["x", "y"],
+                'if(countIf(isNotNull("x") AND isNotNull("y")) < 2, NULL, '
+                'covarSampStable("x", "y"))',
+            ),
+            (
+                "COVAR_POP",
+                ["x", "y"],
+                'if(countIf(isNotNull("x") AND isNotNull("y")) < 1, NULL, '
+                'covarPopStable("x", "y"))',
+            ),
+            (
+                "CORR",
+                ["x", "y"],
+                'if(isFinite(corrStable("x", "y")), corrStable("x", "y"), NULL)',
+            ),
+        ],
+    )
+    def test_clickhouse_renders_the_stable_functions(
+        self, name: str, args: list[str], expected: str
+    ) -> None:
+        """The plain ``varSamp`` family cancels far from zero, and answers ``nan`` or
+        ``inf`` where the statistic is undefined."""
+        expr = FunctionCall(name=name, args=[ColumnRef(name=a) for a in args])
+        assert DialectRegistry.get("clickhouse").compile_expr(expr) == expected
+
+    def test_clickhouse_counts_distinct_values(self) -> None:
+        expr = FunctionCall(name="STDDEV", args=[self.X], distinct=True)
+        assert DialectRegistry.get("clickhouse").compile_expr(expr) == (
+            'if(count(DISTINCT "x") < 2, NULL, stddevSampStable(DISTINCT "x"))'
+        )
+
+    @pytest.mark.parametrize(
+        ("dialect_name", "name", "expected"),
+        [
+            (
+                "duckdb",
+                "CORR",
+                'CASE WHEN isfinite(CORR("x", "y")) THEN CORR("x", "y") END',
+            ),
+            (
+                "duckdb",
+                "REGR_SLOPE",
+                'CASE WHEN isfinite(REGR_SLOPE("x", "y")) THEN REGR_SLOPE("x", "y") END',
+            ),
+            ("duckdb", "REGR_INTERCEPT", 'REGR_INTERCEPT("x", "y")'),
+            ("bigquery", "CORR", "IF(IS_NAN(CORR(`x`, `y`)), NULL, CORR(`x`, `y`))"),
+            (
+                "dremio",
+                "COVAR_SAMP",
+                'CASE WHEN COUNT(CASE WHEN "x" IS NOT NULL AND "y" IS NOT NULL THEN 1 END) > 1 '
+                'THEN COVAR_SAMP("x", "y") END',
+            ),
+            (
+                "databricks",
+                "CORR",
+                "try_divide(COVAR_POP(`x`, `y`), "
+                "STDDEV_POP(CASE WHEN `y` IS NOT NULL THEN `x` END) * "
+                "STDDEV_POP(CASE WHEN `x` IS NOT NULL THEN `y` END))",
+            ),
+            ("postgres", "CORR", 'CORR("x", "y")'),
+            ("snowflake", "CORR", 'CORR("x", "y")'),
+        ],
+    )
+    def test_an_undefined_statistic_is_null(
+        self, dialect_name: str, name: str, expected: str
+    ) -> None:
+        """Where the engine answers NaN, or raises, over one pair or a constant column."""
+        expr = FunctionCall(name=name, args=[self.X, self.Y])
+        assert DialectRegistry.get(dialect_name).compile_expr(expr) == expected
+
+    @pytest.mark.parametrize("dialect_name", ["postgres", "snowflake", "duckdb", "dremio"])
+    def test_other_dialects_keep_the_standard_names(self, dialect_name: str) -> None:
+        sql = DialectRegistry.get(dialect_name).compile_expr(
+            FunctionCall(name="STDDEV", args=[self.X])
+        )
+        assert sql == 'STDDEV("x")'
+
+    @pytest.mark.parametrize("name", ["corr", "regr_slope", "regr_intercept"])
+    def test_dremio_refuses_what_it_cannot_parse(self, name: str) -> None:
+        from orionbelt.dialect.base import UnsupportedAggregationError
+
+        expr = FunctionCall(name=name.upper(), args=[self.X, self.Y])
+        with pytest.raises(UnsupportedAggregationError):
+            DialectRegistry.get("dremio").compile_expr(expr)
+
+
 class TestMedianRendering:
     """Test MEDIAN rendering across all dialects."""
 
