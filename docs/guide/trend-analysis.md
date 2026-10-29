@@ -271,11 +271,31 @@ columns (or vice-versa) raise `INVALID_AGGREGATION_INPUTS`.
 | Aggregation | Postgres | Snowflake | BigQuery | Databricks | DuckDB | ClickHouse | MySQL | Dremio |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | stddev / variance family | yes | yes | yes | yes | yes | yes | yes | yes |
-| corr / covariance | yes | yes | yes | yes | yes | yes | no | yes |
-| regr_slope / regr_intercept | yes | yes | no | yes | yes | no | no | yes |
+| covar_pop / covar_samp | yes | yes | yes | yes | yes | yes | no | yes |
+| corr | yes | yes | yes | yes | yes | yes | no | no |
+| regr_slope / regr_intercept | yes | yes | no | yes | yes | no | no | no |
 
-ClickHouse uses camelCase function names internally (`stddevPop`,
-`covarSamp`, etc.) — OBSL maps automatically.
+Each answers the SQL standard's statistic on every dialect, which takes some
+rendering:
+
+- `stddev` and `variance` are the **sample** statistics. MySQL's own `STDDEV`
+  and `VARIANCE` are the population ones, so OBSL emits `STDDEV_SAMP` and
+  `VAR_SAMP` there.
+- ClickHouse's `varSamp` family subtracts sums of squares, which cancel on
+  values far from zero (the variance of 10^9 + 0..9 came back as 0). OBSL emits
+  the numerically stable `varSampStable`, `covarSampStable`, `corrStable` and
+  so on.
+- Where the standard leaves a statistic undefined (a sample statistic of one
+  value, a correlation of a constant column, a slope over a constant `x`), the
+  answer is NULL. DuckDB, BigQuery and ClickHouse answer `NaN` or `inf` there,
+  and Databricks fails the query with `DIVIDE_BY_ZERO` when a `corr` sits beside
+  a covariance or regression, so OBSL guards each.
+- Dremio cannot parse `CORR` or `REGR_*`, so they are refused at compile time.
+
+Precision: Snowflake (over doubles, and its covariance and correlation over
+integers) and Dremio (over every type) also subtract sums of squares and have
+no stable function, so on values far from zero, relative to their spread,
+their result loses most or all of its digits.
 
 Unsupported combinations raise `UNSUPPORTED_AGGREGATION_FOR_DIALECT` at
 compile time. There is no silent fallback. If you need regression on

@@ -767,24 +767,55 @@ class ClickHouseDialect(Dialect):
             ),
         )
 
-    _FUNCTION_NAME_MAP: dict[str, str] = {
-        "ANY_VALUE": "any",
-        # Statistical aggregates: ClickHouse uses camelCase rather than the
-        # SQL-standard underscore names. Mappings cover every supported
-        # function in OBML's aggregation surface.
-        "STDDEV": "stddevSamp",
-        "STDDEV_SAMP": "stddevSamp",
-        "STDDEV_POP": "stddevPop",
-        "VARIANCE": "varSamp",
-        "VAR_SAMP": "varSamp",
-        "VAR_POP": "varPop",
-        "CORR": "corr",
-        "COVAR_POP": "covarPop",
-        "COVAR_SAMP": "covarSamp",
-    }
+    _FUNCTION_NAME_MAP: dict[str, str] = {"ANY_VALUE": "any"}
 
     def _map_function_name(self, name: str) -> str:
         return self._FUNCTION_NAME_MAP.get(name.upper(), name)
+
+    #: Each statistical aggregate as ClickHouse's numerically stable function,
+    #: and the fewest values it is defined over. The plain ``varSamp`` family
+    #: subtracts sums of squares, which cancel: measured over 10^9 + 0..9,
+    #: ``varSamp`` and ``stddevPop`` answered 0 where ``varSampStable`` and
+    #: ``stddevPopStable`` answer 9.17 and 2.87, and ``covarSamp`` and ``corr``
+    #: of two such columns 0 and nan where the stable ones answer 18.5 and 0.99.
+    _STATISTICS: dict[str, tuple[str, int]] = {
+        "STDDEV": ("stddevSampStable", 2),
+        "STDDEV_SAMP": ("stddevSampStable", 2),
+        "STDDEV_POP": ("stddevPopStable", 1),
+        "VARIANCE": ("varSampStable", 2),
+        "VAR_SAMP": ("varSampStable", 2),
+        "VAR_POP": ("varPopStable", 1),
+        "COVAR_SAMP": ("covarSampStable", 2),
+        "COVAR_POP": ("covarPopStable", 1),
+        "CORR": ("corrStable", 2),
+    }
+
+    def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
+        """ClickHouse: the stable function, NULL where the statistic is undefined.
+
+        Over fewer values than it needs the stable functions answer ``inf``
+        (the plain ones ``nan``), where the SQL standard and the other engines
+        answer NULL: a sample statistic over one value, a population one over
+        none. A correlation is also undefined for a constant column, where
+        ``corrStable`` answers ``nan``: it is NULL whenever it is not finite.
+        """
+        if name not in self._STATISTICS:
+            return super()._compile_statistic(name, args, distinct=distinct)
+        function, fewest = self._STATISTICS[name]
+        values = [self.compile_expr(a) for a in args]
+        joined = ", ".join(values)
+        call = f"{function}(DISTINCT {joined})" if distinct else f"{function}({joined})"
+        if name == "CORR":
+            return f"if(isFinite({call}), {call}, NULL)"
+        if distinct:
+            count = f"count(DISTINCT {joined})"
+        elif len(values) == 1:
+            count = f"count({joined})"
+        else:
+            # A pair counts where both values are present, as the function
+            # reads it: a row with either NULL is skipped.
+            count = f"countIf({' AND '.join(f'isNotNull({v})' for v in values)})"
+        return f"if({count} < {fewest}, NULL, {call})"
 
     # ``length`` counts bytes on ClickHouse (``length('äbcd')`` is 5), and
     # ``startsWith`` / ``endsWith`` are the camelCase-only spellings — unlike

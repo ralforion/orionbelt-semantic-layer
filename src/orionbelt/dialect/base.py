@@ -57,6 +57,24 @@ _PERCENTILES = frozenset({"PERCENTILE_CONT", "PERCENTILE_DISC"})
 #: :meth:`Dialect._compile_ordered_value`.
 _ORDERED_VALUES = frozenset({"FIRST", "LAST"})
 
+#: The statistical aggregates of spread, association and regression, rendered
+#: by :meth:`Dialect._compile_statistic`.
+_STATISTICS = frozenset(
+    {
+        "STDDEV",
+        "STDDEV_SAMP",
+        "STDDEV_POP",
+        "VARIANCE",
+        "VAR_SAMP",
+        "VAR_POP",
+        "COVAR_SAMP",
+        "COVAR_POP",
+        "CORR",
+        "REGR_SLOPE",
+        "REGR_INTERCEPT",
+    }
+)
+
 
 def _unit_of(arg: Expr) -> str:
     """The canonical time unit a literal argument names.
@@ -1871,6 +1889,25 @@ class Dialect(ABC):
         col_sql = self.compile_expr(args[0]) if args else "NULL"
         return f"MEDIAN({col_sql})"
 
+    #: A statistical aggregate's name on this engine, where the standard name
+    #: means something else here.
+    _STATISTIC_NAMES: dict[str, str] = {}
+
+    def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
+        """Compile a statistical aggregate: the standard deviations, variances,
+        covariances, ``CORR`` and the regression line.
+
+        ``STDDEV`` and ``VARIANCE`` are the sample statistics, ``STDDEV_SAMP``
+        and ``VAR_SAMP``, as they are on seven of the eight engines; MySQL
+        renames them (:attr:`_STATISTIC_NAMES`). Where the SQL standard leaves
+        a statistic undefined - a sample statistic of one value, a correlation
+        of a constant column - it is NULL, which a dialect whose engine answers
+        ``NaN``, ``inf`` or an error there makes explicit.
+        """
+        function = self._STATISTIC_NAMES.get(name, name)
+        args_sql = ", ".join(self.compile_expr(a) for a in args)
+        return f"{function}(DISTINCT {args_sql})" if distinct else f"{function}({args_sql})"
+
     @staticmethod
     def percentile_ratio(fraction: Decimal) -> tuple[int, int]:
         """A percentile's *fraction* as an integer ratio ``(numerator, 10 **
@@ -2386,6 +2423,8 @@ class Dialect(ABC):
                     if fraction is None:
                         raise ValueError(f"{fname} needs a fraction")
                     return self._compile_percentile(fname.upper(), args, fraction)
+                if fname.upper() in _STATISTICS:
+                    return self._compile_statistic(fname.upper(), args, distinct=distinct)
                 # Multi-field COUNT: concatenate fields for portability
                 # (Snowflake overrides to use native multi-arg syntax)
                 if fname.upper() == "COUNT" and len(args) > 1:

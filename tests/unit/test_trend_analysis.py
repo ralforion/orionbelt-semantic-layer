@@ -623,9 +623,9 @@ class TestStatisticalAggregates:
             )
         )
         result = CompilationPipeline().compile(query, model, "clickhouse")
-        # ClickHouse: stddevSamp / corr
-        assert "stddevSamp(" in result.sql or "stddevSamp" in result.sql
-        assert "corr(" in result.sql
+        # ClickHouse: the numerically stable stddevSamp / corr
+        assert "stddevSampStable(" in result.sql
+        assert "corrStable(" in result.sql
 
     def test_mysql_rejects_corr(self) -> None:
         model = _load_model()
@@ -638,6 +638,20 @@ class TestStatisticalAggregates:
         with pytest.raises(UnsupportedAggregationError) as exc:
             CompilationPipeline().compile(query, model, "mysql")
         assert exc.value.dialect == "mysql"
+        assert "corr" in exc.value.aggregation
+
+    def test_dremio_rejects_corr(self) -> None:
+        """``CORR (`` is a parse error on Dremio 26.0, so it is refused by name."""
+        model = _load_model()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Country"],
+                measures=["Revenue Spend Corr"],
+            )
+        )
+        with pytest.raises(UnsupportedAggregationError) as exc:
+            CompilationPipeline().compile(query, model, "dremio")
+        assert exc.value.dialect == "dremio"
         assert "corr" in exc.value.aggregation
 
     def test_bigquery_rejects_regr_slope(self) -> None:
@@ -722,10 +736,10 @@ def test_stddev_on_every_dialect(dialect_name: str) -> None:
 
 @pytest.mark.parametrize(
     "dialect_name",
-    ["postgres", "snowflake", "bigquery", "databricks", "duckdb", "clickhouse", "dremio"],
+    ["postgres", "snowflake", "bigquery", "databricks", "duckdb", "clickhouse"],
 )
 def test_corr_on_supported_dialects(dialect_name: str) -> None:
-    """CORR is supported everywhere except MySQL."""
+    """CORR is supported everywhere except MySQL and Dremio."""
     model = _load_model()
     DialectRegistry.get(dialect_name)
     query = QueryObject(
