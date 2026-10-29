@@ -38,6 +38,9 @@ from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
     combined_averages,
+    combined_variances,
+    exact_input_scale,
+    partial_squares,
     partial_sums,
     resolve_measure_cast_type,
 )
@@ -88,6 +91,21 @@ _REAGGREGATE: dict[AggregationType, AggregationType] = {
     AggregationType.ANY_VALUE: AggregationType.ANY_VALUE,
 }
 
+# Aggregations computed from each group's count, sum and sum of squares
+# (:func:`_leg_measures`), when the values are integers or declared decimals.
+_VARIANCES = frozenset(
+    {
+        AggregationType.VARIANCE,
+        AggregationType.VAR_POP,
+        AggregationType.STDDEV,
+        AggregationType.STDDEV_POP,
+    }
+)
+
+# The most places a variance's values may have: the combine step reads their
+# squares, at twice the places, as whole numbers of a 38-digit decimal.
+_VARIANCE_MOST_PLACES = 19
+
 # The decimal scale a decimal ``avg``'s partial sums are normalised to before
 # the combine step divides them: the widest any engine returns one at
 # (BigQuery's NUMERIC has 9 places), so a sum from every engine probed
@@ -113,6 +131,10 @@ class FederatedLeg:
         exact_sums: The columns of partial sums an ``avg`` is divided from,
             each with the decimal scale it is read at, so the combine step
             divides exactly.
+        integer_sums: The columns of partial sums and sums of squares a
+            ``variance`` or ``stddev`` combines from, each with its decimal
+            scale: the combine step reads them as whole numbers of
+            ``10^-scale`` units.
     """
 
     name: str
@@ -123,6 +145,7 @@ class FederatedLeg:
     columns: tuple[tuple[str, str], ...] = ()
     physical_tables: tuple[str, ...] = ()
     exact_sums: tuple[tuple[str, int], ...] = ()
+    integer_sums: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -254,7 +277,7 @@ def plan_federated(
         for i, column in enumerate(edge.from_columns)
     }
     measures = planner.atomic_measures()
-    leg_measures, averages, distinct = _leg_measures(model, measures, taken)
+    leg_measures, averages, distinct, variances = _leg_measures(model, measures, taken)
     # The values a count of distinct values counts: the fact leg groups by them
     # too, so the combine step counts them across every group they reach.
     fact_values = {column: (obj, col) for column, obj, col in distinct.values()}
@@ -301,7 +324,8 @@ def plan_federated(
         kept,
     )
     renamed.update({source: hidden for hidden, source in fact_kept.items()})
-    with partial_sums():
+    squares = {squared: scale for _, _, squared, scale in variances.values()}
+    with partial_sums(), partial_squares(planner.leg_dialect(islands[fact]), squares):
         legs.append(
             planner.leg(
                 "leg_0",
@@ -312,6 +336,11 @@ def plan_federated(
                 compile_leg,
                 exact_sums=tuple(
                     (sums, scale) for sums, _, scale in averages.values() if scale is not None
+                ),
+                integer_sums=tuple(
+                    part
+                    for _, sums, squared, scale in variances.values()
+                    for part in ((sums, scale), (squared, 2 * scale))
                 ),
                 rekeyed=fact_rekeyed,
                 kept=fact_kept,
@@ -414,6 +443,12 @@ def plan_federated(
         joins=fact_joins,
         countable=False,
     )
+    # The fact leg column each combined measure reads, where not its own name.
+    leg_columns = {
+        **{m: sums for m, (sums, _, _) in averages.items()},
+        **{m: values for m, (values, _, _) in distinct.items()},
+        **{m: sums for m, (_, sums, _, _) in variances.items()},
+    }
     combine_model = SemanticModel(
         name=model.name,
         settings=ModelSettings(default_dialect=COMBINE_DIALECT).model_copy(
@@ -421,14 +456,7 @@ def plan_federated(
         ),
         data_objects=combine_objects,
         dimensions=combine_dimensions,
-        measures={
-            m: _combine_measure(
-                model,
-                m,
-                averages[m][0] if m in averages else distinct[m][0] if m in distinct else None,
-            )
-            for m in measures
-        },
+        measures={m: _combine_measure(model, m, leg_columns.get(m)) for m in measures},
         metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
         filters=combine_filters_static,
         expose_counts=False,
@@ -449,9 +477,12 @@ def plan_federated(
             "use_path_names": [],
         }
     )
-    with combined_averages(
-        DialectRegistry.get(COMBINE_DIALECT),
-        {m: (counts, scale) for m, (_, counts, scale) in averages.items()},
+    combiner = DialectRegistry.get(COMBINE_DIALECT)
+    with (
+        combined_averages(combiner, {m: (c, scale) for m, (_, c, scale) in averages.items()}),
+        combined_variances(
+            combiner, {m: (c, sq, scale) for m, (c, _, sq, scale) in variances.items()}
+        ),
     ):
         combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
     return FederatedPlan(legs=tuple(legs), combine_sql=combine_sql)
@@ -689,9 +720,11 @@ class _Planner:
 
     def atomic_measures(self) -> set[str]:
         """The measures the fact leg computes: selected, and those metrics read."""
-        names = {m.name for m in self.resolved.measures if not m.is_expression}
-        names |= set(self.resolved.metric_components)
         effective = self.model.effective_measures
+        # By name, not ``is_expression``: a measure written as an expression
+        # is one too, and only a metric is left out.
+        names = {m.name for m in self.resolved.measures if m.name in effective}
+        names |= set(self.resolved.metric_components)
         for item in self.query.having:
             names |= {f for f in _filter_fields(item) if f in effective}
         names |= {o.field for o in self.query.order_by if o.field in effective}
@@ -714,6 +747,7 @@ class _Planner:
                 and (
                     measure.aggregation in _REAGGREGATE
                     or measure.aggregation == AggregationType.AVG
+                    or measure.aggregation in _VARIANCES
                 )
             )
             if not combinable:
@@ -725,16 +759,22 @@ class _Planner:
                     f"Measure '{name}' aggregates with {aggregation}, which cannot be "
                     "combined from per-data-source partial results",
                     hint=(
-                        "sum, count, count_distinct, avg, min, max and any_value combine "
-                        "across data sources."
+                        "sum, count, count_distinct, avg, min, max, any_value, variance, "
+                        "var_pop, stddev and stddev_pop combine across data sources."
                     ),
                 )
-            if measure.total and (counts_distinct or measure.aggregation == AggregationType.AVG):
+            if measure.total and (
+                counts_distinct
+                or measure.aggregation == AggregationType.AVG
+                or measure.aggregation in _VARIANCES
+            ):
                 raise self.refuse(
                     "UNSUPPORTED_AGGREGATION",
                     f"Measure '{name}' aggregates with {measure.aggregation} and total: true, "
                     "which a federated query does not combine yet",
                 )
+            if measure.aggregation in _VARIANCES:
+                self.check_variance(name, measure, fact_island)
             if counts_distinct and (
                 measure.expression
                 or measure.filters
@@ -763,6 +803,39 @@ class _Planner:
                 )
 
         self.check_distinct_counts()
+
+    def check_variance(self, name: str, measure: Measure, fact_island: set[str]) -> None:
+        """A variance combines exactly over integers and decimals its leg squares.
+
+        The combine step computes it from each group's count, sum and sum of
+        squares, which add up exactly only when no value is a float: the
+        values are integers, or a decimal column declared with its width
+        (:func:`~orionbelt.compiler.type_resolver.exact_input_scale`). Each
+        value is squared in the fact leg's engine, in a type wide enough for
+        its places (:meth:`Dialect.exact_square`).
+        """
+        scale = exact_input_scale(measure, self.model)
+        if scale is None:
+            raise self.refuse(
+                "UNSUPPORTED_AGGREGATION",
+                f"Measure '{name}' aggregates with {measure.aggregation} over values that "
+                "are not integers or decimals of a declared width, which a federated "
+                "query does not combine exactly",
+                hint="A variance or standard deviation of an int column, or of a decimal "
+                "column declared with sqlPrecision and sqlScale, combines across data "
+                "sources.",
+            )
+        dialect = self.leg_dialect(fact_island)
+        if (
+            scale > _VARIANCE_MOST_PLACES
+            or dialect.exact_square(ColumnRef(name=name), scale) is None
+        ):
+            raise self.refuse(
+                "UNSUPPORTED_AGGREGATION",
+                f"Measure '{name}' aggregates with {measure.aggregation} over values of "
+                f"{scale} decimal places, more than a federated query squares exactly on "
+                f"{dialect.name}",
+            )
 
     def check_distinct_counts(self) -> None:
         """A count of distinct values only beside measures of its own data object.
@@ -942,6 +1015,7 @@ class _Planner:
         compile_leg: Callable[[QueryObject, SemanticModel, str], str],
         *,
         exact_sums: tuple[tuple[str, int], ...] = (),
+        integer_sums: tuple[tuple[str, int], ...] = (),
         rekeyed: dict[str, tuple[str, bool]] | None = None,
         kept: dict[str, str] | None = None,
     ) -> FederatedLeg:
@@ -960,6 +1034,7 @@ class _Planner:
             columns=tuple((c.name, c.abstract_type.value) for c in columns),
             physical_tables=_physical_tables(self.model, island),
             exact_sums=exact_sums,
+            integer_sums=integer_sums,
         )
 
 
@@ -1082,6 +1157,7 @@ def _leg_measures(
     dict[str, Measure],
     dict[str, tuple[str, str, int | None]],
     dict[str, tuple[str, str, str]],
+    dict[str, tuple[str, str, str, int]],
 ]:
     """The fact leg's partial measures for *names*, and how the others split.
 
@@ -1099,20 +1175,29 @@ def _leg_measures(
       measures, of the same data object (:meth:`_Planner.check_distinct_counts`),
       are still exact at that finer grain, since each combines from partial
       results.
+    * a ``variance``, ``var_pop``, ``stddev`` or ``stddev_pop``: per-group
+      statistics do not combine, their moments do. The leg returns its
+      argument's ``COUNT``, ``SUM`` and sum of squares, each value squared
+      exactly (:func:`~orionbelt.compiler.type_resolver.partial_squares`), and
+      the combine step computes the statistic from their totals
+      (:meth:`Dialect.combined_variance`). The values are integers or declared
+      decimals (:meth:`_Planner.check_variance`), so every sum is exact.
 
     Returns the leg's measures by name; per ``avg`` the leg columns of its sums
     and its counts, with the scale the sums are read at (0 for an integer
     measure, :data:`_AVERAGE_SCALE` for a decimal one, ``None`` for a
     ``float`` one, whose sums are doubles and divide in floating point); and
     per count of distinct values the leg column of its values, with the data
-    object and column they are read from. Each generated column takes a name
-    none of *taken* (casefolded) is, and is added to it: a declared measure
-    named like a partial would replace it in the leg.
+    object and column they are read from; per variance the leg columns of its
+    counts, sums and squares, with the places of its values. Each generated
+    column takes a name none of *taken* (casefolded) is, and is added to it: a
+    declared measure named like a partial would replace it in the leg.
     """
     effective = model.effective_measures
     measures: dict[str, Measure] = {}
     averages: dict[str, tuple[str, str, int | None]] = {}
     distinct: dict[str, tuple[str, str, str]] = {}
+    variances: dict[str, tuple[str, str, str, int]] = {}
     for name in sorted(names):
         measure = _partial_measure(effective[name])
         if _counts_distinct(measure):
@@ -1123,6 +1208,27 @@ def _leg_measures(
             # measure is what makes the planner keep the rows a count over
             # its object keeps, those without a match on the other side.
             measures[name] = measure
+            continue
+        if measure.aggregation in _VARIANCES:
+            places = exact_input_scale(measure, model)
+            assert places is not None  # _Planner.check_variance
+            prefix = f"__var{len(variances)}"
+            counts = _unused(f"{prefix}_count", taken)
+            sums = _unused(f"{prefix}_sum", taken)
+            squares = _unused(f"{prefix}_squares", taken)
+            # Typed as their values, so neither is summed as a double
+            # (``apply_float_input``); the squares as a decimal, so no
+            # integer widening wraps them in a narrower type.
+            moments = {
+                counts: (AggregationType.COUNT, DataType.INT),
+                sums: (AggregationType.SUM, DataType.INT if places == 0 else DataType.DECIMAL),
+                squares: (AggregationType.SUM, DataType.DECIMAL),
+            }
+            for column, (aggregation, result_type) in moments.items():
+                measures[column] = measure.model_copy(
+                    update={"name": column, "aggregation": aggregation, "result_type": result_type}
+                )
+            variances[name] = (counts, sums, squares, places)
             continue
         if measure.aggregation != AggregationType.AVG:
             measures[name] = measure
@@ -1145,7 +1251,7 @@ def _leg_measures(
         elif measure.result_type == DataType.FLOAT:
             scale = None
         averages[name] = (sums, counts, scale)
-    return measures, averages, distinct
+    return measures, averages, distinct, variances
 
 
 def _counts_distinct(measure: Measure) -> bool:
@@ -1170,8 +1276,10 @@ def _combine_measure(model: SemanticModel, name: str, column: str | None = None)
     as a ``SUM`` of counts, which over no rows is NULL where a count is 0: it
     falls back to 0, whatever default it declares, since a SQL ``COUNT`` never
     applies one. An ``avg`` is the ``SUM`` of its leg *column* of sums, which
-    the combine compile divides by its counts, and a count of distinct values
-    counts its leg *column* of values (:func:`_leg_measures`).
+    the combine compile divides by its counts; a variance keeps its
+    aggregation over its leg *column* of sums, which the combine compile
+    reads with its counts and squares; and a count of distinct values counts
+    its leg *column* of values (:func:`_leg_measures`).
     """
     measure = model.effective_measures[name]
     counts_distinct = _counts_distinct(measure)
@@ -1180,11 +1288,13 @@ def _combine_measure(model: SemanticModel, name: str, column: str | None = None)
         default = 0
     if counts_distinct:
         aggregation = AggregationType.COUNT_DISTINCT
+    elif measure.aggregation in _VARIANCES:
+        aggregation = measure.aggregation
     elif column is not None:
         aggregation = AggregationType.SUM
     else:
         aggregation = _REAGGREGATE[measure.aggregation]
-    averages = column is not None and not counts_distinct
+    averages = measure.aggregation == AggregationType.AVG
     # The type the one database's query casts to, widened for wide sources. An
     # average is typed for the dialect that divides it: an integer one takes
     # the widened type every engine's exact integer AVG casts to (#316), where

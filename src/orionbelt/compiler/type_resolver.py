@@ -1035,6 +1035,123 @@ def combined_average_counts(measure: Measure) -> str | None:
     return active[1][measure.name][0]
 
 
+def exact_input_scale(measure: Measure, model: SemanticModel) -> int | None:
+    """The places of every value *measure* aggregates, when none is a float.
+
+    0 when every value is an integer (:func:`_reads_integer_columns`); the
+    declared ``sqlScale`` of the one column it reads when that column is
+    declared with a width, ``sqlPrecision`` and ``sqlScale``, as a decimal
+    column is; ``None`` otherwise: a float, a computed column, an expression
+    that is not integer arithmetic. It trusts the model to describe its
+    warehouse, as :func:`measure_source_is_exact` does.
+    """
+    if _reads_integer_columns(measure, model):
+        return 0
+    if measure.expression or len(measure.columns) != 1:
+        return None
+    ref = measure.columns[0]
+    data_object = model.data_objects.get(ref.view or "")
+    column = data_object.columns.get(ref.column) if data_object and ref.column else None
+    if column is None or column.expression is not None:
+        return None
+    if column.abstract_type not in (DataType.DECIMAL, DataType.FLOAT):
+        return None
+    if column.sql_precision is None or column.sql_scale is None:
+        return None
+    return column.sql_scale
+
+
+# Set while a federated query's fact leg compiles: see ``partial_squares``.
+_partial_squares: ContextVar[tuple[Dialect, dict[str, int]] | None] = ContextVar(
+    "partial_squares", default=None
+)
+
+
+@contextmanager
+def partial_squares(dialect: Dialect, scales: dict[str, int]) -> Iterator[None]:
+    """Sum each named measure's squared values while the block runs.
+
+    A federated query's fact leg returns, for a ``variance`` or ``stddev``,
+    each group's sum of squares beside its count and sum. *scales* maps the
+    leg measure of squares, a ``SUM`` of the statistic's argument, to the
+    places of that argument; each value is squared before any filter or
+    aggregation reads it (:func:`partial_square`), exactly
+    (:meth:`Dialect.exact_square`).
+    """
+    token = _partial_squares.set((dialect, scales))
+    try:
+        yield
+    finally:
+        _partial_squares.reset(token)
+
+
+def partial_square(measure: Measure, value: Expr) -> Expr:
+    """*value* squared for a :func:`partial_squares` measure, else unchanged."""
+    active = _partial_squares.get()
+    if active is None or measure.name not in active[1]:
+        return value
+    dialect, scales = active
+    square = dialect.exact_square(value, scales[measure.name])
+    if square is None:
+        # The planner refuses a statistic its leg's engine cannot square.
+        raise ValueError(f"{dialect.name} squares no value of {scales[measure.name]} places")
+    return square
+
+
+_combined_variances: ContextVar[tuple[Dialect, dict[str, tuple[str, str, int]]] | None] = (
+    ContextVar("combined_variances", default=None)
+)
+
+
+@contextmanager
+def combined_variances(dialect: Dialect, parts: dict[str, tuple[str, str, int]]) -> Iterator[None]:
+    """Build each named measure from its leg's moments while the block runs.
+
+    A federated query's combine step computes a ``variance``, ``var_pop``,
+    ``stddev`` or ``stddev_pop`` from its fact leg's per-group counts, sums
+    and sums of squares. Its combine model declares the measure over the leg
+    column of sums; *parts* maps its name to the leg columns of counts and of
+    squares and to the places of the values (:func:`combined_variance`).
+    """
+    token = _combined_variances.set((dialect, parts))
+    try:
+        yield
+    finally:
+        _combined_variances.reset(token)
+
+
+def combined_variance_columns(measure: Measure) -> tuple[str, str] | None:
+    """The leg columns of counts and squares a :func:`combined_variances` measure reads."""
+    active = _combined_variances.get()
+    if active is None or measure.name not in active[1]:
+        return None
+    counts, squares, _ = active[1][measure.name]
+    return counts, squares
+
+
+def combined_variance(measure: Measure, count: Expr, total: Expr, squares: Expr) -> Expr:
+    """A :func:`combined_variances` measure from its leg's columns.
+
+    The variance is :meth:`Dialect.combined_variance`; a standard deviation
+    is its square root, rounded once more.
+    """
+    active = _combined_variances.get()
+    assert active is not None
+    dialect, parts = active
+    aggregation = measure.aggregation.upper()
+    variance = dialect.combined_variance(
+        count,
+        total,
+        squares,
+        parts[measure.name][2],
+        sample=aggregation in ("STDDEV", "VARIANCE"),
+    )
+    assert variance is not None
+    if aggregation.startswith("STDDEV"):
+        return FunctionCall(name="SQRT", args=[variance])
+    return variance
+
+
 def resolve_measure_cast_type(
     measure: Measure,
     settings: ModelSettings | None,

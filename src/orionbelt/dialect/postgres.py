@@ -20,6 +20,9 @@ class PostgresDialect(Dialect):
 
     _MAX_DECIMAL_PRECISION: int = 131072
 
+    #: ``NUMERIC`` multiplies exactly at any size and scale.
+    _EXACT_SQUARE = ("NUMERIC", 16383)
+
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "BIGINT",
         "integer": "INTEGER",

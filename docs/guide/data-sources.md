@@ -184,12 +184,28 @@ How a query is split:
   object would not (a customer-level sum would repeat once per order, and the
   customers without orders that a count over customers keeps are not the rows
   a sum over orders keeps).
+- A `variance`, `var_pop`, `stddev` or `stddev_pop` does not combine from
+  per-group statistics either, but its moments do: the leg returns its
+  argument's count, sum and sum of squares, each value squared in a type
+  wide enough to keep every digit (`DECIMAL(38, s)`, `NUMERIC`, `BIGNUMERIC`
+  or `Decimal256`, by engine), and the combine query computes the statistic
+  from their totals. It adds them as 128-bit integers and shifts them by the
+  integer mean, so the result neither cancels, as moments summed in floating
+  point do far from zero, nor overflows, and it rounds once, to a double.
+  Snowflake and Dremio, whose own `STDDEV` cancels far from zero, answer
+  exactly this way. The values must be integers or a decimal column declared
+  with `sqlPrecision` and `sqlScale`, of up to 3 places on Databricks and
+  Dremio, 6 on Snowflake, 15 on MySQL and 19 on the others: past those, the
+  engine rounds a product. A sum of squares past 128 bits raises an error
+  rather than wrapping.
 
 What does not split exactly is refused by name rather than answered with a
 different number: measures from more than one source (`FEDERATION_MULTI_FACT`),
 a `count_distinct` of an expression, of several columns, under measure
-filters or beside measures of another data object, an `avg` or
-`count_distinct` with `total: true`, other `distinct`
+filters or beside measures of another data object, a variance or standard
+deviation of floats or of a decimal without a declared width or with more
+places than its engine squares exactly, an `avg`, `count_distinct`, variance
+or standard deviation with `total: true`, other `distinct`
 aggregations, and aggregations that cannot be combined from partial results
 (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,

@@ -305,6 +305,9 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
     * The partial sums an ``avg`` divides (``leg.exact_sums``) become
       ``decimal128(38, scale)``, the scale the combine query divides them at;
       one holding more places, or a float, is refused, never rounded.
+    * The sums and sums of squares a variance combines (``leg.integer_sums``)
+      become whole numbers of ``10^-scale`` units, ``decimal128(38, 0)``, on
+      the same terms.
 
     Other columns pass unchanged: the combine step casts its results to the
     model's types, as a query on one source does.
@@ -315,6 +318,7 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
 
     declared = dict(leg.columns)
     exact = dict(leg.exact_sums)
+    units = dict(leg.integer_sums)
     columns = []
     for name in table.column_names:
         column = table.column(name)
@@ -330,10 +334,14 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
             column = _decimal_from_text(leg, name, column)
         elif kind in _TEMPORAL_TYPES and pa.types.is_string(column.type):
             column = _temporal_from_text(column, obml_type_to_arrow(kind))
-        elif pa.types.is_decimal256(column.type):
+        elif pa.types.is_decimal256(column.type) and name not in units:
+            # A sum of squares arrives at the scale the engine computed it in,
+            # BigQuery's 38 places, and narrows only once rescaled to its own.
             column = _narrow_decimal(leg, name, column)
         if name in exact:
             column = _exact_sum(leg, name, column, exact[name])
+        elif name in units:
+            column = _whole_units(_exact_sum(leg, name, column, units[name], variance=True))
         columns.append(column)
     return pa.table(columns, names=table.column_names)
 
@@ -388,30 +396,58 @@ def _narrow_decimal(leg: FederatedLeg, name: str, column: Any) -> Any:
         raise _too_wide(leg, name) from None
 
 
-def _exact_sum(leg: FederatedLeg, name: str, column: Any, scale: int) -> Any:
-    """An ``avg``'s partial sums at *scale*, exactly, for the combine's division.
+def _exact_sum(
+    leg: FederatedLeg, name: str, column: Any, scale: int, *, variance: bool = False
+) -> Any:
+    """Partial sums at *scale*, exactly, for an ``avg``'s division or a *variance*.
 
     Every value keeps its digits or the leg is refused: a sum at more places
     than *scale* would be rounded, and a floating-point sum is not exact to
-    begin with (a ``float`` measure divides its doubles as doubles instead).
+    begin with (a ``float`` measure divides its doubles as doubles instead,
+    and a variance of floats is refused at planning).
     """
     import pyarrow as pa
 
+    sums = "the sums of a variance" if variance else "the sums of an average"
     if pa.types.is_floating(column.type):
+        remedy = (
+            "declare the column's type as its engine stores it"
+            if variance
+            else "declare the measure resultType float, or average a fixed-point column"
+        )
         raise FederatedLegError(
-            f"[FEDERATION_LEG_TYPE] {leg_label(leg)} returns the sums of an average in "
-            f"column '{name}' as floating point, which the combine step cannot divide "
-            "exactly: declare the measure resultType float, or average a fixed-point column"
+            f"[FEDERATION_LEG_TYPE] {leg_label(leg)} returns {sums} in column '{name}' as "
+            f"floating point, which the combine step cannot add exactly: {remedy}"
         )
     try:
         return column.cast(pa.decimal128(_DECIMAL128_MAX_PRECISION, scale))
     except (pa.ArrowInvalid, ValueError):
         raise FederatedLegError(
-            f"[FEDERATION_LEG_TYPE] {leg_label(leg)} returns the sums of an average in "
-            f"column '{name}' with more than {scale} decimal places, or more than "
-            f"{_DECIMAL128_MAX_PRECISION} digits, which the combine step does not divide "
+            f"[FEDERATION_LEG_TYPE] {leg_label(leg)} returns {sums} in column '{name}' "
+            f"with more than {scale} decimal places, or more than "
+            f"{_DECIMAL128_MAX_PRECISION} digits, which the combine step does not add "
             "exactly"
         ) from None
+
+
+def _whole_units(column: Any) -> Any:
+    """``decimal128(38, s)`` as the whole numbers of ``10^-s`` it stores.
+
+    A decimal's storage is that integer already, so the buffers are read again
+    at scale 0: nothing is computed and nothing can round.
+    """
+    import pyarrow as pa
+
+    whole = pa.decimal128(_DECIMAL128_MAX_PRECISION, 0)
+    return pa.chunked_array(
+        [
+            pa.Array.from_buffers(
+                whole, len(chunk), chunk.buffers(), null_count=chunk.null_count, offset=chunk.offset
+            )
+            for chunk in column.chunks
+        ],
+        type=whole,
+    )
 
 
 def _too_wide(leg: FederatedLeg, name: str) -> FederatedLegError:

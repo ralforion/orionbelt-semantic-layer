@@ -328,6 +328,27 @@ DISTINCT_QUERIES = {
 }
 
 
+EXPRESSIONS = (
+    '  Doubled Revenue: {expression: "{[Orders].[Amount]} * 2", aggregation: sum, '
+    "resultType: decimal}\n"
+    '  Average Doubled: {expression: "{[Orders].[Amount]} * 2", aggregation: avg, '
+    "resultType: decimal}\n"
+)
+
+
+class TestExpressionMeasures:
+    def test_a_measure_written_as_an_expression_is_computed_in_the_leg(
+        self, files: dict[str, str]
+    ) -> None:
+        """It was taken for a metric and left out of the legs, so the combine
+        step reported it unknown."""
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Doubled Revenue", "Average Doubled"]}
+        }
+
+        assert_same(files, query, extra=EXPRESSIONS)
+
+
 class TestCountDistinct:
     """The fact leg groups by the counted column too; the combine step counts it."""
 

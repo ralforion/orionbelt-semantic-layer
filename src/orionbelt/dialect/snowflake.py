@@ -33,6 +33,11 @@ class SnowflakeDialect(Dialect):
         "boolean": "BOOLEAN",
     }
 
+    #: A product keeps at most 12 places when its operands have more together
+    #: (``min(s1 + s2, max(s1, s2, 12))``), so values of 6 places square
+    #: exactly, measured, and of 7 would not.
+    _EXACT_SQUARE = ("NUMBER(38, {scale})", 6)
+
     _percentile_cont_over_doubles = True
 
     def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:
