@@ -309,9 +309,23 @@ measures:
     aggregation: sum
     dataType: integer
     total: true
+  Price:
+    columns: [{dataObject: T, column: P}]
+    aggregation: sum
+    dataType: integer
+  Dear Price:
+    columns: [{dataObject: T, column: P}]
+    aggregation: sum
+    defaultValue: 0
+    filters:
+      - column: {dataObject: T, column: P}
+        operator: gt
+        values: [{dataType: float, valueFloat: 1}]
 metrics:
   Scaled Mean: {expression: "{[Mean]} * 100", dataType: double}
   Scaled Price: {expression: "{[Price Total]} * 100", dataType: double}
+  Price Share: {expression: "{[Price]} / {[Price Total]} * 100", dataType: double}
+  Dear Share: {expression: "{[Dear Price]} / {[Price Total]} * 100", dataType: double}
 """
 
 
@@ -336,7 +350,8 @@ class TestCasts:
         return {r[0]: dict(zip(measures, r[1:], strict=True)) for r in con.sql(sql).fetchall()}
 
     @pytest.mark.parametrize(
-        ("measure", "metric"), [("Mean", "Scaled Mean"), ("Price Total", "Scaled Price")]
+        ("measure", "metric"),
+        [("Mean", "Scaled Mean"), ("Price Total", "Scaled Price"), ("Price", "Price Share")],
     )
     def test_selecting_the_measure_does_not_change_the_metric(
         self, cast_con: Any, measure: str, metric: str
@@ -349,6 +364,13 @@ class TestCasts:
         assert {g: float(v[metric]) for g, v in beside.items()} == pytest.approx(
             {g: float(v[metric]) for g, v in alone.items()}
         )
+
+    def test_a_metric_reads_a_components_default(self, cast_con: Any) -> None:
+        """No price passes the filter, so the filtered sum is its default, 0,
+        as the planner's own formula reads it; peeled off, it read NULL."""
+        values = self._values(cast_con, ["Dear Share"])
+
+        assert [float(v["Dear Share"]) for v in values.values()] == [0.0] * 3
 
     def test_a_windowed_total_is_cast_once(self, cast_con: Any) -> None:
         """Per group 0.80, 0.40 and 0.40 cast to 1, 0 and 0, which the window
@@ -394,7 +416,11 @@ def facts_con() -> Any:
 class TestCastsAcrossFacts:
     @pytest.mark.parametrize(
         ("measure", "metric", "want"),
-        [("Mean", "Scaled Mean", 700 / 3), ("Price Total", "Scaled Price", 160.0)],
+        [
+            ("Mean", "Scaled Mean", 700 / 3),
+            ("Price Total", "Scaled Price", 160.0),
+            ("Price", "Price Share", None),
+        ],
     )
     @pytest.mark.parametrize("selected", [False, True])
     def test_a_metric_reads_the_total_uncast(
@@ -409,6 +435,12 @@ class TestCastsAcrossFacts:
         sql = store.compile_query(model_id, query, "duckdb").sql
         assert "UNION ALL" in sql
 
-        got = [float(r[1]) for r in facts_con.sql(sql).fetchall()]
+        got = {r[0]: float(r[1]) for r in facts_con.sql(sql).fetchall()}
 
-        assert got == pytest.approx([want] * 3)
+        if want is None:
+            # Each group's share of the 1.60: 0.80, 0.40 and 0.40 cast to an
+            # integer read 0% beside the selected Price.
+            want_by_group = {"a": 50.0, "b": 25.0, "c": 25.0}
+        else:
+            want_by_group = dict.fromkeys(got, want)
+        assert got == pytest.approx(want_by_group)

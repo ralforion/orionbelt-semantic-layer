@@ -221,9 +221,13 @@ def _component_value(comp: ResolvedMeasure, resolved: ResolvedQuery) -> Expr:
     summed rounded groups (0 for 120). The cast and the default are taken
     off in whichever order they wrap the aggregate.
     """
-    value = resolved.projected_expressions.get(comp.name, comp.expression)
+    return _bare(resolved.projected_expressions.get(comp.name, comp.expression), comp)
+
+
+def _bare(value: Expr, measure: ResolvedMeasure) -> Expr:
+    """*value* without the planner's cast and *measure*'s default, in either order."""
     while True:
-        bare = _peel_default(_peel_cast(value)[0], comp)
+        bare = _peel_default(_peel_cast(value)[0], measure)
         if bare == value:
             return value
         value = bare
@@ -303,10 +307,12 @@ def _substitute_metric_refs(
     expr: Expr,
     resolved: ResolvedQuery,
     apart: dict[str, Expr],
+    inputs: dict[str, str],
 ) -> Expr:
     """Walk a metric AST and replace ColumnRef placeholders.
 
-    Non-total components → ColumnRef (pass-through from base CTE).
+    Non-total components → their bare base CTE column, named in *inputs* when
+    the measure is also selected, with their default.
     Total components → WindowFunction (re-aggregation), or the column of the
     CTE that computes them apart (*apart*, :func:`computed_apart`).
 
@@ -319,7 +325,7 @@ def _substitute_metric_refs(
             return apart[comp.name]
         if _needs_window_wrap(comp, resolved.dedup_computed):
             return _build_total_window(comp, resolved.dedup_computed)
-        return ColumnRef(name=comp.name)
+        return comp.with_default(ColumnRef(name=inputs.get(comp.name, comp.name)))
 
     return expand_metric_expression(expr, resolved.metric_components, value_of)
 
@@ -346,6 +352,10 @@ def wrap_with_totals(
     base_columns: list[Expr] = []
     # The cast each windowed measure's outer column puts back (:func:`_peel_cast`).
     recasts: dict[str, Callable[[Expr], Expr]] = {}
+    # The base column a metric reads a selected, unwindowed component from.
+    metric_inputs: dict[str, str] = {}
+    projected_inputs: set[str] = set()
+    selected_columns = {c.alias: c.expr for c in ast.columns if isinstance(c, AliasedExpr)}
     # Track which component measures are already present as direct measures
     direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
 
@@ -355,20 +365,33 @@ def wrap_with_totals(
             # Replace metric column with its individual component columns
             metric = next(m for m in resolved.measures if m.name == alias)
             for comp in metric_leaf_components(metric, resolved.metric_components):
-                if comp.name in direct_measure_names or comp.name in apart_components:
-                    continue  # Already present as a direct measure, or computed apart
+                if comp.name in apart_components or comp.name in projected_inputs:
+                    continue  # computed apart, or projected for another metric already
+                projected_inputs.add(comp.name)
+                selected = comp.name in direct_measure_names
+                if selected and _needs_window_wrap(comp, resolved.dedup_computed):
+                    continue  # the selected measure's base column is bare already
                 if is_avg_total(comp, resolved.dedup_computed):
                     # AVG total needs sum + count helper columns
                     comp_expr = resolved.projected_expressions.get(comp.name, comp.expression)
                     base_columns.append(_build_avg_helpers_base_col(comp, "sum", comp_expr))
                     base_columns.append(_build_avg_helpers_base_col(comp, "count", comp_expr))
+                    continue
+                # A metric reads its components bare, as the planner inlines
+                # them. A selected measure's column is cast to its type, so the
+                # metric gets a column of its own: reading the selected one
+                # made the metric depend on what else was selected (an amount
+                # cast to an integer turned 33.3% into 0%). An anchored
+                # component's aggregate reads conformed subquery columns, which
+                # this CTE's FROM and joins keep in scope.
+                if selected:
+                    # From the selected column, which an earlier pass (grain
+                    # dedup) may have moved onto a CTE of its own.
+                    name = metric_inputs[comp.name] = f"__ob_input_{len(metric_inputs)}"
+                    value = _bare(selected_columns[comp.name], comp)
                 else:
-                    # An anchored component's aggregate reads conformed subquery
-                    # columns. This CTE reuses the planner's FROM and joins, so
-                    # those subqueries are in scope and the foreign fact is not.
-                    base_columns.append(
-                        AliasedExpr(expr=_component_value(comp, resolved), alias=comp.name)
-                    )
+                    name, value = comp.name, _component_value(comp, resolved)
+                base_columns.append(AliasedExpr(expr=value, alias=name))
         elif alias in apart:
             continue  # computed apart, in :func:`_total_ctes`
         elif alias and _is_avg_window_wrap_by_name(alias, resolved):
@@ -429,7 +452,9 @@ def wrap_with_totals(
             # Metric
             if m.name in decompose_metrics:
                 # Rebuild expression with window functions for total components
-                metric_expr = _substitute_metric_refs(m.expression, resolved, apart_components)
+                metric_expr = _substitute_metric_refs(
+                    m.expression, resolved, apart_components, metric_inputs
+                )
                 outer_columns.append(AliasedExpr(expr=metric_expr, alias=m.name))
             else:
                 # Metric without total components: pass-through
