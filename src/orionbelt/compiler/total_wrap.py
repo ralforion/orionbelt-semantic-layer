@@ -224,6 +224,14 @@ def _component_value(comp: ResolvedMeasure, resolved: ResolvedQuery) -> Expr:
     return _bare(resolved.projected_expressions.get(comp.name, comp.expression), comp)
 
 
+def _free_alias(name: str, taken: set[str]) -> str:
+    """*name*, prefixed with underscores until none of *taken* (casefolded) is it."""
+    while name.casefold() in taken:
+        name = f"_{name}"
+    taken.add(name.casefold())
+    return name
+
+
 def _bare(value: Expr, measure: ResolvedMeasure) -> Expr:
     """*value* without the planner's cast and *measure*'s default, in either order."""
     while True:
@@ -356,6 +364,17 @@ def wrap_with_totals(
     metric_inputs: dict[str, str] = {}
     projected_inputs: set[str] = set()
     selected_columns = {c.alias: c.expr for c in ast.columns if isinstance(c, AliasedExpr)}
+    # Every name the base CTE may carry, casefolded as engines compare quoted
+    # identifiers: a metric input named like a dimension read the dimension.
+    taken = {
+        name.casefold()
+        for name in [
+            *selected_columns,
+            *(d.name for d in resolved.dimensions),
+            *(m.name for m in resolved.measures),
+            *resolved.metric_components,
+        ]
+    }
     # Track which component measures are already present as direct measures
     direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
 
@@ -387,7 +406,9 @@ def wrap_with_totals(
                 if selected:
                     # From the selected column, which an earlier pass (grain
                     # dedup) may have moved onto a CTE of its own.
-                    name = metric_inputs[comp.name] = f"__ob_input_{len(metric_inputs)}"
+                    name = metric_inputs[comp.name] = _free_alias(
+                        f"__ob_input_{len(metric_inputs)}", taken
+                    )
                     value = _bare(selected_columns[comp.name], comp)
                 else:
                     name, value = comp.name, _component_value(comp, resolved)

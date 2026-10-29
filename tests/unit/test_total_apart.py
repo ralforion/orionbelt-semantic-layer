@@ -296,6 +296,7 @@ dataObjects:
       P: {code: p, abstractType: decimal, sqlPrecision: 10, sqlScale: 2}
 dimensions:
   G: {dataObject: T, column: G, resultType: string}
+  __OB_Input_0: {dataObject: T, column: G, resultType: string}
 measures:
   Mean:
     columns: [{dataObject: T, column: X}]
@@ -364,6 +365,21 @@ class TestCasts:
         assert {g: float(v[metric]) for g, v in beside.items()} == pytest.approx(
             {g: float(v[metric]) for g, v in alone.items()}
         )
+
+    def test_a_metric_input_is_named_apart_from_a_dimension(self, cast_con: Any) -> None:
+        """The metric's input for the selected Price was named __ob_input_0,
+        which a dimension may be called too (in any case): the metric read the
+        dimension's text and divided a string."""
+        store = ModelStore()
+        model_id = store.load_model(CASTS).model_id
+        query = QueryObject.model_validate(
+            {"select": {"dimensions": ["__OB_Input_0"], "measures": ["Price", "Price Share"]}}
+        )
+        sql = store.compile_query(model_id, query, "duckdb").sql
+
+        rows = {r[0]: float(r[2]) for r in cast_con.sql(sql).fetchall()}
+
+        assert rows == pytest.approx({"a": 50.0, "b": 25.0, "c": 25.0})
 
     def test_a_metric_reads_a_components_default(self, cast_con: Any) -> None:
         """No price passes the filter, so the filtered sum is its default, 0,
