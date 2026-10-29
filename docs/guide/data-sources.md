@@ -205,7 +205,10 @@ a `count_distinct` of an expression, of several columns, under measure
 filters or beside measures of another data object, a variance or standard
 deviation of floats or of a decimal without a declared width or with more
 places than its engine squares exactly, an `avg`, `count_distinct`, variance
-or standard deviation with `total: true`, other `distinct`
+or standard deviation with `total: true`, a `sum`, `count`, `avg`, variance or
+standard deviation of an object the query's joins repeat (customers' ages
+over their sales) when the join to another source starts from an object on
+its many side, which would count each of its rows once per key, other `distinct`
 aggregations, and aggregations that cannot be combined from partial results
 (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,

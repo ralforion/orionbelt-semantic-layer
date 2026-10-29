@@ -1256,3 +1256,112 @@ class TestGeneratedNames:
 
         assert sorted(_rows(combine, federated.sql), key=repr) == expected
         assert expected
+
+
+# Customers' measures over their sales: one database counts each customer once
+# per group (``grain_dedup``). Sales reach products on another source.
+REPEATED = """\
+version: 1.0
+dataObjects:
+  Sales:
+    code: sales
+{facts}    columns:
+      ID: {{code: id, abstractType: int, primaryKey: true}}
+      Customer: {{code: customer, abstractType: int}}
+      Product: {{code: product, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Customers, columnsFrom: [Customer], columnsTo: [ID]}}
+      - {{joinType: many-to-one, joinTo: Products, columnsFrom: [Product], columnsTo: [ID]}}
+  Customers:
+    code: customers
+{facts}    columns:
+      ID: {{code: id, abstractType: int, primaryKey: true}}
+      Age: {{code: age, abstractType: int}}
+      Region: {{code: region, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Regions, columnsFrom: [Region], columnsTo: [ID]}}
+  Products:
+    code: products
+{labels}    columns:
+      ID: {{code: id, abstractType: int, primaryKey: true}}
+      Category: {{code: category, abstractType: string}}
+  Regions:
+    code: regions
+{labels}    columns:
+      ID: {{code: id, abstractType: int, primaryKey: true}}
+      Name: {{code: name, abstractType: string}}
+dimensions:
+  Category: {{dataObject: Products, column: Category, resultType: string}}
+  Region: {{dataObject: Regions, column: Name, resultType: string}}
+measures:
+  Ages: {{columns: [{{dataObject: Customers, column: Age}}], aggregation: {aggregation}}}
+"""
+
+REPEATED_TABLES = [
+    "CREATE TABLE sales AS SELECT * FROM (VALUES (1, 1, 10), (2, 1, 11), (3, 2, 10), (4, 3, 11))"
+    " t(id, customer, product)",
+    "CREATE TABLE customers AS SELECT * FROM (VALUES (1, 10, 1), (2, 20, 1), (3, 40, 2))"
+    " t(id, age, region)",
+    "CREATE TABLE products AS SELECT * FROM (VALUES (10, 'A'), (11, 'A')) t(id, category)",
+    "CREATE TABLE regions AS SELECT * FROM (VALUES (1, 'north'), (2, 'south')) t(id, name)",
+]
+
+
+def _repeated(aggregation: str, query: dict[str, Any]) -> tuple[list[Any], list[Any]]:
+    """*query* over the customers' ages on one source, and across two."""
+
+    def yaml(federated: bool) -> str:
+        facts = "    dataSource: facts\n" if federated else ""
+        labels = "    dataSource: labels\n" if federated else ""
+        return REPEATED.format(facts=facts, labels=labels, aggregation=aggregation)
+
+    single = _compile(yaml(False), query)
+    federated = _compile(yaml(True), query)
+    con = duckdb.connect()
+    try:
+        for statement in REPEATED_TABLES:
+            con.execute(statement)
+        expected = sorted(_rows(con, single.sql), key=repr)
+        combine = duckdb.connect()
+        for leg in federated.federation.legs:
+            combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+        return expected, sorted(_rows(combine, federated.sql), key=repr)
+    finally:
+        con.close()
+
+
+class TestRepeatedRows:
+    """A measure counted once per row of an object the joins repeat."""
+
+    @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
+    @pytest.mark.parametrize("beside", [[], ["Sales Count"]])
+    def test_keys_on_the_many_side_are_refused(self, aggregation: str, beside: list[str]) -> None:
+        """Customer 1's sales reach products 10 and 11, both category A: one
+        database counts the customer once in A, the fact leg once per product.
+        Combined, the sum of ages 10 and 20 was 40, the variance 33.3 for 50."""
+        query = {"select": {"dimensions": ["Category"], "measures": ["Ages", *beside]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _repeated(aggregation, query)
+
+        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_AGGREGATION"]
+        assert "counted once per key" in caught.value.errors[0].message
+
+    @pytest.mark.parametrize("aggregation", ["min", "max", "count_distinct"])
+    def test_what_repeated_rows_do_not_change_combines(self, aggregation: str) -> None:
+        expected, got = _repeated(
+            aggregation, {"select": {"dimensions": ["Category"], "measures": ["Ages"]}}
+        )
+
+        assert got == expected
+        assert expected
+
+    @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
+    def test_keys_of_the_object_itself_combine(self, aggregation: str) -> None:
+        """The join to regions starts from customers: each has one key."""
+        query = {"select": {"dimensions": ["Region"], "measures": ["Ages", "Sales Count"]}}
+
+        expected, got = _repeated(aggregation, query)
+
+        assert got == expected
+        assert expected

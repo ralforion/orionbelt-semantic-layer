@@ -35,6 +35,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from orionbelt.ast.nodes import ColumnRef, Expr
+from orionbelt.compiler.grain_dedup import MULTIPLICITY_SAFE_AGGREGATIONS
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
     combined_averages,
@@ -249,6 +250,7 @@ def plan_federated(
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
     planner.check_measures(islands[fact])
+    planner.check_deduplicated(edges)
     leg_filters, combine_filters = planner.place_filters(islands, fact)
 
     fact_dims, edge_dims = planner.dimensions_by_island(islands, fact, edges, combine_filters)
@@ -836,6 +838,61 @@ class _Planner:
                 f"{scale} decimal places, more than a federated query squares exactly on "
                 f"{dialect.name}",
             )
+
+    def check_deduplicated(self, edges: list[_Edge]) -> None:
+        """A measure counted once per row of its object stays so across the keys.
+
+        One database aggregates a measure of an object the query's joins repeat
+        (customers' ages over their sales) over that object's distinct rows
+        (``grain_dedup``). The fact leg does the same, but within each of its
+        groups, and it groups by the federation keys too: a customer whose
+        sales reach two products is one row in each product's group, and the
+        combine step, adding the groups, counted it twice. Measured, the
+        variance of ages 10 and 20 came out 33.3 for 50, their sum 40 for 30.
+
+        Exact when every key is a column of that object, or of one it joins
+        many-to-one, so each of its rows has one key; refused otherwise. An
+        aggregation repeated rows do not change (``min``, ``count_distinct``)
+        combines either way.
+        """
+        effective = self.model.effective_measures
+        starts = {edge.from_object for edge in edges}
+        for name, target in sorted(self.resolved.dedup_targets.items()):
+            measure = effective[name]
+            if measure.distinct or measure.aggregation in MULTIPLICITY_SAFE_AGGREGATIONS:
+                continue
+            outside = sorted(starts - self._one_row_each(target))
+            if outside:
+                raise self.refuse(
+                    "UNSUPPORTED_AGGREGATION",
+                    f"Measure '{name}' counts each row of '{target}' once, which the "
+                    f"query's joins repeat, but the join to another data source starts "
+                    f"from {', '.join(repr(o) for o in outside)}: a '{target}' row "
+                    "reaching several of its keys would be counted once per key",
+                    hint=f"Join the other data source from '{target}' or an object it "
+                    "joins many-to-one, or query the measure on one data source.",
+                )
+
+    def _one_row_each(self, target: str) -> set[str]:
+        """*target* and the objects of the query with one row per row of it."""
+        reached = {target}
+        changed = True
+        while changed:
+            changed = False
+            for step in self.resolved.join_steps:
+                if step.nested or step.cardinality == Cardinality.MANY_TO_MANY:
+                    continue
+                pairs = [(step.from_object, step.to_object)]
+                if step.cardinality == Cardinality.ONE_TO_ONE:
+                    pairs.append((step.to_object, step.from_object))
+                elif step.reversed:
+                    # Traversed from the one side: the many side is to_object.
+                    pairs = [(step.to_object, step.from_object)]
+                for many, one in pairs:
+                    if many in reached and one not in reached:
+                        reached.add(one)
+                        changed = True
+        return reached
 
     def check_distinct_counts(self) -> None:
         """A count of distinct values only beside measures of its own data object.
