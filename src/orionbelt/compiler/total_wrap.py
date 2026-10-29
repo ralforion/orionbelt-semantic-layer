@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Container
 from dataclasses import fields, is_dataclass, replace
+from itertools import count
 from typing import cast
 
 from orionbelt.ast.nodes import (
@@ -140,14 +141,6 @@ def is_avg_total(measure: ResolvedMeasure, dedup_computed: Container[str]) -> bo
     return _needs_window_wrap(measure, dedup_computed) and measure.aggregation.upper() == "AVG"
 
 
-def _avg_sum_alias(name: str) -> str:
-    return f"{name}__sum"
-
-
-def _avg_count_alias(name: str) -> str:
-    return f"{name}__count"
-
-
 def _partition_by_exprs(measure: ResolvedMeasure) -> list[Expr]:
     """Build PARTITION BY column refs from effective_grain (empty = grand total)."""
     if measure.effective_grain:
@@ -241,30 +234,36 @@ def _bare(value: Expr, measure: ResolvedMeasure) -> Expr:
         value = bare
 
 
-def _build_total_window(measure: ResolvedMeasure, dedup_computed: Container[str]) -> Expr:
+def _build_total_window(
+    measure: ResolvedMeasure,
+    dedup_computed: Container[str],
+    helpers: dict[str, tuple[str, str]],
+) -> Expr:
     """Build a window function for a total/grain-override measure's outer column.
 
     This is where the measure's value is finally produced, so a declared default
     is re-applied here - :func:`_peel_default` took it off the column the window
-    reads.
+    reads. An average reads the base columns of its sums and counts named in
+    *helpers*.
     """
-    return measure.with_default(_build_total_window_expr(measure, dedup_computed))
+    return measure.with_default(_build_total_window_expr(measure, dedup_computed, helpers))
 
 
-def _build_total_window_expr(measure: ResolvedMeasure, dedup_computed: Container[str]) -> Expr:
+def _build_total_window_expr(
+    measure: ResolvedMeasure,
+    dedup_computed: Container[str],
+    helpers: dict[str, tuple[str, str]],
+) -> Expr:
     partition_by = _partition_by_exprs(measure)
     if is_avg_total(measure, dedup_computed):
+        sums, counts = helpers[measure.name]
         return BinaryOp(
             left=WindowFunction(
-                func_name="SUM",
-                args=[ColumnRef(name=_avg_sum_alias(measure.name))],
-                partition_by=partition_by,
+                func_name="SUM", args=[ColumnRef(name=sums)], partition_by=partition_by
             ),
             op="/",
             right=WindowFunction(
-                func_name="SUM",
-                args=[ColumnRef(name=_avg_count_alias(measure.name))],
-                partition_by=partition_by,
+                func_name="SUM", args=[ColumnRef(name=counts)], partition_by=partition_by
             ),
         )
     reagg = _reagg_func(measure.aggregation)
@@ -316,6 +315,7 @@ def _substitute_metric_refs(
     resolved: ResolvedQuery,
     apart: dict[str, Expr],
     inputs: dict[str, str],
+    helpers: dict[str, tuple[str, str]],
 ) -> Expr:
     """Walk a metric AST and replace ColumnRef placeholders.
 
@@ -332,7 +332,7 @@ def _substitute_metric_refs(
         if comp.name in apart:
             return apart[comp.name]
         if _needs_window_wrap(comp, resolved.dedup_computed):
-            return _build_total_window(comp, resolved.dedup_computed)
+            return _build_total_window(comp, resolved.dedup_computed, helpers)
         return comp.with_default(ColumnRef(name=inputs.get(comp.name, comp.name)))
 
     return expand_metric_expression(expr, resolved.metric_components, value_of)
@@ -354,18 +354,10 @@ def wrap_with_totals(
     if not total_names and not decompose_metrics:
         return ast
 
-    total_ctes, apart, apart_components, total_joins = _total_ctes(ast, resolved)
-
-    # --- Build base CTE columns from the planner's AST columns ---
-    base_columns: list[Expr] = []
-    # The cast each windowed measure's outer column puts back (:func:`_peel_cast`).
-    recasts: dict[str, Callable[[Expr], Expr]] = {}
-    # The base column a metric reads a selected, unwindowed component from.
-    metric_inputs: dict[str, str] = {}
-    projected_inputs: set[str] = set()
     selected_columns = {c.alias: c.expr for c in ast.columns if isinstance(c, AliasedExpr)}
-    # Every name the base CTE may carry, casefolded as engines compare quoted
-    # identifiers: a metric input named like a dimension read the dimension.
+    # Every name the outer query reads unqualified, casefolded as engines compare
+    # quoted identifiers. A generated column named like one of them was read in
+    # its place (a metric divided a dimension's text) or made it ambiguous.
     taken = {
         name.casefold()
         for name in [
@@ -375,6 +367,28 @@ def wrap_with_totals(
             *resolved.metric_components,
         ]
     }
+    total_ctes, apart, apart_components, total_joins = _total_ctes(ast, resolved, taken)
+    # The base columns of the sums and counts each windowed average divides.
+    helpers: dict[str, tuple[str, str]] = {}
+    for measure in resolved.measures:
+        for m in [measure, *metric_leaf_components(measure, resolved.metric_components)]:
+            if (
+                m.name not in helpers
+                and is_avg_total(m, resolved.dedup_computed)
+                and not computed_apart(m, resolved)
+            ):
+                helpers[m.name] = (
+                    _free_alias(f"{m.name}__sum", taken),
+                    _free_alias(f"{m.name}__count", taken),
+                )
+
+    # --- Build base CTE columns from the planner's AST columns ---
+    base_columns: list[Expr] = []
+    # The cast each windowed measure's outer column puts back (:func:`_peel_cast`).
+    recasts: dict[str, Callable[[Expr], Expr]] = {}
+    # The base column a metric reads a selected, unwindowed component from.
+    metric_inputs: dict[str, str] = {}
+    projected_inputs: set[str] = set()
     # Track which component measures are already present as direct measures
     direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
 
@@ -393,8 +407,9 @@ def wrap_with_totals(
                 if is_avg_total(comp, resolved.dedup_computed):
                     # AVG total needs sum + count helper columns
                     comp_expr = resolved.projected_expressions.get(comp.name, comp.expression)
-                    base_columns.append(_build_avg_helpers_base_col(comp, "sum", comp_expr))
-                    base_columns.append(_build_avg_helpers_base_col(comp, "count", comp_expr))
+                    sums, counts = helpers[comp.name]
+                    base_columns.append(_build_avg_helpers_base_col("SUM", comp_expr, sums))
+                    base_columns.append(_build_avg_helpers_base_col("COUNT", comp_expr, counts))
                     continue
                 # A metric reads its components bare, as the planner inlines
                 # them. A selected measure's column is cast to its type, so the
@@ -418,8 +433,9 @@ def wrap_with_totals(
         elif alias and _is_avg_window_wrap_by_name(alias, resolved):
             # AVG total/grain-override direct measure: replace with sum + count helpers
             measure = next(m for m in resolved.measures if m.name == alias)
-            base_columns.append(_build_avg_helpers_base_col(measure, "sum", col_node))
-            base_columns.append(_build_avg_helpers_base_col(measure, "count", col_node))
+            sums, counts = helpers[measure.name]
+            base_columns.append(_build_avg_helpers_base_col("SUM", col_node, sums))
+            base_columns.append(_build_avg_helpers_base_col("COUNT", col_node, counts))
         elif alias and _is_window_wrapped_by_name(alias, resolved):
             # A window re-aggregates this column, so the planner's cast and the
             # declared default come off it here and go back on around the window.
@@ -474,7 +490,7 @@ def wrap_with_totals(
             if m.name in decompose_metrics:
                 # Rebuild expression with window functions for total components
                 metric_expr = _substitute_metric_refs(
-                    m.expression, resolved, apart_components, metric_inputs
+                    m.expression, resolved, apart_components, metric_inputs, helpers
                 )
                 outer_columns.append(AliasedExpr(expr=metric_expr, alias=m.name))
             else:
@@ -484,7 +500,7 @@ def wrap_with_totals(
             outer_columns.append(AliasedExpr(expr=apart[m.name], alias=m.name))
         elif _needs_window_wrap(m, resolved.dedup_computed):
             # Total or grain-override measure: window function
-            window = _build_total_window(m, resolved.dedup_computed)
+            window = _build_total_window(m, resolved.dedup_computed, helpers)
             outer_columns.append(
                 AliasedExpr(expr=recasts.get(m.name, _unchanged)(window), alias=m.name)
             )
@@ -518,7 +534,7 @@ def wrap_with_totals(
 
 
 def _total_ctes(
-    ast: Select, resolved: ResolvedQuery
+    ast: Select, resolved: ResolvedQuery, taken: set[str]
 ) -> tuple[list[CTE], dict[str, Expr], dict[str, Expr], list[Join | Unnest]]:
     """The CTEs computing the measures :func:`computed_apart` asks for.
 
@@ -533,9 +549,10 @@ def _total_ctes(
     defaulted. A metric reads its component's aggregate uncast, as the planner
     inlines it, with its default: a measure both selected and read by a metric
     gets a column for each, or selecting it would change the metric (a mean of
-    7/3 cast to an integer made the metric 200 for 233.3). Returns the CTEs,
-    the column each selected measure and each metric component is read from,
-    and the joins.
+    7/3 cast to an integer made the metric 200 for 233.3). The columns are
+    named apart from *taken*, the names the outer query reads unqualified, and
+    added to it. Returns the CTEs, the column each selected measure and each
+    metric component is read from, and the joins.
     """
     projected = {c.alias: c.expr for c in ast.columns if isinstance(c, AliasedExpr)}
     # (selected or component, name) -> (grain, value)
@@ -557,17 +574,19 @@ def _total_ctes(
     selected: dict[str, Expr] = {}
     components: dict[str, Expr] = {}
     joins: list[Join | Unnest] = []
+    # Numbered across the CTEs, so no two share a name the outer query reads.
+    grains, values_seen = count(), count()
     for n, (grain, values) in enumerate(sorted(by_grain.items())):
         name = f"__ob_total_{n}"
         keys = [projected[d] for d in grain]
+        grain_names = [_free_alias(f"__ob_grain_{next(grains)}", taken) for _ in keys]
         columns: list[Expr] = [
-            AliasedExpr(expr=key, alias=f"__ob_grain_{k}") for k, key in enumerate(keys)
+            AliasedExpr(expr=key, alias=alias) for key, alias in zip(keys, grain_names, strict=True)
         ]
-        for k, ((is_selected, measure), value) in enumerate(values):
-            columns.append(AliasedExpr(expr=value, alias=f"__ob_value_{k}"))
-            (selected if is_selected else components)[measure] = ColumnRef(
-                name=f"__ob_value_{k}", table=name
-            )
+        for (is_selected, measure), value in values:
+            alias = _free_alias(f"__ob_value_{next(values_seen)}", taken)
+            columns.append(AliasedExpr(expr=value, alias=alias))
+            (selected if is_selected else components)[measure] = ColumnRef(name=alias, table=name)
         ctes.append(
             CTE(
                 name=name,
@@ -581,10 +600,10 @@ def _total_ctes(
             )
         )
         on: Expr | None = None
-        for k, dimension in enumerate(grain):
+        for dimension, alias in zip(grain, grain_names, strict=True):
             match = _null_safe_eq(
                 ColumnRef(name=dimension, table="base"),
-                ColumnRef(name=f"__ob_grain_{k}", table=name),
+                ColumnRef(name=alias, table=name),
             )
             on = match if on is None else BinaryOp(left=on, op="AND", right=match)
         joins.append(
@@ -660,12 +679,10 @@ def _averaged_argument(expr: Expr, helper: str) -> list[Expr] | None:
     return None
 
 
-def _build_avg_helpers_base_col(measure: ResolvedMeasure, kind: str, source: Expr) -> AliasedExpr:
-    """Build a SUM or COUNT base CTE column for an AVG total measure.
+def _build_avg_helpers_base_col(helper: str, source: Expr, alias: str) -> AliasedExpr:
+    """A ``SUM`` or ``COUNT`` (*helper*) base CTE column, *alias*, for an AVG total.
 
-    For AVG(expr), we need:
-    - SUM(expr) AS "name__sum"
-    - COUNT(expr) AS "name__count"
+    For AVG(expr), the window divides ``SUM(expr)`` by ``COUNT(expr)``.
 
     *source* is the column the plan already projects the measure as, so its
     argument is whatever that plan actually reads: the fact's own column in a
@@ -680,17 +697,5 @@ def _build_avg_helpers_base_col(measure: ResolvedMeasure, kind: str, source: Exp
     """
     # Fallback: use Literal(1) — an AVG measure with no args is unusual
     # but using the measure alias as a column ref would be invalid SQL.
-    inner_args = _averaged_argument(source, "SUM" if kind == "sum" else "COUNT") or [
-        Literal.number(1)
-    ]
-
-    if kind == "sum":
-        return AliasedExpr(
-            expr=FunctionCall(name="SUM", args=inner_args),
-            alias=_avg_sum_alias(measure.name),
-        )
-    else:
-        return AliasedExpr(
-            expr=FunctionCall(name="COUNT", args=inner_args),
-            alias=_avg_count_alias(measure.name),
-        )
+    inner_args = _averaged_argument(source, helper) or [Literal.number(1)]
+    return AliasedExpr(expr=FunctionCall(name=helper, args=inner_args), alias=alias)

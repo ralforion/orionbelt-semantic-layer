@@ -33,8 +33,16 @@ dataObjects:
 dimensions:
   Region: {dataObject: Sales, column: Region, resultType: string}
   City: {dataObject: Sales, column: City, resultType: string}
+  __OB_Value_0: {dataObject: Sales, column: City, resultType: string}
+  __ob_GRAIN_0: {dataObject: Sales, column: City, resultType: string}
+  Mean Total__SUM: {dataObject: Sales, column: City, resultType: string}
 measures:
   Revenue: {columns: [{dataObject: Sales, column: Amount}], aggregation: sum}
+  Mean Total:
+    columns: [{dataObject: Sales, column: Amount}]
+    aggregation: avg
+    resultType: float
+    total: true
   Revenue Total: {columns: [{dataObject: Sales, column: Amount}], aggregation: sum, total: true}
   SD Total:
     columns: [{dataObject: Sales, column: Amount}]
@@ -256,6 +264,35 @@ class TestGrainOverrides:
             _sql(query)
 
         assert [e.code for e in caught.value.errors] == ["INCOMPATIBLE_COMBINATION"]
+
+
+class TestGeneratedNames:
+    """The total's CTE columns are joined into the outer query, which reads the
+    dimensions unqualified: named like one, in any case, they made it ambiguous."""
+
+    def test_a_dimension_named_like_a_totals_value(self, con: Any) -> None:
+        rows = _run(con, {"select": {"dimensions": ["__OB_Value_0"], "measures": ["SD Total"]}})
+
+        assert sorted(r[0] for r in rows) == ["a", "b", "c", "d"]
+        assert {r[1] for r in rows} == {_one(con, WHOLE["SD Total"])}
+
+    def test_a_dimension_named_like_a_grains_key(self, con: Any) -> None:
+        query = {"select": {"dimensions": ["Region", "__ob_GRAIN_0"], "measures": ["SD Region"]}}
+
+        rows = _run(con, query)
+
+        by_region = dict(con.sql("SELECT region, STDDEV(amount) FROM sales GROUP BY 1").fetchall())
+        assert {(r[0], r[1]): r[2] for r in rows} == {(r[0], r[1]): by_region[r[0]] for r in rows}
+
+    def test_a_dimension_named_like_an_averages_helper(self, con: Any) -> None:
+        """The windowed average divides base columns named after it, and a
+        dimension may carry that name too."""
+        rows = _run(
+            con, {"select": {"dimensions": ["Mean Total__SUM"], "measures": ["Mean Total"]}}
+        )
+
+        whole = _one(con, "SELECT AVG(amount) FROM sales")
+        assert [r[1] for r in rows] == pytest.approx([whole] * len(rows))
 
 
 class TestRewrittenRows:
