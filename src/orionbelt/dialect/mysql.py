@@ -6,7 +6,16 @@ import re
 from dataclasses import replace
 from decimal import Decimal
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, Select, Unnest
+from orionbelt.ast.nodes import (
+    Cast,
+    Expr,
+    FunctionCall,
+    Literal,
+    OrderByItem,
+    Select,
+    Unnest,
+    WindowFunction,
+)
 from orionbelt.dialect.base import (
     PORTABLE_DECIMAL_PRECISION,
     Dialect,
@@ -147,6 +156,40 @@ class MySQLDialect(Dialect):
     }
 
     avg_over_integers_is_exact = True
+
+    def equality_key(
+        self, column: Expr, abstract_type: str, *, counted: bool
+    ) -> tuple[Expr, str] | None:
+        """A string as one member of its class of equal values, the same for all.
+
+        MySQL compares a string by its column's collation, and the default,
+        ``utf8mb4_0900_ai_ci``, ignores case and accents: ``'a'`` and ``'A'``,
+        ``'e'`` and ``'é'``, ``'ss'`` and ``'ß'`` are one value. DuckDB
+        compares bytes. A leg grouped by a federation key returned ``'a'`` in
+        one row and ``'A'`` in another, and the combine step made two groups,
+        or counted two distinct values, where MySQL makes one.
+
+        ``FIRST_VALUE(x) OVER (PARTITION BY x ORDER BY CAST(x AS BINARY))``
+        replaces each value by the bytewise least of the values its collation
+        calls equal to it. The partition compares exactly as ``GROUP BY`` and
+        ``DISTINCT`` do, whatever the collation, padding included: measured,
+        the distinct representatives counted 6 under ``utf8mb4_0900_ai_ci``,
+        7 under ``utf8mb4_general_ci`` and 7 under ``latin1_swedish_ci``,
+        MySQL's own ``COUNT(DISTINCT)`` each time. DuckDB's bytewise equality
+        over them is then MySQL's. The value shown is one of MySQL's, the same
+        on every run.
+        """
+        if abstract_type != "string":
+            return None
+        return (
+            WindowFunction(
+                func_name="FIRST_VALUE",
+                args=[column],
+                partition_by=[column],
+                order_by=[OrderByItem(expr=Cast(expr=column, type_name="BINARY"))],
+            ),
+            abstract_type,
+        )
 
     backslash_escapes_strings = True
 

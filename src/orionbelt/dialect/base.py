@@ -738,6 +738,32 @@ class Dialect(ABC):
             type(self).exact_integer_avg is not Dialect.exact_integer_avg
         )
 
+    def equality_key(
+        self, column: Expr, abstract_type: str, *, counted: bool
+    ) -> tuple[Expr, str] | None:
+        """What a federated leg returns for *column* so DuckDB compares as this engine.
+
+        A federated query groups and counts distinct values in the combine
+        step, in DuckDB, across rows that came from different groups of a leg.
+        Where this engine calls two values equal and DuckDB does not, or the
+        other way round, the leg returns *column* rewritten so that DuckDB's
+        equality over the result is this engine's. *abstract_type* is the
+        column's OBML type; *counted* says it feeds a count of distinct
+        values rather than a dimension, whose value is also shown. Returns
+        the expression with the OBML type it has, or ``None``, the default,
+        where DuckDB already agrees: measured for PostgreSQL, Snowflake,
+        BigQuery, Databricks and Dremio.
+        """
+        return None
+
+    def wrap_leg(self, sql: str, projection: list[tuple[str, Expr]], alias: str) -> str:
+        """``SELECT projection FROM (sql) AS alias``: a leg with rewritten columns."""
+        items = ",\n       ".join(
+            f"{self.compile_expr(expr)} AS {self.quote_identifier(name)}"
+            for name, expr in projection
+        )
+        return f"SELECT {items}\nFROM (\n{sql}\n) AS {self.quote_identifier(alias)}"
+
     def exact_quotient(
         self, total: Expr, count: Expr, input_scale: int, obml_type: OBMLType
     ) -> Expr | None:
