@@ -217,6 +217,22 @@ def _component_value(comp: ResolvedMeasure, resolved: ResolvedQuery) -> Expr:
     return _bare(resolved.projected_expressions.get(comp.name, comp.expression), comp)
 
 
+def _relation_names(node: object) -> set[str]:
+    """Every table and CTE name *node* reads, each part of a qualified one,
+    unquoted and casefolded."""
+    names: set[str] = set()
+    if isinstance(node, CTE):
+        names.add(node.name.casefold())
+    if isinstance(node, (From, Join)) and isinstance(node.source, str):
+        names.update(part.strip('"`[] ').casefold() for part in node.source.split("."))
+    if is_dataclass(node) and not isinstance(node, type):
+        for field in fields(node):
+            value = getattr(node, field.name)
+            for child in value if isinstance(value, (list, tuple)) else (value,):
+                names |= _relation_names(child)
+    return names
+
+
 def _free_alias(name: str, taken: set[str]) -> str:
     """*name*, prefixed with underscores until none of *taken* (casefolded) is it."""
     while name.casefold() in taken:
@@ -367,7 +383,9 @@ def wrap_with_totals(
             *resolved.metric_components,
         ]
     }
-    total_ctes, apart, apart_components, total_joins = _total_ctes(ast, resolved, taken)
+    # A CTE named like a table the plan reads hides it from every later CTE.
+    relations = _relation_names(ast) | {"base"}
+    total_ctes, apart, apart_components, total_joins = _total_ctes(ast, resolved, taken, relations)
     # The base columns of the sums and counts each windowed average divides.
     helpers: dict[str, tuple[str, str]] = {}
     for measure in resolved.measures:
@@ -512,7 +530,9 @@ def wrap_with_totals(
     outer_order_by = remap_order_by(ast.order_by, resolved, model)
 
     # --- Assemble final Select ---
-    all_ctes = [*ast.ctes, base_cte, *total_ctes]
+    # The totals before the base CTE: they read the plan's tables, one of which
+    # may be named like it.
+    all_ctes = [*ast.ctes, *total_ctes, base_cte]
 
     outer = Select(
         columns=outer_columns,
@@ -534,7 +554,7 @@ def wrap_with_totals(
 
 
 def _total_ctes(
-    ast: Select, resolved: ResolvedQuery, taken: set[str]
+    ast: Select, resolved: ResolvedQuery, taken: set[str], relations: set[str]
 ) -> tuple[list[CTE], dict[str, Expr], dict[str, Expr], list[Join | Unnest]]:
     """The CTEs computing the measures :func:`computed_apart` asks for.
 
@@ -551,7 +571,9 @@ def _total_ctes(
     gets a column for each, or selecting it would change the metric (a mean of
     7/3 cast to an integer made the metric 200 for 233.3). The columns are
     named apart from *taken*, the names the outer query reads unqualified, and
-    added to it. Returns the CTEs, the column each selected measure and each
+    the CTEs apart from *relations*, the tables and CTEs the query reads: a
+    CTE named like a source table was read in its place by the next one.
+    Both sets are added to. Returns the CTEs, the column each selected measure and each
     metric component is read from, and the joins.
     """
     projected = {c.alias: c.expr for c in ast.columns if isinstance(c, AliasedExpr)}
@@ -577,7 +599,7 @@ def _total_ctes(
     # Numbered across the CTEs, so no two share a name the outer query reads.
     grains, values_seen = count(), count()
     for n, (grain, values) in enumerate(sorted(by_grain.items())):
-        name = f"__ob_total_{n}"
+        name = _free_alias(f"__ob_total_{n}", relations)
         keys = [projected[d] for d in grain]
         grain_names = [_free_alias(f"__ob_grain_{next(grains)}", taken) for _ in keys]
         columns: list[Expr] = [

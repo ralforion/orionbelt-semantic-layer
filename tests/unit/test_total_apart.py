@@ -294,6 +294,24 @@ class TestGeneratedNames:
         whole = _one(con, "SELECT AVG(amount) FROM sales")
         assert [r[1] for r in rows] == pytest.approx([whole] * len(rows))
 
+    @pytest.mark.parametrize("table", ["__ob_total_0", "BASE"])
+    def test_a_source_table_named_like_a_cte(self, con: Any, table: str) -> None:
+        """A CTE named like a table the plan reads hid it from every later
+        CTE: the grain override's CTE read the grand total's instead."""
+        con.execute(f'CREATE OR REPLACE TABLE "{table}" AS SELECT * FROM sales')
+        store = ModelStore()
+        model_id = store.load_model(MODEL.replace("code: sales", f"code: {table}")).model_id
+        query = {
+            "select": {"dimensions": ["Region", "City"], "measures": ["SD Total", "SD Region"]}
+        }
+        sql = store.compile_query(model_id, QueryObject.model_validate(query), "duckdb").sql
+
+        rows = con.sql(sql).fetchall()
+
+        by_region = dict(con.sql("SELECT region, STDDEV(amount) FROM sales GROUP BY 1").fetchall())
+        assert {r[2] for r in rows} == {_one(con, WHOLE["SD Total"])}
+        assert {(r[0], r[1]): r[3] for r in rows} == {(r[0], r[1]): by_region[r[0]] for r in rows}
+
 
 class TestRewrittenRows:
     def test_a_total_beside_a_filter_context_is_refused(self) -> None:
