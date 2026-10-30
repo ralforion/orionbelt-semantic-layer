@@ -846,7 +846,10 @@ class Dialect(ABC):
     #: of :meth:`_statistic_from_moments` has in units: a larger one is left out
     #: of the exact sums, and its group keeps the engine's own statistic. A sum
     #: of values under ``10^13`` units reaches 128 bits in no fewer than about
-    #: 10^12 rows. ``None`` where an overflowing sum only wraps.
+    #: 10^12 rows. Such an engine raises when the unscaled product a value is
+    #: put in units with passes 128 bits too, so a decimal of more than 38 less
+    #: these places keeps its own statistic. ``None`` where an overflow only
+    #: wraps.
     _MOMENTS_ROW_DIGITS: int | None = None
 
     def _statistic_from_moments(
@@ -878,13 +881,16 @@ class Dialect(ABC):
         value of :attr:`_MOMENTS_ROW_DIGITS` digits or more where that is set,
         a DISTINCT one and a group too small for it, where it is NULL. So does
         a decimal of 38 places: its multiplier, 10^38, has a digit more than
-        the widest decimal, which Dremio read as 0.
+        the widest decimal, which Dremio read as 0. Snowflake raised on a
+        ``DECIMAL(38, 37)`` of 10^-33, whose unscaled product, 10^41, passes
+        128 bits, hence :attr:`_MOMENTS_ROW_DIGITS`' limit on the places.
         """
         name = aggregate.name.upper()
         args = aggregate.args
         if aggregate.distinct or len(args) != len(scales) or len(args) not in (1, 2):
             return None
-        if any(scale + 1 > self._MAX_DECIMAL_PRECISION for scale in scales):
+        most_places = self._MAX_DECIMAL_PRECISION - (self._MOMENTS_ROW_DIGITS or 1)
+        if any(scale > most_places for scale in scales):
             return None
 
         def op(left: Expr, operator: str, right: Expr) -> Expr:
@@ -976,12 +982,13 @@ class Dialect(ABC):
         else:
             return None
         fits: Expr = op(count, ">=", Literal.number(2 if sample else 1))
-        for arg, scale in zip(args, scales, strict=True):
-            value = double(arg)
+        # Of the values the sums read: a value without its pair counts in neither.
+        for paired, scale in zip(values, scales, strict=True):
+            value = double(paired)
             squares = call("SUM", op(value, "*", value))
             fits = op(fits, "AND", op(squares, "<", power(self._MOMENTS_LIMIT - 2 * scale)))
             if self._MOMENTS_ROW_DIGITS is not None:
-                largest = call("MAX", magnitude(arg))
+                largest = call("MAX", magnitude(paired))
                 bound = power(self._MOMENTS_ROW_DIGITS - scale)
                 fits = op(fits, "AND", op(largest, "<", bound))
         return CaseExpr(when_clauses=[(fits, statistic)], else_clause=aggregate)

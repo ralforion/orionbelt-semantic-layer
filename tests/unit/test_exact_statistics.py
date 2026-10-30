@@ -48,6 +48,8 @@ dataObjects:
       Amount: {code: amount, abstractType: float}
       Fine: {code: fine, abstractType: decimal, sqlPrecision: 38, sqlScale: 37}
       Finest: {code: finest, abstractType: decimal, sqlPrecision: 38, sqlScale: 38}
+      Deep: {code: deep, abstractType: decimal, sqlPrecision: 38, sqlScale: 25}
+      Deeper: {code: deeper, abstractType: decimal, sqlPrecision: 38, sqlScale: 26}
 dimensions:
   Day: {dataObject: Charges, column: Day, resultType: int}
 measures:
@@ -61,7 +63,7 @@ measures:
         f"  Qty {other} {aggregation}: {{columns: [{{dataObject: Charges, column: Qty}}, "
         f"{{dataObject: Charges, column: {other}}}], aggregation: {aggregation}, "
         "resultType: float}\n"
-        for other in ("Price", "Loose")
+        for other in ("Price", "Loose", "Deep", "Deeper")
         for aggregation in PAIRED
     )
     + """\
@@ -197,6 +199,32 @@ def test_snowflake_sums_only_values_under_its_bound(dialect: str, bounded: bool)
     """Its ``SUM`` past 128 bits raises, in a ``CASE`` branch not taken too."""
     sql = _sql("Qty Price covar_pop", dialect)
 
-    assert (
-        'MAX(ABS(CAST("Charges"."qty" AS DOUBLE))) < CAST(\'1E13\' AS DOUBLE)' in sql
-    ) is bounded
+    paired = 'CASE WHEN "Charges"."price" IS NOT NULL THEN "Charges"."qty" END'
+    bound = f"MAX(ABS(CAST({paired} AS DOUBLE))) < CAST('1E13' AS DOUBLE)"
+    assert (bound in sql) is bounded
+
+
+@pytest.mark.parametrize(
+    ("dialect", "measure", "exact"),
+    [
+        ("snowflake", "Qty Deep covar_samp", True),
+        ("snowflake", "Qty Deeper covar_samp", False),
+        ("dremio", "Qty Deeper covar_samp", True),
+    ],
+)
+def test_snowflake_keeps_its_own_past_25_places(dialect: str, measure: str, exact: bool) -> None:
+    """A value under its bound of 13 digits in units, unscaled by 10^26 or
+    more, can pass 128 bits, which Snowflake raises on: a ``DECIMAL(38, 37)``
+    of 10^-33 did. Dremio's product rounds instead, past places it has none in."""
+    assert (EXACT in _sql(measure, dialect)) is exact
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "dremio"])
+def test_the_limits_read_the_paired_values(dialect: str) -> None:
+    """A value without its pair is in no sum, so it cannot send its group to
+    the engine's own statistic: (9e18, NULL) beside a covariance of 18.5 did."""
+    sql = _sql("Qty Price covar_samp", dialect)
+
+    paired = 'CAST(CASE WHEN "Charges"."price" IS NOT NULL THEN "Charges"."qty" END AS DOUBLE)'
+    assert f"SUM({paired} * {paired})" in sql, sql
+    assert 'SUM(CAST("Charges"."qty" AS DOUBLE)' not in sql, sql

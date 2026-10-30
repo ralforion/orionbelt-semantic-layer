@@ -372,17 +372,20 @@ class DremioDialect(Dialect):
         return self._statistic_from_moments(aggregate, scales)
 
     def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
-        """Dremio: ``COVAR_SAMP`` over one pair is NULL, where Dremio answers NaN.
+        """Dremio: a covariance over too few pairs is NULL.
 
-        The sample covariance divides by one less than the pairs, as the
-        sample variance does, which Dremio already answers NULL for.
+        Dremio answered NaN for ``COVAR_SAMP`` over one pair, and 0 for
+        ``COVAR_POP`` over none. The sample covariance divides by one less
+        than the pairs and the population one by the pairs, as the variances
+        do, which Dremio already answers NULL for.
         """
         call = super()._compile_statistic(name, args, distinct=distinct)
-        if name != "COVAR_SAMP" or distinct:
+        fewest = {"COVAR_SAMP": 2, "COVAR_POP": 1}.get(name)
+        if fewest is None or distinct:
             return call
         x, y = (self.compile_expr(a) for a in args)
         pairs = f"COUNT(CASE WHEN {x} IS NOT NULL AND {y} IS NOT NULL THEN 1 END)"
-        return f"CASE WHEN {pairs} > 1 THEN {call} END"
+        return f"CASE WHEN {pairs} >= {fewest} THEN {call} END"
 
     _percentile_cont_over_doubles = True
 

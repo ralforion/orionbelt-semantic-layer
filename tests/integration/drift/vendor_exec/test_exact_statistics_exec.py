@@ -286,8 +286,7 @@ def _paired_sql(dialect: str) -> tuple[str, list[str]]:
     return store.compile_query(model_id, query, dialect).sql, measures
 
 
-def _assert_paired(target: VendorTarget) -> None:
-    groups = _paired_groups()
+def _assert_paired(target: VendorTarget, groups: dict[str, Group]) -> None:
     sql, measures = _paired_sql(target.dialect)
     rows = {row["Label"]: row for row in target.execute(_paired_rows(target.dialect, groups) + sql)}
     assert set(rows) == set(groups)
@@ -315,11 +314,59 @@ def _assert_paired(target: VendorTarget) -> None:
 
 
 def test_dremio_exact_covariance(vendor_dremio: VendorTarget) -> None:
-    _assert_paired(vendor_dremio)
+    _assert_paired(vendor_dremio, _paired_groups())
 
 
 def test_snowflake_exact_paired_statistics(vendor_snowflake: VendorTarget) -> None:
-    _assert_paired(vendor_snowflake)
+    _assert_paired(vendor_snowflake, _paired_groups())
+
+
+#: A covariance of 18.5 far from zero, beside a value without its pair, which
+#: is in no sum: read raw, it sent the group to the engine's own statistic,
+#: 142.2 on Dremio and 0 on Snowflake.
+UNPAIRED: dict[str, Group] = {
+    "unpaired": {
+        "X": [*(10**9 + i for i in range(10)), 9 * 10**18],
+        "D": [*((10**9 + 2 * i + i % 3) * 100 for i in range(10)), None],
+        "E": [None] * 11,
+    }
+}
+
+
+@pytest.mark.parametrize("vendor", ["vendor_dremio", "vendor_snowflake"])
+def test_a_value_without_its_pair_counts_nowhere(
+    vendor: str, request: pytest.FixtureRequest
+) -> None:
+    _assert_paired(request.getfixturevalue(vendor), UNPAIRED)
+
+
+def test_snowflake_keeps_its_own_past_25_places(vendor_snowflake: VendorTarget) -> None:
+    """In units, 10^-33 at 37 places is 10^4, and its unscaled product 10^41
+    passes 128 bits, which Snowflake raised on. Its own covariance answers, a
+    double cancelling 8 of its digits: 1.0000000052e-74."""
+    model = """\
+version: 1.0
+dataObjects:
+  Values:
+    code: deep_values
+    columns:
+      A: {code: a, abstractType: decimal, sqlPrecision: 38, sqlScale: 37}
+measures:
+  Spread:
+    columns: [{dataObject: Values, column: A}, {dataObject: Values, column: A}]
+    aggregation: covar_samp
+    resultType: float
+"""
+    rows = " UNION ALL ".join(
+        f"SELECT CAST('{Decimal(10**4 + i).scaleb(-37):f}' AS DECIMAL(38, 37)) AS \"a\""
+        for i in range(3)
+    )
+    store = ModelStore()
+    query = QueryObject.model_validate({"select": {"measures": ["Spread"]}})
+    sql = store.compile_query(store.load_model(model).model_id, query, "snowflake").sql
+    (row,) = vendor_snowflake.execute(f'WITH "deep_values" AS ({rows})\n{sql}')
+
+    assert math.isclose(row["Spread"], 1e-74, rel_tol=1e-7)
 
 
 def test_snowflake_keeps_its_own_past_the_bound(vendor_snowflake: VendorTarget) -> None:
