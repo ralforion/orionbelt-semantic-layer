@@ -151,13 +151,19 @@ How a query is split:
   (`SUM` of sums and counts, `MIN` / `MAX` of minimums and maximums), evaluates
   derived metrics, and applies HAVING, ORDER BY and LIMIT. An order whose key
   has no match keeps its values under an empty group, as in one database.
-- A filter on the fact island's dimensions runs in its leg. Any other filter
-  runs in the combine query, after the join. So does a static model filter on
+- A filter on the fact island's dimensions runs in its leg. A filter on one
+  dimension island's dimensions runs in that island's leg when it is never
+  true where they are all NULL (`=`, `!=`, `in`, comparisons, `like`,
+  `relative` and the others, but not `is_null` or `blank`): the leg returns
+  only the rows it keeps, compared as its own engine compares them, and the
+  combine query keeps the fact rows that leg matched, as such a filter on a
+  left-joined object does in one database. Any other filter runs in the
+  combine query, after the join. So does a static model filter on
   another island, on a column that island's leg returns: it drops the rows it
   excludes and keeps an unmatched row when it holds for NULL, as it does in one
   database, and an `enforce: always` filter applies even when the query reads
-  nothing else of that island. A filter on a dimension the query selects at a
-  time grain cannot run after the join and is refused.
+  nothing else of that island. A filter that runs after the join cannot read a
+  dimension the query selects at a time grain and is refused.
 - Measures are combined from partial results that are neither rounded nor
   bounded: a leg leaves its sums in the engine's own type, which keeps the
   input's scale and the engine's range, and the measure's own type and
@@ -217,8 +223,8 @@ aggregations, and aggregations that cannot be combined from partial results
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,
 period-over-period, window and reaggregate metrics (`FEDERATION_UNSUPPORTED_METRIC`),
 joins between sources other than many-to-one from the measures' side
-(`FEDERATION_UNSUPPORTED_JOIN`), relative date and time-grain filters on
-another source (`FEDERATION_UNSUPPORTED_FILTER`), and queries without measures,
+(`FEDERATION_UNSUPPORTED_JOIN`), relative date filters that run after the
+join (`FEDERATION_UNSUPPORTED_FILTER`), and queries without measures,
 with `exists`, role-playing dimensions, `fill`, `asOf`, `usePathNames` or raw
 mode.
 
@@ -226,7 +232,7 @@ mode.
 
 | What | How |
 |---|---|
-| Caching | The result is cached like any query's. Its key covers the combine query and every leg's SQL with the data source it runs on, its TTL is the shortest of all the tables the legs read, and a change to any of them invalidates it; a hit runs nothing. A result computed from legs served from the cache expires no later than the first of them, so it is never older than its legs. Each leg is also cached on its own, keyed by its data source and SQL, so a query that changes only what the combine step does (a filter on another source, HAVING, ORDER BY, LIMIT) reuses the legs an earlier query fetched |
+| Caching | The result is cached like any query's. Its key covers the combine query and every leg's SQL with the data source it runs on, its TTL is the shortest of all the tables the legs read, and a change to any of them invalidates it; a hit runs nothing. A result computed from legs served from the cache expires no later than the first of them, so it is never older than its legs. Each leg is also cached on its own, keyed by its data source and SQL, so a query that changes only what the combine step does (a filter after the join, HAVING, ORDER BY, LIMIT) reuses the legs an earlier query fetched, and one that changes a filter running in a dimension leg reruns that leg alone |
 | Legs | Run at once, each on its own source |
 | Types | Each leg's columns are made exact for DuckDB before combining: Postgres `numeric`, which arrives as text, becomes a decimal at the scale its values carry, and a decimal wider than 38 digits narrows when its values fit. A value no decimal holds (`NaN`, more than 38 digits) is refused with `FEDERATION_LEG_TYPE`, never rounded |
 | Errors | A leg that fails fails the query, and the error names the leg's data source and dialect (HTTP 502) |
@@ -260,7 +266,8 @@ engines differ, and their legs return what DuckDB then compares as they do:
 
 The other six engines compare as DuckDB does, measured. What still compares
 as DuckDB does: a filter that runs in the combine step (one reading more than
-one source) compares the value a MySQL leg returned, not its class; a
+one source, or one true for NULL) compares the value a MySQL leg returned, not
+its class; a
 ClickHouse float dimension makes one group of `0.0` and `-0.0`; a join key
 across sources compares bytewise; and `MIN` or `MAX` of a string orders by
 bytes.

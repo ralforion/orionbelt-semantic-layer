@@ -205,18 +205,38 @@ class TestRestExecution:
             calls.append(kwargs["source"].name)
             return real(sql, **kwargs)
 
+        filtered = {**REVENUE_BY_REGION, "having": [{"field": "Revenue", "op": ">", "value": 100}]}
+        with patch.object(query_cache, "execute_sql", counting):
+            first = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+            # HAVING runs in the combine step, so the legs' SQL is unchanged
+            # and both are served from the cache.
+            narrowed = await execute(client, model_yaml(federated=True), filtered)
+
+        assert narrowed.json()["cached"] is False
+        assert calls == ["shop", "crm"]
+        assert narrowed.json()["rows"] == [r for r in first.json()["rows"] if float(r[1]) > 100]
+
+    async def test_a_filter_on_another_source_reruns_only_its_leg(
+        self, client: AsyncClient
+    ) -> None:
+        from orionbelt.api import query_cache
+
+        calls: list[str] = []
+        real = query_cache.execute_sql
+
+        def counting(sql: str, **kwargs: Any) -> ExecutionResult:
+            calls.append(kwargs["source"].name)
+            return real(sql, **kwargs)
+
         filtered = {
             **REVENUE_BY_REGION,
             "where": [{"field": "Region", "op": "equals", "value": "EU"}],
         }
         with patch.object(query_cache, "execute_sql", counting):
             first = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
-            # A filter on the other source runs in the combine step, so the
-            # legs' SQL is unchanged and both are served from the cache.
             narrowed = await execute(client, model_yaml(federated=True), filtered)
 
-        assert narrowed.json()["cached"] is False
-        assert calls == ["shop", "crm"]
+        assert calls == ["shop", "crm", "crm"]
         assert narrowed.json()["rows"] == [r for r in first.json()["rows"] if r[0] == "EU"]
 
     async def test_the_same_query_over_other_sources_is_another_entry(
