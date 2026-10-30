@@ -63,6 +63,10 @@ class PostgresDialect(Dialect):
         return f"{self.quote_identifier(schema)}.{self.quote_identifier(code)}"
 
     avg_over_integers_is_exact = True
+    # Before Postgres 14 an IN list is tested one value at a time: 51 s for
+    # 10,000 keys over 5 million rows. Such a server takes
+    # DB_<NAME>_KEY_INJECTION_MAX_KEYS=0.
+    key_injection_max_keys = 10_000
 
     @property
     def name(self) -> str:

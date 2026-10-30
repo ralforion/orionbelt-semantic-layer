@@ -647,8 +647,10 @@ async def execute_federated_with_cache(
     On a miss the query waits for a federation slot (see
     ``service/federated_executor.py`` for the bounds it runs within), then
     each leg goes through the cache on its own, keyed by its source and SQL:
-    a query that changes only the combine step - a filter on another source,
+    a query that changes only the combine step - a filter after the join,
     HAVING, ORDER BY, LIMIT - still reuses the legs an earlier one fetched.
+    A fact leg that may read only the keys its filtered dimension legs
+    return runs after them (``federated_executor.injected_fact_leg``).
 
     Raises:
         ExecutionUnavailableError: No slot freed within the wait
@@ -745,17 +747,35 @@ async def execute_federated_with_cache(
                 assert ran.exec_result is not None
                 return federation.leg_table(leg, ran.exec_result)
 
-            # Every leg runs to its end before an error is raised, so a failed
-            # query does not give up its slot while its other legs still hold
-            # connections.
-            outcomes = await asyncio.gather(
-                *(run_leg(leg, source) for leg, source in zip(plan.legs, sources, strict=True)),
-                return_exceptions=True,
+            async def run_at_once(
+                legs: list[tuple[FederatedLeg, DataSource | None]],
+            ) -> dict[str, Any]:
+                # Every leg runs to its end before an error is raised, so a
+                # failed query does not give up its slot while its other legs
+                # still hold connections.
+                outcomes = await asyncio.gather(
+                    *(run_leg(leg, source) for leg, source in legs), return_exceptions=True
+                )
+                for outcome in outcomes:
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+                return {leg.name: table for (leg, _), table in zip(legs, outcomes, strict=True)}
+
+            legs = list(zip(plan.legs, sources, strict=True))
+            fact, fact_source = legs[0]
+            max_keys = (
+                federation.key_injection_max_keys(fact_source, fact.dialect)
+                if plan.injections
+                else 0
             )
-            for outcome in outcomes:
-                if isinstance(outcome, BaseException):
-                    raise outcome
-            tables = {leg.name: table for leg, table in zip(plan.legs, outcomes, strict=True)}
+            if max_keys:
+                # The fact leg waits for the dimension legs filtered by the
+                # query, and reads only the keys they return.
+                tables = await run_at_once(legs[1:])
+                fact = federation.injected_fact_leg(plan, tables, max_keys)
+                tables.update(await run_at_once([(fact, fact_source)]))
+            else:
+                tables = await run_at_once(legs)
             return await asyncio.get_running_loop().run_in_executor(
                 pool,
                 federation.combine,

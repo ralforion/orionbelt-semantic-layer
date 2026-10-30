@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
@@ -32,7 +33,11 @@ from orionbelt.api.deps import (  # noqa: E402
     reset_session_manager,
 )
 from orionbelt.cache.file import FileCache  # noqa: E402
-from orionbelt.compiler.federation import FederatedLeg, FederatedPlan  # noqa: E402
+from orionbelt.compiler.federation import (  # noqa: E402
+    FederatedLeg,
+    FederatedPlan,
+    KeyInjection,
+)
 from orionbelt.service import federated_executor as federation  # noqa: E402
 from orionbelt.service.db_executor import (  # noqa: E402
     ExecutionResult,
@@ -217,9 +222,12 @@ class TestRestExecution:
         assert narrowed.json()["rows"] == [r for r in first.json()["rows"] if float(r[1]) > 100]
 
     async def test_a_filter_on_another_source_reruns_only_its_leg(
-        self, client: AsyncClient
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Without key injection, which also reruns the fact leg on the keys."""
         from orionbelt.api import query_cache
+
+        monkeypatch.setenv("DB_KEY_INJECTION_MAX_KEYS", "0")
 
         calls: list[str] = []
         real = query_cache.execute_sql
@@ -317,6 +325,187 @@ def compiled_federated(*queries: dict[str, Any]) -> tuple[Any, str, Any]:
         for q in queries or (REVENUE_BY_REGION,)
     ]
     return store, model_id, compiled[0] if len(compiled) == 1 else compiled
+
+
+EU_REVENUE = {
+    "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Orders Count"]},
+    "where": [{"field": "Region", "op": "equals", "value": "EU"}],
+    "orderBy": [{"field": "Order Date"}],
+}
+
+
+class TestKeyInjection:
+    """A filter on the other source narrows the fact leg to the keys it keeps."""
+
+    @pytest.fixture
+    def ran(self) -> Iterator[list[tuple[str, str]]]:
+        """Each leg's data source and SQL, in the order they ran."""
+        from orionbelt.api import query_cache
+
+        ran: list[tuple[str, str]] = []
+        real = query_cache.execute_sql
+
+        def recording(sql: str, **kwargs: Any) -> ExecutionResult:
+            ran.append((kwargs["source"].name, sql))
+            return real(sql, **kwargs)
+
+        with patch.object(query_cache, "execute_sql", recording):
+            yield ran
+
+    async def _assert_same(self, client: AsyncClient, query: dict[str, Any]) -> list[Any]:
+        federated = await execute(client, model_yaml(federated=True), query)
+        single = await execute(client, single_model(), query)
+        assert federated.status_code == 200, federated.text
+        assert federated.json()["rows"] == single.json()["rows"]
+        return list(federated.json()["rows"])
+
+    async def test_the_fact_leg_reads_the_keys_after_the_dimension_leg(
+        self, client: AsyncClient, ran: list[tuple[str, str]]
+    ) -> None:
+        rows = await self._assert_same(client, EU_REVENUE)
+
+        assert [source for source, _ in ran[:2]] == ["crm", "shop"]
+        assert '"Orders"."customer_id" IN (10, 13)' in ran[1][1]
+        assert sum(Decimal(r[1]) for r in rows) == Decimal("123.90")
+
+    async def test_more_keys_than_the_source_takes_read_every_key(
+        self, client: AsyncClient, ran: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DB_SHOP_KEY_INJECTION_MAX_KEYS", "1")
+
+        await self._assert_same(client, EU_REVENUE)
+
+        (shop,) = [sql for source, sql in ran[:2] if source == "shop"]
+        assert " IN (" not in shop
+
+    async def test_a_source_setting_overrides_the_shared_one(
+        self, client: AsyncClient, ran: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DB_KEY_INJECTION_MAX_KEYS", "0")
+        monkeypatch.setenv("DB_SHOP_KEY_INJECTION_MAX_KEYS", "2")
+
+        await self._assert_same(client, EU_REVENUE)
+
+        (shop,) = [sql for source, sql in ran[:2] if source == "shop"]
+        assert " IN (10, 13)" in shop
+
+    async def test_no_key_reads_no_fact_row(
+        self, client: AsyncClient, ran: list[tuple[str, str]]
+    ) -> None:
+        query = {
+            "select": {"measures": ["Revenue", "Orders Count"]},
+            "where": [{"field": "Region", "op": "equals", "value": "nowhere"}],
+        }
+
+        rows = await self._assert_same(client, query)
+
+        assert ran[1][0] == "shop" and ran[1][1].endswith("LIMIT 0")
+        assert rows[0][1] == 0
+
+    async def test_a_filter_true_for_null_reads_every_key(
+        self, client: AsyncClient, ran: list[tuple[str, str]]
+    ) -> None:
+        """The orphan order's NULL region passes it, and the leg has no key for it."""
+        query = {**EU_REVENUE, "where": [{"field": "Region", "op": "is_null"}]}
+
+        await self._assert_same(client, query)
+
+        (shop,) = [sql for source, sql in ran[:2] if source == "shop"]
+        assert " IN (" not in shop
+
+    @staticmethod
+    def _plan(injected: list[dict[str, list[Any]]]) -> FederatedPlan:
+        fact = FederatedLeg(
+            name="leg_0", data_source="shop", dialect="duckdb", sql="", data_objects=()
+        )
+        return FederatedPlan(
+            legs=(fact,),
+            combine_sql="",
+            injections=(
+                KeyInjection("leg_1", "__fk0_0", "int"),
+                KeyInjection("leg_2", "__fk1_0", "string"),
+            ),
+            inject=lambda keys: injected.append(keys) or fact,
+        )
+
+    @pytest.mark.parametrize(
+        ("max_keys", "expected"),
+        [
+            (5, {"__fk1_0": ["a", "b"], "__fk0_0": [1, 2, 3]}),
+            (4, {"__fk1_0": ["a", "b"]}),
+            (1, None),
+        ],
+        ids=["both", "the_fewest_first", "neither"],
+    )
+    def test_the_fewest_keys_are_read_first_within_the_limit(
+        self, max_keys: int, expected: dict[str, list[Any]] | None
+    ) -> None:
+        injected: list[dict[str, list[Any]]] = []
+        tables = {
+            "leg_1": pa.table({"__fk0_0": [3, 1, None, 2, 1]}),
+            "leg_2": pa.table({"__fk1_0": ["b", "a", "b"]}),
+        }
+
+        federation.injected_fact_leg(self._plan(injected), tables, max_keys)
+
+        assert injected == ([expected] if expected else [])
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            pa.array([Decimal("1"), Decimal("2.5")]),
+            pa.array([1.0, 2.0]),
+            pa.array(["1", "2"]),
+        ],
+        ids=["a_fraction", "floats", "text"],
+    )
+    def test_an_integer_key_read_as_another_type_is_not_listed(self, values: Any) -> None:
+        injected: list[dict[str, list[Any]]] = []
+        tables = {"leg_1": pa.table({"__fk0_0": values}), "leg_2": pa.table({"__fk1_0": [1]})}
+
+        federation.injected_fact_leg(self._plan(injected), tables, 10)
+
+        assert injected == []
+
+    def test_a_string_key_holding_a_nul_is_not_listed(self) -> None:
+        """Postgres ends a statement's text at a NUL, inside a literal too."""
+        injected: list[dict[str, list[Any]]] = []
+        tables = {
+            "leg_1": pa.table({"__fk0_0": [1]}),
+            "leg_2": pa.table({"__fk1_0": ["a", "a\x00b"]}),
+        }
+
+        federation.injected_fact_leg(self._plan(injected), tables, 10)
+
+        assert injected == [{"__fk0_0": [1]}]
+
+    def test_a_list_longer_than_the_engine_parses_is_not_read(self) -> None:
+        """ClickHouse refuses a statement past ``max_query_size`` (256 KiB)."""
+        fact = FederatedLeg(
+            name="leg_0", data_source="shop", dialect="clickhouse", sql="", data_objects=()
+        )
+        plan = FederatedPlan(
+            legs=(fact,),
+            combine_sql="",
+            injections=(KeyInjection("leg_1", "__fk0_0", "string"),),
+            inject=lambda keys: replace(fact, sql=f"IN ({', '.join(keys['__fk0_0'])})"),
+        )
+        short = {"leg_1": pa.table({"__fk0_0": ["a" * 20]})}
+        long = {"leg_1": pa.table({"__fk0_0": [f"{n:030d}" for n in range(10_000)]})}
+
+        assert federation.injected_fact_leg(plan, short, 10_000).sql.startswith("IN (")
+        assert federation.injected_fact_leg(plan, long, 10_000) is fact
+
+    def test_an_integral_decimal_key_is_listed_as_an_integer(self) -> None:
+        injected: list[dict[str, list[Any]]] = []
+        tables = {
+            "leg_1": pa.table({"__fk0_0": pa.array([Decimal("2"), Decimal("10.00")])}),
+            "leg_2": pa.table({"__fk1_0": pa.array([], pa.string())}),
+        }
+
+        federation.injected_fact_leg(self._plan(injected), tables, 10)
+
+        assert injected == [{"__fk1_0": [], "__fk0_0": [2, 10]}]
 
 
 class TestCachedLegs:

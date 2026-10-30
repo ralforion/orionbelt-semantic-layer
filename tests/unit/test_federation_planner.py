@@ -12,14 +12,18 @@ customer without a region, and several orders per customer.
 
 from __future__ import annotations
 
+import gc
+import weakref
 from typing import Any
 
 import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
+from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
 from orionbelt.compiler.resolution import ResolutionError  # noqa: E402
 from orionbelt.models.query import QueryObject  # noqa: E402
+from orionbelt.service.compilation_cache import CompilationCache  # noqa: E402
 from orionbelt.service.model_store import ModelStore  # noqa: E402
 
 ORDERS = """
@@ -553,6 +557,149 @@ class TestPlan:
 
         assert ("WHERE" in plan.legs[1].sql) is in_leg
         assert ('"leg_1"."__fk0_0" IS NOT NULL' in plan.combine_sql) is in_leg
+
+    @pytest.mark.parametrize(
+        ("order_key", "customer_key", "injected"),
+        [
+            ("int", "int", ["int"]),
+            ("string", "string", ["string"]),
+            ("string", "int", []),
+            ("date", "date", []),
+        ],
+        ids=["integers", "strings", "two_types", "dates"],
+    )
+    def test_a_filtered_dimension_legs_keys_of_one_type_may_filter_the_fact_leg(
+        self, order_key: str, customer_key: str, injected: list[str]
+    ) -> None:
+        yaml = (
+            model_yaml(federated=True)
+            .replace(
+                "Order Customer: {code: customer_id, abstractType: int}",
+                f"Order Customer: {{code: customer_id, abstractType: {order_key}}}",
+            )
+            .replace(
+                "Customer ID: {code: customer_id, abstractType: int}",
+                f"Customer ID: {{code: customer_id, abstractType: {customer_key}}}",
+            )
+        )
+
+        plan = _compile(
+            yaml,
+            {
+                "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+                "where": [EU],
+            },
+        ).federation
+
+        assert [(i.leg, i.abstract_type) for i in plan.injections] == [
+            ("leg_1", kind) for kind in injected
+        ]
+        assert (plan.inject is not None) is bool(injected)
+
+    @pytest.mark.parametrize(
+        "where",
+        [[], [{"field": "Region", "op": "is_null"}]],
+        ids=["no_filter", "a_filter_true_for_null"],
+    )
+    def test_an_unfiltered_dimension_leg_filters_no_fact_leg(
+        self, where: list[dict[str, Any]]
+    ) -> None:
+        """Its fact rows without a key there count too."""
+        plan = _compile(
+            model_yaml(federated=True),
+            {"select": {"dimensions": ["Region"], "measures": ["Revenue"]}, "where": where},
+        ).federation
+
+        assert plan.injections == ()
+        assert plan.inject is None
+
+    def test_a_key_of_two_columns_filters_no_fact_leg(self) -> None:
+        yaml = (
+            model_yaml(federated=True)
+            .replace(
+                "      Order Date: {code: order_date, abstractType: date}\n",
+                "      Order Date: {code: order_date, abstractType: date}\n"
+                "      Order Tenant: {code: tenant, abstractType: string}\n",
+            )
+            .replace(
+                "columnsFrom: [Order Customer]\n        columnsTo: [Customer ID]",
+                "columnsFrom: [Order Customer, Order Tenant]\n"
+                "        columnsTo: [Customer ID, Tenant]",
+            )
+        )
+
+        plan = _compile(
+            yaml,
+            {
+                "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+                "where": [EU],
+            },
+        ).federation
+
+        assert len(plan.legs) == 2
+        assert plan.injections == ()
+
+    def test_injected_keys_are_written_as_the_fact_legs_literals(self) -> None:
+        yaml = (
+            model_yaml(federated=True)
+            .replace(
+                "Order Customer: {code: customer_id, abstractType: int}",
+                "Order Customer: {code: customer_id, abstractType: string}",
+            )
+            .replace(
+                "Customer ID: {code: customer_id, abstractType: int}",
+                "Customer ID: {code: customer_id, abstractType: string}",
+            )
+        )
+        plan = _compile(
+            yaml,
+            {
+                "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+                "where": [EU],
+            },
+        ).federation
+        assert plan.inject is not None
+
+        sql = plan.inject({"__fk0_0": ["a", "it's"]}).sql
+
+        assert "\"Orders\".\"customer_id\" IN ('a', 'it''s')" in sql
+        assert sql.endswith("LIMIT 1000001")
+
+    def test_a_query_changed_after_planning_leaves_the_injected_fact_leg_as_planned(
+        self,
+    ) -> None:
+        store = ModelStore()
+        model_id = store.load_model(model_yaml(federated=True)).model_id
+        query = QueryObject.model_validate(
+            {
+                "select": {"measures": ["Revenue"]},
+                "where": [EU, {"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+            }
+        )
+        plan = store.compile_query(model_id, query, "duckdb").federation
+        assert plan.inject is not None
+
+        query.where[1].value = "2024-01-01"
+
+        assert "'2024-02-01'" in plan.inject({"__fk0_0": [13]}).sql
+
+    def test_a_cached_plan_that_injects_keys_lets_its_model_go(self) -> None:
+        """The compilation cache drops a model's entries once nothing else holds it."""
+        store = ModelStore()
+        model = store.get_model(store.load_model(model_yaml(federated=True), dedup=False).model_id)
+        del store
+        cache = CompilationCache(max_entries=8)
+        query = QueryObject.model_validate({"select": {"measures": ["Revenue"]}, "where": [EU]})
+        plan = cache.compile(CompilationPipeline(), query, model, "duckdb").federation
+        assert plan.inject is not None
+        assert cache.stats().entries == 1
+        collected = weakref.ref(model)
+
+        del model
+        gc.collect()
+
+        assert collected() is None
+        assert cache.stats().entries == 0
 
     def test_a_relative_date_filter_on_the_dimension_side_runs_in_its_leg(self) -> None:
         """Refused while it ran in the combine step; its leg runs it as one

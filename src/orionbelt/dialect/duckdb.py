@@ -28,6 +28,7 @@ class DuckDBDialect(Dialect):
     """DuckDB dialect — PostgreSQL-like syntax, ILIKE, UNION ALL BY NAME."""
 
     like_needs_escape_clause = True
+    key_injection_max_keys = 1_000
 
     @property
     def name(self) -> str:

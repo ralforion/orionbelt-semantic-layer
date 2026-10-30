@@ -49,7 +49,8 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `DB_POOL_SIZE`             | `5`         | Idle connections kept per data source     |
 | `DB_MAX_CONNECTIONS`       | `10`        | Connections of one data source in use at once, on every surface; `0` for no limit. Queries past it wait in order of arrival |
 | `DB_ACQUIRE_TIMEOUT_SECONDS` | `30`      | How long a query waits for a connection before `DATA_SOURCE_BUSY` (503) |
-| `OBSL_DATABASES`           | —           | Comma-separated names of [named data sources](../guide/data-sources.md); each reads `DB_<NAME>_TYPE`, `DB_<NAME>_DESCRIPTION`, `DB_<NAME>_POOL_SIZE`, `DB_<NAME>_MAX_CONNECTIONS`, `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS` and its dialect's variables behind the `DB_<NAME>_` prefix. A model picks one with `settings.defaultDataSource` |
+| `DB_KEY_INJECTION_MAX_KEYS` | by engine  | Most keys a federated query lists in a fact leg ([key injection](../guide/data-sources.md#key-injection)); `0` turns it off. Default 10,000 on Postgres, MySQL and ClickHouse, 1,000 on DuckDB, 0 elsewhere |
+| `OBSL_DATABASES`           | —           | Comma-separated names of [named data sources](../guide/data-sources.md); each reads `DB_<NAME>_TYPE`, `DB_<NAME>_DESCRIPTION`, `DB_<NAME>_POOL_SIZE`, `DB_<NAME>_MAX_CONNECTIONS`, `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS`, `DB_<NAME>_KEY_INJECTION_MAX_KEYS` and its dialect's variables behind the `DB_<NAME>_` prefix. A model picks one with `settings.defaultDataSource` |
 | `FEDERATION_MAX_CONCURRENT` | `4`       | [Queries across data sources](../guide/data-sources.md#running-a-federated-query) running at once per process; the others wait in order of arrival |
 | `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `30` | How long a federated query waits for a slot before `FEDERATION_BUSY` (503) |
 | `FEDERATION_LEG_THREADS`   | `16`        | Legs of federated queries fetched at once per process |

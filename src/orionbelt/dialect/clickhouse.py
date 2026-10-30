@@ -321,6 +321,8 @@ class ClickHouseDialect(Dialect):
     }
 
     unions_resolve_leg_types = False
+    key_injection_max_keys = 10_000
+    max_statement_bytes = 256 * 1024
 
     def render_unnest(self, node: Unnest) -> str:
         """``ARRAY JOIN``, which is its own clause rather than a join.

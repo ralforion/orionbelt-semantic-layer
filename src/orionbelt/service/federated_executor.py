@@ -13,6 +13,9 @@ module holds what running that plan needs, whatever the surface:
 * **Legs** run on a thread pool of their own (``FEDERATION_LEG_THREADS``),
   never the event loop's default executor: a query waiting there for its legs
   could otherwise hold the threads its legs need.
+* **Key injection.** A fact leg whose dimension legs run a filter of the
+  query may wait for them and read only the keys they returned, up to the
+  fact source's ``KEY_INJECTION_MAX_KEYS``.
 * **Normalising** a leg's Arrow table into types DuckDB combines exactly:
   Postgres ``numeric`` arrives as text, a wide decimal as ``decimal256``,
   which DuckDB cannot read, and an all-NULL column without a type.
@@ -43,6 +46,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
+from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionResult,
@@ -52,6 +56,8 @@ from orionbelt.service.db_executor import (
 
 if TYPE_CHECKING:
     from zoneinfo import ZoneInfo
+
+    from ob_flight.datasources import DataSource
 
     from orionbelt.compiler.federation import FederatedLeg, FederatedPlan
 
@@ -273,6 +279,85 @@ def check_leg_rows(leg: FederatedLeg, row_count: int) -> None:
             f"{limits.max_leg_rows} rows, the most one leg may return "
             "(FEDERATION_MAX_LEG_ROWS). Filter the query or select fewer dimensions."
         )
+
+
+def key_injection_max_keys(source: DataSource | None, dialect: str) -> int:
+    """The most keys a fact leg on *source* reads as a list; 0 for none.
+
+    ``DB_<NAME>_KEY_INJECTION_MAX_KEYS`` for a named source, then
+    ``DB_KEY_INJECTION_MAX_KEYS``, then what the dialect measured
+    (:attr:`Dialect.key_injection_max_keys`).
+    """
+    environ = source.environ if source is not None else os.environ
+    variables = ["DB_KEY_INJECTION_MAX_KEYS"]
+    if source is not None and source.prefix:
+        variables.insert(0, f"{source.prefix}KEY_INJECTION_MAX_KEYS")
+    for variable in variables:
+        raw = environ.get(variable)
+        if raw:
+            return max(0, int(raw))
+    return DialectRegistry.get(dialect).key_injection_max_keys
+
+
+def injected_fact_leg(plan: FederatedPlan, tables: dict[str, Any], max_keys: int) -> FederatedLeg:
+    """The fact leg reading only the keys its dimension legs returned.
+
+    At most *max_keys* in all, the legs with the fewest keys first; a leg
+    past what is left is not read from, and the fact leg reads every value
+    of that key. *tables* holds the dimension legs' results. A list making
+    the statement longer than the engine parses is not read either
+    (:attr:`Dialect.max_statement_bytes`).
+    """
+    lists: list[tuple[str, list[Any]]] = []
+    for injection in plan.injections:
+        keys = _key_values(
+            tables[injection.leg].column(injection.column), injection.abstract_type, max_keys
+        )
+        if keys is not None:
+            lists.append((injection.column, keys))
+    chosen: dict[str, list[Any]] = {}
+    left = max_keys
+    for column, keys in sorted(lists, key=lambda item: len(item[1])):
+        if len(keys) > left:
+            break
+        chosen[column] = keys
+        left -= len(keys)
+    if not chosen or plan.inject is None:
+        return plan.legs[0]
+    fact = plan.inject(chosen)
+    longest = DialectRegistry.get(fact.dialect).max_statement_bytes
+    # Longer than the engine parses: it would refuse the query.
+    if longest is not None and len(fact.sql.encode()) > longest:
+        return plan.legs[0]
+    return fact
+
+
+def _key_values(column: Any, abstract_type: str, max_keys: int) -> list[Any] | None:
+    """*column*'s distinct values, sorted, as literals of *abstract_type*.
+
+    ``None`` past *max_keys*, or for a value that is not one: an integer key
+    read as a fraction, say, which a list of integers would not match. Also
+    for a string holding a NUL, which no literal writes on every engine: the
+    statement's text ends at it on Postgres.
+    """
+    import pyarrow.compute as pc
+
+    distinct = pc.drop_null(pc.unique(column))
+    if len(distinct) > max_keys:
+        return None
+    keys: list[Any] = []
+    for value in distinct.to_pylist():
+        if abstract_type == "int":
+            if isinstance(value, bool) or not isinstance(value, int | Decimal):
+                return None
+            if value != int(value):
+                return None
+            keys.append(int(value))
+        elif isinstance(value, str) and "\x00" not in value:
+            keys.append(value)
+        else:
+            return None
+    return sorted(keys)
 
 
 def leg_table(leg: FederatedLeg, result: ExecutionResult) -> Any:
@@ -639,6 +724,8 @@ __all__ = [
     "combine",
     "configure",
     "federation_limits",
+    "injected_fact_leg",
+    "key_injection_max_keys",
     "leg_executor",
     "leg_label",
     "leg_table",
