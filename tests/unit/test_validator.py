@@ -51,6 +51,29 @@ def test_dremio_maps_to_trino() -> None:
     assert errors == []
 
 
+#: How the Dremio dialect writes text outside Latin-1, which Trino's parser
+#: rejected with "Expecting )" although Dremio runs it.
+_DREMIO_UTF8 = (
+    "SELECT SUBSTR(_UTF8'it''s €', 1) AS \"r\", '_UTF8 ''y' AS \"s\" "
+    'FROM "t" WHERE "t"."v" IN (SUBSTR(_UTF8\'東京\', 1), \'café\')'
+)
+
+
+def test_dremio_utf8_literals_validate() -> None:
+    assert validate_sql(_DREMIO_UTF8, "dremio") == []
+
+
+def test_dremio_utf8_literals_format_as_dremio_reads_them() -> None:
+    """sqlglot writes ``_UTF8 '...'``, which Dremio rejects; the space goes,
+    and a literal holding the same characters keeps them.
+    """
+    formatted = format_sql(_DREMIO_UTF8, "dremio")
+    assert "SUBSTR(_UTF8'it''s €', 1)" in formatted
+    assert "SUBSTR(_UTF8'東京', 1)" in formatted
+    assert "'_UTF8 ''y'" in formatted
+    assert "_UTF8 '" not in formatted.replace("'_UTF8 ''y'", "")
+
+
 def test_dialect_map_covers_all_registered_dialects() -> None:
     """Every registered dialect must have an entry in the validator's _DIALECT_MAP."""
     registered = set(DialectRegistry.available())

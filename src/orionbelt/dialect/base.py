@@ -2022,8 +2022,7 @@ class Dialect(ABC):
         sep = separator if separator is not None else ","
         col_sql = self.compile_expr(args[0]) if args else "''"
         distinct_sql = "DISTINCT " if distinct else ""
-        escaped_sep = self.quote_string_literal(sep)[1:-1]
-        result = f"LISTAGG({distinct_sql}{col_sql}, '{escaped_sep}')"
+        result = f"LISTAGG({distinct_sql}{col_sql}, {self.quote_string_literal(sep)})"
         if order_by:
             ob = ", ".join(self.compile_order_by(o) for o in order_by)
             result += f" WITHIN GROUP (ORDER BY {ob})"

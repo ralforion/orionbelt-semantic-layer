@@ -2,21 +2,44 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from collections import OrderedDict
 
 import sqlglot
+from sqlglot import TokenType
+from sqlglot.dialects.trino import Trino
 from sqlglot.errors import SqlglotError
 
 from orionbelt.dialect.clickhouse import STATEMENT_SETTINGS
 
+
+class ObslDremio(Trino):
+    """Trino, the closest sqlglot dialect to Dremio's Calcite SQL, plus ``_UTF8'...'``.
+
+    The Dremio dialect writes text outside Latin-1 as ``SUBSTR(_UTF8'...', 1)``
+    (:meth:`~orionbelt.dialect.dremio.DremioDialect.quote_string_literal`),
+    which Trino's tokenizer rejects. Registered with sqlglot as
+    ``obsldremio``, its class name lowercased. sqlglot writes an introducer
+    back with a space, which Dremio rejects (measured), so :func:`_pretty`
+    joins it to its literal again.
+    """
+
+    class Tokenizer(Trino.Tokenizer):
+        KEYWORDS = {**Trino.Tokenizer.KEYWORDS, "_UTF8": TokenType.INTRODUCER}
+
+
+# A string literal or quoted identifier, consumed whole so nothing inside one is
+# rewritten, or the space sqlglot writes between ``_UTF8`` and its literal.
+_INTRODUCER_SPACE = re.compile(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|(_UTF8) (?=')")
+
+
 # Map OrionBelt dialect names to sqlglot dialect identifiers.
-# Dremio uses Calcite-based ANSI SQL; Trino is the closest sqlglot dialect.
 _DIALECT_MAP: dict[str, str] = {
     "bigquery": "bigquery",
     "clickhouse": "clickhouse",
     "databricks": "databricks",
-    "dremio": "trino",
+    "dremio": "obsldremio",
     "duckdb": "duckdb",
     "mysql": "mysql",
     "postgres": "postgres",
@@ -77,9 +100,12 @@ def _without_settings(sql: str, dialect_name: str) -> tuple[str, str]:
 
 def _pretty(sql: str, sg_dialect: str) -> str:
     try:
-        return sqlglot.transpile(sql, read=sg_dialect, write=sg_dialect, pretty=True)[0]
+        pretty = sqlglot.transpile(sql, read=sg_dialect, write=sg_dialect, pretty=True)[0]
     except SqlglotError:
         return sql
+    if sg_dialect == "obsldremio":
+        return _INTRODUCER_SPACE.sub(lambda m: m.group(1) or m.group(0), pretty)
+    return pretty
 
 
 class _FormatMemo:

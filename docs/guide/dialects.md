@@ -473,6 +473,9 @@ The continuous percentile has the median's types: a floating-point number on Pos
 !!! warning "MySQL GROUP_CONCAT limitations"
     MySQL's `GROUP_CONCAT` silently cuts its result at `group_concat_max_len`, 1024 bytes by default. A statement that uses it (a `listagg` or a `median`) carries `/*+ SET_VAR(group_concat_max_len = 4294967295) */` on its outermost `SELECT`, which lifts the limit for that statement only; the hint has no effect anywhere else in the statement. Additionally, MySQL silently ignores `ORDER BY` when `DISTINCT` is also present in `GROUP_CONCAT`.
 
+!!! warning "Dremio: an ASCII separator only"
+    Dremio writes as many UTF-8 bytes of a `LISTAGG` separator as it has characters, so a separator that is not ASCII is cut short: `' · '` joins `a`, `b`, `c` as `a ·b ·c`, and `'é'` or `' → '` leave half a character, bytes that are not UTF-8. A `delimiter` that is not ASCII is refused at compile time. Values of any text are aggregated correctly; only the separator is limited. Elsewhere, OBSL writes text outside Latin-1 on Dremio as `SUBSTR(_UTF8'...', 1)`: a plain literal of it fails to plan where it is a value (a CASE branch, a COALESCE fallback), and a `_UTF8` one fails where it is compared with a column.
+
 !!! note "Totals of non-additive aggregations"
     `MEDIAN`, `MODE`, `LISTAGG`, `ANY_VALUE`, the percentiles, the statistics and distinct counts take `total: true` and a `grain` override: no window over the groups combines them, so they are computed again in a CTE of their own (see [Grain and filter context](grain-filter-context.md)).
 

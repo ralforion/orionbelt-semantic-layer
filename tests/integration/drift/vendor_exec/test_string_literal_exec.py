@@ -31,6 +31,8 @@ import pytest
 
 from orionbelt.ast.nodes import Literal
 from orionbelt.dialect.registry import DialectRegistry
+from orionbelt.models.query import QueryObject
+from orionbelt.service.model_store import ModelStore
 
 from .conftest import VendorTarget
 
@@ -58,6 +60,64 @@ VALUES = [
     "real\ttab",
     "form\x0cfeed",
     "control\x01byte",
+    # Outside Latin-1, which Dremio types a plain literal as: it failed to
+    # plan each of these as a value of its own.
+    "İstanbul",
+    "€ 東京 😀",
+    "it's İ",
+    "a\\b €",
+]
+
+#: A dimension computed from text outside Latin-1, filtered on and grouped by,
+#: with a group of two cities, so the ``listagg`` writes its separator.
+MODEL = """\
+version: 1.0
+dataObjects:
+  Places:
+    code: places
+    columns:
+      City: {code: city, abstractType: string}
+      Amount: {code: amount, abstractType: int}
+      Region:
+        expression: >-
+          CASE WHEN {City} IN ('İstanbul', 'İzmir') THEN 'Türkiye €'
+          ELSE coalesce({City}, '東京') END
+        abstractType: string
+dimensions:
+  City: {dataObject: Places, column: City, resultType: string}
+  Region: {dataObject: Places, column: Region, resultType: string}
+measures:
+  Total: {columns: [{dataObject: Places, column: Amount}], aggregation: sum, resultType: int}
+  Cities:
+    columns: [{dataObject: Places, column: City}]
+    aggregation: listagg
+    delimiter: " | "
+    resultType: string
+"""
+
+#: (city, amount): the table the model reads.
+ROWS = [("İstanbul", 1), ("café", 2), ("東京", 4), (None, 8), ("x", 16), ("İzmir", 32)]
+
+TURKIYE = ["İstanbul", "İzmir"]
+
+#: (filter, {region: (total, cities)}): each filter compares text outside
+#: Latin-1, with a column or with the computed dimension.
+FILTERS = [
+    (
+        {"field": "City", "op": "in", "value": [*TURKIYE, "東京", "café"]},
+        {"Türkiye €": (33, TURKIYE), "café": (2, ["café"]), "東京": (4, ["東京"])},
+    ),
+    ({"field": "Region", "op": "equals", "value": "東京"}, {"東京": (12, ["東京"])}),
+    ({"field": "Region", "op": "like", "value": "Tür%"}, {"Türkiye €": (33, TURKIYE)}),
+    (
+        {"field": "City", "op": "notequals", "value": "İstanbul"},
+        {
+            "Türkiye €": (32, ["İzmir"]),
+            "café": (2, ["café"]),
+            "東京": (4, ["東京"]),
+            "x": (16, ["x"]),
+        },
+    ),
 ]
 
 
@@ -74,6 +134,46 @@ def _assert_round_trip(target: VendorTarget) -> None:
         if got != raw:
             mismatches.append(f"{raw!r} -> {got!r} (emitted {literal})")
     assert not mismatches, f"{target.name} mangles string literals:\n  " + "\n  ".join(mismatches)
+
+
+#: How each engine spells a string type in ``CAST(NULL AS ...)``.
+TEXT = {
+    "bigquery": "STRING",
+    "clickhouse": "Nullable(String)",
+    "databricks": "STRING",
+    "mysql": "CHAR",
+}
+
+
+def _assert_model(target: VendorTarget) -> None:
+    """The model's queries, compiled for the engine, over :data:`ROWS`."""
+    dialect = DialectRegistry.get(target.dialect)
+    q = dialect.quote_identifier
+    null = f"CAST(NULL AS {TEXT.get(target.dialect, 'VARCHAR')})"
+    rows = " UNION ALL ".join(
+        f"SELECT {null if city is None else dialect.quote_string_literal(city)} AS {q('city')}, "
+        f"{amount} AS {q('amount')}"
+        for city, amount in ROWS
+    )
+    store = ModelStore()
+    model_id = store.load_model(MODEL).model_id
+    mismatches = []
+    for where, expected in FILTERS:
+        select = {"dimensions": ["Region"], "measures": ["Total", "Cities"]}
+        query = QueryObject.model_validate({"select": select, "where": [where]})
+        sql = store.compile_query(model_id, query, target.dialect).sql
+        try:
+            result = target.execute(f"WITH {q('places')} AS ({rows})\n{sql}")
+        except Exception as exc:  # noqa: BLE001 - a raise is a failure like any other
+            mismatches.append(f"{where} -> raised {str(exc)[:80]}")
+            continue
+        got = {}
+        for raw in result:
+            row = {key.lower(): value for key, value in raw.items()}
+            got[row["region"]] = (int(row["total"]), sorted(row["cities"].split(" | ")))
+        if got != expected:
+            mismatches.append(f"{where} -> {got}, expected {expected}")
+    assert not mismatches, f"{target.name} text outside Latin-1:\n  " + "\n  ".join(mismatches)
 
 
 def test_duckdb_string_literals(vendor_duckdb: VendorTarget) -> None:
@@ -102,3 +202,39 @@ def test_snowflake_string_literals(vendor_snowflake: VendorTarget) -> None:
 
 def test_databricks_string_literals(vendor_databricks: VendorTarget) -> None:
     _assert_round_trip(vendor_databricks)
+
+
+def test_dremio_string_literals(vendor_dremio: VendorTarget) -> None:
+    _assert_round_trip(vendor_dremio)
+
+
+def test_duckdb_text_outside_latin1_in_a_model(vendor_duckdb: VendorTarget) -> None:
+    _assert_model(vendor_duckdb)
+
+
+def test_postgres_text_outside_latin1_in_a_model(vendor_postgres: VendorTarget) -> None:
+    _assert_model(vendor_postgres)
+
+
+def test_mysql_text_outside_latin1_in_a_model(vendor_mysql: VendorTarget) -> None:
+    _assert_model(vendor_mysql)
+
+
+def test_clickhouse_text_outside_latin1_in_a_model(vendor_clickhouse: VendorTarget) -> None:
+    _assert_model(vendor_clickhouse)
+
+
+def test_bigquery_text_outside_latin1_in_a_model(vendor_bigquery: VendorTarget) -> None:
+    _assert_model(vendor_bigquery)
+
+
+def test_snowflake_text_outside_latin1_in_a_model(vendor_snowflake: VendorTarget) -> None:
+    _assert_model(vendor_snowflake)
+
+
+def test_databricks_text_outside_latin1_in_a_model(vendor_databricks: VendorTarget) -> None:
+    _assert_model(vendor_databricks)
+
+
+def test_dremio_text_outside_latin1_in_a_model(vendor_dremio: VendorTarget) -> None:
+    _assert_model(vendor_dremio)
