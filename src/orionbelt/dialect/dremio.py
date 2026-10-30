@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from orionbelt.ast.nodes import (
     BinaryOp,
+    CaseExpr,
     Cast,
     Expr,
     FunctionCall,
@@ -358,6 +359,88 @@ class DremioDialect(Dialect):
     #: silently (DECIMAL(18, 6) of 1234567890123456.5 was 0.000000), so a
     #: square keeps 38 digits and 3 places at most.
     _EXACT_SQUARE = ("DECIMAL(38, {scale})", 3)
+
+    #: The sum of squares, in units of the values' last place, from which
+    #: :meth:`exact_variance` keeps Dremio's own statistic. A ``SUM`` past 128
+    #: bits wraps here, silently - three squares of 9e18 summed to -9.7e37 -
+    #: and a product or a sum past them is 0; this leaves room for the
+    #: double the limit is tested with.
+    _VARIANCE_SQUARES_LIMIT = 37
+
+    def exact_variance(self, aggregate: FunctionCall, scale: int) -> Expr | None:
+        """The statistic from exact moments, shifted by their integer mean.
+
+        Dremio's ``VARIANCE`` and ``STDDEV`` subtract sums of squares as
+        doubles, so they cancel on values far from zero, integers and decimals
+        alike. The variance of 10^9 + 0..9 is 9.1666...; Dremio answered 0,
+        and 2.5e14 for 10^15 + 0..9, and for 10^17 + 0..9 a negative variance
+        and a NaN deviation.
+
+        Each value ``x`` becomes ``u``, a whole number of its last place
+        (``x * 10^scale``, exact: the product has no places to round), and
+        the group's ``N = COUNT(x)``, ``S1 = SUM(u)`` and ``S2 = SUM(u * u)``
+        are exact in ``DECIMAL(38, 0)``. The spread ``S2 - S1^2 / N`` is
+        taken as DuckDB's :meth:`combined_variance` takes it, through ``S1``'s
+        quotient ``q`` and remainder ``r`` by ``N``: no term exceeds ``S2``,
+        and the one rounding is to a double at the end. Each quotient divides
+        a multiple of its divisor, as Dremio's decimal ``/`` rounds, and none
+        reaches the 32 integer digits past which it returns 0: ``q`` is at
+        most the largest ``|u|``, ``r^2 / N`` below ``N``.
+
+        A sum of squares of 10^:attr:`_VARIANCE_SQUARES_LIMIT` units or more,
+        as the values' doubles sum them, keeps Dremio's own statistic, as do
+        a DISTINCT one and a group too small for it, where it is NULL.
+        """
+        if aggregate.distinct or len(aggregate.args) != 1:
+            return None
+        (arg,) = aggregate.args
+        name = aggregate.name.upper()
+        sample = name in ("STDDEV", "STDDEV_SAMP", "VARIANCE", "VAR_SAMP")
+
+        def op(left: Expr, operator: str, right: Expr) -> Expr:
+            return BinaryOp(left=left, op=operator, right=right)
+
+        def call(function: str, *args: Expr) -> Expr:
+            return FunctionCall(name=function, args=list(args))
+
+        def integer(expr: Expr) -> Expr:
+            return Cast(expr=expr, type_name="DECIMAL(38, 0)")
+
+        def double(expr: Expr) -> Expr:
+            return Cast(expr=expr, type_name="DOUBLE")
+
+        def quotient(dividend: Expr, divisor: Expr) -> Expr:
+            whole = integer(op(dividend, "-", call("MOD", dividend, divisor)))
+            return integer(op(whole, "/", divisor))
+
+        units = integer(arg)
+        if scale:
+            shift = Cast(
+                expr=Literal.string(f"1{'0' * scale}"), type_name=f"DECIMAL({scale + 1}, 0)"
+            )
+            units = integer(op(Cast(expr=arg, type_name=f"DECIMAL(38, {scale})"), "*", shift))
+        count = call("COUNT", arg)
+        n = Cast(expr=call("NULLIF", count, Literal.number(0)), type_name="DECIMAL(19, 0)")
+        s1 = call("SUM", units)
+        s2 = call("SUM", op(units, "*", units))
+        r = call("MOD", s1, n)
+        r_squared = integer(op(r, "*", r))
+        shifted = integer(op(quotient(s1, n), "*", integer(op(s1, "+", r))))
+        whole = integer(op(integer(op(s2, "-", shifted)), "-", quotient(r_squared, n)))
+        spread = op(double(whole), "-", op(double(call("MOD", r_squared, n)), "/", double(n)))
+        divisor = call("NULLIF", op(n, "-", Literal.number(1)), Literal.number(0)) if sample else n
+        statistic = op(spread, "/", double(divisor))
+        if scale:
+            statistic = op(statistic, "/", double(Literal.string(f"1E{2 * scale}")))
+        if name.startswith("STDDEV"):
+            statistic = call("SQRT", statistic)
+        value = double(arg)
+        squares = call("SUM", op(value, "*", value))
+        limit = double(Literal.string(f"1E{self._VARIANCE_SQUARES_LIMIT - 2 * scale}"))
+        fits = op(
+            op(count, ">=", Literal.number(2 if sample else 1)), "AND", op(squares, "<", limit)
+        )
+        return CaseExpr(when_clauses=[(fits, statistic)], else_clause=aggregate)
 
     def _compile_statistic(self, name: str, args: list[Expr], *, distinct: bool) -> str:
         """Dremio: ``COVAR_SAMP`` over one pair is NULL, where Dremio answers NaN.

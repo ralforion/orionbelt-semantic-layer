@@ -815,6 +815,7 @@ def cast_measure_to_resolved_type(
     if exact is not None:
         rewritten, target = exact
         return dialect.cast_to_obml_type(rewritten, target)
+    expr = apply_exact_variance(expr, measure, dialect, model)
     expr = apply_float_input(expr, measure, settings, dialect, model)
     expr = apply_exact_integer_sum(expr, measure, dialect)
     resolved = resolve_measure_cast_type(measure, settings, dialect, model)
@@ -861,7 +862,36 @@ def apply_exact_integer_avg(
     exact = rewrite_exact_integer_avg(measure, settings, dialect, expr, model)
     if exact is not None:
         return exact[0]
+    expr = apply_exact_variance(expr, measure, dialect, model)
     return apply_float_input(expr, measure, settings, dialect, model)
+
+
+_VARIANCES = frozenset({"VARIANCE", "VAR_POP", "STDDEV", "STDDEV_POP"})
+
+
+def apply_exact_variance(
+    expr: Expr, measure: Measure, dialect: Dialect, model: SemanticModel | None
+) -> Expr:
+    """A ``variance`` or ``stddev`` of integers or decimals, computed exactly
+    where the engine's own cancels far from zero (:meth:`Dialect.exact_variance`).
+
+    Only a bare aggregate of the measure's own values, a measure filter or
+    default around it: the places of every value must be known
+    (:func:`exact_input_scale`), so a float, a decimal column declared without
+    ``sqlPrecision`` and ``sqlScale``, and an expression that is not integer
+    arithmetic keep the engine's statistic.
+    """
+    name = measure.aggregation.upper()
+    if name not in _VARIANCES or model is None:
+        return expr
+    aggregate, rebuild = unwrap_default(expr)
+    if not isinstance(aggregate, FunctionCall) or aggregate.name != name:
+        return expr
+    scale = exact_input_scale(measure, model)
+    if scale is None:
+        return expr
+    exact = dialect.exact_variance(aggregate, scale)
+    return rebuild(exact) if exact is not None else expr
 
 
 def apply_float_input(

@@ -819,6 +819,19 @@ class Dialect(ABC):
         wide = Cast(expr=arg, type_name=wide_type.format(scale=scale))
         return BinaryOp(left=wide, op="*", right=wide)
 
+    def exact_variance(self, aggregate: FunctionCall, scale: int) -> Expr | None:
+        """*aggregate*, a ``VARIANCE``, ``VAR_POP``, ``STDDEV`` or ``STDDEV_POP``
+        of one argument, computed without cancelling, or ``None`` to keep it.
+
+        Its argument is an integer (*scale* 0) or a decimal of *scale* places.
+        ``None`` - the default - where the engine's own statistic of integers
+        and decimals is right far from zero, as measured on seven engines: over
+        10^9 + 0..9 they answer 9.1666..., Snowflake to six places for
+        integers. Dremio's answered 0 there, and 2.5e14 and a negative variance
+        further out, and it overrides this.
+        """
+        return None
+
     def combined_variance(
         self, count: Expr, total: Expr, squares: Expr, scale: int, *, sample: bool
     ) -> Expr | None:

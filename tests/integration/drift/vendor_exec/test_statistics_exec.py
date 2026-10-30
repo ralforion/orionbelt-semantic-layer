@@ -74,11 +74,13 @@ TOLERANCE = Fraction(1, 10**6)
 
 #: The statistics an engine computes by subtracting sums of squares, which
 #: cancel far from zero, with no stable function to render instead: Snowflake's
-#: over doubles and its covariance of integers answer 0, Dremio's answer 0, NaN
-#: or a negative variance over every type. Asserted apart, as failing.
+#: over doubles and its covariance of integers answer 0, Dremio's over doubles
+#: and its covariance answer 0, NaN or a negative variance. Its variance and
+#: standard deviation of integers and decimals are computed exactly instead
+#: (``Dialect.exact_variance``). Asserted apart, as failing.
 CANCELLING: dict[str, set[str]] = {
     "snowflake": {f"F {a}" for a in SINGLE} | {f"XY {a}" for a in PAIRED},
-    "dremio": {f"{c} {a}" for c in "XDF" for a in SINGLE} | {"XY covar_samp", "XY covar_pop"},
+    "dremio": {f"F {a}" for a in SINGLE} | {"XY covar_samp", "XY covar_pop"},
 }
 
 MODEL = """\
@@ -90,7 +92,7 @@ dataObjects:
       Label: {code: l, abstractType: string}
       X: {code: x, abstractType: int}
       Y: {code: y, abstractType: int}
-      D: {code: d, abstractType: decimal}
+      D: {code: d, abstractType: decimal, sqlPrecision: 18, sqlScale: 2}
       F: {code: f, abstractType: float}
 dimensions:
   Label: {dataObject: Values, column: Label, resultType: string}
