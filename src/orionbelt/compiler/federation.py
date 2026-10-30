@@ -186,6 +186,59 @@ class KeyInjection:
 
 
 @dataclass(frozen=True)
+class KeyInjector:
+    """Compiles the fact leg again, reading only the keys given for each column.
+
+    It holds copies of the leg's query and of its island's model, and nothing
+    of the query or model planned: a query changed after planning does not
+    change it, and a plan in the compilation cache does not keep a model
+    unloaded since alive.
+
+    Attributes:
+        leg: The fact leg as planned, which the injected one replaces.
+        query: The query it compiles from.
+        model: The model of its island it compiles against.
+        columns: The columns it returns.
+        squares: The sums of squares it reads, by name, each with its scale.
+        rekeyed: Its columns compared as their engine compares them.
+        kept: The copies of rekeyed columns a combine filter reads.
+        compile_leg: As :func:`plan_federated` takes it.
+    """
+
+    leg: FederatedLeg
+    query: QueryObject
+    model: SemanticModel
+    columns: tuple[DataObjectColumn, ...]
+    squares: dict[str, int]
+    rekeyed: dict[str, tuple[str, bool]]
+    kept: dict[str, str]
+    compile_leg: Callable[[QueryObject, SemanticModel, str], str] = dataclasses.field(
+        compare=False, repr=False
+    )
+
+    def __call__(self, keys: dict[str, list[Any]]) -> FederatedLeg:
+        """The fact leg reading only *keys*; an empty list for a column reads no rows."""
+        if all(keys.values()):
+            where = [
+                *self.query.where,
+                *(
+                    QueryFilter(field=column, op=FilterOperator.IN_LIST, value=values)
+                    for column, values in keys.items()
+                ),
+            ]
+            query = self.query.model_copy(update={"where": where})
+        else:
+            # No key at all matches no fact row: the leg's columns, without rows.
+            query = self.query.model_copy(update={"limit": 0})
+        dialect = DialectRegistry.get(self.leg.dialect)
+        with partial_sums(), partial_squares(dialect, self.squares):
+            sql = self.compile_leg(query, self.model, dialect.name)
+        if self.rekeyed:
+            sql = _rewrite_leg(dialect, sql, list(self.columns), self.rekeyed, self.kept)
+        return dataclasses.replace(self.leg, sql=sql)
+
+
+@dataclass(frozen=True)
 class FederatedPlan:
     """The legs of a federated query and the DuckDB query combining them.
 
@@ -200,8 +253,9 @@ class FederatedPlan:
     combine_sql: str
     combine_dialect: str = COMBINE_DIALECT
     injections: tuple[KeyInjection, ...] = ()
+    # In the repr, which the compilation cache sizes an entry by.
     inject: Callable[[dict[str, list[Any]]], FederatedLeg] | None = dataclasses.field(
-        default=None, compare=False, repr=False
+        default=None, compare=False
     )
 
 
@@ -374,14 +428,12 @@ def plan_federated(
     )
     renamed.update({source: hidden for hidden, source in fact_kept.items()})
     squares = {squared: scale for _, _, squared, scale in variances.values()}
-
-    def fact_leg(where: list[QueryFilterItem], limit: int | None) -> FederatedLeg:
-        """The fact leg under *where*, returning at most *limit* rows."""
-        with partial_sums(), partial_squares(planner.leg_dialect(islands[fact]), squares):
-            return planner.leg(
+    with partial_sums(), partial_squares(planner.leg_dialect(islands[fact]), squares):
+        legs.append(
+            planner.leg(
                 "leg_0",
                 islands[fact],
-                fact_query.model_copy(update={"where": where, "limit": limit}),
+                fact_query,
                 fact_model,
                 fact_columns,
                 compile_leg,
@@ -396,23 +448,7 @@ def plan_federated(
                 rekeyed=fact_rekeyed,
                 kept=fact_kept,
             )
-
-    def inject(keys: dict[str, list[Any]]) -> FederatedLeg:
-        # No key at all matches no fact row: the leg's columns, without rows.
-        if not all(keys.values()):
-            return fact_leg(fact_query.where, 0)
-        return fact_leg(
-            [
-                *fact_query.where,
-                *(
-                    QueryFilter(field=column, op=FilterOperator.IN_LIST, value=values)
-                    for column, values in keys.items()
-                ),
-            ],
-            leg_limit,
         )
-
-    legs.append(fact_leg(fact_query.where, leg_limit))
     injections: list[KeyInjection] = []
     fact_joins: list[DataObjectJoin] = []
     for d in fact_dims:
@@ -571,11 +607,23 @@ def plan_federated(
         ),
     ):
         combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
+    inject = None
+    if injections:
+        inject = KeyInjector(
+            leg=legs[0],
+            query=fact_query.model_copy(deep=True),
+            model=fact_model.model_copy(deep=True),
+            columns=tuple(fact_columns),
+            squares=squares,
+            rekeyed=fact_rekeyed,
+            kept=fact_kept,
+            compile_leg=compile_leg,
+        )
     return FederatedPlan(
         legs=tuple(legs),
         combine_sql=combine_sql,
         injections=tuple(injections),
-        inject=inject if injections else None,
+        inject=inject,
     )
 
 
@@ -1194,6 +1242,12 @@ class _Planner:
                 ),
                 "rules": {},
                 "expose_counts": False,
+                # Read by no compilation, and kept by a plan that injects keys.
+                "description": None,
+                "examples": [],
+                "custom_extensions": [],
+                "ontology": None,
+                "external_concept_mappings": [],
             }
         )
 

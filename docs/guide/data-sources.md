@@ -246,6 +246,7 @@ fact rows the combine step would drop are not read.
 | How many | At most the fact source's limit of keys, over every such leg together, the legs with the fewest keys first. A leg with more keys than are left is not listed, and the fact leg reads all of that key. No key at all reads no fact row |
 | Limit | Postgres, MySQL and ClickHouse 10,000; DuckDB 1,000; Snowflake, BigQuery, Databricks and Dremio 0 (off) until measured. `DB_<NAME>_KEY_INJECTION_MAX_KEYS` sets it for the fact leg's source, `DB_KEY_INJECTION_MAX_KEYS` for every source; `0` turns it off |
 | Cost | The fact leg waits for the dimension legs rather than running beside them. A list past the limit gains nothing over aggregating every key |
+| Not listed | A list making a ClickHouse statement longer than its default `max_query_size` (256 KiB), and a string key holding a NUL, which ends a Postgres statement's text: the fact leg reads every key instead |
 
 The limits come from a measurement with 5 million orders over 1 million
 customers, the filter keeping 10 to 100,000 of them:

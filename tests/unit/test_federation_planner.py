@@ -12,14 +12,18 @@ customer without a region, and several orders per customer.
 
 from __future__ import annotations
 
+import gc
+import weakref
 from typing import Any
 
 import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
+from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
 from orionbelt.compiler.resolution import ResolutionError  # noqa: E402
 from orionbelt.models.query import QueryObject  # noqa: E402
+from orionbelt.service.compilation_cache import CompilationCache  # noqa: E402
 from orionbelt.service.model_store import ModelStore  # noqa: E402
 
 ORDERS = """
@@ -660,6 +664,42 @@ class TestPlan:
 
         assert "\"Orders\".\"customer_id\" IN ('a', 'it''s')" in sql
         assert sql.endswith("LIMIT 1000001")
+
+    def test_a_query_changed_after_planning_leaves_the_injected_fact_leg_as_planned(
+        self,
+    ) -> None:
+        store = ModelStore()
+        model_id = store.load_model(model_yaml(federated=True)).model_id
+        query = QueryObject.model_validate(
+            {
+                "select": {"measures": ["Revenue"]},
+                "where": [EU, {"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+            }
+        )
+        plan = store.compile_query(model_id, query, "duckdb").federation
+        assert plan.inject is not None
+
+        query.where[1].value = "2024-01-01"
+
+        assert "'2024-02-01'" in plan.inject({"__fk0_0": [13]}).sql
+
+    def test_a_cached_plan_that_injects_keys_lets_its_model_go(self) -> None:
+        """The compilation cache drops a model's entries once nothing else holds it."""
+        store = ModelStore()
+        model = store.get_model(store.load_model(model_yaml(federated=True), dedup=False).model_id)
+        del store
+        cache = CompilationCache(max_entries=8)
+        query = QueryObject.model_validate({"select": {"measures": ["Revenue"]}, "where": [EU]})
+        plan = cache.compile(CompilationPipeline(), query, model, "duckdb").federation
+        assert plan.inject is not None
+        assert cache.stats().entries == 1
+        collected = weakref.ref(model)
+
+        del model
+        gc.collect()
+
+        assert collected() is None
+        assert cache.stats().entries == 0
 
     def test_a_relative_date_filter_on_the_dimension_side_runs_in_its_leg(self) -> None:
         """Refused while it ran in the combine step; its leg runs it as one

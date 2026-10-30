@@ -467,6 +467,18 @@ class TestKeyInjection:
 
         assert injected == []
 
+    def test_a_string_key_holding_a_nul_is_not_listed(self) -> None:
+        """Postgres ends a statement's text at a NUL, inside a literal too."""
+        injected: list[dict[str, list[Any]]] = []
+        tables = {
+            "leg_1": pa.table({"__fk0_0": [1]}),
+            "leg_2": pa.table({"__fk1_0": ["a", "a\x00b"]}),
+        }
+
+        federation.injected_fact_leg(self._plan(injected), tables, 10)
+
+        assert injected == [{"__fk0_0": [1]}]
+
     def test_a_list_longer_than_the_engine_parses_is_not_read(self) -> None:
         """ClickHouse refuses a statement past ``max_query_size`` (256 KiB)."""
         fact = FederatedLeg(

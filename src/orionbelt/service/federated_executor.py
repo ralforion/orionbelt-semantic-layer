@@ -336,7 +336,9 @@ def _key_values(column: Any, abstract_type: str, max_keys: int) -> list[Any] | N
     """*column*'s distinct values, sorted, as literals of *abstract_type*.
 
     ``None`` past *max_keys*, or for a value that is not one: an integer key
-    read as a fraction, say, which a list of integers would not match.
+    read as a fraction, say, which a list of integers would not match. Also
+    for a string holding a NUL, which no literal writes on every engine: the
+    statement's text ends at it on Postgres.
     """
     import pyarrow.compute as pc
 
@@ -351,7 +353,7 @@ def _key_values(column: Any, abstract_type: str, max_keys: int) -> list[Any] | N
             if value != int(value):
                 return None
             keys.append(int(value))
-        elif isinstance(value, str):
+        elif isinstance(value, str) and "\x00" not in value:
             keys.append(value)
         else:
             return None
