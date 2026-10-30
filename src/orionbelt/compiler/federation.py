@@ -18,8 +18,9 @@ than one source, no single database can run it. It is split instead:
   for DuckDB against a model whose data objects are the legs: the fact leg
   joins each dimension leg on its key, and each measure is re-aggregated from
   the leg's partial result (``SUM`` of sums and counts, ``MIN`` of minimums).
-  Derived metrics, filters on other islands, HAVING, ORDER BY and LIMIT run
-  there, over the combined rows.
+  Derived metrics, filters reading several islands or true for NULL, HAVING,
+  ORDER BY and LIMIT run there, over the combined rows; a filter on one island
+  that rejects NULL runs in its leg.
 
 Only what splits exactly is planned. Everything else is refused with a named
 ``FEDERATION_*`` error rather than answered with a different number; see
@@ -67,6 +68,8 @@ from orionbelt.models.semantic import (
     DataObjectJoin,
     DataType,
     Dimension,
+    FilterEnforcement,
+    FilterLogic,
     Measure,
     MetricType,
     ModelFilter,
@@ -106,6 +109,13 @@ _VARIANCES = frozenset(
 # The most places a variance's values may have: the combine step reads their
 # squares, at twice the places, as whole numbers of a 38-digit decimal.
 _VARIANCE_MOST_PLACES = 19
+
+# The filter operators true where their field is NULL, and those false there.
+# Every other one compares the field, which is unknown (NULL) for NULL.
+_TRUE_FOR_NULL = frozenset({FilterOperator.IS_NULL, FilterOperator.NOT_SET, FilterOperator.BLANK})
+_FALSE_FOR_NULL = frozenset(
+    {FilterOperator.IS_NOT_NULL, FilterOperator.SET, FilterOperator.NOT_BLANK}
+)
 
 # The decimal scale a decimal ``avg``'s partial sums are normalised to before
 # the combine step divides them: the widest any engine returns one at
@@ -288,7 +298,7 @@ def plan_federated(
         select=QuerySelect(
             dimensions=[*fact_dims, *fact_keys, *fact_values], measures=sorted(leg_measures)
         ),
-        where=leg_filters,
+        where=leg_filters.get(fact, []),
         limit=leg_limit,
     )
     fact_columns = [
@@ -380,7 +390,9 @@ def plan_federated(
             island, {**keys, **static_columns}, {}, static_filters=False
         )
         dim_query = QueryObject(
-            select=QuerySelect(dimensions=[*dims, *keys, *static_columns]), limit=leg_limit
+            select=QuerySelect(dimensions=[*dims, *keys, *static_columns]),
+            where=leg_filters.get(edge.island, []),
+            limit=leg_limit,
         )
         dim_columns = [
             *[_dimension_column(model, DimensionRef.parse(d).name) for d in dims],
@@ -421,6 +433,18 @@ def plan_federated(
             f.model_copy(update={"data_object": leg_name, "column": name})
             for name, (_, _, f) in static.items()
         )
+        if edge.island in leg_filters:
+            # The leg dropped the rows its filters reject: the combine step
+            # keeps the fact rows it matched, which joins it also when the
+            # query reads nothing else there.
+            combine_filters_static.append(
+                ModelFilter(
+                    data_object=leg_name,
+                    column=next(iter(keys)),
+                    operator=FilterOperator.IS_NOT_NULL,
+                    enforce=FilterEnforcement.ALWAYS,
+                )
+            )
         for d in dims:
             name = DimensionRef.parse(d).name
             combine_dimensions[name] = _combine_dimension(model, name, leg_name)
@@ -984,16 +1008,21 @@ class _Planner:
 
     def place_filters(
         self, islands: list[set[str]], fact: int
-    ) -> tuple[list[QueryFilterItem], list[QueryFilterItem]]:
-        """Split ``where`` into what the fact leg runs and what the combine step runs.
+    ) -> tuple[dict[int, list[QueryFilterItem]], list[QueryFilterItem]]:
+        """Split ``where`` into what each island's leg runs and what the combine step runs.
 
         A condition on the fact island's dimensions alone runs in the fact
-        leg. Any other runs only in the combine step, over the joined rows:
-        pushed into a dimension leg too, a predicate true for NULL (``IS
-        NULL``) would also match the fact rows whose key that leg dropped.
+        leg. A condition on one dimension island's dimensions alone runs in
+        that island's leg when it is never true where they are all NULL, and
+        the combine step keeps only the fact rows that leg matched: an
+        unmatched fact row reads NULL there, which the condition rejects, as
+        it rejects the fact rows whose key the leg dropped. Any other runs only in
+        the combine step, over the joined rows: pushed into a dimension leg, a
+        predicate true for NULL (``IS NULL``) would also match the fact rows
+        whose key that leg dropped.
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
-        leg: list[QueryFilterItem] = []
+        legs: dict[int, list[QueryFilterItem]] = {}
         combine: list[QueryFilterItem] = []
         for item in self.query.where:
             fields = _filter_fields(item)
@@ -1007,8 +1036,9 @@ class _Planner:
                         f"The filter on '{field}' is not on a dimension",
                     )
                 owners.add(island_of.get(dimension.view))
-            if owners == {fact}:
-                leg.append(item)
+            owner = owners.pop() if len(owners) == 1 else None
+            if owner is not None and (owner == fact or _on_null(item) is not True):
+                legs.setdefault(owner, []).append(item)
                 continue
             if _uses_relative(item):
                 raise self.refuse(
@@ -1021,7 +1051,7 @@ class _Planner:
                     "A filter at a time grain on another data source is not supported yet",
                 )
             combine.append(item)
-        return leg, combine
+        return legs, combine
 
     def dimensions_by_island(
         self,
@@ -1421,6 +1451,23 @@ def _filter_fields(item: QueryFilterItem) -> list[str]:
     if isinstance(item, QueryFilterGroup):
         return [f for sub in item.filters for f in _filter_fields(sub)]
     return [item.field]
+
+
+def _on_null(item: QueryFilterItem) -> bool | None:
+    """What *item* is where every field it reads is NULL: true, false or unknown (``None``).
+
+    A group without conditions compiles to none, so it holds.
+    """
+    if isinstance(item, QueryFilter):
+        if item.op in _TRUE_FOR_NULL:
+            return True
+        return False if item.op in _FALSE_FOR_NULL else None
+    values = [_on_null(sub) for sub in item.filters if _filter_fields(sub)]
+    if not values:
+        return True
+    decisive = item.logic == FilterLogic.OR
+    value = decisive if decisive in values else None if None in values else not decisive
+    return not value if item.negated and value is not None else value
 
 
 def _uses_relative(item: QueryFilterItem) -> bool:

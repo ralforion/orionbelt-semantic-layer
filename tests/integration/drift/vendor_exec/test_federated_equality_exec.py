@@ -4,9 +4,10 @@ The combine step runs in DuckDB, over rows a leg returned from different
 groups. Where the source engine calls two values equal and DuckDB does not -
 MySQL's default collation ignores case and accents, ClickHouse tells ``-0.0``
 from ``0.0`` - the leg rewrites the value (``Dialect.equality_key``) so the
-combine step agrees. Each engine's answer over one source is the reference:
-both of a query's sources are the engine itself here, and the same rows are
-read either way.
+combine step agrees. A filter on one source's dimensions runs in its leg,
+where the engine compares as it does over one source. Each engine's answer
+over one source is the reference: both of a query's sources are the engine
+itself here, and the same rows are read either way.
 """
 
 from __future__ import annotations
@@ -155,6 +156,17 @@ def _assert_equality(target: VendorTarget) -> None:
         return Counter((r["label"], r["rows"]) for r in _fold(rows))
 
     assert groups(federated) == groups(single), f"{target.name}: groups differ"
+
+    # Filtered on the other source: 'Y' is 'y' to MySQL's collation alone,
+    # which DuckDB, comparing bytes, would not find.
+    single, federated = _answers(
+        target,
+        {
+            "select": {"measures": ["Rows", "Names"]},
+            "where": [{"field": "Label", "op": "in", "value": ["x", "Y"]}],
+        },
+    )
+    assert _fold(federated) == _fold(single), f"{target.name}: the filter differs"
 
 
 def test_duckdb_federated_equality(vendor_duckdb: VendorTarget) -> None:

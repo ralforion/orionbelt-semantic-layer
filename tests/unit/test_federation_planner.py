@@ -156,6 +156,7 @@ def assert_same(files: dict[str, str], query: dict[str, Any], **model: Any) -> N
 
 
 MEASURES = ["Revenue", "Orders Count", "Top Order", "Smallest Order", "Revenue per Order"]
+EU = {"field": "Region", "op": "=", "value": "EU"}
 
 DIFFERENTIAL = {
     "by_dimension_island": {"select": {"dimensions": ["Region"], "measures": MEASURES}},
@@ -181,6 +182,52 @@ DIFFERENTIAL = {
     "null_filter_on_dimension_island": {
         "select": {"dimensions": ["Order Date:month"], "measures": MEASURES},
         "where": [{"field": "Region", "op": "is_null"}],
+    },
+    "blank_filter_on_dimension_island": {
+        "select": {"dimensions": ["Order Date:month"], "measures": MEASURES},
+        "where": [{"field": "Region", "op": "blank"}],
+    },
+    "set_filter_on_dimension_island_without_its_dimensions": {
+        "select": {"measures": MEASURES},
+        "where": [{"field": "Region", "op": "is_not_null"}],
+    },
+    "negated_null_or_on_dimension_island": {
+        "select": {"dimensions": ["Order Date:month"], "measures": MEASURES},
+        "where": [
+            {
+                "logic": "or",
+                "negated": True,
+                "filters": [
+                    {"field": "Region", "op": "=", "value": "EU"},
+                    {"field": "Region", "op": "is_null"},
+                ],
+            }
+        ],
+    },
+    "null_or_on_dimension_island": {
+        "select": {"dimensions": ["Region"], "measures": MEASURES},
+        "where": [
+            {
+                "logic": "or",
+                "filters": [
+                    {"field": "Region", "op": "=", "value": "US"},
+                    {"field": "Region", "op": "is_null"},
+                ],
+            }
+        ],
+    },
+    "filters_in_the_leg_and_across_islands": {
+        "select": {"dimensions": ["Region"], "measures": MEASURES},
+        "where": [
+            {"field": "Region", "op": "in", "value": ["EU", "US"]},
+            {
+                "logic": "or",
+                "filters": [
+                    {"field": "Region", "op": "=", "value": "US"},
+                    {"field": "Order Date", "op": "<", "value": "2024-02-01"},
+                ],
+            },
+        ],
     },
     "or_across_islands": {
         "select": {"dimensions": ["Region"], "measures": MEASURES},
@@ -222,6 +269,22 @@ class TestDifferential:
         assert_same(files, query, tenant_filter=True)
         totals = sum(r[1] for r in run_federated(files, query, tenant_filter=True))
         assert float(totals) == pytest.approx(100.50 + 20.25 + 7.00 + 55.10 + 12.00)
+
+    def test_a_total_reads_the_rows_a_leg_filter_keeps(self, files: dict[str, str]) -> None:
+        totals = (
+            f"  Revenue Total: {{columns: [{AMOUNT}], aggregation: sum, total: true}}\n"
+            f"  Top Total: {{columns: [{AMOUNT}], aggregation: max, total: true}}\n"
+        )
+        query = {
+            "select": {
+                "dimensions": ["Order Date:month"],
+                "measures": ["Revenue", "Revenue Total", "Top Total"],
+            },
+            "where": [EU],
+        }
+
+        assert_same(files, query, extra=totals)
+        assert {float(r[2]) for r in run_federated(files, query, extra=totals)} == {123.90}
 
     def test_the_orphan_order_keeps_its_value_under_no_region(self, files: dict[str, str]) -> None:
         rows = dict(
@@ -422,7 +485,9 @@ class TestPlan:
         assert "2024-02-01" in plan.legs[0].sql
         assert "2024-02-01" not in plan.combine_sql
 
-    def test_a_filter_on_the_dimension_side_runs_only_in_the_combine_step(self) -> None:
+    def test_a_filter_true_for_null_on_the_dimension_side_runs_only_in_the_combine_step(
+        self,
+    ) -> None:
         plan = _compile(
             model_yaml(federated=True),
             {
@@ -433,6 +498,90 @@ class TestPlan:
 
         assert "IS NULL" not in plan.legs[1].sql
         assert "IS NULL" in plan.combine_sql
+
+    def test_a_filter_false_for_null_on_the_dimension_side_runs_in_its_leg(self) -> None:
+        """The combine step keeps the fact rows the filtered leg matched, and
+        joins it although the query reads nothing else there."""
+        plan = _compile(
+            model_yaml(federated=True),
+            {
+                "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+                "where": [{"field": "Region", "op": "=", "value": "EU"}],
+            },
+        ).federation
+
+        assert "'EU'" in plan.legs[1].sql
+        assert "'EU'" not in plan.combine_sql
+        assert '"leg_1"."__fk0_0" IS NOT NULL' in plan.combine_sql
+
+    @pytest.mark.parametrize(
+        ("item", "in_leg"),
+        [
+            ({"field": "Region", "op": "!=", "value": "EU"}, True),
+            ({"field": "Region", "op": "notblank"}, True),
+            ({"field": "Region", "op": "blank"}, False),
+            (
+                {"logic": "and", "filters": [{"field": "Region", "op": "is_null"}, EU]},
+                True,
+            ),
+            ({"logic": "or", "filters": [{"field": "Region", "op": "is_null"}, EU]}, False),
+            ({"negated": True, "filters": [{"field": "Region", "op": "is_null"}]}, True),
+            ({"negated": True, "filters": [{"field": "Region", "op": "is_not_null"}]}, False),
+            (
+                {"negated": True, "filters": [{"logic": "or", "filters": []}]},
+                False,
+            ),
+        ],
+        ids=[
+            "not_equal",
+            "not_blank",
+            "blank",
+            "and_with_null",
+            "or_with_null",
+            "not_null",
+            "not_set",
+            "negated_no_condition",
+        ],
+    )
+    def test_a_dimension_side_filter_runs_in_its_leg_when_false_or_unknown_for_null(
+        self, item: dict[str, Any], in_leg: bool
+    ) -> None:
+        plan = _compile(
+            model_yaml(federated=True),
+            {"select": {"dimensions": ["Region"], "measures": ["Revenue"]}, "where": [item]},
+        ).federation
+
+        assert ("WHERE" in plan.legs[1].sql) is in_leg
+        assert ('"leg_1"."__fk0_0" IS NOT NULL' in plan.combine_sql) is in_leg
+
+    def test_a_relative_date_filter_on_the_dimension_side_runs_in_its_leg(self) -> None:
+        """Refused while it ran in the combine step; its leg runs it as one
+        database would."""
+        item = {
+            "field": "Customer Since",
+            "op": "relative",
+            "value": {"unit": "day", "count": 30, "direction": "past"},
+        }
+        yaml = (
+            model_yaml(federated=True)
+            .replace(
+                "      Tenant: {code: tenant, abstractType: string}\n",
+                "      Tenant: {code: tenant, abstractType: string}\n"
+                "      Since: {code: since, abstractType: date}\n",
+            )
+            .replace(
+                "dimensions:\n",
+                "dimensions:\n"
+                "  Customer Since: {dataObject: Customers, column: Since, resultType: date}\n",
+            )
+        )
+
+        plan = _compile(
+            yaml, {"select": {"dimensions": ["Region"], "measures": ["Revenue"]}, "where": [item]}
+        ).federation
+
+        assert '"since"' in plan.legs[1].sql
+        assert "since" not in plan.combine_sql.lower()
 
 
 DISTINCT = (
