@@ -8,6 +8,7 @@ from orionbelt.ast.nodes import (
     Expr,
     FunctionCall,
     Literal,
+    OrderByItem,
     Unnest,
 )
 from orionbelt.dialect.base import (
@@ -22,6 +23,30 @@ from orionbelt.dialect.base import (
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
+
+
+def _is_latin1(value: str) -> bool:
+    """Whether Dremio can type *value* as a plain literal: ISO-8859-1 only."""
+    return all(ord(char) <= 0xFF for char in value)
+
+
+class UnsupportedSeparatorError(UnsupportedAggregationError):
+    """A LISTAGG separator Dremio cannot write: one outside Latin-1.
+
+    A domain error rather than an unreadable result, so routers surface the
+    same 422 as every other unsupported-aggregation case.
+    """
+
+    def __init__(self, separator: str) -> None:
+        self.dialect = "dremio"
+        self.aggregation = "listagg"
+        Exception.__init__(
+            self,
+            f"Dialect 'dremio' cannot write the LISTAGG separator {separator!r}: "
+            f"it holds a character outside Latin-1 (ISO-8859-1), and Dremio "
+            f"returns such a separator as bytes that are not text. Use a "
+            f"Latin-1 separator, or query it on another dialect.",
+        )
 
 
 @DialectRegistry.register
@@ -148,6 +173,29 @@ class DremioDialect(Dialect):
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
+
+    def quote_string_literal(self, value: str) -> str:
+        """A string outside Latin-1 as ``SUBSTR(_UTF8'...', 1)``, any other as standard SQL.
+
+        Dremio types a plain literal as ISO-8859-1 (Latin-1). Measured on 26.0
+        with ``'İstanbul'``: as a value of its own - a SELECT item, a CASE
+        branch, a COALESCE fallback, a UNION ALL row - the query failed to
+        plan. Compared with a column it ran, but the column was cast to UTF-8
+        for it, so the filter was not pushed down to the scan.
+
+        ``_UTF8'...'`` (and ``U&'...'``) is the reverse: a value runs, while
+        ``=``, ``<>`` and ``LIKE`` against a column fail with "Cannot apply =
+        to the two different charsets", and so does any comparison with an
+        expression holding one, such as a CASE dimension.
+
+        Through ``SUBSTR``, the whole string has Dremio's own string type:
+        measured right in all thirteen of those places, quotes, backslashes,
+        control characters, CJK and emoji included. It folds back into a
+        constant while planning, so a filter on it is pushed down to the scan
+        like any other. A Latin-1 string keeps the plain literal.
+        """
+        literal = super().quote_string_literal(value)
+        return literal if _is_latin1(value) else f"SUBSTR(_UTF8{literal}, 1)"
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="DATE_TRUNC", args=[Literal.string(grain.value), column])
@@ -329,6 +377,24 @@ class DremioDialect(Dialect):
     def _compile_mode(self, args: list[Expr]) -> str:
         """Dremio does not support MODE aggregation."""
         raise UnsupportedAggregationError("dremio", "mode")
+
+    def _compile_listagg(
+        self,
+        args: list[Expr],
+        distinct: bool,
+        order_by: list[OrderByItem],
+        separator: str | None,
+    ) -> str:
+        """Refuses a separator outside Latin-1, which Dremio cannot write.
+
+        Measured on 26.0 with ``' → '``: plain, ``_UTF8`` or ``U&``, the
+        result came back as bytes that are not UTF-8, so a reader failed to
+        decode it. The ``SUBSTR`` form :meth:`quote_string_literal` gives such
+        a string elsewhere is refused: the separator must be a constant.
+        """
+        if separator is not None and not _is_latin1(separator):
+            raise UnsupportedSeparatorError(separator)
+        return super()._compile_listagg(args, distinct, order_by, separator)
 
     def current_date_sql(self) -> str:
         return "CURRENT_DATE"

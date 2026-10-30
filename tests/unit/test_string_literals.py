@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.ast.nodes import Literal
+from orionbelt.ast.nodes import ColumnRef, FunctionCall, Literal
+from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import DialectRegistry
 
 STANDARD = ["duckdb", "postgres", "dremio"]
@@ -98,6 +99,48 @@ class TestControlCharacters:
         control-character pass.
         """
         assert "\t" in DialectRegistry.get(dialect).quote_string_literal("a\tb")
+
+
+class TestDremioOutsideLatin1:
+    """Dremio types a plain literal as Latin-1, so other text goes through ``_UTF8``.
+
+    Measured on 26.0: ``'İstanbul'`` fails to plan as a value of its own,
+    ``_UTF8'İstanbul'`` fails compared with a column, and
+    ``SUBSTR(_UTF8'İstanbul', 1)`` runs in both and is pushed down to the
+    scan. Round-tripped live in ``test_string_literal_exec.py``.
+    """
+
+    def test_latin1_keeps_the_plain_literal(self) -> None:
+        dia = DialectRegistry.get("dremio")
+        assert dia.quote_string_literal("Straße café ÿ") == "'Straße café ÿ'"
+
+    @pytest.mark.parametrize("value", ["İstanbul", "€", "東京", "😀"])
+    def test_any_other_text_is_read_as_utf8(self, value: str) -> None:
+        dia = DialectRegistry.get("dremio")
+        assert dia.quote_string_literal(value) == f"SUBSTR(_UTF8'{value}', 1)"
+
+    def test_the_quote_is_still_doubled(self) -> None:
+        dia = DialectRegistry.get("dremio")
+        assert dia.quote_string_literal("it's €") == "SUBSTR(_UTF8'it''s €', 1)"
+
+    def test_the_other_dialects_write_it_plainly(self) -> None:
+        for dialect in STANDARD:
+            if dialect != "dremio":
+                assert DialectRegistry.get(dialect).quote_string_literal("€") == "'€'"
+
+    def test_a_latin1_listagg_separator_is_written(self) -> None:
+        dia = DialectRegistry.get("dremio")
+        sql = dia.compile_expr(
+            FunctionCall(name="LISTAGG", args=[ColumnRef(name="city")], separator=" · ")
+        )
+        assert sql == "LISTAGG(\"city\", ' · ')"
+
+    def test_a_separator_outside_latin1_is_refused(self) -> None:
+        """Measured: Dremio returned ``' → '`` as bytes that are not UTF-8."""
+        dia = DialectRegistry.get("dremio")
+        call = FunctionCall(name="LISTAGG", args=[ColumnRef(name="city")], separator=" → ")
+        with pytest.raises(UnsupportedAggregationError, match="outside Latin-1"):
+            dia.compile_expr(call)
 
 
 @pytest.mark.parametrize("dialect", DialectRegistry.available())
