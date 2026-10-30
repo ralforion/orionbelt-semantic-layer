@@ -53,6 +53,7 @@ shops above share a user, password and database name and differ only in host.
 | `DB_<NAME>_POOL_SIZE` | Optional. Idle connections kept for the source; falls back to `DB_POOL_SIZE`, then 5 |
 | `DB_<NAME>_MAX_CONNECTIONS` | Optional. Connections of the source in use at once, by REST, pgwire, Flight SQL and federated legs together; falls back to `DB_MAX_CONNECTIONS`, then 10. `0` means no limit. A query past it waits its turn, in order of arrival |
 | `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS` | Optional. How long a query waits for one of those connections; falls back to `DB_ACQUIRE_TIMEOUT_SECONDS`, then 30. A query still waiting then is refused with `DATA_SOURCE_BUSY` (HTTP 503), naming the source and the setting to raise |
+| `DB_<NAME>_KEY_INJECTION_MAX_KEYS` | Optional. The most keys a [federated query](#key-injection) lists in a leg on this source; falls back to `DB_KEY_INJECTION_MAX_KEYS`, then the engine's measured limit. `0` turns it off |
 | Variable lookup | `DB_<NAME>_<VAR>`, then the unprefixed `<VAR>`, each under its own name before its [alternative spellings](#orionbelt-analytics-variable-names). A source's own value always wins over a shared default |
 | Names | Compared ignoring case, spaces, dashes and underscores, so `Shop EU` means `shop-eu` |
 
@@ -164,6 +165,8 @@ How a query is split:
   database, and an `enforce: always` filter applies even when the query reads
   nothing else of that island. A filter that runs after the join cannot read a
   dimension the query selects at a time grain and is refused.
+- When a filter runs in a dimension leg, the fact leg may read only the keys
+  that leg returned: see [key injection](#key-injection).
 - Measures are combined from partial results that are neither rounded nor
   bounded: a leg leaves its sums in the engine's own type, which keeps the
   input's scale and the engine's range, and the measure's own type and
@@ -228,12 +231,49 @@ join (`FEDERATION_UNSUPPORTED_FILTER`), and queries without measures,
 with `exists`, role-playing dimensions, `fill`, `asOf`, `usePathNames` or raw
 mode.
 
+#### Key injection
+
+A filter on another source's dimensions runs in that source's leg, and the
+fact leg would still aggregate every key. When the filter keeps few keys, the
+fact leg runs after that leg instead and reads only them, as
+`key IN (...)`: the engine aggregates those rows alone, and with an index or
+sort key on the column reads only those. The answer is the same; only the
+fact rows the combine step would drop are not read.
+
+| What | How |
+|---|---|
+| When | A dimension leg runs a filter of the query (one never true where that source's dimensions are all NULL), joined on one column of the same type on both sides, an integer or a string |
+| How many | At most the fact source's limit of keys, over every such leg together, the legs with the fewest keys first. A leg with more keys than are left is not listed, and the fact leg reads all of that key. No key at all reads no fact row |
+| Limit | Postgres, MySQL and ClickHouse 10,000; DuckDB 1,000; Snowflake, BigQuery, Databricks and Dremio 0 (off) until measured. `DB_<NAME>_KEY_INJECTION_MAX_KEYS` sets it for the fact leg's source, `DB_KEY_INJECTION_MAX_KEYS` for every source; `0` turns it off |
+| Cost | The fact leg waits for the dimension legs rather than running beside them. A list past the limit gains nothing over aggregating every key |
+
+The limits come from a measurement with 5 million orders over 1 million
+customers, the filter keeping 10 to 100,000 of them:
+
+| Fact leg on | Every key | 10 keys | 1,000 | 10,000 | 100,000 |
+|---|---|---|---|---|---|
+| Postgres 16 | 1.32 s | 0.10 s | 0.10 s | 0.14 s | 0.38 s |
+| Postgres 16, indexed | 1.32 s (*) | 0.013 s | 0.021 s | 0.12 s | 0.39 s |
+| MySQL 8.0 | 7.0 s | 0.92 s | 0.96 s | 0.96 s | 1.25 s |
+| MySQL 8.0, indexed | 7.1 s | 0.017 s | 0.022 s | 0.12 s | 7.06 s (index unused) |
+| ClickHouse | 0.85 s | 0.021 s | 0.045 s | 0.078 s | refused (`max_query_size`) |
+| DuckDB | 0.040 s | 0.022 s | 0.034 s | 0.11 s | 0.93 s |
+
+Median of three runs on a laptop, the dimension leg on Postgres 16. (*) For
+every key Postgres chose an index scan over the indexed copy and took 11 s;
+the row shows the unindexed time.
+
+!!! warning "Postgres 13 and older"
+    Before Postgres 14 an `IN` list is tested one value at a time: 10,000
+    keys over 5 million rows took 51 s, against 2 s without the list. Set
+    `DB_<NAME>_KEY_INJECTION_MAX_KEYS=0` for such a server.
+
 #### Running a federated query
 
 | What | How |
 |---|---|
-| Caching | The result is cached like any query's. Its key covers the combine query and every leg's SQL with the data source it runs on, its TTL is the shortest of all the tables the legs read, and a change to any of them invalidates it; a hit runs nothing. A result computed from legs served from the cache expires no later than the first of them, so it is never older than its legs. Each leg is also cached on its own, keyed by its data source and SQL, so a query that changes only what the combine step does (a filter after the join, HAVING, ORDER BY, LIMIT) reuses the legs an earlier query fetched, and one that changes a filter running in a dimension leg reruns that leg alone |
-| Legs | Run at once, each on its own source |
+| Caching | The result is cached like any query's. Its key covers the combine query and every leg's SQL with the data source it runs on, its TTL is the shortest of all the tables the legs read, and a change to any of them invalidates it; a hit runs nothing. A result computed from legs served from the cache expires no later than the first of them, so it is never older than its legs. Each leg is also cached on its own, keyed by its data source and SQL, so a query that changes only what the combine step does (a filter after the join, HAVING, ORDER BY, LIMIT) reuses the legs an earlier query fetched, and one that changes a filter running in a dimension leg reruns that leg, and the fact leg too when it reads that leg's keys |
+| Legs | Run at once, each on its own source; a fact leg reading [injected keys](#key-injection) runs after the dimension legs |
 | Types | Each leg's columns are made exact for DuckDB before combining: Postgres `numeric`, which arrives as text, becomes a decimal at the scale its values carry, and a decimal wider than 38 digits narrows when its values fit. A value no decimal holds (`NaN`, more than 38 digits) is refused with `FEDERATION_LEG_TYPE`, never rounded |
 | Errors | A leg that fails fails the query, and the error names the leg's data source and dialect (HTTP 502) |
 | Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 1,000,000). Each leg's SQL asks for one more row, so a larger leg is refused with `FEDERATION_LEG_TOO_LARGE` rather than combined in part |

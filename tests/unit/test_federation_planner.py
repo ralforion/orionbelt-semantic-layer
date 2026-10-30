@@ -554,6 +554,113 @@ class TestPlan:
         assert ("WHERE" in plan.legs[1].sql) is in_leg
         assert ('"leg_1"."__fk0_0" IS NOT NULL' in plan.combine_sql) is in_leg
 
+    @pytest.mark.parametrize(
+        ("order_key", "customer_key", "injected"),
+        [
+            ("int", "int", ["int"]),
+            ("string", "string", ["string"]),
+            ("string", "int", []),
+            ("date", "date", []),
+        ],
+        ids=["integers", "strings", "two_types", "dates"],
+    )
+    def test_a_filtered_dimension_legs_keys_of_one_type_may_filter_the_fact_leg(
+        self, order_key: str, customer_key: str, injected: list[str]
+    ) -> None:
+        yaml = (
+            model_yaml(federated=True)
+            .replace(
+                "Order Customer: {code: customer_id, abstractType: int}",
+                f"Order Customer: {{code: customer_id, abstractType: {order_key}}}",
+            )
+            .replace(
+                "Customer ID: {code: customer_id, abstractType: int}",
+                f"Customer ID: {{code: customer_id, abstractType: {customer_key}}}",
+            )
+        )
+
+        plan = _compile(
+            yaml,
+            {
+                "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+                "where": [EU],
+            },
+        ).federation
+
+        assert [(i.leg, i.abstract_type) for i in plan.injections] == [
+            ("leg_1", kind) for kind in injected
+        ]
+        assert (plan.inject is not None) is bool(injected)
+
+    @pytest.mark.parametrize(
+        "where",
+        [[], [{"field": "Region", "op": "is_null"}]],
+        ids=["no_filter", "a_filter_true_for_null"],
+    )
+    def test_an_unfiltered_dimension_leg_filters_no_fact_leg(
+        self, where: list[dict[str, Any]]
+    ) -> None:
+        """Its fact rows without a key there count too."""
+        plan = _compile(
+            model_yaml(federated=True),
+            {"select": {"dimensions": ["Region"], "measures": ["Revenue"]}, "where": where},
+        ).federation
+
+        assert plan.injections == ()
+        assert plan.inject is None
+
+    def test_a_key_of_two_columns_filters_no_fact_leg(self) -> None:
+        yaml = (
+            model_yaml(federated=True)
+            .replace(
+                "      Order Date: {code: order_date, abstractType: date}\n",
+                "      Order Date: {code: order_date, abstractType: date}\n"
+                "      Order Tenant: {code: tenant, abstractType: string}\n",
+            )
+            .replace(
+                "columnsFrom: [Order Customer]\n        columnsTo: [Customer ID]",
+                "columnsFrom: [Order Customer, Order Tenant]\n"
+                "        columnsTo: [Customer ID, Tenant]",
+            )
+        )
+
+        plan = _compile(
+            yaml,
+            {
+                "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+                "where": [EU],
+            },
+        ).federation
+
+        assert len(plan.legs) == 2
+        assert plan.injections == ()
+
+    def test_injected_keys_are_written_as_the_fact_legs_literals(self) -> None:
+        yaml = (
+            model_yaml(federated=True)
+            .replace(
+                "Order Customer: {code: customer_id, abstractType: int}",
+                "Order Customer: {code: customer_id, abstractType: string}",
+            )
+            .replace(
+                "Customer ID: {code: customer_id, abstractType: int}",
+                "Customer ID: {code: customer_id, abstractType: string}",
+            )
+        )
+        plan = _compile(
+            yaml,
+            {
+                "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+                "where": [EU],
+            },
+        ).federation
+        assert plan.inject is not None
+
+        sql = plan.inject({"__fk0_0": ["a", "it's"]}).sql
+
+        assert "\"Orders\".\"customer_id\" IN ('a', 'it''s')" in sql
+        assert sql.endswith("LIMIT 1000001")
+
     def test_a_relative_date_filter_on_the_dimension_side_runs_in_its_leg(self) -> None:
         """Refused while it ran in the combine step; its leg runs it as one
         database would."""

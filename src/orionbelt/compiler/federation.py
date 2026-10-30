@@ -21,6 +21,9 @@ than one source, no single database can run it. It is split instead:
   Derived metrics, filters reading several islands or true for NULL, HAVING,
   ORDER BY and LIMIT run there, over the combined rows; a filter on one island
   that rejects NULL runs in its leg.
+* **Key injection.** Where a dimension leg runs such a filter, the plan can
+  compile the fact leg again reading only the keys that leg returned
+  (``FederatedPlan.inject``); the executor decides from how many it got.
 
 Only what splits exactly is planned. Everything else is refused with a named
 ``FEDERATION_*`` error rather than answered with a different number; see
@@ -32,8 +35,10 @@ plan.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.grain_dedup import MULTIPLICITY_SAFE_AGGREGATIONS
@@ -117,6 +122,9 @@ _FALSE_FOR_NULL = frozenset(
     {FilterOperator.IS_NOT_NULL, FilterOperator.SET, FilterOperator.NOT_BLANK}
 )
 
+# The key types the fact leg may read a list of (:func:`_injectable_key_type`).
+_INJECTABLE_KEYS = frozenset({DataType.INT, DataType.STRING})
+
 # The decimal scale a decimal ``avg``'s partial sums are normalised to before
 # the combine step divides them: the widest any engine returns one at
 # (BigQuery's NUMERIC has 9 places), so a sum from every engine probed
@@ -160,12 +168,41 @@ class FederatedLeg:
 
 
 @dataclass(frozen=True)
+class KeyInjection:
+    """A dimension leg whose keys may filter the fact leg.
+
+    The leg runs a filter of the query, and the combine step keeps only the
+    fact rows it matched: the fact leg may read only the keys it returned.
+
+    Attributes:
+        leg: The dimension leg (``leg_1``).
+        column: The key column, of the same name in that leg and the fact leg.
+        abstract_type: The key's OBML type, ``int`` or ``string``.
+    """
+
+    leg: str
+    column: str
+    abstract_type: str
+
+
+@dataclass(frozen=True)
 class FederatedPlan:
-    """The legs of a federated query and the DuckDB query combining them."""
+    """The legs of a federated query and the DuckDB query combining them.
+
+    Attributes:
+        injections: The dimension legs whose keys may filter the fact leg
+            (``legs[0]``), which then runs after them.
+        inject: The fact leg reading only the keys given for each injection's
+            column; an empty list for any of them reads no rows.
+    """
 
     legs: tuple[FederatedLeg, ...]
     combine_sql: str
     combine_dialect: str = COMBINE_DIALECT
+    injections: tuple[KeyInjection, ...] = ()
+    inject: Callable[[dict[str, list[Any]]], FederatedLeg] | None = dataclasses.field(
+        default=None, compare=False, repr=False
+    )
 
 
 def object_sources(model: SemanticModel) -> dict[str, str | None]:
@@ -337,12 +374,14 @@ def plan_federated(
     )
     renamed.update({source: hidden for hidden, source in fact_kept.items()})
     squares = {squared: scale for _, _, squared, scale in variances.values()}
-    with partial_sums(), partial_squares(planner.leg_dialect(islands[fact]), squares):
-        legs.append(
-            planner.leg(
+
+    def fact_leg(where: list[QueryFilterItem], limit: int | None) -> FederatedLeg:
+        """The fact leg under *where*, returning at most *limit* rows."""
+        with partial_sums(), partial_squares(planner.leg_dialect(islands[fact]), squares):
+            return planner.leg(
                 "leg_0",
                 islands[fact],
-                fact_query,
+                fact_query.model_copy(update={"where": where, "limit": limit}),
                 fact_model,
                 fact_columns,
                 compile_leg,
@@ -357,7 +396,24 @@ def plan_federated(
                 rekeyed=fact_rekeyed,
                 kept=fact_kept,
             )
+
+    def inject(keys: dict[str, list[Any]]) -> FederatedLeg:
+        # No key at all matches no fact row: the leg's columns, without rows.
+        if not all(keys.values()):
+            return fact_leg(fact_query.where, 0)
+        return fact_leg(
+            [
+                *fact_query.where,
+                *(
+                    QueryFilter(field=column, op=FilterOperator.IN_LIST, value=values)
+                    for column, values in keys.items()
+                ),
+            ],
+            leg_limit,
         )
+
+    legs.append(fact_leg(fact_query.where, leg_limit))
+    injections: list[KeyInjection] = []
     fact_joins: list[DataObjectJoin] = []
     for d in fact_dims:
         name = DimensionRef.parse(d).name
@@ -445,6 +501,10 @@ def plan_federated(
                     enforce=FilterEnforcement.ALWAYS,
                 )
             )
+            # So the fact leg may read only the keys this leg returns.
+            key_type = _injectable_key_type(model, edge)
+            if key_type is not None:
+                injections.append(KeyInjection(leg_name, next(iter(keys)), key_type))
         for d in dims:
             name = DimensionRef.parse(d).name
             combine_dimensions[name] = _combine_dimension(model, name, leg_name)
@@ -511,7 +571,12 @@ def plan_federated(
         ),
     ):
         combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
-    return FederatedPlan(legs=tuple(legs), combine_sql=combine_sql)
+    return FederatedPlan(
+        legs=tuple(legs),
+        combine_sql=combine_sql,
+        injections=tuple(injections),
+        inject=inject if injections else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -1168,6 +1233,20 @@ class _Planner:
             exact_sums=exact_sums,
             integer_sums=integer_sums,
         )
+
+
+def _injectable_key_type(model: SemanticModel, edge: _Edge) -> str | None:
+    """The OBML type of *edge*'s key, when the fact leg may read a list of its values.
+
+    One column of the same type on both sides, an integer or a string: their
+    literals compare as the column does on every engine.
+    """
+    if len(edge.from_columns) != 1:
+        return None
+    (fact_column,), (dim_column,) = edge.from_columns, edge.to_columns
+    key_type = model.data_objects[edge.from_object].columns[fact_column].abstract_type
+    dim_type = model.data_objects[edge.to_object].columns[dim_column].abstract_type
+    return key_type.value if key_type == dim_type and key_type in _INJECTABLE_KEYS else None
 
 
 def _physical_tables(model: SemanticModel, objects: Iterable[str]) -> tuple[str, ...]:

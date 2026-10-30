@@ -156,6 +156,7 @@ class MySQLDialect(Dialect):
     }
 
     avg_over_integers_is_exact = True
+    key_injection_max_keys = 10_000
 
     def equality_key(
         self, column: Expr, abstract_type: str, *, counted: bool

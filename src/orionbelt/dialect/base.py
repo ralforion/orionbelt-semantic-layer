@@ -963,6 +963,23 @@ class Dialect(ABC):
     #: no default escape character.
     like_needs_escape_clause: bool = False
 
+    #: The most keys a federated query writes into a fact leg on this engine,
+    #: as ``key IN (...)``, rather than letting it aggregate every key: 0 for
+    #: never. Measured end to end with 5 million fact rows
+    #: (``design/PLAN_federation.md`` §4.3.1): through 10,000 keys it wins on
+    #: Postgres 16, MySQL 8 and ClickHouse; past that MySQL stops using an
+    #: index and ClickHouse refuses the query (``max_query_size``). DuckDB
+    #: aggregates so fast that it wins only to about 1,000. The engines not
+    #: measured keep 0: a list costs them a round trip after the dimension
+    #: leg's. ``DB_<NAME>_KEY_INJECTION_MAX_KEYS`` sets it per data source.
+    key_injection_max_keys: int = 0
+
+    #: The longest statement the engine parses by default, in bytes, where it
+    #: is short enough for a list of keys to reach: ClickHouse's
+    #: ``max_query_size`` (256 KiB) refused 100,000 integer keys with code 62.
+    #: A fact leg whose list would pass it reads every key instead.
+    max_statement_bytes: int | None = None
+
     def quote_string_literal(self, value: str) -> str:
         """*value* as a quoted string literal for this engine.
 
