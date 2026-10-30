@@ -31,10 +31,10 @@ def _is_latin1(value: str) -> bool:
 
 
 class UnsupportedSeparatorError(UnsupportedAggregationError):
-    """A LISTAGG separator Dremio cannot write: one outside Latin-1.
+    """A LISTAGG separator Dremio cannot write: one that is not ASCII.
 
-    A domain error rather than an unreadable result, so routers surface the
-    same 422 as every other unsupported-aggregation case.
+    A domain error rather than a wrong or unreadable result, so routers surface
+    the same 422 as every other unsupported-aggregation case.
     """
 
     def __init__(self, separator: str) -> None:
@@ -43,9 +43,9 @@ class UnsupportedSeparatorError(UnsupportedAggregationError):
         Exception.__init__(
             self,
             f"Dialect 'dremio' cannot write the LISTAGG separator {separator!r}: "
-            f"it holds a character outside Latin-1 (ISO-8859-1), and Dremio "
-            f"returns such a separator as bytes that are not text. Use a "
-            f"Latin-1 separator, or query it on another dialect.",
+            f"it holds a character outside ASCII, and Dremio cuts such a "
+            f"separator short. Use an ASCII separator, or query it on another "
+            f"dialect.",
         )
 
 
@@ -385,14 +385,17 @@ class DremioDialect(Dialect):
         order_by: list[OrderByItem],
         separator: str | None,
     ) -> str:
-        """Refuses a separator outside Latin-1, which Dremio cannot write.
+        """Refuses a separator that is not ASCII, which Dremio cuts short.
 
-        Measured on 26.0 with ``' → '``: plain, ``_UTF8`` or ``U&``, the
-        result came back as bytes that are not UTF-8, so a reader failed to
-        decode it. The ``SUBSTR`` form :meth:`quote_string_literal` gives such
-        a string elsewhere is refused: the separator must be a constant.
+        Dremio writes as many UTF-8 bytes of the separator as it has
+        characters. Measured on 26.0 over ``a``, ``b``, ``c``, plain,
+        ``_UTF8`` or ``U&`` alike: ``' · '`` joined them as ``a ·b ·c``,
+        ``'ÿÿ'`` as ``aÿbÿc``, and ``'é'`` and ``' → '`` left half a
+        character, bytes that are not UTF-8. The ``SUBSTR`` form
+        :meth:`quote_string_literal` gives other text is refused here: the
+        separator must be a constant.
         """
-        if separator is not None and not _is_latin1(separator):
+        if separator is not None and not separator.isascii():
             raise UnsupportedSeparatorError(separator)
         return super()._compile_listagg(args, distinct, order_by, separator)
 

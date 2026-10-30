@@ -128,18 +128,21 @@ class TestDremioOutsideLatin1:
             if dialect != "dremio":
                 assert DialectRegistry.get(dialect).quote_string_literal("€") == "'€'"
 
-    def test_a_latin1_listagg_separator_is_written(self) -> None:
+    def test_an_ascii_listagg_separator_is_written(self) -> None:
         dia = DialectRegistry.get("dremio")
         sql = dia.compile_expr(
-            FunctionCall(name="LISTAGG", args=[ColumnRef(name="city")], separator=" · ")
+            FunctionCall(name="LISTAGG", args=[ColumnRef(name="city")], separator=" | ")
         )
-        assert sql == "LISTAGG(\"city\", ' · ')"
+        assert sql == "LISTAGG(\"city\", ' | ')"
 
-    def test_a_separator_outside_latin1_is_refused(self) -> None:
-        """Measured: Dremio returned ``' → '`` as bytes that are not UTF-8."""
+    @pytest.mark.parametrize("separator", [" · ", "é", " → "])
+    def test_a_separator_outside_ascii_is_refused(self, separator: str) -> None:
+        """Measured: Dremio joined a, b, c with ``' · '`` as ``a ·b ·c``, and
+        ``'é'`` and ``' → '`` left bytes that are not UTF-8.
+        """
         dia = DialectRegistry.get("dremio")
-        call = FunctionCall(name="LISTAGG", args=[ColumnRef(name="city")], separator=" → ")
-        with pytest.raises(UnsupportedAggregationError, match="outside Latin-1"):
+        call = FunctionCall(name="LISTAGG", args=[ColumnRef(name="city")], separator=separator)
+        with pytest.raises(UnsupportedAggregationError, match="outside ASCII"):
             dia.compile_expr(call)
 
 

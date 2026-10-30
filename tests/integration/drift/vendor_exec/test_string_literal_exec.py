@@ -68,7 +68,8 @@ VALUES = [
     "a\\b €",
 ]
 
-#: A dimension computed from text outside Latin-1, filtered on and grouped by.
+#: A dimension computed from text outside Latin-1, filtered on and grouped by,
+#: with a group of two cities, so the ``listagg`` writes its separator.
 MODEL = """\
 version: 1.0
 dataObjects:
@@ -79,7 +80,8 @@ dataObjects:
       Amount: {code: amount, abstractType: int}
       Region:
         expression: >-
-          CASE WHEN {City} = 'İstanbul' THEN 'Türkiye €' ELSE coalesce({City}, '東京') END
+          CASE WHEN {City} IN ('İstanbul', 'İzmir') THEN 'Türkiye €'
+          ELSE coalesce({City}, '東京') END
         abstractType: string
 dimensions:
   City: {dataObject: Places, column: City, resultType: string}
@@ -89,23 +91,33 @@ measures:
   Cities:
     columns: [{dataObject: Places, column: City}]
     aggregation: listagg
-    delimiter: " · "
+    delimiter: " | "
     resultType: string
 """
 
 #: (city, amount): the table the model reads.
-ROWS = [("İstanbul", 1), ("café", 2), ("東京", 4), (None, 8), ("x", 16)]
+ROWS = [("İstanbul", 1), ("café", 2), ("東京", 4), (None, 8), ("x", 16), ("İzmir", 32)]
 
-#: (filter, {region: total}): each filter compares text outside Latin-1, with a
-#: column or with the computed dimension.
+TURKIYE = ["İstanbul", "İzmir"]
+
+#: (filter, {region: (total, cities)}): each filter compares text outside
+#: Latin-1, with a column or with the computed dimension.
 FILTERS = [
     (
-        {"field": "City", "op": "in", "value": ["İstanbul", "東京", "café"]},
-        {"Türkiye €": 1, "café": 2, "東京": 4},
+        {"field": "City", "op": "in", "value": [*TURKIYE, "東京", "café"]},
+        {"Türkiye €": (33, TURKIYE), "café": (2, ["café"]), "東京": (4, ["東京"])},
     ),
-    ({"field": "Region", "op": "equals", "value": "東京"}, {"東京": 12}),
-    ({"field": "Region", "op": "like", "value": "Tür%"}, {"Türkiye €": 1}),
-    ({"field": "City", "op": "notequals", "value": "İstanbul"}, {"café": 2, "東京": 4, "x": 16}),
+    ({"field": "Region", "op": "equals", "value": "東京"}, {"東京": (12, ["東京"])}),
+    ({"field": "Region", "op": "like", "value": "Tür%"}, {"Türkiye €": (33, TURKIYE)}),
+    (
+        {"field": "City", "op": "notequals", "value": "İstanbul"},
+        {
+            "Türkiye €": (32, ["İzmir"]),
+            "café": (2, ["café"]),
+            "東京": (4, ["東京"]),
+            "x": (16, ["x"]),
+        },
+    ),
 ]
 
 
@@ -158,10 +170,7 @@ def _assert_model(target: VendorTarget) -> None:
         got = {}
         for raw in result:
             row = {key.lower(): value for key, value in raw.items()}
-            got[row["region"]] = int(row["total"])
-            city = "İstanbul" if row["region"] == "Türkiye €" else row["region"]
-            if row["cities"] != city:
-                mismatches.append(f"{where} -> cities {row['cities']!r}, expected {city!r}")
+            got[row["region"]] = (int(row["total"]), sorted(row["cities"].split(" | ")))
         if got != expected:
             mismatches.append(f"{where} -> {got}, expected {expected}")
     assert not mismatches, f"{target.name} text outside Latin-1:\n  " + "\n  ".join(mismatches)
