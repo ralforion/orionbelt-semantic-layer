@@ -1,13 +1,13 @@
-"""A derived metric reads its measures' averages and variances as their own columns do.
+"""A derived metric reads its measures' variances and doubles as their own columns do.
 
-A metric's formula inlines its components' aggregates without their casts, so
-it skipped the rewrites a measure's own column gets with them: the exact
-``AVG`` (``test_exact_avg_exec``) and Dremio's exact ``variance``
-(``test_exact_variance_exec``). Each case runs a metric over the values that
-told the rewrite apart, and one formula mixes decimal and double components,
-which some engines type apart. An integer ``SUM`` is read as the engine sums
-it: widened, Dremio divides it at 6 places (``test_decimal_division_exec``).
-Both sources are the engine itself, as in ``test_statistics_exec``.
+A metric's formula inlines its components' aggregates without their casts,
+so it skipped two rewrites a measure's own column gets with them: Dremio's
+exact ``variance`` (``test_exact_variance_exec``) and a ``float`` measure's
+sum taken over doubles, which an engine whose integer accumulator wraps needs.
+Both keep every digit a double has. The exact ``AVG`` is left out: it stops at
+the measure's own places, so the average of 1, 1 and 2 times 3 came back 3.99
+on DuckDB, and the case below holds a metric to 4.00. Both sources are the
+engine itself, as in ``test_statistics_exec``.
 """
 
 from __future__ import annotations
@@ -35,55 +35,55 @@ dataObjects:
     columns:
       Label: {code: l, abstractType: string}
       X: {code: x, abstractType: int}
-      D: {code: d, abstractType: decimal, sqlPrecision: 18, sqlScale: 2}
       F: {code: f, abstractType: float}
 dimensions:
   Label: {dataObject: Values, column: Label, resultType: string}
 measures:
   X Avg: {columns: [{dataObject: Values, column: X}], aggregation: avg, resultType: int}
+  X Total: {columns: [{dataObject: Values, column: X}], aggregation: sum, resultType: float}
   X Stddev: {columns: [{dataObject: Values, column: X}], aggregation: stddev, resultType: float}
-  D Avg: {columns: [{dataObject: Values, column: D}], aggregation: avg, resultType: decimal}
   F Sum: {columns: [{dataObject: Values, column: F}], aggregation: sum, resultType: float}
 metrics:
-  Avg Offset: {expression: "{[X Avg]} - 1000000000000000000", dataType: "decimal(38, 2)"}
+  Avg Thrice: {expression: "{[X Avg]} * 3", dataType: "decimal(18, 2)"}
   Avg Share: {expression: "{[X Avg]} / 600000", dataType: "decimal(18, 10)"}
+  Total Again: {expression: "{[X Total]} * 1", dataType: double}
   Spread: {expression: "{[X Stddev]} * 1", dataType: double}
   Mixed: {expression: "{[X Avg]} + {[X Stddev]} + {[F Sum]}", dataType: double}
-  Decimal Mean: {expression: "{[D Avg]} * 1", dataType: "decimal(38, 2)"}
 """
 
-#: (case, metric, rows as (x, d, f), expected, relative tolerance or None for exact).
-CASES: list[tuple[str, str, list[tuple[Any, Any, Any]], Any, float | None]] = [
-    # A double average of these is 1e18, and the offset 0.
+#: The engines whose integer ``SUM`` of two rows of 9e18 answers; BigQuery and
+#: Databricks raise, for the measure alone too.
+SUMS_PAST_64_BITS = {"postgres", "mysql", "snowflake", "clickhouse", "dremio", "duckdb"}
+
+#: (case, metric, rows as (x, f), expected, relative tolerance or None for
+#: exact, engines or None for all).
+CASES: list[tuple[str, str, list[tuple[Any, Any]], Any, float | None, set[str] | None]] = [
+    # An average computed on in the formula: at the measure's own two places,
+    # 1.33 * 3 is 3.99.
+    ("thirds", "Avg Thrice", [(1, None), (1, None), (2, None)], Decimal("4.00"), None, None),
+    # An average in a small quotient keeps its places.
+    ("share", "Avg Share", [(1, None), (2, None)], Decimal("0.0000025000"), None, None),
+    # A float measure's sum of integers past 64 bits, which wraps negative
+    # where the accumulator does.
     (
-        "avg",
-        "Avg Offset",
-        [(1000000000000000002, None, None), (1000000000000000004, None, None)],
-        Decimal("3"),
-        None,
+        "wide",
+        "Total Again",
+        [(9000000000000000000, None), (9000000000000000000, None)],
+        1.8e19,
+        1e-12,
+        SUMS_PAST_64_BITS,
     ),
-    # An exact average in a small quotient keeps its places, which a 38-digit
-    # decimal dividend would not on Dremio.
-    ("share", "Avg Share", [(1, None, None), (2, None, None)], Decimal("0.0000025000"), None),
     # Dremio's own standard deviation of these was 0. Snowflake's of an
     # integer keeps six places of the variance.
-    ("far", "Spread", [(10**9 + i, None, None) for i in range(10)], math.sqrt(55 / 6), 1e-6),
-    # An exact average, a double deviation and a double sum in one formula.
-    ("mixed", "Mixed", [(1, None, "0.5"), (2, None, "0.25"), (3, None, "0.25")], 4.0, 1e-9),
-    # A double average of these is .56; the exact one rounds to .57.
-    (
-        "tie",
-        "Decimal Mean",
-        [(None, "12345678901234.56", None), (None, "12345678901234.57", None)],
-        Decimal("12345678901234.57"),
-        None,
-    ),
+    ("far", "Spread", [(10**9 + i, None) for i in range(10)], math.sqrt(55 / 6), 1e-6, None),
+    # An average, a deviation and a double sum in one formula.
+    ("mixed", "Mixed", [(1, "0.5"), (2, "0.25"), (3, "0.25")], 4.0, 1e-9, None),
 ]
 
 
-def _rows(dialect: str, label: str, rows: list[tuple[Any, Any, Any]]) -> str:
+def _rows(dialect: str, label: str, rows: list[tuple[Any, Any]]) -> str:
     """``WITH t AS (...)``: *rows*, as a table of this engine."""
-    text, whole, fixed, real = TYPES[dialect]
+    text, whole, _, real = TYPES[dialect]
     q = DialectRegistry.get(dialect).quote_identifier
 
     def value(v: object, kind: str) -> str:
@@ -91,8 +91,8 @@ def _rows(dialect: str, label: str, rows: list[tuple[Any, Any, Any]]) -> str:
 
     selects = " UNION ALL ".join(
         f"SELECT {value(label, text)} AS {q('l')}, {value(x, whole)} AS {q('x')}, "
-        f"{value(d, fixed)} AS {q('d')}, {value(f, real)} AS {q('f')}"
-        for x, d, f in rows
+        f"{value(f, real)} AS {q('f')}"
+        for x, f in rows
     )
     return f"WITH {q('t')} AS ({selects})\n"
 
@@ -101,7 +101,9 @@ def _assert_exact_components(target: VendorTarget) -> None:
     store = ModelStore()
     model_id = store.load_model(MODEL).model_id
     wrong = []
-    for case, metric, rows, expected, tolerance in CASES:
+    for case, metric, rows, expected, tolerance, engines in CASES:
+        if engines is not None and target.dialect not in engines:
+            continue
         query = QueryObject.model_validate(
             {"select": {"dimensions": ["Label"], "measures": [metric]}}
         )

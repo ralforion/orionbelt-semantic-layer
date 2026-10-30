@@ -24,7 +24,11 @@ from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.expr_rewrite import map_column_refs
-from orionbelt.compiler.type_resolver import apply_exact_integer_avg, resolve_metric_data_type
+from orionbelt.compiler.type_resolver import (
+    apply_exact_variance,
+    apply_float_input,
+    resolve_metric_data_type,
+)
 from orionbelt.models.semantic import SemanticModel
 
 if TYPE_CHECKING:
@@ -139,20 +143,22 @@ def exact_components(
     dialect: Dialect | None,
     value_of: Callable[[ResolvedMeasure], Expr],
 ) -> Callable[[ResolvedMeasure], Expr]:
-    """*value_of*, reading each measure's average and variance as its own column does.
+    """*value_of*, reading a measure's variance and doubles as its own column does.
 
     For the passes that inline a component's aggregate into the formula,
     without the measure's cast, which would round it first. Read bare, a
-    component also skipped the exact ``AVG`` and ``variance`` and a ``float``
-    measure's sum or average over doubles (:func:`apply_exact_integer_avg`).
-    Measured in a metric: the average of 10^18 + 2 and 10^18 + 4 read 10^18 on
-    five engines, and Dremio's standard deviation of 10^9 + 0..9 was 0.
+    component skipped two rewrites its own column gets, which keep every digit
+    a double has: Dremio's exact ``variance`` and ``stddev``
+    (:func:`apply_exact_variance`; its standard deviation of 10^9 + 0..9 was 0
+    in a metric), and a ``float`` measure's sum or average taken over doubles
+    (:func:`apply_float_input`; an integer sum past 9.2e18 wrapped on
+    ClickHouse and Dremio).
 
-    An integer ``SUM`` is read as the engine sums it, not widened as its own
-    column is where the accumulator wraps (:func:`apply_exact_integer_sum`):
-    Dremio divides a ``DECIMAL(38, 0)`` at 6 places, so 2 / 600,000 came back
-    0.0000030000 where the 64-bit sum divides at 19. Past 9.2e18 the sum wraps
-    on ClickHouse and Dremio, as it did.
+    The others are left out, since a formula computes on with what they keep:
+    the exact ``AVG`` stops at the measure's own places, so the average of 1,
+    1 and 2 times 3 came back 3.99, where a double reads 4; and Dremio divides
+    the ``DECIMAL(38, 0)`` an integer ``SUM`` is widened to at 6 places, so
+    2 / 600,000 came back 0.0000030000.
     """
 
     def exact(component: ResolvedMeasure) -> Expr:
@@ -160,7 +166,8 @@ def exact_components(
         measure = model.effective_measures.get(component.name)
         if measure is None or dialect is None:
             return value
-        return apply_exact_integer_avg(value, measure, model.settings, dialect, model)
+        value = apply_exact_variance(value, measure, dialect, model)
+        return apply_float_input(value, measure, model.settings, dialect, model)
 
     return exact
 

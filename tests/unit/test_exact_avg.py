@@ -625,8 +625,6 @@ class TestNoPathLeavesARawFloatingAverage:
     - A window or cumulative metric's placeholder deliberately skips the
       *cast*, because casting to the metric's own type would truncate the
       window's input - and skipped the rewrite along with it.
-    - A derived metric inlines its components' aggregates without their casts,
-      and inlined them without the rewrite too.
     """
 
     REWRITE_ONLY = ["bigquery", "clickhouse", "dremio", "databricks"]
@@ -637,8 +635,6 @@ class TestNoPathLeavesARawFloatingAverage:
         "pop": ["Qty Avg Prior"],
         "window": ["Qty Avg Lag"],
         "pop+window": ["Qty Avg Prior", "Qty Avg Lag"],
-        "metric": ["Qty Avg Again"],
-        "nested metric": ["Qty Avg Twice"],
     }
 
     YAML = """
@@ -675,61 +671,7 @@ metrics:
     windowFunction: lag
     offset: 1
     timeDimension: Sale Month
-  Qty Avg Again: {expression: '{[Qty Avg]} * 1'}
-  Qty Avg Twice: {expression: '{[Qty Avg Again]} * 2'}
 """
-
-    #: Two facts on one dimension: a metric over both is planned as CFL, and
-    #: its outer query re-aggregates the union.
-    CFL_YAML = """
-version: "1.0"
-dataObjects:
-  Charges:
-    code: charges
-    columns:
-      Shop: {code: shop, abstractType: int}
-      Qty: {code: qty, abstractType: int}
-    joins:
-      - {joinType: many-to-one, joinTo: Shops, columnsFrom: [Shop], columnsTo: [Shop ID]}
-  Refunds:
-    code: refunds
-    columns:
-      Shop: {code: shop, abstractType: int}
-      Qty: {code: qty, abstractType: int}
-    joins:
-      - {joinType: many-to-one, joinTo: Shops, columnsFrom: [Shop], columnsTo: [Shop ID]}
-  Shops:
-    code: shops
-    columns:
-      Shop ID: {code: id, abstractType: int}
-      Region: {code: region, abstractType: string}
-dimensions:
-  Region: {dataObject: Shops, column: Region, resultType: string}
-measures:
-  Qty Avg: {columns: [{dataObject: Charges, column: Qty}], resultType: int, aggregation: avg}
-  Refund Qty: {columns: [{dataObject: Refunds, column: Qty}], resultType: int, aggregation: sum}
-metrics:
-  Net: {expression: '{[Qty Avg]} - {[Refund Qty]}'}
-"""
-
-    @staticmethod
-    def _raw_avgs(sql: str) -> list[str]:
-        return [
-            m.group(0)
-            for m in re.finditer(r"\b(?:AVG|avg)\(([^()]*)\)", sql)
-            if "CAST" not in m.group(1).upper() and "toDecimal" not in m.group(1)
-        ]
-
-    @pytest.mark.parametrize("dialect", REWRITE_ONLY)
-    def test_a_metric_over_two_facts_reads_the_rewritten_aggregate(self, dialect: str) -> None:
-        raw, sm = TrackedLoader().load_string(self.CFL_YAML)
-        model, result = ReferenceResolver().resolve(raw, sm)
-        assert result.valid, result.errors
-        query = QueryObject(select=QuerySelect(dimensions=["Region"], measures=["Net"]))
-        sql = CompilationPipeline().compile(query, model, dialect).sql
-
-        assert "composite_01" in sql
-        assert not self._raw_avgs(sql), sql
 
     @pytest.mark.parametrize("dialect", REWRITE_ONLY)
     @pytest.mark.parametrize("shape", sorted(SHAPES), ids=sorted(SHAPES))
@@ -748,11 +690,37 @@ metrics:
             )
             .sql
         )
-        raw_avgs = self._raw_avgs(sql)
+        raw_avgs = [
+            m.group(0)
+            for m in re.finditer(r"\b(?:AVG|avg)\(([^()]*)\)", sql)
+            if "CAST" not in m.group(1).upper() and "toDecimal" not in m.group(1)
+        ]
         assert not raw_avgs, (
             f"{dialect}/{shape} leaves a raw floating average under a widened cast: "
             f"{raw_avgs}\n{sql}"
         )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "An exact AVG stops at the measure's own places, which a metric's formula computes on "
+        "with: 1.33 * 3 is 3.99. A metric reads the engine's average until a route keeps more."
+    ),
+)
+@pytest.mark.parametrize("dialect", TestNoPathLeavesARawFloatingAverage.REWRITE_ONLY)
+def test_a_metric_reads_the_exact_average(dialect: str) -> None:
+    yaml = (
+        TestNoPathLeavesARawFloatingAverage.YAML
+        + "  Qty Avg Again: {expression: '{[Qty Avg]} * 3'}\n"
+    )
+    raw, sm = TrackedLoader().load_string(yaml)
+    model, result = ReferenceResolver().resolve(raw, sm)
+    assert result.valid, result.errors
+    query = QueryObject(select=QuerySelect(dimensions=["Sale Month"], measures=["Qty Avg Again"]))
+    sql = CompilationPipeline().compile(query, model, dialect).sql
+
+    assert not re.search(r"\b(?:AVG|avg)\(\W?Charges\W?\.\W?qty\W?\)", sql), sql
 
 
 class TestDuckDBAssemblesItsAverage:
