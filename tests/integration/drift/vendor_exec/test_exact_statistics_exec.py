@@ -1,12 +1,13 @@
-"""Dremio's variance and standard deviation of integers and decimals, exact.
+"""Variances, covariances, correlations and regressions of integers and decimals, exact.
 
-Dremio's own subtract sums of squares as doubles and cancel far from zero
-(``test_statistics_exec``); ``Dialect.exact_variance`` computes them from
+Dremio's variance and covariance and Snowflake's covariance, correlation and
+regression subtract sums of squares or products as doubles and cancel far from
+zero (``test_statistics_exec``); ``Dialect.exact_statistic`` computes them from
 exact moments instead. Seeded random groups - far from zero, negative, of one
-value, constant, with NULLs, and near the limit past which Dremio's own is
+value, constant, with NULLs, and near the limit past which the engine's own is
 kept - are each held to the exact statistic of their values, within the few
-roundings to double the route makes. A group past the limit answers what
-Dremio's own statistic answers.
+roundings to double the route makes. A group past the limit answers what the
+engine's own statistic answers.
 """
 
 from __future__ import annotations
@@ -184,3 +185,150 @@ measures:
     got = vendor_dremio.execute(f'WITH "v" AS (SELECT * FROM (VALUES {rows}) AS t("w"))\n{sql}')
 
     assert math.isclose(got[0]["W variance"], 10.0 ** (-2 * scale), rel_tol=1e-12)
+
+
+#: The two-column statistics each engine computes from exact moments; Dremio
+#: has no ``corr`` or regression.
+PAIRED = {
+    "dremio": ("covar_samp", "covar_pop"),
+    "snowflake": ("covar_samp", "covar_pop", "corr", "regr_slope", "regr_intercept"),
+}
+PAIRS = (("X", "D"), ("D", "E"))
+
+PAIRED_MODEL = """\
+version: 1.0
+dataObjects:
+  Values:
+    code: paired_values
+    columns:
+      Label: {code: l, abstractType: string}
+      X: {code: x, abstractType: int}
+      D: {code: d, abstractType: decimal, sqlPrecision: 18, sqlScale: 2}
+      E: {code: e, abstractType: decimal, sqlPrecision: 24, sqlScale: 6}
+dimensions:
+  Label: {dataObject: Values, column: Label, resultType: string}
+measures:
+"""
+
+
+def _paired_groups() -> dict[str, Group]:
+    """Random groups under Snowflake's bound of 10^13 units, a NULL on either
+    side of some pairs, and a constant column in some."""
+    rng = random.Random(691)
+    groups: dict[str, Group] = {}
+    for g in range(30):
+        size = rng.choice([1, 2, 3, 10, 40])
+        group: Group = {}
+        for column in COLUMNS:
+            centre = rng.choice([0, 10, 10**3, 10**9, 10**12]) * rng.choice([1, -1])
+            spread = rng.choice([0, 1, 7, 1000])
+            values: list[int | None] = [centre + rng.randint(-spread, spread) for _ in range(size)]
+            if size > 2 and rng.random() < 0.3:
+                values[rng.randrange(size)] = None
+            group[column] = values
+        groups[f"p{g:02d}"] = group
+    return groups
+
+
+def _paired_exact(a: list[int | None], b: list[int | None], places: tuple[int, int], name: str):
+    """The statistic of the pairs, a correlation squared and signed; ``None``
+    where undefined. Also the intercept's scale: its mean and slope terms."""
+    pairs = [
+        (Fraction(x, 10 ** places[0]), Fraction(y, 10 ** places[1]))
+        for x, y in zip(a, b, strict=True)
+        if x is not None and y is not None
+    ]
+    n = len(pairs)
+    if n == 0 or (name == "covar_samp" and n < 2):
+        return None, None
+    mean_a = sum(x for x, _ in pairs) / n
+    mean_b = sum(y for _, y in pairs) / n
+    co = sum((x - mean_a) * (y - mean_b) for x, y in pairs)
+    spread_a = sum((x - mean_a) ** 2 for x, _ in pairs)
+    spread_b = sum((y - mean_b) ** 2 for _, y in pairs)
+    if name == "covar_samp":
+        return co / (n - 1), None
+    if name == "covar_pop":
+        return co / n, None
+    if name == "corr":
+        if spread_a == 0 or spread_b == 0:
+            return None, None
+        return co * abs(co) / (spread_a * spread_b), None
+    if spread_b == 0:
+        return None, None
+    slope = co / spread_b
+    if name == "regr_slope":
+        return slope, None
+    return mean_a - slope * mean_b, abs(mean_a) + abs(slope * mean_b)
+
+
+def _paired_rows(dialect: str, groups: dict[str, Group]) -> str:
+    """``WITH paired_values AS (VALUES ...)``, in this engine's types."""
+    rows = ", ".join(
+        f"(CAST('{label}' AS VARCHAR), {', '.join(_literal(group[c][i], c) for c in COLUMNS)})"
+        for label, group in groups.items()
+        for i in range(len(group["X"]))
+    )
+    return f'WITH "paired_values" AS (SELECT * FROM (VALUES {rows}) AS v("l", "x", "d", "e"))\n'
+
+
+def _paired_sql(dialect: str) -> tuple[str, list[str]]:
+    measures = [f"{a}{b} {name}" for a, b in PAIRS for name in PAIRED[dialect]]
+    lines = [
+        f"  {a}{b} {name}: {{columns: [{{dataObject: Values, column: {a}}}, "
+        f"{{dataObject: Values, column: {b}}}], aggregation: {name}, resultType: float}}"
+        for a, b in PAIRS
+        for name in PAIRED[dialect]
+    ]
+    store = ModelStore()
+    model_id = store.load_model(PAIRED_MODEL + "\n".join(lines) + "\n").model_id
+    query = QueryObject.model_validate({"select": {"dimensions": ["Label"], "measures": measures}})
+    return store.compile_query(model_id, query, dialect).sql, measures
+
+
+def _assert_paired(target: VendorTarget) -> None:
+    groups = _paired_groups()
+    sql, measures = _paired_sql(target.dialect)
+    rows = {row["Label"]: row for row in target.execute(_paired_rows(target.dialect, groups) + sql)}
+    assert set(rows) == set(groups)
+    wrong = []
+    for label, group in groups.items():
+        for measure in measures:
+            pair, name = measure.split()
+            a, b = pair[0], pair[1]
+            exact, scale = _paired_exact(group[a], group[b], (COLUMNS[a][1], COLUMNS[b][1]), name)
+            got = rows[label][measure]
+            if got is not None and not math.isfinite(got):
+                wrong.append(f"{label} {measure}: {got}")
+                continue
+            if exact is None or got is None:
+                if exact is not None or got is not None:
+                    wrong.append(f"{label} {measure}: {got}, exact {exact}")
+                continue
+            value = Fraction(got)
+            if name == "corr":
+                value *= abs(value)
+            allowed = (scale if scale is not None else abs(exact)) / 10**12
+            if abs(value - exact) > allowed:
+                wrong.append(f"{label} {measure}: {got}, exact {float(exact)}")
+    assert wrong == [], f"{target.name}: {wrong}"
+
+
+def test_dremio_exact_covariance(vendor_dremio: VendorTarget) -> None:
+    _assert_paired(vendor_dremio)
+
+
+def test_snowflake_exact_paired_statistics(vendor_snowflake: VendorTarget) -> None:
+    _assert_paired(vendor_snowflake)
+
+
+def test_snowflake_keeps_its_own_past_the_bound(vendor_snowflake: VendorTarget) -> None:
+    """Values of 13 digits or more in units are left out of the exact sums,
+    which would otherwise raise past 128 bits (40 squares of 9e18), and the
+    group reads Snowflake's own statistic."""
+    groups = {"big": {c: [9 * 10**18 + i for i in range(40)] for c in ("X", "D", "E")}}
+    groups["big"]["D"] = [10**15 + i for i in range(40)]
+    groups["big"]["E"] = [10**17 + i for i in range(40)]
+    sql, measures = _paired_sql("snowflake")
+    (row,) = vendor_snowflake.execute(_paired_rows("snowflake", groups) + sql)
+    assert set(row) == {"Label", *measures}

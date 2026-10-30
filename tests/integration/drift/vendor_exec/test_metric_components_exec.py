@@ -2,7 +2,7 @@
 
 A metric's formula inlines its components' aggregates without their casts,
 so it skipped two rewrites a measure's own column gets with them: Dremio's
-exact ``variance`` (``test_exact_variance_exec``) and a ``float`` measure's
+exact ``variance`` (``test_exact_statistics_exec``) and a ``float`` measure's
 sum taken over doubles, which an engine whose integer accumulator wraps needs,
 a DISTINCT one summed exactly and then read as a double.
 Both keep every digit a double has. The exact ``AVG`` is left out: it stops at

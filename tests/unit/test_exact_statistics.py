@@ -1,10 +1,12 @@
-"""Exact ``variance`` and ``stddev`` of integers and decimals on Dremio.
+"""Exact statistics of integers and decimals on Dremio and Snowflake.
 
-Dremio's statistics subtract sums of squares as doubles and cancel far from
-zero: 0 for the variance of 10^9 + 0..9, a negative one further out. They are
-computed from exact moments there instead (``Dialect.exact_variance``). These
-tests pin which measures are rewritten and the shape of the SQL; the vendor
-suite (``test_exact_variance_exec``) runs it against the exact statistic.
+Dremio's variance and covariance and Snowflake's covariance, correlation and
+regression subtract sums of squares or products as doubles and cancel far from
+zero: 0 for the variance of 10^9 + 0..9 on Dremio, 0 for a covariance of 18.5
+there on Snowflake. They are computed from exact moments instead
+(``Dialect.exact_statistic``). These tests pin which measures are rewritten and
+the shape of the SQL; the vendor suite (``test_exact_statistics_exec``) runs it
+against the exact statistic.
 """
 
 from __future__ import annotations
@@ -29,6 +31,9 @@ STATISTICS = [
     ("Finest Variance", "Finest", "variance"),
 ]
 
+#: The two-column statistics.
+PAIRED = ("covar_samp", "covar_pop", "corr", "regr_slope", "regr_intercept")
+
 MODEL_YAML = (
     """
 version: "1.0"
@@ -51,6 +56,13 @@ measures:
         f"  {name}: {{columns: [{{dataObject: Charges, column: {column}}}], "
         f"aggregation: {aggregation}, resultType: float}}\n"
         for name, column, aggregation in STATISTICS
+    )
+    + "".join(
+        f"  Qty {other} {aggregation}: {{columns: [{{dataObject: Charges, column: Qty}}, "
+        f"{{dataObject: Charges, column: {other}}}], aggregation: {aggregation}, "
+        "resultType: float}\n"
+        for other in ("Price", "Loose")
+        for aggregation in PAIRED
     )
     + """\
   Doubled Variance:
@@ -150,3 +162,41 @@ def test_a_metric_reads_the_exact_statistics() -> None:
 def test_the_other_engines_keep_their_own(dialect: str) -> None:
     """Right far from zero there, measured: ``test_statistics_exec``."""
     assert EXACT not in _sql("Qty Variance", dialect)
+
+
+@pytest.mark.parametrize(
+    ("dialect", "rewritten"),
+    [("snowflake", PAIRED), ("dremio", ("covar_samp", "covar_pop"))],
+)
+def test_a_pair_is_computed_from_exact_moments(dialect: str, rewritten: tuple[str, ...]) -> None:
+    for aggregation in rewritten:
+        sql = _sql(f"Qty Price {aggregation}", dialect)
+
+        assert EXACT in sql, sql
+        # A pair counts only where both of its values are.
+        assert 'CASE WHEN "Charges"."price" IS NOT NULL THEN "Charges"."qty" END' in sql
+        # Past the limit, the engine's own, as it renders it.
+        assert f'{aggregation.upper()}("Charges"."qty", "Charges"."price")' in sql
+
+
+@pytest.mark.parametrize(
+    "dialect", sorted(set(DialectRegistry.available()) - {"snowflake", "dremio", "mysql"})
+)
+def test_the_other_engines_keep_their_own_covariance(dialect: str) -> None:
+    """MySQL has none to keep."""
+    assert EXACT not in _sql("Qty Price covar_samp", dialect)
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "dremio"])
+def test_a_pair_of_unknown_places_keeps_the_engines_own(dialect: str) -> None:
+    assert EXACT not in _sql("Qty Loose covar_samp", dialect)
+
+
+@pytest.mark.parametrize(("dialect", "bounded"), [("snowflake", True), ("dremio", False)])
+def test_snowflake_sums_only_values_under_its_bound(dialect: str, bounded: bool) -> None:
+    """Its ``SUM`` past 128 bits raises, in a ``CASE`` branch not taken too."""
+    sql = _sql("Qty Price covar_pop", dialect)
+
+    assert (
+        'MAX(ABS(CAST("Charges"."qty" AS DOUBLE))) < CAST(\'1E13\' AS DOUBLE)' in sql
+    ) is bounded
