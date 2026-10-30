@@ -430,13 +430,24 @@ class CFLPlanner:
         metric: ResolvedMeasure,
         resolved: ResolvedQuery,
         cte_name: str,
+        model: SemanticModel,
+        dialect: Dialect | None,
     ) -> Expr:
         """Build the outer query expression for a metric."""
-        return cfl_projection.build_outer_metric_expr(self, metric, resolved, cte_name)
+        return cfl_projection.build_outer_metric_expr(
+            self, metric, resolved, cte_name, model, dialect
+        )
 
-    def _substitute_outer_refs(self, expr: Expr, resolved: ResolvedQuery, cte_name: str) -> Expr:
+    def _substitute_outer_refs(
+        self,
+        expr: Expr,
+        resolved: ResolvedQuery,
+        cte_name: str,
+        model: SemanticModel,
+        dialect: Dialect | None,
+    ) -> Expr:
         """Recursively substitute measure refs with outer aggregations."""
-        return cfl_projection.substitute_outer_refs(self, expr, resolved, cte_name)
+        return cfl_projection.substitute_outer_refs(self, expr, resolved, cte_name, model, dialect)
 
     @staticmethod
     def _collect_table_refs(expr: Expr, tables: set[str]) -> None:
@@ -945,7 +956,9 @@ class CFLPlanner:
         # Then, add metric expressions that combine component measures
         for m in resolved.measures:
             if m.component_measures and m.name not in seen_measure_names:
-                metric_expr: Expr = self._build_outer_metric_expr(m, resolved, cte_name)
+                metric_expr: Expr = self._build_outer_metric_expr(
+                    m, resolved, cte_name, model, dialect
+                )
                 metric = model.metrics.get(m.name)
                 if metric and dialect:
                     resolved_type = resolve_metric_data_type(metric, settings)

@@ -701,6 +701,28 @@ metrics:
         )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "An exact AVG stops at the measure's own places, which a metric's formula computes on "
+        "with: 1.33 * 3 is 3.99. A metric reads the engine's average until a route keeps more."
+    ),
+)
+@pytest.mark.parametrize("dialect", TestNoPathLeavesARawFloatingAverage.REWRITE_ONLY)
+def test_a_metric_reads_the_exact_average(dialect: str) -> None:
+    yaml = (
+        TestNoPathLeavesARawFloatingAverage.YAML
+        + "  Qty Avg Again: {expression: '{[Qty Avg]} * 3'}\n"
+    )
+    raw, sm = TrackedLoader().load_string(yaml)
+    model, result = ReferenceResolver().resolve(raw, sm)
+    assert result.valid, result.errors
+    query = QueryObject(select=QuerySelect(dimensions=["Sale Month"], measures=["Qty Avg Again"]))
+    sql = CompilationPipeline().compile(query, model, dialect).sql
+
+    assert not re.search(r"\b(?:AVG|avg)\(\W?Charges\W?\.\W?qty\W?\)", sql), sql
+
+
 class TestDuckDBAssemblesItsAverage:
     """The engine with no exact division to divide with (#316).
 

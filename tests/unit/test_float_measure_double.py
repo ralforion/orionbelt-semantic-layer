@@ -128,6 +128,8 @@ measures:
     resultType: float
   Returned: {{columns: [{{dataObject: Returns, column: Returned Weight}}], aggregation: sum,
               resultType: float}}
+metrics:
+  Distinct Unit Share: {{expression: "{{[Distinct Unit Sum]}} / 600000"}}
 """
 
 
@@ -243,6 +245,22 @@ class TestAWrappingAccumulatorIsAvoided:
         128-bit widening keeps every integer distinct and does not wrap."""
         sql = _sql([measure], dialect)
         assert f"SUM({widened})" in sql, sql
+
+    @pytest.mark.parametrize(
+        ("dialect", "double"),
+        [
+            (
+                "clickhouse",
+                'SUM(DISTINCT toDecimal128("Orders"."quantity", 0)) AS Nullable(Float64)',
+            ),
+            ("dremio", 'CAST(SUM(DISTINCT CAST("Orders"."quantity" AS DECIMAL(38, 0))) AS DOUBLE)'),
+        ],
+    )
+    def test_a_metric_reads_the_exact_sum_as_a_double(self, dialect: str, double: str) -> None:
+        """No cast follows it in a formula, and Dremio divides a
+        ``DECIMAL(38, 0)`` at 6 places: 2 / 600,000 came back 0.0000030000."""
+        sql = _sql(["Distinct Unit Share"], dialect)
+        assert double in sql, sql
 
     @pytest.mark.parametrize("dialect", ["clickhouse", "dremio"])
     @pytest.mark.parametrize("measure", ["Distinct Bare Sum", "Distinct Scaled Sum"])

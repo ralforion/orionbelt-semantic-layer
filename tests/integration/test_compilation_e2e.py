@@ -520,9 +520,11 @@ class TestCFLWithFilters:
         assert "composite_01" in sql
         # Every reference inside an outer SUM(...) must be qualified with the
         # CTE alias. Identifier quoting differs per dialect, so match on the
-        # quote-agnostic shape: SUM( <quote>composite_01<quote>.<quote>...
-        assert re.search(r"SUM\(\W?composite_01\W?\.\W?Revenue\W?\)", sql), sql
-        assert re.search(r"SUM\(\W?composite_01\W?\.\W?Total Refunds\W?\)", sql), sql
+        # quote-agnostic shape: SUM( <quote>composite_01<quote>.<quote>...,
+        # the value cast to a double first where a float sum is read as one.
+        for column in ("Revenue", "Total Refunds"):
+            assert re.search(rf"SUM\((CAST\()?\W?composite_01\W?\.\W?{column}\W", sql), sql
+            assert not re.search(rf"SUM\((CAST\()?\W?{column}\W", sql), sql
 
 
 class TestCFLUnsupportedAggregations:

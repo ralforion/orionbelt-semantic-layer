@@ -24,7 +24,11 @@ from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.expr_rewrite import map_column_refs
-from orionbelt.compiler.type_resolver import resolve_metric_data_type
+from orionbelt.compiler.type_resolver import (
+    apply_exact_variance,
+    apply_float_input,
+    resolve_metric_data_type,
+)
 from orionbelt.models.semantic import SemanticModel
 
 if TYPE_CHECKING:
@@ -132,6 +136,40 @@ def metric_leaf_components(
 
     walk(measure)
     return out
+
+
+def exact_components(
+    model: SemanticModel,
+    dialect: Dialect | None,
+    value_of: Callable[[ResolvedMeasure], Expr],
+) -> Callable[[ResolvedMeasure], Expr]:
+    """*value_of*, reading a measure's variance and doubles as its own column does.
+
+    For the passes that inline a component's aggregate into the formula,
+    without the measure's cast, which would round it first. Read bare, a
+    component skipped two rewrites its own column gets, which keep every digit
+    a double has: Dremio's exact ``variance`` and ``stddev``
+    (:func:`apply_exact_variance`; its standard deviation of 10^9 + 0..9 was 0
+    in a metric), and a ``float`` measure's sum or average taken over doubles
+    (:func:`apply_float_input`; an integer sum past 9.2e18 wrapped on
+    ClickHouse and Dremio).
+
+    The others are left out, since a formula computes on with what they keep:
+    the exact ``AVG`` stops at the measure's own places, so the average of 1,
+    1 and 2 times 3 came back 3.99, where a double reads 4; and Dremio divides
+    the ``DECIMAL(38, 0)`` an integer ``SUM`` is widened to at 6 places, so
+    2 / 600,000 came back 0.0000030000.
+    """
+
+    def exact(component: ResolvedMeasure) -> Expr:
+        value = value_of(component)
+        measure = model.effective_measures.get(component.name)
+        if measure is None or dialect is None:
+            return value
+        value = apply_exact_variance(value, measure, dialect, model)
+        return apply_float_input(value, measure, model.settings, dialect, model)
+
+    return exact
 
 
 def metric_over_components(

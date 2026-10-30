@@ -923,7 +923,10 @@ def apply_float_input(
     exact_integer_sum`) where the accumulator wraps and every column read is an
     integer, which no two distinct values share - and an average divides that
     sum by ``COUNT(DISTINCT x)``. A float or decimal column needs no widening:
-    its accumulator does not wrap.
+    its accumulator does not wrap. The exact sum is read as a double before
+    anything else reads it, as the measure is one: a derived metric's formula
+    reads it with no cast after, and Dremio divides a ``DECIMAL(38, 0)`` at 6
+    places (2 / 600,000 came back 0.0000030000).
     """
     agg = measure.aggregation.upper()
     if agg not in ("SUM", "AVG"):
@@ -949,11 +952,11 @@ def apply_float_input(
         total = FunctionCall(name="SUM", args=aggregate.args, distinct=True)
     else:
         return expr
+    as_double = dialect.cast_to_obml_type(total, FLOAT_DEFAULT)
     if agg == "SUM":
-        return rebuild(total)
+        return rebuild(as_double)
     count = FunctionCall(name="COUNT", args=aggregate.args, distinct=True)
-    mean = BinaryOp(left=dialect.cast_to_obml_type(total, FLOAT_DEFAULT), op="/", right=count)
-    return rebuild(mean)
+    return rebuild(BinaryOp(left=as_double, op="/", right=count))
 
 
 def _reads_integer_columns(measure: Measure, model: SemanticModel | None) -> bool:

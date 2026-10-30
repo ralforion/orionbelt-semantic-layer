@@ -30,6 +30,7 @@ from orionbelt.compiler.expr_rewrite import (
 )
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.metric_expansion import (
+    exact_components,
     expand_metric_expression,
     metric_leaf_components,
 )
@@ -592,6 +593,8 @@ def build_outer_metric_expr(
     metric: ResolvedMeasure,
     resolved: ResolvedQuery,
     cte_name: str,
+    model: SemanticModel,
+    dialect: Dialect | None,
 ) -> Expr:
     """Build the outer query expression for a metric.
 
@@ -604,11 +607,16 @@ def build_outer_metric_expr(
     ``ILLEGAL_AGGREGATION``. Qualifying with the CTE name forces the
     inner ref to resolve to the raw CTE column.
     """
-    return planner._substitute_outer_refs(metric.expression, resolved, cte_name)
+    return planner._substitute_outer_refs(metric.expression, resolved, cte_name, model, dialect)
 
 
 def substitute_outer_refs(
-    planner: CFLPlanner, expr: Expr, resolved: ResolvedQuery, cte_name: str
+    planner: CFLPlanner,
+    expr: Expr,
+    resolved: ResolvedQuery,
+    cte_name: str,
+    model: SemanticModel,
+    dialect: Dialect | None,
 ) -> Expr:
     """Substitute a metric's component refs with outer aggregations.
 
@@ -616,7 +624,8 @@ def substitute_outer_refs(
     UNION ALL composite, wherever it sits in the expression — inside a function
     call (``... / NULLIF(other, 0)``), a ``CASE``, or a nested derived metric,
     whose own formula is expanded here rather than left as a bare label that
-    would bind against a column no leg projects.
+    would bind against a column no leg projects. A measure is read as exactly
+    as its own column, without its cast (:func:`exact_components`).
     """
 
     aliases = composite_aliases(resolved)
@@ -624,7 +633,9 @@ def substitute_outer_refs(
     def value_of(comp: ResolvedMeasure) -> Expr:
         return build_outer_measure_expr(comp, cte_name, aliases)
 
-    return expand_metric_expression(expr, resolved.metric_components, value_of)
+    return expand_metric_expression(
+        expr, resolved.metric_components, exact_components(model, dialect, value_of)
+    )
 
 
 def collect_table_refs(expr: Expr, tables: set[str]) -> None:
