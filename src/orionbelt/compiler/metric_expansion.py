@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.expr_rewrite import map_column_refs
-from orionbelt.compiler.type_resolver import resolve_metric_data_type
+from orionbelt.compiler.type_resolver import apply_exact_integer_avg, resolve_metric_data_type
 from orionbelt.models.semantic import SemanticModel
 
 if TYPE_CHECKING:
@@ -132,6 +132,37 @@ def metric_leaf_components(
 
     walk(measure)
     return out
+
+
+def exact_components(
+    model: SemanticModel,
+    dialect: Dialect | None,
+    value_of: Callable[[ResolvedMeasure], Expr],
+) -> Callable[[ResolvedMeasure], Expr]:
+    """*value_of*, reading each measure's average and variance as its own column does.
+
+    For the passes that inline a component's aggregate into the formula,
+    without the measure's cast, which would round it first. Read bare, a
+    component also skipped the exact ``AVG`` and ``variance`` and a ``float``
+    measure's sum or average over doubles (:func:`apply_exact_integer_avg`).
+    Measured in a metric: the average of 10^18 + 2 and 10^18 + 4 read 10^18 on
+    five engines, and Dremio's standard deviation of 10^9 + 0..9 was 0.
+
+    An integer ``SUM`` is read as the engine sums it, not widened as its own
+    column is where the accumulator wraps (:func:`apply_exact_integer_sum`):
+    Dremio divides a ``DECIMAL(38, 0)`` at 6 places, so 2 / 600,000 came back
+    0.0000030000 where the 64-bit sum divides at 19. Past 9.2e18 the sum wraps
+    on ClickHouse and Dremio, as it did.
+    """
+
+    def exact(component: ResolvedMeasure) -> Expr:
+        value = value_of(component)
+        measure = model.effective_measures.get(component.name)
+        if measure is None or dialect is None:
+            return value
+        return apply_exact_integer_avg(value, measure, model.settings, dialect, model)
+
+    return exact
 
 
 def metric_over_components(

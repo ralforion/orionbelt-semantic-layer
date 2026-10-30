@@ -139,10 +139,6 @@ def test_a_default_holds_the_exact_statistic() -> None:
     assert sql.count("COALESCE(CAST(CASE WHEN COUNT(") + sql.count("COALESCE(CASE WHEN COUNT(") == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A derived metric reads its measures' aggregates bare, as it reads an exact AVG",
-)
 def test_a_metric_reads_the_exact_statistics() -> None:
     sql = _sql("Spread Ratio")
 

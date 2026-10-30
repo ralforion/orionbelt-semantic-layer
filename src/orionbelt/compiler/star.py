@@ -17,7 +17,7 @@ from orionbelt.ast.nodes import (
 from orionbelt.compiler.anchored import conformed_join_type, plan_conformed_facts
 from orionbelt.compiler.expr_rewrite import inline_measure_aliases
 from orionbelt.compiler.graph import JoinGraph, JoinStep
-from orionbelt.compiler.metric_expansion import expand_metric_expression
+from orionbelt.compiler.metric_expansion import exact_components, expand_metric_expression
 from orionbelt.compiler.nested import emit_join_step
 from orionbelt.compiler.resolution import (
     ResolvedMeasure,
@@ -62,6 +62,8 @@ def grouping_flag_alias(dim_alias: str) -> str:
 def _substitute_measure_refs(
     expr: Expr,
     components: dict[str, ResolvedMeasure],
+    model: SemanticModel,
+    dialect: Dialect | None,
 ) -> Expr:
     """Inline each of a metric's components into its formula.
 
@@ -69,9 +71,12 @@ def _substitute_measure_refs(
     ``Margin Pct: '{[Margin]} / {[Revenue]}'`` over ``Margin: '{[Revenue]} -
     {[Cost]}'`` resolves down to real aggregates. A cumulative, window, or
     period-over-period component stays a named reference for its own wrapper to
-    resolve — see :mod:`orionbelt.compiler.metric_expansion`.
+    resolve — see :mod:`orionbelt.compiler.metric_expansion`. A measure is read
+    as exactly as its own column, without its cast (:func:`exact_components`).
     """
-    return expand_metric_expression(expr, components, lambda comp: comp.expression)
+    return expand_metric_expression(
+        expr, components, exact_components(model, dialect, lambda comp: comp.expression)
+    )
 
 
 @dataclass
@@ -152,7 +157,9 @@ class StarSchemaPlanner:
         }
         for measure in resolved.measures:
             if measure.component_measures:
-                expr: Expr = _substitute_measure_refs(measure.expression, metric_components)
+                expr: Expr = _substitute_measure_refs(
+                    measure.expression, metric_components, model, dialect
+                )
                 metric = model.metrics.get(measure.name)
                 if metric and dialect:
                     resolved_type = resolve_metric_data_type(metric, settings)

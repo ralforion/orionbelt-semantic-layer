@@ -305,8 +305,7 @@ Precision: Snowflake (over doubles, and its covariance and correlation over
 integers) and Dremio (over doubles, a decimal column without its declared
 places, and its covariance) also subtract sums of squares and have no stable
 function, so on values far from zero, relative to their spread, their result
-loses most or all of its digits. On Dremio a derived metric reading a
-`stddev` or `variance` measure still reads Dremio's own statistic.
+loses most or all of its digits.
 
 Unsupported combinations raise `UNSUPPORTED_AGGREGATION_FOR_DIALECT` at
 compile time. There is no silent fallback. If you need regression on
