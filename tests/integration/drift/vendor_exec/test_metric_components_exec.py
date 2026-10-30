@@ -3,7 +3,8 @@
 A metric's formula inlines its components' aggregates without their casts,
 so it skipped two rewrites a measure's own column gets with them: Dremio's
 exact ``variance`` (``test_exact_variance_exec``) and a ``float`` measure's
-sum taken over doubles, which an engine whose integer accumulator wraps needs.
+sum taken over doubles, which an engine whose integer accumulator wraps needs,
+a DISTINCT one summed exactly and then read as a double.
 Both keep every digit a double has. The exact ``AVG`` is left out: it stops at
 the measure's own places, so the average of 1, 1 and 2 times 3 came back 3.99
 on DuckDB, and the case below holds a metric to 4.00. Both sources are the
@@ -41,12 +42,18 @@ dimensions:
 measures:
   X Avg: {columns: [{dataObject: Values, column: X}], aggregation: avg, resultType: int}
   X Total: {columns: [{dataObject: Values, column: X}], aggregation: sum, resultType: float}
+  X Distinct Total:
+    columns: [{dataObject: Values, column: X}]
+    aggregation: sum
+    distinct: true
+    resultType: float
   X Stddev: {columns: [{dataObject: Values, column: X}], aggregation: stddev, resultType: float}
   F Sum: {columns: [{dataObject: Values, column: F}], aggregation: sum, resultType: float}
 metrics:
   Avg Thrice: {expression: "{[X Avg]} * 3", dataType: "decimal(18, 2)"}
   Avg Share: {expression: "{[X Avg]} / 600000", dataType: "decimal(18, 10)"}
   Total Again: {expression: "{[X Total]} * 1", dataType: double}
+  Distinct Share: {expression: "{[X Distinct Total]} / 600000", dataType: "decimal(18, 10)"}
   Spread: {expression: "{[X Stddev]} * 1", dataType: double}
   Mixed: {expression: "{[X Avg]} + {[X Stddev]} + {[F Sum]}", dataType: double}
 """
@@ -54,6 +61,10 @@ metrics:
 #: The engines whose integer ``SUM`` of two rows of 9e18 answers; BigQuery and
 #: Databricks raise, for the measure alone too.
 SUMS_PAST_64_BITS = {"postgres", "mysql", "snowflake", "clickhouse", "dremio", "duckdb"}
+
+#: The engines that divide an integer at more than 10 places. MySQL keeps 4
+#: and Snowflake 6, by design (``test_decimal_division_exec``).
+TEN_PLACES = {"postgres", "clickhouse", "bigquery", "databricks", "dremio", "duckdb"}
 
 #: (case, metric, rows as (x, f), expected, relative tolerance or None for
 #: exact, engines or None for all).
@@ -72,6 +83,16 @@ CASES: list[tuple[str, str, list[tuple[Any, Any]], Any, float | None, set[str] |
         1.8e19,
         1e-12,
         SUMS_PAST_64_BITS,
+    ),
+    # A float measure's DISTINCT sum is summed exactly, as a 38-digit decimal
+    # where the accumulator wraps, which Dremio divides at 6 places.
+    (
+        "distinct",
+        "Distinct Share",
+        [(0, None), (2, None), (2, None)],
+        Decimal("0.0000033333"),
+        None,
+        TEN_PLACES,
     ),
     # Dremio's own standard deviation of these was 0. Snowflake's of an
     # integer keeps six places of the variance.
