@@ -444,7 +444,7 @@ class TestAMetricMixingAContextWithATotal:
     def test_a_total_component_composes(self) -> None:
         sql = _sql(["Share Of Grand"])
         assert '"Sales"."AMOUNT"' not in sql.split('"base" AS')[-1]
-        assert 'SUM("Grand Revenue") OVER ()' in sql
+        assert 'SUM("base"."Grand Revenue") OVER ()' in sql
 
     def test_it_answers_what_the_two_measures_do(self) -> None:
         direct = _rows(["Unfiltered Revenue", "Grand Revenue"])

@@ -473,8 +473,8 @@ The continuous percentile has the median's types: a floating-point number on Pos
 !!! warning "MySQL GROUP_CONCAT limitations"
     MySQL's `GROUP_CONCAT` silently cuts its result at `group_concat_max_len`, 1024 bytes by default. A statement that uses it (a `listagg` or a `median`) carries `/*+ SET_VAR(group_concat_max_len = 4294967295) */` on its outermost `SELECT`, which lifts the limit for that statement only; the hint has no effect anywhere else in the statement. Additionally, MySQL silently ignores `ORDER BY` when `DISTINCT` is also present in `GROUP_CONCAT`.
 
-!!! warning "Total not supported"
-    `MEDIAN`, `MODE`, `LISTAGG`, and `ANY_VALUE` do not support `total: true` because they cannot be meaningfully re-aggregated via window functions.
+!!! note "Totals of non-additive aggregations"
+    `MEDIAN`, `MODE`, `LISTAGG`, `ANY_VALUE`, the percentiles, the statistics and distinct counts take `total: true` and a `grain` override: no window over the groups combines them, so they are computed again in a CTE of their own (see [Grain and filter context](grain-filter-context.md)).
 
 ## Dialect Plugin Architecture
 

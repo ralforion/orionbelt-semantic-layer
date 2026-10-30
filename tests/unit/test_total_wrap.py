@@ -10,6 +10,7 @@ from orionbelt.ast.nodes import (
     ColumnRef,
     From,
     FunctionCall,
+    JoinType,
     OrderByItem,
     Select,
     WindowFunction,
@@ -335,14 +336,27 @@ class TestReaggMapping:
         assert isinstance(total_col.expr.right, WindowFunction)
         assert total_col.expr.right.func_name == "SUM"
 
-    @pytest.mark.parametrize("agg", ["median", "mode", "listagg", "any_value"])
-    def test_unsupported_total_raises(self, agg: str) -> None:
-        """MODE, LISTAGG, and ANY_VALUE cannot be used with total: true."""
-        ast = _make_ast(measure_names=["Bad Total"])
+    @pytest.mark.parametrize(
+        "agg", ["median", "mode", "listagg", "any_value", "stddev", "count_distinct"]
+    )
+    def test_a_total_no_window_combines_is_computed_apart(self, agg: str) -> None:
+        """No window over per-group values gives these totals: the measure is
+        computed again over the plan's rows, ungrouped, and cross joined."""
+        ast = _make_ast(measure_names=["Whole"])
         resolved = ResolvedQuery(
             dimensions=[_make_dim()],
-            measures=[_make_measure(name="Bad Total", aggregation=agg, total=True)],
+            measures=[_make_measure(name="Whole", aggregation=agg, total=True)],
             base_object="Orders",
         )
-        with pytest.raises(ValueError, match="does not support total"):
-            wrap_with_totals(ast, resolved)
+        result = wrap_with_totals(ast, resolved)
+
+        total_col = result.columns[1]
+        assert isinstance(total_col, AliasedExpr)
+        assert total_col.expr == ColumnRef(name="__ob_value_0", table="__ob_total_0")
+        total = next(c for c in result.ctes if c.name == "__ob_total_0")
+        assert total.query.group_by == []
+        assert total.query.from_ == ast.from_
+        assert [c.alias for c in total.query.columns] == ["__ob_value_0"]
+        assert [j.join_type for j in result.joins] == [JoinType.CROSS]
+        base = next(c for c in result.ctes if c.name == "base")
+        assert "Whole" not in [getattr(c, "alias", None) for c in base.query.columns]

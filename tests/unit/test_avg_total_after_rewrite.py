@@ -62,7 +62,7 @@ def _sql(measure: str, dialect: str) -> str:
 
 
 @pytest.mark.parametrize("dialect", DIALECTS)
-@pytest.mark.parametrize("measure", ["Int Mean", "Float Mean", "Distinct Mean"])
+@pytest.mark.parametrize("measure", ["Int Mean", "Float Mean"])
 def test_the_helpers_read_the_column(measure: str, dialect: str) -> None:
     sql = _sql(measure, dialect)
     assert "SUM(1)" not in sql and "COUNT(1)" not in sql, sql
@@ -78,12 +78,16 @@ def test_the_total_of_2_4_and_6_is_4(measure: str) -> None:
     assert sorted(rows) == [("x", 4), ("y", 4)], rows
 
 
-def test_snowflake_sums_the_distinct_average_exactly() -> None:
-    """The helper reads ``SUM(DISTINCT x)``'s argument, not the double it is
-    cast to."""
-    sql = _sql("Distinct Mean", "snowflake")
-    assert 'SUM("Orders"."quantity") AS "Distinct Mean__sum"' in sql, sql
-    assert 'COUNT("Orders"."quantity") AS "Distinct Mean__count"' in sql, sql
+def test_a_distinct_average_totals_the_distinct_values() -> None:
+    """2 twice, 4 and 6: the distinct values average 4. The helpers summed and
+    counted every row, so the total read 3.5; the average is computed apart."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id VARCHAR, region VARCHAR, quantity BIGINT)")
+    con.execute(
+        "INSERT INTO orders VALUES ('a', 'x', 2), ('b', 'x', 4), ('c', 'y', 6), ('d', 'y', 2)"
+    )
+    rows = con.execute(_sql("Distinct Mean", "duckdb")).fetchall()
+    assert sorted(rows) == [("x", 4), ("y", 4)], rows
 
 
 @pytest.mark.parametrize(

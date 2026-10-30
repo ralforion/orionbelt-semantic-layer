@@ -307,18 +307,38 @@ The compilation pipeline handles grain and filter context in two phases:
 | Phase | Module | Handles |
 |-------|--------|---------|
 | Phase 2.3 | `filter_wrap.py` | Measures with `filterContext` -- isolates into separate CTEs with modified WHERE |
-| Phase 2.5 | `total_wrap.py` | Measures with `grain` (no filterContext) -- window functions `OVER (PARTITION BY ...)` |
+| Phase 2.5 | `total_wrap.py` | Measures with `grain` or `total` (no filterContext) -- window functions `OVER (PARTITION BY ...)`, or a CTE of their own |
 
 ### Strategy Selection
 
 | Grain | Filter context | Strategy |
 |-------|---------------|----------|
 | Same as query | Same as query | Inline (no wrapping needed) |
-| Subset of query dims | Same as query | Window function `OVER (PARTITION BY ...)` |
-| Empty (grand total) | Same as query | Window function `OVER ()` |
+| Subset of query dims | Same as query | Window function `OVER (PARTITION BY ...)` for `sum`, `count`, `min`, `max` and `avg`; otherwise a CTE grouped by the grain + LEFT JOIN on its dims |
+| Empty (grand total) | Same as query | Window function `OVER ()` for `sum`, `count`, `min`, `max` and `avg`; otherwise, and under `rollup` / `cube`, a CTE + CROSS JOIN |
 | Same as query | Different | CTE + LEFT JOIN on all dims |
 | Subset of query dims | Different | CTE + LEFT JOIN on subset dims |
 | Empty (scalar) | Different | CTE + CROSS JOIN |
+
+### Totals and grains a window cannot combine
+
+A window over the query's groups re-aggregates their values: the sum of the
+groups' sums, the largest of their maxima, the sums and counts an average is
+divided from. That is the total only for those aggregations. A standard
+deviation, a variance, a distinct count (or any `distinct: true` measure), a
+median, a percentile, a mode, `first` / `last`, `listagg` and `any_value` of
+the whole are not a combination of the groups' values, so such a measure is
+computed again in a CTE of its own: over the same rows, joins and `WHERE` as
+the query, grouped by the measure's grain (nothing, for a grand total), and
+joined back on the grain's dimensions, a NULL member to its own group. Under
+`rollup` or `cube` every total is computed this way, since the query's groups
+include the subtotal rows. Like a windowed total, it covers the groups a
+`HAVING` removes.
+
+A `grain` override is refused under `rollup` or `cube`: a subtotal row's empty
+dimension may be the rolled-up one or a NULL member. A total computed apart is
+refused in a query whose rows a filterContext or a deduplication on a repeated
+object computes first, in CTEs of finished values.
 
 ### CTE Structure for Filter Context
 

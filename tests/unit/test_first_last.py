@@ -141,9 +141,11 @@ class TestCompile:
     def test_untyped_result(self) -> None:
         assert "AS DECIMAL" not in _sql(CLOSE)
 
-    def test_total_refused(self) -> None:
-        with pytest.raises(Exception, match="does not support total"):
-            _sql(CLOSE + "    total: true\n")
+    def test_a_total_is_computed_apart(self) -> None:
+        """The last value of the whole is not a combination of the groups'."""
+        sql = _sql(CLOSE + "    total: true\n")
+        assert '"__ob_total_0" AS (' in sql
+        assert 'CROSS JOIN "__ob_total_0"' in sql
 
     @pytest.mark.parametrize("dialect", ["mysql", "dremio"])
     def test_refused(self, dialect: str) -> None:
