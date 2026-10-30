@@ -157,3 +157,30 @@ def test_dremio_exact_variance(vendor_dremio: VendorTarget) -> None:
             if abs(value - exact) > abs(exact) / 10**12:
                 wrong.append(f"{label} {measure}: {got}, exact {float(exact)}")
     assert wrong == []
+
+
+@pytest.mark.parametrize("scale", [37, 38])
+def test_dremio_variance_at_the_most_places(vendor_dremio: VendorTarget, scale: int) -> None:
+    """Exact at 37 places; at 38, whose multiplier Dremio cannot hold, its own."""
+    model = f"""\
+version: 1.0
+dataObjects:
+  Values:
+    code: v
+    columns:
+      W: {{code: w, abstractType: decimal, sqlPrecision: 38, sqlScale: {scale}}}
+measures:
+  W variance:
+    columns: [{{dataObject: Values, column: W}}]
+    aggregation: variance
+    resultType: float
+"""
+    rows = ", ".join(
+        f"(CAST('{Decimal(n).scaleb(-scale):f}' AS DECIMAL(38, {scale})))" for n in (1, 2, 3)
+    )
+    store = ModelStore()
+    query = QueryObject.model_validate({"select": {"measures": ["W variance"]}})
+    sql = store.compile_query(store.load_model(model).model_id, query, "dremio").sql
+    got = vendor_dremio.execute(f'WITH "v" AS (SELECT * FROM (VALUES {rows}) AS t("w"))\n{sql}')
+
+    assert math.isclose(got[0]["W variance"], 10.0 ** (-2 * scale), rel_tol=1e-12)

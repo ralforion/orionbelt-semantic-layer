@@ -389,9 +389,14 @@ class DremioDialect(Dialect):
 
         A sum of squares of 10^:attr:`_VARIANCE_SQUARES_LIMIT` units or more,
         as the values' doubles sum them, keeps Dremio's own statistic, as do
-        a DISTINCT one and a group too small for it, where it is NULL.
+        a DISTINCT one and a group too small for it, where it is NULL. So
+        does a decimal of 38 places: its multiplier, 10^38, has a digit more
+        than Dremio's widest decimal, which it read as 0, and every variance
+        as 0 with it.
         """
         if aggregate.distinct or len(aggregate.args) != 1:
+            return None
+        if scale + 1 > self._MAX_DECIMAL_PRECISION:
             return None
         (arg,) = aggregate.args
         name = aggregate.name.upper()

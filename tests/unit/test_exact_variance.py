@@ -25,6 +25,8 @@ STATISTICS = [
     ("Price Variance", "Price", "variance"),
     ("Loose Variance", "Loose", "variance"),
     ("Amount Variance", "Amount", "variance"),
+    ("Fine Variance", "Fine", "variance"),
+    ("Finest Variance", "Finest", "variance"),
 ]
 
 MODEL_YAML = (
@@ -39,6 +41,8 @@ dataObjects:
       Price: {code: price, abstractType: decimal, sqlPrecision: 18, sqlScale: 2}
       Loose: {code: loose, abstractType: decimal}
       Amount: {code: amount, abstractType: float}
+      Fine: {code: fine, abstractType: decimal, sqlPrecision: 38, sqlScale: 37}
+      Finest: {code: finest, abstractType: decimal, sqlPrecision: 38, sqlScale: 38}
 dimensions:
   Day: {dataObject: Charges, column: Day, resultType: int}
 measures:
@@ -118,6 +122,14 @@ def test_a_value_of_unknown_places_keeps_dremios_own(measure: str) -> None:
 
     assert EXACT not in sql
     assert "VARIANCE(" in sql
+
+
+@pytest.mark.parametrize(
+    ("measure", "exact"), [("Fine Variance", True), ("Finest Variance", False)]
+)
+def test_a_decimal_of_38_places_keeps_dremios_own(measure: str, exact: bool) -> None:
+    """Its multiplier, 10^38, has a digit more than Dremio's widest decimal."""
+    assert (EXACT in _sql(measure)) is exact
 
 
 def test_a_default_holds_the_exact_statistic() -> None:

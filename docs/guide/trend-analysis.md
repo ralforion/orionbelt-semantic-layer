@@ -299,7 +299,7 @@ rendering:
   place, their count, sum and sum of squares in `DECIMAL(38, 0)`, shifted by
   the integer mean, rounded once to a double. A group whose sum of squares
   reaches 10^37 of those units keeps Dremio's own statistic, since a larger
-  sum would wrap silently.
+  sum would wrap silently, and so does a decimal of 38 places.
 
 Precision: Snowflake (over doubles, and its covariance and correlation over
 integers) and Dremio (over doubles, a decimal column without its declared
