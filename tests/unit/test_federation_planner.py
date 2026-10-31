@@ -618,7 +618,7 @@ class TestFromRows:
             "__value1",
             "__rows",
         }
-        assert 'range(CAST("__leg"."__rows" AS BIGINT))' in compiled.sql
+        assert 'range(CAST(COALESCE("__leg"."__rows", 0) AS BIGINT))' in compiled.sql
         assert 'FROM "leg_0_rows" AS "leg_0"' in compiled.sql
         assert compiled.warnings == []
 
@@ -1928,13 +1928,25 @@ measures:
     columns: [{{dataObject: Customers, column: Age}}]
     aggregation: {aggregation}
     total: true
+  Doubled Ages: {{expression: "{{[Customers].[Age]}} * 2", aggregation: {aggregation}}}
+  Adult Ages:
+    columns: [{{dataObject: Customers, column: Age}}]
+    aggregation: {aggregation}
+    filters:
+      - column: {{dataObject: Customers, column: Age}}
+        operator: gte
+        values: [{{dataType: int, valueInt: 18}}]
+metrics:
+  Ages per Sale: {{expression: "{{[Ages]}} / {{[Sales Count]}}"}}
 """
 
 REPEATED_TABLES = [
-    "CREATE TABLE sales AS SELECT * FROM (VALUES (1, 1, 10), (2, 1, 11), (3, 2, 10), (4, 3, 11))"
-    " t(id, customer, product)",
-    "CREATE TABLE customers AS SELECT * FROM (VALUES (1, 10, 1), (2, 20, 1), (3, 40, 2))"
-    " t(id, age, region)",
+    # Sale 5's customer is missing.
+    "CREATE TABLE sales AS SELECT * FROM (VALUES (1, 1, 10), (2, 1, 11), (3, 2, 10), (4, 3, 11),"
+    " (5, 9, 10)) t(id, customer, product)",
+    # Customer 4 has no sales.
+    "CREATE TABLE customers AS SELECT * FROM (VALUES (1, 10, 1), (2, 20, 1), (3, 40, 2),"
+    " (4, 70, 2)) t(id, age, region)",
     "CREATE TABLE products AS SELECT * FROM (VALUES (10, 'A'), (11, 'A')) t(id, category)",
     "CREATE TABLE regions AS SELECT * FROM (VALUES (1, 'north'), (2, 'south')) t(id, name)",
 ]
@@ -1966,35 +1978,77 @@ def _repeated(aggregation: str, query: dict[str, Any]) -> tuple[list[Any], list[
 class TestRepeatedRows:
     """A measure counted once per row of an object the joins repeat."""
 
-    def test_from_rows_it_is_refused(self) -> None:
-        """The fact leg's rows repeat customer 1 once per sale; one database
-        takes its age once."""
+    @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance", "median"])
+    @pytest.mark.parametrize("beside", [[], ["Sales Count"]])
+    def test_keys_on_the_many_side_come_from_rows(
+        self, aggregation: str, beside: list[str]
+    ) -> None:
+        """Customer 1's sales reach products 10 and 11, both category A: one
+        database counts the customer once in A, a fact leg of partial results
+        once per product (the sum of ages 10 and 20 was 40, the variance 33.3
+        for 50). From rows, the combine step counts each customer once."""
+        query = {"select": {"dimensions": ["Category"], "measures": ["Ages", *beside]}}
+
+        expected, got = _repeated(aggregation, query)
+
+        assert got == expected
+        assert expected
+
+    @pytest.mark.parametrize("aggregation", ["sum", "count", "avg"])
+    def test_an_expression_a_filter_and_a_metric_from_rows(self, aggregation: str) -> None:
+        query = {
+            "select": {
+                "dimensions": ["Category"],
+                "measures": ["Doubled Ages", "Adult Ages", "Ages per Sale", "Sales Count"],
+            }
+        }
+
+        expected, got = _repeated(aggregation, query)
+
+        assert got == expected
+        assert expected
+
+    def test_measures_of_two_repeated_objects_from_rows_are_refused(self) -> None:
         yaml = REPEATED.format(
-            facts="    dataSource: facts\n",
-            labels="    dataSource: labels\n",
-            aggregation="median",
+            facts="    dataSource: facts\n", labels="    dataSource: labels\n", aggregation="sum"
+        ).replace(
+            "  Products:\n    code: products\n    dataSource: labels\n",
+            "  Products:\n    code: products\n    dataSource: facts\n",
+        ) + (
+            "  Products Counted: {columns: [{dataObject: Products, column: ID}], "
+            "aggregation: count}\n"
         )
+        yaml = yaml.replace("metrics:\n", "").replace(
+            '  Ages per Sale: {expression: "{[Ages]} / {[Sales Count]}"}\n', ""
+        )
+        query = {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Ages", "Products Counted", "Sales Count"],
+            }
+        }
 
         with pytest.raises(ResolutionError) as caught:
-            _compile(yaml, {"select": {"dimensions": ["Category"], "measures": ["Ages"]}})
+            _compile(yaml, query)
 
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_AGGREGATION"
-        assert "repeat each row of 'Customers'" in error.message
+        assert "measures of Customers, Products count each of their rows once" in error.message
 
-    @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
-    @pytest.mark.parametrize("beside", [[], ["Sales Count"]])
-    def test_keys_on_the_many_side_are_refused(self, aggregation: str, beside: list[str]) -> None:
-        """Customer 1's sales reach products 10 and 11, both category A: one
-        database counts the customer once in A, the fact leg once per product.
-        Combined, the sum of ages 10 and 20 was 40, the variance 33.3 for 50."""
-        query = {"select": {"dimensions": ["Category"], "measures": ["Ages", *beside]}}
+    def test_the_combine_step_reads_the_objects_rows_once_each(self) -> None:
+        yaml = REPEATED.format(
+            facts="    dataSource: facts\n", labels="    dataSource: labels\n", aggregation="sum"
+        )
+        compiled = _compile(yaml, {"select": {"dimensions": ["Category"], "measures": ["Ages"]}})
 
-        with pytest.raises(ResolutionError) as caught:
-            _repeated(aggregation, query)
-
-        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_AGGREGATION"]
-        assert "the key of the join from 'Sales' to 'Products'" in caught.value.errors[0].message
+        fact = compiled.federation.legs[0]
+        assert fact.rows == "__rows"
+        # The customer's identity and age, once each, joined from the fact rows.
+        assert (
+            'SELECT DISTINCT "__value0", "__value1"\nFROM "leg_0"\nWHERE "__value1" IS NOT NULL'
+        ) in compiled.sql
+        assert 'LEFT JOIN "leg_0_once" AS "leg_0_once"' in compiled.sql
+        assert compiled.warnings == []
 
     @pytest.mark.parametrize("aggregation", ["min", "max", "count_distinct"])
     def test_what_repeated_rows_do_not_change_combines(self, aggregation: str) -> None:
@@ -2006,7 +2060,9 @@ class TestRepeatedRows:
         assert expected
 
     @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
-    def test_a_filter_after_the_join_on_the_many_side_is_refused(self, aggregation: str) -> None:
+    def test_a_filter_after_the_join_on_the_many_side_comes_from_rows(
+        self, aggregation: str
+    ) -> None:
         """The join starts at customers, but the OR runs after the join, so the
         fact leg groups by the product ID it reads too: customer 1 has two."""
         query = {
@@ -2022,13 +2078,10 @@ class TestRepeatedRows:
             ],
         }
 
-        with pytest.raises(ResolutionError) as caught:
-            _repeated(aggregation, query)
+        expected, got = _repeated(aggregation, query)
 
-        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_AGGREGATION"]
-        assert "dimension 'Product ID', which a filter after the join reads" in (
-            caught.value.errors[0].message
-        )
+        assert got == expected
+        assert expected
 
     @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
     def test_a_filter_after_the_join_on_the_object_itself_combines(self, aggregation: str) -> None:
@@ -2052,29 +2105,14 @@ class TestRepeatedRows:
 
     @pytest.mark.parametrize("grouping", ["rollup", "cube"])
     @pytest.mark.parametrize("aggregation", ["sum", "variance"])
-    def test_subtotals_across_the_many_side_are_refused(
+    def test_subtotals_across_the_many_side_come_from_rows(
         self, grouping: str, aggregation: str
     ) -> None:
-        """Per region and product the leg's groups are right, but the region's
-        subtotal adds customer 1's two product groups: ages summed to 40 for
+        """Per region and product a leg's groups are right, but the region's
+        subtotal added customer 1's two product groups: ages summed to 40 for
         30, their variance 33.3 for 50."""
         query = {
             "select": {"dimensions": ["Region", "Product ID"], "measures": ["Ages"]},
-            "grouping": grouping,
-        }
-
-        with pytest.raises(ResolutionError) as caught:
-            _repeated(aggregation, query)
-
-        assert "which the query's subtotals add across" in caught.value.errors[0].message
-
-    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
-    @pytest.mark.parametrize("aggregation", ["sum", "variance"])
-    def test_subtotals_across_the_object_itself_combine(
-        self, grouping: str, aggregation: str
-    ) -> None:
-        query = {
-            "select": {"dimensions": ["Region", "Age"], "measures": ["Ages", "Sales Count"]},
             "grouping": grouping,
         }
 
@@ -2083,19 +2121,37 @@ class TestRepeatedRows:
         assert got == expected
         assert expected
 
-    @pytest.mark.parametrize(("dimension", "refused"), [("Product ID", True), ("Age", False)])
-    def test_a_total_across_the_many_side_is_refused(self, dimension: str, refused: bool) -> None:
-        """A total adds every group, as a grand total does: 80 for 70."""
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    @pytest.mark.parametrize("aggregation", ["sum", "variance"])
+    def test_subtotals_across_the_object_itself_combine(
+        self, grouping: str, aggregation: str
+    ) -> None:
+        """Over doubles: the variance of the grand total is 700 from exact
+        moments, 700.0000000000001 from DuckDB's own VAR_SAMP on one source."""
+        query = {
+            "select": {"dimensions": ["Region", "Age"], "measures": ["Ages", "Sales Count"]},
+            "grouping": grouping,
+        }
+
+        expected, got = _repeated(aggregation, query)
+
+        assert len(got) == len(expected)
+        for row, want in zip(got, expected, strict=True):
+            assert row == tuple(
+                pytest.approx(v, rel=1e-12) if isinstance(v, float) else v for v in want
+            )
+        assert expected
+
+    @pytest.mark.parametrize("dimension", ["Product ID", "Age"])
+    def test_a_total(self, dimension: str) -> None:
+        """A total adds every group, as a grand total does: across products,
+        partial results made it 80 for 70."""
         query = {"select": {"dimensions": ["Region", dimension], "measures": ["Ages Total"]}}
 
-        if refused:
-            with pytest.raises(ResolutionError) as caught:
-                _repeated("sum", query)
-            assert "which its total adds across" in caught.value.errors[0].message
-        else:
-            expected, got = _repeated("sum", query)
-            assert got == expected
-            assert expected
+        expected, got = _repeated("sum", query)
+
+        assert got == expected
+        assert expected
 
     @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
     def test_keys_of_the_object_itself_combine(self, aggregation: str) -> None:
