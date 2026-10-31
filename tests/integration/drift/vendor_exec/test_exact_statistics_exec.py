@@ -417,6 +417,36 @@ def test_postgres_exact_paired_statistics(vendor_postgres: VendorTarget) -> None
     _assert_paired(vendor_postgres, _wide_groups())
 
 
+@pytest.mark.parametrize("places", [100, 160])
+def test_postgres_at_many_places(vendor_postgres: VendorTarget, places: int) -> None:
+    """Exact at 100 places; past 150, whose powers of ten no double holds,
+    PostgreSQL's own: at 160 the route's ``CAST('1E320' AS DOUBLE PRECISION)``
+    raised, in a branch not taken too."""
+    kind = f"NUMERIC({places + 2}, {places})"
+    measures = {
+        f"{name} S": f"{{columns: [{{dataObject: V, column: X}}, {{dataObject: V, column: Y}}], "
+        f"aggregation: {name}, resultType: float}}"
+        for name in ("covar_samp", "corr", "regr_slope")
+    }
+    model = (
+        "version: 1.0\ndataObjects:\n  V:\n    code: v\n    columns:\n"
+        f"      X: {{code: x, abstractType: decimal, sqlPrecision: {places + 2}, "
+        f"sqlScale: {places}}}\n"
+        f"      Y: {{code: y, abstractType: decimal, sqlPrecision: {places + 2}, "
+        f"sqlScale: {places}}}\n"
+        "measures:\n" + "".join(f"  {name}: {spec}\n" for name, spec in measures.items())
+    )
+    rows = " UNION ALL ".join(
+        f"SELECT CAST('{v}' AS {kind}) AS \"x\", CAST('{v}' AS {kind}) AS \"y\"" for v in (1, 2, 3)
+    )
+    store = ModelStore()
+    query = QueryObject.model_validate({"select": {"measures": list(measures)}})
+    sql = store.compile_query(store.load_model(model).model_id, query, "postgres").sql
+    (row,) = vendor_postgres.execute(f'WITH "v" AS ({rows})\n{sql}')
+
+    assert {name: row[name] for name in measures} == dict.fromkeys(measures, 1.0)
+
+
 def test_mysql_exact_variance(vendor_mysql: VendorTarget) -> None:
     """Over 10^17 + 0..5 its own variance was 0."""
     groups = _wide_groups()

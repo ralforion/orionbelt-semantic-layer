@@ -305,12 +305,14 @@ rendering:
   `VARIANCE`, read their values as doubles, so an integer or a decimal past a
   double's 53 bits loses its last digits first: over 10^17 + 0..5 PostgreSQL's
   covariance came back as 0 and its correlation NULL, and MySQL's variance as 0.
-  OBSL computes them from the same exact moments, in `NUMERIC` on PostgreSQL,
-  which holds any sum, and in `DECIMAL(65, 0)` on MySQL. PostgreSQL's own
-  variance of an integer or a decimal is `NUMERIC`, exact, and is kept.
-- A group whose sum of squares reaches 10^37 of those units (10^63 on MySQL)
-  keeps the engine's own statistic, since a larger sum would wrap silently on
-  Dremio, and so does a decimal of 38 places. Snowflake raises past 128 bits in
+  OBSL computes them from the same exact moments, in `NUMERIC` on PostgreSQL
+  and in `DECIMAL(65, 0)` on MySQL. PostgreSQL's own variance of an integer or a
+  decimal is `NUMERIC`, exact, and is kept.
+- A group whose sum of squares reaches 10^37 of those units (10^63 on MySQL,
+  10^300 on PostgreSQL, within the double the result is rounded to) keeps the
+  engine's own statistic, since a larger sum would wrap silently on Dremio, and
+  so does a decimal of 38 places, or of more than 150 on PostgreSQL, whose
+  powers of ten no double holds. Snowflake raises past 128 bits in
   any `SUM` a query computes, so there a value of 10^13 units or more is left
   out of the exact sums and its group keeps Snowflake's own.
 - The regression intercept is the mean of the first argument less the slope

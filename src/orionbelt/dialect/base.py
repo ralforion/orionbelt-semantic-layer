@@ -838,8 +838,14 @@ class Dialect(ABC):
     #: Past 128 bits Dremio's ``SUM`` wraps silently - three squares of 9e18
     #: summed to -9.7e37 - and a product or a sum past them is 0; Snowflake's
     #: raises past 38 digits. This leaves room for the double the limit is
-    #: tested with. ``None`` where :attr:`_MOMENTS_INTEGER` holds any sum.
-    _MOMENTS_LIMIT: int | None = 37
+    #: tested with, and the sums are rounded to.
+    _MOMENTS_LIMIT = 37
+
+    #: The most places :meth:`_statistic_from_moments` reads a decimal at: it
+    #: scales by powers of ten written as doubles, which reach 10^308, up to
+    #: twice its places, and PostgreSQL refused ``CAST('1E320' AS DOUBLE
+    #: PRECISION)`` for a ``NUMERIC(162, 160)``, in a branch not taken too.
+    _MOMENTS_MOST_PLACES = 150
 
     #: The types :meth:`_statistic_from_moments` sums whole numbers of units
     #: in, divides by the count in, and rounds to at the end, as this engine
@@ -889,8 +895,7 @@ class Dialect(ABC):
         argument less the slope times the second's, in doubles.
 
         A sum of squares of 10^:attr:`_MOMENTS_LIMIT` units or more, as the
-        values' doubles sum them, keeps the engine's own statistic (where the
-        engine has a limit: :attr:`_MOMENTS_INTEGER` may hold any sum), as does a
+        values' doubles sum them, keeps the engine's own statistic, as does a
         value of :attr:`_MOMENTS_ROW_DIGITS` digits or more where that is set,
         a DISTINCT one and a group too small for it, where it is NULL. So does
         a decimal of 38 places: its multiplier, 10^38, has a digit more than
@@ -902,7 +907,9 @@ class Dialect(ABC):
         args = aggregate.args
         if aggregate.distinct or len(args) != len(scales) or len(args) not in (1, 2):
             return None
-        most_places = self._MAX_DECIMAL_PRECISION - (self._MOMENTS_ROW_DIGITS or 1)
+        most_places = min(
+            self._MAX_DECIMAL_PRECISION - (self._MOMENTS_ROW_DIGITS or 1), self._MOMENTS_MOST_PLACES
+        )
         if any(scale > most_places for scale in scales):
             return None
 
@@ -999,10 +1006,8 @@ class Dialect(ABC):
         # Of the values the sums read: a value without its pair counts in neither.
         for paired, scale in zip(values, scales, strict=True):
             value = double(paired)
-            if self._MOMENTS_LIMIT is not None:
-                squares = call("SUM", op(value, "*", value))
-                limit = power(self._MOMENTS_LIMIT - 2 * scale)
-                fits = op(fits, "AND", op(squares, "<", limit))
+            squares = call("SUM", op(value, "*", value))
+            fits = op(fits, "AND", op(squares, "<", power(self._MOMENTS_LIMIT - 2 * scale)))
             if self._MOMENTS_ROW_DIGITS is not None:
                 largest = call("MAX", magnitude(paired))
                 bound = power(self._MOMENTS_ROW_DIGITS - scale)

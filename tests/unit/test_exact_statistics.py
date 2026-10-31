@@ -208,18 +208,47 @@ def test_postgres_keeps_its_own_numeric_variance() -> None:
     assert EXACT not in _sql("Price Variance", "postgres")
 
 
-def test_postgres_sums_in_numeric_without_a_limit() -> None:
-    """``NUMERIC`` holds any sum: no group keeps the engine's own for its size."""
+def test_postgres_sums_in_numeric_under_what_a_double_holds() -> None:
+    """``NUMERIC`` holds any sum; the double it is rounded to, 1.8e308."""
     sql = _sql("Qty Price covar_samp", "postgres")
 
     assert (
         'CAST(CAST(CASE WHEN "Charges"."qty" IS NOT NULL THEN "Charges"."price" END AS NUMERIC)'
-        in (sql)
+        in sql
     )
     assert "AS DOUBLE PRECISION)" in sql
     assert "AS DOUBLE)" not in sql
-    assert "< CAST('1E" not in sql
-    assert "COUNT(CASE WHEN" in sql and ") >= 2 THEN" in sql
+    # 10^300 units: the integers at 0 places, the decimals at 2.
+    assert "< CAST('1E300' AS DOUBLE PRECISION)" in sql
+    assert "< CAST('1E296' AS DOUBLE PRECISION)" in sql
+
+
+@pytest.mark.parametrize(("places", "exact"), [(150, True), (151, False)])
+def test_postgres_keeps_its_own_past_150_places(places: int, exact: bool) -> None:
+    """The route scales by powers of ten written as doubles, up to twice the
+    places: PostgreSQL refused ``CAST('1E320' AS DOUBLE PRECISION)`` for a
+    ``NUMERIC(162, 160)``, in a branch not taken too."""
+    model = f"""
+version: "1.0"
+dataObjects:
+  T:
+    code: t
+    columns:
+      X: {{code: x, abstractType: decimal, sqlPrecision: {places + 2}, sqlScale: {places}}}
+      Y: {{code: y, abstractType: decimal, sqlPrecision: {places + 2}, sqlScale: {places}}}
+measures:
+  Spread:
+    columns: [{{dataObject: T, column: X}}, {{dataObject: T, column: Y}}]
+    aggregation: covar_samp
+    resultType: float
+"""
+    raw, source_map = TrackedLoader().load_string(model)
+    resolved, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = QueryObject(select=QuerySelect(measures=["Spread"]))
+    sql = CompilationPipeline().compile(query, resolved, "postgres").sql
+
+    assert (EXACT in sql) is exact
 
 
 @pytest.mark.parametrize("dialect", ["snowflake", "dremio"])

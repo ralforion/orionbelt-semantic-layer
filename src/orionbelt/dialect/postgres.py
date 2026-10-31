@@ -24,12 +24,13 @@ class PostgresDialect(Dialect):
     _EXACT_SQUARE = ("NUMERIC", 16383)
 
     # Exact moments (Dialect._statistic_from_moments) in NUMERIC, which holds
-    # any sum, so no group keeps the engine's own for its size.
+    # any sum: the limit is the double they are rounded to, which reaches
+    # 1.8e308. A NUMERIC(162, 160) of 1, 2, 3 in units passed it.
     _MOMENTS_INTEGER = "NUMERIC"
     _MOMENTS_COUNT = "NUMERIC"
     _MOMENTS_DOUBLE = "DOUBLE PRECISION"
     _MOMENTS_DECIMAL = "NUMERIC"
-    _MOMENTS_LIMIT = None
+    _MOMENTS_LIMIT = 300
 
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "BIGINT",
