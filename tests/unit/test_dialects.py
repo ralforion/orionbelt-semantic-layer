@@ -1363,8 +1363,15 @@ class TestStatisticRendering:
             (
                 "dremio",
                 "COVAR_SAMP",
-                'CASE WHEN COUNT(CASE WHEN "x" IS NOT NULL AND "y" IS NOT NULL THEN 1 END) > 1 '
+                'CASE WHEN COUNT(CASE WHEN "x" IS NOT NULL AND "y" IS NOT NULL THEN 1 END) >= 2 '
                 'THEN COVAR_SAMP("x", "y") END',
+            ),
+            # Over no pair Dremio answered 0.
+            (
+                "dremio",
+                "COVAR_POP",
+                'CASE WHEN COUNT(CASE WHEN "x" IS NOT NULL AND "y" IS NOT NULL THEN 1 END) >= 1 '
+                'THEN COVAR_POP("x", "y") END',
             ),
             (
                 "databricks",

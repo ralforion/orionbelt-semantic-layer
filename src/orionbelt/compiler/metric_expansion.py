@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.expr_rewrite import map_column_refs
 from orionbelt.compiler.type_resolver import (
-    apply_exact_variance,
+    apply_exact_statistic,
     apply_float_input,
     resolve_metric_data_type,
 )
@@ -149,7 +149,7 @@ def exact_components(
     without the measure's cast, which would round it first. Read bare, a
     component skipped two rewrites its own column gets, which keep every digit
     a double has: Dremio's exact ``variance`` and ``stddev``
-    (:func:`apply_exact_variance`; its standard deviation of 10^9 + 0..9 was 0
+    (:func:`apply_exact_statistic`; its standard deviation of 10^9 + 0..9 was 0
     in a metric), and a ``float`` measure's sum or average taken over doubles
     (:func:`apply_float_input`; an integer sum past 9.2e18 wrapped on
     ClickHouse and Dremio).
@@ -166,7 +166,7 @@ def exact_components(
         measure = model.effective_measures.get(component.name)
         if measure is None or dialect is None:
             return value
-        value = apply_exact_variance(value, measure, dialect, model)
+        value = apply_exact_statistic(value, measure, dialect, model)
         return apply_float_input(value, measure, model.settings, dialect, model)
 
     return exact

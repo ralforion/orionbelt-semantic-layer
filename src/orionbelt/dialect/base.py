@@ -819,18 +819,179 @@ class Dialect(ABC):
         wide = Cast(expr=arg, type_name=wide_type.format(scale=scale))
         return BinaryOp(left=wide, op="*", right=wide)
 
-    def exact_variance(self, aggregate: FunctionCall, scale: int) -> Expr | None:
-        """*aggregate*, a ``VARIANCE``, ``VAR_POP``, ``STDDEV`` or ``STDDEV_POP``
-        of one argument, computed without cancelling, or ``None`` to keep it.
+    def exact_statistic(self, aggregate: FunctionCall, scales: tuple[int, ...]) -> Expr | None:
+        """*aggregate*, a variance, standard deviation, covariance, ``CORR`` or
+        regression, computed without cancelling, or ``None`` to keep it.
 
-        Its argument is an integer (*scale* 0) or a decimal of *scale* places.
-        ``None`` - the default - where the engine's own statistic of integers
-        and decimals is right far from zero, as measured on seven engines: over
-        10^9 + 0..9 they answer 9.1666..., Snowflake to six places for
-        integers. Dremio's answered 0 there, and 2.5e14 and a negative variance
-        further out, and it overrides this.
+        Each argument is an integer (scale 0) or a decimal of its scale's
+        places, *scales* in the arguments' order. ``None`` - the default -
+        where the engine's own statistic of integers and decimals is right far
+        from zero, as measured over 10^9 + 0..9: Dremio's variance answered 0
+        there and its covariance 142.2 for 18.5, Snowflake's covariance 0 and
+        its correlation and regression NULL. Those two override this with
+        :meth:`_statistic_from_moments`.
         """
         return None
+
+    #: The sum of squares of one argument, in units of its last place, from
+    #: which :meth:`_statistic_from_moments` keeps the engine's own statistic.
+    #: Past 128 bits Dremio's ``SUM`` wraps silently - three squares of 9e18
+    #: summed to -9.7e37 - and a product or a sum past them is 0; Snowflake's
+    #: raises past 38 digits. This leaves room for the double the limit is
+    #: tested with.
+    _MOMENTS_LIMIT = 37
+
+    #: Where every aggregate is computed whichever branch a ``CASE`` takes, and
+    #: a ``SUM`` past 128 bits raises rather than wraps, the most digits a value
+    #: of :meth:`_statistic_from_moments` has in units: a larger one is left out
+    #: of the exact sums, and its group keeps the engine's own statistic. A sum
+    #: of values under ``10^13`` units reaches 128 bits in no fewer than about
+    #: 10^12 rows. Such an engine raises when the unscaled product a value is
+    #: put in units with passes 128 bits too, so a decimal of more than 38 less
+    #: these places keeps its own statistic. ``None`` where an overflow only
+    #: wraps.
+    _MOMENTS_ROW_DIGITS: int | None = None
+
+    def _statistic_from_moments(
+        self, aggregate: FunctionCall, scales: tuple[int, ...]
+    ) -> Expr | None:
+        """*aggregate* from exact moments, shifted by the integer means.
+
+        Each value ``x`` becomes ``u``, a whole number of its last place
+        (``x * 10^scale``, exact: the product has no places to round). For a
+        pair, only the rows where both values are count. Over them, ``N``, the
+        sums ``Sa`` and ``Sb`` and the sums of products are exact in
+        ``DECIMAL(38, 0)``. The co-moment ``Sab - Sa * Sb / N``, whose
+        division is where floating point cancels, is taken through ``Sa``'s
+        quotient ``qa`` and remainder ``ra`` by ``N``, and ``Sb``'s:
+        ``Sab - qa * Sb - ra * qb - ra * rb / N``, the last by its own quotient
+        and remainder. No term exceeds the larger sum of squares, and the one
+        rounding is to a double at the end. A variance is the co-moment of a
+        value with itself, as DuckDB's :meth:`combined_variance` computes it.
+
+        Each quotient divides a multiple of its divisor, as a decimal ``/``
+        may round (Dremio's does), and none reaches the 32 integer digits past
+        which Dremio's returns 0: ``qa`` is at most the largest ``|u|``,
+        ``ra * rb / N`` below ``N``. The correlation and the regression slope
+        are ratios of the co-moments, the intercept the mean of the first
+        argument less the slope times the second's, in doubles.
+
+        A sum of squares of 10^:attr:`_MOMENTS_LIMIT` units or more, as the
+        values' doubles sum them, keeps the engine's own statistic, as does a
+        value of :attr:`_MOMENTS_ROW_DIGITS` digits or more where that is set,
+        a DISTINCT one and a group too small for it, where it is NULL. So does
+        a decimal of 38 places: its multiplier, 10^38, has a digit more than
+        the widest decimal, which Dremio read as 0. Snowflake raised on a
+        ``DECIMAL(38, 37)`` of 10^-33, whose unscaled product, 10^41, passes
+        128 bits, hence :attr:`_MOMENTS_ROW_DIGITS`' limit on the places.
+        """
+        name = aggregate.name.upper()
+        args = aggregate.args
+        if aggregate.distinct or len(args) != len(scales) or len(args) not in (1, 2):
+            return None
+        most_places = self._MAX_DECIMAL_PRECISION - (self._MOMENTS_ROW_DIGITS or 1)
+        if any(scale > most_places for scale in scales):
+            return None
+
+        def op(left: Expr, operator: str, right: Expr) -> Expr:
+            return BinaryOp(left=left, op=operator, right=right)
+
+        def call(function: str, *operands: Expr) -> Expr:
+            return FunctionCall(name=function, args=list(operands))
+
+        def integer(expr: Expr) -> Expr:
+            return Cast(expr=expr, type_name="DECIMAL(38, 0)")
+
+        def double(expr: Expr) -> Expr:
+            return Cast(expr=expr, type_name="DOUBLE")
+
+        def power(exponent: int) -> Expr:
+            return double(Literal.string(f"1E{exponent}"))
+
+        def scaled(value: Expr, places: int) -> Expr:
+            """*value* over ``10^places``; *places* may be negative."""
+            return op(value, "/", power(places)) if places else value
+
+        def quotient(dividend: Expr, divisor: Expr) -> Expr:
+            whole = integer(op(dividend, "-", call("MOD", dividend, divisor)))
+            return integer(op(whole, "/", divisor))
+
+        def magnitude(value: Expr) -> Expr:
+            return call("ABS", double(value))
+
+        def units(value: Expr, scale: int) -> Expr:
+            if self._MOMENTS_ROW_DIGITS is not None:
+                small = op(magnitude(value), "<", power(self._MOMENTS_ROW_DIGITS - scale))
+                value = CaseExpr(when_clauses=[(small, value)])
+            if not scale:
+                return integer(value)
+            shift = Cast(
+                expr=Literal.string(f"1{'0' * scale}"), type_name=f"DECIMAL({scale + 1}, 0)"
+            )
+            return integer(op(Cast(expr=value, type_name=f"DECIMAL(38, {scale})"), "*", shift))
+
+        # A pair counts only where both of its values are.
+        values = list(args)
+        if len(args) == 2:
+            values = [
+                CaseExpr(when_clauses=[(IsNull(expr=args[1 - i], negated=True), args[i])])
+                for i in range(2)
+            ]
+        us = [units(value, scale) for value, scale in zip(values, scales, strict=True)]
+        count = call("COUNT", values[0])
+        n = Cast(expr=call("NULLIF", count, Literal.number(0)), type_name="DECIMAL(19, 0)")
+        sums = [call("SUM", u) for u in us]
+
+        def co_moment(i: int, j: int) -> Expr:
+            """``S_ij - S_i * S_j / N`` as a double, by the integer means."""
+            r_i, r_j = call("MOD", sums[i], n), call("MOD", sums[j], n)
+            shifted = integer(
+                op(
+                    integer(op(quotient(sums[i], n), "*", sums[j])),
+                    "+",
+                    integer(op(r_i, "*", quotient(sums[j], n))),
+                )
+            )
+            rest = integer(op(r_i, "*", r_j))
+            products = call("SUM", op(us[i], "*", us[j]))
+            whole = integer(op(integer(op(products, "-", shifted)), "-", quotient(rest, n)))
+            return op(double(whole), "-", op(double(call("MOD", rest, n)), "/", double(n)))
+
+        def mean(i: int) -> Expr:
+            whole = double(quotient(sums[i], n))
+            fraction = op(double(call("MOD", sums[i], n)), "/", double(n))
+            return scaled(op(whole, "+", fraction), scales[i])
+
+        sample = name in ("VARIANCE", "VAR_SAMP", "STDDEV", "STDDEV_SAMP", "COVAR_SAMP")
+        divisor = call("NULLIF", op(n, "-", Literal.number(1)), Literal.number(0)) if sample else n
+        statistic: Expr
+        if len(args) == 1:
+            statistic = scaled(op(co_moment(0, 0), "/", double(divisor)), 2 * scales[0])
+            if name.startswith("STDDEV"):
+                statistic = call("SQRT", statistic)
+        elif name in ("COVAR_SAMP", "COVAR_POP"):
+            statistic = scaled(op(co_moment(0, 1), "/", double(divisor)), sum(scales))
+        elif name == "CORR":
+            spreads = op(call("SQRT", co_moment(0, 0)), "*", call("SQRT", co_moment(1, 1)))
+            statistic = op(co_moment(0, 1), "/", call("NULLIF", spreads, Literal.number(0)))
+        elif name in ("REGR_SLOPE", "REGR_INTERCEPT"):
+            ratio = op(co_moment(0, 1), "/", call("NULLIF", co_moment(1, 1), Literal.number(0)))
+            statistic = slope = scaled(ratio, scales[0] - scales[1])
+            if name == "REGR_INTERCEPT":
+                statistic = op(mean(0), "-", op(slope, "*", mean(1)))
+        else:
+            return None
+        fits: Expr = op(count, ">=", Literal.number(2 if sample else 1))
+        # Of the values the sums read: a value without its pair counts in neither.
+        for paired, scale in zip(values, scales, strict=True):
+            value = double(paired)
+            squares = call("SUM", op(value, "*", value))
+            fits = op(fits, "AND", op(squares, "<", power(self._MOMENTS_LIMIT - 2 * scale)))
+            if self._MOMENTS_ROW_DIGITS is not None:
+                largest = call("MAX", magnitude(paired))
+                bound = power(self._MOMENTS_ROW_DIGITS - scale)
+                fits = op(fits, "AND", op(largest, "<", bound))
+        return CaseExpr(when_clauses=[(fits, statistic)], else_clause=aggregate)
 
     def combined_variance(
         self, count: Expr, total: Expr, squares: Expr, scale: int, *, sample: bool

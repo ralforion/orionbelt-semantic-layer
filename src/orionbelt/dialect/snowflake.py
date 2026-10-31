@@ -38,6 +38,26 @@ class SnowflakeDialect(Dialect):
     #: exactly, measured, and of 7 would not.
     _EXACT_SQUARE = ("NUMBER(38, {scale})", 6)
 
+    #: Measured: a ``SUM`` of ``NUMBER(38, 0)`` past 128 bits raises "Value
+    #: overflow in a SUM aggregate", inside a ``CASE`` branch not taken too.
+    #: Snowflake's own ``VARIANCE`` of three BIGINTs of 9e18 raised it.
+    _MOMENTS_ROW_DIGITS = 13
+
+    def exact_statistic(self, aggregate: FunctionCall, scales: tuple[int, ...]) -> Expr | None:
+        """A covariance, ``CORR`` or regression from exact moments
+        (:meth:`Dialect._statistic_from_moments`).
+
+        Snowflake subtracts sums of products as doubles, over integers and
+        decimals alike: over 10^9 + 0..9 against a second column, a covariance
+        of 18.5 came back 0, and the correlation and regression NULL, their
+        variance 0 too; over 10^15 + 0..9, -1.25e14. Its own variance and
+        standard deviation of a ``NUMBER`` are exact, to six places for
+        integers, and are kept.
+        """
+        if len(aggregate.args) != 2:
+            return None
+        return self._statistic_from_moments(aggregate, scales)
+
     _percentile_cont_over_doubles = True
 
     def _compile_ordered_value(self, last: bool, value: Expr, key: Expr) -> str:

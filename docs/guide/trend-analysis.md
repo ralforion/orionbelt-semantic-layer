@@ -291,19 +291,27 @@ rendering:
   and Databricks fails the query with `DIVIDE_BY_ZERO` when a `corr` sits beside
   a covariance or regression, so OBSL guards each.
 - Dremio cannot parse `CORR` or `REGR_*`, so they are refused at compile time.
-- Dremio's `STDDEV` and `VARIANCE` subtract sums of squares as doubles: the
-  variance of 10^9 + 0..9 came back as 0, of 10^17 + 0..9 negative. Over
-  integers, and over a decimal column declared with `sqlPrecision` and
-  `sqlScale`, OBSL computes `stddev`, `stddev_pop`, `variance` and `var_pop`
-  there from exact moments instead: each value as a whole number of its last
-  place, their count, sum and sum of squares in `DECIMAL(38, 0)`, shifted by
-  the integer mean, rounded once to a double. A group whose sum of squares
-  reaches 10^37 of those units keeps Dremio's own statistic, since a larger
-  sum would wrap silently, and so does a decimal of 38 places.
+- Dremio's `STDDEV`, `VARIANCE` and covariances, and Snowflake's covariances,
+  `CORR` and regressions, subtract sums of squares or products as doubles: on
+  Dremio the variance of 10^9 + 0..9 came back as 0 and a covariance of 18.5
+  there as 142.2; on Snowflake that covariance came back as 0 and the
+  correlation and regression NULL. Over integers, and over decimal columns
+  declared with `sqlPrecision` and `sqlScale`, OBSL computes them there from
+  exact moments instead: each value as a whole number of its last place, the
+  count, sums and sums of squares and products in `DECIMAL(38, 0)`, shifted by
+  the integer means, rounded once to a double. A pair counts where both of its
+  values are. Snowflake's own variance of a `NUMBER` is exact and is kept.
+- A group whose sum of squares reaches 10^37 of those units keeps the engine's
+  own statistic, since a larger sum would wrap silently on Dremio, and so does
+  a decimal of 38 places. Snowflake raises past 128 bits in any `SUM` a query
+  computes, so there a value of 10^13 units or more is left out of the exact
+  sums and its group keeps Snowflake's own.
+- The regression intercept is the mean of the first argument less the slope
+  times the second's, in doubles: exact to a double's precision of those two
+  terms, as on the engines that compute it themselves.
 
-Precision: Snowflake (over doubles, and its covariance and correlation over
-integers) and Dremio (over doubles, a decimal column without its declared
-places, and its covariance) also subtract sums of squares and have no stable
+Precision: Snowflake and Dremio over doubles, and over a decimal column
+without its declared places, also subtract sums of squares and have no stable
 function, so on values far from zero, relative to their spread, their result
 loses most or all of its digits.
 
