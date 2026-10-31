@@ -694,6 +694,29 @@ class MySQLDialect(Dialect):
     #: are 2.14 and 4.57, and 0 over one value, whose sample statistics are NULL.
     _STATISTIC_NAMES = {"STDDEV": "STDDEV_SAMP", "VARIANCE": "VAR_SAMP"}
 
+    # Exact moments (Dialect._statistic_from_moments) in DECIMAL(65, 0): a sum
+    # of squares under 10^63 units leaves room for the double it is tested
+    # with, and covers the squares of any BIGINT a group of 10^25 rows holds.
+    _MOMENTS_INTEGER = "DECIMAL(65, 0)"
+    _MOMENTS_DECIMAL = "DECIMAL(65, {scale})"
+    _MOMENTS_LIMIT = 63
+
+    def exact_statistic(self, aggregate: FunctionCall, scales: tuple[int, ...]) -> Expr | None:
+        """A variance or standard deviation from exact moments in ``DECIMAL(65, 0)``
+        (:meth:`Dialect._statistic_from_moments`).
+
+        MySQL's ``VAR_SAMP``, ``VAR_POP``, ``STDDEV_SAMP`` and ``STDDEV_POP``
+        compute in doubles over integers and decimals alike, so a value past a
+        double's 53 bits loses its last digits first: the variance of
+        10^17 + 0..5 came back 0, and of the ``DECIMAL(18, 2)`` values
+        9999999999999999.99 less 0..5 hundredths 0 too, and 0.00039 for
+        99999999999999.99 less the same, whose variance is 0.00035, measured.
+        MySQL has no covariance, correlation or regression.
+        """
+        if len(aggregate.args) != 1:
+            return None
+        return self._statistic_from_moments(aggregate, scales)
+
     def _compile_median(self, args: list[Expr]) -> str:
         """MySQL: the mean of the middle one or two values of the sorted group.
 

@@ -2,10 +2,12 @@
 
 Dremio's variance and covariance and Snowflake's covariance, correlation and
 regression subtract sums of squares or products as doubles and cancel far from
-zero (``test_statistics_exec``); ``Dialect.exact_statistic`` computes them from
-exact moments instead. Seeded random groups - far from zero, negative, of one
-value, constant, with NULLs, and near the limit past which the engine's own is
-kept - are each held to the exact statistic of their values, within the few
+zero (``test_statistics_exec``); PostgreSQL's covariance family and MySQL's
+variance read a value past a double's 53 bits as a double, and lose its last
+digits. ``Dialect.exact_statistic`` computes them from exact moments instead.
+Seeded random groups - far from zero, negative, of one value, constant, with
+NULLs, and near the limit past which the engine's own is kept - are each held
+to the exact statistic of their values, within the few
 roundings to double the route makes. A group past the limit answers what the
 engine's own statistic answers.
 """
@@ -192,6 +194,7 @@ measures:
 PAIRED = {
     "dremio": ("covar_samp", "covar_pop"),
     "snowflake": ("covar_samp", "covar_pop", "corr", "regr_slope", "regr_intercept"),
+    "postgres": ("covar_samp", "covar_pop", "corr", "regr_slope", "regr_intercept"),
 }
 PAIRS = (("X", "D"), ("D", "E"))
 
@@ -379,3 +382,79 @@ def test_snowflake_keeps_its_own_past_the_bound(vendor_snowflake: VendorTarget) 
     sql, measures = _paired_sql("snowflake")
     (row,) = vendor_snowflake.execute(_paired_rows("snowflake", groups) + sql)
     assert set(row) == {"Label", *measures}
+
+
+#: The most units each column holds: a BIGINT near its largest, and the
+#: decimals at their width.
+WIDEST = {"X": 9 * 10**18, "D": 99 * 10**16, "E": 99 * 10**22}
+
+
+def _wide_groups() -> dict[str, Group]:
+    """Random groups out to the widest each column holds, past a double's 53
+    bits, a NULL on either side of some pairs; PostgreSQL's ``NUMERIC`` and
+    MySQL's ``DECIMAL(65)`` hold their sums of squares."""
+    rng = random.Random(697)
+    groups: dict[str, Group] = {}
+    for g in range(30):
+        size = rng.choice([1, 2, 3, 10, 40])
+        group: Group = {}
+        for column, widest in WIDEST.items():
+            centre = rng.choice([10**15, 10**17, widest // 10, widest]) * rng.choice([1, -1])
+            spread = rng.choice([0, 1, 7, 1000, 10**6])
+            values: list[int | None] = [
+                max(-widest, min(widest, centre + rng.randint(-spread, spread)))
+                for _ in range(size)
+            ]
+            if size > 2 and rng.random() < 0.3:
+                values[rng.randrange(size)] = None
+            group[column] = values
+        groups[f"w{g:02d}"] = group
+    return groups
+
+
+def test_postgres_exact_paired_statistics(vendor_postgres: VendorTarget) -> None:
+    """Over 10^17 + 0..5 its own covariances were 0, its correlation NULL."""
+    _assert_paired(vendor_postgres, _wide_groups())
+
+
+def test_mysql_exact_variance(vendor_mysql: VendorTarget) -> None:
+    """Over 10^17 + 0..5 its own variance was 0."""
+    groups = _wide_groups()
+    kinds = {"X": "SIGNED", "D": "DECIMAL(18, 2)", "E": "DECIMAL(24, 6)"}
+
+    def literal(units: int | None, column: str) -> str:
+        if units is None:
+            return f"CAST(NULL AS {kinds[column]})"
+        return f"CAST('{Decimal(units).scaleb(-COLUMNS[column][1]):f}' AS {kinds[column]})"
+
+    rows = " UNION ALL ".join(
+        f"SELECT CAST('{label}' AS CHAR) AS l, "
+        + ", ".join(f"{literal(group[c][i], c)} AS {c.lower()}" for c in COLUMNS)
+        for label, group in groups.items()
+        for i in range(len(group["X"]))
+    )
+    measures = [f"{c} {a}" for c in COLUMNS for a in AGGREGATIONS]
+    model = _model().replace("    code: variance_values\n    schema: $scratch\n", "    code: t\n")
+    store = ModelStore()
+    query = QueryObject.model_validate({"select": {"dimensions": ["Label"], "measures": measures}})
+    sql = store.compile_query(store.load_model(model).model_id, query, "mysql").sql
+    found = vendor_mysql.execute(f"WITH t AS ({rows})\n{sql}")
+    rows_by_label = {row["Label"]: row for row in found}
+    assert set(rows_by_label) == set(groups)
+
+    wrong = []
+    for label, group in groups.items():
+        for measure in measures:
+            column, aggregation = measure.split()
+            got = rows_by_label[label][measure]
+            exact = _exact(group[column], COLUMNS[column][1], aggregation)
+            if exact is None or got is None:
+                if exact is not None or got is not None:
+                    wrong.append(f"{label} {measure}: {got}, exact {exact}")
+                continue
+            value = Fraction(got)
+            if aggregation.startswith("stddev"):
+                value *= value
+            if abs(value - exact) > abs(exact) / 10**12:
+                wrong.append(f"{label} {measure}: {got}, exact {float(exact)}")
+    assert wrong == []

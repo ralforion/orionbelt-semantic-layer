@@ -23,6 +23,14 @@ class PostgresDialect(Dialect):
     #: ``NUMERIC`` multiplies exactly at any size and scale.
     _EXACT_SQUARE = ("NUMERIC", 16383)
 
+    # Exact moments (Dialect._statistic_from_moments) in NUMERIC, which holds
+    # any sum, so no group keeps the engine's own for its size.
+    _MOMENTS_INTEGER = "NUMERIC"
+    _MOMENTS_COUNT = "NUMERIC"
+    _MOMENTS_DOUBLE = "DOUBLE PRECISION"
+    _MOMENTS_DECIMAL = "NUMERIC"
+    _MOMENTS_LIMIT = None
+
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "BIGINT",
         "integer": "INTEGER",
@@ -256,6 +264,22 @@ class PostgresDialect(Dialect):
         and it truncates toward zero.
         """
         return self._render_null_guard(self._render_named_function(name, args), args)
+
+    def exact_statistic(self, aggregate: FunctionCall, scales: tuple[int, ...]) -> Expr | None:
+        """A covariance, ``CORR`` or regression from exact moments in ``NUMERIC``
+        (:meth:`Dialect._statistic_from_moments`).
+
+        PostgreSQL's ``COVAR_SAMP``, ``COVAR_POP``, ``CORR`` and ``REGR_*``
+        take ``double precision``, so an integer or a decimal past a double's
+        53 bits loses its last digits before they are subtracted: against a
+        second column over 10^17 + 0..5, the covariances came back 0, the
+        correlation NULL and the slope 0, measured. Its own variance and
+        standard deviation of an integer or a decimal are ``NUMERIC``, exact,
+        and are kept.
+        """
+        if len(aggregate.args) != 2:
+            return None
+        return self._statistic_from_moments(aggregate, scales)
 
     def _compile_median(self, args: list[Expr]) -> str:
         """PostgreSQL: PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY col).
