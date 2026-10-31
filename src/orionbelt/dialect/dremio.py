@@ -55,6 +55,10 @@ class DremioDialect(Dialect):
 
     like_needs_escape_clause = True
 
+    #: Measured over 5 million rows: every key in 0.40-0.64 s, 1,000 keys in
+    #: 0.14-0.36 s, 10,000 in 0.42-0.63 s.
+    key_injection_max_keys = 1_000
+
     @property
     def name(self) -> str:
         return "dremio"

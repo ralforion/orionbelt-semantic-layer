@@ -244,9 +244,9 @@ fact rows the combine step would drop are not read.
 |---|---|
 | When | A dimension leg runs a filter of the query (one never true where that source's dimensions are all NULL), joined on one column of the same type on both sides, an integer or a string |
 | How many | At most the fact source's limit of keys, over every such leg together, the legs with the fewest keys first. A leg with more keys than are left is not listed, and the fact leg reads all of that key. No key at all reads no fact row |
-| Limit | Postgres, MySQL and ClickHouse 10,000; DuckDB 1,000; Snowflake, BigQuery, Databricks and Dremio 0 (off) until measured. `DB_<NAME>_KEY_INJECTION_MAX_KEYS` sets it for the fact leg's source, `DB_KEY_INJECTION_MAX_KEYS` for every source; `0` turns it off |
+| Limit | Postgres, MySQL, ClickHouse and BigQuery 10,000; DuckDB, Snowflake, Databricks and Dremio 1,000. `DB_<NAME>_KEY_INJECTION_MAX_KEYS` sets it for the fact leg's source, `DB_KEY_INJECTION_MAX_KEYS` for every source; `0` turns it off |
 | Cost | The fact leg waits for the dimension legs rather than running beside them. A list past the limit gains nothing over aggregating every key |
-| Not listed | A list making a ClickHouse statement longer than its default `max_query_size` (256 KiB), and a string key holding a NUL, which ends a Postgres statement's text: the fact leg reads every key instead |
+| Not listed | A list making a statement longer than the engine parses, ClickHouse's default `max_query_size` (256 KiB) or BigQuery's 1,024K characters, and a string key holding a NUL, which ends a Postgres statement's text: the fact leg reads every key instead. Snowflake refused a list of 300,000 values, where 200,000 passed |
 
 The limits come from a measurement with 5 million orders over 1 million
 customers, the filter keeping 10 to 100,000 of them:
@@ -259,10 +259,17 @@ customers, the filter keeping 10 to 100,000 of them:
 | MySQL 8.0, indexed | 7.1 s | 0.017 s | 0.022 s | 0.12 s | 7.06 s (index unused) |
 | ClickHouse | 0.85 s | 0.021 s | 0.045 s | 0.078 s | refused (`max_query_size`) |
 | DuckDB | 0.040 s | 0.022 s | 0.034 s | 0.11 s | 0.93 s |
+| BigQuery | 21 s | 1.05 s | 1.21 s | 2.20 s | 11.6 s |
+| Snowflake (first time a list is sent) | 0.53 s | 0.20 s | 0.40 s | 1.42 s | 15.3 s |
+| Databricks | 1.50 s | 0.33 s | 0.39 s | 0.87 s | 4.96 s |
+| Dremio | 0.41 s | 0.12 s | 0.17 s | 0.44 s | 1.38 s |
 
-Median of three runs on a laptop, the dimension leg on Postgres 16. (*) For
-every key Postgres chose an index scan over the indexed copy and took 11 s;
-the row shows the unindexed time.
+Median of three runs on a laptop, the dimension leg on Postgres 16; the last
+four timed on the fact leg alone, through OBSL's executor, which fetches the
+million rows of every key as Arrow. Snowflake answered a list sent again under
+another comment three to eight times faster, but a filter's list is new each
+time, so its row shows the first. (*) For every key Postgres chose an index
+scan over the indexed copy and took 11 s; the row shows the unindexed time.
 
 !!! warning "Postgres 13 and older"
     Before Postgres 14 an `IN` list is tested one value at a time: 10,000

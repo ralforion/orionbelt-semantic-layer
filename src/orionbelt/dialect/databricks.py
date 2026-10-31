@@ -52,6 +52,10 @@ class DatabricksDialect(Dialect):
 
     backslash_escapes_strings = True
 
+    #: Measured over 5 million rows: every key in 1.5-2.1 s warm, 1,000 keys
+    #: in 0.33-0.82 s, 10,000 in 0.73-1.78 s.
+    key_injection_max_keys = 1_000
+
     @property
     def name(self) -> str:
         return "databricks"
