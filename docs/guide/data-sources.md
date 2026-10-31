@@ -207,21 +207,39 @@ How a query is split:
   Dremio, 6 on Snowflake, 15 on MySQL and 19 on the others: past those, the
   engine rounds a product. A sum of squares past 128 bits raises an error
   rather than wrapping.
+- A measure that does not combine from partial results is computed from the
+  fact leg's rows: a `median`, `percentile_cont`, `percentile_disc`, `mode`,
+  `first`, `last`, `listagg`, `corr`, covariance or regression, a variance or
+  standard deviation its moments do not combine exactly (of floats, of a
+  decimal without a declared width or with more places than its engine
+  squares exactly), a `distinct` aggregation, a `count_distinct` of an
+  expression, of several columns or under measure filters, and an `avg`,
+  `count_distinct`, variance or standard deviation with `total: true`. The
+  fact leg then also groups by every column a measure reads (its argument,
+  filters, ordering and expression) and counts the rows of each group. The
+  combine query repeats each group that many times and computes every
+  measure of the query from those rows, in DuckDB, as one database computes
+  it from its own: so an aggregation the fact leg's engine lacks, such as
+  `corr` on MySQL, is available too. The rows a leg stands for are bounded by
+  `FEDERATION_MAX_LEG_ROWS` as well. Over doubles the result is DuckDB's,
+  which far from zero depends on the order the values are added in, as on one
+  source: DuckDB's own `VAR_SAMP` of the doubles 10^15 + 0 to 5 is 3.5 in that
+  order and 3.4875 in another, measured. Since every measure of such a query
+  is computed from the rows, an integer variance beside a median is DuckDB's
+  variance of doubles, not the exact one from moments.
 
 What does not split exactly is refused by name rather than answered with a
 different number: measures from more than one source (`FEDERATION_MULTI_FACT`),
-a `count_distinct` of an expression, of several columns, under measure
-filters or beside measures of another data object, a variance or standard
-deviation of floats or of a decimal without a declared width or with more
-places than its engine squares exactly, an `avg`, `count_distinct`, variance
-or standard deviation with `total: true`, a `sum`, `count`, `avg`, variance or
-standard deviation of an object the query's joins repeat (customers' ages
-over their sales) when the fact leg would group it by more than one value per
-row of that object, which would count each row once per value: a join to
-another source starting on its many side, a filter after the join reading a
-dimension there, or a `rollup` / `cube` subtotal or a `total: true` adding
-groups across a selected dimension there, other `distinct`
-aggregations, and aggregations that cannot be combined from partial results
+a `count_distinct` beside measures of another data object, a `sum`, `count`,
+`avg`, variance or standard deviation of an object the query's joins repeat
+(customers' ages over their sales) when the fact leg would group it by more
+than one value per row of that object, which would count each row once per
+value: a join to another source starting on its many side, a filter after the
+join reading a dimension there, or a `rollup` / `cube` subtotal or a
+`total: true` adding groups across a selected dimension there; in a query
+computed from the fact leg's rows, which repeat such an object's rows, any
+measure one database counts once per row of it, and a measure comparing values
+its engine compares otherwise than DuckDB (below)
 (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,
 period-over-period, window and reaggregate metrics (`FEDERATION_UNSUPPORTED_METRIC`),
@@ -284,7 +302,7 @@ scan over the indexed copy and took 11 s; the row shows the unindexed time.
 | Legs | Run at once, each on its own source; a fact leg reading [injected keys](#key-injection) runs after the dimension legs |
 | Types | Each leg's columns are made exact for DuckDB before combining: Postgres `numeric`, which arrives as text, becomes a decimal at the scale its values carry, and a decimal wider than 38 digits narrows when its values fit. A value no decimal holds (`NaN`, more than 38 digits) is refused with `FEDERATION_LEG_TYPE`, never rounded |
 | Errors | A leg that fails fails the query, and the error names the leg's data source and dialect (HTTP 502) |
-| Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 1,000,000). Each leg's SQL asks for one more row, so a larger leg is refused with `FEDERATION_LEG_TOO_LARGE` rather than combined in part |
+| Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 1,000,000). Each leg's SQL asks for one more row, so a larger leg is refused with `FEDERATION_LEG_TOO_LARGE` rather than combined in part. A fact leg returning its rows grouped and counted may stand for at most as many: past that, it is refused the same way |
 | Concurrency | At most `FEDERATION_MAX_CONCURRENT` federated queries run at once per process (default 4). The others wait in order of arrival for up to `FEDERATION_QUEUE_TIMEOUT_SECONDS` (default 30), then get `FEDERATION_BUSY` (HTTP 503). Legs run on a pool of `FEDERATION_LEG_THREADS` threads (default 16) |
 | Combine | A fresh in-memory DuckDB per query, with `FEDERATION_COMBINE_THREADS` threads (default 2) and `FEDERATION_COMBINE_MEMORY_LIMIT` (default `512MB`) instead of DuckDB's defaults of every core and 80% of RAM per instance |
 | Spill to disk | Off unless `FEDERATION_SPILL_DIR` names a directory. A leg is then read batch by batch and held in memory up to `FEDERATION_SPILL_THRESHOLD_MB` (default 64); past that, it goes to an Arrow IPC file that the combine step reads memory-mapped, so the operating system can page it out, and DuckDB spills its own join and sort state next to it. Each query writes into its own directory, readable by the server alone and removed when the query ends, also when it fails. One query may spill at most `FEDERATION_SPILL_MAX_MB` (default 4096, else `FEDERATION_SPILL_TOO_LARGE`, HTTP 502), and the queries running at once at most `FEDERATION_SPILL_BUDGET_MB` together (default 16384, else `FEDERATION_SPILL_FULL`, HTTP 503). DuckDB's own spill in the combine step is capped at `FEDERATION_SPILL_MAX_MB` per query as well. A spilled leg is not stored in the result cache; the combined result is |
@@ -319,6 +337,14 @@ its class; a
 ClickHouse float dimension makes one group of `0.0` and `-0.0`; a join key
 across sources compares bytewise; and `MIN` or `MAX` of a string orders by
 bytes.
+
+A query computed from the fact leg's rows compares their values in DuckDB.
+There a measure that compares a MySQL string (in a filter, as its ordering or
+expression, or as the argument of `min`, `max`, a percentile, `mode`,
+`first`, `last`, `listagg` or a `distinct` aggregation), or counts ClickHouse
+floats (`mode`, a `distinct` aggregation), is refused with
+`FEDERATION_UNSUPPORTED_AGGREGATION`. A `count_distinct` of one column still
+counts as its engine counts.
 
 ### One model on several databases
 

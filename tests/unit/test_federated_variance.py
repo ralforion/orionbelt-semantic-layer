@@ -20,7 +20,6 @@ duckdb = pytest.importorskip("duckdb")
 pa = pytest.importorskip("pyarrow")
 
 from orionbelt.compiler.federation import FederatedLeg  # noqa: E402
-from orionbelt.compiler.resolution import ResolutionError  # noqa: E402
 from orionbelt.dialect.registry import DialectRegistry  # noqa: E402
 from orionbelt.models.query import QueryObject  # noqa: E402
 from orionbelt.service.db_executor import ExecutionError  # noqa: E402
@@ -117,18 +116,20 @@ metrics:
 @pytest.fixture(scope="module")
 def files(tmp_path_factory: Any) -> dict[str, str]:
     root = tmp_path_factory.mktemp("variance")
-    paths = {"facts": str(root / "facts.duckdb"), "labels": str(root / "labels.duckdb")}
-    con = duckdb.connect(paths["facts"])
-    con.execute("CREATE TABLE facts (k INTEGER, i BIGINT, d DECIMAL(18, 2), f DOUBLE)")
-    con.executemany(
-        "INSERT INTO facts VALUES (?, ?, CAST(? AS DECIMAL(18, 2)), ?)",
-        [(k, i, d, None if i is None else float(i)) for _, k, i, d in ROWS],
-    )
-    con.close()
-    con = duckdb.connect(paths["labels"])
-    con.execute("CREATE TABLE groups (k INTEGER, g VARCHAR)")
-    con.executemany("INSERT INTO groups VALUES (?, ?)", sorted({(k, g) for g, k, *_ in ROWS}))
-    con.close()
+    paths = {name: str(root / f"{name}.duckdb") for name in ("facts", "labels", "all")}
+    for name in ("facts", "all"):
+        con = duckdb.connect(paths[name])
+        con.execute("CREATE TABLE facts (k INTEGER, i BIGINT, d DECIMAL(18, 2), f DOUBLE)")
+        con.executemany(
+            "INSERT INTO facts VALUES (?, ?, CAST(? AS DECIMAL(18, 2)), ?)",
+            [(k, i, d, None if i is None else float(i)) for _, k, i, d in ROWS],
+        )
+        con.close()
+    for name in ("labels", "all"):
+        con = duckdb.connect(paths[name])
+        con.execute("CREATE TABLE groups (k INTEGER, g VARCHAR)")
+        con.executemany("INSERT INTO groups VALUES (?, ?)", sorted({(k, g) for g, k, *_ in ROWS}))
+        con.close()
     return paths
 
 
@@ -152,6 +153,22 @@ def run(
         finally:
             con.close()
     rows = combine(plan, tables, None).arrow_table.to_pylist()
+    return {r["Label"]: r for r in rows}
+
+
+def run_single(files: dict[str, str], measures: list[str]) -> dict[str, dict[str, Any]]:
+    """The same query on one source holding both tables."""
+    single = MODEL.replace("    dataSource: facts\n", "").replace("    dataSource: labels\n", "")
+    store = ModelStore()
+    model_id = store.load_model(single).model_id
+    query = QueryObject.model_validate({"select": {"dimensions": ["Label"], "measures": measures}})
+    compiled = store.compile_query(model_id, query, "duckdb")
+    assert compiled.federation is None
+    con = duckdb.connect(files["all"], read_only=True)
+    try:
+        rows = con.sql(compiled.sql).to_arrow_table().to_pylist()
+    finally:
+        con.close()
     return {r["Label"]: r for r in rows}
 
 
@@ -257,7 +274,7 @@ class TestPlan:
         assert [scale for _, scale in plan.federation.legs[0].integer_sums] == [0, 0]
 
     @pytest.mark.parametrize("dialect", ["databricks", "dremio"])
-    def test_four_places_square_exactly_on_duckdb_but_not_on(self, dialect: str) -> None:
+    def test_four_places_square_exactly_on_duckdb_but_come_from_rows_on(self, dialect: str) -> None:
         wider = MODEL.replace("sqlPrecision: 18, sqlScale: 2", "sqlPrecision: 18, sqlScale: 4")
         store = ModelStore()
         model_id = store.load_model(wider).model_id
@@ -265,14 +282,13 @@ class TestPlan:
             {"select": {"dimensions": ["Label"], "measures": ["Var D"]}}
         )
 
-        assert store.compile_query(model_id, query, "duckdb").federation is not None
-        with pytest.raises(ResolutionError) as caught:
-            store.compile_query(model_id, query, dialect)
-        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_AGGREGATION"]
-        assert f"squares exactly on {dialect}" in caught.value.errors[0].message
+        squared = store.compile_query(model_id, query, "duckdb").federation.legs[0]
+        assert squared.integer_sums and squared.rows is None
+        from_rows = store.compile_query(model_id, query, dialect).federation.legs[0]
+        assert not from_rows.integer_sums and from_rows.rows is not None
 
 
-REFUSED = {
+FROM_ROWS = {
     "a float column": "Var F",
     "a decimal without a declared width": "Var Bare D",
     "total: true": "Var Total I",
@@ -280,13 +296,24 @@ REFUSED = {
 }
 
 
-class TestRefusals:
-    @pytest.mark.parametrize("measure", REFUSED.values(), ids=REFUSED.keys())
-    def test_what_does_not_combine_exactly_is_refused(self, measure: str) -> None:
-        with pytest.raises(ResolutionError) as caught:
-            compile_query({"select": {"dimensions": ["Label"], "measures": [measure]}})
+# Far from zero a statistic of doubles depends on the order its values are
+# added in, on one source too: DuckDB's own VAR_SAMP of the doubles 1e15 + 0..5
+# is 3.5 in that order, 3.4875 in the order the fact leg returns them (grouped
+# by key) and 3.525 in another, measured.
+NEAR_ZERO = [label for label in VALUES if label not in ("far", "big", "huge")]
 
-        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_AGGREGATION"]
+
+class TestFromRows:
+    """What its moments do not combine exactly is computed from the fact leg's rows."""
+
+    @pytest.mark.parametrize("measure", FROM_ROWS.values(), ids=FROM_ROWS.keys())
+    def test_it_is_what_one_source_returns(self, files: dict[str, str], measure: str) -> None:
+        federated = run(files, [measure])
+        single = run_single(files, [measure])
+
+        assert federated.keys() == single.keys()
+        for label in NEAR_ZERO:
+            assert federated[label][measure] == single[label][measure], label
 
 
 SQUARES = {
