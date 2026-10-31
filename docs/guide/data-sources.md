@@ -204,9 +204,12 @@ search, the database `EXPLAIN` of `query/plan`, online validation, Arrow Flight
 SQL, PostgreSQL wire and the CLI.
 
 Online validation (`validate --online`, `POST .../validate?online=true`) probes
-the source the model names. An explicit `dialect` cannot point the probe at
-another source: one that differs from the named source's dialect is reported as
-`DATASOURCE_UNAVAILABLE`, naming both dialects.
+the source the model names. A model whose data objects are read from several
+sources has each data object probed on its own source, in that source's
+dialect, as its queries read it; a source that cannot be reached is reported
+where it is named, and the others are probed all the same. An explicit
+`dialect` cannot point the probe at another source: one that differs from a
+source's dialect is reported as `DATASOURCE_UNAVAILABLE`, naming both dialects.
 
 A Flight query runs on the source it was planned with: the ticket is fetched by
 a later call, which need not name the model again.

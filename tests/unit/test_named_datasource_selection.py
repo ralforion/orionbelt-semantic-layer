@@ -232,6 +232,58 @@ class TestOnlineValidation:
         assert [e.code for e in summary.errors] == ["DATASOURCE_UNAVAILABLE"]
         assert "which is duckdb" in summary.errors[0].message
 
+    def test_a_model_reading_two_sources_probes_each_object_on_its_own(self, shops: Any) -> None:
+        """The check did not run at all: FEDERATION_NOT_ENABLED, the model invalid."""
+        from orionbelt.cli import _local
+
+        summary = _local.validate(two_object_model("shop-eu", "shop-us"), online=True)
+
+        assert summary.valid, summary.errors
+
+    def test_a_table_missing_on_one_source_is_reported_there(self, shops: Any) -> None:
+        from orionbelt.cli import _local
+
+        yaml = two_object_model("shop-eu", "shop-us").replace(
+            "  Customers:\n    code: shop\n", "  Customers:\n    code: customers\n"
+        )
+
+        summary = _local.validate(yaml, online=True)
+
+        assert [(e.code, e.path) for e in summary.errors] == [
+            ("DATASOURCE_TABLE_MISSING", "dataObjects.Customers.code")
+        ]
+
+    def test_a_source_that_cannot_be_reached_is_reported_where_it_is_named(
+        self, shops: Any
+    ) -> None:
+        """And the other source is probed all the same: its missing table too."""
+        from orionbelt.cli import _local
+
+        yaml = two_object_model("shop-eu", "shop-xx").replace(
+            "  Orders:\n    code: shop\n", "  Orders:\n    code: orders\n"
+        )
+
+        summary = _local.validate(yaml, online=True)
+
+        assert [(e.code, e.path) for e in summary.errors] == [
+            ("DATASOURCE_TABLE_MISSING", "dataObjects.Orders.code"),
+            ("DATASOURCE_UNAVAILABLE", "dataObjects.Customers.dataSource"),
+        ]
+        assert "shop-xx" in summary.errors[1].message
+
+    def test_an_explicit_dialect_still_decides_for_each_source(self, shops: Any) -> None:
+        from orionbelt.cli import _local
+
+        summary = _local.validate(
+            two_object_model("shop-eu", "shop-us"), online=True, dialect="postgres"
+        )
+
+        assert [(e.code, e.path) for e in summary.errors] == [
+            ("DATASOURCE_UNAVAILABLE", "dataObjects.Orders.dataSource"),
+            ("DATASOURCE_UNAVAILABLE", "dataObjects.Customers.dataSource"),
+        ]
+        assert all("which is duckdb" in e.message for e in summary.errors)
+
 
 @pytest.fixture
 async def client(shops: Any) -> AsyncIterator[AsyncClient]:
@@ -307,6 +359,17 @@ class TestRest:
             response = await client.post(
                 path, params={"online": "true"}, json={"model_yaml": shop_model("shop-us")}
             )
+            assert response.json()["valid"], (path, response.json())
+
+    async def test_online_validation_of_a_model_reading_two_sources(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("orionbelt.api.deps.get_db_vendor", lambda: "postgres")
+        session = (await client.post("/v1/sessions")).json()["session_id"]
+        yaml = two_object_model("shop-eu", "shop-us")
+
+        for path in (f"/v1/sessions/{session}/validate", "/v1/validate"):
+            response = await client.post(path, params={"online": "true"}, json={"model_yaml": yaml})
             assert response.json()["valid"], (path, response.json())
 
     async def test_the_settings_mirror_reports_it(self, client: AsyncClient) -> None:
