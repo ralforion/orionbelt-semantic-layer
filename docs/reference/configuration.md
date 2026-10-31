@@ -49,15 +49,15 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `DB_POOL_SIZE`             | `5`         | Idle connections kept per data source     |
 | `DB_MAX_CONNECTIONS`       | `10`        | Connections of one data source in use at once, on every surface; `0` for no limit. Queries past it wait in order of arrival |
 | `DB_ACQUIRE_TIMEOUT_SECONDS` | `30`      | How long a query waits for a connection before `DATA_SOURCE_BUSY` (503) |
-| `DB_KEY_INJECTION_MAX_KEYS` | by engine  | Most keys a federated query lists in a fact leg ([key injection](../guide/data-sources.md#key-injection)); `0` turns it off. Default 10,000 on Postgres, MySQL, ClickHouse and BigQuery, 1,000 on DuckDB, Snowflake, Databricks and Dremio |
+| `DB_KEY_INJECTION_MAX_KEYS` | by engine  | Most keys a federated query lists in a fact leg ([key injection](../guide/federation.md#key-injection)); `0` turns it off. Default 10,000 on Postgres, MySQL, ClickHouse and BigQuery, 1,000 on DuckDB, Snowflake, Databricks and Dremio |
 | `OBSL_DATABASES`           | —           | Comma-separated names of [named data sources](../guide/data-sources.md); each reads `DB_<NAME>_TYPE`, `DB_<NAME>_DESCRIPTION`, `DB_<NAME>_POOL_SIZE`, `DB_<NAME>_MAX_CONNECTIONS`, `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS`, `DB_<NAME>_KEY_INJECTION_MAX_KEYS` and its dialect's variables behind the `DB_<NAME>_` prefix. A model picks one with `settings.defaultDataSource` |
-| `FEDERATION_MAX_CONCURRENT` | `4`       | [Queries across data sources](../guide/data-sources.md#running-a-federated-query) running at once per process; the others wait in order of arrival |
+| `FEDERATION_MAX_CONCURRENT` | `4`       | [Queries across data sources](../guide/federation.md#running-a-federated-query) running at once per process; the others wait in order of arrival |
 | `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `30` | How long a federated query waits for a slot before `FEDERATION_BUSY` (503) |
 | `FEDERATION_LEG_THREADS`   | `16`        | Legs of federated queries fetched at once per process |
 | `FEDERATION_MAX_LEG_ROWS`  | `1000000`   | Most rows one leg may return; a larger leg is refused with `FEDERATION_LEG_TOO_LARGE` |
 | `FEDERATION_COMBINE_THREADS` | `2`       | DuckDB threads of each federated query's combine step |
 | `FEDERATION_COMBINE_MEMORY_LIMIT` | `512MB` | DuckDB `memory_limit` of each combine step |
-| `FEDERATION_SPILL_DIR`     | —           | Directory on real disk where large federated legs are [spilled](../guide/data-sources.md#running-a-federated-query); unset keeps every leg in memory. Not an in-memory filesystem such as Cloud Run's default |
+| `FEDERATION_SPILL_DIR`     | —           | Directory on real disk where large federated legs are [spilled](../guide/federation.md#running-a-federated-query); unset keeps every leg in memory. Not an in-memory filesystem such as Cloud Run's default |
 | `FEDERATION_SPILL_THRESHOLD_MB` | `64`   | A leg past this size goes to a file instead of memory |
 | `FEDERATION_SPILL_MAX_MB`  | `4096`      | Most one federated query may spill; past it, `FEDERATION_SPILL_TOO_LARGE` |
 | `FEDERATION_SPILL_BUDGET_MB` | `16384`   | Most the federated queries running at once may spill together; past it, `FEDERATION_SPILL_FULL` (503) |
