@@ -479,10 +479,18 @@ class TestKeyInjection:
 
         assert injected == [{"__fk0_0": [1]}]
 
-    def test_a_list_longer_than_the_engine_parses_is_not_read(self) -> None:
-        """ClickHouse refuses a statement past ``max_query_size`` (256 KiB)."""
+    @pytest.mark.parametrize(
+        ("dialect", "width"),
+        [("clickhouse", 30), ("bigquery", 120)],
+        ids=["clickhouse_max_query_size", "bigquery_1024k_characters"],
+    )
+    def test_a_list_longer_than_the_engine_parses_is_not_read(
+        self, dialect: str, width: int
+    ) -> None:
+        """ClickHouse refuses a statement past ``max_query_size`` (256 KiB),
+        BigQuery one past 1,024K characters."""
         fact = FederatedLeg(
-            name="leg_0", data_source="shop", dialect="clickhouse", sql="", data_objects=()
+            name="leg_0", data_source="shop", dialect=dialect, sql="", data_objects=()
         )
         plan = FederatedPlan(
             legs=(fact,),
@@ -491,10 +499,34 @@ class TestKeyInjection:
             inject=lambda keys: replace(fact, sql=f"IN ({', '.join(keys['__fk0_0'])})"),
         )
         short = {"leg_1": pa.table({"__fk0_0": ["a" * 20]})}
-        long = {"leg_1": pa.table({"__fk0_0": [f"{n:030d}" for n in range(10_000)]})}
+        long = {"leg_1": pa.table({"__fk0_0": [f"{n:0{width}d}" for n in range(10_000)]})}
 
         assert federation.injected_fact_leg(plan, short, 10_000).sql.startswith("IN (")
         assert federation.injected_fact_leg(plan, long, 10_000) is fact
+
+    @pytest.mark.parametrize(
+        ("dialect", "limit"),
+        [
+            ("postgres", 10_000),
+            ("mysql", 10_000),
+            ("clickhouse", 10_000),
+            ("bigquery", 10_000),
+            ("duckdb", 1_000),
+            ("snowflake", 1_000),
+            ("databricks", 1_000),
+            ("dremio", 1_000),
+        ],
+    )
+    def test_each_engine_lists_as_many_keys_as_measured(
+        self, dialect: str, limit: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """5 million rows over 1 million keys (``design/PLAN_federation.md``
+        §4.3.1): BigQuery took 21 s for every key and 2.2 s for 10,000;
+        Snowflake, Databricks and Dremio 0.4-2.1 s for every key, so 10,000
+        gained little or lost."""
+        monkeypatch.delenv("DB_KEY_INJECTION_MAX_KEYS", raising=False)
+
+        assert federation.key_injection_max_keys(None, dialect) == limit
 
     def test_an_integral_decimal_key_is_listed_as_an_integer(self) -> None:
         injected: list[dict[str, list[Any]]] = []

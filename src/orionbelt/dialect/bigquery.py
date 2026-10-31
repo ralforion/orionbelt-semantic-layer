@@ -192,6 +192,11 @@ class BigQueryDialect(Dialect):
 
     backslash_escapes_strings = True
 
+    #: Measured over 5 million rows: every key in 19-24 s, most of it fetching
+    #: a million rows, 10,000 keys in 1.9-2.3 s, 100,000 in 11-19 s.
+    key_injection_max_keys = 10_000
+    max_statement_bytes = 1024 * 1024
+
     @property
     def name(self) -> str:
         return "bigquery"

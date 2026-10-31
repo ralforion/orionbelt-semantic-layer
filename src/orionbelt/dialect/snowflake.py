@@ -82,6 +82,12 @@ class SnowflakeDialect(Dialect):
 
     avg_rounds_exact_input = True
 
+    #: Measured over 5 million rows: every key in 0.45-0.62 s warm; 1,000
+    #: keys in 0.28-0.40 s the first time a list was sent and 0.11-0.17 s when
+    #: it was sent again under another comment, 10,000 in 1.33-1.42 s and
+    #: 0.34-0.58 s. A list a filter has just produced is sent once.
+    key_injection_max_keys = 1_000
+
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """The integer summed as a decimal, divided by :meth:`Dialect._truncated_average`.
 
