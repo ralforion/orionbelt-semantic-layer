@@ -146,6 +146,7 @@ nav:
       - Freshness Contracts: guide/freshness-contracts.md
       - Result Cache: guide/result-cache.md
       - Data Sources: guide/data-sources.md
+      - Federated Queries: guide/federation.md
       - Command-Line Interface: guide/cli.md
       - Gradio UI: guide/ui.md
       - AI Integrations: guide/integrations.md

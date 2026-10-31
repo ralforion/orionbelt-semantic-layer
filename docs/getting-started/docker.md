@@ -36,7 +36,7 @@ same page shows how to pass them, and their secrets, on
 
 ## Spilling federated queries to disk
 
-A [query across data sources](../guide/data-sources.md#running-a-federated-query)
+A [query across data sources](../guide/federation.md#running-a-federated-query)
 can spill its large legs to disk instead of holding them in memory. It is off
 until `FEDERATION_SPILL_DIR` is set. In a container, give it a volume:
 
