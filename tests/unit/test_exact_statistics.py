@@ -1,9 +1,11 @@
-"""Exact statistics of integers and decimals on Dremio and Snowflake.
+"""Exact statistics of integers and decimals on Dremio, Snowflake, PostgreSQL and MySQL.
 
 Dremio's variance and covariance and Snowflake's covariance, correlation and
 regression subtract sums of squares or products as doubles and cancel far from
 zero: 0 for the variance of 10^9 + 0..9 on Dremio, 0 for a covariance of 18.5
-there on Snowflake. They are computed from exact moments instead
+there on Snowflake. PostgreSQL's covariance, correlation and regression and
+MySQL's variance read a value past a double's 53 bits as a double: 0 for the
+variance of 10^17 + 0..5. They are computed from exact moments instead
 (``Dialect.exact_statistic``). These tests pin which measures are rewritten and
 the shape of the SQL; the vendor suite (``test_exact_statistics_exec``) runs it
 against the exact statistic.
@@ -160,15 +162,25 @@ def test_a_metric_reads_the_exact_statistics() -> None:
     assert sql.count('ELSE VARIANCE("Charges"."price")') == 1
 
 
-@pytest.mark.parametrize("dialect", sorted(set(DialectRegistry.available()) - {"dremio"}))
+@pytest.mark.parametrize("dialect", sorted(set(DialectRegistry.available()) - {"dremio", "mysql"}))
 def test_the_other_engines_keep_their_own(dialect: str) -> None:
     """Right far from zero there, measured: ``test_statistics_exec``."""
     assert EXACT not in _sql("Qty Variance", dialect)
 
 
+def test_mysql_sums_in_decimal_65() -> None:
+    sql = _sql("Price Variance", "mysql")
+
+    assert "MOD(SUM(CAST(CAST(`Charges`.`price` AS DECIMAL(65, 2))" in sql, sql
+    assert "AS DECIMAL(65, 0))" in sql
+    # Its limit: sums of squares under 10^63 units, at two places 10^59.
+    assert "< CAST('1E59' AS DOUBLE)" in sql
+    assert "ELSE VAR_SAMP(`Charges`.`price`)" in sql
+
+
 @pytest.mark.parametrize(
     ("dialect", "rewritten"),
-    [("snowflake", PAIRED), ("dremio", ("covar_samp", "covar_pop"))],
+    [("snowflake", PAIRED), ("dremio", ("covar_samp", "covar_pop")), ("postgres", PAIRED)],
 )
 def test_a_pair_is_computed_from_exact_moments(dialect: str, rewritten: tuple[str, ...]) -> None:
     for aggregation in rewritten:
@@ -182,11 +194,62 @@ def test_a_pair_is_computed_from_exact_moments(dialect: str, rewritten: tuple[st
 
 
 @pytest.mark.parametrize(
-    "dialect", sorted(set(DialectRegistry.available()) - {"snowflake", "dremio", "mysql"})
+    "dialect",
+    sorted(set(DialectRegistry.available()) - {"snowflake", "dremio", "postgres", "mysql"}),
 )
 def test_the_other_engines_keep_their_own_covariance(dialect: str) -> None:
     """MySQL has none to keep."""
     assert EXACT not in _sql("Qty Price covar_samp", dialect)
+
+
+def test_postgres_keeps_its_own_numeric_variance() -> None:
+    """``NUMERIC``, exact: only its covariance family reads doubles."""
+    assert EXACT not in _sql("Qty Variance", "postgres")
+    assert EXACT not in _sql("Price Variance", "postgres")
+
+
+def test_postgres_sums_in_numeric_under_what_a_double_holds() -> None:
+    """``NUMERIC`` holds any sum; the double it is rounded to, 1.8e308."""
+    sql = _sql("Qty Price covar_samp", "postgres")
+
+    assert (
+        'CAST(CAST(CASE WHEN "Charges"."qty" IS NOT NULL THEN "Charges"."price" END AS NUMERIC)'
+        in sql
+    )
+    assert "AS DOUBLE PRECISION)" in sql
+    assert "AS DOUBLE)" not in sql
+    # 10^300 units, tested on the exact sums of squares: squared as doubles,
+    # values near 10^200 overflowed before the CASE could keep its own.
+    assert sql.count("< CAST('1E300' AS NUMERIC)") == 2
+    assert "AS DOUBLE PRECISION) * CAST(" not in sql
+
+
+@pytest.mark.parametrize(("places", "exact"), [(150, True), (151, False)])
+def test_postgres_keeps_its_own_past_150_places(places: int, exact: bool) -> None:
+    """The route scales by powers of ten written as doubles, up to twice the
+    places: PostgreSQL refused ``CAST('1E320' AS DOUBLE PRECISION)`` for a
+    ``NUMERIC(162, 160)``, in a branch not taken too."""
+    model = f"""
+version: "1.0"
+dataObjects:
+  T:
+    code: t
+    columns:
+      X: {{code: x, abstractType: decimal, sqlPrecision: {places + 2}, sqlScale: {places}}}
+      Y: {{code: y, abstractType: decimal, sqlPrecision: {places + 2}, sqlScale: {places}}}
+measures:
+  Spread:
+    columns: [{{dataObject: T, column: X}}, {{dataObject: T, column: Y}}]
+    aggregation: covar_samp
+    resultType: float
+"""
+    raw, source_map = TrackedLoader().load_string(model)
+    resolved, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = QueryObject(select=QuerySelect(measures=["Spread"]))
+    sql = CompilationPipeline().compile(query, resolved, "postgres").sql
+
+    assert (EXACT in sql) is exact
 
 
 @pytest.mark.parametrize("dialect", ["snowflake", "dremio"])

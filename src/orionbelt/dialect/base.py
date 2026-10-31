@@ -838,8 +838,31 @@ class Dialect(ABC):
     #: Past 128 bits Dremio's ``SUM`` wraps silently - three squares of 9e18
     #: summed to -9.7e37 - and a product or a sum past them is 0; Snowflake's
     #: raises past 38 digits. This leaves room for the double the limit is
-    #: tested with.
+    #: tested with, and the sums are rounded to.
     _MOMENTS_LIMIT = 37
+
+    #: Whether :attr:`_MOMENTS_LIMIT` is tested on the exact sums of squares,
+    #: where :attr:`_MOMENTS_INTEGER` cannot overflow, rather than on the
+    #: values' doubles: squared past 1.8e308, a double raised in PostgreSQL
+    #: before the ``CASE`` could keep the engine's own (values near 10^200).
+    _MOMENTS_EXACT_LIMIT = False
+
+    #: The most places :meth:`_statistic_from_moments` reads a decimal at: it
+    #: scales by powers of ten written as doubles, which reach 10^308, up to
+    #: twice its places, and PostgreSQL refused ``CAST('1E320' AS DOUBLE
+    #: PRECISION)`` for a ``NUMERIC(162, 160)``, in a branch not taken too.
+    _MOMENTS_MOST_PLACES = 150
+
+    #: The types :meth:`_statistic_from_moments` sums whole numbers of units
+    #: in, divides by the count in, and rounds to at the end, as this engine
+    #: spells them in a ``CAST``. An engine with a wider exact type than 38
+    #: digits sums in that, with a :attr:`_MOMENTS_LIMIT` to match.
+    _MOMENTS_INTEGER = "DECIMAL(38, 0)"
+    _MOMENTS_COUNT = "DECIMAL(19, 0)"
+    _MOMENTS_DOUBLE = "DOUBLE"
+    #: The decimal a value of ``{scale}`` places is read as before it is put
+    #: in units.
+    _MOMENTS_DECIMAL = "DECIMAL(38, {scale})"
 
     #: Where every aggregate is computed whichever branch a ``CASE`` takes, and
     #: a ``SUM`` past 128 bits raises rather than wraps, the most digits a value
@@ -861,7 +884,8 @@ class Dialect(ABC):
         (``x * 10^scale``, exact: the product has no places to round). For a
         pair, only the rows where both values are count. Over them, ``N``, the
         sums ``Sa`` and ``Sb`` and the sums of products are exact in
-        ``DECIMAL(38, 0)``. The co-moment ``Sab - Sa * Sb / N``, whose
+        :attr:`_MOMENTS_INTEGER`, ``DECIMAL(38, 0)`` unless the engine has a
+        wider exact type. The co-moment ``Sab - Sa * Sb / N``, whose
         division is where floating point cancels, is taken through ``Sa``'s
         quotient ``qa`` and remainder ``ra`` by ``N``, and ``Sb``'s:
         ``Sab - qa * Sb - ra * qb - ra * rb / N``, the last by its own quotient
@@ -889,7 +913,9 @@ class Dialect(ABC):
         args = aggregate.args
         if aggregate.distinct or len(args) != len(scales) or len(args) not in (1, 2):
             return None
-        most_places = self._MAX_DECIMAL_PRECISION - (self._MOMENTS_ROW_DIGITS or 1)
+        most_places = min(
+            self._MAX_DECIMAL_PRECISION - (self._MOMENTS_ROW_DIGITS or 1), self._MOMENTS_MOST_PLACES
+        )
         if any(scale > most_places for scale in scales):
             return None
 
@@ -900,10 +926,10 @@ class Dialect(ABC):
             return FunctionCall(name=function, args=list(operands))
 
         def integer(expr: Expr) -> Expr:
-            return Cast(expr=expr, type_name="DECIMAL(38, 0)")
+            return Cast(expr=expr, type_name=self._MOMENTS_INTEGER)
 
         def double(expr: Expr) -> Expr:
-            return Cast(expr=expr, type_name="DOUBLE")
+            return Cast(expr=expr, type_name=self._MOMENTS_DOUBLE)
 
         def power(exponent: int) -> Expr:
             return double(Literal.string(f"1E{exponent}"))
@@ -928,7 +954,8 @@ class Dialect(ABC):
             shift = Cast(
                 expr=Literal.string(f"1{'0' * scale}"), type_name=f"DECIMAL({scale + 1}, 0)"
             )
-            return integer(op(Cast(expr=value, type_name=f"DECIMAL(38, {scale})"), "*", shift))
+            decimal = Cast(expr=value, type_name=self._MOMENTS_DECIMAL.format(scale=scale))
+            return integer(op(decimal, "*", shift))
 
         # A pair counts only where both of its values are.
         values = list(args)
@@ -939,7 +966,7 @@ class Dialect(ABC):
             ]
         us = [units(value, scale) for value, scale in zip(values, scales, strict=True)]
         count = call("COUNT", values[0])
-        n = Cast(expr=call("NULLIF", count, Literal.number(0)), type_name="DECIMAL(19, 0)")
+        n = Cast(expr=call("NULLIF", count, Literal.number(0)), type_name=self._MOMENTS_COUNT)
         sums = [call("SUM", u) for u in us]
 
         def co_moment(i: int, j: int) -> Expr:
@@ -983,10 +1010,14 @@ class Dialect(ABC):
             return None
         fits: Expr = op(count, ">=", Literal.number(2 if sample else 1))
         # Of the values the sums read: a value without its pair counts in neither.
-        for paired, scale in zip(values, scales, strict=True):
-            value = double(paired)
-            squares = call("SUM", op(value, "*", value))
-            fits = op(fits, "AND", op(squares, "<", power(self._MOMENTS_LIMIT - 2 * scale)))
+        for paired, scale, u in zip(values, scales, us, strict=True):
+            if self._MOMENTS_EXACT_LIMIT:
+                limit = integer(Literal.string(f"1E{self._MOMENTS_LIMIT}"))
+                fits = op(fits, "AND", op(call("SUM", op(u, "*", u)), "<", limit))
+            else:
+                value = double(paired)
+                squares = call("SUM", op(value, "*", value))
+                fits = op(fits, "AND", op(squares, "<", power(self._MOMENTS_LIMIT - 2 * scale)))
             if self._MOMENTS_ROW_DIGITS is not None:
                 largest = call("MAX", magnitude(paired))
                 bound = power(self._MOMENTS_ROW_DIGITS - scale)
