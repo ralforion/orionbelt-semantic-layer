@@ -490,6 +490,7 @@ ROW_MEASURES = [
     "Median Share",
     "P90 Order",
     "P25 Order",
+    "Commonest Customer",
     "First Amount",
     "Last Amount",
     "Order IDs",
@@ -558,17 +559,6 @@ class TestFromRows:
         self, files: dict[str, str], query: dict[str, Any]
     ) -> None:
         assert_same(files, query, extra=FROM_ROWS + DISTINCTS)
-
-    def test_a_mode(self, files: dict[str, str]) -> None:
-        """Out of the queries above: the engine picks any of two values as
-        common as each other, on one source too. Here each is the one."""
-        query = {
-            "select": {"dimensions": ["Region"], "measures": ["Commonest Customer"]},
-            "where": [{"field": "Region", "op": "in", "value": ["EU", "US"]}],
-        }
-
-        assert_same(files, query, extra=FROM_ROWS)
-        assert sorted(run_federated(files, query, extra=FROM_ROWS)) == [("EU", 10), ("US", 11)]
 
     def test_a_derived_metric_over_a_median(self, files: dict[str, str]) -> None:
         query = {"select": {"dimensions": ["Region"], "measures": ["Median Of Revenue"]}}

@@ -285,6 +285,15 @@ class DatabricksDialect(Dialect):
         """
         return self._render_null_guard(self._render_named_function(name, args), args)
 
+    def _compile_mode(self, args: list[Expr]) -> str:
+        """Databricks: ``MODE(col, true)``, the smallest of the most frequent values.
+
+        Its ``deterministic`` argument asks for that; measured, ``MODE(col)``
+        answered it too, but promises any of them.
+        """
+        col_sql = self.compile_expr(args[0]) if args else "NULL"
+        return f"MODE({col_sql}, true)"
+
     def _compile_listagg(
         self,
         args: list[Expr],
