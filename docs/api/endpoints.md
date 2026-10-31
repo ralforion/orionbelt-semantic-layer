@@ -1869,7 +1869,7 @@ List all available SQL dialects, their capability flags, and the vocabulary each
 [portable function catalog](../guide/functions.md) it can
 render — both stated positively, so a client needs no second call to learn the full vocabulary
 and subtract from it. Signatures, arity and pinned semantics for the functions are at
-[`GET /v1/reference/functions`](#get-v1referencefunctions).
+[`GET /v1/reference/functions`](../guide/functions.md).
 
 **Response (200):**
 

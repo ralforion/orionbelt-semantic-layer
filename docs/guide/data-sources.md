@@ -53,7 +53,7 @@ shops above share a user, password and database name and differ only in host.
 | `DB_<NAME>_POOL_SIZE` | Optional. Idle connections kept for the source; falls back to `DB_POOL_SIZE`, then 5 |
 | `DB_<NAME>_MAX_CONNECTIONS` | Optional. Connections of the source in use at once, by REST, pgwire, Flight SQL and federated legs together; falls back to `DB_MAX_CONNECTIONS`, then 10. `0` means no limit. A query past it waits its turn, in order of arrival |
 | `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS` | Optional. How long a query waits for one of those connections; falls back to `DB_ACQUIRE_TIMEOUT_SECONDS`, then 30. A query still waiting then is refused with `DATA_SOURCE_BUSY` (HTTP 503), naming the source and the setting to raise |
-| `DB_<NAME>_KEY_INJECTION_MAX_KEYS` | Optional. The most keys a [federated query](#key-injection) lists in a leg on this source; falls back to `DB_KEY_INJECTION_MAX_KEYS`, then the engine's measured limit. `0` turns it off |
+| `DB_<NAME>_KEY_INJECTION_MAX_KEYS` | Optional. The most keys a [federated query](federation.md#key-injection) lists in a leg on this source; falls back to `DB_KEY_INJECTION_MAX_KEYS`, then the engine's measured limit. `0` turns it off |
 | Variable lookup | `DB_<NAME>_<VAR>`, then the unprefixed `<VAR>`, each under its own name before its [alternative spellings](#orionbelt-analytics-variable-names). A source's own value always wins over a shared default |
 | Names | Compared ignoring case, spaces, dashes and underscores, so `Shop EU` means `shop-eu` |
 
