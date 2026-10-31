@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import gc
 import weakref
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -57,6 +58,7 @@ def model_yaml(
     extra: str = "",
     static: str = "",
     metric: str = "",
+    settings: str = "",
 ) -> str:
     shop = "    dataSource: shop\n" if federated else ""
     crm = "    dataSource: crm\n" if federated else ""
@@ -67,7 +69,7 @@ def model_yaml(
 version: 1.0
 settings:
   defaultDialect: duckdb
-dataObjects:
+{settings}dataObjects:
   Orders:
     code: orders
 {shop}    columns:
@@ -451,6 +453,311 @@ class TestCountDistinct:
         assert 'COUNT(DISTINCT "leg_0"."__distinct0")' in plan.combine_sql
 
 
+A = "{dataObject: Orders, column: Amount}"
+ON_DATE = "withinGroup: {column: {dataObject: Orders, column: Order Date}}"
+FROM_ROWS = (
+    f"  Median Order: {{columns: [{A}], aggregation: median}}\n"
+    '  Median Share: {expression: "{[Orders].[Amount]} / {[Orders].[Order ID]}", '
+    "aggregation: median, resultType: float}\n"
+    f"  P90 Order: {{columns: [{A}], aggregation: percentile_cont, percentile: 0.9}}\n"
+    f"  P25 Order: {{columns: [{A}], aggregation: percentile_disc, percentile: 0.25}}\n"
+    "  Commonest Customer: {columns: [{dataObject: Orders, column: Order Customer}], "
+    "aggregation: mode, resultType: int}\n"
+    f"  First Amount: {{columns: [{A}], aggregation: first, {ON_DATE}}}\n"
+    f"  Last Amount: {{columns: [{A}], aggregation: last, {ON_DATE}}}\n"
+    "  Order IDs: {columns: [{dataObject: Orders, column: Order ID}], aggregation: listagg, "
+    "delimiter: ', ', withinGroup: {column: {dataObject: Orders, column: Order ID}}, "
+    "resultType: string}\n"
+    f"  Amount Spread: {{columns: [{A}], aggregation: variance, resultType: float}}\n"
+    "  Id Amount Corr: {columns: [{dataObject: Orders, column: Order ID}, "
+    f"{A}], aggregation: corr, resultType: float}}\n"
+    f"  Distinct Amounts: {{columns: [{A}], aggregation: sum, distinct: true}}\n"
+    f"  Total Average: {{columns: [{A}], aggregation: avg, total: true}}\n"
+    f"  Total Median: {{columns: [{A}], aggregation: median, total: true}}\n"
+    "  Big Customers: {columns: [{dataObject: Orders, column: Order Customer}], "
+    f"aggregation: count_distinct, resultType: int, filters: [{{column: {A}, operator: gt, "
+    "values: [{dataType: int, valueInt: 10}]}]}\n"
+    "  Customers With Total: {columns: [{dataObject: Orders, column: Order Customer}], "
+    "aggregation: count_distinct, resultType: int, total: true}\n"
+    '  Shifted Customers: {expression: "{[Orders].[Order Customer]} + 1", '
+    "aggregation: count_distinct, resultType: int}\n"
+    '  Shifted Customer Count: {expression: "{[Orders].[Order Customer]} + 1", '
+    "aggregation: count, distinct: true, resultType: int}\n"
+)
+ROW_MEASURES = [
+    "Median Order",
+    "Median Share",
+    "P90 Order",
+    "P25 Order",
+    "First Amount",
+    "Last Amount",
+    "Order IDs",
+    "Amount Spread",
+    "Id Amount Corr",
+    "Distinct Amounts",
+    "Total Average",
+    "Total Median",
+    "Big Customers",
+    "Customers With Total",
+    "Shifted Customers",
+    "Shifted Customer Count",
+]
+ROW_QUERIES = {
+    "by_dimension_island": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": [*ROW_MEASURES, *MEASURES, "Customers Ordering"],
+        }
+    },
+    "by_both_islands": {
+        "select": {"dimensions": ["Order Date:month", "Region"], "measures": ROW_MEASURES}
+    },
+    "filter_on_dimension_island": {
+        "select": {"dimensions": ["Order Date:month"], "measures": [*ROW_MEASURES, *MEASURES]},
+        "where": [EU],
+    },
+    "null_filter_on_dimension_island": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ROW_MEASURES},
+        "where": [{"field": "Region", "op": "is_null"}],
+    },
+    "filter_across_islands": {
+        "select": {"dimensions": ["Region"], "measures": ROW_MEASURES},
+        "where": [
+            {
+                "logic": "or",
+                "filters": [EU, {"field": "Order Date", "op": ">=", "value": "2024-03-01"}],
+            }
+        ],
+    },
+    "no_dimensions_with_a_filter_on_the_dimension_side": {
+        "select": {"measures": [*ROW_MEASURES, *MEASURES]},
+        "where": [{"field": "Region", "op": "in", "value": ["EU", "US"]}],
+    },
+    "having_ordered_limited": {
+        "select": {"dimensions": ["Region"], "measures": ["Median Order", "Revenue"]},
+        "having": [{"field": "Median Order", "op": ">", "value": 10}],
+        "orderBy": [{"field": "Median Order", "direction": "desc"}],
+        "limit": 2,
+    },
+    "rollup": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Median Order", "Revenue", "Orders Count"],
+        },
+        "grouping": "rollup",
+    },
+}
+
+
+class TestFromRows:
+    """What does not combine from partial results is computed from the fact leg's rows."""
+
+    @pytest.mark.parametrize("query", ROW_QUERIES.values(), ids=ROW_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        assert_same(files, query, extra=FROM_ROWS + DISTINCTS)
+
+    def test_a_mode(self, files: dict[str, str]) -> None:
+        """Out of the queries above: the engine picks any of two values as
+        common as each other, on one source too. Here each is the one."""
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Commonest Customer"]},
+            "where": [{"field": "Region", "op": "in", "value": ["EU", "US"]}],
+        }
+
+        assert_same(files, query, extra=FROM_ROWS)
+        assert sorted(run_federated(files, query, extra=FROM_ROWS)) == [("EU", 10), ("US", 11)]
+
+    def test_a_derived_metric_over_a_median(self, files: dict[str, str]) -> None:
+        query = {"select": {"dimensions": ["Region"], "measures": ["Median Of Revenue"]}}
+        metric = '  Median Of Revenue: {expression: "{[Median Order]} / {[Revenue]}"}\n'
+
+        assert_same(files, query, extra=FROM_ROWS, metric=metric)
+
+    def test_the_models_numeric_type_applies_to_the_combined_values(
+        self, files: dict[str, str]
+    ) -> None:
+        """A sum of 0.1239 came back 0.12 beside a median, and a metric over
+        partial results as well: the combine model had no
+        ``defaultNumericDataType``."""
+        extra = FROM_ROWS + (
+            '  Milli Revenue: {expression: "{[Orders].[Amount]} * 0.001", aggregation: sum}\n'
+        )
+        metric = '  Milli Doubled: {expression: "{[Milli Revenue]} * 2"}\n'
+        settings = "  defaultNumericDataType: decimal(18, 4)\n"
+        both = ["Milli Revenue", "Median Order"]
+        for measures in (both, ["Milli Doubled"]):
+            query = {"select": {"dimensions": ["Region"], "measures": measures}}
+            assert_same(files, query, extra=extra, metric=metric, settings=settings)
+
+        query = {"select": {"dimensions": ["Region"], "measures": both}}
+        rows = {r[0]: r[1] for r in run_federated(files, query, extra=extra, settings=settings)}
+        assert rows["EU"] == Decimal("0.1239")
+
+    def test_the_leg_counts_the_rows_of_each_group_of_values(self) -> None:
+        compiled = _compile(
+            model_yaml(federated=True, extra=FROM_ROWS + DISTINCTS),
+            {
+                "select": {
+                    "dimensions": ["Region"],
+                    "measures": ["Median Order", "First Amount", "Customers Ordering"],
+                }
+            },
+        )
+        fact = compiled.federation.legs[0]
+
+        assert fact.rows == "__rows"
+        assert "MEDIAN" not in fact.sql.upper()
+        # Each column read once: the amount for both measures, the date the
+        # first one is ordered by, and the counted customer apart.
+        assert set(dict(fact.columns)) == {
+            "__fk0_0",
+            "__distinct0",
+            "__value0",
+            "__value1",
+            "__rows",
+        }
+        assert 'range(CAST("__leg"."__rows" AS BIGINT))' in compiled.sql
+        assert 'FROM "leg_0_rows" AS "leg_0"' in compiled.sql
+        assert compiled.warnings == []
+
+    def test_a_query_combining_from_partial_results_returns_none(self) -> None:
+        plan = _compile(
+            model_yaml(federated=True, extra=FROM_ROWS),
+            {"select": {"dimensions": ["Region"], "measures": MEASURES}},
+        ).federation
+
+        assert plan.legs[0].rows is None
+        assert "leg_0_rows" not in plan.combine_sql
+
+    def test_injected_keys_keep_the_leg_returning_rows(self) -> None:
+        plan = _compile(
+            model_yaml(federated=True, extra=FROM_ROWS),
+            {"select": {"dimensions": ["Order Date"], "measures": ["Median Order"]}, "where": [EU]},
+        ).federation
+
+        injected = plan.inject({"__fk0_0": [10, 13]})
+
+        assert injected.rows == plan.legs[0].rows == "__rows"
+        assert "IN (10, 13)" in injected.sql
+
+
+IN_BERLIN = """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+  queryTimezone: Europe/Berlin
+dataObjects:
+  Readings:
+    code: readings
+{facts}    columns:
+      Key: {{code: k, abstractType: int}}
+      Taken: {{code: taken, abstractType: timestamp_tz}}
+      Value: {{code: v, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Sites, columnsFrom: [Key], columnsTo: [Site Key]}}
+  Sites:
+    code: sites
+{labels}    columns:
+      Site Key: {{code: k, abstractType: int}}
+      Site: {{code: s, abstractType: string}}
+dimensions:
+  Site: {{dataObject: Sites, column: Site, resultType: string}}
+measures:
+  First Value:
+    columns: [{{dataObject: Readings, column: Value}}]
+    aggregation: first
+    withinGroup: {{column: {{dataObject: Readings, column: Taken}}}}
+    resultType: int
+  Last Value:
+    columns: [{{dataObject: Readings, column: Value}}]
+    aggregation: last
+    withinGroup: {{column: {{dataObject: Readings, column: Taken}}}}
+    resultType: int
+  Earliest:
+    columns: [{{dataObject: Readings, column: Taken}}]
+    aggregation: min
+    resultType: timestamp
+"""
+# 00:30 and 01:30 UTC are both 02:30 in Berlin the night it falls back.
+READINGS = (
+    "CREATE TABLE readings AS SELECT * FROM (VALUES"
+    " (1, TIMESTAMPTZ '2024-10-27 00:30:00+00', 100),"
+    " (1, TIMESTAMPTZ '2024-10-27 01:30:00+00', 1)) t(k, taken, v)"
+)
+SITES = "CREATE TABLE sites AS SELECT * FROM (VALUES (1, 'north')) t(k, s)"
+
+
+@pytest.fixture(scope="module")
+def zoned(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("zoned")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "facts", "labels")}
+    for name, statements in (
+        ("all", [READINGS, SITES]),
+        ("facts", [READINGS]),
+        ("labels", [SITES]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+class TestFromRowsInTheQueryZone:
+    """A first or last is ordered by its key in the column's own time, as on one source."""
+
+    def _run(self, zoned: dict[str, str], federated: bool, query: dict[str, Any]) -> list[Any]:
+        sources = "    dataSource: facts\n", "    dataSource: labels\n"
+        facts, labels = sources if federated else ("", "")
+        compiled = _compile(IN_BERLIN.format(facts=facts, labels=labels), query)
+        if compiled.federation is None:
+            con = duckdb.connect(zoned["all"], read_only=True)
+            try:
+                return _rows(con, compiled.sql)
+            finally:
+                con.close()
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(zoned[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+        return _rows(combine, compiled.sql)
+
+    def test_two_instants_of_one_wall_clock_time_keep_their_order(
+        self, zoned: dict[str, str]
+    ) -> None:
+        """Read in Berlin time, both readings were 02:30, and the tie went to
+        the smaller value: the first came back 1, not 100."""
+        query = {
+            "select": {
+                "dimensions": ["Site"],
+                "measures": ["First Value", "Last Value", "Earliest"],
+            }
+        }
+
+        single = self._run(zoned, False, query)
+
+        assert self._run(zoned, True, query) == single
+        assert single[0][1:3] == (100, 1)
+
+    def test_injected_keys_read_the_key_in_its_own_time_too(self) -> None:
+        yaml = IN_BERLIN.format(facts="    dataSource: facts\n", labels="    dataSource: labels\n")
+        query = {
+            "select": {"dimensions": ["Site"], "measures": ["First Value", "Earliest"]},
+            "where": [{"field": "Site", "op": "=", "value": "north"}],
+        }
+        plan = _compile(yaml, query).federation
+
+        for leg in (plan.legs[0], plan.inject({"__fk0_0": [1]})):
+            # The minimum reads the reading in Berlin time, the ordering as stored.
+            assert '"Readings"."taken" AT TIME ZONE \'Europe/Berlin\'' in leg.sql
+            assert '"Readings"."taken" AS' in leg.sql
+
+
 class TestPlan:
     def test_a_query_on_one_source_is_not_federated(self) -> None:
         compiled = _compile(
@@ -731,41 +1038,12 @@ class TestPlan:
         assert "since" not in plan.combine_sql.lower()
 
 
-DISTINCT = (
-    "  Customers Ordering: {columns: [{dataObject: Orders, column: Order Customer}], "
-    "aggregation: count_distinct, resultType: int}\n"
-)
 ON_CUSTOMERS = (
     "  Customer Rows: {columns: [{dataObject: Customers, column: Customer ID}], "
     "aggregation: count, resultType: int}\n"
 )
 
 REFUSALS = {
-    "avg_with_a_total": (
-        AVG.replace("aggregation: avg}", "aggregation: avg, total: true}"),
-        {"select": {"dimensions": ["Region"], "measures": ["Average Order"]}},
-        "FEDERATION_UNSUPPORTED_AGGREGATION",
-    ),
-    "count_distinct_under_a_filter": (
-        DISTINCT.replace(
-            "resultType: int}",
-            "resultType: int, filters: [{column: {dataObject: Orders, column: Amount}, "
-            "operator: gt, values: [{dataType: int, valueInt: 10}]}]}",
-        ),
-        {"select": {"dimensions": ["Region"], "measures": ["Customers Ordering"]}},
-        "FEDERATION_UNSUPPORTED_AGGREGATION",
-    ),
-    "count_distinct_with_a_total": (
-        DISTINCT.replace("resultType: int}", "resultType: int, total: true}"),
-        {"select": {"dimensions": ["Region"], "measures": ["Customers Ordering"]}},
-        "FEDERATION_UNSUPPORTED_AGGREGATION",
-    ),
-    "sum_distinct": (
-        "  Distinct Amounts: {columns: [{dataObject: Orders, column: Amount}], "
-        "aggregation: sum, distinct: true}\n",
-        {"select": {"dimensions": ["Region"], "measures": ["Distinct Amounts"]}},
-        "FEDERATION_UNSUPPORTED_AGGREGATION",
-    ),
     "measures_on_two_sources": (
         ON_CUSTOMERS,
         {"select": {"dimensions": ["Region"], "measures": ["Revenue", "Customer Rows"]}},
@@ -1354,6 +1632,10 @@ measures:
   Rows: {columns: [{dataObject: Facts, column: Key}], aggregation: count, resultType: int}
   Names: {columns: [{dataObject: Facts, column: Name}], aggregation: count_distinct}
   Floats: {columns: [{dataObject: Facts, column: F}], aggregation: count_distinct}
+  Median F: {columns: [{dataObject: Facts, column: F}], aggregation: median, resultType: float}
+  Least Name: {columns: [{dataObject: Facts, column: Name}], aggregation: min, resultType: string}
+  Mode Name: {columns: [{dataObject: Facts, column: Name}], aggregation: mode, resultType: string}
+  Mode F: {columns: [{dataObject: Facts, column: F}], aggregation: mode, resultType: float}
 """
 
 
@@ -1409,6 +1691,55 @@ class TestEngineEquality:
         texts = [c for c in dict(facts.columns) if f'toString("__leg"."{c}")' in facts.sql]
         assert len(texts) == 1
         assert dict(facts.columns)[texts[0]] == "string"
+
+    def test_from_rows_a_count_of_distinct_mysql_strings_still_counts_classes(
+        self, facts_on: Any
+    ) -> None:
+        plan = facts_on(
+            "mysql", {"select": {"dimensions": ["Label"], "measures": ["Median F", "Names"]}}
+        )
+
+        facts = plan.legs[0]
+        assert facts.rows is not None
+        rewritten = [c for c in dict(facts.columns) if f"PARTITION BY `__leg`.`{c}`" in facts.sql]
+        assert len(rewritten) == 1
+
+    @pytest.mark.parametrize(
+        ("dialect", "measure", "column"),
+        [
+            ("mysql", "Least Name", "Name"),
+            ("mysql", "Mode Name", "Name"),
+            ("clickhouse", "Mode F", "F"),
+        ],
+    )
+    def test_from_rows_values_their_engine_compares_otherwise_are_refused(
+        self, facts_on: Any, dialect: str, measure: str, column: str
+    ) -> None:
+        """The combine step would compare them: 'a' and 'A' as two values,
+        where MySQL sees one; 0.0 and -0.0 as one, where ClickHouse counts two."""
+        with pytest.raises(ResolutionError) as caught:
+            facts_on(
+                dialect, {"select": {"dimensions": ["Label"], "measures": ["Median F", measure]}}
+            )
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_AGGREGATION"
+        assert f"compares the values of 'Facts.{column}' otherwise than {dialect}" in (
+            error.message
+        )
+
+    @pytest.mark.parametrize(
+        ("dialect", "measure"),
+        [("mysql", "Mode F"), ("clickhouse", "Mode Name"), ("clickhouse", "Least Name")],
+    )
+    def test_from_rows_values_their_engine_compares_as_duckdb_combine(
+        self, facts_on: Any, dialect: str, measure: str
+    ) -> None:
+        plan = facts_on(
+            dialect, {"select": {"dimensions": ["Label"], "measures": ["Median F", measure]}}
+        )
+
+        assert plan.legs[0].rows is not None
 
     def test_a_clickhouse_dimension_is_left_alone(self, facts_on: Any) -> None:
         plan = facts_on(
@@ -1634,6 +1965,22 @@ def _repeated(aggregation: str, query: dict[str, Any]) -> tuple[list[Any], list[
 
 class TestRepeatedRows:
     """A measure counted once per row of an object the joins repeat."""
+
+    def test_from_rows_it_is_refused(self) -> None:
+        """The fact leg's rows repeat customer 1 once per sale; one database
+        takes its age once."""
+        yaml = REPEATED.format(
+            facts="    dataSource: facts\n",
+            labels="    dataSource: labels\n",
+            aggregation="median",
+        )
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, {"select": {"dimensions": ["Category"], "measures": ["Ages"]}})
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_AGGREGATION"
+        assert "repeat each row of 'Customers'" in error.message
 
     @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
     @pytest.mark.parametrize("beside", [[], ["Sales Count"]])

@@ -118,10 +118,13 @@ async def client(sources: dict[str, str], tmp_path: Any) -> AsyncIterator[AsyncC
         mgr.stop()
 
 
-def single_model() -> str:
-    return model_yaml(federated=False).replace(
+def single_model(**model: Any) -> str:
+    return model_yaml(federated=False, **model).replace(
         "  defaultDialect: duckdb\n", "  defaultDialect: duckdb\n  defaultDataSource: all\n"
     )
+
+
+MEDIAN = "  Median Order: {columns: [{dataObject: Orders, column: Amount}], aggregation: median}\n"
 
 
 async def execute(client: AsyncClient, yaml: str, query: dict[str, Any]) -> Any:
@@ -159,6 +162,19 @@ class TestRestExecution:
         assert single.status_code == 200, single.text
         assert federated.status_code == 200, federated.text
         assert single.json()["federation"] is None
+        assert federated.json()["rows"] == single.json()["rows"]
+        assert federated.json()["columns"] == single.json()["columns"]
+
+    async def test_a_median_is_computed_from_the_fact_legs_rows(self, client: AsyncClient) -> None:
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Median Order", "Revenue"]},
+            "orderBy": [{"field": "Region"}],
+        }
+
+        single = await execute(client, single_model(extra=MEDIAN), query)
+        federated = await execute(client, model_yaml(federated=True, extra=MEDIAN), query)
+
+        assert federated.status_code == 200, federated.text
         assert federated.json()["rows"] == single.json()["rows"]
         assert federated.json()["columns"] == single.json()["columns"]
 
@@ -284,6 +300,24 @@ class TestRestExecution:
         assert "FEDERATION_LEG_TOO_LARGE" in response.json()["detail"]
         assert "leg leg_0 on shop" in response.json()["detail"]
 
+    async def test_a_leg_standing_for_more_rows_than_the_limit_is_refused(
+        self, client: AsyncClient
+    ) -> None:
+        """Five customer rows that stand for the seven orders: under the limit
+        of six as returned, over it as the combine step reads them."""
+        federation.configure(FederationLimits(max_leg_rows=6))
+        overall = (
+            "  Customers Overall: {columns: [{dataObject: Orders, column: Order Customer}], "
+            "aggregation: count_distinct, resultType: int, total: true}\n"
+        )
+        query = {"select": {"dimensions": ["Region"], "measures": ["Customers Overall"]}}
+
+        response = await execute(client, model_yaml(federated=True, extra=overall), query)
+
+        assert response.status_code == 502
+        assert "FEDERATION_LEG_TOO_LARGE" in response.json()["detail"]
+        assert "leg leg_0 on shop (duckdb) stands for 7 rows" in response.json()["detail"]
+
     async def test_a_leg_over_the_row_limit_stays_refused_when_repeated(
         self, client: AsyncClient
     ) -> None:
@@ -367,6 +401,22 @@ class TestKeyInjection:
         assert [source for source, _ in ran[:2]] == ["crm", "shop"]
         assert '"Orders"."customer_id" IN (10, 13)' in ran[1][1]
         assert sum(Decimal(r[1]) for r in rows) == Decimal("123.90")
+
+    async def test_a_leg_returning_rows_reads_the_keys_too(
+        self, client: AsyncClient, ran: list[tuple[str, str]]
+    ) -> None:
+        query = {
+            **EU_REVENUE,
+            "select": {"dimensions": ["Order Date"], "measures": ["Median Order"]},
+        }
+
+        federated = await execute(client, model_yaml(federated=True, extra=MEDIAN), query)
+        single = await execute(client, single_model(extra=MEDIAN), query)
+
+        assert federated.status_code == 200, federated.text
+        assert federated.json()["rows"] == single.json()["rows"]
+        assert [source for source, _ in ran[:2]] == ["crm", "shop"]
+        assert '"Orders"."customer_id" IN (10, 13)' in ran[1][1]
 
     async def test_more_keys_than_the_source_takes_read_every_key(
         self, client: AsyncClient, ran: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
@@ -915,6 +965,23 @@ class TestCombine:
         threads, memory = result.rows[0]
         assert int(threads) == 1
         assert memory.replace(" ", "").upper().startswith(("61", "64"))
+
+    def test_a_leg_may_stand_for_as_many_rows_as_it_may_return(self) -> None:
+        federation.configure(FederationLimits(max_leg_rows=5))
+        leg = FederatedLeg(
+            name="leg_0",
+            data_source="shop",
+            dialect="duckdb",
+            sql="",
+            data_objects=("Orders",),
+            rows="__rows",
+        )
+        plan = FederatedPlan(legs=(leg,), combine_sql="SELECT SUM(__rows) AS n FROM leg_0")
+
+        five = federation.combine(plan, {"leg_0": pa.table({"__rows": [3, 2]})}, None)
+        assert list(five.rows[0]) == [5]
+        with pytest.raises(FederatedLegError, match="stands for 6 rows of its data source"):
+            federation.combine(plan, {"leg_0": pa.table({"__rows": [3, 3]})}, None)
 
     def test_the_combine_step_spills_into_the_querys_directory(self, tmp_path: Any) -> None:
         federation.configure(FederationLimits(spill_max_bytes=100 * 1024 * 1024))

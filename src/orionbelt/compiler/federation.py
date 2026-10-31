@@ -18,6 +18,10 @@ than one source, no single database can run it. It is split instead:
   for DuckDB against a model whose data objects are the legs: the fact leg
   joins each dimension leg on its key, and each measure is re-aggregated from
   the leg's partial result (``SUM`` of sums and counts, ``MIN`` of minimums).
+* **Rows.** When a measure does not combine from partial results (a median,
+  a correlation), the fact leg groups by every column the measures read as
+  well and counts each group's rows instead, and the combine step computes
+  every measure from that many copies of each (:func:`_row_measures`).
   Derived metrics, filters reading several islands or true for NULL, HAVING,
   ORDER BY and LIMIT run there, over the combined rows; a filter on one island
   that rejects NULL runs in its leg.
@@ -42,7 +46,7 @@ from typing import Any
 
 from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.grain_dedup import MULTIPLICITY_SAFE_AGGREGATIONS
-from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
+from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery, columns_in_own_zone
 from orionbelt.compiler.type_resolver import (
     combined_averages,
     combined_variances,
@@ -54,6 +58,7 @@ from orionbelt.compiler.type_resolver import (
 from orionbelt.dialect.base import Dialect
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
+from orionbelt.models.expressions import find_qualified_refs, repoint_references
 from orionbelt.models.query import (
     DimensionRef,
     FilterOperator,
@@ -76,6 +81,8 @@ from orionbelt.models.semantic import (
     FilterEnforcement,
     FilterLogic,
     Measure,
+    MeasureFilterGroup,
+    MeasureFilterItem,
     MetricType,
     ModelFilter,
     ModelSettings,
@@ -114,6 +121,26 @@ _VARIANCES = frozenset(
 # The most places a variance's values may have: the combine step reads their
 # squares, at twice the places, as whole numbers of a 38-digit decimal.
 _VARIANCE_MOST_PLACES = 19
+
+# Aggregations that compare the values they read, when computed from a fact
+# leg's rows (:func:`_compared_columns`): by order, or by equality alone.
+_ORDERING = frozenset(
+    {
+        AggregationType.MIN,
+        AggregationType.MAX,
+        AggregationType.MEDIAN,
+        AggregationType.PERCENTILE_CONT,
+        AggregationType.PERCENTILE_DISC,
+        AggregationType.FIRST,
+        AggregationType.LAST,
+        AggregationType.LISTAGG,
+    }
+)
+_COUNTING = frozenset({AggregationType.COUNT_DISTINCT, AggregationType.MODE})
+
+# The relation the combine step reads a fact leg returning rows as: the leg,
+# each row repeated as often as it counts (:func:`_with_rows`).
+_ROWS_RELATION = "leg_0_rows"
 
 # The filter operators true where their field is NULL, and those false there.
 # Every other one compares the field, which is unknown (NULL) for NULL.
@@ -154,6 +181,10 @@ class FederatedLeg:
             ``variance`` or ``stddev`` combines from, each with its decimal
             scale: the combine step reads them as whole numbers of
             ``10^-scale`` units.
+        rows: The column saying how many of its data source's rows each row
+            stands for, when the leg returns rows rather than partial results
+            (:func:`_row_measures`); the combine query repeats each row that
+            many times.
     """
 
     name: str
@@ -165,6 +196,7 @@ class FederatedLeg:
     physical_tables: tuple[str, ...] = ()
     exact_sums: tuple[tuple[str, int], ...] = ()
     integer_sums: tuple[tuple[str, int], ...] = ()
+    rows: str | None = None
 
 
 @dataclass(frozen=True)
@@ -200,6 +232,8 @@ class KeyInjector:
         model: The model of its island it compiles against.
         columns: The columns it returns.
         squares: The sums of squares it reads, by name, each with its scale.
+        own_zone: The ``(data object, column)`` pairs it reads in their own
+            time (:func:`columns_in_own_zone`).
         rekeyed: Its columns compared as their engine compares them.
         kept: The copies of rekeyed columns a combine filter reads.
         compile_leg: As :func:`plan_federated` takes it.
@@ -210,6 +244,7 @@ class KeyInjector:
     model: SemanticModel
     columns: tuple[DataObjectColumn, ...]
     squares: dict[str, int]
+    own_zone: frozenset[tuple[str, str]]
     rekeyed: dict[str, tuple[str, bool]]
     kept: dict[str, str]
     compile_leg: Callable[[QueryObject, SemanticModel, str], str] = dataclasses.field(
@@ -231,7 +266,11 @@ class KeyInjector:
             # No key at all matches no fact row: the leg's columns, without rows.
             query = self.query.model_copy(update={"limit": 0})
         dialect = DialectRegistry.get(self.leg.dialect)
-        with partial_sums(), partial_squares(dialect, self.squares):
+        with (
+            partial_sums(),
+            partial_squares(dialect, self.squares),
+            columns_in_own_zone(self.own_zone),
+        ):
             sql = self.compile_leg(query, self.model, dialect.name)
         if self.rekeyed:
             sql = _rewrite_leg(dialect, sql, list(self.columns), self.rekeyed, self.kept)
@@ -350,7 +389,7 @@ def plan_federated(
     islands = planner.islands()
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
-    planner.check_measures(islands[fact])
+    from_rows = planner.check_measures(islands[fact])
     leg_filters, combine_filters = planner.place_filters(islands, fact)
 
     fact_dims, edge_dims = planner.dimensions_by_island(islands, fact, edges, combine_filters)
@@ -379,15 +418,39 @@ def plan_federated(
         for i, column in enumerate(edge.from_columns)
     }
     measures = planner.atomic_measures()
-    leg_measures, averages, distinct, variances = _leg_measures(model, measures, taken)
+    # The leg column counting the rows each of its rows stands for, and the
+    # leg column of each column a measure reads, when the leg returns rows.
+    row_count: str | None = None
+    measure_columns: dict[tuple[str, str, bool], str] = {}
+    if from_rows:
+        # A key read in its own time is a copy of its column, under the key's
+        # name, which no column of its data object may have.
+        taken |= {c.casefold() for o in islands[fact] for c in model.data_objects[o].columns}
+        leg_measures, row_count, distinct, measure_columns = _row_measures(
+            model, measures, taken, resolved.base_object
+        )
+        averages: dict[str, tuple[str, str, int | None]] = {}
+        variances: dict[str, tuple[str, str, str, int]] = {}
+    else:
+        leg_measures, averages, distinct, variances = _leg_measures(model, measures, taken)
     # The values a count of distinct values counts: the fact leg groups by them
     # too, so the combine step counts them across every group they reach.
     fact_values = {column: (obj, col) for column, obj, col in distinct.values()}
-    planner.check_deduplicated(edges, fact_dims, distinct)
-    fact_model = planner.island_model(islands[fact], {**fact_keys, **fact_values}, leg_measures)
+    row_values = {column: (obj, col) for (obj, col, _), column in measure_columns.items()}
+    own_zone = {column for (_, _, own), column in measure_columns.items() if own}
+    in_own_zone = frozenset((row_values[column][0], column) for column in own_zone)
+    if not from_rows:
+        planner.check_deduplicated(edges, fact_dims, distinct)
+    fact_model = planner.island_model(
+        islands[fact],
+        {**fact_keys, **fact_values, **row_values},
+        leg_measures,
+        own_zone=own_zone,
+    )
     fact_query = QueryObject(
         select=QuerySelect(
-            dimensions=[*fact_dims, *fact_keys, *fact_values], measures=sorted(leg_measures)
+            dimensions=[*fact_dims, *fact_keys, *fact_values, *row_values],
+            measures=sorted(leg_measures),
         ),
         where=leg_filters.get(fact, []),
         limit=leg_limit,
@@ -398,6 +461,7 @@ def plan_federated(
             _key_column(model, name, obj, col)
             for name, (obj, col) in {**fact_keys, **fact_values}.items()
         ],
+        *[_value_column(model, name, obj, col) for name, (obj, col) in row_values.items()],
         *[
             DataObjectColumn(name=n, code=n, abstract_type=m.result_type)
             for n, m in sorted(leg_measures.items())
@@ -428,7 +492,11 @@ def plan_federated(
     )
     renamed.update({source: hidden for hidden, source in fact_kept.items()})
     squares = {squared: scale for _, _, squared, scale in variances.values()}
-    with partial_sums(), partial_squares(planner.leg_dialect(islands[fact]), squares):
+    with (
+        partial_sums(),
+        partial_squares(planner.leg_dialect(islands[fact]), squares),
+        columns_in_own_zone(in_own_zone),
+    ):
         legs.append(
             planner.leg(
                 "leg_0",
@@ -445,6 +513,7 @@ def plan_federated(
                     for _, sums, squared, scale in variances.values()
                     for part in ((sums, scale), (squared, 2 * scale))
                 ),
+                rows=row_count,
                 rekeyed=fact_rekeyed,
                 kept=fact_kept,
             )
@@ -558,10 +627,11 @@ def plan_federated(
 
     combine_objects["leg_0"] = DataObject(
         name="leg_0",
-        code="leg_0",
+        # The leg with each row repeated as often as it counts (_with_rows).
+        code=_ROWS_RELATION if row_count else "leg_0",
         database="",
         schema_name="",
-        columns={c.name: c for c in fact_columns},
+        columns={c.name: c for c in fact_columns if c.name != row_count},
         joins=fact_joins,
         countable=False,
     )
@@ -573,12 +643,28 @@ def plan_federated(
     }
     combine_model = SemanticModel(
         name=model.name,
+        # What types and buckets the combined values; not the query's time
+        # zone, which the legs read their timestamps in already.
         settings=ModelSettings(default_dialect=COMBINE_DIALECT).model_copy(
-            update={"week_start": model.settings.week_start} if model.settings else {}
+            update=(
+                {
+                    "week_start": model.settings.week_start,
+                    "default_numeric_data_type": model.settings.default_numeric_data_type,
+                }
+                if model.settings
+                else {}
+            )
         ),
         data_objects=combine_objects,
         dimensions=combine_dimensions,
-        measures={m: _combine_measure(model, m, leg_columns.get(m)) for m in measures},
+        measures={
+            m: (
+                _row_measure(model, m, measure_columns)
+                if from_rows and m not in distinct
+                else _combine_measure(model, m, leg_columns.get(m))
+            )
+            for m in measures
+        },
         metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
         filters=combine_filters_static,
         expose_counts=False,
@@ -607,6 +693,8 @@ def plan_federated(
         ),
     ):
         combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
+    if row_count:
+        combine_sql = _with_rows(combine_sql, combiner, "leg_0", row_count)
     inject = None
     if injections:
         inject = KeyInjector(
@@ -615,6 +703,7 @@ def plan_federated(
             model=fact_model.model_copy(deep=True),
             columns=tuple(fact_columns),
             squares=squares,
+            own_zone=in_own_zone,
             rekeyed=fact_rekeyed,
             kept=fact_kept,
             compile_leg=compile_leg,
@@ -869,7 +958,15 @@ class _Planner:
         names |= {o.field for o in self.query.order_by if o.field in effective}
         return names
 
-    def check_measures(self, fact_island: set[str]) -> None:
+    def check_measures(self, fact_island: set[str]) -> bool:
+        """Refuse a measure no federated query computes; say whether the fact leg returns rows.
+
+        A measure combines from partial results the fact leg computes per
+        group (:meth:`combines`). When one does not - a median, a
+        correlation, a variance of floats, an average with a total - the fact
+        leg returns its rows instead, and the combine step computes every
+        measure from them (:meth:`check_rows`).
+        """
         for rm in self.resolved.measures:
             if rm.is_cumulative or rm.is_pop or rm.is_window or rm.is_reaggregate:
                 raise self.refuse(
@@ -878,55 +975,9 @@ class _Planner:
                     "federated query supports yet",
                 )
         effective = self.model.effective_measures
-        for name in sorted(self.atomic_measures()):
+        names = sorted(self.atomic_measures())
+        for name in names:
             measure = effective[name]
-            counts_distinct = _counts_distinct(measure)
-            combinable = counts_distinct or (
-                not measure.distinct
-                and (
-                    measure.aggregation in _REAGGREGATE
-                    or measure.aggregation == AggregationType.AVG
-                    or measure.aggregation in _VARIANCES
-                )
-            )
-            if not combinable:
-                aggregation = (
-                    f"{measure.aggregation} distinct" if measure.distinct else measure.aggregation
-                )
-                raise self.refuse(
-                    "UNSUPPORTED_AGGREGATION",
-                    f"Measure '{name}' aggregates with {aggregation}, which cannot be "
-                    "combined from per-data-source partial results",
-                    hint=(
-                        "sum, count, count_distinct, avg, min, max, any_value, variance, "
-                        "var_pop, stddev and stddev_pop combine across data sources."
-                    ),
-                )
-            if measure.total and (
-                counts_distinct
-                or measure.aggregation == AggregationType.AVG
-                or measure.aggregation in _VARIANCES
-            ):
-                raise self.refuse(
-                    "UNSUPPORTED_AGGREGATION",
-                    f"Measure '{name}' aggregates with {measure.aggregation} and total: true, "
-                    "which a federated query does not combine yet",
-                )
-            if measure.aggregation in _VARIANCES:
-                self.check_variance(name, measure, fact_island)
-            if counts_distinct and (
-                measure.expression
-                or measure.filters
-                or len(measure.columns) != 1
-                or not measure.columns[0].column
-            ):
-                raise self.refuse(
-                    "UNSUPPORTED_AGGREGATION",
-                    f"Measure '{name}' counts the distinct values of an expression, of "
-                    "several columns or under filters, which a federated query does not "
-                    "combine yet",
-                    hint="A count of the distinct values of one column combines.",
-                )
             if measure.filter_context is not None or measure.grain is not None:
                 raise self.refuse(
                     "UNSUPPORTED_AGGREGATION",
@@ -940,41 +991,92 @@ class _Planner:
                     f"Measure '{name}' reads {', '.join(sorted(outside))}, of another "
                     "data source than its own",
                 )
-
         self.check_distinct_counts()
+        rows = [name for name in names if not self.combines(effective[name], fact_island)]
+        if rows:
+            self.check_rows(rows[0], fact_island)
+        return bool(rows)
 
-    def check_variance(self, name: str, measure: Measure, fact_island: set[str]) -> None:
-        """A variance combines exactly over integers and decimals its leg squares.
+    def combines(self, measure: Measure, fact_island: set[str]) -> bool:
+        """Whether *measure* combines from the fact leg's partial results (:func:`_leg_measures`).
+
+        Sums, counts, minima, maxima and any value re-aggregate; an average
+        divides its summed sums by its summed counts; a count of the distinct
+        values of one column counts them across the groups they reach. A
+        variance or standard deviation combines from its moments when its
+        values are integers or decimals the leg squares exactly
+        (:meth:`squares_exactly`). None of them with a total but the
+        re-aggregated ones, nor any other aggregation.
+        """
+        if _counts_distinct(measure):
+            return _counts_distinct_column(measure) and not measure.total
+        if measure.distinct:
+            return False
+        if measure.aggregation in _REAGGREGATE:
+            return True
+        if measure.aggregation == AggregationType.AVG:
+            return not measure.total
+        if measure.aggregation in _VARIANCES:
+            return not measure.total and self.squares_exactly(measure, fact_island)
+        return False
+
+    def squares_exactly(self, measure: Measure, fact_island: set[str]) -> bool:
+        """Whether the fact leg squares the values of a variance exactly.
 
         The combine step computes it from each group's count, sum and sum of
         squares, which add up exactly only when no value is a float: the
         values are integers, or a decimal column declared with its width
-        (:func:`~orionbelt.compiler.type_resolver.exact_input_scale`). Each
-        value is squared in the fact leg's engine, in a type wide enough for
-        its places (:meth:`Dialect.exact_square`).
+        (:func:`~orionbelt.compiler.type_resolver.exact_input_scale`), each
+        squared in the fact leg's engine in a type wide enough for its places
+        (:meth:`Dialect.exact_square`).
         """
         scale = exact_input_scale(measure, self.model)
-        if scale is None:
-            raise self.refuse(
-                "UNSUPPORTED_AGGREGATION",
-                f"Measure '{name}' aggregates with {measure.aggregation} over values that "
-                "are not integers or decimals of a declared width, which a federated "
-                "query does not combine exactly",
-                hint="A variance or standard deviation of an int column, or of a decimal "
-                "column declared with sqlPrecision and sqlScale, combines across data "
-                "sources.",
-            )
+        if scale is None or scale > _VARIANCE_MOST_PLACES:
+            return False
         dialect = self.leg_dialect(fact_island)
-        if (
-            scale > _VARIANCE_MOST_PLACES
-            or dialect.exact_square(ColumnRef(name=name), scale) is None
-        ):
+        return dialect.exact_square(ColumnRef(name=measure.name), scale) is not None
+
+    def check_rows(self, reason: str, fact_island: set[str]) -> None:
+        """Refuse what the combine step cannot compute from the fact leg's rows.
+
+        The fact leg returns the rows of the query's base object grouped by
+        everything the combine step reads of them, each group with the
+        number of rows it stands for, and the combine step computes every
+        measure from that many copies (:func:`_row_measures`). Two things do
+        not survive it:
+
+        * A measure ``grain_dedup`` counts once per row of an object the
+          query's joins repeat: its rows come back once per base row.
+        * Values the leg's engine compares otherwise than DuckDB, where a
+          measure compares them (:func:`_compared_columns`): the combine step
+          compares them as DuckDB does (:meth:`Dialect.equality_key`). A
+          count of the distinct values of one column is counted as its
+          engine counts, as when the leg combines partial results.
+
+        *reason* is the measure that needs the rows.
+        """
+        for name, target in sorted(self.resolved.dedup_targets.items()):
             raise self.refuse(
                 "UNSUPPORTED_AGGREGATION",
-                f"Measure '{name}' aggregates with {measure.aggregation} over values of "
-                f"{scale} decimal places, more than a federated query squares exactly on "
-                f"{dialect.name}",
+                f"{_from_rows(reason, name)}, which repeat each row of '{target}' as often "
+                "as the query's joins do, where one database counts each once",
+                hint=_apart(reason, name),
             )
+        effective = self.model.effective_measures
+        dialect = self.leg_dialect(fact_island)
+        for name in sorted(self.atomic_measures()):
+            measure = effective[name]
+            if _counts_distinct_column(measure):
+                continue
+            for obj, column, counted in _compared_columns(measure):
+                kind = self.model.data_objects[obj].columns[column].abstract_type.value
+                if dialect.equality_key(ColumnRef(name=column), kind, counted=counted) is not None:
+                    raise self.refuse(
+                        "UNSUPPORTED_AGGREGATION",
+                        f"{_from_rows(reason, name)}, in DuckDB, which compares the values "
+                        f"of '{obj}.{column}' otherwise than {dialect.name}",
+                        hint=_apart(reason, name),
+                    )
 
     def check_deduplicated(
         self,
@@ -1094,7 +1196,7 @@ class _Planner:
         """
         effective = self.model.effective_measures
         atomic = sorted(self.atomic_measures())
-        distinct = [name for name in atomic if _counts_distinct(effective[name])]
+        distinct = [name for name in atomic if _counts_distinct_column(effective[name])]
         if not distinct:
             return
         counted = {effective[name].columns[0].view for name in distinct}
@@ -1211,13 +1313,17 @@ class _Planner:
         measures: dict[str, Measure],
         *,
         static_filters: bool = True,
+        own_zone: Iterable[str] = (),
     ) -> SemanticModel:
         """The model a leg compiles against: the island alone, keys as dimensions.
 
         *measures* are partial results (:func:`_leg_measures`): no ``total``,
         no ``defaultValue`` (an empty group's default would become an input to
         the combined aggregate), and a sum at a width that does not round
-        before the partials are added (``partial_sums``).
+        before the partials are added (``partial_sums``). A key named in
+        *own_zone* reads a copy of its column, under the key's name, which
+        the leg compiles in its own time (:func:`columns_in_own_zone`): the
+        column itself may be read in the query's time too.
         """
         model = self.model
         objects = {
@@ -1226,8 +1332,13 @@ class _Planner:
             if name in island
         }
         dimensions = {name: dim for name, dim in model.dimensions.items() if dim.view in island}
+        copies = set(own_zone)
         for key, (obj, column) in keys.items():
             col = model.data_objects[obj].columns[column]
+            if key in copies:
+                columns = {**objects[obj].columns, key: col.model_copy(update={"name": key})}
+                objects[obj] = objects[obj].model_copy(update={"columns": columns})
+                column = key
             dimensions[key] = Dimension(
                 name=key, view=obj, column=column, result_type=col.abstract_type
             )
@@ -1267,6 +1378,7 @@ class _Planner:
         *,
         exact_sums: tuple[tuple[str, int], ...] = (),
         integer_sums: tuple[tuple[str, int], ...] = (),
+        rows: str | None = None,
         rekeyed: dict[str, tuple[str, bool]] | None = None,
         kept: dict[str, str] | None = None,
     ) -> FederatedLeg:
@@ -1286,6 +1398,7 @@ class _Planner:
             physical_tables=_physical_tables(self.model, island),
             exact_sums=exact_sums,
             integer_sums=integer_sums,
+            rows=rows,
         )
 
 
@@ -1321,6 +1434,18 @@ def _dimension_column(model: SemanticModel, name: str) -> DataObjectColumn:
 def _key_column(model: SemanticModel, name: str, obj: str, column: str) -> DataObjectColumn:
     col = model.data_objects[obj].columns[column]
     return DataObjectColumn(name=name, code=name, abstract_type=col.abstract_type)
+
+
+def _value_column(model: SemanticModel, name: str, obj: str, column: str) -> DataObjectColumn:
+    """*column* of *obj* as the fact leg returns it, as *name*: computed there, typed as declared.
+
+    Its declared width stays, which the combine step's exact averages and
+    statistics read (:func:`~orionbelt.compiler.type_resolver.exact_input_scale`).
+    """
+    col = model.data_objects[obj].columns[column]
+    return col.model_copy(
+        update={"name": name, "code": name, "expression": None, "primary_key": False}
+    )
 
 
 def _combine_dimension(
@@ -1524,6 +1649,199 @@ def _counts_distinct(measure: Measure) -> bool:
     return measure.aggregation == AggregationType.COUNT_DISTINCT or (
         measure.aggregation == AggregationType.COUNT and measure.distinct
     )
+
+
+def _from_rows(reason: str, name: str) -> str:
+    """How a refusal says *name* is computed from rows, which *reason* needs."""
+    if name == reason:
+        return f"Measure '{name}' is computed from the fact leg's rows"
+    return f"Measure '{reason}' is computed from the fact leg's rows, and so is '{name}'"
+
+
+def _apart(reason: str, name: str) -> str:
+    return "Query it on one data source." if name == reason else f"Query '{name}' apart."
+
+
+def _counts_distinct_column(measure: Measure) -> bool:
+    """Whether *measure* counts the distinct values of one column, unfiltered."""
+    return (
+        _counts_distinct(measure)
+        and not measure.expression
+        and not measure.filters
+        and len(measure.columns) == 1
+        and bool(measure.columns[0].column)
+    )
+
+
+def _row_measures(
+    model: SemanticModel, names: set[str], taken: set[str], base: str
+) -> tuple[
+    dict[str, Measure], str, dict[str, tuple[str, str, str]], dict[tuple[str, str, bool], str]
+]:
+    """The fact leg's measure when it returns rows, and what else it groups by.
+
+    The leg returns the rows of the query's base object grouped by all the
+    combine step reads of them: the dimensions and keys, and each column a
+    measure reads, as its argument, in a filter, as its ordering or in its
+    expression, under a name of its own. Its one measure counts each group's
+    rows, a ``COUNT(*)`` of the base object, whose rows the joins of its
+    island do not repeat. The combine step repeats each row that many times
+    (:func:`_with_rows`) and computes each measure from the copies, as one
+    database computes it from its rows (:func:`_row_measure`). A count of
+    the distinct values of one column counts a column of its own, as its
+    engine counts them, as in :func:`_leg_measures`.
+
+    Returns the leg's measures by name; the name of its count; per count of
+    the distinct values of one column, the leg column of its values with the
+    data object and column they are read from; and the leg column of each
+    ``(data object, column, in its own time)`` the other measures read
+    (:func:`_read_columns`). Each generated column takes a name none of
+    *taken* (casefolded) is, and is added to it.
+    """
+    effective = model.effective_measures
+    count = _unused("__rows", taken)
+    distinct: dict[str, tuple[str, str, str]] = {}
+    columns: dict[tuple[str, str, bool], str] = {}
+    for name in sorted(names):
+        measure = effective[name]
+        if _counts_distinct_column(measure):
+            ref = measure.columns[0]
+            column = _unused(f"__distinct{len(distinct)}", taken)
+            distinct[name] = (column, ref.view or "", ref.column or "")
+            continue
+        for read in _read_columns(measure):
+            if read not in columns:
+                columns[read] = _unused(f"__value{len(columns)}", taken)
+    rows = Measure(
+        name=count,
+        columns=[DataColumnRef(view=base)],
+        aggregation=AggregationType.COUNT,
+        result_type=DataType.INT,
+    )
+    return {count: rows}, count, distinct, columns
+
+
+def _row_measure(
+    model: SemanticModel, name: str, columns: dict[tuple[str, str, bool], str]
+) -> Measure:
+    """The measure as the combine step computes it from the fact leg's rows.
+
+    The measure itself, reading each column it reads from the fact leg's
+    column of it (:func:`_row_measures`), with its type, default and
+    ``total``. A count of rows counts the leg's rows, which stand for the
+    base object's.
+    """
+    measure = model.effective_measures[name]
+
+    def at(ref: DataColumnRef, own_zone: bool = False) -> DataColumnRef:
+        if not ref.column:
+            return DataColumnRef(view="leg_0")
+        return DataColumnRef(view="leg_0", column=columns[(ref.view or "", ref.column, own_zone)])
+
+    update: dict[str, Any] = {
+        "columns": [at(ref) for ref in measure.columns],
+        "filters": [_filter_at(item, at) for item in measure.filters],
+        "anchor": None,
+    }
+    if measure.expression:
+        update["expression"] = repoint_references(
+            measure.expression,
+            {(obj, col): ("leg_0", leg) for (obj, col, own), leg in columns.items() if not own},
+        )
+    if measure.within_group is not None:
+        ordering = measure.within_group.column
+        update["within_group"] = measure.within_group.model_copy(
+            update={"column": at(ordering, _orders_in_own_zone(measure))}
+        )
+    return measure.model_copy(update=update)
+
+
+def _read_columns(measure: Measure) -> list[tuple[str, str, bool]]:
+    """Each column *measure* reads, as ``(data object, column, in its own time)``.
+
+    Its arguments, filters, ordering and expression, all read in the query's
+    time as one database reads them, but for the key a ``first`` or ``last``
+    is ordered by, which it reads in the column's own (:func:`_orders_in_own_zone`).
+    """
+    read = [(ref.view or "", ref.column, False) for ref in measure.columns if ref.column]
+    read += [(obj, column, False) for obj, column in _filter_columns(measure.filters)]
+    ordering = measure.within_group.column if measure.within_group is not None else None
+    if ordering is not None and ordering.column:
+        read.append((ordering.view or "", ordering.column, _orders_in_own_zone(measure)))
+    if measure.expression:
+        read += [(obj, column, False) for obj, column in find_qualified_refs(measure.expression)]
+    return read
+
+
+def _orders_in_own_zone(measure: Measure) -> bool:
+    """Whether *measure* is ordered by its key in the column's own time: ``first``, ``last``.
+
+    As :meth:`~orionbelt.compiler.resolution.QueryResolver._within_group_order`
+    orders them; a ``listagg`` is ordered in the query's time, as its values are.
+    """
+    return measure.aggregation in (AggregationType.FIRST, AggregationType.LAST)
+
+
+def _compared_columns(measure: Measure) -> list[tuple[str, str, bool]]:
+    """The columns whose values *measure* compares, each with whether it counts them.
+
+    Its filters, its ordering and its expression compare what they read; its
+    arguments are compared by an aggregation that orders them, or counts
+    equal ones once (:data:`_ORDERING`, :data:`_COUNTING`, ``distinct``).
+    Counting compares equality alone, which an engine may judge otherwise
+    than order (:meth:`Dialect.equality_key`).
+    """
+    counts = measure.distinct or measure.aggregation in _COUNTING
+    compared = [(obj, column, False) for obj, column in _filter_columns(measure.filters)]
+    ordering = measure.within_group.column if measure.within_group is not None else None
+    if ordering is not None and ordering.column:
+        compared.append((ordering.view or "", ordering.column, False))
+    if measure.expression:
+        compared += [(obj, col, counts) for obj, col in find_qualified_refs(measure.expression)]
+    if counts or measure.aggregation in _ORDERING:
+        compared += [(ref.view or "", ref.column, counts) for ref in measure.columns if ref.column]
+    return compared
+
+
+def _filter_columns(items: Iterable[MeasureFilterItem]) -> list[tuple[str, str]]:
+    """Each ``(data object, column)`` measure filters read."""
+    columns: list[tuple[str, str]] = []
+    for item in items:
+        if isinstance(item, MeasureFilterGroup):
+            columns += _filter_columns(item.filters)
+        elif item.column is not None and item.column.column:
+            columns.append((item.column.view or "", item.column.column))
+    return columns
+
+
+def _filter_at(
+    item: MeasureFilterItem, at: Callable[[DataColumnRef], DataColumnRef]
+) -> MeasureFilterItem:
+    """*item* reading each column where *at* puts it."""
+    if isinstance(item, MeasureFilterGroup):
+        return item.model_copy(update={"filters": [_filter_at(f, at) for f in item.filters]})
+    if item.column is None:
+        return item
+    return item.model_copy(update={"column": at(item.column)})
+
+
+def _with_rows(sql: str, dialect: Dialect, leg: str, count: str) -> str:
+    """*sql* reading :data:`_ROWS_RELATION`: *leg* with each row repeated *count* times.
+
+    A common table expression ahead of any the combine query has, so the
+    query stays one statement over the legs' results as they are returned.
+    The count is cast: an engine whose integers are decimals (Snowflake's
+    ``NUMBER``) may return it as one.
+    """
+    q = dialect.quote_identifier
+    alias = q(_LEG_ALIAS)
+    rows = (
+        f"{q(_ROWS_RELATION)} AS (\nSELECT {alias}.* EXCLUDE ({q(count)})\n"
+        f"FROM {q(leg)} AS {alias}, range(CAST({alias}.{q(count)} AS BIGINT))\n)"
+    )
+    if sql.startswith("WITH "):
+        return f"WITH {rows},\n{sql.removeprefix('WITH ')}"
+    return f"WITH {rows}\n{sql}"
 
 
 def _unused(name: str, taken: set[str]) -> str:

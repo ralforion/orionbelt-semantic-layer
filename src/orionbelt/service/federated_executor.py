@@ -281,6 +281,33 @@ def check_leg_rows(leg: FederatedLeg, row_count: int) -> None:
         )
 
 
+def check_rows_stood_for(leg: FederatedLeg, table: Any) -> None:
+    """Refuse a leg returning rows that stand for more than ``FEDERATION_MAX_LEG_ROWS``.
+
+    A leg returning its data source's rows rather than partial results
+    returns each group of equal rows once, with how many it stands for
+    (``leg.rows``), and the combine step computes over that many copies.
+    Those are as many rows as the leg would have returned one by one, and
+    they are bounded the same way.
+
+    Raises:
+        FederatedLegError: ``FEDERATION_LEG_TOO_LARGE``.
+    """
+    import pyarrow.compute as pc
+
+    assert leg.rows is not None
+    limits = federation_limits()
+    stood_for = pc.sum(table.column(leg.rows)).as_py() or 0
+    if stood_for > limits.max_leg_rows:
+        raise FederatedLegError(
+            f"[FEDERATION_LEG_TOO_LARGE] {leg_label(leg)} stands for {stood_for} rows of its "
+            f"data source, more than the {limits.max_leg_rows} one leg may return "
+            "(FEDERATION_MAX_LEG_ROWS), which the combine step computes a median, a "
+            "correlation or another measure that does not combine from partial results "
+            "from. Filter the query or raise the limit."
+        )
+
+
 def key_injection_max_keys(source: DataSource | None, dialect: str) -> int:
     """The most keys a fact leg on *source* reads as a list; 0 for none.
 
@@ -684,10 +711,14 @@ def combine(
     ``FEDERATION_SPILL_MAX_MB``.
 
     Raises:
+        FederatedLegError: A leg stands for too many rows (:func:`check_rows_stood_for`).
         ExecutionError: The combine query failed.
     """
     import duckdb
 
+    for leg in plan.legs:
+        if leg.rows is not None:
+            check_rows_stood_for(leg, tables[leg.name])
     limits = federation_limits()
     t0 = time.monotonic()
     config: dict[str, Any] = {
@@ -721,6 +752,7 @@ __all__ = [
     "admission_gate",
     "busy_error",
     "check_leg_rows",
+    "check_rows_stood_for",
     "combine",
     "configure",
     "federation_limits",

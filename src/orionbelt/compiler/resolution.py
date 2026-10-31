@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -606,6 +608,27 @@ def split_conformed_filters(
     return pushed, kept
 
 
+_own_zone: ContextVar[frozenset[tuple[str, str]]] = ContextVar("own_zone", default=frozenset())
+
+
+@contextmanager
+def columns_in_own_zone(columns: Iterable[tuple[str, str]]) -> Iterator[None]:
+    """Read each ``(data object, column)`` in its own time while the block runs.
+
+    A federated fact leg returns the key a ``first`` or ``last`` measure is
+    ordered by as a column of its own, and the combine step orders by it.
+    One database orders by the key in the column's own time, not the query's
+    (:meth:`QueryResolver._within_group_order`): two instants an hour apart
+    are one wall-clock time in the hour a zone falls back, so read in the
+    query's time they would tie. The leg's column is read as that key is.
+    """
+    token = _own_zone.set(frozenset(columns))
+    try:
+        yield
+    finally:
+        _own_zone.reset(token)
+
+
 def make_column_expr(
     model: SemanticModel,
     object_name: str,
@@ -633,6 +656,8 @@ def make_column_expr(
     column = obj.columns.get(column_label)
     if column is None:
         return ColumnRef(name=column_label, table=object_name)
+    if (object_name, column_label) in _own_zone.get():
+        in_query_timezone = False
     if column.expression:
         return _build_computed_column_expr(column, obj, model, in_query_timezone=in_query_timezone)
     ref: Expr

@@ -23,7 +23,7 @@ and both already depend on ``models``.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 
 COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
@@ -81,6 +81,24 @@ def rename_object_references(expression: str, old: str, new: str) -> str:
             return match.group(0)
         return f"{{[{new}].[{match.group(2)}]}}"
 
+    return _substitute_qualified_refs(expression, repl)
+
+
+def repoint_references(expression: str, targets: Mapping[tuple[str, str], tuple[str, str]]) -> str:
+    """Point each ``{[Object].[Column]}`` reference outside a string literal at its target.
+
+    *targets* maps an ``(object, column)`` pair, as :func:`find_qualified_refs`
+    reads it, to the pair read instead; any other reference stays as written.
+    """
+
+    def repl(match: re.Match[str]) -> str:
+        target = targets.get((match.group(1).strip(), match.group(2).strip()))
+        return match.group(0) if target is None else f"{{[{target[0]}].[{target[1]}]}}"
+
+    return _substitute_qualified_refs(expression, repl)
+
+
+def _substitute_qualified_refs(expression: str, repl: Callable[[re.Match[str]], str]) -> str:
     return "".join(
         text if is_literal else QUALIFIED_COLUMN_REF.sub(repl, text)
         for text, is_literal in _segments(expression)
