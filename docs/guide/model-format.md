@@ -837,7 +837,7 @@ declared one does.
 | `percentile_disc` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY expr)` | Exact, discrete percentile: the first value whose cumulative share of the group reaches `p`, a value from the data; see [Percentiles](#percentiles) |
 | `first` | the value at the least `withinGroup` key | Opening price, first status of each group; see [First and last](#first-and-last) |
 | `last` | the value at the greatest `withinGroup` key | Closing price, latest status of each group; see [First and last](#first-and-last) |
-| `mode` | `MODE(expr)` | Most frequent value (`MODE() WITHIN GROUP (ORDER BY ...)` in Postgres, `topK(1)(col)[1]` in ClickHouse; not supported in Dremio) |
+| `mode` | `MODE(expr)` | Most frequent value, NULLs ignored. Of values as frequent as each other, the smallest on PostgreSQL, DuckDB, ClickHouse and Databricks; one of them on Snowflake, whose `MODE` picks, and on BigQuery, whose `APPROX_TOP_COUNT` is approximate. Not supported on MySQL and Dremio |
 | `listagg` | `LISTAGG(expr, sep)` | Concatenated values (dialect-specific: `STRING_AGG` in Postgres, `ARRAY_JOIN(COLLECT_LIST(...))` in Databricks, `arrayStringConcat(groupArray(...))` in ClickHouse) |
 
 #### Percentiles

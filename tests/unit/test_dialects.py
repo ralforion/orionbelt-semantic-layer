@@ -1249,9 +1249,9 @@ class TestModeRendering:
         ("dialect_name", "expected"),
         [
             ("bigquery", "APPROX_TOP_COUNT("),
-            ("clickhouse", "topK(1)("),
-            ("databricks", "MODE("),
-            ("duckdb", "MODE("),
+            ("clickhouse", 'sumMapIf(["status"], [toUInt64(1)], "status" IS NOT NULL)'),
+            ("databricks", "MODE(`status`, true)"),
+            ("duckdb", 'MODE("status" ORDER BY "status")'),
             ("postgres", "MODE() WITHIN GROUP (ORDER BY"),
             ("snowflake", "MODE("),
         ],

@@ -522,9 +522,17 @@ class BigQueryDialect(Dialect):
         )
 
     def _compile_mode(self, args: list[Expr]) -> str:
-        """BigQuery: APPROX_TOP_COUNT(col, 1)[OFFSET(0)].value."""
+        """BigQuery: the first value not NULL of ``APPROX_TOP_COUNT(col, 2)``.
+
+        ``APPROX_TOP_COUNT`` counts NULL as a value: over NULL, NULL, NULL, 6
+        its most frequent was NULL, where the mode is 6. Of its two most
+        frequent, the first that is not NULL is the most frequent value. It
+        is approximate, and settles a tie as it pleases: one of the most
+        frequent values, measured not always the smallest.
+        """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
-        return f"APPROX_TOP_COUNT({col_sql}, 1)[OFFSET(0)].value"
+        top = f"APPROX_TOP_COUNT({col_sql}, 2)"
+        return f"COALESCE({top}[SAFE_OFFSET(0)].value, {top}[SAFE_OFFSET(1)].value)"
 
     def _compile_listagg(
         self,

@@ -1176,9 +1176,18 @@ class ClickHouseDialect(Dialect):
         return f"if({empty}, NULL, arraySort(groupArray({col_sql}))[{position}])"
 
     def _compile_mode(self, args: list[Expr]) -> str:
-        """ClickHouse: topK(1)(col)[1] — returns the most frequent value."""
+        """ClickHouse: the smallest of the most frequent values, counted exactly.
+
+        ``topK(1)`` is an approximate count whose tie went either way from
+        one run to the next, and it answered 0, not NULL, for a group of
+        NULLs only. ``sumMap`` counts each value exactly, keyed in ascending
+        order, so the first key with the highest count is the smallest: one
+        answer, every time.
+        """
         col_sql = self.compile_expr(args[0]) if args else "NULL"
-        return f"topK(1)({col_sql})[1]"
+        counts = f"sumMapIf([{col_sql}], [toUInt64(1)], {col_sql} IS NOT NULL)"
+        first_most = f"arrayElement({counts}.1, indexOf({counts}.2, arrayMax({counts}.2)))"
+        return f"if(count({col_sql}) = 0, NULL, {first_most})"
 
     def _compile_listagg(
         self,
