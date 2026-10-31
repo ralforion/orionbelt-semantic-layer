@@ -220,7 +220,11 @@ How a query is split:
   combine query repeats each group that many times and computes every
   measure of the query from those rows, in DuckDB, as one database computes
   it from its own: so an aggregation the fact leg's engine lacks, such as
-  `corr` on MySQL, is available too. The rows a leg stands for are bounded by
+  `corr` on MySQL, is available too. The leg reads the columns in the
+  model's `queryTimezone`, as one database does, but for the key a `first` or
+  `last` is ordered by, which it returns as stored, as one database orders by
+  it: two instants an hour apart are one wall-clock time the night a zone
+  falls back. The rows a leg stands for are bounded by
   `FEDERATION_MAX_LEG_ROWS` as well. Over doubles the result is DuckDB's,
   which far from zero depends on the order the values are added in, as on one
   source: DuckDB's own `VAR_SAMP` of the doubles 10^15 + 0 to 5 is 3.5 in that

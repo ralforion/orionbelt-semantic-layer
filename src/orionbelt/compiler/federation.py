@@ -46,7 +46,7 @@ from typing import Any
 
 from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.grain_dedup import MULTIPLICITY_SAFE_AGGREGATIONS
-from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
+from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery, columns_in_own_zone
 from orionbelt.compiler.type_resolver import (
     combined_averages,
     combined_variances,
@@ -232,6 +232,8 @@ class KeyInjector:
         model: The model of its island it compiles against.
         columns: The columns it returns.
         squares: The sums of squares it reads, by name, each with its scale.
+        own_zone: The ``(data object, column)`` pairs it reads in their own
+            time (:func:`columns_in_own_zone`).
         rekeyed: Its columns compared as their engine compares them.
         kept: The copies of rekeyed columns a combine filter reads.
         compile_leg: As :func:`plan_federated` takes it.
@@ -242,6 +244,7 @@ class KeyInjector:
     model: SemanticModel
     columns: tuple[DataObjectColumn, ...]
     squares: dict[str, int]
+    own_zone: frozenset[tuple[str, str]]
     rekeyed: dict[str, tuple[str, bool]]
     kept: dict[str, str]
     compile_leg: Callable[[QueryObject, SemanticModel, str], str] = dataclasses.field(
@@ -263,7 +266,11 @@ class KeyInjector:
             # No key at all matches no fact row: the leg's columns, without rows.
             query = self.query.model_copy(update={"limit": 0})
         dialect = DialectRegistry.get(self.leg.dialect)
-        with partial_sums(), partial_squares(dialect, self.squares):
+        with (
+            partial_sums(),
+            partial_squares(dialect, self.squares),
+            columns_in_own_zone(self.own_zone),
+        ):
             sql = self.compile_leg(query, self.model, dialect.name)
         if self.rekeyed:
             sql = _rewrite_leg(dialect, sql, list(self.columns), self.rekeyed, self.kept)
@@ -414,8 +421,11 @@ def plan_federated(
     # The leg column counting the rows each of its rows stands for, and the
     # leg column of each column a measure reads, when the leg returns rows.
     row_count: str | None = None
-    measure_columns: dict[tuple[str, str], str] = {}
+    measure_columns: dict[tuple[str, str, bool], str] = {}
     if from_rows:
+        # A key read in its own time is a copy of its column, under the key's
+        # name, which no column of its data object may have.
+        taken |= {c.casefold() for o in islands[fact] for c in model.data_objects[o].columns}
         leg_measures, row_count, distinct, measure_columns = _row_measures(
             model, measures, taken, resolved.base_object
         )
@@ -426,11 +436,16 @@ def plan_federated(
     # The values a count of distinct values counts: the fact leg groups by them
     # too, so the combine step counts them across every group they reach.
     fact_values = {column: (obj, col) for column, obj, col in distinct.values()}
-    row_values = {column: ref for ref, column in measure_columns.items()}
+    row_values = {column: (obj, col) for (obj, col, _), column in measure_columns.items()}
+    own_zone = {column for (_, _, own), column in measure_columns.items() if own}
+    in_own_zone = frozenset((row_values[column][0], column) for column in own_zone)
     if not from_rows:
         planner.check_deduplicated(edges, fact_dims, distinct)
     fact_model = planner.island_model(
-        islands[fact], {**fact_keys, **fact_values, **row_values}, leg_measures
+        islands[fact],
+        {**fact_keys, **fact_values, **row_values},
+        leg_measures,
+        own_zone=own_zone,
     )
     fact_query = QueryObject(
         select=QuerySelect(
@@ -477,7 +492,11 @@ def plan_federated(
     )
     renamed.update({source: hidden for hidden, source in fact_kept.items()})
     squares = {squared: scale for _, _, squared, scale in variances.values()}
-    with partial_sums(), partial_squares(planner.leg_dialect(islands[fact]), squares):
+    with (
+        partial_sums(),
+        partial_squares(planner.leg_dialect(islands[fact]), squares),
+        columns_in_own_zone(in_own_zone),
+    ):
         legs.append(
             planner.leg(
                 "leg_0",
@@ -624,8 +643,17 @@ def plan_federated(
     }
     combine_model = SemanticModel(
         name=model.name,
+        # What types and buckets the combined values; not the query's time
+        # zone, which the legs read their timestamps in already.
         settings=ModelSettings(default_dialect=COMBINE_DIALECT).model_copy(
-            update={"week_start": model.settings.week_start} if model.settings else {}
+            update=(
+                {
+                    "week_start": model.settings.week_start,
+                    "default_numeric_data_type": model.settings.default_numeric_data_type,
+                }
+                if model.settings
+                else {}
+            )
         ),
         data_objects=combine_objects,
         dimensions=combine_dimensions,
@@ -675,6 +703,7 @@ def plan_federated(
             model=fact_model.model_copy(deep=True),
             columns=tuple(fact_columns),
             squares=squares,
+            own_zone=in_own_zone,
             rekeyed=fact_rekeyed,
             kept=fact_kept,
             compile_leg=compile_leg,
@@ -1167,7 +1196,7 @@ class _Planner:
         """
         effective = self.model.effective_measures
         atomic = sorted(self.atomic_measures())
-        distinct = [name for name in atomic if _counts_distinct(effective[name])]
+        distinct = [name for name in atomic if _counts_distinct_column(effective[name])]
         if not distinct:
             return
         counted = {effective[name].columns[0].view for name in distinct}
@@ -1284,13 +1313,17 @@ class _Planner:
         measures: dict[str, Measure],
         *,
         static_filters: bool = True,
+        own_zone: Iterable[str] = (),
     ) -> SemanticModel:
         """The model a leg compiles against: the island alone, keys as dimensions.
 
         *measures* are partial results (:func:`_leg_measures`): no ``total``,
         no ``defaultValue`` (an empty group's default would become an input to
         the combined aggregate), and a sum at a width that does not round
-        before the partials are added (``partial_sums``).
+        before the partials are added (``partial_sums``). A key named in
+        *own_zone* reads a copy of its column, under the key's name, which
+        the leg compiles in its own time (:func:`columns_in_own_zone`): the
+        column itself may be read in the query's time too.
         """
         model = self.model
         objects = {
@@ -1299,8 +1332,13 @@ class _Planner:
             if name in island
         }
         dimensions = {name: dim for name, dim in model.dimensions.items() if dim.view in island}
+        copies = set(own_zone)
         for key, (obj, column) in keys.items():
             col = model.data_objects[obj].columns[column]
+            if key in copies:
+                columns = {**objects[obj].columns, key: col.model_copy(update={"name": key})}
+                objects[obj] = objects[obj].model_copy(update={"columns": columns})
+                column = key
             dimensions[key] = Dimension(
                 name=key, view=obj, column=column, result_type=col.abstract_type
             )
@@ -1637,7 +1675,9 @@ def _counts_distinct_column(measure: Measure) -> bool:
 
 def _row_measures(
     model: SemanticModel, names: set[str], taken: set[str], base: str
-) -> tuple[dict[str, Measure], str, dict[str, tuple[str, str, str]], dict[tuple[str, str], str]]:
+) -> tuple[
+    dict[str, Measure], str, dict[str, tuple[str, str, str]], dict[tuple[str, str, bool], str]
+]:
     """The fact leg's measure when it returns rows, and what else it groups by.
 
     The leg returns the rows of the query's base object grouped by all the
@@ -1654,13 +1694,14 @@ def _row_measures(
     Returns the leg's measures by name; the name of its count; per count of
     the distinct values of one column, the leg column of its values with the
     data object and column they are read from; and the leg column of each
-    ``(data object, column)`` the other measures read. Each generated column
-    takes a name none of *taken* (casefolded) is, and is added to it.
+    ``(data object, column, in its own time)`` the other measures read
+    (:func:`_read_columns`). Each generated column takes a name none of
+    *taken* (casefolded) is, and is added to it.
     """
     effective = model.effective_measures
     count = _unused("__rows", taken)
     distinct: dict[str, tuple[str, str, str]] = {}
-    columns: dict[tuple[str, str], str] = {}
+    columns: dict[tuple[str, str, bool], str] = {}
     for name in sorted(names):
         measure = effective[name]
         if _counts_distinct_column(measure):
@@ -1680,7 +1721,9 @@ def _row_measures(
     return {count: rows}, count, distinct, columns
 
 
-def _row_measure(model: SemanticModel, name: str, columns: dict[tuple[str, str], str]) -> Measure:
+def _row_measure(
+    model: SemanticModel, name: str, columns: dict[tuple[str, str, bool], str]
+) -> Measure:
     """The measure as the combine step computes it from the fact leg's rows.
 
     The measure itself, reading each column it reads from the fact leg's
@@ -1690,10 +1733,10 @@ def _row_measure(model: SemanticModel, name: str, columns: dict[tuple[str, str],
     """
     measure = model.effective_measures[name]
 
-    def at(ref: DataColumnRef) -> DataColumnRef:
+    def at(ref: DataColumnRef, own_zone: bool = False) -> DataColumnRef:
         if not ref.column:
             return DataColumnRef(view="leg_0")
-        return DataColumnRef(view="leg_0", column=columns[(ref.view or "", ref.column)])
+        return DataColumnRef(view="leg_0", column=columns[(ref.view or "", ref.column, own_zone)])
 
     update: dict[str, Any] = {
         "columns": [at(ref) for ref in measure.columns],
@@ -1702,25 +1745,41 @@ def _row_measure(model: SemanticModel, name: str, columns: dict[tuple[str, str],
     }
     if measure.expression:
         update["expression"] = repoint_references(
-            measure.expression, {read: ("leg_0", column) for read, column in columns.items()}
+            measure.expression,
+            {(obj, col): ("leg_0", leg) for (obj, col, own), leg in columns.items() if not own},
         )
     if measure.within_group is not None:
+        ordering = measure.within_group.column
         update["within_group"] = measure.within_group.model_copy(
-            update={"column": at(measure.within_group.column)}
+            update={"column": at(ordering, _orders_in_own_zone(measure))}
         )
     return measure.model_copy(update=update)
 
 
-def _read_columns(measure: Measure) -> list[tuple[str, str]]:
-    """Each ``(data object, column)`` *measure* reads: arguments, filters, ordering, expression."""
-    read = [(ref.view or "", ref.column) for ref in measure.columns if ref.column]
-    read += _filter_columns(measure.filters)
+def _read_columns(measure: Measure) -> list[tuple[str, str, bool]]:
+    """Each column *measure* reads, as ``(data object, column, in its own time)``.
+
+    Its arguments, filters, ordering and expression, all read in the query's
+    time as one database reads them, but for the key a ``first`` or ``last``
+    is ordered by, which it reads in the column's own (:func:`_orders_in_own_zone`).
+    """
+    read = [(ref.view or "", ref.column, False) for ref in measure.columns if ref.column]
+    read += [(obj, column, False) for obj, column in _filter_columns(measure.filters)]
     ordering = measure.within_group.column if measure.within_group is not None else None
     if ordering is not None and ordering.column:
-        read.append((ordering.view or "", ordering.column))
+        read.append((ordering.view or "", ordering.column, _orders_in_own_zone(measure)))
     if measure.expression:
-        read += find_qualified_refs(measure.expression)
+        read += [(obj, column, False) for obj, column in find_qualified_refs(measure.expression)]
     return read
+
+
+def _orders_in_own_zone(measure: Measure) -> bool:
+    """Whether *measure* is ordered by its key in the column's own time: ``first``, ``last``.
+
+    As :meth:`~orionbelt.compiler.resolution.QueryResolver._within_group_order`
+    orders them; a ``listagg`` is ordered in the query's time, as its values are.
+    """
+    return measure.aggregation in (AggregationType.FIRST, AggregationType.LAST)
 
 
 def _compared_columns(measure: Measure) -> list[tuple[str, str, bool]]:

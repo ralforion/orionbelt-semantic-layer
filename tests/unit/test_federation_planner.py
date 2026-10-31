@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import gc
 import weakref
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -57,6 +58,7 @@ def model_yaml(
     extra: str = "",
     static: str = "",
     metric: str = "",
+    settings: str = "",
 ) -> str:
     shop = "    dataSource: shop\n" if federated else ""
     crm = "    dataSource: crm\n" if federated else ""
@@ -67,7 +69,7 @@ def model_yaml(
 version: 1.0
 settings:
   defaultDialect: duckdb
-dataObjects:
+{settings}dataObjects:
   Orders:
     code: orders
 {shop}    columns:
@@ -477,6 +479,10 @@ FROM_ROWS = (
     "values: [{dataType: int, valueInt: 10}]}]}\n"
     "  Customers With Total: {columns: [{dataObject: Orders, column: Order Customer}], "
     "aggregation: count_distinct, resultType: int, total: true}\n"
+    '  Shifted Customers: {expression: "{[Orders].[Order Customer]} + 1", '
+    "aggregation: count_distinct, resultType: int}\n"
+    '  Shifted Customer Count: {expression: "{[Orders].[Order Customer]} + 1", '
+    "aggregation: count, distinct: true, resultType: int}\n"
 )
 ROW_MEASURES = [
     "Median Order",
@@ -493,6 +499,8 @@ ROW_MEASURES = [
     "Total Median",
     "Big Customers",
     "Customers With Total",
+    "Shifted Customers",
+    "Shifted Customer Count",
 ]
 ROW_QUERIES = {
     "by_dimension_island": {
@@ -567,6 +575,26 @@ class TestFromRows:
 
         assert_same(files, query, extra=FROM_ROWS, metric=metric)
 
+    def test_the_models_numeric_type_applies_to_the_combined_values(
+        self, files: dict[str, str]
+    ) -> None:
+        """A sum of 0.1239 came back 0.12 beside a median, and a metric over
+        partial results as well: the combine model had no
+        ``defaultNumericDataType``."""
+        extra = FROM_ROWS + (
+            '  Milli Revenue: {expression: "{[Orders].[Amount]} * 0.001", aggregation: sum}\n'
+        )
+        metric = '  Milli Doubled: {expression: "{[Milli Revenue]} * 2"}\n'
+        settings = "  defaultNumericDataType: decimal(18, 4)\n"
+        both = ["Milli Revenue", "Median Order"]
+        for measures in (both, ["Milli Doubled"]):
+            query = {"select": {"dimensions": ["Region"], "measures": measures}}
+            assert_same(files, query, extra=extra, metric=metric, settings=settings)
+
+        query = {"select": {"dimensions": ["Region"], "measures": both}}
+        rows = {r[0]: r[1] for r in run_federated(files, query, extra=extra, settings=settings)}
+        assert rows["EU"] == Decimal("0.1239")
+
     def test_the_leg_counts_the_rows_of_each_group_of_values(self) -> None:
         compiled = _compile(
             model_yaml(federated=True, extra=FROM_ROWS + DISTINCTS),
@@ -613,6 +641,121 @@ class TestFromRows:
 
         assert injected.rows == plan.legs[0].rows == "__rows"
         assert "IN (10, 13)" in injected.sql
+
+
+IN_BERLIN = """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+  queryTimezone: Europe/Berlin
+dataObjects:
+  Readings:
+    code: readings
+{facts}    columns:
+      Key: {{code: k, abstractType: int}}
+      Taken: {{code: taken, abstractType: timestamp_tz}}
+      Value: {{code: v, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Sites, columnsFrom: [Key], columnsTo: [Site Key]}}
+  Sites:
+    code: sites
+{labels}    columns:
+      Site Key: {{code: k, abstractType: int}}
+      Site: {{code: s, abstractType: string}}
+dimensions:
+  Site: {{dataObject: Sites, column: Site, resultType: string}}
+measures:
+  First Value:
+    columns: [{{dataObject: Readings, column: Value}}]
+    aggregation: first
+    withinGroup: {{column: {{dataObject: Readings, column: Taken}}}}
+    resultType: int
+  Last Value:
+    columns: [{{dataObject: Readings, column: Value}}]
+    aggregation: last
+    withinGroup: {{column: {{dataObject: Readings, column: Taken}}}}
+    resultType: int
+  Earliest:
+    columns: [{{dataObject: Readings, column: Taken}}]
+    aggregation: min
+    resultType: timestamp
+"""
+# 00:30 and 01:30 UTC are both 02:30 in Berlin the night it falls back.
+READINGS = (
+    "CREATE TABLE readings AS SELECT * FROM (VALUES"
+    " (1, TIMESTAMPTZ '2024-10-27 00:30:00+00', 100),"
+    " (1, TIMESTAMPTZ '2024-10-27 01:30:00+00', 1)) t(k, taken, v)"
+)
+SITES = "CREATE TABLE sites AS SELECT * FROM (VALUES (1, 'north')) t(k, s)"
+
+
+@pytest.fixture(scope="module")
+def zoned(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("zoned")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "facts", "labels")}
+    for name, statements in (
+        ("all", [READINGS, SITES]),
+        ("facts", [READINGS]),
+        ("labels", [SITES]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+class TestFromRowsInTheQueryZone:
+    """A first or last is ordered by its key in the column's own time, as on one source."""
+
+    def _run(self, zoned: dict[str, str], federated: bool, query: dict[str, Any]) -> list[Any]:
+        sources = "    dataSource: facts\n", "    dataSource: labels\n"
+        facts, labels = sources if federated else ("", "")
+        compiled = _compile(IN_BERLIN.format(facts=facts, labels=labels), query)
+        if compiled.federation is None:
+            con = duckdb.connect(zoned["all"], read_only=True)
+            try:
+                return _rows(con, compiled.sql)
+            finally:
+                con.close()
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(zoned[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+        return _rows(combine, compiled.sql)
+
+    def test_two_instants_of_one_wall_clock_time_keep_their_order(
+        self, zoned: dict[str, str]
+    ) -> None:
+        """Read in Berlin time, both readings were 02:30, and the tie went to
+        the smaller value: the first came back 1, not 100."""
+        query = {
+            "select": {
+                "dimensions": ["Site"],
+                "measures": ["First Value", "Last Value", "Earliest"],
+            }
+        }
+
+        single = self._run(zoned, False, query)
+
+        assert self._run(zoned, True, query) == single
+        assert single[0][1:3] == (100, 1)
+
+    def test_injected_keys_read_the_key_in_its_own_time_too(self) -> None:
+        yaml = IN_BERLIN.format(facts="    dataSource: facts\n", labels="    dataSource: labels\n")
+        query = {
+            "select": {"dimensions": ["Site"], "measures": ["First Value", "Earliest"]},
+            "where": [{"field": "Site", "op": "=", "value": "north"}],
+        }
+        plan = _compile(yaml, query).federation
+
+        for leg in (plan.legs[0], plan.inject({"__fk0_0": [1]})):
+            # The minimum reads the reading in Berlin time, the ordering as stored.
+            assert '"Readings"."taken" AT TIME ZONE \'Europe/Berlin\'' in leg.sql
+            assert '"Readings"."taken" AS' in leg.sql
 
 
 class TestPlan:
