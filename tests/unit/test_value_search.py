@@ -7,8 +7,10 @@ restricts any query.
 
 from __future__ import annotations
 
+import threading
 from datetime import date
 from typing import Any
+from unittest.mock import patch
 
 import duckdb
 import pytest
@@ -18,6 +20,7 @@ from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
+from orionbelt.service import value_search
 from orionbelt.service.value_search import (
     QueryRun,
     ValueSearchConfig,
@@ -247,30 +250,31 @@ async def test_fuzzy_scoring_stops_at_the_deadline(model: SemanticModel) -> None
 
 
 async def test_fuzzy_scoring_leaves_the_event_loop_free(model: SemanticModel) -> None:
-    import asyncio
+    """The scoring runs in a worker thread, so the loop serves other requests.
 
-    ticks = 0
-    done = False
+    Asserted by the thread it ran on. Counting the loop's ticks while it ran
+    measured how long it took instead, and under the load of the full suite
+    it once took too few switches of the interpreter lock to pass.
+    """
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    score = value_search._score
 
-    async def ticker() -> None:
-        nonlocal ticks
-        while not done:
-            ticks += 1
-            await asyncio.sleep(0.001)
+    def scored(*args: Any) -> list[tuple[float, str]]:
+        threads.append(threading.get_ident())
+        return score(*args)
 
-    long_values = [f"{i:04d}" + "x" * 200 for i in range(1500)]
-    task = asyncio.create_task(ticker())
-    await search_values(
-        model,
-        "Country",
-        run=_domain_runner(long_values),
-        config=ValueSearchConfig(timeout_ms=60000),
-        search="Germny",
-    )
-    done = True
-    await task
-    # On the event loop, the scoring would have run with no tick in between.
-    assert ticks > 5
+    with patch.object(value_search, "_score", scored):
+        await search_values(
+            model,
+            "Country",
+            run=_domain_runner(["Germany", "France"]),
+            config=ValueSearchConfig(timeout_ms=60000),
+            search="Germny",
+        )
+
+    assert threads
+    assert loop_thread not in threads
 
 
 async def test_one_long_comparison_stops_at_the_deadline(model: SemanticModel) -> None:
