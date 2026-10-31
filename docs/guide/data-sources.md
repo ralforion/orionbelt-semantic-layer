@@ -186,13 +186,12 @@ How a query is split:
   per-group counts either: the fact leg also groups by the column it counts,
   and the combine query counts that column's distinct values across all the
   groups they reach. The leg then returns a row per value as well, which
-  `FEDERATION_MAX_LEG_ROWS` bounds. The query's other measures must read the
-  same data object as the counted column, and nothing else, a computed
-  column's dependencies included: that object's sums, counts and
-  averages still combine exactly at the finer grain, but a measure of another
-  object would not (a customer-level sum would repeat once per order, and the
-  customers without orders that a count over customers keeps are not the rows
-  a sum over orders keeps).
+  `FEDERATION_MAX_LEG_ROWS` bounds. That object's sums, counts and averages
+  still combine exactly at the finer grain, but a measure of another object
+  would not (a customer-level sum would repeat once per order, and the
+  customers without orders that a count over customers keeps are not the
+  rows a sum over orders keeps): beside one, the query is computed from the
+  fact leg's rows.
 - A `variance`, `var_pop`, `stddev` or `stddev_pop` does not combine from
   per-group statistics either, but its moments do: the leg returns its
   argument's count, sum and sum of squares, each value squared in a type
@@ -231,19 +230,33 @@ How a query is split:
   order and 3.4875 in another, measured. Since every measure of such a query
   is computed from the rows, an integer variance beside a median is DuckDB's
   variance of doubles, not the exact one from moments.
+- A measure of an object the query's joins repeat (customers' ages over their
+  sales) counts each of its rows once per group, as one database does. A fact
+  leg of partial results does too when everything it groups by beyond the
+  query is read from that object or from one it joins many-to-one. Otherwise
+  (a join to another source starting on its many side, a filter after the join
+  reading a dimension there, a `rollup` / `cube` subtotal or a `total: true`
+  adding groups across a selected dimension there) it would count a customer
+  once per product, so the query is computed from the fact leg's rows.
+- Computed from rows, every measure of an object read through the fact rows
+  (a sum, a `count_distinct` or a `max` of customers' columns over their
+  sales) is read from that object's rows once each, as one database reads
+  it. The leg also returns the object's identity (its `primaryKey`, else the
+  key its join reaches it by) and counts its rows, so that it returns the
+  customers without a sale as well, as one database adds them. The combine
+  query reads the customers' rows once each, with what their measures read
+  and the dimensions and keys the query reads of them, and counts each once
+  per group: a customer without sales is in the group of its own region. What
+  such a measure reads must have one value per customer, a column of the
+  customer or of an object it joins many-to-one; a dimension read through two
+  such objects at once is refused.
 
 What does not split exactly is refused by name rather than answered with a
 different number: measures from more than one source (`FEDERATION_MULTI_FACT`),
-a `count_distinct` beside measures of another data object, a `sum`, `count`,
-`avg`, variance or standard deviation of an object the query's joins repeat
-(customers' ages over their sales) when the fact leg would group it by more
-than one value per row of that object, which would count each row once per
-value: a join to another source starting on its many side, a filter after the
-join reading a dimension there, or a `rollup` / `cube` subtotal or a
-`total: true` adding groups across a selected dimension there; in a query
-computed from the fact leg's rows, which repeat such an object's rows, any
-measure one database counts once per row of it, and a measure comparing values
-its engine compares otherwise than DuckDB (below)
+and in a query computed from the fact leg's rows, a measure of an object read
+through the fact rows that reads a value of which one of its rows has several,
+a dimension or key read through two such objects, and a measure comparing
+values its engine compares otherwise than DuckDB (below)
 (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,
 period-over-period, window and reaggregate metrics (`FEDERATION_UNSUPPORTED_METRIC`),

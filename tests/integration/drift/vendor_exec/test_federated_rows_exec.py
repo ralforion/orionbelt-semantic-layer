@@ -56,6 +56,11 @@ ROWS = [
     for r, row in enumerate(rows)
 ]
 
+# Each row's parent: two per label, each reached from several keys, so a fact
+# leg grouped by key repeats it. Parents 998 and 999 have no rows.
+PARENT = [100 * n + r % 2 for n, rows in enumerate(VALUES.values()) for r in range(len(rows))]
+WEIGHTS = {p: p % 7 + 1 for p in PARENT} | {998: 5, 999: 7}
+
 MODEL = """\
 version: 1.0
 dataObjects:
@@ -68,8 +73,16 @@ dataObjects:
       D: {code: d, abstractType: decimal, sqlPrecision: 18, sqlScale: 2}
       F: {code: f, abstractType: float}
       O: {code: o, abstractType: int}
+      P: {code: p, abstractType: int}
     joins:
       - {joinType: many-to-one, joinTo: Groups, columnsFrom: [Key], columnsTo: [Group Key]}
+      - {joinType: many-to-one, joinTo: Parents, columnsFrom: [P], columnsTo: [Parent]}
+  Parents:
+    code: p
+    dataSource: facts
+    columns:
+      Parent: {code: pid, abstractType: int, primaryKey: true}
+      W: {code: w, abstractType: int}
   Groups:
     code: g
     dataSource: groups
@@ -123,6 +136,12 @@ measures:
     aggregation: avg
     total: true
     resultType: float
+  Weights: {columns: [{dataObject: Parents, column: W}], aggregation: sum, resultType: int}
+  Distinct Weights:
+    columns: [{dataObject: Parents, column: W}]
+    aggregation: count_distinct
+    resultType: int
+  Heaviest: {columns: [{dataObject: Parents, column: W}], aggregation: max, resultType: int}
 """
 
 MEASURES = [
@@ -168,14 +187,25 @@ def _tables(dialect: str) -> str:
     facts = " UNION ALL ".join(
         f"SELECT {value(k, whole)} AS {q('k')}, {value(i, whole)} AS {q('i')}, "
         f"{value(d, decimal)} AS {q('d')}, {value(f, double)} AS {q('f')}, "
-        f"{value(o, whole)} AS {q('o')}"
-        for _, k, i, d, f, o in ROWS
+        f"{value(o, whole)} AS {q('o')}, {value(p, whole)} AS {q('p')}"
+        for (_, k, i, d, f, o), p in zip(ROWS, PARENT, strict=True)
     )
     groups = " UNION ALL ".join(
         f"SELECT {value(k, whole)} AS {q('k')}, {value(label, text)} AS {q('l')}"
         for k, label in sorted({(k, label) for label, k, *_ in ROWS})
     )
-    return f"WITH {q('t')} AS ({facts}), {q('g')} AS ({groups})\n"
+    parents = " UNION ALL ".join(
+        f"SELECT {value(p, whole)} AS {q('pid')}, {value(w, whole)} AS {q('w')}"
+        for p, w in sorted(WEIGHTS.items())
+    )
+    return f"WITH {q('t')} AS ({facts}), {q('g')} AS ({groups}), {q('p')} AS ({parents})"
+
+
+def _on_tables(dialect: str, sql: str) -> str:
+    """*sql* reading the rows as tables of this engine, beside its own ``WITH``."""
+    if sql.startswith("WITH "):
+        return f"{_tables(dialect)},\n{sql.removeprefix('WITH ')}"
+    return f"{_tables(dialect)}\n{sql}"
 
 
 def _arrow(rows: list[dict[str, Any]]) -> pa.Table:
@@ -257,7 +287,7 @@ def _mismatches(target: VendorTarget) -> list[str]:
     assert plan is not None
     assert plan.legs[0].rows is not None
     tables = {
-        leg.name: normalize_leg(leg, _arrow(target.execute(_tables(target.dialect) + leg.sql)))
+        leg.name: normalize_leg(leg, _arrow(target.execute(_on_tables(target.dialect, leg.sql))))
         for leg in plan.legs
     }
     rows = {r["Label"]: r for r in combine(plan, tables, None).arrow_table.to_pylist()}
@@ -280,8 +310,45 @@ def _mismatches(target: VendorTarget) -> list[str]:
     return wrong
 
 
+PARENT_MEASURES = ["Weights", "Distinct Weights", "Heaviest", "Facts Count"]
+
+
+def _weights(target: VendorTarget) -> dict[str | None, tuple[Any, ...]]:
+    """Per label, its parents' weights summed, each parent once, counted
+    distinct and at most, and its rows."""
+    store = ModelStore()
+    query = QueryObject.model_validate(
+        {"select": {"dimensions": ["Label"], "measures": PARENT_MEASURES}}
+    )
+    plan = store.compile_query(store.load_model(MODEL).model_id, query, target.dialect).federation
+    assert plan is not None
+    assert plan.legs[0].rows is not None
+    tables = {
+        leg.name: normalize_leg(leg, _arrow(target.execute(_on_tables(target.dialect, leg.sql))))
+        for leg in plan.legs
+    }
+    rows = combine(plan, tables, None).arrow_table.to_pylist()
+    return {r["Label"]: tuple(r[m] for m in PARENT_MEASURES) for r in rows}
+
+
+def _expected_weights() -> dict[str | None, tuple[Any, ...]]:
+    parents: dict[str | None, set[int]] = {}
+    for (label, *_), parent in zip(ROWS, PARENT, strict=True):
+        parents.setdefault(label, set()).add(parent)
+    # One database adds the parents no row reaches, under no label.
+    parents[None] = {998, 999}
+
+    def weights(label: str | None, reached: set[int]) -> tuple[Any, ...]:
+        each = [WEIGHTS[p] for p in reached]
+        rows = len(VALUES[label]) if label is not None else 0
+        return (sum(each), len(set(each)), max(each), rows)
+
+    return {label: weights(label, reached) for label, reached in parents.items()}
+
+
 def _assert_exact(target: VendorTarget) -> None:
     assert _mismatches(target) == [], f"{target.name}: measures from rows differ"
+    assert _weights(target) == _expected_weights(), f"{target.name}: parents counted otherwise"
 
 
 def test_duckdb_federated_rows(vendor_duckdb: VendorTarget) -> None:
