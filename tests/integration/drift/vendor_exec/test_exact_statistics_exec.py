@@ -447,6 +447,38 @@ def test_postgres_at_many_places(vendor_postgres: VendorTarget, places: int) -> 
     assert {name: row[name] for name in measures} == dict.fromkeys(measures, 1.0)
 
 
+@pytest.mark.parametrize(("magnitude", "exact"), [(10**149, True), (10**200, False)])
+def test_postgres_far_past_a_double(
+    vendor_postgres: VendorTarget, magnitude: int, exact: bool
+) -> None:
+    """Exact while the sums of squares are under 10^300; past them, PostgreSQL's
+    own, which squares only the spread: values near 10^200 squared as doubles
+    raised before the route could keep it."""
+    kind = "NUMERIC(250, 0)"
+    model = (
+        "version: 1.0\ndataObjects:\n  V:\n    code: v\n    columns:\n"
+        "      X: {code: x, abstractType: decimal, sqlPrecision: 250, sqlScale: 0}\n"
+        "      Y: {code: y, abstractType: decimal, sqlPrecision: 250, sqlScale: 0}\n"
+        "measures:\n  Spread:\n"
+        "    columns: [{dataObject: V, column: X}, {dataObject: V, column: Y}]\n"
+        "    aggregation: covar_samp\n    resultType: float\n"
+    )
+    rows = " UNION ALL ".join(
+        f"SELECT CAST('{magnitude + i}' AS {kind}) AS \"x\", "
+        f"CAST('{magnitude + i}' AS {kind}) AS \"y\""
+        for i in range(3)
+    )
+    store = ModelStore()
+    query = QueryObject.model_validate({"select": {"measures": ["Spread"]}})
+    sql = store.compile_query(store.load_model(model).model_id, query, "postgres").sql
+    (row,) = vendor_postgres.execute(f'WITH "v" AS ({rows})\n{sql}')
+    (native,) = vendor_postgres.execute(
+        f'WITH "v" AS ({rows})\nSELECT COVAR_SAMP("x", "y") AS "Spread" FROM "v"'
+    )
+
+    assert row["Spread"] == (1.0 if exact else native["Spread"])
+
+
 def test_mysql_exact_variance(vendor_mysql: VendorTarget) -> None:
     """Over 10^17 + 0..5 its own variance was 0."""
     groups = _wide_groups()

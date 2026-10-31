@@ -25,12 +25,15 @@ class PostgresDialect(Dialect):
 
     # Exact moments (Dialect._statistic_from_moments) in NUMERIC, which holds
     # any sum: the limit is the double they are rounded to, which reaches
-    # 1.8e308. A NUMERIC(162, 160) of 1, 2, 3 in units passed it.
+    # 1.8e308, tested on the sums themselves. Values near 10^200 squared as
+    # doubles raised before the CASE could keep PostgreSQL's own, which
+    # squares only their spread.
     _MOMENTS_INTEGER = "NUMERIC"
     _MOMENTS_COUNT = "NUMERIC"
     _MOMENTS_DOUBLE = "DOUBLE PRECISION"
     _MOMENTS_DECIMAL = "NUMERIC"
     _MOMENTS_LIMIT = 300
+    _MOMENTS_EXACT_LIMIT = True
 
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "BIGINT",

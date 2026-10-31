@@ -218,9 +218,10 @@ def test_postgres_sums_in_numeric_under_what_a_double_holds() -> None:
     )
     assert "AS DOUBLE PRECISION)" in sql
     assert "AS DOUBLE)" not in sql
-    # 10^300 units: the integers at 0 places, the decimals at 2.
-    assert "< CAST('1E300' AS DOUBLE PRECISION)" in sql
-    assert "< CAST('1E296' AS DOUBLE PRECISION)" in sql
+    # 10^300 units, tested on the exact sums of squares: squared as doubles,
+    # values near 10^200 overflowed before the CASE could keep its own.
+    assert sql.count("< CAST('1E300' AS NUMERIC)") == 2
+    assert "AS DOUBLE PRECISION) * CAST(" not in sql
 
 
 @pytest.mark.parametrize(("places", "exact"), [(150, True), (151, False)])

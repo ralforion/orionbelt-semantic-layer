@@ -841,6 +841,12 @@ class Dialect(ABC):
     #: tested with, and the sums are rounded to.
     _MOMENTS_LIMIT = 37
 
+    #: Whether :attr:`_MOMENTS_LIMIT` is tested on the exact sums of squares,
+    #: where :attr:`_MOMENTS_INTEGER` cannot overflow, rather than on the
+    #: values' doubles: squared past 1.8e308, a double raised in PostgreSQL
+    #: before the ``CASE`` could keep the engine's own (values near 10^200).
+    _MOMENTS_EXACT_LIMIT = False
+
     #: The most places :meth:`_statistic_from_moments` reads a decimal at: it
     #: scales by powers of ten written as doubles, which reach 10^308, up to
     #: twice its places, and PostgreSQL refused ``CAST('1E320' AS DOUBLE
@@ -1004,10 +1010,14 @@ class Dialect(ABC):
             return None
         fits: Expr = op(count, ">=", Literal.number(2 if sample else 1))
         # Of the values the sums read: a value without its pair counts in neither.
-        for paired, scale in zip(values, scales, strict=True):
-            value = double(paired)
-            squares = call("SUM", op(value, "*", value))
-            fits = op(fits, "AND", op(squares, "<", power(self._MOMENTS_LIMIT - 2 * scale)))
+        for paired, scale, u in zip(values, scales, us, strict=True):
+            if self._MOMENTS_EXACT_LIMIT:
+                limit = integer(Literal.string(f"1E{self._MOMENTS_LIMIT}"))
+                fits = op(fits, "AND", op(call("SUM", op(u, "*", u)), "<", limit))
+            else:
+                value = double(paired)
+                squares = call("SUM", op(value, "*", value))
+                fits = op(fits, "AND", op(squares, "<", power(self._MOMENTS_LIMIT - 2 * scale)))
             if self._MOMENTS_ROW_DIGITS is not None:
                 largest = call("MAX", magnitude(paired))
                 bound = power(self._MOMENTS_ROW_DIGITS - scale)
