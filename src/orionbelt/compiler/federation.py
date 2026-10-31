@@ -139,9 +139,9 @@ _ORDERING = frozenset(
 _COUNTING = frozenset({AggregationType.COUNT_DISTINCT, AggregationType.MODE})
 
 # The relation the combine step reads a fact leg returning rows as: the leg,
-# each row repeated as often as it counts (:func:`_with_rows`); and the
-# relation of the rows, once each, of an object a measure counts once per row
-# of.
+# each row repeated as often as it counts (:func:`_with_rows`); and the prefix
+# of each relation of an object's rows once each, the parent of measures that
+# read it through the fact rows (:meth:`_Planner.parents`).
 _ROWS_RELATION = "leg_0_rows"
 _ONCE_RELATION = "leg_0_once"
 
@@ -397,9 +397,10 @@ def plan_federated(
 
     fact_dims, edge_dims = planner.dimensions_by_island(islands, fact, edges, combine_filters)
     # Partial results count a row of an object the joins repeat once per
-    # value the fact leg groups by beyond the query; from rows, the combine
-    # step counts each once itself.
-    rows_for = rows_for or planner.repeats(edges, fact_dims)
+    # value the fact leg groups by beyond the query, and other objects'
+    # measures beside a count of distinct values once per value it counts;
+    # from rows, the combine step counts each once itself.
+    rows_for = rows_for or planner.repeats(edges, fact_dims) or planner.counts_beside_others()
     if rows_for:
         planner.check_rows(rows_for[0], islands[fact])
     from_rows = bool(rows_for)
@@ -432,18 +433,17 @@ def plan_federated(
     # leg column of each column a measure reads, when the leg returns rows.
     row_count: str | None = None
     measure_columns: dict[tuple[str, str, bool], str] = {}
-    # The identity of each object a measure counts once per row of.
+    # The measures of each object read through the fact rows, and its identity.
+    parents: dict[str, list[str]] = {}
     identities: dict[str, list[str]] = {}
     if from_rows:
         # A key read in its own time is a copy of its column, under the key's
         # name, which no column of its data object may have.
         taken |= {c.casefold() for o in islands[fact] for c in model.data_objects[o].columns}
-        repeated = resolved.dedup_targets
-        identities |= {
-            target: dedup_identity(
-                target, [m for m, t in repeated.items() if t == target], resolved, model
-            )
-            for target in sorted(set(repeated.values()))
+        parents = planner.parents()
+        identities = {
+            parent: dedup_identity(parent, names, resolved, model)
+            for parent, names in parents.items()
         }
         leg_measures, row_count, distinct, measure_columns = _row_measures(
             model, measures, taken, resolved.base_object, identities
@@ -537,22 +537,29 @@ def plan_federated(
         )
     injections: list[KeyInjection] = []
     fact_joins: list[DataObjectJoin] = []
-    # The object a measure counts once per row of, from rows (one at most,
-    # _Planner.check_rows), is its own relation in the combine model: its rows
-    # once each (_with_rows), joined from the fact rows many-to-one, holding
-    # the dimensions and keys the query reads of it and of the objects it
-    # joins many-to-one, as one database reads them there. The combine step's
-    # own grain_dedup then counts each row once per group, and puts the rows
-    # no fact row reaches in the groups they belong to.
-    once_joins: list[DataObjectJoin] = []
-    on_once = planner.read_once(identities, fact_dims, edges, key_names)
-    on_once |= {hidden for hidden, source in fact_kept.items() if source in on_once}
+    # Each object measures read through the fact rows, from rows, is its own
+    # relation in the combine model: its rows once each (_with_rows), joined
+    # from the fact rows many-to-one, holding what its measures read, and the
+    # dimensions and keys the query reads of it and of the objects it joins
+    # many-to-one, as one database reads them there. The combine step's own
+    # grain_dedup then counts each row once per group where the joins repeat
+    # it, and puts the rows no fact row reaches in the groups they belong to,
+    # as one database does.
+    once = {parent: f"{_ONCE_RELATION}{i}" for i, parent in enumerate(sorted(parents))}
+    once_of = {name: once[parent] for parent, names in parents.items() for name in names}
+    once_joins: dict[str, list[DataObjectJoin]] = {}
+    on_once = {
+        column: once[parent]
+        for column, parent in planner.read_once(parents, fact_dims, edges, key_names).items()
+    }
+    on_once |= {
+        hidden: on_once[source] for hidden, source in fact_kept.items() if source in on_once
+    }
     for d in fact_dims:
         name = DimensionRef.parse(d).name
-        view = _ONCE_RELATION if name in on_once else "leg_0"
-        combine_dimensions[name] = _combine_dimension(model, name, view)
+        combine_dimensions[name] = _combine_dimension(model, name, on_once.get(name, "leg_0"))
     for hidden, source in fact_kept.items():
-        view = _ONCE_RELATION if hidden in on_once else "leg_0"
+        view = on_once.get(hidden, "leg_0")
         combine_dimensions[hidden] = _combine_dimension(model, source, view, hidden)
 
     # One leg per dimension island: its keys and the dimensions read there.
@@ -644,7 +651,8 @@ def plan_federated(
             combine_dimensions[name] = _combine_dimension(model, name, leg_name)
         for hidden, source in dim_kept.items():
             combine_dimensions[hidden] = _combine_dimension(model, source, leg_name, hidden)
-        (once_joins if set(keys) <= on_once else fact_joins).append(
+        owner = on_once.get(next(iter(keys)))
+        (once_joins.setdefault(owner, []) if owner else fact_joins).append(
             DataObjectJoin(
                 join_type=Cardinality.MANY_TO_ONE,
                 join_to=leg_name,
@@ -655,30 +663,43 @@ def plan_federated(
         )
 
     once_columns: dict[str, tuple[list[str], list[str]]] = {}
-    for target, identity in identities.items():
-        identity_columns = [measure_columns[(target, column, False)] for column in identity]
+    effective = model.effective_measures
+    for parent, names in sorted(parents.items()):
+        name = once[parent]
+        identity_columns = [
+            measure_columns[(parent, column, False)] for column in identities[parent]
+        ]
+        read = set(identity_columns)
+        for measure in names:
+            if measure in distinct:
+                read.add(distinct[measure][0])
+            else:
+                read |= {measure_columns[r] for r in _read_columns(effective[measure])}
         values = {
-            leg: _value_column(model, leg, obj, col).model_copy(
+            leg: _value_column(model, leg, *row_values[leg]).model_copy(
                 update={"primary_key": leg in identity_columns}
             )
-            for (obj, col, own), leg in measure_columns.items()
-            if obj == target and not own
+            for leg in sorted(read & row_values.keys())
         }
-        held = {c.name: c for c in fact_columns if c.name in on_once}
-        once_columns[_ONCE_RELATION] = ([*sorted(values), *held], identity_columns)
-        combine_objects[_ONCE_RELATION] = DataObject(
-            name=_ONCE_RELATION,
-            code=_ONCE_RELATION,
+        held = {
+            c.name: c
+            for c in fact_columns
+            if on_once.get(c.name) == name or c.name in read - values.keys()
+        }
+        once_columns[name] = ([*values, *held], identity_columns)
+        combine_objects[name] = DataObject(
+            name=name,
+            code=name,
             database="",
             schema_name="",
             columns={**values, **held},
-            joins=once_joins,
+            joins=once_joins.get(name, []),
             countable=False,
         )
         fact_joins.append(
             DataObjectJoin(
                 join_type=Cardinality.MANY_TO_ONE,
-                join_to=_ONCE_RELATION,
+                join_to=name,
                 columns_from=identity_columns,
                 columns_to=identity_columns,
             )
@@ -718,14 +739,9 @@ def plan_federated(
         dimensions=combine_dimensions,
         measures={
             m: (
-                _row_measure(
-                    model,
-                    m,
-                    measure_columns,
-                    _ONCE_RELATION if m in resolved.dedup_targets else "leg_0",
-                )
+                _row_measure(model, m, measure_columns, once_of.get(m, "leg_0"))
                 if from_rows and m not in distinct
-                else _combine_measure(model, m, leg_columns.get(m))
+                else _combine_measure(model, m, leg_columns.get(m), once_of.get(m, "leg_0"))
             )
             for m in measures
         },
@@ -1055,7 +1071,6 @@ class _Planner:
                     f"Measure '{name}' reads {', '.join(sorted(outside))}, of another "
                     "data source than its own",
                 )
-        self.check_distinct_counts()
         return [name for name in names if not self.combines(effective[name], fact_island)]
 
     def combines(self, measure: Measure, fact_island: set[str]) -> bool:
@@ -1110,23 +1125,26 @@ class _Planner:
         A count of the distinct values of one column is counted as its engine
         counts, as when the leg combines partial results.
 
-        From rows, the combine step counts the rows of one object the
-        query's joins repeat once each (:func:`_row_measures`); measures doing
-        so for several objects are refused.
+        A measure of an object read through the fact rows (:meth:`parents`)
+        is computed from that object's rows once each: what it reads must have
+        one value per row of it, as columns of the object and of those it joins
+        many-to-one have.
 
         *reason* is the measure that needs the rows.
         """
-        repeated = sorted(set(self.resolved.dedup_targets.values()))
-        if len(repeated) > 1:
-            raise self.refuse(
-                "UNSUPPORTED_AGGREGATION",
-                f"Measure '{reason}' is computed from the fact leg's rows, and measures of "
-                f"{', '.join(repeated)} count each of their rows once, which the query's "
-                "joins repeat: from rows, a federated query counts the rows of one such "
-                "object once, not of several",
-                hint="Query the measures of each object apart.",
-            )
         effective = self.model.effective_measures
+        for parent, names in self.parents().items():
+            side = self._one_row_each(parent)
+            for name in names:
+                for obj, column, _ in _read_columns(effective[name]):
+                    if not self._column_objects(obj, column) <= side:
+                        raise self.refuse(
+                            "UNSUPPORTED_AGGREGATION",
+                            f"{_from_rows(reason, name)}, from the rows of '{parent}' once "
+                            f"each, but it reads '{obj}.{column}', which one row of "
+                            f"'{parent}' can have several values of",
+                            hint=_apart(reason, name),
+                        )
         dialect = self.leg_dialect(fact_island)
         for name in sorted(self.atomic_measures()):
             measure = effective[name]
@@ -1198,33 +1216,64 @@ class _Planner:
                 repeated.append(name)
         return repeated
 
+    def parents(self) -> dict[str, list[str]]:
+        """The objects measures are read from through the base's rows, each with its measures.
+
+        As :meth:`~orionbelt.compiler.resolution.QueryResolver._parent_of` has
+        it: a measure whose values come from one object, not the base. One
+        database counts each row of such an object once where the joins repeat
+        it (``grain_dedup``), and adds its rows no base row reaches, customers
+        without sales.
+        """
+        base = self.resolved.base_object
+        effective = self.model.effective_measures
+        parents: dict[str, list[str]] = {}
+        for name in sorted(self.atomic_measures()):
+            sources = effective[name].source_objects
+            if len(sources) == 1 and (source := next(iter(sources))) != base:
+                parents.setdefault(source, []).append(name)
+        return parents
+
     def read_once(
         self,
-        identities: dict[str, list[str]],
+        parents: Iterable[str],
         fact_dims: list[str],
         edges: list[_Edge],
         key_names: list[list[str]],
-    ) -> set[str]:
-        """The fact leg's dimensions and keys read from the object counted once per row.
+    ) -> dict[str, str]:
+        """The fact leg's dimensions and keys read through an object measures read, each to it.
 
-        That object (the one in *identities*, from rows) and the objects it
-        joins many-to-one have one row per row of it: one database reads
-        those dimensions and keys through it, also for its rows no fact row
-        reaches.
+        Such an object (:meth:`parents`, from rows) and the objects it joins
+        many-to-one have one row per row of it: one database reads those
+        dimensions and keys through it, also for its rows no fact row reaches.
+        One read through two such objects is refused: whose rows without a
+        fact row it groups is not one answer.
         """
-        if not identities:
-            return set()
-        (target,) = identities
-        side = self._one_row_each(target)
-        read = {
-            name
-            for name in (DimensionRef.parse(d).name for d in fact_dims)
-            if self._dimension_objects(name) <= side
-        }
+        sides = {parent: self._one_row_each(parent) for parent in parents}
+
+        def through(objects: set[str], what: str) -> str | None:
+            owners = sorted(parent for parent, side in sides.items() if objects <= side)
+            if len(owners) > 1:
+                raise self.refuse(
+                    "UNSUPPORTED_AGGREGATION",
+                    f"The query reads {what} through each of {', '.join(owners)}, whose "
+                    "measures are computed from the fact leg's rows: which one's rows "
+                    "without a fact row it groups is not one answer",
+                    hint="Query the measures of each object apart.",
+                )
+            return owners[0] if owners else None
+
+        read: dict[str, str] = {}
+        for name in (DimensionRef.parse(d).name for d in fact_dims):
+            if owner := through(self._dimension_objects(name), f"dimension '{name}'"):
+                read[name] = owner
         for edge, names in zip(edges, key_names, strict=True):
-            objects = [self._column_objects(edge.from_object, c) for c in edge.from_columns]
-            if set().union(*objects) <= side:
-                read.update(names)
+            objects = set().union(
+                *(self._column_objects(edge.from_object, c) for c in edge.from_columns)
+            )
+            what = f"the key of the join from '{edge.from_object}' to '{edge.to_object}'"
+            if owner := through(objects, what):
+                read.update(dict.fromkeys(names, owner))
         return read
 
     def _column_objects(self, obj: str, column: str) -> set[str]:
@@ -1257,27 +1306,24 @@ class _Planner:
                         changed = True
         return reached
 
-    def check_distinct_counts(self) -> None:
-        """A count of distinct values only beside measures of its own data object.
+    def counts_beside_others(self) -> list[str]:
+        """The counts of distinct values beside measures of other data objects.
 
-        The fact leg groups by the counted column as well
+        A fact leg of partial results groups by the counted column as well
         (:func:`_leg_measures`). Grouping an object's rows by one of its own
         columns leaves that object's sums, counts, minima and averages exact,
         since each combines from partial results. A measure of another object
         does not survive it: a customer-level sum is repeated once per order
         when the leg groups by order, and the rows the planner keeps for a
         count over customers - those without orders - are not the rows it
-        keeps for a sum over orders. Combining those needs fact legs
-        aggregated apart, which a federated query does not build yet. The
-        objects compared are all a measure reads, a computed column's
-        dependencies included: a Customers column computed from Orders makes
-        the counted values per order.
+        keeps for a sum over orders. Such a query is computed from the fact
+        leg's rows instead. The objects compared are all a measure reads, a
+        computed column's dependencies included: a Customers column computed
+        from Orders makes the counted values per order.
         """
         effective = self.model.effective_measures
         atomic = sorted(self.atomic_measures())
         distinct = [name for name in atomic if _counts_distinct_column(effective[name])]
-        if not distinct:
-            return
         counted = {effective[name].columns[0].view for name in distinct}
         for name in atomic:
             measure = effective[name]
@@ -1285,18 +1331,9 @@ class _Planner:
             # computed column, its own or a filter's, reads the objects its
             # expression names, so "a Customers column" can be per order.
             objects = measure.source_objects | self.model.measure_join_objects(name)
-            if objects == counted and len(counted) == 1 and not measure.anchor:
-                continue
-            reads = ", ".join(sorted(objects)) or "no data object"
-            raise self.refuse(
-                "UNSUPPORTED_AGGREGATION",
-                f"Measure '{distinct[0]}' counts distinct values of "
-                f"{', '.join(sorted(o or '' for o in counted))}, and measure '{name}' reads "
-                f"{reads}: across data sources, a count of distinct values combines only "
-                "with measures of its own data object",
-                hint="Query the count of distinct values apart from measures of other data "
-                "objects.",
-            )
+            if objects != counted or len(counted) != 1 or measure.anchor:
+                return distinct
+        return []
 
     # -- filters ------------------------------------------------------------
 
@@ -1641,7 +1678,7 @@ def _leg_measures(
       the leg groups by the column it counts as well, and the combine step
       counts that column's distinct values across all the groups they reach.
       The measure stays in the leg only to keep the rows it keeps; the other
-      measures, of the same data object (:meth:`_Planner.check_distinct_counts`),
+      measures, of the same data object (:meth:`_Planner.counts_beside_others`),
       are still exact at that finer grain, since each combines from partial
       results.
     * a ``variance``, ``var_pop``, ``stddev`` or ``stddev_pop``: per-group
@@ -1773,11 +1810,11 @@ def _row_measures(
     database computes it from its rows (:func:`_row_measure`). A count of
     the distinct values of one column counts a column of its own, as its
     engine counts them, as in :func:`_leg_measures`. The leg returns the
-    *identities* of the objects the query's joins repeat, by object, as well,
-    and counts each one's rows: the combine step counts each of their rows
-    once for a measure that one database counts so (``grain_dedup``), and the
-    count makes the leg return the rows of the object no base row reaches,
-    as one database adds them, with no base rows to stand for.
+    *identities* of the objects measures read through the base's rows
+    (:meth:`_Planner.parents`) as well, and counts each one's rows: the
+    combine step reads those measures from each object's rows once each,
+    and the count makes the leg return the rows of the object no base row
+    reaches, as one database adds them, with no base rows to stand for.
 
     Returns the leg's measures by name; the name of its count; per count of
     the distinct values of one column, the leg column of its values with the
@@ -1971,7 +2008,9 @@ def _unused(name: str, taken: set[str]) -> str:
     return name
 
 
-def _combine_measure(model: SemanticModel, name: str, column: str | None = None) -> Measure:
+def _combine_measure(
+    model: SemanticModel, name: str, column: str | None = None, view: str = "leg_0"
+) -> Measure:
     """The measure re-aggregated from the fact leg's partial results.
 
     It carries the measure's type, default and ``total``. A count is combined
@@ -1981,7 +2020,8 @@ def _combine_measure(model: SemanticModel, name: str, column: str | None = None)
     the combine compile divides by its counts; a variance keeps its
     aggregation over its leg *column* of sums, which the combine compile
     reads with its counts and squares; and a count of distinct values counts
-    its leg *column* of values (:func:`_leg_measures`).
+    its leg *column* of values (:func:`_leg_measures`), from *view* where the
+    fact leg returns rows (:func:`_row_measures`).
     """
     measure = model.effective_measures[name]
     counts_distinct = _counts_distinct(measure)
@@ -2006,7 +2046,7 @@ def _combine_measure(model: SemanticModel, name: str, column: str | None = None)
     resolved = resolve_measure_cast_type(measure, model.settings, dialect, model)
     return Measure(
         name=name,
-        columns=[DataColumnRef(view="leg_0", column=column or name)],
+        columns=[DataColumnRef(view=view, column=column or name)],
         aggregation=aggregation,
         result_type=measure.result_type,
         data_type=measure.data_type

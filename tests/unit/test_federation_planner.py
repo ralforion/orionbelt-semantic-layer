@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import gc
 import weakref
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 
@@ -1586,25 +1587,51 @@ class TestCountDistinctBesideOtherObjects:
         [
             ["Revenue", "Customers Counted"],
             ["Credit Total", "Orders Counted"],
-            ["Credit Total", "First Orders Counted"],
         ],
-        ids=[
-            "sum_over_orders_and_distinct_customers",
-            "customer_sum_and_distinct_orders",
-            # A Customers column computed from Orders: per order, not per customer.
-            "customer_sum_and_a_customer_column_computed_from_orders",
-        ],
+        ids=["sum_over_orders_and_distinct_customers", "customer_sum_and_distinct_orders"],
     )
-    def test_with_measures_of_another_object_it_is_refused(self, measures: list[str]) -> None:
-        """Grouping by the counted column would repeat a one-side sum per value,
-        and the rows kept for one measure are not the other's."""
-        with pytest.raises(ResolutionError) as caught:
-            _compile(
-                three_objects(True), {"select": {"dimensions": ["Country"], "measures": measures}}
-            )
+    def test_with_measures_of_another_object_it_comes_from_rows(
+        self, three_files: dict[str, str], measures: list[str]
+    ) -> None:
+        """Grouping a fact leg of partial results by the counted column would
+        repeat a one-side sum per value, and the rows kept for one measure are
+        not the other's: from rows, each is counted as on one source."""
+        query = {"select": {"dimensions": ["Country"], "measures": measures}}
+        single_compiled = _compile(three_objects(False), query)
+        con = duckdb.connect(three_files["all"], read_only=True)
+        try:
+            single = sorted(_rows(con, single_compiled.sql), key=repr)
+        finally:
+            con.close()
+        compiled = _compile(three_objects(True), query)
+        assert compiled.federation.legs[0].rows is not None
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(three_files[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
 
-        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_AGGREGATION"]
-        assert "its own data object" in caught.value.errors[0].message
+        assert sorted(_rows(combine, compiled.sql), key=repr) == single
+        assert single
+
+    def test_a_customer_column_computed_from_orders_is_refused(self) -> None:
+        """Per order, not per customer: one source refuses it too
+        (``FILTER_ADMITS_ROWS_WITHOUT``)."""
+        query = {
+            "select": {
+                "dimensions": ["Country"],
+                "measures": ["Credit Total", "First Orders Counted"],
+            }
+        }
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(three_objects(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_AGGREGATION"
+        assert "which one row of 'Customers' can have several values of" in error.message
 
 
 EQUALITY = """\
@@ -1952,13 +1979,20 @@ REPEATED_TABLES = [
 ]
 
 
-def _repeated(aggregation: str, query: dict[str, Any]) -> tuple[list[Any], list[Any]]:
-    """*query* over the customers' ages on one source, and across two."""
+def _repeated(
+    aggregation: str,
+    query: dict[str, Any],
+    change: Callable[[str], str] = lambda yaml: yaml,
+) -> tuple[list[Any], list[Any]]:
+    """*query* over the customers' ages on one source, and across two.
+
+    *change* rewrites the model, both ways.
+    """
 
     def yaml(federated: bool) -> str:
         facts = "    dataSource: facts\n" if federated else ""
         labels = "    dataSource: labels\n" if federated else ""
-        return REPEATED.format(facts=facts, labels=labels, aggregation=aggregation)
+        return change(REPEATED.format(facts=facts, labels=labels, aggregation=aggregation))
 
     single = _compile(yaml(False), query)
     federated = _compile(yaml(True), query)
@@ -1973,6 +2007,18 @@ def _repeated(aggregation: str, query: dict[str, Any]) -> tuple[list[Any], list[
         return expected, sorted(_rows(combine, federated.sql), key=repr)
     finally:
         con.close()
+
+
+def _assert_same_rows(got: list[Any], expected: list[Any]) -> None:
+    """*got* is *expected*, a double to twelve digits: DuckDB adds a variance's
+    doubles in no fixed order, so the grand total of 700 came back
+    699.9999999999999 or 700.0000000000001 from one run to the next."""
+    assert len(got) == len(expected)
+    for row, want in zip(got, expected, strict=True):
+        assert row == tuple(
+            pytest.approx(v, rel=1e-12) if isinstance(v, float) else v for v in want
+        )
+    assert expected
 
 
 class TestRepeatedRows:
@@ -1991,8 +2037,7 @@ class TestRepeatedRows:
 
         expected, got = _repeated(aggregation, query)
 
-        assert got == expected
-        assert expected
+        _assert_same_rows(got, expected)
 
     @pytest.mark.parametrize("aggregation", ["sum", "count", "avg"])
     def test_an_expression_a_filter_and_a_metric_from_rows(self, aggregation: str) -> None:
@@ -2005,22 +2050,22 @@ class TestRepeatedRows:
 
         expected, got = _repeated(aggregation, query)
 
-        assert got == expected
-        assert expected
+        _assert_same_rows(got, expected)
 
-    def test_measures_of_two_repeated_objects_from_rows_are_refused(self) -> None:
-        yaml = REPEATED.format(
-            facts="    dataSource: facts\n", labels="    dataSource: labels\n", aggregation="sum"
-        ).replace(
-            "  Products:\n    code: products\n    dataSource: labels\n",
-            "  Products:\n    code: products\n    dataSource: facts\n",
-        ) + (
-            "  Products Counted: {columns: [{dataObject: Products, column: ID}], "
-            "aggregation: count}\n"
-        )
-        yaml = yaml.replace("metrics:\n", "").replace(
-            '  Ages per Sale: {expression: "{[Ages]} / {[Sales Count]}"}\n', ""
-        )
+    def test_measures_of_two_objects_from_rows(self) -> None:
+        """One database counts each customer and each product once, and adds
+        none without sales: it does that for one such object, not several."""
+
+        def products_with_sales(yaml: str) -> str:
+            return yaml.replace(
+                "  Products:\n    code: products\n    dataSource: labels\n",
+                "  Products:\n    code: products\n    dataSource: facts\n",
+            ).replace(
+                "metrics:\n",
+                "  Products Counted: {columns: [{dataObject: Products, column: ID}], "
+                "aggregation: count}\nmetrics:\n",
+            )
+
         query = {
             "select": {
                 "dimensions": ["Region"],
@@ -2028,12 +2073,72 @@ class TestRepeatedRows:
             }
         }
 
+        expected, got = _repeated("sum", query, products_with_sales)
+
+        _assert_same_rows(got, expected)
+
+    @pytest.mark.parametrize("aggregation", ["min", "max", "first", "last", "count_distinct"])
+    def test_another_measure_of_the_object_keeps_its_rows_without_sales(
+        self, aggregation: str
+    ) -> None:
+        """Read from the fact rows, customer 4, who has no sales, was left out:
+        a count of distinct ages of no category was 0 for 1."""
+        other = (
+            "  Other Age:\n    columns: [{dataObject: Customers, column: Age}]\n"
+            f"    aggregation: {aggregation}\n    resultType: int\n"
+        )
+        if aggregation in ("first", "last"):
+            # Ordered by the customer's identity, which the relation holds too.
+            other += "    withinGroup: {column: {dataObject: Customers, column: ID}}\n"
+        query = {"select": {"dimensions": ["Category"], "measures": ["Ages", "Other Age"]}}
+
+        expected, got = _repeated(
+            "sum", query, lambda yaml: yaml.replace("metrics:\n", other + "metrics:\n")
+        )
+
+        assert got == expected
+        assert (None, 70, 70) in expected or (None, 70, 1) in expected
+
+    def test_a_measure_filtered_on_an_object_it_joins_many_to_one(self) -> None:
+        """The filter's region column is the customer's: the relation holds it."""
+
+        def regions_with_customers(yaml: str) -> str:
+            return yaml.replace(
+                "  Regions:\n    code: regions\n    dataSource: labels\n",
+                "  Regions:\n    code: regions\n    dataSource: facts\n",
+            ).replace(
+                "      - column: {dataObject: Customers, column: Age}\n"
+                "        operator: gte\n"
+                "        values: [{dataType: int, valueInt: 18}]\n",
+                "      - column: {dataObject: Regions, column: Name}\n"
+                "        operator: equals\n"
+                "        values: [{dataType: string, valueString: south}]\n",
+            )
+
+        query = {"select": {"dimensions": ["Category"], "measures": ["Adult Ages", "Sales Count"]}}
+
+        expected, got = _repeated("sum", query, regions_with_customers)
+
+        assert got == expected
+        assert (None, 70, 0) in expected
+
+    def test_a_measure_reading_the_many_side_is_refused(self) -> None:
+        """Ages filtered on the sale's product: one customer has several."""
+        yaml = REPEATED.format(
+            facts="    dataSource: facts\n", labels="    dataSource: labels\n", aggregation="sum"
+        ).replace(
+            "      - column: {dataObject: Customers, column: Age}\n        operator: gte\n",
+            "      - column: {dataObject: Sales, column: Product}\n        operator: gte\n",
+        )
+
         with pytest.raises(ResolutionError) as caught:
-            _compile(yaml, query)
+            _compile(yaml, {"select": {"dimensions": ["Category"], "measures": ["Adult Ages"]}})
 
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_AGGREGATION"
-        assert "measures of Customers, Products count each of their rows once" in error.message
+        assert "reads 'Sales.Product', which one row of 'Customers' can have several" in (
+            error.message
+        )
 
     def test_the_combine_step_reads_the_objects_rows_once_each(self) -> None:
         yaml = REPEATED.format(
@@ -2047,7 +2152,7 @@ class TestRepeatedRows:
         assert (
             'SELECT DISTINCT "__value0", "__value1"\nFROM "leg_0"\nWHERE "__value1" IS NOT NULL'
         ) in compiled.sql
-        assert 'LEFT JOIN "leg_0_once" AS "leg_0_once"' in compiled.sql
+        assert 'LEFT JOIN "leg_0_once0" AS "leg_0_once0"' in compiled.sql
         assert compiled.warnings == []
 
     @pytest.mark.parametrize("aggregation", ["min", "max", "count_distinct"])
@@ -2056,8 +2161,7 @@ class TestRepeatedRows:
             aggregation, {"select": {"dimensions": ["Category"], "measures": ["Ages"]}}
         )
 
-        assert got == expected
-        assert expected
+        _assert_same_rows(got, expected)
 
     @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
     def test_a_filter_after_the_join_on_the_many_side_comes_from_rows(
@@ -2080,8 +2184,7 @@ class TestRepeatedRows:
 
         expected, got = _repeated(aggregation, query)
 
-        assert got == expected
-        assert expected
+        _assert_same_rows(got, expected)
 
     @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
     def test_a_filter_after_the_join_on_the_object_itself_combines(self, aggregation: str) -> None:
@@ -2100,8 +2203,7 @@ class TestRepeatedRows:
 
         expected, got = _repeated(aggregation, query)
 
-        assert got == expected
-        assert expected
+        _assert_same_rows(got, expected)
 
     @pytest.mark.parametrize("grouping", ["rollup", "cube"])
     @pytest.mark.parametrize("aggregation", ["sum", "variance"])
@@ -2116,31 +2218,19 @@ class TestRepeatedRows:
             "grouping": grouping,
         }
 
-        expected, got = _repeated(aggregation, query)
-
-        assert got == expected
-        assert expected
+        _assert_same_rows(*reversed(_repeated(aggregation, query)))
 
     @pytest.mark.parametrize("grouping", ["rollup", "cube"])
     @pytest.mark.parametrize("aggregation", ["sum", "variance"])
     def test_subtotals_across_the_object_itself_combine(
         self, grouping: str, aggregation: str
     ) -> None:
-        """Over doubles: the variance of the grand total is 700 from exact
-        moments, 700.0000000000001 from DuckDB's own VAR_SAMP on one source."""
         query = {
             "select": {"dimensions": ["Region", "Age"], "measures": ["Ages", "Sales Count"]},
             "grouping": grouping,
         }
 
-        expected, got = _repeated(aggregation, query)
-
-        assert len(got) == len(expected)
-        for row, want in zip(got, expected, strict=True):
-            assert row == tuple(
-                pytest.approx(v, rel=1e-12) if isinstance(v, float) else v for v in want
-            )
-        assert expected
+        _assert_same_rows(*reversed(_repeated(aggregation, query)))
 
     @pytest.mark.parametrize("dimension", ["Product ID", "Age"])
     def test_a_total(self, dimension: str) -> None:
@@ -2150,8 +2240,7 @@ class TestRepeatedRows:
 
         expected, got = _repeated("sum", query)
 
-        assert got == expected
-        assert expected
+        _assert_same_rows(got, expected)
 
     @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
     def test_keys_of_the_object_itself_combine(self, aggregation: str) -> None:
@@ -2160,5 +2249,4 @@ class TestRepeatedRows:
 
         expected, got = _repeated(aggregation, query)
 
-        assert got == expected
-        assert expected
+        _assert_same_rows(got, expected)

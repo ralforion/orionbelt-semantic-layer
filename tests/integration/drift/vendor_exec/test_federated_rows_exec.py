@@ -137,6 +137,11 @@ measures:
     total: true
     resultType: float
   Weights: {columns: [{dataObject: Parents, column: W}], aggregation: sum, resultType: int}
+  Distinct Weights:
+    columns: [{dataObject: Parents, column: W}]
+    aggregation: count_distinct
+    resultType: int
+  Heaviest: {columns: [{dataObject: Parents, column: W}], aggregation: max, resultType: int}
 """
 
 MEASURES = [
@@ -305,11 +310,15 @@ def _mismatches(target: VendorTarget) -> list[str]:
     return wrong
 
 
-def _weights(target: VendorTarget) -> dict[str | None, tuple[Any, Any]]:
-    """Each label's parents' weights, each parent once, and its rows."""
+PARENT_MEASURES = ["Weights", "Distinct Weights", "Heaviest", "Facts Count"]
+
+
+def _weights(target: VendorTarget) -> dict[str | None, tuple[Any, ...]]:
+    """Per label, its parents' weights summed, each parent once, counted
+    distinct and at most, and its rows."""
     store = ModelStore()
     query = QueryObject.model_validate(
-        {"select": {"dimensions": ["Label"], "measures": ["Weights", "Facts Count"]}}
+        {"select": {"dimensions": ["Label"], "measures": PARENT_MEASURES}}
     )
     plan = store.compile_query(store.load_model(MODEL).model_id, query, target.dialect).federation
     assert plan is not None
@@ -319,20 +328,22 @@ def _weights(target: VendorTarget) -> dict[str | None, tuple[Any, Any]]:
         for leg in plan.legs
     }
     rows = combine(plan, tables, None).arrow_table.to_pylist()
-    return {r["Label"]: (r["Weights"], r["Facts Count"]) for r in rows}
+    return {r["Label"]: tuple(r[m] for m in PARENT_MEASURES) for r in rows}
 
 
-def _expected_weights() -> dict[str | None, tuple[Any, Any]]:
+def _expected_weights() -> dict[str | None, tuple[Any, ...]]:
     parents: dict[str | None, set[int]] = {}
     for (label, *_), parent in zip(ROWS, PARENT, strict=True):
         parents.setdefault(label, set()).add(parent)
-    expected: dict[str | None, tuple[Any, Any]] = {
-        label: (sum(WEIGHTS[p] for p in reached), len(VALUES[label]))
-        for label, reached in parents.items()
-    }
     # One database adds the parents no row reaches, under no label.
-    expected[None] = (WEIGHTS[998] + WEIGHTS[999], 0)
-    return expected
+    parents[None] = {998, 999}
+
+    def weights(label: str | None, reached: set[int]) -> tuple[Any, ...]:
+        each = [WEIGHTS[p] for p in reached]
+        rows = len(VALUES[label]) if label is not None else 0
+        return (sum(each), len(set(each)), max(each), rows)
+
+    return {label: weights(label, reached) for label, reached in parents.items()}
 
 
 def _assert_exact(target: VendorTarget) -> None:

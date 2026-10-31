@@ -186,13 +186,12 @@ How a query is split:
   per-group counts either: the fact leg also groups by the column it counts,
   and the combine query counts that column's distinct values across all the
   groups they reach. The leg then returns a row per value as well, which
-  `FEDERATION_MAX_LEG_ROWS` bounds. The query's other measures must read the
-  same data object as the counted column, and nothing else, a computed
-  column's dependencies included: that object's sums, counts and
-  averages still combine exactly at the finer grain, but a measure of another
-  object would not (a customer-level sum would repeat once per order, and the
-  customers without orders that a count over customers keeps are not the rows
-  a sum over orders keeps).
+  `FEDERATION_MAX_LEG_ROWS` bounds. That object's sums, counts and averages
+  still combine exactly at the finer grain, but a measure of another object
+  would not (a customer-level sum would repeat once per order, and the
+  customers without orders that a count over customers keeps are not the
+  rows a sum over orders keeps): beside one, the query is computed from the
+  fact leg's rows.
 - A `variance`, `var_pop`, `stddev` or `stddev_pop` does not combine from
   per-group statistics either, but its moments do: the leg returns its
   argument's count, sum and sum of squares, each value squared in a type
@@ -238,20 +237,26 @@ How a query is split:
   (a join to another source starting on its many side, a filter after the join
   reading a dimension there, a `rollup` / `cube` subtotal or a `total: true`
   adding groups across a selected dimension there) it would count a customer
-  once per product, so the query is computed from the fact leg's rows. The leg
-  then also returns the object's identity (its `primaryKey`, else the key its
-  join reaches it by) and counts its rows, so that it returns the customers
-  without a sale as well, as one database adds them. The combine query reads
-  the object's rows once each, with the dimensions and keys the query reads
-  of it, and counts each once per group, a customer without sales under the
-  group of its own region. One such object per query.
+  once per product, so the query is computed from the fact leg's rows.
+- Computed from rows, every measure of an object read through the fact rows
+  (a sum, a `count_distinct` or a `max` of customers' columns over their
+  sales) is read from that object's rows once each, as one database reads
+  it. The leg also returns the object's identity (its `primaryKey`, else the
+  key its join reaches it by) and counts its rows, so that it returns the
+  customers without a sale as well, as one database adds them. The combine
+  query reads the customers' rows once each, with what their measures read
+  and the dimensions and keys the query reads of them, and counts each once
+  per group: a customer without sales is in the group of its own region. What
+  such a measure reads must have one value per customer, a column of the
+  customer or of an object it joins many-to-one; a dimension read through two
+  such objects at once is refused.
 
 What does not split exactly is refused by name rather than answered with a
 different number: measures from more than one source (`FEDERATION_MULTI_FACT`),
-a `count_distinct` beside measures of another data object, and in a query
-computed from the fact leg's rows, measures counting the rows of more than
-one object the joins repeat once each, and a measure comparing values its
-engine compares otherwise than DuckDB (below)
+and in a query computed from the fact leg's rows, a measure of an object read
+through the fact rows that reads a value of which one of its rows has several,
+a dimension or key read through two such objects, and a measure comparing
+values its engine compares otherwise than DuckDB (below)
 (`FEDERATION_UNSUPPORTED_AGGREGATION`), a measure reading
 another source (`FEDERATION_MEASURE_ACROSS_SOURCES`), cumulative,
 period-over-period, window and reaggregate metrics (`FEDERATION_UNSUPPORTED_METRIC`),
