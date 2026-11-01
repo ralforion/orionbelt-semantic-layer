@@ -361,9 +361,17 @@ def _outer_objects(resolved: ResolvedQuery, model: SemanticModel) -> set[str]:
     """The data objects a resolved query reads outside its ``exists`` subqueries.
 
     A metric across periods reads its time dimension's data object too,
-    whether or not the query joins it (:meth:`_Planner.check_period_dates`).
+    whether or not the query joins it (:meth:`_Planner.check_period_dates`),
+    and the objects one database joins to reach it from the base object: a
+    calendar reached through the CRM's customers reads the CRM.
     """
-    return _joined_objects(resolved) | set(_period_dates(resolved, model).values())
+    objects = _joined_objects(resolved)
+    unjoined = set(_period_dates(resolved, model).values()) - objects
+    if unjoined:
+        graph = JoinGraph.of(model)
+        for obj in sorted(unjoined):
+            objects |= {obj} | _step_objects(graph.find_join_path({resolved.base_object}, {obj}))
+    return objects
 
 
 def _joined_objects(resolved: ResolvedQuery) -> set[str]:

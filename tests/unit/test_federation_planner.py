@@ -1528,6 +1528,34 @@ class TestPeriodMetrics:
             error.message
         )
 
+    def test_over_a_calendar_reached_through_another_source_is_refused(self) -> None:
+        """The calendar is the shop's, reached through the CRM's customers'
+        signup: the query reads the CRM too, so it is federated, and refused,
+        not compiled for the shop with the CRM's customers in its SQL."""
+        yaml = (
+            calendar_yaml(True)
+            .replace(
+                "      - {joinType: many-to-one, joinTo: Calendar, columnsFrom: [Order Date], "
+                "columnsTo: [Day]}\n",
+                "",
+            )
+            .replace(
+                "      Tenant: {code: tenant, abstractType: string}\n",
+                "      Tenant: {code: tenant, abstractType: string}\n"
+                "      Signup: {code: signup, abstractType: date}\n"
+                "    joins:\n"
+                "      - {joinType: many-to-one, joinTo: Calendar, columnsFrom: [Signup], "
+                "columnsTo: [Day]}\n",
+            )
+        )
+        query = {"select": {"measures": ["Calendar Running", "Revenue"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+
     @pytest.mark.parametrize("metric", ["Running Of", "Rolling Of", "Span Of", "Change Of"])
     @pytest.mark.parametrize(
         "measure", ["Average Order", "Order Variance", "Middle Order", "Ordering Customers"]
