@@ -191,6 +191,15 @@ WHERE "leg_2"."__fk0_0" IS NULL
 GROUP BY ALL
 ```
 
+A subquery may read an object the outer query joins elsewhere: the orders of
+customers with a ticket handled by Ann, by each order's rep, where the tickets'
+agent and the order's rep are both employees. One database joins the
+employees twice, once in the outer query and once in the subquery. Federated,
+so is it: the employees' leg returns the reps, and the customers' leg reads
+the employees again for the subquery. A static filter on the employees runs
+in their own leg; its `enforce: always` form applies in the subquery too, as
+on one database.
+
 The combine query runs no subquery, so an `exists` that would run there,
 after the join, is refused: in an OR with a condition on another source, or
 in a group that holds where its subject is missing.
@@ -550,7 +559,7 @@ database would return, without a refusal.
 | Data objects of another source that no join from the measures' source reaches | `FEDERATION_UNSUPPORTED_JOIN` |
 | Inside a dimension source, a join that is not many-to-one from where the edge enters (it would repeat the key's rows) | `FEDERATION_UNSUPPORTED_JOIN` |
 | A nested data object (`nestedIn`) on the dimension side | `FEDERATION_UNSUPPORTED_JOIN` |
-| A dimension computed from a column of a data object the query does not join to the dimension's own within its source: on another source, or reached through another join (the regions joined to the orders directly, read by a column of the customers) | `FEDERATION_UNSUPPORTED_JOIN` |
+| A dimension, or a static filter, whose column is computed from a column of a data object the query does not join to the column's own within its source: on another source, or reached through another join (the regions joined to the orders directly, read by a column of the customers) | `FEDERATION_UNSUPPORTED_JOIN` |
 
 ### Measures and metrics
 
