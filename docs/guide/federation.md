@@ -484,9 +484,8 @@ time span, a change against an earlier period, a rank, a lag.
   window over months then counts months, and a time span reads each order's
   date. Every dimension over one date column (`Order Date`, `Order Month`,
   whatever result type it declares) reads that one column there, and the
-  metric's time dimension is returned, and its data object joined, even when
-  the query does not select it: a running total by region alone sums up to
-  the last date of the calendar it is on.
+  metric's time dimension is returned even when the query does not select it:
+  a running total by region alone sums up to the last order date.
 - A filter on the metric's time dimension, or on another dimension over its
   date column, runs in the combine step. It says which periods to show, not
   which the metric reads: shown from February, February's change is against
@@ -496,7 +495,11 @@ time span, a change against an earlier period, a rank, a lag.
   and so is a measure over a time span that does not add up from partial
   results (an average, a variance, a median, a count of distinct values).
 
-A reaggregate metric is refused, and so is a date dimension over a timestamp
+A metric whose time dimension is on a data object the query does not join,
+a calendar it neither selects nor filters on, is refused: one database joins
+it in a query of the metric's own, so it limits no other measure, where a
+leg joining it would limit them all. A reaggregate metric is refused, and so
+is a date dimension over a timestamp
 with a time zone that the combine step would truncate, or cast to a date,
 beside such a metric: it would do so in its own time zone, and an order of Los
 Angeles' New Year's Eve would move into January.
@@ -599,6 +602,7 @@ database would return, without a refusal.
 |---|---|
 | Reaggregate metrics (derived, cumulative, period-over-period and window metrics work) | `FEDERATION_UNSUPPORTED_METRIC` |
 | A dimension over a timestamp with a time zone, at a grain or as a date, beside a cumulative, period-over-period or window metric | `FEDERATION_UNSUPPORTED_METRIC` |
+| A cumulative, period-over-period or window metric whose time dimension is on a data object the query does not join (a calendar it neither selects nor filters on) | `FEDERATION_UNSUPPORTED_METRIC` |
 | A measure with `filterContext` or `grain` | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | A measure counted once per row of an object read through the fact rows that reads a column of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |

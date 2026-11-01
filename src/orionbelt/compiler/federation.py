@@ -358,9 +358,18 @@ def query_objects(resolved: ResolvedQuery, query: QueryObject, model: SemanticMo
 
 
 def _outer_objects(resolved: ResolvedQuery, model: SemanticModel) -> set[str]:
-    """The data objects a resolved query reads outside its ``exists`` subqueries."""
+    """The data objects a resolved query reads outside its ``exists`` subqueries.
+
+    A metric across periods reads its time dimension's data object too,
+    whether or not the query joins it (:meth:`_Planner.check_period_dates`).
+    """
+    return _joined_objects(resolved) | set(_period_dates(resolved, model).values())
+
+
+def _joined_objects(resolved: ResolvedQuery) -> set[str]:
+    """The data objects the resolved query itself reads and joins."""
     objects = set(resolved.required_objects) | {resolved.base_object}
-    for step in query_join_steps(resolved, model):
+    for step in resolved.join_steps:
         objects |= {step.from_object, step.to_object}
     objects |= {d.object_name for d in resolved.dimensions}
     objects |= set(resolved.measure_source_objects)
@@ -368,30 +377,15 @@ def _outer_objects(resolved: ResolvedQuery, model: SemanticModel) -> set[str]:
     return objects
 
 
-def query_join_steps(resolved: ResolvedQuery, model: SemanticModel) -> list[JoinStep]:
-    """The query's joins, and those to the time dimension of a metric across periods.
-
-    A metric reads its time dimension's dates whether or not the query
-    selects it: a running total by region alone sums up to the last date,
-    which one database reads in a query of its own, joining the calendar
-    the dimension is on. The query's own joins do not reach it then.
-    """
-    steps = list(resolved.join_steps)
-    joined = {resolved.base_object} | {o for s in steps for o in (s.from_object, s.to_object)}
-    names = {
-        m.cumulative_time_dimension or m.pop_time_dimension or m.window_time_dimension
-        for m in resolved.measures
-        if m.is_cumulative or m.is_pop or m.is_window
-    }
-    graph = JoinGraph.of(model)
-    for name in sorted(n for n in names if n in model.dimensions):
-        target = model.dimensions[name].view
-        if target in joined:
-            continue
-        path = graph.find_join_path(set(joined), {target})
-        steps += path
-        joined |= _step_objects(path)
-    return steps
+def _period_dates(resolved: ResolvedQuery, model: SemanticModel) -> dict[str, str]:
+    """Each metric across periods by name, with the data object of its time dimension."""
+    dates: dict[str, str] = {}
+    for m in resolved.measures:
+        if m.is_cumulative or m.is_pop or m.is_window:
+            name = m.cumulative_time_dimension or m.pop_time_dimension or m.window_time_dimension
+            if name in model.dimensions:
+                dates[m.name] = model.dimensions[name].view
+    return dates
 
 
 def is_federated(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> bool:
@@ -446,6 +440,7 @@ def plan_federated(
     planner = _Planner(query, model, resolved, dialect_name, source_dialect)
     leg_limit = leg_row_limit + 1 if leg_row_limit is not None else None
     planner.check_query_shape()
+    planner.check_period_dates()
     islands = planner.islands()
     planner.check_computed_columns(islands)
     body_reads = planner.body_reads(islands)
@@ -1096,7 +1091,6 @@ class _Planner:
         # The objects only an ``exists`` subquery reads: the outer query of a
         # leg does not join them, and their static filters apply in the body.
         self.in_subqueries = self.objects - _outer_objects(resolved, model)
-        self.join_steps = query_join_steps(resolved, model)
 
     # -- refusals -----------------------------------------------------------
 
@@ -1110,6 +1104,24 @@ class _Planner:
                 )
             ]
         )
+
+    def check_period_dates(self) -> None:
+        """Refuse a metric across periods whose dates the query does not join.
+
+        Its time dimension's data object, when the query neither selects nor
+        filters on it (a running total by region alone, over a calendar):
+        one database joins it in a query of the metric's own, apart from the
+        others, by the base object's own join, so it limits no other measure.
+        A leg joining it would join it for every measure.
+        """
+        joined = _joined_objects(self.resolved)
+        for metric, obj in sorted(_period_dates(self.resolved, self.model).items()):
+            if obj not in joined:
+                raise self.refuse(
+                    "UNSUPPORTED_METRIC",
+                    f"Metric '{metric}' reads the dates of '{obj}', which the query does not join",
+                    hint="Select its time dimension, or query the metric on one data source.",
+                )
 
     def check_query_shape(self) -> None:
         q = self.query
@@ -1149,7 +1161,7 @@ class _Planner:
                 o = parent[o]
             return o
 
-        for step in self.join_steps:
+        for step in self.resolved.join_steps:
             a, b = step.from_object, step.to_object
             if a in parent and b in parent and self.sources.get(a) == self.sources.get(b):
                 parent[find(a)] = find(b)
@@ -1286,7 +1298,7 @@ class _Planner:
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         steps = [
             step
-            for step in self.join_steps
+            for step in self.resolved.join_steps
             if island_of.get(step.from_object) != island_of.get(step.to_object)
         ]
         edges: list[_Edge] = []
@@ -1350,7 +1362,7 @@ class _Planner:
         changed = True
         while changed:
             changed = False
-            for step in self.join_steps:
+            for step in self.resolved.join_steps:
                 if (
                     step.from_object in reached
                     and step.to_object in island
@@ -1738,7 +1750,7 @@ class _Planner:
         changed = True
         while changed:
             changed = False
-            for step in self.join_steps:
+            for step in self.resolved.join_steps:
                 if step.nested or step.cardinality == Cardinality.MANY_TO_MANY:
                     continue
                 pairs = [(step.from_object, step.to_object)]

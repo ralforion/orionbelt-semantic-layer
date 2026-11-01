@@ -1475,17 +1475,17 @@ class TestPeriodMetrics:
         assert_same(files, query, metric=PERIOD_METRICS)
 
     @pytest.mark.parametrize("calendar_source", ["shop", "geo"])
-    @pytest.mark.parametrize(
-        "dimensions", [["Region"], ["Calendar Date:month", "Region"], []], ids=["", "month", "none"]
-    )
     def test_over_a_joined_calendar(
-        self, calendar_files: dict[str, str], dimensions: list[str], calendar_source: str
+        self, calendar_files: dict[str, str], calendar_source: str
     ) -> None:
-        """The running total's dates are the calendar's, which the query does
-        not join when it does not select them: the planner joins it, beside
-        the orders or on a source of its own. By the total alone, the orders
-        and the calendar's source are federated, not compiled for the shop."""
-        query = {"select": {"dimensions": dimensions, "measures": ["Calendar Running", "Revenue"]}}
+        """The running total's dates are the calendar's, beside the orders or on
+        a source of its own: selected by month, the query joins it."""
+        query = {
+            "select": {
+                "dimensions": ["Calendar Date:month", "Region"],
+                "measures": ["Calendar Running", "Revenue"],
+            }
+        }
         single = _compile(calendar_yaml(False), query)
         con = duckdb.connect(calendar_files["all"], read_only=True)
         try:
@@ -1493,10 +1493,6 @@ class TestPeriodMetrics:
         finally:
             con.close()
         compiled = _compile(calendar_yaml(True, calendar_source), query)
-        if compiled.federation is None:
-            # The shop's orders and calendar alone: one source.
-            assert calendar_source == "shop" and not dimensions
-            return
         combine = duckdb.connect()
         for leg in compiled.federation.legs:
             con = duckdb.connect(calendar_files[leg.data_source], read_only=True)
@@ -1507,6 +1503,30 @@ class TestPeriodMetrics:
 
         assert sorted(_rows(combine, compiled.sql), key=repr) == expected
         assert expected
+
+    @pytest.mark.parametrize("calendar_source", ["shop", "geo"])
+    @pytest.mark.parametrize("dimensions", [["Region"], []], ids=["by_region", "alone"])
+    def test_over_a_calendar_the_query_does_not_join_is_refused(
+        self, dimensions: list[str], calendar_source: str
+    ) -> None:
+        """One database joins the calendar in the running total's own query,
+        by the orders' date, and it limits no other measure: joined in a leg,
+        it would limit them all. Alone, the shop's orders and a calendar of
+        another source are federated, not compiled for the shop."""
+        query = {"select": {"dimensions": dimensions, "measures": ["Calendar Running", "Revenue"]}}
+        if calendar_source == "shop" and not dimensions:
+            # The shop's orders and calendar alone: one source, as before.
+            assert _compile(calendar_yaml(True, calendar_source), query).federation is None
+            return
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(calendar_yaml(True, calendar_source), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert "'Calendar Running' reads the dates of 'Calendar', which the query does not" in (
+            error.message
+        )
 
     @pytest.mark.parametrize("metric", ["Running Of", "Rolling Of", "Span Of", "Change Of"])
     @pytest.mark.parametrize(
