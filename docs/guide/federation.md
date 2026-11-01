@@ -50,15 +50,18 @@ flowchart LR
 ```
 
 - **Islands.** The query's data objects that share a source and are joined
-  among themselves form an *island*. The island holding the measures, and the
-  query's base object, is the *fact island*; every other island is a
-  *dimension island*, reached from the fact island by one many-to-one join, a
-  *federation edge*.
+  among themselves form an *island*. The island the measures' values come
+  from, which also holds the query's base object, is the *fact island* (in a
+  [query without measures](#queries-without-measures), the base object's);
+  every other island is a *dimension island*, reached from the fact island by
+  one many-to-one join, a *federation edge*.
 - **Legs.** Each island becomes a *leg*: an ordinary OBSL query against a model
   holding that island alone, written in its source's dialect. The **fact leg**
   groups by the query's dimensions on its island and by the edge keys, and
-  pre-aggregates the measures. A **dimension leg** returns the distinct keys
-  with the dimensions the query reads there. A source not configured where the
+  pre-aggregates the measures, or returns its rows where a measure needs them
+  ([computed from rows](#computed-from-rows)). A **dimension leg** returns the
+  distinct keys with the dimensions the query reads there, and any column a
+  measure reads there ([measures reading another source](#measures-reading-another-source)). A source not configured where the
   query is compiled gets the dialect the query is compiled for.
 - **Combine.** The combine query is the original query, compiled for DuckDB
   against a model whose data objects are the legs: the fact leg joins each
@@ -176,6 +179,30 @@ scan over the indexed copy and took 11 s; the row shows the unindexed time.
     Before Postgres 14 an `IN` list is tested one value at a time: 10,000
     keys over 5 million rows took 51 s, against 2 s without the list. Set
     `DB_<NAME>_KEY_INJECTION_MAX_KEYS=0` for such a server.
+
+## Queries without measures
+
+A query selecting dimensions alone returns the combinations the fact rows
+reach, as one database does. For `Order Date:month` and `Region`, that is each
+month with the region of every customer who ordered in it, and NULL for an
+order whose customer is missing; no month is paired with a region its orders
+do not reach.
+
+- the fact leg returns its dimensions and the join keys, each combination once
+  (grouped, with no measure);
+- each dimension leg returns its keys and dimensions, as for any query;
+- the combine query groups the joined rows.
+
+Filters run where they would beside a measure, and a filter on another source
+injects its keys into the fact leg. The fact leg returns each combination of
+its dimensions with the join key, which can be many more rows than the result
+(months by customers for months by regions); `FEDERATION_MAX_LEG_ROWS` bounds
+it as any leg. Dimensions of one source alone run on that source and are not
+federated. Dimensions of another source with a filter on the facts' source
+are refused as on one database: the customers do not reach the orders.
+
+Value search (`POST .../values`) runs such queries too, so a dimension's
+values can be listed under a filter on another source.
 
 ## How measures combine
 
@@ -367,7 +394,6 @@ database would return, without a refusal.
 
 | Limitation | Error |
 |---|---|
-| A query without measures (dimensions alone) | `FEDERATION_NO_MEASURES` |
 | Raw mode (`select.fields`) | `FEDERATION_UNSUPPORTED_QUERY` |
 | Coalesce dimensions | `FEDERATION_UNSUPPORTED_QUERY` |
 | `dimensionsExclude` | `FEDERATION_UNSUPPORTED_QUERY` |

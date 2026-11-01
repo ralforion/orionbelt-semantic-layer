@@ -157,6 +157,14 @@ def _assert_equality(target: VendorTarget) -> None:
 
     assert groups(federated) == groups(single), f"{target.name}: groups differ"
 
+    # Dimensions alone: each label with each of its names, a class of them once.
+    single, federated = _answers(target, {"select": {"dimensions": ["Label", "Name"]}})
+
+    def names(rows: list[dict]) -> Counter[Any]:
+        return Counter(r["label"] for r in _fold(rows))
+
+    assert names(federated) == names(single), f"{target.name}: dimensions alone differ"
+
     # Filtered on the other source: 'Y' is 'y' to MySQL's collation alone,
     # which DuckDB, comparing bytes, would not find.
     single, federated = _answers(

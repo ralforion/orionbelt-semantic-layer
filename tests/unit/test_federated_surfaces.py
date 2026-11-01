@@ -195,13 +195,13 @@ class TestFlight:
 
 
 class TestRestObsql:
-    async def obsql(self, api: Any, yaml: str) -> Any:
+    async def obsql(self, api: Any, yaml: str, sql: str = OBSQL) -> Any:
         session = (await api.post("/v1/sessions")).json()["session_id"]
         loaded = await api.post(f"/v1/sessions/{session}/models", json={"model_yaml": yaml})
         assert loaded.status_code == 201, loaded.text
         response = await api.post(
             f"/v1/sessions/{session}/query/semantic-ql",
-            json={"model_id": loaded.json()["model_id"], "sql": OBSQL},
+            json={"model_id": loaded.json()["model_id"], "sql": sql},
         )
         assert response.status_code == 200, response.text
         return response.json()
@@ -212,6 +212,14 @@ class TestRestObsql:
         single = await self.obsql(api, single_model())
         assert federated["rows"] == single["rows"]
         assert len(federated["rows"]) == 3
+
+    async def test_dimensions_alone(self, api: Any) -> None:
+        sql = 'SELECT "Order Date", "Region" FROM shop_model ORDER BY "Order Date", "Region"'
+        federated = await self.obsql(api, federated_model(), sql)
+        single = await self.obsql(api, single_model(), sql)
+        assert federated["federation"] is not None
+        assert federated["rows"] == single["rows"]
+        assert len(federated["rows"]) == 7
 
 
 class TestRestValueSearch:
@@ -229,16 +237,16 @@ class TestRestValueSearch:
         assert federated.json()["values"] == single.json()["values"]
         assert federated.json()["values"]
 
-    async def test_a_filter_on_another_source_is_refused_by_name(self, api: Any) -> None:
-        # A query with no measures does not split across sources.
-        response = await self.values(
-            api,
-            federated_model(),
-            dimension="Order Date",
-            where=[{"field": "Region", "op": "=", "value": "EU"}],
-        )
-        assert response.status_code == 422
-        assert response.json()["detail"]["errors"][0]["code"] == "FEDERATION_NO_MEASURES"
+    async def test_a_filter_on_another_source(self, api: Any) -> None:
+        """The range of EU customers' order dates: queries without measures,
+        across sources."""
+        body = {"dimension": "Order Date", "where": [{"field": "Region", "op": "=", "value": "EU"}]}
+        federated = await self.values(api, federated_model(), **body)
+        single = await self.values(api, single_model(), **body)
+        assert federated.status_code == 200, federated.text
+        found = {k: federated.json()[k] for k in ("minimum", "maximum")}
+        assert found == {k: single.json()[k] for k in ("minimum", "maximum")}
+        assert found == {"minimum": "2024-01-05", "maximum": "2024-03-01"}
 
 
 ORDERS_BY_DATE = {
