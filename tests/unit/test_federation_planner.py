@@ -1414,7 +1414,8 @@ class TestReviewFindings:
 
 
 def chain_yaml(shop: str, crm: str, regions: str) -> str:
-    """Orders -> Customers -> Regions, each on the data source given."""
+    """Orders -> Customers -> Regions, each on the data source given; the
+    embargoes on some regions with the regions."""
     return f"""\
 version: 1.0
 settings:
@@ -1448,8 +1449,20 @@ dataObjects:
     columns:
       Region ID: {{code: region_id, abstractType: int}}
       Region Name: {{code: name, abstractType: string}}
+  Embargoes:
+    code: embargoes
+    dataSource: {regions}
+    columns:
+      Embargoed Region: {{code: region_id, abstractType: int}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Regions
+        columnsFrom: [Embargoed Region]
+        columnsTo: [Region ID]
 dimensions:
   Region Name: {{dataObject: Regions, column: Region Name, resultType: string}}
+  Order Customer: {{dataObject: Orders, column: Order Customer, resultType: int}}
+  Customer Region: {{dataObject: Customers, column: Customer Region, resultType: int}}
 measures:
   Revenue: {{columns: [{AMOUNT}], aggregation: sum, resultType: decimal}}
 """
@@ -1466,11 +1479,145 @@ class TestIntermediateObjects:
             ("crm", ("Regions",)),
         ]
 
-    def test_a_join_passing_through_another_source_is_federated(self) -> None:
-        with pytest.raises(ResolutionError) as caught:
-            _compile(chain_yaml("shop", "crm", "shop"), self.QUERY)
+    def test_a_join_passing_through_another_source_comes_back_on_its_own_leg(self) -> None:
+        """The regions are of the shop, reached through the CRM's customers:
+        a leg of their own on the shop, joined from the customers' leg."""
+        plan = _compile(chain_yaml("shop", "crm", "shop"), self.QUERY).federation
 
-        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_JOIN"]
+        assert [(leg.data_source, leg.data_objects) for leg in plan.legs] == [
+            ("shop", ("Orders",)),
+            ("crm", ("Customers",)),
+            ("shop", ("Regions",)),
+        ]
+
+
+# Customer 12 has no region and region 3 of customer 13 is missing; order 6's
+# customer 99 is missing. Region 2 is under an embargo.
+CHAIN_TABLES = {
+    "orders": "CREATE TABLE orders AS SELECT * FROM (VALUES (10, 100.50), (10, 20.25),"
+    " (11, 7.00), (12, 55.10), (13, 3.15), (99, 40.00)) t(customer_id, amount)",
+    "customers": "CREATE TABLE customers AS SELECT * FROM (VALUES (10, 1), (11, 2), (12, NULL),"
+    " (13, 3)) t(customer_id, region_id)",
+    "regions": "CREATE TABLE regions AS SELECT * FROM (VALUES (1, 'EU'), (2, 'US'))"
+    " t(region_id, name)",
+    "embargoes": "CREATE TABLE embargoes AS SELECT * FROM (VALUES (2)) t(region_id)",
+}
+
+
+@pytest.fixture(scope="module")
+def chain_files(tmp_path_factory: Any) -> dict[str, str]:
+    """Every table in ``all``; the regions and embargoes on ``geo``, and on the shop too."""
+    root = tmp_path_factory.mktemp("chain")
+    tables = {
+        "all": list(CHAIN_TABLES),
+        "shop": ["orders", "regions", "embargoes"],
+        "crm": ["customers"],
+        "geo": ["regions", "embargoes"],
+    }
+    paths = {name: str(root / f"{name}.duckdb") for name in tables}
+    for name, names in tables.items():
+        con = duckdb.connect(paths[name])
+        for table in names:
+            con.execute(CHAIN_TABLES[table])
+        con.close()
+    return paths
+
+
+EU_REGION = {"field": "Region Name", "op": "=", "value": "EU"}
+CHAIN_QUERIES = {
+    "by_the_far_source": {"select": {"dimensions": ["Region Name"], "measures": ["Revenue"]}},
+    "beside_the_middle_source": {
+        "select": {"dimensions": ["Customer Region", "Region Name"], "measures": ["Revenue"]}
+    },
+    "filtered_on_the_far_source": {
+        "select": {"dimensions": ["Customer Region"], "measures": ["Revenue"]},
+        "where": [EU_REGION],
+    },
+    "missing_on_the_far_source": {
+        "select": {"dimensions": ["Order Customer"], "measures": ["Revenue"]},
+        "where": [{"field": "Region Name", "op": "is_null"}],
+    },
+    "or_across_three_sources": {
+        "select": {"dimensions": ["Region Name"], "measures": ["Revenue"]},
+        "where": [
+            _either(
+                {"field": "Order Customer", "op": "=", "value": 12},
+                {"field": "Customer Region", "op": "=", "value": 2},
+                EU_REGION,
+            )
+        ],
+    },
+    "nonexists_on_the_far_source": {
+        "select": {"dimensions": ["Order Customer"], "measures": ["Revenue"]},
+        "where": [
+            {
+                "field": "Regions.Region ID",
+                "op": "nonexists",
+                "subquery": {"dataObject": "Embargoes"},
+            }
+        ],
+    },
+    "without_measures": {"select": {"dimensions": ["Order Customer", "Region Name"]}},
+}
+
+
+class TestSourceChains:
+    """A source reached through another dimension source: a leg joined from that one's."""
+
+    def _run(
+        self, paths: dict[str, str], sources: tuple[str, str, str] | None, query: dict[str, Any]
+    ) -> list[Any]:
+        compiled = _compile(chain_yaml(*(sources or ("all", "all", "all"))), query)
+        if sources is None:
+            assert compiled.federation is None
+            con = duckdb.connect(paths["all"], read_only=True)
+            try:
+                return sorted(_rows(con, compiled.sql), key=repr)
+            finally:
+                con.close()
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(paths[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+        return sorted(_rows(combine, compiled.sql), key=repr)
+
+    @pytest.mark.parametrize("query", CHAIN_QUERIES.values(), ids=CHAIN_QUERIES.keys())
+    @pytest.mark.parametrize(
+        "sources", [("shop", "crm", "geo"), ("shop", "crm", "shop")], ids=["three", "back"]
+    )
+    def test_federated_returns_what_one_source_returns(
+        self, chain_files: dict[str, str], query: dict[str, Any], sources: tuple[str, str, str]
+    ) -> None:
+        single = self._run(chain_files, None, query)
+
+        assert self._run(chain_files, sources, query) == single
+        assert single
+
+    def test_the_far_leg_is_joined_from_the_middle_one(self) -> None:
+        query = {"select": {"dimensions": ["Region Name"], "measures": ["Revenue"]}}
+
+        plan = _compile(chain_yaml("shop", "crm", "geo"), query).federation
+
+        orders, customers, regions = plan.legs
+        assert "region_id" not in orders.sql
+        assert '"Customers"."region_id" AS "__fk1_0"' in customers.sql
+        assert 'LEFT JOIN "leg_2" AS "leg_2" ON "leg_1"."__fk1_0" = "leg_2"."__fk1_0"' in (
+            plan.combine_sql
+        )
+
+    def test_only_a_filter_on_the_middle_source_narrows_the_fact_leg(self) -> None:
+        """The fact leg holds the customers' keys, not the regions'."""
+        middle = {"field": "Customer Region", "op": "=", "value": 1}
+        query = {"select": {"dimensions": ["Region Name"], "measures": ["Revenue"]}}
+
+        far = _compile(chain_yaml("shop", "crm", "geo"), {**query, "where": [EU_REGION]})
+        near = _compile(chain_yaml("shop", "crm", "geo"), {**query, "where": [middle]})
+
+        assert far.federation.injections == ()
+        assert [i.leg for i in near.federation.injections] == ["leg_1"]
 
 
 TYPED_ORDERS = """

@@ -53,19 +53,21 @@ flowchart LR
   among themselves form an *island*. The island the measures' values come
   from, which also holds the query's base object, is the *fact island* (in a
   [query without measures](#queries-without-measures), the base object's);
-  every other island is a *dimension island*, reached from the fact island by
-  one many-to-one join, a *federation edge*.
+  every other island is a *dimension island*, reached by one many-to-one join,
+  a *federation edge*, from the fact island or from a dimension island nearer
+  it ([a chain of sources](#chains-of-sources)).
 - **Legs.** Each island becomes a *leg*: an ordinary OBSL query against a model
   holding that island alone, written in its source's dialect. The **fact leg**
   groups by the query's dimensions on its island and by the edge keys, and
   pre-aggregates the measures, or returns its rows where a measure needs them
   ([computed from rows](#computed-from-rows)). A **dimension leg** returns the
-  distinct keys with the dimensions the query reads there, and any column a
-  measure reads there ([measures reading another source](#measures-reading-another-source)). A source not configured where the
+  distinct keys with the dimensions the query reads there, the keys of the
+  edges leaving it, and any column a measure reads there ([measures reading another source](#measures-reading-another-source)). A source not configured where the
   query is compiled gets the dialect the query is compiled for.
 - **Combine.** The combine query is the original query, compiled for DuckDB
-  against a model whose data objects are the legs: the fact leg joins each
-  dimension leg on its key, many-to-one, as `LEFT JOIN`, and each measure is
+  against a model whose data objects are the legs: each dimension leg is
+  joined on its key, many-to-one, as `LEFT JOIN`, from the leg holding that
+  key (the fact leg, or the dimension leg a chain passes through), and each measure is
   re-aggregated from the fact leg's results. Derived metrics, HAVING, ORDER BY,
   LIMIT, totals and `rollup` / `cube` subtotals run there. A fact row whose key
   has no match keeps its values under an empty group, as in one database.
@@ -203,7 +205,7 @@ index or sort key on the column reads only those. The answer is the same.
 
 | What | How |
 |---|---|
-| When | A dimension leg runs a filter of the query, joined on one column of the same type on both sides, an integer or a string |
+| When | A dimension leg joined from the fact leg runs a filter of the query, joined on one column of the same type on both sides, an integer or a string. A leg further along a [chain of sources](#chains-of-sources) narrows nothing: the fact leg does not hold its keys |
 | How many | At most the fact source's limit of keys, over every such leg together, the legs with the fewest keys first. A leg with more keys than are left is not listed, and the fact leg reads all of that key. No key at all reads no fact row |
 | Limit | Postgres, MySQL, ClickHouse and BigQuery 10,000; DuckDB, Snowflake, Databricks and Dremio 1,000. `DB_<NAME>_KEY_INJECTION_MAX_KEYS` sets it for the fact leg's source, `DB_KEY_INJECTION_MAX_KEYS` for every source; `0` turns it off |
 | Cost | The fact leg waits for the dimension legs rather than running beside them. A list past the limit gains nothing over aggregating every key |
@@ -260,6 +262,43 @@ are refused as on one database: the customers do not reach the orders.
 
 Value search (`POST .../values`) runs such queries too, so a dimension's
 values can be listed under a filter on another source.
+
+## Chains of sources
+
+A source reached through another dimension source, rather than from the
+measures' source directly, is a dimension leg of its own, joined from the leg
+it is reached through. For orders on the shop, their customers in the CRM, and
+the customers' regions on a third source, `geo`:
+
+```sql
+-- leg_0, on shop
+SELECT "Orders"."customer_id" AS "__fk0_0", SUM("Orders"."amount") AS "Revenue"
+FROM "orders" AS "Orders"
+GROUP BY ALL
+
+-- leg_1, on crm: the customers' keys, and the key of their region
+SELECT "Customers"."customer_id" AS "__fk0_0", "Customers"."region_id" AS "__fk1_0"
+FROM "customers" AS "Customers"
+GROUP BY ALL
+
+-- leg_2, on geo
+SELECT "Regions"."name" AS "Region Name", "Regions"."region_id" AS "__fk1_0"
+FROM "regions" AS "Regions"
+GROUP BY ALL
+
+-- combine
+SELECT "leg_2"."Region Name" AS "Region Name", CAST(SUM("leg_0"."Revenue") AS DECIMAL(18, 2)) AS "Revenue"
+FROM "leg_0" AS "leg_0"
+LEFT JOIN "leg_1" AS "leg_1" ON "leg_0"."__fk0_0" = "leg_1"."__fk0_0"
+LEFT JOIN "leg_2" AS "leg_2" ON "leg_1"."__fk1_0" = "leg_2"."__fk1_0"
+GROUP BY ALL
+```
+
+The same holds when the chain comes back to the measures' source (regions on
+the shop, reached through the CRM): the regions are a leg of their own there.
+Filters, `nonexists` and measures reading a column of the far source work as
+for a source joined directly. Only [key injection](#key-injection) stops at
+the first source: the fact leg holds the customers' keys, not the regions'.
 
 ## Role-playing dimensions
 
@@ -506,7 +545,6 @@ database would return, without a refusal.
 |---|---|
 | Measures whose values come from different sources (revenue beside a count of the CRM's customers); one measure reading a column of another source is [computed from rows](#measures-reading-another-source) | `FEDERATION_MULTI_FACT` |
 | Measures grouped by dimensions of another source on the many side of their join | `FEDERATION_UNSUPPORTED_JOIN` |
-| A chain of sources: a source joined through another dimension source rather than from the measures' source directly | `FEDERATION_UNSUPPORTED_JOIN` |
 | A join between sources that is not many-to-one from the measures' side | `FEDERATION_UNSUPPORTED_JOIN` |
 | One dimension source's objects reached by two joins from the measures' source | `FEDERATION_UNSUPPORTED_JOIN` |
 | Data objects of another source that no join from the measures' source reaches | `FEDERATION_UNSUPPORTED_JOIN` |

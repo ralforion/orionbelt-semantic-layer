@@ -423,13 +423,15 @@ def plan_federated(
     fact_dims, edge_dims, regrained = planner.dimensions_by_island(
         islands, fact, edges, combine_filters
     )
+    # The edges from the fact island: the fact leg returns their keys.
+    from_fact = [edge for edge in edges if edge.parent == fact]
     # Partial results count a row of an object the joins repeat once per
     # value the fact leg groups by beyond the query, and other objects'
     # measures beside a count of distinct values once per value it counts;
     # from rows, the combine step counts each once itself.
     rows_for = (
         rows_for
-        or planner.repeats(edges, fact_dims, regrained.get(fact, []))
+        or planner.repeats(from_fact, fact_dims, regrained.get(fact, []))
         or planner.counts_beside_others()
     )
     if rows_for:
@@ -460,12 +462,18 @@ def plan_federated(
         for e, edge in enumerate(edges)
     ]
 
-    # The fact leg: the island's dimensions, the edge keys and the measures.
-    fact_keys = {
-        key_names[e][i]: (edge.from_object, column)
-        for e, edge in enumerate(edges)
-        for i, column in enumerate(edge.from_columns)
+    # The fact leg: the island's dimensions, the keys of the edges from it and
+    # the measures. A dimension leg returns the keys of the edges from its own.
+    out_keys = {
+        island: {
+            key_names[e][i]: (edge.from_object, column)
+            for e, edge in enumerate(edges)
+            if edge.parent == island
+            for i, column in enumerate(edge.from_columns)
+        }
+        for island in range(len(islands))
     }
+    fact_keys = out_keys[fact]
     measures = planner.atomic_measures()
     # The leg column counting the rows each of its rows stands for, and the
     # leg column of each column a measure reads, when the leg returns rows.
@@ -614,7 +622,11 @@ def plan_federated(
     on_once = {
         column: once[parent]
         for column, parent in planner.read_once(
-            parents, fact_dims, edges, key_names, fact_own_grain
+            parents,
+            fact_dims,
+            from_fact,
+            [names for edge, names in zip(edges, key_names, strict=True) if edge.parent == fact],
+            fact_own_grain,
         ).items()
     }
     on_once |= {
@@ -630,6 +642,16 @@ def plan_federated(
         view = on_once.get(column, "leg_0")
         combine_dimensions[column] = _combine_dimension(model, name, view, column)
 
+    # The joins of the dimension legs a chained edge starts from, by leg.
+    leg_joins: dict[str, list[DataObjectJoin]] = {}
+
+    def joins_from(e: int) -> list[DataObjectJoin]:
+        """Where the combine step joins edge *e*'s legs from: what holds its key."""
+        if edges[e].parent != fact:
+            return leg_joins.setdefault(island_legs[edges[e].parent], [])
+        owner = on_once.get(key_names[e][0])
+        return once_joins.setdefault(owner, []) if owner else fact_joins
+
     # One leg per dimension island: its keys and the dimensions read there.
     for e, edge in enumerate(edges, start=1):
         leg_name = f"leg_{e}"
@@ -637,6 +659,7 @@ def plan_federated(
             key_names[e - 1][i]: (edge.to_object, column)
             for i, column in enumerate(edge.to_columns)
         }
+        onward = out_keys[edge.island]
         dims = edge_dims[e - 1]
         dim_own_grain = own_grain.get(edge.island, {})
         island = islands[edge.island]
@@ -667,14 +690,14 @@ def plan_federated(
         }
         dim_model = planner.island_model(
             island,
-            {**keys, **static_columns, **read_here},
+            {**keys, **onward, **static_columns, **read_here},
             {},
             own_zone=read_own_zone,
             own_grain=dim_own_grain,
         )
         dim_query = QueryObject(
             select=QuerySelect(
-                dimensions=[*dims, *dim_own_grain, *keys, *static_columns, *read_here]
+                dimensions=[*dims, *dim_own_grain, *keys, *onward, *static_columns, *read_here]
             ),
             where=leg_filters.get(edge.island, []),
             limit=leg_limit,
@@ -684,7 +707,7 @@ def plan_federated(
             *[_dimension_column(model, name, column) for column, name in dim_own_grain.items()],
             *[
                 _key_column(model, name, obj, col)
-                for name, (obj, col) in {**keys, **static_columns}.items()
+                for name, (obj, col) in {**keys, **onward, **static_columns}.items()
             ],
             *[_value_column(model, name, obj, col) for name, (obj, col) in read_here.items()],
         ]
@@ -737,7 +760,7 @@ def plan_federated(
                 )
             )
             # So the fact leg may read only the keys this leg returns.
-            key_type = _injectable_key_type(model, edge)
+            key_type = _injectable_key_type(model, edge) if edge.parent == fact else None
             if key_type is not None:
                 injections.append(KeyInjection(leg_name, next(iter(keys)), key_type))
         for d in dims:
@@ -747,8 +770,7 @@ def plan_federated(
             combine_dimensions[hidden] = _combine_dimension(model, source, leg_name, hidden)
         for column, name in dim_own_grain.items():
             combine_dimensions[column] = _combine_dimension(model, name, leg_name, column)
-        owner = on_once.get(next(iter(keys)))
-        (once_joins.setdefault(owner, []) if owner else fact_joins).append(
+        joins_from(e - 1).append(
             DataObjectJoin(
                 join_type=Cardinality.MANY_TO_ONE,
                 join_to=leg_name,
@@ -800,8 +822,7 @@ def plan_federated(
                 enforce=FilterEnforcement.ALWAYS,
             )
         )
-        owner = on_once.get(next(iter(keys)))
-        (once_joins.setdefault(owner, []) if owner else fact_joins).append(
+        joins_from(e).append(
             DataObjectJoin(
                 join_type=Cardinality.MANY_TO_ONE,
                 join_to=leg_name,
@@ -809,6 +830,8 @@ def plan_federated(
                 columns_to=list(keys),
             )
         )
+    for name, joins in leg_joins.items():
+        combine_objects[name] = combine_objects[name].model_copy(update={"joins": joins})
 
     once_columns: dict[str, tuple[list[str], list[str]]] = {}
     effective = model.effective_measures
@@ -946,7 +969,11 @@ def plan_federated(
 
 @dataclass(frozen=True)
 class _Edge:
-    """A many-to-one join from the fact island into a dimension island."""
+    """A many-to-one join into a dimension island, from the island *parent*.
+
+    The parent is the fact island, or a dimension island nearer it: a chain of
+    sources, orders to the CRM's customers to the regions of a third.
+    """
 
     from_object: str
     to_object: str
@@ -954,6 +981,7 @@ class _Edge:
     to_columns: tuple[str, ...]
     island: int
     required: bool
+    parent: int
 
 
 @dataclass(frozen=True)
@@ -1106,23 +1134,33 @@ class _Planner:
         return base
 
     def federation_edges(self, islands: list[set[str]], fact: int) -> list[_Edge]:
+        """The joins between islands, each from an island nearer the measures.
+
+        In the order they are reached from the fact island: an edge's parent
+        comes before it.
+        """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
+        steps = [
+            step
+            for step in self.resolved.join_steps
+            if island_of.get(step.from_object) != island_of.get(step.to_object)
+        ]
         edges: list[_Edge] = []
-        reached: set[int] = set()
-        for step in self.resolved.join_steps:
+        reached = {fact}
+        while steps:
+            ends = [{island_of.get(s.from_object), island_of.get(s.to_object)} for s in steps]
+            ready = [s for s, touched in zip(steps, ends, strict=True) if touched & reached]
+            if not ready:
+                break
+            step = ready[0]
+            steps.remove(step)
             a, b = step.from_object, step.to_object
-            if island_of.get(a) == island_of.get(b):
-                continue
             label = f"'{a}' -> '{b}'"
-            if island_of.get(a) != fact:
-                raise self.refuse(
-                    "UNSUPPORTED_JOIN",
-                    f"The join {label} connects two data sources away from the measures' "
-                    "data source",
-                    hint="A federated query joins its measures' data source directly to "
-                    "each other one, for now.",
-                )
-            if step.reversed or step.cardinality != Cardinality.MANY_TO_ONE:
+            if (
+                step.reversed
+                or step.cardinality != Cardinality.MANY_TO_ONE
+                or island_of.get(a) not in reached
+            ):
                 raise self.refuse(
                     "UNSUPPORTED_JOIN",
                     f"The join {label} between data sources is not many-to-one from the "
@@ -1144,6 +1182,7 @@ class _Planner:
                     to_columns=tuple(step.to_columns),
                     island=target,
                     required=declared.required if declared else False,
+                    parent=island_of[a],
                 )
             )
         for i, island in enumerate(islands):
