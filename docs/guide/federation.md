@@ -134,7 +134,62 @@ Each leg asks for one row more than `FEDERATION_MAX_LEG_ROWS` (default
 | On one dimension island's dimensions, never true where they are all NULL (`=`, `!=`, `in`, comparisons, `like`, `relative`, ...) | that dimension leg, and the combine query keeps the fact rows it matched | compared as its own engine compares; the fact leg may then read only the keys it returned |
 | True where the dimensions are NULL (`is_null`, `blank`, ...), or reading several islands (an OR across sources) | the combine query, after the join | in a dimension leg it would also match the fact rows whose key the leg dropped |
 | A static model filter on the fact island | the fact leg | |
-| A static model filter on another island | the combine query, on a column that island's leg returns | it drops the rows it excludes and keeps an unmatched row when it holds for NULL; `enforce: always` applies even when the query reads nothing else of that island |
+| A static model filter on another island | the combine query, on a column that island's leg returns | it drops the rows it excludes and keeps an unmatched row when it holds for NULL; `enforce: always` applies even when the query reads nothing else of that island, and in the body of an `exists` subquery on that island too, as on one database |
+| `exists` on its subject's island, `nonexists` on the fact island | the leg of the subject's island, with its subquery | as on one database |
+| `nonexists` on a dimension island | a leg of its own returning that island's keys the subquery holds for (`exists`); the combine query keeps the fact rows whose key is not among them | it holds for a fact row with no row there (an order whose customer is missing), which a filter in the dimension leg would drop |
+
+### Exists subqueries
+
+An [`exists` / `nonexists`](query-language.md#existence-operators) filter runs
+on the data source of its subject, with its whole subquery: the target, the
+join path from the subject to it, every object its own filters and the
+`enforce: always` static filters read, and the objects joined to reach them,
+must be of that source. "Revenue from customers with a high-severity ticket" runs
+where the customers and tickets are, and the fact leg then reads only those
+customers' keys:
+
+```yaml
+where:
+  - field: Customers.Customer ID     # crm
+    op: exists
+    subquery:
+      dataObject: Tickets            # crm
+      filter:
+        - {field: Severity, op: equals, value: high}
+```
+
+With `op: nonexists` instead, by region, a leg of its own on the CRM returns
+the keys of the customers who do have such a ticket, and the combine query
+left-joins it and keeps the orders whose key found none, so an order whose
+customer is missing stays, as on one database:
+
+```sql
+-- leg_2, on crm
+SELECT "Customers"."customer_id" AS "__fk0_0"
+FROM "customers" AS "Customers"
+WHERE EXISTS (
+SELECT 1
+FROM "tickets" AS "Tickets"
+WHERE "Customers"."customer_id" = "Tickets"."customer_id" AND "Tickets"."severity" = 'high'
+)
+GROUP BY ALL
+ORDER BY "__fk0_0" ASC
+LIMIT 1000001
+```
+
+```sql
+-- combine
+SELECT "leg_1"."Region" AS "Region", CAST(SUM("leg_0"."Revenue") AS DECIMAL(18, 2)) AS "Revenue"
+FROM "leg_0" AS "leg_0"
+LEFT JOIN "leg_1" AS "leg_1" ON "leg_0"."__fk0_0" = "leg_1"."__fk0_0"
+LEFT JOIN "leg_2" AS "leg_2" ON "leg_0"."__fk0_0" = "leg_2"."__fk0_0"
+WHERE "leg_2"."__fk0_0" IS NULL
+GROUP BY ALL
+```
+
+The combine query runs no subquery, so an `exists` that would run there,
+after the join, is refused: in an OR with a condition on another source, or
+in a group that holds where its subject is missing.
 
 ### Key injection
 
@@ -401,7 +456,6 @@ database would return, without a refusal.
 | `asOf` | `FEDERATION_UNSUPPORTED_QUERY` |
 | `usePathNames` | `FEDERATION_UNSUPPORTED_QUERY` |
 | One dimension selected at two grains | `FEDERATION_UNSUPPORTED_QUERY` |
-| `exists` / `nonexists` filters | `FEDERATION_UNSUPPORTED_QUERY` |
 | Role-playing dimensions (`via`) | `FEDERATION_UNSUPPORTED_QUERY` |
 
 ### Joins between sources
@@ -437,6 +491,8 @@ database would return, without a refusal.
 | A relative date filter that runs after the join (true for NULL, or reading several sources) | `FEDERATION_UNSUPPORTED_FILTER` |
 | A filter at a time grain that runs after the join | `FEDERATION_UNSUPPORTED_FILTER` |
 | A filter after the join on a dimension the query selects at a time grain | `FEDERATION_UNSUPPORTED_FILTER` |
+| An `exists` / `nonexists` whose subquery reads another source than its subject (its target, the join path to it, or an object its filters read) | `FEDERATION_UNSUPPORTED_FILTER` |
+| An `exists` / `nonexists` that would run after the join: in an OR with a condition on another source, or in a group that holds where its subject is missing | `FEDERATION_UNSUPPORTED_FILTER` |
 
 ### At run time
 

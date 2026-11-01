@@ -629,6 +629,27 @@ def columns_in_own_zone(columns: Iterable[tuple[str, str]]) -> Iterator[None]:
         _own_zone.reset(token)
 
 
+_after_join: ContextVar[frozenset[str]] = ContextVar("after_join", default=frozenset())
+
+
+@contextmanager
+def static_filters_after_join(objects: Iterable[str]) -> Iterator[None]:
+    """Leave the static filters on *objects* out of the query while the block runs.
+
+    A federated dimension leg returns the column a static filter on its
+    objects reads, and the combine step applies the filter to the joined
+    rows, as one database applies it to a left-joined object. An ``exists``
+    subquery the leg runs still applies the enforced ones in its body
+    (:func:`~orionbelt.compiler.filters.build_exists_filter_expr`), as one
+    database does: there the outer query's filter does not reach its rows.
+    """
+    token = _after_join.set(frozenset(objects))
+    try:
+        yield
+    finally:
+        _after_join.reset(token)
+
+
 def make_column_expr(
     model: SemanticModel,
     object_name: str,
@@ -1619,7 +1640,10 @@ class QueryResolver:
 
         # 5b. Inject static model filters — always applied as WHERE conditions
         static_exprs: list[Expr] = []
+        after_join = _after_join.get()
         for mf in model.filters:
+            if mf.data_object in after_join:
+                continue
             static_filter = self._resolve_static_filter(ctx, mf)
             if static_filter:
                 ctx.result.where_filters.append(static_filter)
