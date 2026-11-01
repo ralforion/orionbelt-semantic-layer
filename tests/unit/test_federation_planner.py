@@ -1200,6 +1200,423 @@ class TestFiltersAfterTheJoin:
         assert "CURRENT_DATE" in plan.combine_sql
 
 
+PERIOD_METRICS = (
+    "  Running Revenue: {type: cumulative, measure: Revenue, timeDimension: Order Date}\n"
+    "  Rolling Revenue:\n"
+    "    {type: cumulative, measure: Revenue, timeDimension: Order Date, window: 2}\n"
+    "  QTD Revenue:\n"
+    "    {type: cumulative, measure: Revenue, timeDimension: Order Date, grainToDate: quarter}\n"
+    "  Span Revenue:\n"
+    "    type: cumulative\n    measure: Revenue\n    timeDimension: Order Date\n"
+    "    windowSpan: {count: 30, unit: day}\n"
+    "  Revenue MoM:\n    type: period_over_period\n    expression: '{[Revenue]}'\n"
+    "    periodOverPeriod:\n      timeDimension: Order Date\n      grain: month\n"
+    "      offset: -1\n      offsetGrain: month\n      comparison: difference\n"
+    "  Rank in Region:\n"
+    "    {type: window, windowFunction: dense_rank, measure: Revenue, partitionBy: [Region]}\n"
+    "  Revenue Before:\n"
+    "    type: window\n    windowFunction: lag\n    measure: Revenue\n    offset: 1\n"
+    "    timeDimension: Order Date\n"
+    "  Revenue per Day:\n"
+    "    {type: reaggregate, measure: Revenue, per: [Order Date], aggregation: avg}\n"
+)
+FEB_ON = {"field": "Order Date", "op": ">=", "value": "2024-02-01"}
+KNOWN_REGION = {"field": "Region", "op": "in", "value": ["EU", "US"]}
+BY_MONTH_REGION = ["Order Date:month", "Region"]
+PERIOD_QUERIES = {
+    "running_total": {"select": {"dimensions": BY_MONTH_REGION, "measures": ["Running Revenue"]}},
+    "rolling_window": {"select": {"dimensions": BY_MONTH_REGION, "measures": ["Rolling Revenue"]}},
+    "grain_to_date": {"select": {"dimensions": BY_MONTH_REGION, "measures": ["QTD Revenue"]}},
+    "time_span": {"select": {"dimensions": BY_MONTH_REGION, "measures": ["Span Revenue"]}},
+    "time_span_filtered_on_the_other_source": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Span Revenue"]},
+        "where": [EU],
+    },
+    "period_over_period": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Revenue MoM", "Revenue"]}
+    },
+    "rank_in_a_partition": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Rank in Region", "Revenue"]}
+    },
+    "lag": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue Before"]},
+        "where": [KNOWN_REGION],
+    },
+    "beside_a_derived_metric": {
+        "select": {
+            "dimensions": BY_MONTH_REGION,
+            "measures": ["Running Revenue", "Revenue per Order"],
+        }
+    },
+    # A filter on the time dimension says which periods to show, not which to
+    # read: March's running total and February's change read January.
+    "running_total_shown_from_february": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Running Revenue", "Revenue"]},
+        "where": [FEB_ON],
+    },
+    "change_shown_from_february": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue MoM"]},
+        "where": [FEB_ON, KNOWN_REGION],
+    },
+    "rolling_quarters_shown_from_february": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Region"],
+            "measures": ["Rolling Revenue", "Running Revenue"],
+        },
+        "where": [FEB_ON],
+    },
+}
+
+
+SPREAD = (
+    f"  Average Order: {{columns: [{AMOUNT}], aggregation: avg, resultType: decimal}}\n"
+    f"  Order Variance: {{columns: [{AMOUNT}], aggregation: variance, resultType: float}}\n"
+    f"  Middle Order: {{columns: [{AMOUNT}], aggregation: median}}\n"
+    "  Ordering Customers:\n"
+    "    columns: [{dataObject: Orders, column: Order Customer}]\n"
+    "    aggregation: count_distinct\n    resultType: int\n"
+)
+
+
+def _metrics_over(measure: str) -> str:
+    """A running total, a rolling window, a time span and a change of *measure*."""
+    on = f"measure: {measure}, timeDimension: Order Date"
+    return (
+        f"  Running Of: {{type: cumulative, {on}}}\n"
+        f"  Rolling Of: {{type: cumulative, {on}, window: 2}}\n"
+        f"  Span Of: {{type: cumulative, {on}, windowSpan: {{count: 30, unit: day}}}}\n"
+        "  Change Of:\n    type: period_over_period\n"
+        f"    expression: '{{[{measure}]}}'\n"
+        "    periodOverPeriod:\n      timeDimension: Order Date\n      grain: month\n"
+        "      offset: -1\n      offsetGrain: month\n      comparison: difference\n"
+    )
+
+
+CALENDAR = (
+    "CREATE TABLE calendar AS SELECT CAST(d AS DATE) AS day"
+    " FROM range(DATE '2024-01-01', DATE '2024-04-01', INTERVAL 1 DAY) t(d)"
+)
+
+
+def calendar_yaml(federated: bool, calendar_source: str = "shop") -> str:
+    """The orders joined to a calendar by their date, with a running total
+    over the calendar's day."""
+    yaml = model_yaml(
+        federated=federated,
+        metric=PERIOD_METRICS + "  Calendar Running:\n"
+        "    {type: cumulative, measure: Revenue, timeDimension: Calendar Date}\n",
+        dimension="  Calendar Date: {dataObject: Calendar, column: Day, resultType: date}\n",
+    ).replace(
+        "        columnsTo: [Customer ID]\n  Customers:",
+        "        columnsTo: [Customer ID]\n"
+        "      - {joinType: many-to-one, joinTo: Calendar, columnsFrom: [Order Date], "
+        "columnsTo: [Day]}\n"
+        "  Customers:",
+    )
+    source = f"    dataSource: {calendar_source}\n" if federated else ""
+    calendar = (
+        f"  Calendar:\n    code: calendar\n{source}    columns:\n"
+        "      Day: {code: day, abstractType: date}\n"
+    )
+    return yaml.replace("dimensions:\n", calendar + "dimensions:\n", 1)
+
+
+@pytest.fixture(scope="module")
+def calendar_files(tmp_path_factory: Any) -> dict[str, str]:
+    """The calendar beside the orders, and on a source of its own, ``geo``."""
+    root = tmp_path_factory.mktemp("calendar")
+    tables = {
+        "all": [ORDERS, CUSTOMERS, CALENDAR],
+        "shop": [ORDERS, CALENDAR],
+        "crm": [CUSTOMERS],
+        "geo": [CALENDAR],
+    }
+    paths = {name: str(root / f"{name}.duckdb") for name in tables}
+    for name, statements in tables.items():
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+class TestPeriodMetrics:
+    """Cumulative, period-over-period and window metrics run in the combine step."""
+
+    @pytest.mark.parametrize("query", PERIOD_QUERIES.values(), ids=PERIOD_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        assert_same(files, query, metric=PERIOD_METRICS)
+
+    @pytest.mark.parametrize("dimension", ["Order Month", "Order Month:quarter"])
+    def test_over_a_dimension_declaring_its_grain(
+        self, files: dict[str, str], dimension: str
+    ) -> None:
+        """A rolling window over Order Month, a month by declaration, counts
+        months: March reads February too (US 19.00, not 12.00)."""
+        metric = PERIOD_METRICS + (
+            "  Rolling Months:\n"
+            "    {type: cumulative, measure: Revenue, timeDimension: Order Month, window: 2}\n"
+        )
+        query = {"select": {"dimensions": [dimension, "Region"], "measures": ["Rolling Months"]}}
+
+        assert_same(files, query, metric=metric, dimension=ORDER_MONTH)
+
+    def test_a_time_filter_runs_after_the_join_so_the_history_is_read(
+        self, files: dict[str, str]
+    ) -> None:
+        """February's change is against January's 120.75, which the filter does
+        not show: the fact leg reads it, each order at its own date."""
+        query = PERIOD_QUERIES["change_shown_from_february"]
+
+        rows = run_federated(files, query, metric=PERIOD_METRICS)
+        plan = _compile(model_yaml(federated=True, metric=PERIOD_METRICS), query).federation
+
+        assert dict(rows)[date(2024, 2, 1)] == Decimal("7.00") - Decimal("120.75")
+        assert "2024-02-01" not in plan.legs[0].sql
+        assert "date_trunc" not in plan.legs[0].sql.lower()
+
+    def test_a_reaggregate_metric_is_refused(self) -> None:
+        query = {"select": {"dimensions": BY_MONTH_REGION, "measures": ["Revenue per Day"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(model_yaml(federated=True, metric=PERIOD_METRICS), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert "'Revenue per Day' is a reaggregate metric" in error.message
+
+    @pytest.mark.parametrize("selected", ["Order Month:day", "Order Month:week"])
+    def test_a_finer_grain_than_a_dimension_declares(
+        self, files: dict[str, str], selected: str
+    ) -> None:
+        """Order Month, a month by declaration, selected by day: its leg reads
+        each order's date, not the month it declares."""
+        metric = PERIOD_METRICS + (
+            "  Running Months: {type: cumulative, measure: Revenue, timeDimension: Order Month}\n"
+        )
+        query = {
+            "select": {
+                "dimensions": [selected, "Region"],
+                "measures": ["Running Months", "Revenue"],
+            }
+        }
+
+        assert_same(files, query, metric=metric, dimension=ORDER_MONTH)
+
+    def test_a_time_span_over_a_dimension_declaring_its_grain(self, files: dict[str, str]) -> None:
+        """Thirty days before each month's end, over the orders' dates: January
+        reads its own orders, not the first of the month alone."""
+        metric = PERIOD_METRICS + (
+            "  Span Months:\n"
+            "    type: cumulative\n    measure: Revenue\n    timeDimension: Order Month\n"
+            "    windowSpan: {count: 30, unit: day}\n"
+        )
+        query = {"select": {"dimensions": ["Order Month", "Region"], "measures": ["Span Months"]}}
+
+        assert_same(files, query, metric=metric, dimension=ORDER_MONTH)
+        assert (date(2024, 1, 1), "EU", Decimal("120.75")) in run_federated(
+            files, query, metric=metric, dimension=ORDER_MONTH
+        )
+
+    @pytest.mark.parametrize("metric", ["Running Revenue", "Revenue MoM"])
+    def test_a_time_filter_on_another_dimension_of_the_date(
+        self, files: dict[str, str], metric: str
+    ) -> None:
+        """Filtered on Order Month, shown by Order Date: one date column, so
+        the filter shows periods and the history is read, as on one database."""
+        query = {
+            "select": {"dimensions": ["Order Date:month"], "measures": [metric, "Revenue"]},
+            "where": [{"field": "Order Month", "op": ">=", "value": "2024-02-01"}, KNOWN_REGION],
+        }
+
+        assert_same(files, query, metric=PERIOD_METRICS, dimension=ORDER_MONTH)
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {
+                "select": {"dimensions": ["Order Date:month"], "measures": ["Running Revenue"]},
+                "where": [
+                    {"field": "Order Month", "op": ">=", "value": "2024-02-01"},
+                    KNOWN_REGION,
+                ],
+            },
+            {
+                "select": {
+                    "dimensions": ["Order Month:day", "Region"],
+                    "measures": ["Rank in Region"],
+                }
+            },
+        ],
+        ids=["filtered_from_february", "selected_by_day"],
+    )
+    def test_a_dimension_over_a_date_declared_as_text(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        """Order Month reads Order Date's column, a date, though it declares no
+        result type (a string): its leg returns the date, and its filter and
+        grain read it, as one database's do."""
+        month = "  Order Month: {dataObject: Orders, column: Order Date, timeGrain: month}\n"
+
+        assert_same(files, query, metric=PERIOD_METRICS, dimension=month)
+
+    @pytest.mark.parametrize(
+        "measures", [["Running Revenue", "Revenue"], ["QTD Revenue", "Rolling Revenue"]]
+    )
+    def test_without_the_time_dimension_selected(
+        self, files: dict[str, str], measures: list[str]
+    ) -> None:
+        """A running total by region alone sums up to the last date: the fact
+        leg returns the dates for it, which the query does not select."""
+        query = {"select": {"dimensions": ["Region"], "measures": measures}}
+
+        assert_same(files, query, metric=PERIOD_METRICS)
+
+    @pytest.mark.parametrize("calendar_source", ["shop", "geo"])
+    def test_over_a_joined_calendar(
+        self, calendar_files: dict[str, str], calendar_source: str
+    ) -> None:
+        """The running total's dates are the calendar's, beside the orders or on
+        a source of its own: selected by month, the query joins it."""
+        query = {
+            "select": {
+                "dimensions": ["Calendar Date:month", "Region"],
+                "measures": ["Calendar Running", "Revenue"],
+            }
+        }
+        single = _compile(calendar_yaml(False), query)
+        con = duckdb.connect(calendar_files["all"], read_only=True)
+        try:
+            expected = sorted(_rows(con, single.sql), key=repr)
+        finally:
+            con.close()
+        compiled = _compile(calendar_yaml(True, calendar_source), query)
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(calendar_files[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+
+        assert sorted(_rows(combine, compiled.sql), key=repr) == expected
+        assert expected
+
+    @pytest.mark.parametrize("calendar_source", ["shop", "geo"])
+    @pytest.mark.parametrize("dimensions", [["Region"], []], ids=["by_region", "alone"])
+    def test_over_a_calendar_the_query_does_not_join_is_refused(
+        self, dimensions: list[str], calendar_source: str
+    ) -> None:
+        """One database joins the calendar in the running total's own query,
+        by the orders' date, and it limits no other measure: joined in a leg,
+        it would limit them all. Alone, the shop's orders and a calendar of
+        another source are federated, not compiled for the shop."""
+        query = {"select": {"dimensions": dimensions, "measures": ["Calendar Running", "Revenue"]}}
+        if calendar_source == "shop" and not dimensions:
+            # The shop's orders and calendar alone: one source, as before.
+            assert _compile(calendar_yaml(True, calendar_source), query).federation is None
+            return
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(calendar_yaml(True, calendar_source), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert "'Calendar Running' reads the dates of 'Calendar', which the query does not" in (
+            error.message
+        )
+
+    def test_over_a_calendar_reached_through_another_source_is_refused(self) -> None:
+        """The calendar is the shop's, reached through the CRM's customers'
+        signup: the query reads the CRM too, so it is federated, and refused,
+        not compiled for the shop with the CRM's customers in its SQL."""
+        yaml = (
+            calendar_yaml(True)
+            .replace(
+                "      - {joinType: many-to-one, joinTo: Calendar, columnsFrom: [Order Date], "
+                "columnsTo: [Day]}\n",
+                "",
+            )
+            .replace(
+                "      Tenant: {code: tenant, abstractType: string}\n",
+                "      Tenant: {code: tenant, abstractType: string}\n"
+                "      Signup: {code: signup, abstractType: date}\n"
+                "    joins:\n"
+                "      - {joinType: many-to-one, joinTo: Calendar, columnsFrom: [Signup], "
+                "columnsTo: [Day]}\n",
+            )
+        )
+        query = {"select": {"measures": ["Calendar Running", "Revenue"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+
+    @pytest.mark.parametrize("metric", ["Running Of", "Rolling Of", "Span Of", "Change Of"])
+    @pytest.mark.parametrize(
+        "measure", ["Average Order", "Order Variance", "Middle Order", "Ordering Customers"]
+    )
+    def test_over_a_measure_that_does_not_add_up(
+        self, files: dict[str, str], measure: str, metric: str
+    ) -> None:
+        """An average over a time span reads the orders in the span: the fact
+        leg returns its rows. Grouped by date it summed partial sums beside the
+        dates, which DuckDB refused."""
+        query = {"select": {"dimensions": BY_MONTH_REGION, "measures": [metric, measure]}}
+        model = {"extra": SPREAD, "metric": _metrics_over(measure)}
+
+        _assert_same_rows(
+            sorted(run_federated(files, query, **model), key=repr),
+            sorted(run_single(files, query, **model), key=repr),
+        )
+
+    @pytest.mark.parametrize(
+        ("dimension", "column"),
+        [
+            ("Order Stamp:month", "date"),
+            ("Order Date:month", "timestamp_tz"),
+            ("Order Date", "timestamp_tz"),
+        ],
+        ids=["zoned_at_a_grain", "a_date_over_a_zoned_column", "cast_to_a_date"],
+    )
+    def test_a_zoned_timestamp_the_combine_step_would_reshape_is_refused(
+        self, dimension: str, column: str
+    ) -> None:
+        """Returned as stored, its truncation, or its cast to a date, would be
+        in the combine step's time zone: an order of Los Angeles' New Year's
+        Eve would move into January."""
+        query = {"select": {"dimensions": [dimension, "Region"], "measures": ["Revenue Rank"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(self._zoned_yaml(column), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert "reads a timestamp with a time zone, which the combine step would" in (error.message)
+
+    def test_a_zoned_timestamp_left_as_it_is_is_ranked(self) -> None:
+        query = {"select": {"dimensions": ["Order Stamp", "Region"], "measures": ["Revenue Rank"]}}
+
+        assert _compile(self._zoned_yaml("timestamp_tz"), query).federation is not None
+
+    @staticmethod
+    def _zoned_yaml(column: str) -> str:
+        stamp = (
+            "  Order Stamp:\n"
+            "    {dataObject: Orders, column: Order Date, resultType: timestamp_tz}\n"
+        )
+        metric = PERIOD_METRICS + (
+            "  Revenue Rank: {type: window, windowFunction: dense_rank, measure: Revenue}\n"
+        )
+        return model_yaml(federated=True, metric=metric, dimension=stamp).replace(
+            "code: order_date, abstractType: date", f"code: order_date, abstractType: {column}"
+        )
+
+
 class TestRefusals:
     @pytest.mark.parametrize(("extra", "query", "code"), REFUSALS.values(), ids=REFUSALS.keys())
     def test_a_query_that_does_not_split_exactly_is_refused_by_name(
@@ -2561,6 +2978,30 @@ class TestRepeatedRows:
         }
 
         expected, got = _repeated(aggregation, query, _dated, DATED_TABLES)
+
+        _assert_same_rows(got, expected)
+
+    @pytest.mark.parametrize("metric", ["Running Ages", "Ranked Ages"])
+    def test_beside_a_metric_across_periods_the_days_count_once(self, metric: str) -> None:
+        """The fact leg groups the sales by their dates, finer than the month:
+        customer 1 bought on two days of January, and counted twice (40 for 30)."""
+
+        def with_metrics(yaml: str) -> str:
+            return _dated(yaml).replace(
+                "metrics:\n",
+                "metrics:\n"
+                "  Running Ages: {type: cumulative, measure: Ages, timeDimension: Sale Date}\n"
+                "  Ranked Ages: {type: window, measure: Ages, windowFunction: dense_rank}\n",
+            )
+
+        query = {
+            "select": {
+                "dimensions": ["Sale Date:month", "Region"],
+                "measures": ["Ages", "Sales Count", metric],
+            }
+        }
+
+        expected, got = _repeated("sum", query, with_metrics, DATED_TABLES)
 
         _assert_same_rows(got, expected)
 
