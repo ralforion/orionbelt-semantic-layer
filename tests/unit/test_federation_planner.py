@@ -1200,6 +1200,142 @@ class TestFiltersAfterTheJoin:
         assert "CURRENT_DATE" in plan.combine_sql
 
 
+PERIOD_METRICS = (
+    "  Running Revenue: {type: cumulative, measure: Revenue, timeDimension: Order Date}\n"
+    "  Rolling Revenue:\n"
+    "    {type: cumulative, measure: Revenue, timeDimension: Order Date, window: 2}\n"
+    "  QTD Revenue:\n"
+    "    {type: cumulative, measure: Revenue, timeDimension: Order Date, grainToDate: quarter}\n"
+    "  Span Revenue:\n"
+    "    type: cumulative\n    measure: Revenue\n    timeDimension: Order Date\n"
+    "    windowSpan: {count: 30, unit: day}\n"
+    "  Revenue MoM:\n    type: period_over_period\n    expression: '{[Revenue]}'\n"
+    "    periodOverPeriod:\n      timeDimension: Order Date\n      grain: month\n"
+    "      offset: -1\n      offsetGrain: month\n      comparison: difference\n"
+    "  Rank in Region:\n"
+    "    {type: window, windowFunction: dense_rank, measure: Revenue, partitionBy: [Region]}\n"
+    "  Revenue Before:\n"
+    "    type: window\n    windowFunction: lag\n    measure: Revenue\n    offset: 1\n"
+    "    timeDimension: Order Date\n"
+    "  Revenue per Day:\n"
+    "    {type: reaggregate, measure: Revenue, per: [Order Date], aggregation: avg}\n"
+)
+FEB_ON = {"field": "Order Date", "op": ">=", "value": "2024-02-01"}
+KNOWN_REGION = {"field": "Region", "op": "in", "value": ["EU", "US"]}
+BY_MONTH_REGION = ["Order Date:month", "Region"]
+PERIOD_QUERIES = {
+    "running_total": {"select": {"dimensions": BY_MONTH_REGION, "measures": ["Running Revenue"]}},
+    "rolling_window": {"select": {"dimensions": BY_MONTH_REGION, "measures": ["Rolling Revenue"]}},
+    "grain_to_date": {"select": {"dimensions": BY_MONTH_REGION, "measures": ["QTD Revenue"]}},
+    "time_span": {"select": {"dimensions": BY_MONTH_REGION, "measures": ["Span Revenue"]}},
+    "time_span_filtered_on_the_other_source": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Span Revenue"]},
+        "where": [EU],
+    },
+    "period_over_period": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Revenue MoM", "Revenue"]}
+    },
+    "rank_in_a_partition": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Rank in Region", "Revenue"]}
+    },
+    "lag": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue Before"]},
+        "where": [KNOWN_REGION],
+    },
+    "beside_a_derived_metric": {
+        "select": {
+            "dimensions": BY_MONTH_REGION,
+            "measures": ["Running Revenue", "Revenue per Order"],
+        }
+    },
+    # A filter on the time dimension says which periods to show, not which to
+    # read: March's running total and February's change read January.
+    "running_total_shown_from_february": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Running Revenue", "Revenue"]},
+        "where": [FEB_ON],
+    },
+    "change_shown_from_february": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue MoM"]},
+        "where": [FEB_ON, KNOWN_REGION],
+    },
+    "rolling_quarters_shown_from_february": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Region"],
+            "measures": ["Rolling Revenue", "Running Revenue"],
+        },
+        "where": [FEB_ON],
+    },
+}
+
+
+class TestPeriodMetrics:
+    """Cumulative, period-over-period and window metrics run in the combine step."""
+
+    @pytest.mark.parametrize("query", PERIOD_QUERIES.values(), ids=PERIOD_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        assert_same(files, query, metric=PERIOD_METRICS)
+
+    @pytest.mark.parametrize("dimension", ["Order Month", "Order Month:quarter"])
+    def test_over_a_dimension_declaring_its_grain(
+        self, files: dict[str, str], dimension: str
+    ) -> None:
+        """A rolling window over Order Month, a month by declaration, counts
+        months: March reads February too (US 19.00, not 12.00)."""
+        metric = PERIOD_METRICS + (
+            "  Rolling Months:\n"
+            "    {type: cumulative, measure: Revenue, timeDimension: Order Month, window: 2}\n"
+        )
+        query = {"select": {"dimensions": [dimension, "Region"], "measures": ["Rolling Months"]}}
+
+        assert_same(files, query, metric=metric, dimension=ORDER_MONTH)
+
+    def test_a_time_filter_runs_after_the_join_so_the_history_is_read(
+        self, files: dict[str, str]
+    ) -> None:
+        """February's change is against January's 120.75, which the filter does
+        not show: the fact leg reads it, each order at its own date."""
+        query = PERIOD_QUERIES["change_shown_from_february"]
+
+        rows = run_federated(files, query, metric=PERIOD_METRICS)
+        plan = _compile(model_yaml(federated=True, metric=PERIOD_METRICS), query).federation
+
+        assert dict(rows)[date(2024, 2, 1)] == Decimal("7.00") - Decimal("120.75")
+        assert "2024-02-01" not in plan.legs[0].sql
+        assert "date_trunc" not in plan.legs[0].sql.lower()
+
+    def test_a_reaggregate_metric_is_refused(self) -> None:
+        query = {"select": {"dimensions": BY_MONTH_REGION, "measures": ["Revenue per Day"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(model_yaml(federated=True, metric=PERIOD_METRICS), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert "'Revenue per Day' is a reaggregate metric" in error.message
+
+    def test_a_zoned_timestamp_at_a_grain_is_refused(self) -> None:
+        """The combine step would truncate it in its own time zone."""
+        stamp = (
+            "  Order Stamp:\n"
+            "    {dataObject: Orders, column: Order Date, resultType: timestamp_tz}\n"
+        )
+        query = {
+            "select": {"dimensions": ["Order Stamp:month", "Region"], "measures": ["Revenue Rank"]}
+        }
+        metric = PERIOD_METRICS + (
+            "  Revenue Rank: {type: window, windowFunction: dense_rank, measure: Revenue}\n"
+        )
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(model_yaml(federated=True, metric=metric, dimension=stamp), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert "'Order Stamp' is a timestamp with a time zone" in error.message
+
+
 class TestRefusals:
     @pytest.mark.parametrize(("extra", "query", "code"), REFUSALS.values(), ids=REFUSALS.keys())
     def test_a_query_that_does_not_split_exactly_is_refused_by_name(

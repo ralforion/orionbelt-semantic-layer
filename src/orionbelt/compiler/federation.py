@@ -901,6 +901,15 @@ def plan_federated(
         **{m: values for m, (values, _, _) in distinct.items()},
         **{m: sums for m, (_, sums, _, _) in variances.items()},
     }
+    if planner.reads_periods():
+        # A dimension declaring its grain is a period there too: a rolling
+        # window over months counts months. Its leg returned it at that grain.
+        combine_dimensions = {
+            name: dimension.model_copy(update={"time_grain": model.dimensions[name].time_grain})
+            if name in model.dimensions
+            else dimension
+            for name, dimension in combine_dimensions.items()
+        }
     combine_model = SemanticModel(
         name=model.name,
         # What types and buckets the combined values; not the query's time
@@ -925,14 +934,17 @@ def plan_federated(
             )
             for m in measures
         },
-        metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
+        metrics={n: m for n, m in model.metrics.items() if m.type != MetricType.REAGGREGATE},
         filters=combine_filters_static,
         expose_counts=False,
     )
     combine_query = query.model_copy(
         update={
             "select": QuerySelect(
-                dimensions=[DimensionRef.parse(str(d)).name for d in query.select.dimensions],
+                dimensions=[
+                    str(d) if planner.reads_periods() else DimensionRef.parse(str(d)).name
+                    for d in query.select.dimensions
+                ],
                 measures=list(query.select.measures),
             ),
             "where": [_renamed(item, renamed) for item in combine_filters],
@@ -1317,6 +1329,33 @@ class _Planner:
 
     # -- measures -----------------------------------------------------------
 
+    def reads_periods(self) -> bool:
+        """Whether a metric of the query reads its values across periods.
+
+        A cumulative, period-over-period or window metric orders, offsets or
+        frames the periods of its time dimension at the grain the query
+        selects. The combine step computes it, as one database does, over
+        the combined values: the legs return each dimension at its own grain,
+        and the combine step applies the query's grains.
+        """
+        return any(rm.is_cumulative or rm.is_pop or rm.is_window for rm in self.resolved.measures)
+
+    def lookback_axes(self) -> set[tuple[str, str]]:
+        """The ``(data object, column)`` of each time dimension a metric looks back along.
+
+        A filter on one says which periods a cumulative or period-over-period
+        metric shows, not which it reads (``compiler.time_lookback``): it runs
+        in the combine step, which computes the metric over the periods
+        before it too.
+        """
+        names = {
+            m.cumulative_time_dimension if m.is_cumulative else m.pop_time_dimension
+            for m in self.resolved.measures
+            if m.is_cumulative or m.is_pop
+        }
+        dims = [self.model.dimensions.get(n or "") for n in names]
+        return {(d.view, d.column) for d in dims if d is not None}
+
     def atomic_measures(self) -> set[str]:
         """The measures the fact leg computes: selected, and those metrics read."""
         effective = self.model.effective_measures
@@ -1343,12 +1382,25 @@ class _Planner:
         join, as one database computes it over the joined rows.
         """
         for rm in self.resolved.measures:
-            if rm.is_cumulative or rm.is_pop or rm.is_window or rm.is_reaggregate:
+            if rm.is_reaggregate:
                 raise self.refuse(
                     "UNSUPPORTED_METRIC",
-                    f"Metric '{rm.name}' is not a derived metric, which is all a "
-                    "federated query supports yet",
+                    f"Metric '{rm.name}' is a reaggregate metric, which a federated query "
+                    "does not support yet",
                 )
+        if self.reads_periods():
+            for d in self.query.select.dimensions:
+                ref = DimensionRef.parse(str(d))
+                dimension = self.model.dimensions[ref.name]
+                grain = ref.grain or dimension.time_grain
+                if grain is not None and dimension.result_type == DataType.TIMESTAMP_TZ:
+                    raise self.refuse(
+                        "UNSUPPORTED_METRIC",
+                        f"Dimension '{ref.name}' is a timestamp with a time zone, selected "
+                        "at a grain beside a cumulative, period-over-period or window "
+                        "metric: the combine step would truncate it in its own time zone",
+                        hint="Select it without a grain, or as a date.",
+                    )
         effective = self.model.effective_measures
         names = sorted(self.atomic_measures())
         for name in names:
@@ -1693,7 +1745,15 @@ class _Planner:
         legs: dict[int, list[QueryFilterItem]] = {}
         combine: list[QueryFilterItem] = []
         absent: list[_Absent] = []
+        axes = self.lookback_axes()
         for item in self.query.where:
+            if (
+                axes
+                and not any(True for _ in _exists_filters([item]))
+                and self._on_axes(item, axes)
+            ):
+                combine.append(item)
+                continue
             owners = {island_of.get(o) for o in self._filter_objects(item)}
             owner = owners.pop() if len(owners) == 1 else None
             if owner is not None and (owner == fact or _on_null(item) is not True):
@@ -1717,6 +1777,14 @@ class _Planner:
                 )
             combine.append(item)
         return legs, combine, absent
+
+    def _on_axes(self, item: QueryFilterItem, axes: set[tuple[str, str]]) -> bool:
+        """Whether *item* reads a time dimension's own column a metric looks back along."""
+        for field in _filter_fields(item):
+            dimension = self.model.dimensions.get(DimensionRef.parse(field).name)
+            if dimension is not None and (dimension.view, dimension.column) in axes:
+                return True
+        return False
 
     def _filter_objects(self, item: QueryFilterItem) -> set[str]:
         """The data objects whose rows *item* is a condition on: an ``exists``'s subject."""
@@ -1748,6 +1816,9 @@ class _Planner:
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         wanted = [d for d in self.query.select.dimensions if isinstance(d, str)]
+        if self.reads_periods():
+            # At their own grain: the combine step applies the query's.
+            wanted = [DimensionRef.parse(d).name for d in wanted]
         selected = {DimensionRef.parse(d).name for d in wanted}
         at_grain = {DimensionRef.parse(d).name for d in wanted if DimensionRef.parse(d).grain}
         regrained: dict[int, list[str]] = {}

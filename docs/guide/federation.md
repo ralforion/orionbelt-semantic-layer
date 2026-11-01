@@ -68,8 +68,9 @@ flowchart LR
   against a model whose data objects are the legs: each dimension leg is
   joined on its key, many-to-one, as `LEFT JOIN`, from the leg holding that
   key (the fact leg, or the dimension leg a chain passes through), and each measure is
-  re-aggregated from the fact leg's results. Derived metrics, HAVING, ORDER BY,
-  LIMIT, totals and `rollup` / `cube` subtotals run there. A fact row whose key
+  re-aggregated from the fact leg's results. Derived metrics,
+  [cumulative, period-over-period and window metrics](#metrics-across-periods),
+  HAVING, ORDER BY, LIMIT, totals and `rollup` / `cube` subtotals run there. A fact row whose key
   has no match keeps its values under an empty group, as in one database.
 
 ## An example
@@ -137,6 +138,7 @@ Each leg asks for one row more than `FEDERATION_MAX_LEG_ROWS` (default
 | True where the dimensions are NULL (`is_null`, `blank`, ...), or reading several islands (an OR across sources) | the combine query, after the join | in a dimension leg it would also match the fact rows whose key the leg dropped |
 | After the join, on a dimension the query selects at a time grain (`Order Date:month`, filtered on `Order Date`) | the combine query, on a column the dimension's leg returns beside it: the dimension at its own grain (the day, or its declared `timeGrain`) | as on one database: `Order Date < 2024-01-15` compares each order's day, not the month selected |
 | `relative`, after the join | the combine query, counting from the combine step's date | see [Results that can differ](#results-that-can-differ-from-one-database) |
+| On the time dimension of a cumulative or period-over-period metric | the combine query | it says which periods to show, not which the metric reads: [metrics across periods](#metrics-across-periods) |
 | A static model filter on the fact island | the fact leg | |
 | A static model filter on another island | the combine query, on a column that island's leg returns | it drops the rows it excludes and keeps an unmatched row when it holds for NULL; `enforce: always` applies even when the query reads nothing else of that island, and in the body of an `exists` subquery on that island too, as on one database |
 | `exists` on its subject's island, `nonexists` on the fact island | the leg of the subject's island, with its subquery | as on one database |
@@ -469,6 +471,26 @@ another object of the fact's source (a customer's credit beside their orders)
 cannot read another source yet, nor can a measure read a column computed from
 columns of two sources.
 
+### Metrics across periods
+
+[Cumulative, period-over-period and window metrics](model-format.md#metrics)
+run in the combine step, over the combined values, as one database runs them
+over its own: a running total, a rolling window, grain-to-date, a rolling
+time span, a change against an earlier period, a rank, a lag.
+
+- The legs return each dimension at its own grain, an order at its own date,
+  and the combine step applies the query's grains (`Order Date:month`). A
+  rolling window over months then counts months, and a time span reads each
+  order's date.
+- A filter on the metric's time dimension runs in the combine step. It says
+  which periods to show, not which the metric reads: shown from February,
+  February's change is against January, and March's running total counts
+  January, as on one database.
+
+A reaggregate metric is refused, and so is a time dimension that is a
+timestamp with a time zone selected at a grain beside such a metric: the
+combine step would truncate it in its own time zone.
+
 ### Objects the joins repeat
 
 A measure of an object the query's joins repeat (customers' ages over their
@@ -565,7 +587,8 @@ database would return, without a refusal.
 
 | Limitation | Error |
 |---|---|
-| Cumulative, period-over-period, window and reaggregate metrics (derived metrics work) | `FEDERATION_UNSUPPORTED_METRIC` |
+| Reaggregate metrics (derived, cumulative, period-over-period and window metrics work) | `FEDERATION_UNSUPPORTED_METRIC` |
+| A timestamp with a time zone selected at a grain beside a cumulative, period-over-period or window metric | `FEDERATION_UNSUPPORTED_METRIC` |
 | A measure with `filterContext` or `grain` | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | A measure counted once per row of an object read through the fact rows that reads a column of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
