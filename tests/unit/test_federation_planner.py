@@ -331,6 +331,57 @@ AVERAGE_QUERIES = {
 }
 
 
+# One database returns the pairs its joined rows hold: no month crossed with
+# a region its orders do not reach, a month with the region NULL for the order
+# whose customer is missing.
+WITHOUT_MEASURES = {
+    "dimensions_of_both_sources": {"select": {"dimensions": ["Order Date:month", "Region"]}},
+    "filtered_on_the_other_source": {
+        "select": {"dimensions": ["Order Date:month"]},
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+    "a_filter_true_for_null_on_the_other_source": {
+        "select": {"dimensions": ["Order Date:month"]},
+        "where": [{"field": "Region", "op": "is_null"}],
+    },
+    "filtered_on_the_facts_source": {
+        "select": {"dimensions": ["Order Date", "Region"]},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+    },
+    "ordered_and_limited": {
+        "select": {"dimensions": ["Order Date:month", "Region"]},
+        "orderBy": [{"field": "Region"}, {"field": "Order Date"}],
+        "limit": 3,
+    },
+}
+
+
+class TestWithoutMeasures:
+    """Dimensions alone: the distinct values the fact rows reach, as on one source."""
+
+    @pytest.mark.parametrize("query", WITHOUT_MEASURES.values(), ids=WITHOUT_MEASURES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        assert_same(files, query)
+
+    def test_a_static_filter_on_the_other_source(self, files: dict[str, str]) -> None:
+        assert_same(
+            files, {"select": {"dimensions": ["Order Date:month", "Region"]}}, tenant_filter=True
+        )
+
+    def test_the_fact_leg_returns_its_dimensions_and_keys_once_each(self) -> None:
+        plan = _compile(
+            model_yaml(federated=True), WITHOUT_MEASURES["filtered_on_the_other_source"]
+        ).federation
+
+        orders, customers = plan.legs
+        assert [c for c, _ in orders.columns] == ["Order Date", "__fk0_0"]
+        assert orders.rows is None
+        assert "GROUP BY ALL" in orders.sql
+        assert '"Customers"."region" = \'EU\'' in customers.sql
+
+
 class TestAverage:
     """An average is the total of the legs' partial sums over the total of their counts."""
 
@@ -1039,11 +1090,6 @@ REFUSALS = {
         ON_CUSTOMERS,
         {"select": {"dimensions": ["Region"], "measures": ["Revenue", "Customer Rows"]}},
         "FEDERATION_MULTI_FACT",
-    ),
-    "no_measures": (
-        "",
-        {"select": {"dimensions": ["Region", "Order Date"]}},
-        "FEDERATION_NO_MEASURES",
     ),
     "relative_filter_on_dimension_side": (
         "",
@@ -2467,6 +2513,35 @@ class TestMeasuresReadingAnotherSource:
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_MEASURE_ACROSS_SOURCES"
         assert "counted once per row of 'Batches'" in error.message
+
+    def test_dimensions_alone_of_two_other_sources_join_through_the_facts(
+        self, priced: dict[str, str], tmp_path: Any
+    ) -> None:
+        """No dimension of the lines: one source reads them all the same, to
+        pair each category with the batches its lines reach."""
+        plant = str(tmp_path / "plant.duckdb")
+        con = duckdb.connect(plant)
+        con.execute(BATCHES)
+        con.close()
+        yaml = _priced(True).replace(
+            "  Batches:\n    code: batches\n    dataSource: shop\n",
+            "  Batches:\n    code: batches\n    dataSource: plant\n",
+        )
+        query = {"select": {"dimensions": ["Category", "Batch"]}}
+        compiled = _compile(yaml, query)
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect({**priced, "plant": plant}[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+
+        federated = sorted(_rows(combine, compiled.sql), key=repr)
+
+        assert [leg.data_source for leg in compiled.federation.legs] == ["shop", "plant", "catalog"]
+        assert federated == sorted(self._run(priced, False, query), key=repr)
+        assert federated == sorted([("tools", 1), ("tools", 2), ("toys", 2), (None, 1)], key=repr)
 
     def test_a_column_computed_from_another_source_is_refused(self) -> None:
         yaml = (

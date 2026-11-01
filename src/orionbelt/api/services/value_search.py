@@ -19,7 +19,11 @@ from orionbelt.api.deps import (
     get_value_search_config,
     is_query_execute_enabled,
 )
-from orionbelt.api.query_cache import execute_query_with_cache, execution_result_from_data
+from orionbelt.api.query_cache import (
+    execute_federated_with_cache,
+    execute_query_with_cache,
+    execution_result_from_data,
+)
 from orionbelt.api.schemas import ValueMatchItem, ValueSearchRequest, ValueSearchResponse
 from orionbelt.api.services.query_compilation import _resolve_dialect, compile_query_or_raise
 from orionbelt.models.query import QueryObject
@@ -82,23 +86,30 @@ async def run_value_search(
             store=store, model_id=model_id, query=query, dialect=dialect
         )
         declared = declared_arrow_types(model, query)
+        shared: dict[str, Any] = {
+            "store": store,
+            "model": model,
+            "compile_result": compiled,
+            "model_id": model_id,
+            "cache": cache,
+            "cache_config": cache_config,
+            "tz": tz,
+            "override_db_tz": bool(settings and settings.override_database_timezone),
+            "cacheable": getattr(cache, "backend_name", "noop") != "noop",
+            "declared_types": declared,
+            "query": query,
+        }
         try:
-            cached = await execute_query_with_cache(
-                store=store,
-                model=model,
-                compile_result=compiled,
-                model_id=model_id,
-                # The source's dialect, where the model reads several.
-                dialect=compiled.dialect,
-                source=resolve_query_source(model, compiled),
-                cache=cache,
-                cache_config=cache_config,
-                tz=tz,
-                override_db_tz=bool(settings and settings.override_database_timezone),
-                cacheable=getattr(cache, "backend_name", "noop") != "noop",
-                declared_types=declared,
-                query=query,
-            )
+            if compiled.federation is not None:
+                # A filter or dimension of another source: legs, then the combine.
+                cached = await execute_federated_with_cache(**shared)
+            else:
+                cached = await execute_query_with_cache(
+                    # The source's dialect, where the model reads several.
+                    dialect=compiled.dialect,
+                    source=resolve_query_source(model, compiled),
+                    **shared,
+                )
         except ExecutionUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from None
         except ExecutionError as exc:

@@ -151,6 +151,10 @@ class TestRestExecution:
                 "where": [{"field": "Region", "op": "equals", "value": "EU"}],
                 "orderBy": [{"field": "Order Date"}],
             },
+            {
+                "select": {"dimensions": ["Region", "Order Date:month"]},
+                "orderBy": [{"field": "Order Date"}, {"field": "Region"}],
+            },
         ],
     )
     async def test_a_federated_query_returns_what_one_source_returns(
@@ -401,6 +405,18 @@ class TestKeyInjection:
         assert [source for source, _ in ran[:2]] == ["crm", "shop"]
         assert '"Orders"."customer_id" IN (10, 13)' in ran[1][1]
         assert sum(Decimal(r[1]) for r in rows) == Decimal("123.90")
+
+    async def test_a_query_without_measures_reads_the_keys_too(
+        self, client: AsyncClient, ran: list[tuple[str, str]]
+    ) -> None:
+        """The months EU customers ordered in."""
+        query = {**EU_REVENUE, "select": {"dimensions": ["Order Date:month"]}}
+
+        rows = await self._assert_same(client, query)
+
+        assert [source for source, _ in ran[:2]] == ["crm", "shop"]
+        assert '"Orders"."customer_id" IN (10, 13)' in ran[1][1]
+        assert len(rows) == 2
 
     async def test_a_leg_returning_rows_reads_the_keys_too(
         self, client: AsyncClient, ran: list[tuple[str, str]]

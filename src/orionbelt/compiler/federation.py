@@ -890,12 +890,6 @@ class _Planner:
         for feature, used in unsupported.items():
             if used:
                 raise self.refuse("UNSUPPORTED_QUERY", f"A federated query cannot use {feature}")
-        if not q.select.measures:
-            raise self.refuse(
-                "NO_MEASURES",
-                "A query with no measures across data sources is not supported yet",
-                hint="Select a measure, or query the dimensions of one data source.",
-            )
         names = [DimensionRef.parse(d).name for d in q.select.dimensions if isinstance(d, str)]
         if len(names) != len(set(names)):
             raise self.refuse(
