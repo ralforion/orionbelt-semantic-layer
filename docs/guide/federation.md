@@ -134,7 +134,7 @@ Each leg asks for one row more than `FEDERATION_MAX_LEG_ROWS` (default
 | On one dimension island's dimensions, never true where they are all NULL (`=`, `!=`, `in`, comparisons, `like`, `relative`, ...) | that dimension leg, and the combine query keeps the fact rows it matched | compared as its own engine compares; the fact leg may then read only the keys it returned |
 | True where the dimensions are NULL (`is_null`, `blank`, ...), or reading several islands (an OR across sources) | the combine query, after the join | in a dimension leg it would also match the fact rows whose key the leg dropped |
 | A static model filter on the fact island | the fact leg | |
-| A static model filter on another island | the combine query, on a column that island's leg returns | it drops the rows it excludes and keeps an unmatched row when it holds for NULL; `enforce: always` applies even when the query reads nothing else of that island |
+| A static model filter on another island | the combine query, on a column that island's leg returns | it drops the rows it excludes and keeps an unmatched row when it holds for NULL; `enforce: always` applies even when the query reads nothing else of that island, and in the body of an `exists` subquery on that island too, as on one database |
 | `exists` on its subject's island, `nonexists` on the fact island | the leg of the subject's island, with its subquery | as on one database |
 | `nonexists` on a dimension island | a leg of its own returning that island's keys the subquery holds for (`exists`); the combine query keeps the fact rows whose key is not among them | it holds for a fact row with no row there (an order whose customer is missing), which a filter in the dimension leg would drop |
 
@@ -142,8 +142,9 @@ Each leg asks for one row more than `FEDERATION_MAX_LEG_ROWS` (default
 
 An [`exists` / `nonexists`](query-language.md#existence-operators) filter runs
 on the data source of its subject, with its whole subquery: the target, the
-join path from the subject to it, and every object its own filters read must
-be of that source. "Revenue from customers with a high-severity ticket" runs
+join path from the subject to it, every object its own filters and the
+`enforce: always` static filters read, and the objects joined to reach them,
+must be of that source. "Revenue from customers with a high-severity ticket" runs
 where the customers and tickets are, and the fact leg then reads only those
 customers' keys:
 

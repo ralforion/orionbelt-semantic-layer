@@ -40,7 +40,7 @@ plan.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Collection, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,7 +48,12 @@ from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.filters import _resolve_subquery_filter_field
 from orionbelt.compiler.grain_dedup import MULTIPLICITY_SAFE_AGGREGATIONS, dedup_identity
 from orionbelt.compiler.graph import JoinGraph, JoinStep
-from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery, columns_in_own_zone
+from orionbelt.compiler.resolution import (
+    ResolutionError,
+    ResolvedQuery,
+    columns_in_own_zone,
+    static_filters_after_join,
+)
 from orionbelt.compiler.type_resolver import (
     combined_averages,
     combined_variances,
@@ -618,11 +623,13 @@ def plan_federated(
         # object in one database: there it drops the fact rows whose object
         # fails it, and keeps an unmatched one when the predicate holds for
         # NULL. Applied in the leg instead, a fact row whose object it
-        # removed would come back NULL-joined, and pass ``IS NULL``.
+        # removed would come back NULL-joined, and pass ``IS NULL``. An
+        # exists subquery the leg runs still applies it in its body.
+        after_join = island - planner.in_subqueries
         static = {
             _unused(f"__sf{e - 1}_{n}", taken): (f.data_object, f.column, f)
             for n, f in enumerate(model.filters)
-            if f.data_object in island and f.data_object not in planner.in_subqueries
+            if f.data_object in after_join
         }
         static_columns = {name: (obj, col) for name, (obj, col, _) in static.items()}
         # The columns measures read here, as the fact leg returns its own.
@@ -640,7 +647,6 @@ def plan_federated(
             island,
             {**keys, **static_columns, **read_here},
             {},
-            filters_on=planner.in_subqueries,
             own_zone=read_own_zone,
         )
         dim_query = QueryObject(
@@ -664,7 +670,10 @@ def plan_federated(
             kept,
         )
         renamed.update({source: hidden for hidden, source in dim_kept.items()})
-        with columns_in_own_zone(frozenset((read_here[c][0], c) for c in read_own_zone)):
+        with (
+            columns_in_own_zone(frozenset((read_here[c][0], c) for c in read_own_zone)),
+            static_filters_after_join(after_join),
+        ):
             legs.append(
                 planner.leg(
                     leg_name,
@@ -733,18 +742,20 @@ def plan_federated(
         }
         key_columns = [_key_column(model, name, obj, col) for name, (obj, col) in keys.items()]
         holds = missing.item.model_copy(update={"op": FilterOperator.EXISTS})
-        legs.append(
-            planner.leg(
-                leg_name,
-                islands[missing.island],
-                QueryObject(select=QuerySelect(dimensions=[*keys]), where=[holds], limit=leg_limit),
-                planner.island_model(
-                    islands[missing.island], keys, {}, filters_on=planner.in_subqueries
-                ),
-                key_columns,
-                compile_leg,
+        island = islands[missing.island]
+        with static_filters_after_join(island - planner.in_subqueries):
+            legs.append(
+                planner.leg(
+                    leg_name,
+                    island,
+                    QueryObject(
+                        select=QuerySelect(dimensions=[*keys]), where=[holds], limit=leg_limit
+                    ),
+                    planner.island_model(island, keys, {}),
+                    key_columns,
+                    compile_leg,
+                )
             )
-        )
         combine_objects[leg_name] = DataObject(
             name=leg_name,
             code=leg_name,
@@ -1631,13 +1642,13 @@ class _Planner:
         keys: dict[str, tuple[str, str]],
         measures: dict[str, Measure],
         *,
-        filters_on: Collection[str] | None = None,
         own_zone: Iterable[str] = (),
     ) -> SemanticModel:
         """The model a leg compiles against: the island alone, keys as dimensions.
 
-        It keeps the static filters of the island's objects, or of those in
-        *filters_on* only. *measures* are partial results (:func:`_leg_measures`): no ``total``,
+        It keeps the static filters of the island's objects; a dimension leg
+        leaves some to the combine step (:func:`static_filters_after_join`).
+        *measures* are partial results (:func:`_leg_measures`): no ``total``,
         no ``defaultValue`` (an empty group's default would become an input to
         the combined aggregate), and a sum at a width that does not round
         before the partials are added (``partial_sums``). A key named in
@@ -1668,12 +1679,7 @@ class _Planner:
                 "dimensions": dimensions,
                 "measures": measures,
                 "metrics": {},
-                "filters": [
-                    f
-                    for f in model.filters
-                    if f.data_object in island
-                    and (filters_on is None or f.data_object in filters_on)
-                ],
+                "filters": [f for f in model.filters if f.data_object in island],
                 "rules": {},
                 "expose_counts": False,
                 # Read by no compilation, and kept by a plan that injects keys.
@@ -2326,7 +2332,8 @@ def _exists_objects(item: QueryFilter, model: SemanticModel) -> set[str]:
     """The data objects an ``exists`` filter's subquery reads.
 
     Its target, the objects on the join path from the subject to it, and
-    those its filters read, inner ``exists`` included, as
+    those its filters and the enforced static filters read, with the objects
+    joined to reach them, inner ``exists`` included, as
     :func:`~orionbelt.compiler.filters.build_exists_filter_expr` joins them;
     the subject is the outer query's.
     """
@@ -2337,21 +2344,36 @@ def _exists_objects(item: QueryFilter, model: SemanticModel) -> set[str]:
 
 def _subquery_reads(sub: Subquery, subject: str | None, model: SemanticModel) -> set[str]:
     graph = JoinGraph.of(model)
-    found = {sub.data_object}
+    body = {sub.data_object}
     if subject is not None and sub.path_name is None:
-        found |= _step_objects(graph.find_join_path_undirected(subject, sub.data_object))
-        found.discard(subject)
+        body |= _step_objects(graph.find_join_path_undirected(subject, sub.data_object))
+        body.discard(subject)
+    inner: set[str] = set()
+
+    def join(objects: Iterable[str]) -> None:
+        # Each reached from what the body joins already, in the order it joins them.
+        for obj in objects:
+            if obj not in body:
+                body.update({obj}, _step_objects(graph.find_join_path(set(body), {obj})))
+
     for item in sub.filter:
         ref = _resolve_subquery_filter_field(item.field, model, sub.data_object, [])
         if ref is None:
             continue
         obj, column = ref
-        found |= {obj} | model.column_reference_objects(obj, column)
-        if obj != sub.data_object:
-            found |= _step_objects(graph.find_join_path({sub.data_object}, {obj}))
         if item.subquery is not None:
-            found |= _subquery_reads(item.subquery, obj, model)
-    return found
+            join([obj])
+            inner |= _subquery_reads(item.subquery, obj, model)
+        else:
+            join([obj, *sorted(model.column_reference_objects(obj, column))])
+    for mf in model.filters:
+        needed = [
+            mf.data_object,
+            *sorted(model.column_reference_objects(mf.data_object, mf.column)),
+        ]
+        if mf.enforce == FilterEnforcement.ALWAYS and not set(needed) <= {subject}:
+            join(needed)
+    return body | inner
 
 
 def _step_objects(steps: Iterable[JoinStep]) -> set[str]:

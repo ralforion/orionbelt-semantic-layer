@@ -2570,11 +2570,22 @@ class TestMeasuresReadingAnotherSource:
 
 
 # Customer 10 has two tickets, 12 one; ticket 4's customer 98 is not a
-# customer. Orders 1 and 4 have returns. Order 6's customer 99 is missing:
-# one database keeps it under nonexists, its subject row being NULL.
+# customer. Customer 10's tickets are raised under the inactive tenant
+# 'other', on the basic plan. Orders 1 and 4 have returns. Order 6's
+# customer 99 is missing: one database keeps it under nonexists, its
+# subject row being NULL.
 TICKETS = (
-    "CREATE TABLE tickets AS SELECT * FROM (VALUES (1, 10, 'high'), (2, 10, 'low'),"
-    " (3, 12, 'low'), (4, 98, 'high')) t(ticket_id, customer_id, severity)"
+    "CREATE TABLE tickets AS SELECT * FROM (VALUES (1, 10, 'high', 'other'),"
+    " (2, 10, 'low', 'other'), (3, 12, 'low', 'acme'), (4, 98, 'high', 'acme'))"
+    " t(ticket_id, customer_id, severity, tenant)"
+)
+TENANTS = (
+    "CREATE TABLE tenants AS SELECT * FROM (VALUES ('acme', true, 'gold'),"
+    " ('other', false, 'basic')) t(tenant, active, plan)"
+)
+PLANS = (
+    "CREATE TABLE plans AS SELECT * FROM (VALUES ('gold', 'Gold'), ('basic', 'Basic'))"
+    " t(plan, tier)"
 )
 RETURNS = (
     "CREATE TABLE returns AS SELECT * FROM (VALUES (1, 1, 'broken'), (2, 4, 'late'),"
@@ -2591,11 +2602,30 @@ SUBQUERY_OBJECTS = """\
       Ticket ID: {{code: ticket_id, abstractType: int}}
       Ticket Customer: {{code: customer_id, abstractType: int}}
       Severity: {{code: severity, abstractType: string}}
+      Ticket Tenant: {{code: tenant, abstractType: string}}
+      Ticket Tier: {{expression: "{{[Plans].[Tier]}}", abstractType: string}}
     joins:
       - joinType: many-to-one
         joinTo: Customers
         columnsFrom: [Ticket Customer]
         columnsTo: [Customer ID]
+      - joinType: many-to-one
+        joinTo: Tenants
+        columnsFrom: [Ticket Tenant]
+        columnsTo: [Tenant Code]
+  Tenants:
+    code: tenants
+{crm}    columns:
+      Tenant Code: {{code: tenant, abstractType: string}}
+      Active: {{code: active, abstractType: boolean}}
+      Plan: {{code: plan, abstractType: string}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Plans, columnsFrom: [Plan], columnsTo: [Plan Code]}}
+  Plans:
+    code: plans
+{crm}    columns:
+      Plan Code: {{code: plan, abstractType: string}}
+      Tier: {{code: tier, abstractType: string}}
   Returns:
     code: returns
 {shop}    columns:
@@ -2621,8 +2651,15 @@ def subquery_model(federated: bool, **model: Any) -> str:
     shop = "    dataSource: shop\n" if federated else ""
     crm = "    dataSource: crm\n" if federated else ""
     objects = SUBQUERY_OBJECTS.format(shop=shop, crm=crm)
-    return model_yaml(federated=federated, **model).replace(
-        "dimensions:\n", objects + "dimensions:\n", 1
+    tenant = "      Tenant: {code: tenant, abstractType: string}\n"
+    tenant_join = (
+        "    joins:\n      - {joinType: many-to-one, joinTo: Tenants, columnsFrom: [Tenant],"
+        " columnsTo: [Tenant Code]}\n"
+    )
+    return (
+        model_yaml(federated=federated, **model)
+        .replace(tenant, tenant + tenant_join, 1)
+        .replace("dimensions:\n", objects + "dimensions:\n", 1)
     )
 
 
@@ -2631,9 +2668,9 @@ def subquery_files(tmp_path_factory: Any) -> dict[str, str]:
     root = tmp_path_factory.mktemp("subquery")
     paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
     for name, statements in (
-        ("all", [ORDERS, CUSTOMERS, TICKETS, RETURNS, REASONS]),
+        ("all", [ORDERS, CUSTOMERS, TICKETS, RETURNS, REASONS, TENANTS, PLANS]),
         ("shop", [ORDERS, RETURNS]),
-        ("crm", [CUSTOMERS, TICKETS, REASONS]),
+        ("crm", [CUSTOMERS, TICKETS, REASONS, TENANTS, PLANS]),
     ):
         con = duckdb.connect(paths[name])
         for statement in statements:
@@ -2652,6 +2689,10 @@ def _returns(op: str) -> dict[str, Any]:
 
 
 HIGH = {"field": "Severity", "op": "=", "value": "high"}
+GOLD = {"field": "Ticket Tier", "op": "=", "value": "Gold"}
+ACTIVE = (
+    "  - {dataObject: Tenants, column: Active, operator: equals, value: true, enforce: always}\n"
+)
 BY_MONTH = {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Orders Count"]}
 BY_REGION = {"dimensions": ["Region"], "measures": ["Revenue", "Orders Count"]}
 
@@ -2719,6 +2760,35 @@ class TestExists:
     ) -> None:
         single = self._run(subquery_files, False, query, tenant_filter=tenant_filter)
         federated = self._run(subquery_files, True, query, tenant_filter=tenant_filter)
+
+        assert sorted(federated, key=repr) == sorted(single, key=repr)
+        assert single
+
+    @pytest.mark.parametrize("op", ["exists", "nonexists"])
+    def test_an_enforced_filter_the_subquery_reads_applies_in_it_too(
+        self, subquery_files: dict[str, str], op: str
+    ) -> None:
+        """Customers and tickets both join tenants: the filter on tenants runs
+        after the join for the customers, and in the subquery for the tickets,
+        whose tenant is not always their customer's."""
+        query = {"select": BY_MONTH, "where": [_tickets(op)]}
+
+        single = self._run(subquery_files, False, query, static=ACTIVE)
+        federated = self._run(subquery_files, True, query, static=ACTIVE)
+
+        assert sorted(federated, key=repr) == sorted(single, key=repr)
+        # Customer 10's January orders: its tickets are of the inactive tenant.
+        assert (Decimal("120.75") in {revenue for _, revenue, _ in single}) is (op == "nonexists")
+
+    @pytest.mark.parametrize("op", ["exists", "nonexists"])
+    def test_a_subquery_filter_computed_two_joins_away(
+        self, subquery_files: dict[str, str], op: str
+    ) -> None:
+        """A ticket's tier is its tenant's plan's: the subquery joins both."""
+        query = {"select": BY_REGION, "where": [_tickets(op, GOLD)]}
+
+        single = self._run(subquery_files, False, query)
+        federated = self._run(subquery_files, True, query)
 
         assert sorted(federated, key=repr) == sorted(single, key=repr)
         assert single
