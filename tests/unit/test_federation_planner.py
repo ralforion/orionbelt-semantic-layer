@@ -3355,6 +3355,25 @@ class TestRoles:
         assert self._run(role_files, True, query, static=static) == single
         assert single
 
+    def test_a_static_filter_reads_its_object_not_a_roles_copy(
+        self, role_files: dict[str, str]
+    ) -> None:
+        """The filter is on Employees as declared, joined through the primary
+        (sales) join. Order 1's support employee Bob is of the west team, its
+        sales employee Ann is not: the order stays, as on one database."""
+        static = TEAM_NOT_WEST.replace("}\n", ", enforce: always}\n")
+        query = {
+            "select": {
+                "dimensions": ["Sales Employee", "Support Employee"],
+                "measures": ["Revenue"],
+            }
+        }
+
+        rows = self._run(role_files, True, query, static=static)
+
+        assert rows == self._run(role_files, False, query, static=static)
+        assert ("Ann", "Bob", Decimal("10.50")) in rows
+
     def test_each_role_reads_the_target_under_its_own_name(self) -> None:
         query = {
             "select": {

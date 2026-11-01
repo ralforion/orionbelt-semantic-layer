@@ -297,8 +297,10 @@ GROUP BY ALL
 
 A role whose join stays within one source (a customer's account manager,
 customers and employees both in the CRM) runs in that source's leg, as on one
-database. A static filter on the role's data object applies to every role, as
-on one database.
+database. A static filter on the role's data object filters that object as
+the model declares it, joined through its primary join, not a role's copy, as
+on one database: with a filter on `Employees`, an order is kept by its sales
+employee's team, whichever role the query selects.
 
 ## How measures combine
 
