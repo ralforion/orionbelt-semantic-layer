@@ -261,6 +261,47 @@ are refused as on one database: the customers do not reach the orders.
 Value search (`POST .../values`) runs such queries too, so a dimension's
 values can be listed under a filter on another source.
 
+## Role-playing dimensions
+
+A dimension that plays a role ([`via`](model-format.md#role-playing-dimensions-via),
+with a [`pathName`](model-format.md#several-roles-in-one-query-pathname)) reads
+its data object through one of several joins. One database joins each role
+under an alias of its own. Across sources, each role of a dimension source is
+a dimension leg of its own, reading the table under that alias, and the fact
+leg returns each role's key. For an order's sales and support employee, both
+in the CRM:
+
+```sql
+-- leg_0, on shop
+SELECT "Orders"."sales_id" AS "__fk0_0", "Orders"."support_id" AS "__fk1_0", SUM("Orders"."amount") AS "Revenue"
+FROM "orders" AS "Orders"
+GROUP BY ALL
+
+-- leg_1, on crm
+SELECT "Employees__Orders__sales"."name" AS "Sales Employee", "Employees__Orders__sales"."employee_id" AS "__fk0_0"
+FROM "employees" AS "Employees__Orders__sales"
+GROUP BY ALL
+
+-- leg_2, on crm
+SELECT "Employees__Orders__support"."name" AS "Support Employee", "Employees__Orders__support"."employee_id" AS "__fk1_0"
+FROM "employees" AS "Employees__Orders__support"
+GROUP BY ALL
+
+-- combine
+SELECT "leg_1"."Sales Employee" AS "Sales Employee", "leg_2"."Support Employee" AS "Support Employee", CAST(SUM("leg_0"."Revenue") AS DECIMAL(18, 2)) AS "Revenue"
+FROM "leg_0" AS "leg_0"
+LEFT JOIN "leg_1" AS "leg_1" ON "leg_0"."__fk0_0" = "leg_1"."__fk0_0"
+LEFT JOIN "leg_2" AS "leg_2" ON "leg_0"."__fk1_0" = "leg_2"."__fk1_0"
+GROUP BY ALL
+```
+
+A role whose join stays within one source (a customer's account manager,
+customers and employees both in the CRM) runs in that source's leg, as on one
+database. A static filter on the role's data object filters that object as
+the model declares it, joined through its primary join, not a role's copy, as
+on one database: with a filter on `Employees`, an order is kept by its sales
+employee's team, whichever role the query selects.
+
 ## How measures combine
 
 Most measures combine from **partial results** the fact leg computes per
@@ -458,7 +499,6 @@ database would return, without a refusal.
 | `asOf` | `FEDERATION_UNSUPPORTED_QUERY` |
 | `usePathNames` | `FEDERATION_UNSUPPORTED_QUERY` |
 | One dimension selected at two grains | `FEDERATION_UNSUPPORTED_QUERY` |
-| Role-playing dimensions (`via`) | `FEDERATION_UNSUPPORTED_QUERY` |
 
 ### Joins between sources
 
