@@ -191,6 +191,15 @@ WHERE "leg_2"."__fk0_0" IS NULL
 GROUP BY ALL
 ```
 
+A subquery may read an object the outer query joins elsewhere: the orders of
+customers with a ticket handled by Ann, by each order's rep, where the tickets'
+agent and the order's rep are both employees. One database joins the
+employees twice, once in the outer query and once in the subquery. Federated,
+so is it: the employees' leg returns the reps, and the customers' leg reads
+the employees again for the subquery. A static filter on the employees runs
+in their own leg; its `enforce: always` form applies in the subquery too, as
+on one database.
+
 The combine query runs no subquery, so an `exists` that would run there,
 after the join, is refused: in an OR with a condition on another source, or
 in a group that holds where its subject is missing.

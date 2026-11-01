@@ -3608,3 +3608,281 @@ class TestComputedDimensions:
             "Dimension 'Home Region' is computed from Regions, which the query does not "
             "join to 'Customers' within its data source"
         )
+
+
+# Orders on the shop with their rep; customers, employees and tickets in the
+# CRM. Acme's tickets went to Ann and Bob, Beta's to Bob, Cora's to Cid; order
+# 5's customer 99 is missing.
+SHARED_TABLES = {
+    "shop": [
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10, 1, 100.50), (2, 10, 2, 20.25),"
+        " (3, 11, 1, 7.00), (4, 12, 3, 55.10), (5, 99, 2, 3.15))"
+        " t(order_id, customer_id, rep_id, amount)"
+    ],
+    "crm": [
+        "CREATE TABLE customers AS SELECT * FROM (VALUES (10, 'Acme'), (11, 'Beta'), (12, 'Cora'))"
+        " t(customer_id, name)",
+        "CREATE TABLE employees AS SELECT * FROM (VALUES (1, 'Ann'), (2, 'Bob'), (3, 'Cid'))"
+        " t(employee_id, name)",
+        "CREATE TABLE tickets AS SELECT * FROM (VALUES (10, 1), (10, 2), (11, 2), (12, 3))"
+        " t(customer_id, agent_id)",
+    ],
+}
+
+
+def shared_yaml(federated: bool, static: str = "") -> str:
+    """Orders joined to their customer and to their rep, an employee; tickets
+    joined to the customer and to their agent, an employee too."""
+    shop = "    dataSource: shop\n" if federated else ""
+    crm = "    dataSource: crm\n" if federated else ""
+    filters = f"filters:\n{static}" if static else ""
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Orders:
+    code: orders
+{shop}    columns:
+      Order ID: {{code: order_id, abstractType: int}}
+      Order Customer: {{code: customer_id, abstractType: int}}
+      Order Rep: {{code: rep_id, abstractType: int}}
+      Amount: {{code: amount, abstractType: decimal}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+      - joinType: many-to-one
+        joinTo: Employees
+        columnsFrom: [Order Rep]
+        columnsTo: [Employee ID]
+  Customers:
+    code: customers
+{crm}    columns:
+      Customer ID: {{code: customer_id, abstractType: int}}
+      Customer Name: {{code: name, abstractType: string}}
+  Employees:
+    code: employees
+{crm}    columns:
+      Employee ID: {{code: employee_id, abstractType: int}}
+      Name: {{code: name, abstractType: string}}
+  Tickets:
+    code: tickets
+{crm}    columns:
+      Ticket Customer: {{code: customer_id, abstractType: int}}
+      Ticket Agent: {{code: agent_id, abstractType: int}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Ticket Customer]
+        columnsTo: [Customer ID]
+      - joinType: many-to-one
+        joinTo: Employees
+        columnsFrom: [Ticket Agent]
+        columnsTo: [Employee ID]
+dimensions:
+  Customer Name: {{dataObject: Customers, column: Customer Name, resultType: string}}
+  Rep: {{dataObject: Employees, column: Name, resultType: string}}
+measures:
+  Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
+{filters}"""
+
+
+@pytest.fixture(scope="module")
+def shared_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("shared")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+    for name, statements in (
+        ("all", [*SHARED_TABLES["shop"], *SHARED_TABLES["crm"]]),
+        ("shop", SHARED_TABLES["shop"]),
+        ("crm", SHARED_TABLES["crm"]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+def _agent(op: str, name: str) -> dict[str, Any]:
+    """The orders of customers with (or without) a ticket handled by *name*."""
+    subquery = {
+        "dataObject": "Tickets",
+        "filter": [{"field": "Employees.Name", "op": "=", "value": name}],
+    }
+    return {"field": "Customers.Customer ID", "op": op, "subquery": subquery}
+
+
+SHARED_QUERIES = {
+    "exists_by_the_rep": {
+        "select": {"dimensions": ["Rep"], "measures": ["Revenue"]},
+        "where": [_agent("exists", "Ann")],
+    },
+    "nonexists_by_the_rep": {
+        "select": {"dimensions": ["Rep"], "measures": ["Revenue"]},
+        "where": [_agent("nonexists", "Ann")],
+    },
+    "exists_by_customer_and_rep": {
+        "select": {"dimensions": ["Customer Name", "Rep"], "measures": ["Revenue"]},
+        "where": [_agent("exists", "Cid")],
+    },
+    "exists_beside_a_filter_on_the_rep": {
+        "select": {"dimensions": ["Customer Name"], "measures": ["Revenue"]},
+        "where": [_agent("exists", "Ann"), {"field": "Rep", "op": "=", "value": "Ann"}],
+    },
+}
+NOT_BOB = "  - {dataObject: Employees, column: Name, operator: notequals, value: Bob}\n"
+
+
+class TestExistsReadingAnOuterObject:
+    """A subquery reading an object the outer query joins elsewhere reads it in its own leg."""
+
+    @pytest.mark.parametrize("query", SHARED_QUERIES.values(), ids=SHARED_QUERIES.keys())
+    @pytest.mark.parametrize(
+        "static",
+        ["", NOT_BOB, NOT_BOB.replace("}\n", ", enforce: always}\n")],
+        ids=["", "static", "enforced"],
+    )
+    def test_federated_returns_what_one_source_returns(
+        self, shared_files: dict[str, str], query: dict[str, Any], static: str
+    ) -> None:
+        """The employees are joined twice, as the orders' rep and as the
+        tickets' agent: their leg, and the customers' leg for the subquery."""
+        single = _compile(shared_yaml(False, static), query)
+        con = duckdb.connect(shared_files["all"], read_only=True)
+        try:
+            expected = sorted(_rows(con, single.sql), key=repr)
+        finally:
+            con.close()
+        compiled = _compile(shared_yaml(True, static), query)
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(shared_files[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+
+        assert sorted(_rows(combine, compiled.sql), key=repr) == expected
+        assert expected
+
+    def test_the_subjects_leg_reads_the_object_for_the_subquery(self) -> None:
+        query = SHARED_QUERIES["exists_by_the_rep"]
+
+        plan = _compile(shared_yaml(True), query).federation
+
+        legs = {leg.data_objects: leg for leg in plan.legs}
+        assert set(legs) == {
+            ("Orders",),
+            ("Employees",),
+            ("Customers", "Employees", "Tickets"),
+        }
+        customers = legs["Customers", "Employees", "Tickets"]
+        assert 'INNER JOIN "employees" AS "Employees"' in customers.sql
+
+
+def returns_chain_yaml(*sources: str, static: str = "") -> str:
+    """The chain with order IDs, and the orders' returns, each with the region
+    it was returned in, on the orders' source."""
+    yaml = chain_yaml(*sources).replace(
+        "      Order Customer: {code: customer_id, abstractType: int}\n",
+        "      Order ID: {code: order_id, abstractType: int}\n"
+        "      Order Customer: {code: customer_id, abstractType: int}\n",
+    )
+    returns = (
+        f"  Returns:\n    code: returns\n    dataSource: {sources[0]}\n    columns:\n"
+        "      Return Order: {code: order_id, abstractType: int}\n"
+        "      Return Region: {code: region_id, abstractType: int}\n"
+        "    joins:\n"
+        "      - joinType: many-to-one\n        joinTo: Orders\n"
+        "        columnsFrom: [Return Order]\n        columnsTo: [Order ID]\n"
+        "      - joinType: many-to-one\n        joinTo: Regions\n"
+        "        columnsFrom: [Return Region]\n        columnsTo: [Region ID]\n"
+    )
+    return yaml.replace("dimensions:\n", returns + "dimensions:\n", 1) + static
+
+
+RETURN_TABLES = {
+    **CHAIN_TABLES,
+    "orders": "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10, 100.50), (2, 10, 20.25),"
+    " (3, 11, 7.00), (4, 12, 55.10), (5, 13, 3.15), (6, 99, 40.00))"
+    " t(order_id, customer_id, amount)",
+    # Order 1 was returned in the EU, order 2 in the US, order 3 in the EU.
+    "returns": "CREATE TABLE returns AS SELECT * FROM (VALUES (1, 1), (2, 2), (3, 1))"
+    " t(order_id, region_id)",
+}
+
+
+@pytest.mark.parametrize(
+    "static",
+    [
+        "",
+        "filters:\n  - {dataObject: Regions, column: Region Name, operator: notequals,"
+        " value: US, enforce: always}\n",
+    ],
+    ids=["", "enforced"],
+)
+def test_a_subquery_on_the_facts_source_reads_the_object_with_injected_keys(
+    tmp_path: Any, static: str
+) -> None:
+    """The orders returned in the EU, of customers in region 1, by the
+    customers' region: the regions are read through the CRM's customers, a
+    leg of their own on the shop, and by the returns' subquery in the fact
+    leg. The fact leg reads only the keys the customers' leg returns, and
+    leaves the regions' static filter to their own leg there too."""
+    query = {
+        "select": {"dimensions": ["Region Name"], "measures": ["Revenue"]},
+        "where": [
+            {
+                "field": "Orders.Order ID",
+                "op": "exists",
+                "subquery": {
+                    "dataObject": "Returns",
+                    "filter": [{"field": "Regions.Region Name", "op": "=", "value": "EU"}],
+                },
+            },
+            {"field": "Customer Region", "op": "=", "value": 1},
+        ],
+    }
+    layout = {
+        "all": list(RETURN_TABLES),
+        "shop": ["orders", "regions", "returns"],
+        "crm": ["customers"],
+    }
+    paths = {name: str(tmp_path / f"{name}.duckdb") for name in layout}
+    for name, tables in layout.items():
+        con = duckdb.connect(paths[name])
+        for table in tables:
+            con.execute(RETURN_TABLES[table])
+        con.close()
+    single = _compile(returns_chain_yaml("all", "all", "all", static=static), query)
+    con = duckdb.connect(paths["all"], read_only=True)
+    try:
+        expected = sorted(_rows(con, single.sql), key=repr)
+    finally:
+        con.close()
+
+    compiled = _compile(returns_chain_yaml("shop", "crm", "shop", static=static), query)
+    plan = compiled.federation
+    assert plan.legs[0].data_objects == ("Orders", "Regions", "Returns")
+    tables = {}
+    for leg in plan.legs:
+        con = duckdb.connect(paths[leg.data_source], read_only=True)
+        try:
+            tables[leg.name] = con.sql(leg.sql).to_arrow_table()
+        finally:
+            con.close()
+    (injection,) = plan.injections
+    keys = sorted(v for v in tables[injection.leg].column(injection.column).to_pylist() if v)
+    con = duckdb.connect(paths["shop"], read_only=True)
+    try:
+        tables["leg_0"] = con.sql(plan.inject({injection.column: keys}).sql).to_arrow_table()
+    finally:
+        con.close()
+    combine = duckdb.connect()
+    for name, table in tables.items():
+        combine.register(name, table)
+
+    assert sorted(_rows(combine, compiled.sql), key=repr) == expected
+    assert expected == [("EU", Decimal("100.50"))]

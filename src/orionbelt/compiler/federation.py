@@ -254,6 +254,8 @@ class KeyInjector:
         squares: The sums of squares it reads, by name, each with its scale.
         own_zone: The ``(data object, column)`` pairs it reads in their own
             time (:func:`columns_in_own_zone`).
+        body: The objects of other islands its ``exists`` subqueries read, whose
+            static filters it leaves out (:func:`static_filters_after_join`).
         rekeyed: Its columns compared as their engine compares them.
         kept: The copies of rekeyed columns a combine filter reads.
         compile_leg: As :func:`plan_federated` takes it.
@@ -265,6 +267,7 @@ class KeyInjector:
     columns: tuple[DataObjectColumn, ...]
     squares: dict[str, int]
     own_zone: frozenset[tuple[str, str]]
+    body: frozenset[str]
     rekeyed: dict[str, tuple[str, bool]]
     kept: dict[str, str]
     compile_leg: Callable[[QueryObject, SemanticModel, str], str] = dataclasses.field(
@@ -290,6 +293,7 @@ class KeyInjector:
             partial_sums(),
             partial_squares(dialect, self.squares),
             columns_in_own_zone(self.own_zone),
+            static_filters_after_join(self.body),
         ):
             sql = self.compile_leg(query, self.model, dialect.name)
         if self.rekeyed:
@@ -416,6 +420,7 @@ def plan_federated(
     planner.check_query_shape()
     islands = planner.islands()
     planner.check_dimensions(islands)
+    body_reads = planner.body_reads(islands)
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
     rows_for = planner.check_measures(islands[fact])
@@ -528,8 +533,9 @@ def plan_federated(
     }
     in_own_zone = frozenset((row_values[column][0], column) for column in own_zone)
     fact_own_grain = own_grain.get(fact, {})
+    fact_body = frozenset(body_reads.get(fact, set()))
     fact_model = planner.island_model(
-        islands[fact],
+        islands[fact] | fact_body,
         {**fact_keys, **fact_values, **row_values},
         leg_measures,
         own_zone=own_zone,
@@ -585,11 +591,12 @@ def plan_federated(
         partial_sums(),
         partial_squares(planner.leg_dialect(islands[fact]), squares),
         columns_in_own_zone(in_own_zone),
+        static_filters_after_join(fact_body),
     ):
         legs.append(
             planner.leg(
                 "leg_0",
-                islands[fact],
+                islands[fact] | fact_body,
                 fact_query,
                 fact_model,
                 fact_columns,
@@ -664,6 +671,7 @@ def plan_federated(
         dims = edge_dims[e - 1]
         dim_own_grain = own_grain.get(edge.island, {})
         island = islands[edge.island]
+        body = body_reads.get(edge.island, set())
         # A static model filter on this island runs in the combine step, on
         # the column this leg returns for it, as it runs on a left-joined
         # object in one database: there it drops the fact rows whose object
@@ -690,7 +698,7 @@ def plan_federated(
             if own and column in read_here
         }
         dim_model = planner.island_model(
-            island,
+            island | body,
             {**keys, **onward, **static_columns, **read_here},
             {},
             own_zone=read_own_zone,
@@ -722,12 +730,12 @@ def plan_federated(
         renamed.update({source: hidden for hidden, source in dim_kept.items()})
         with (
             columns_in_own_zone(frozenset((read_here[c][0], c) for c in read_own_zone)),
-            static_filters_after_join(after_join),
+            static_filters_after_join(after_join | body),
         ):
             legs.append(
                 planner.leg(
                     leg_name,
-                    island,
+                    island | body,
                     dim_query,
                     dim_model,
                     dim_columns,
@@ -793,7 +801,7 @@ def plan_federated(
         }
         key_columns = [_key_column(model, name, obj, col) for name, (obj, col) in keys.items()]
         holds = missing.item.model_copy(update={"op": FilterOperator.EXISTS})
-        island = islands[missing.island]
+        island = islands[missing.island] | body_reads.get(missing.island, set())
         with static_filters_after_join(island - planner.in_subqueries):
             legs.append(
                 planner.leg(
@@ -956,6 +964,7 @@ def plan_federated(
             columns=tuple(fact_columns),
             squares=squares,
             own_zone=in_own_zone,
+            body=fact_body,
             rekeyed=fact_rekeyed,
             kept=fact_kept,
             compile_leg=compile_leg,
@@ -1058,7 +1067,9 @@ class _Planner:
         """The query's objects grouped by source and joined within it.
 
         An ``exists`` subquery runs where its subject is read, so the objects
-        it reads join its subject's island; they must be of its data source.
+        it alone reads join its subject's island; they must be of its data
+        source. One the outer query reads too stays in its own island, and the
+        subject's leg reads it for the subquery as well (:meth:`body_reads`).
         """
         parent = {o: o for o in self.objects}
 
@@ -1087,12 +1098,30 @@ class _Planner:
                     f"of another data source than '{subject}', which it correlates to",
                     hint="Keep an exists subquery on the data source of its subject.",
                 )
-            for o in read:
+            for o in read & self.in_subqueries:
                 parent[find(o)] = find(subject)
         groups: dict[str, set[str]] = {}
         for o in sorted(self.objects):
             groups.setdefault(find(o), set()).add(o)
         return list(groups.values())
+
+    def body_reads(self, islands: list[set[str]]) -> dict[int, set[str]]:
+        """The objects of another island an ``exists`` subquery reads, by its subject's island.
+
+        One database joins such an object twice: in the outer query, as an
+        order's sales rep, and in the subquery, as the agent of the
+        customer's ticket. Its own island's leg reads it for the first, the
+        subject's leg for the second, its static filters left to its own leg
+        (:func:`static_filters_after_join`).
+        """
+        island_of = {o: i for i, island in enumerate(islands) for o in island}
+        reads: dict[int, set[str]] = {}
+        for item in _exists_filters(self.query.where):
+            home = island_of[_exists_subject(item, self.model) or ""]
+            apart = {o for o in _exists_objects(item, self.model) if island_of.get(o) != home}
+            if apart:
+                reads.setdefault(home, set()).update(apart)
+        return reads
 
     def check_dimensions(self, islands: list[set[str]]) -> None:
         """Each dimension the query reads is computed in its own data object's leg.
