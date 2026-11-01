@@ -261,6 +261,41 @@ doubles far from zero the result depends on the order values are added in, as
 on one source, and an integer variance beside a median is DuckDB's variance of
 doubles rather than the exact one from moments.
 
+### Measures reading another source
+
+A measure of the fact's source may read a column of another one: a line's
+quantity times a product's price kept in the catalog, revenue filtered on the
+customer's segment in the CRM, the first order by the customer's signup date.
+Such a measure is computed from rows, after the join:
+
+- the dimension leg of the other source returns each column the measure reads
+  beside its keys, read there as one database reads it (a `first` or `last`
+  ordering key as stored, any other column in the `queryTimezone`);
+- the fact leg returns its rows, as above, and the combine query joins the two
+  and computes the measure over the joined rows, as one database does.
+
+For revenue as quantity times price, by batch, the catalog leg becomes:
+
+```sql
+SELECT "Products"."product_id" AS "__fk0_0", "Products"."price" AS "__value1"
+FROM "products" AS "Products"
+GROUP BY ALL
+ORDER BY "__fk0_0" ASC, "__value1" ASC
+LIMIT 1000001
+```
+
+and the combine query computes
+`SUM("leg_0"."__value0" * "leg_1"."__value1")` over the fact rows left-joined
+to it. A filter on the other source still runs in its leg, and its keys are
+injected into the fact leg as for any filter there.
+
+Its values are compared as DuckDB compares them, so a value its own engine
+compares otherwise (a MySQL string in the measure's filter, say) is refused,
+as for a column of the fact's source. A measure counted once per row of
+another object of the fact's source (a customer's credit beside their orders)
+cannot read another source yet, nor can a measure read a column computed from
+columns of two sources.
+
 ### Objects the joins repeat
 
 A measure of an object the query's joins repeat (customers' ages over their
@@ -347,7 +382,7 @@ database would return, without a refusal.
 
 | Limitation | Error |
 |---|---|
-| Measures read from more than one source | `FEDERATION_MULTI_FACT` |
+| Measures whose values come from different sources (revenue beside a count of the CRM's customers); one measure reading a column of another source is [computed from rows](#measures-reading-another-source) | `FEDERATION_MULTI_FACT` |
 | Measures grouped by dimensions of another source on the many side of their join | `FEDERATION_UNSUPPORTED_JOIN` |
 | A chain of sources: a source joined through another dimension source rather than from the measures' source directly | `FEDERATION_UNSUPPORTED_JOIN` |
 | A join between sources that is not many-to-one from the measures' side | `FEDERATION_UNSUPPORTED_JOIN` |
@@ -362,7 +397,8 @@ database would return, without a refusal.
 |---|---|
 | Cumulative, period-over-period, window and reaggregate metrics (derived metrics work) | `FEDERATION_UNSUPPORTED_METRIC` |
 | A measure with `filterContext` or `grain` | `FEDERATION_UNSUPPORTED_AGGREGATION` |
-| A measure whose expression, filter or columns read another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
+| A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
+| A measure counted once per row of an object read through the fact rows that reads a column of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | Computed from rows: a measure that compares values its engine compares otherwise than DuckDB, a MySQL string (in a filter, as its ordering or expression, or as the argument of `min`, `max`, a percentile, `mode`, `first`, `last`, `listagg` or a `distinct` aggregation), or a ClickHouse float it counts (`mode`, a `distinct` aggregation) | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | Computed from rows: a measure of an object read through the fact rows that reads a value of which one row of that object has several (a sales column in a customer measure) | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | Computed from rows: a dimension or key read through two such objects at once | `FEDERATION_UNSUPPORTED_AGGREGATION` |
@@ -399,4 +435,5 @@ Not refused, and documented here so they are known:
 | `min` / `max` of strings | the combine step orders strings bytewise |
 | Doubles computed from rows | far from zero the result depends on the order values are added in, as on one source |
 | Integer variance computed from rows | beside a measure that needs rows, a variance is DuckDB's double variance, not the exact one from moments |
+| Decimal products computed from rows | typed as DuckDB types them, as on one DuckDB: two decimals of 18 digits or fewer multiply to `DECIMAL(18, s1 + s2)`, so two of 2 places raise an overflow past 10^14, where PostgreSQL and MySQL compute the product exactly |
 | Key injection skipped | for a key of two columns, of a type other than integer or string, or past the limit, the fact leg reads every key: the same answer, more rows read |

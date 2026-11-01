@@ -60,6 +60,13 @@ ROWS = [
 # leg grouped by key repeats it. Parents 998 and 999 have no rows.
 PARENT = [100 * n + r % 2 for n, rows in enumerate(VALUES.values()) for r in range(len(rows))]
 WEIGHTS = {p: p % 7 + 1 for p in PARENT} | {998: 5, 999: 7}
+# Each key's rate, on the other data source; none for some. Nought for the
+# 'wide' rows: DuckDB types the product of two decimals 18 digits wide or less
+# DECIMAL(18, 4) and raises past 10**14, on one DuckDB as in the combine step.
+RATES = {
+    k: "0.00" if label == "wide" else None if k % 7 == 3 else f"{(k % 5) * 0.25:.2f}"
+    for label, k, *_ in ROWS
+}
 
 MODEL = """\
 version: 1.0
@@ -89,6 +96,7 @@ dataObjects:
     columns:
       Group Key: {code: k, abstractType: int}
       Label: {code: l, abstractType: string}
+      R: {code: r, abstractType: decimal, sqlPrecision: 10, sqlScale: 2}
 dimensions:
   Label: {dataObject: Groups, column: Label, resultType: string}
 measures:
@@ -142,6 +150,18 @@ measures:
     aggregation: count_distinct
     resultType: int
   Heaviest: {columns: [{dataObject: Parents, column: W}], aggregation: max, resultType: int}
+  Rated D:
+    expression: "{[Facts].[D]} * {[Groups].[R]}"
+    aggregation: sum
+    resultType: float
+  Rated Rows:
+    columns: [{dataObject: Facts, column: Key}]
+    aggregation: count
+    resultType: int
+    filters:
+      - column: {dataObject: Groups, column: R}
+        operator: gt
+        values: [{dataType: int, valueInt: 0}]
 """
 
 MEASURES = [
@@ -191,7 +211,8 @@ def _tables(dialect: str) -> str:
         for (_, k, i, d, f, o), p in zip(ROWS, PARENT, strict=True)
     )
     groups = " UNION ALL ".join(
-        f"SELECT {value(k, whole)} AS {q('k')}, {value(label, text)} AS {q('l')}"
+        f"SELECT {value(k, whole)} AS {q('k')}, {value(label, text)} AS {q('l')}, "
+        f"{value(RATES[k], decimal)} AS {q('r')}"
         for k, label in sorted({(k, label) for label, k, *_ in ROWS})
     )
     parents = " UNION ALL ".join(
@@ -346,9 +367,49 @@ def _expected_weights() -> dict[str | None, tuple[Any, ...]]:
     return {label: weights(label, reached) for label, reached in parents.items()}
 
 
+ACROSS_MEASURES = ["Rated D", "Rated Rows"]
+
+
+def _rated(target: VendorTarget) -> dict[str, tuple[Any, ...]]:
+    """Per label, the sum of D times the rate of its key, read on the other
+    data source, and the rows whose rate is positive."""
+    store = ModelStore()
+    query = QueryObject.model_validate(
+        {"select": {"dimensions": ["Label"], "measures": ACROSS_MEASURES}}
+    )
+    plan = store.compile_query(store.load_model(MODEL).model_id, query, target.dialect).federation
+    assert plan is not None
+    assert plan.legs[0].rows is not None
+    tables = {
+        leg.name: normalize_leg(leg, _arrow(target.execute(_on_tables(target.dialect, leg.sql))))
+        for leg in plan.legs
+    }
+    rows = combine(plan, tables, None).arrow_table.to_pylist()
+    return {r["Label"]: tuple(r[m] for m in ACROSS_MEASURES) for r in rows}
+
+
+def _expected_rated() -> dict[str, tuple[Any, ...]]:
+    expected = {}
+    for label in VALUES:
+        rows = [(k, d) for name, k, _, d, *_ in ROWS if name == label]
+        products = [
+            _exact(d) * _exact(RATES[k]) for k, d in rows if d is not None and RATES[k] is not None
+        ]
+        positive = sum(1 for k, _ in rows if RATES[k] is not None and _exact(RATES[k]) > 0)
+        expected[label] = (float(sum(products)) if products else None, positive)
+    return expected
+
+
 def _assert_exact(target: VendorTarget) -> None:
     assert _mismatches(target) == [], f"{target.name}: measures from rows differ"
     assert _weights(target) == _expected_weights(), f"{target.name}: parents counted otherwise"
+    rated = _rated(target)
+    for label, (want, positive) in _expected_rated().items():
+        got, rows = rated[label]
+        assert rows == positive, f"{target.name} {label}: {rows} rated rows for {positive}"
+        assert (got is None) == (want is None), f"{target.name} {label}: {got} for {want}"
+        if want is not None:
+            assert got == pytest.approx(want, rel=1e-12), f"{target.name} {label}: {got}"
 
 
 def test_duckdb_federated_rows(vendor_duckdb: VendorTarget) -> None:

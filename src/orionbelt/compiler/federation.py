@@ -402,7 +402,7 @@ def plan_federated(
     # from rows, the combine step counts each once itself.
     rows_for = rows_for or planner.repeats(edges, fact_dims) or planner.counts_beside_others()
     if rows_for:
-        planner.check_rows(rows_for[0], islands[fact])
+        planner.check_rows(rows_for[0])
     from_rows = bool(rows_for)
     legs: list[FederatedLeg] = []
     combine_objects: dict[str, DataObject] = {}
@@ -439,7 +439,12 @@ def plan_federated(
     if from_rows:
         # A key read in its own time is a copy of its column, under the key's
         # name, which no column of its data object may have.
-        taken |= {c.casefold() for o in islands[fact] for c in model.data_objects[o].columns}
+        taken |= {
+            c.casefold()
+            for island in islands
+            for o in island
+            for c in model.data_objects[o].columns
+        }
         parents = planner.parents()
         identities = {
             parent: dedup_identity(parent, names, resolved, model)
@@ -455,8 +460,25 @@ def plan_federated(
     # The values a count of distinct values counts: the fact leg groups by them
     # too, so the combine step counts them across every group they reach.
     fact_values = {column: (obj, col) for column, obj, col in distinct.values()}
-    row_values = {column: (obj, col) for (obj, col, _), column in measure_columns.items()}
-    own_zone = {column for (_, _, own), column in measure_columns.items() if own}
+    # A column a measure reads of another data source comes from that
+    # source's dimension leg, beside its keys; the rest from the fact leg.
+    island_legs = {edge.island: f"leg_{e}" for e, edge in enumerate(edges, start=1)}
+    elsewhere = {
+        read: island_legs[i]
+        for read in measure_columns
+        for i, island in enumerate(islands)
+        if read[0] in island and i != fact
+    }
+    row_values = {
+        column: (obj, col)
+        for (obj, col, own), column in measure_columns.items()
+        if (obj, col, own) not in elsewhere
+    }
+    own_zone = {
+        column
+        for (obj, col, own), column in measure_columns.items()
+        if own and (obj, col, own) not in elsewhere
+    }
     in_own_zone = frozenset((row_values[column][0], column) for column in own_zone)
     fact_model = planner.island_model(
         islands[fact],
@@ -583,11 +605,26 @@ def plan_federated(
             if f.data_object in island
         }
         static_columns = {name: (obj, col) for name, (obj, col, _) in static.items()}
+        # The columns measures read here, as the fact leg returns its own.
+        read_here = {
+            column: (obj, col)
+            for (obj, col, own), column in measure_columns.items()
+            if elsewhere.get((obj, col, own)) == leg_name
+        }
+        read_own_zone = {
+            column
+            for (obj, col, own), column in measure_columns.items()
+            if own and column in read_here
+        }
         dim_model = planner.island_model(
-            island, {**keys, **static_columns}, {}, static_filters=False
+            island,
+            {**keys, **static_columns, **read_here},
+            {},
+            static_filters=False,
+            own_zone=read_own_zone,
         )
         dim_query = QueryObject(
-            select=QuerySelect(dimensions=[*dims, *keys, *static_columns]),
+            select=QuerySelect(dimensions=[*dims, *keys, *static_columns, *read_here]),
             where=leg_filters.get(edge.island, []),
             limit=leg_limit,
         )
@@ -597,6 +634,7 @@ def plan_federated(
                 _key_column(model, name, obj, col)
                 for name, (obj, col) in {**keys, **static_columns}.items()
             ],
+            *[_value_column(model, name, obj, col) for name, (obj, col) in read_here.items()],
         ]
         dim_columns, dim_rekeyed, dim_kept = _rekeyed(
             planner.leg_dialect(island),
@@ -606,18 +644,19 @@ def plan_federated(
             kept,
         )
         renamed.update({source: hidden for hidden, source in dim_kept.items()})
-        legs.append(
-            planner.leg(
-                leg_name,
-                island,
-                dim_query,
-                dim_model,
-                dim_columns,
-                compile_leg,
-                rekeyed=dim_rekeyed,
-                kept=dim_kept,
+        with columns_in_own_zone(frozenset((read_here[c][0], c) for c in read_own_zone)):
+            legs.append(
+                planner.leg(
+                    leg_name,
+                    island,
+                    dim_query,
+                    dim_model,
+                    dim_columns,
+                    compile_leg,
+                    rekeyed=dim_rekeyed,
+                    kept=dim_kept,
+                )
             )
-        )
         combine_objects[leg_name] = DataObject(
             name=leg_name,
             code=leg_name,
@@ -739,7 +778,7 @@ def plan_federated(
         dimensions=combine_dimensions,
         measures={
             m: (
-                _row_measure(model, m, measure_columns, once_of.get(m, "leg_0"))
+                _row_measure(model, m, measure_columns, once_of.get(m, "leg_0"), elsewhere)
                 if from_rows and m not in distinct
                 else _combine_measure(model, m, leg_columns.get(m), once_of.get(m, "leg_0"))
             )
@@ -900,9 +939,22 @@ class _Planner:
         return list(groups.values())
 
     def fact_island(self, islands: list[set[str]]) -> int:
-        """The island of the measures, which must also hold the base object."""
-        measure_objects = set(self.resolved.measure_source_objects)
-        owners = {i for i, island in enumerate(islands) if island & measure_objects}
+        """The island of the measures, which must also hold the base object.
+
+        A measure belongs to the island its values come from, its ``columns``
+        and ``expression``: the base's, when they come from it and from
+        another island too. That other island is read through the joins from
+        the base's, as a dimension is (:meth:`federation_edges`), and so are
+        the columns its filters or ordering read there; the combine step
+        computes such a measure from rows (:meth:`check_measures`).
+        """
+        island_of = {o: i for i, island in enumerate(islands) for o in island}
+        base = island_of[self.resolved.base_object]
+        effective = self.model.effective_measures
+        owners: set[int] = set()
+        for name in self.atomic_measures():
+            homes = {island_of[o] for o in effective[name].source_objects if o in island_of}
+            owners |= {base} if base in homes else homes
         if len(owners) > 1:
             listed = "; ".join(
                 f"{self._island_source(islands[i])}: {', '.join(sorted(islands[i]))}"
@@ -913,7 +965,6 @@ class _Planner:
                 f"The query's measures are read from more than one data source ({listed})",
                 hint="Measures of one query must come from one data source for now.",
             )
-        base = next(i for i, island in enumerate(islands) if self.resolved.base_object in island)
         if owners and owners != {base}:
             (fact,) = owners
             raise self.refuse(
@@ -1045,7 +1096,11 @@ class _Planner:
         group (:meth:`combines`). When one does not - a median, a
         correlation, a variance of floats, an average with a total - the fact
         leg returns its rows instead, and the combine step computes every
-        measure from them (:meth:`check_rows`).
+        measure from them (:meth:`check_rows`). So it does when a measure
+        reads a column of another data source, in its expression, a filter or
+        its ordering: the dimension leg of that source returns the column
+        beside its keys, and the combine step computes the measure after the
+        join, as one database computes it over the joined rows.
         """
         for rm in self.resolved.measures:
             if rm.is_cumulative or rm.is_pop or rm.is_window or rm.is_reaggregate:
@@ -1064,14 +1119,38 @@ class _Planner:
                     f"Measure '{name}' sets filterContext or grain, which a federated "
                     "query does not support yet",
                 )
-            outside = self.model.measure_join_objects(name) - fact_island
-            if outside:
+            for obj, column, _ in _read_columns(measure):
+                apart = sorted(
+                    o
+                    for o in self._column_objects(obj, column)
+                    if self.sources.get(o) != self.sources.get(obj)
+                )
+                if apart:
+                    raise self.refuse(
+                        "MEASURE_ACROSS_SOURCES",
+                        f"Measure '{name}' reads '{obj}.{column}', which is computed from "
+                        f"{', '.join(apart)}, of another data source",
+                        hint="Compute the column from columns of its own data source.",
+                    )
+        across = {
+            name
+            for name in names
+            if any(obj not in fact_island for obj, _, _ in _read_columns(effective[name]))
+        }
+        for parent, owned in self.parents().items():
+            if reading := sorted(across.intersection(owned)):
                 raise self.refuse(
                     "MEASURE_ACROSS_SOURCES",
-                    f"Measure '{name}' reads {', '.join(sorted(outside))}, of another "
-                    "data source than its own",
+                    f"Measure '{reading[0]}' is counted once per row of '{parent}', and "
+                    "reads a column of another data source, which a federated query does "
+                    "not support yet",
+                    hint=f"Query '{reading[0]}' on one data source.",
                 )
-        return [name for name in names if not self.combines(effective[name], fact_island)]
+        return [
+            name
+            for name in names
+            if name in across or not self.combines(effective[name], fact_island)
+        ]
 
     def combines(self, measure: Measure, fact_island: set[str]) -> bool:
         """Whether *measure* combines from the fact leg's partial results (:func:`_leg_measures`).
@@ -1112,7 +1191,7 @@ class _Planner:
         dialect = self.leg_dialect(fact_island)
         return dialect.exact_square(ColumnRef(name=measure.name), scale) is not None
 
-    def check_rows(self, reason: str, fact_island: set[str]) -> None:
+    def check_rows(self, reason: str) -> None:
         """Refuse what the combine step cannot compute from the fact leg's rows.
 
         The fact leg returns the rows of the query's base object grouped by
@@ -1145,12 +1224,13 @@ class _Planner:
                             f"'{parent}' can have several values of",
                             hint=_apart(reason, name),
                         )
-        dialect = self.leg_dialect(fact_island)
         for name in sorted(self.atomic_measures()):
             measure = effective[name]
             if _counts_distinct_column(measure):
                 continue
             for obj, column, counted in _compared_columns(measure):
+                # Read on its own data source: the fact leg's, or another's.
+                dialect = self.leg_dialect({obj})
                 kind = self.model.data_objects[obj].columns[column].abstract_type.value
                 if dialect.equality_key(ColumnRef(name=column), kind, counted=counted) is not None:
                     raise self.refuse(
@@ -1863,21 +1943,28 @@ def _row_measures(
 
 
 def _row_measure(
-    model: SemanticModel, name: str, columns: dict[tuple[str, str, bool], str], view: str
+    model: SemanticModel,
+    name: str,
+    columns: dict[tuple[str, str, bool], str],
+    view: str,
+    elsewhere: dict[tuple[str, str, bool], str],
 ) -> Measure:
     """The measure as the combine step computes it from the fact leg's rows.
 
     The measure itself, reading each column it reads from *view*'s column of
     it (:func:`_row_measures`): the fact leg's, or, for a measure counted
-    once per row of its object, that object's rows once each. It keeps its
-    type, default and ``total``. A count of rows counts *view*'s rows.
+    once per row of its object, that object's rows once each. A column of
+    another data source it reads from the dimension leg *elsewhere* names,
+    which the combine step joins to the fact rows. It keeps its type,
+    default and ``total``. A count of rows counts *view*'s rows.
     """
     measure = model.effective_measures[name]
 
     def at(ref: DataColumnRef, own_zone: bool = False) -> DataColumnRef:
         if not ref.column:
             return DataColumnRef(view=view)
-        return DataColumnRef(view=view, column=columns[(ref.view or "", ref.column, own_zone)])
+        read = (ref.view or "", ref.column, own_zone)
+        return DataColumnRef(view=elsewhere.get(read, view), column=columns[read])
 
     update: dict[str, Any] = {
         "columns": [at(ref) for ref in measure.columns],
@@ -1887,7 +1974,11 @@ def _row_measure(
     if measure.expression:
         update["expression"] = repoint_references(
             measure.expression,
-            {(obj, col): (view, leg) for (obj, col, own), leg in columns.items() if not own},
+            {
+                (obj, col): (elsewhere.get((obj, col, own), view), leg)
+                for (obj, col, own), leg in columns.items()
+                if not own
+            },
         )
     if measure.within_group is not None:
         ordering = measure.within_group.column
