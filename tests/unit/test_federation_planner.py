@@ -2567,3 +2567,245 @@ class TestMeasuresReadingAnotherSource:
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_MEASURE_ACROSS_SOURCES"
         assert "'Lines.Gross', which is computed from Products" in error.message
+
+
+# Customer 10 has two tickets, 12 one; ticket 4's customer 98 is not a
+# customer. Orders 1 and 4 have returns. Order 6's customer 99 is missing:
+# one database keeps it under nonexists, its subject row being NULL.
+TICKETS = (
+    "CREATE TABLE tickets AS SELECT * FROM (VALUES (1, 10, 'high'), (2, 10, 'low'),"
+    " (3, 12, 'low'), (4, 98, 'high')) t(ticket_id, customer_id, severity)"
+)
+RETURNS = (
+    "CREATE TABLE returns AS SELECT * FROM (VALUES (1, 1, 'broken'), (2, 4, 'late'),"
+    " (3, 4, 'broken')) t(return_id, order_id, reason)"
+)
+REASONS = (
+    "CREATE TABLE reasons AS SELECT * FROM (VALUES ('broken', 'Damaged'), ('late', 'Delayed'))"
+    " t(reason, label)"
+)
+SUBQUERY_OBJECTS = """\
+  Tickets:
+    code: tickets
+{crm}    columns:
+      Ticket ID: {{code: ticket_id, abstractType: int}}
+      Ticket Customer: {{code: customer_id, abstractType: int}}
+      Severity: {{code: severity, abstractType: string}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Ticket Customer]
+        columnsTo: [Customer ID]
+  Returns:
+    code: returns
+{shop}    columns:
+      Return ID: {{code: return_id, abstractType: int}}
+      Return Order: {{code: order_id, abstractType: int}}
+      Reason: {{code: reason, abstractType: string}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Orders
+        columnsFrom: [Return Order]
+        columnsTo: [Order ID]
+      - {{joinType: many-to-one, joinTo: Reasons, columnsFrom: [Reason], columnsTo: [Reason Code]}}
+  Reasons:
+    code: reasons
+{crm}    columns:
+      Reason Code: {{code: reason, abstractType: string}}
+      Reason Label: {{code: label, abstractType: string}}
+"""
+
+
+def subquery_model(federated: bool, **model: Any) -> str:
+    """The orders and customers model with tickets on the CRM, returns on the shop."""
+    shop = "    dataSource: shop\n" if federated else ""
+    crm = "    dataSource: crm\n" if federated else ""
+    objects = SUBQUERY_OBJECTS.format(shop=shop, crm=crm)
+    return model_yaml(federated=federated, **model).replace(
+        "dimensions:\n", objects + "dimensions:\n", 1
+    )
+
+
+@pytest.fixture(scope="module")
+def subquery_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("subquery")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+    for name, statements in (
+        ("all", [ORDERS, CUSTOMERS, TICKETS, RETURNS, REASONS]),
+        ("shop", [ORDERS, RETURNS]),
+        ("crm", [CUSTOMERS, TICKETS, REASONS]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+def _tickets(op: str, *filters: dict[str, Any]) -> dict[str, Any]:
+    subquery = {"dataObject": "Tickets", "filter": list(filters)}
+    return {"field": "Customers.Customer ID", "op": op, "subquery": subquery}
+
+
+def _returns(op: str) -> dict[str, Any]:
+    return {"field": "Orders.Order ID", "op": op, "subquery": {"dataObject": "Returns"}}
+
+
+HIGH = {"field": "Severity", "op": "=", "value": "high"}
+BY_MONTH = {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Orders Count"]}
+BY_REGION = {"dimensions": ["Region"], "measures": ["Revenue", "Orders Count"]}
+
+SUBQUERY_QUERIES = {
+    "exists_on_the_other_source": {"select": BY_MONTH, "where": [_tickets("exists")]},
+    "nonexists_on_the_other_source": {"select": BY_MONTH, "where": [_tickets("nonexists")]},
+    "exists_filtered_in_its_subquery": {"select": BY_REGION, "where": [_tickets("exists", HIGH)]},
+    "nonexists_filtered_in_its_subquery": {
+        "select": BY_REGION,
+        "where": [_tickets("nonexists", HIGH)],
+    },
+    "exists_on_the_facts_source": {"select": BY_REGION, "where": [_returns("exists")]},
+    "nonexists_on_the_facts_source": {"select": BY_REGION, "where": [_returns("nonexists")]},
+    "nonexists_beside_a_filter_there": {
+        "select": BY_MONTH,
+        "where": [_tickets("nonexists"), {"field": "Region", "op": "=", "value": "US"}],
+    },
+    "exists_in_a_group_on_its_source": {
+        "select": BY_MONTH,
+        "where": [
+            {
+                "logic": "or",
+                "filters": [_tickets("exists"), {"field": "Region", "op": "=", "value": "US"}],
+            }
+        ],
+    },
+    "nonexists_on_both_sources": {
+        "select": BY_REGION,
+        "where": [_tickets("nonexists"), _returns("nonexists")],
+    },
+    "nonexists_without_measures": {
+        "select": {"dimensions": ["Order Date:month", "Region"]},
+        "where": [_tickets("nonexists")],
+    },
+}
+
+
+class TestExists:
+    """An exists subquery runs on its subject's data source, as one database runs it."""
+
+    def _run(
+        self, paths: dict[str, str], federated: bool, query: dict[str, Any], **model: Any
+    ) -> list[Any]:
+        compiled = _compile(subquery_model(federated, **model), query)
+        if not federated:
+            assert compiled.federation is None
+            con = duckdb.connect(paths["all"], read_only=True)
+            try:
+                return _rows(con, compiled.sql)
+            finally:
+                con.close()
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(paths[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+        return _rows(combine, compiled.sql)
+
+    @pytest.mark.parametrize("query", SUBQUERY_QUERIES.values(), ids=SUBQUERY_QUERIES.keys())
+    @pytest.mark.parametrize("tenant_filter", [False, True], ids=["", "tenant"])
+    def test_federated_returns_what_one_source_returns(
+        self, subquery_files: dict[str, str], query: dict[str, Any], tenant_filter: bool
+    ) -> None:
+        single = self._run(subquery_files, False, query, tenant_filter=tenant_filter)
+        federated = self._run(subquery_files, True, query, tenant_filter=tenant_filter)
+
+        assert sorted(federated, key=repr) == sorted(single, key=repr)
+        assert single
+
+    def test_the_order_without_a_customer_is_kept_under_nonexists(
+        self, subquery_files: dict[str, str]
+    ) -> None:
+        query = {"select": {"measures": ["Orders Count"]}, "where": [_tickets("nonexists")]}
+
+        # Orders 3, 7 (customer 11), 5 (13) and 6 (99, missing).
+        assert self._run(subquery_files, True, query) == [(4,)]
+
+    def test_nonexists_on_the_other_source_reads_the_keys_it_holds_for(self) -> None:
+        plan = _compile(
+            subquery_model(True), {"select": BY_MONTH, "where": [_tickets("nonexists", HIGH)]}
+        ).federation
+
+        orders, customers, holding = plan.legs
+        assert "EXISTS" not in orders.sql and "EXISTS" not in customers.sql
+        assert holding.data_source == "crm" and "WHERE EXISTS (" in holding.sql
+        assert "'high'" in holding.sql
+        assert set(holding.physical_tables) == {"customers", "tickets"}
+        assert f'"{holding.name}"."__fk0_0" IS NULL' in plan.combine_sql
+
+    def test_exists_on_the_other_source_runs_in_its_leg_and_narrows_the_facts(self) -> None:
+        plan = _compile(
+            subquery_model(True), {"select": BY_MONTH, "where": [_tickets("exists")]}
+        ).federation
+
+        orders, customers = plan.legs
+        assert "WHERE EXISTS (" in customers.sql
+        assert [i.leg for i in plan.injections] == ["leg_1"]
+
+    def test_exists_on_the_facts_source_runs_in_the_fact_leg(self) -> None:
+        plan = _compile(
+            subquery_model(True), {"select": BY_REGION, "where": [_returns("nonexists")]}
+        ).federation
+
+        orders, customers = plan.legs
+        assert "WHERE NOT EXISTS (" in orders.sql
+        assert "returns" in orders.physical_tables
+
+    def test_beside_a_condition_on_another_source_it_is_refused(self) -> None:
+        after = {"field": "Order Date", "op": ">=", "value": "2024-03-01"}
+        query = {
+            "select": BY_REGION,
+            "where": [{"logic": "or", "filters": [_tickets("exists"), after]}],
+        }
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(subquery_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+        assert "An exists filter that runs after the join" in error.message
+
+    def test_a_subquery_reading_another_source_than_its_subject_is_refused(self) -> None:
+        tickets_of_orders = {
+            "field": "Orders.Order ID",
+            "op": "exists",
+            "subquery": {"dataObject": "Tickets"},
+        }
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(subquery_model(True), {"select": BY_REGION, "where": [tickets_of_orders]})
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+        assert "reads Customers, Tickets, of another data source than 'Orders'" in error.message
+
+    def test_a_subquery_filter_on_another_source_is_not_compiled_for_one(self) -> None:
+        """The orders returned as damaged, the reasons kept in the CRM: the
+        query read only the shop's objects besides, so it was compiled for the
+        shop alone, with the CRM's reasons table in its SQL."""
+        returns = {
+            "field": "Orders.Order ID",
+            "op": "exists",
+            "subquery": {
+                "dataObject": "Returns",
+                "filter": [{"field": "Reasons.Reason Label", "op": "=", "value": "Damaged"}],
+            },
+        }
+        query = {"select": {"dimensions": ["Order Date"], "measures": ["Revenue"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(subquery_model(True), {**query, "where": [returns]})
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+        assert "reads Reasons, of another data source than 'Orders'" in error.message

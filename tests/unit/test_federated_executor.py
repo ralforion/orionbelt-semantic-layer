@@ -50,7 +50,15 @@ from orionbelt.service.federated_executor import (  # noqa: E402
 )
 from orionbelt.service.session_manager import SessionManager  # noqa: E402
 from orionbelt.settings import Settings  # noqa: E402
-from tests.unit.test_federation_planner import CUSTOMERS, ORDERS, model_yaml  # noqa: E402
+from tests.unit.test_federation_planner import (  # noqa: E402
+    CUSTOMERS,
+    ORDERS,
+    REASONS,
+    RETURNS,
+    TICKETS,
+    model_yaml,
+    subquery_model,
+)
 
 REVENUE_BY_REGION = {
     "select": {"dimensions": ["Region"], "measures": ["Revenue", "Top Order", "Orders Count"]},
@@ -70,9 +78,9 @@ def sources(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """``shop``, ``crm`` and ``all``: three DuckDB files as named data sources."""
     paths = {name: str(tmp_path / f"{name}.duckdb") for name in ("all", "shop", "crm")}
     for name, statements in (
-        ("all", [ORDERS, CUSTOMERS]),
-        ("shop", [ORDERS]),
-        ("crm", [CUSTOMERS]),
+        ("all", [ORDERS, CUSTOMERS, TICKETS, RETURNS, REASONS]),
+        ("shop", [ORDERS, RETURNS]),
+        ("crm", [CUSTOMERS, TICKETS, REASONS]),
     ):
         con = duckdb.connect(paths[name])
         for statement in statements:
@@ -405,6 +413,32 @@ class TestKeyInjection:
         assert [source for source, _ in ran[:2]] == ["crm", "shop"]
         assert '"Orders"."customer_id" IN (10, 13)' in ran[1][1]
         assert sum(Decimal(r[1]) for r in rows) == Decimal("123.90")
+
+    async def test_an_exists_on_the_other_source_narrows_the_fact_leg_too(
+        self, client: AsyncClient, ran: list[tuple[str, str]]
+    ) -> None:
+        """The revenue of customers with a ticket, and of those without one."""
+        tickets = {"dataObject": "Tickets"}
+        for op, keys in (("exists", "IN (10, 12)"), ("nonexists", None)):
+            ran.clear()
+            query = {
+                "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+                "where": [{"field": "Customers.Customer ID", "op": op, "subquery": tickets}],
+                "orderBy": [{"field": "Order Date"}],
+            }
+            single_yaml = subquery_model(False).replace(
+                "  defaultDialect: duckdb\n", "  defaultDialect: duckdb\n  defaultDataSource: all\n"
+            )
+
+            federated = await execute(client, subquery_model(True), query)
+            single = await execute(client, single_yaml, query)
+
+            assert federated.status_code == 200, federated.text
+            assert federated.json()["rows"] == single.json()["rows"]
+            assert federated.json()["rows"]
+            if keys is not None:
+                assert [source for source, _ in ran[:2]] == ["crm", "shop"]
+                assert f'"Orders"."customer_id" {keys}' in ran[1][1]
 
     async def test_a_query_without_measures_reads_the_keys_too(
         self, client: AsyncClient, ran: list[tuple[str, str]]

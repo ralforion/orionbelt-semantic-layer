@@ -40,12 +40,14 @@ plan.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
 from orionbelt.ast.nodes import ColumnRef, Expr
+from orionbelt.compiler.filters import _resolve_subquery_filter_field
 from orionbelt.compiler.grain_dedup import MULTIPLICITY_SAFE_AGGREGATIONS, dedup_identity
+from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery, columns_in_own_zone
 from orionbelt.compiler.type_resolver import (
     combined_averages,
@@ -68,6 +70,7 @@ from orionbelt.models.query import (
     QueryObject,
     QueryOrderBy,
     QuerySelect,
+    Subquery,
 )
 from orionbelt.models.semantic import (
     AggregationType,
@@ -147,9 +150,18 @@ _ONCE_RELATION = "leg_0_once"
 
 # The filter operators true where their field is NULL, and those false there.
 # Every other one compares the field, which is unknown (NULL) for NULL.
-_TRUE_FOR_NULL = frozenset({FilterOperator.IS_NULL, FilterOperator.NOT_SET, FilterOperator.BLANK})
+# A missing subject row matches no row of an ``exists`` subquery: ``exists`` is
+# false there, ``nonexists`` true.
+_TRUE_FOR_NULL = frozenset(
+    {FilterOperator.IS_NULL, FilterOperator.NOT_SET, FilterOperator.BLANK, FilterOperator.NONEXISTS}
+)
 _FALSE_FOR_NULL = frozenset(
-    {FilterOperator.IS_NOT_NULL, FilterOperator.SET, FilterOperator.NOT_BLANK}
+    {
+        FilterOperator.IS_NOT_NULL,
+        FilterOperator.SET,
+        FilterOperator.NOT_BLANK,
+        FilterOperator.EXISTS,
+    }
 )
 
 # The key types the fact leg may read a list of (:func:`_injectable_key_type`).
@@ -325,15 +337,22 @@ def source_name(model: SemanticModel, obj: str) -> str | None:
     return root.data_source or default
 
 
-def query_objects(resolved: ResolvedQuery, query: QueryObject) -> set[str]:
+def query_objects(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> set[str]:
     """Every data object a resolved query reads, ``exists`` subqueries included."""
+    objects = _outer_objects(resolved)
+    for item in _exists_filters([*query.where, *query.having]):
+        objects |= _exists_objects(item, model)
+    objects.discard("")
+    return objects
+
+
+def _outer_objects(resolved: ResolvedQuery) -> set[str]:
+    """The data objects a resolved query reads outside its ``exists`` subqueries."""
     objects = set(resolved.required_objects) | {resolved.base_object}
     for step in resolved.join_steps:
         objects |= {step.from_object, step.to_object}
     objects |= {d.object_name for d in resolved.dimensions}
     objects |= set(resolved.measure_source_objects)
-    for item in [*query.where, *query.having]:
-        objects |= _subquery_objects(item)
     objects.discard("")
     return objects
 
@@ -341,7 +360,8 @@ def query_objects(resolved: ResolvedQuery, query: QueryObject) -> set[str]:
 def is_federated(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> bool:
     """Whether a query reads data objects of more than one data source."""
     sources = object_sources(model)
-    return len({sources.get(o) for o in query_objects(resolved, query) if o in sources}) > 1
+    read = query_objects(resolved, query, model)
+    return len({sources.get(o) for o in read if o in sources}) > 1
 
 
 def query_source(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> str | None:
@@ -353,7 +373,7 @@ def query_source(resolved: ResolvedQuery, query: QueryObject, model: SemanticMod
     sources = object_sources(model)
     if len(set(sources.values())) < 2:
         return None
-    read = sorted(o for o in query_objects(resolved, query) if o in sources)
+    read = sorted(o for o in query_objects(resolved, query, model) if o in sources)
     return source_name(model, read[0]) if read else None
 
 
@@ -393,7 +413,7 @@ def plan_federated(
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
     rows_for = planner.check_measures(islands[fact])
-    leg_filters, combine_filters = planner.place_filters(islands, fact)
+    leg_filters, combine_filters, absent = planner.place_filters(islands, fact)
 
     fact_dims, edge_dims = planner.dimensions_by_island(islands, fact, edges, combine_filters)
     # Partial results count a row of an object the joins repeat once per
@@ -602,7 +622,7 @@ def plan_federated(
         static = {
             _unused(f"__sf{e - 1}_{n}", taken): (f.data_object, f.column, f)
             for n, f in enumerate(model.filters)
-            if f.data_object in island
+            if f.data_object in island and f.data_object not in planner.in_subqueries
         }
         static_columns = {name: (obj, col) for name, (obj, col, _) in static.items()}
         # The columns measures read here, as the fact leg returns its own.
@@ -620,7 +640,7 @@ def plan_federated(
             island,
             {**keys, **static_columns, **read_here},
             {},
-            static_filters=False,
+            filters_on=planner.in_subqueries,
             own_zone=read_own_zone,
         )
         dim_query = QueryObject(
@@ -698,6 +718,56 @@ def plan_federated(
                 columns_from=list(keys),
                 columns_to=list(keys),
                 required=edge.required,
+            )
+        )
+
+    # One leg per nonexists on a dimension island: the island's keys the
+    # subquery holds for, which the fact rows' keys must not be among.
+    edge_of = {edge.island: e for e, edge in enumerate(edges)}
+    for n, missing in enumerate(absent, start=len(legs)):
+        leg_name = f"leg_{n}"
+        e = edge_of[missing.island]
+        keys = {
+            key_names[e][i]: (edges[e].to_object, column)
+            for i, column in enumerate(edges[e].to_columns)
+        }
+        key_columns = [_key_column(model, name, obj, col) for name, (obj, col) in keys.items()]
+        holds = missing.item.model_copy(update={"op": FilterOperator.EXISTS})
+        legs.append(
+            planner.leg(
+                leg_name,
+                islands[missing.island],
+                QueryObject(select=QuerySelect(dimensions=[*keys]), where=[holds], limit=leg_limit),
+                planner.island_model(
+                    islands[missing.island], keys, {}, filters_on=planner.in_subqueries
+                ),
+                key_columns,
+                compile_leg,
+            )
+        )
+        combine_objects[leg_name] = DataObject(
+            name=leg_name,
+            code=leg_name,
+            database="",
+            schema_name="",
+            columns={c.name: c for c in key_columns},
+            countable=False,
+        )
+        combine_filters_static.append(
+            ModelFilter(
+                data_object=leg_name,
+                column=next(iter(keys)),
+                operator=FilterOperator.IS_NULL,
+                enforce=FilterEnforcement.ALWAYS,
+            )
+        )
+        owner = on_once.get(next(iter(keys)))
+        (once_joins.setdefault(owner, []) if owner else fact_joins).append(
+            DataObjectJoin(
+                join_type=Cardinality.MANY_TO_ONE,
+                join_to=leg_name,
+                columns_from=list(keys),
+                columns_to=list(keys),
             )
         )
 
@@ -847,6 +917,20 @@ class _Edge:
     required: bool
 
 
+@dataclass(frozen=True)
+class _Absent:
+    """A ``nonexists`` filter on a dimension island, and the island.
+
+    The combine step keeps the fact rows whose key is not among those of
+    the island's rows the subquery holds for: a leg of its own returns those
+    keys (``exists``), and a fact row whose key has no row in the island at
+    all is kept, as one database keeps it.
+    """
+
+    island: int
+    item: QueryFilter
+
+
 class _Planner:
     def __init__(
         self,
@@ -862,7 +946,10 @@ class _Planner:
         self.model = model
         self.resolved = resolved
         self.sources = object_sources(model)
-        self.objects = query_objects(resolved, query)
+        self.objects = query_objects(resolved, query, model)
+        # The objects only an ``exists`` subquery reads: the outer query of a
+        # leg does not join them, and their static filters apply in the body.
+        self.in_subqueries = self.objects - _outer_objects(resolved)
 
     # -- refusals -----------------------------------------------------------
 
@@ -896,9 +983,6 @@ class _Planner:
                 "UNSUPPORTED_QUERY",
                 "A federated query cannot select one dimension at two grains",
             )
-        for item in [*q.where, *q.having]:
-            if _subquery_objects(item):
-                raise self.refuse("UNSUPPORTED_QUERY", "A federated query cannot use exists")
         for name in names:
             if self.model.dimensions[name].via:
                 raise self.refuse(
@@ -910,7 +994,11 @@ class _Planner:
     # -- islands and edges --------------------------------------------------
 
     def islands(self) -> list[set[str]]:
-        """The query's objects grouped by source and joined within it."""
+        """The query's objects grouped by source and joined within it.
+
+        An ``exists`` subquery runs where its subject is read, so the objects
+        it reads join its subject's island; they must be of its data source.
+        """
         parent = {o: o for o in self.objects}
 
         def find(o: str) -> str:
@@ -927,6 +1015,19 @@ class _Planner:
             nested = self.model.data_objects[name].nested_in
             if nested is not None and nested.data_object in parent:
                 parent[find(name)] = find(nested.data_object)
+        for item in _exists_filters(self.query.where):
+            subject = _exists_subject(item, self.model) or ""
+            read = _exists_objects(item, self.model)
+            apart = sorted(o for o in read if self.sources.get(o) != self.sources.get(subject))
+            if apart:
+                raise self.refuse(
+                    "UNSUPPORTED_FILTER",
+                    f"The {item.op.value} filter on '{item.field}' reads {', '.join(apart)}, "
+                    f"of another data source than '{subject}', which it correlates to",
+                    hint="Keep an exists subquery on the data source of its subject.",
+                )
+            for o in read:
+                parent[find(o)] = find(subject)
         groups: dict[str, set[str]] = {}
         for o in sorted(self.objects):
             groups.setdefault(find(o), set()).add(o)
@@ -1413,7 +1514,7 @@ class _Planner:
 
     def place_filters(
         self, islands: list[set[str]], fact: int
-    ) -> tuple[dict[int, list[QueryFilterItem]], list[QueryFilterItem]]:
+    ) -> tuple[dict[int, list[QueryFilterItem]], list[QueryFilterItem], list[_Absent]]:
         """Split ``where`` into what each island's leg runs and what the combine step runs.
 
         A condition on the fact island's dimensions alone runs in the fact
@@ -1425,26 +1526,40 @@ class _Planner:
         the combine step, over the joined rows: pushed into a dimension leg, a
         predicate true for NULL (``IS NULL``) would also match the fact rows
         whose key that leg dropped.
+
+        An ``exists`` filter is a condition on its subject. A ``nonexists``
+        on a dimension island holds for a fact row with no row there, so it
+        becomes the absence of the fact row's key among those the subquery
+        holds for (:class:`_Absent`). The combine step cannot run a subquery:
+        an ``exists`` that would run there is refused.
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         legs: dict[int, list[QueryFilterItem]] = {}
         combine: list[QueryFilterItem] = []
+        absent: list[_Absent] = []
         for item in self.query.where:
             fields = _filter_fields(item)
-            owners = set()
-            for field in fields:
-                name = DimensionRef.parse(field).name
-                dimension = self.model.dimensions.get(name)
-                if dimension is None:
-                    raise self.refuse(
-                        "UNSUPPORTED_FILTER",
-                        f"The filter on '{field}' is not on a dimension",
-                    )
-                owners.add(island_of.get(dimension.view))
+            owners = {island_of.get(o) for o in self._filter_objects(item)}
             owner = owners.pop() if len(owners) == 1 else None
             if owner is not None and (owner == fact or _on_null(item) is not True):
                 legs.setdefault(owner, []).append(item)
                 continue
+            if (
+                owner is not None
+                and isinstance(item, QueryFilter)
+                and item.op == FilterOperator.NONEXISTS
+            ):
+                absent.append(_Absent(owner, item))
+                continue
+            if any(True for _ in _exists_filters([item])):
+                raise self.refuse(
+                    "UNSUPPORTED_FILTER",
+                    "An exists filter that runs after the join (beside a condition on "
+                    "another data source, or in a group true where its subject is "
+                    "missing) is not supported yet",
+                    hint="Filter with exists apart, or beside conditions of its subject's "
+                    "data source.",
+                )
             if _uses_relative(item):
                 raise self.refuse(
                     "UNSUPPORTED_FILTER",
@@ -1456,7 +1571,21 @@ class _Planner:
                     "A filter at a time grain on another data source is not supported yet",
                 )
             combine.append(item)
-        return legs, combine
+        return legs, combine, absent
+
+    def _filter_objects(self, item: QueryFilterItem) -> set[str]:
+        """The data objects whose rows *item* is a condition on: an ``exists``'s subject."""
+        if isinstance(item, QueryFilterGroup):
+            return {o for sub in item.filters for o in self._filter_objects(sub)}
+        if item.subquery is not None:
+            return {_exists_subject(item, self.model) or ""}
+        dimension = self.model.dimensions.get(DimensionRef.parse(item.field).name)
+        if dimension is None:
+            raise self.refuse(
+                "UNSUPPORTED_FILTER",
+                f"The filter on '{item.field}' is not on a dimension",
+            )
+        return {dimension.view or ""}
 
     def dimensions_by_island(
         self,
@@ -1502,12 +1631,13 @@ class _Planner:
         keys: dict[str, tuple[str, str]],
         measures: dict[str, Measure],
         *,
-        static_filters: bool = True,
+        filters_on: Collection[str] | None = None,
         own_zone: Iterable[str] = (),
     ) -> SemanticModel:
         """The model a leg compiles against: the island alone, keys as dimensions.
 
-        *measures* are partial results (:func:`_leg_measures`): no ``total``,
+        It keeps the static filters of the island's objects, or of those in
+        *filters_on* only. *measures* are partial results (:func:`_leg_measures`): no ``total``,
         no ``defaultValue`` (an empty group's default would become an input to
         the combined aggregate), and a sum at a width that does not round
         before the partials are added (``partial_sums``). A key named in
@@ -1538,9 +1668,12 @@ class _Planner:
                 "dimensions": dimensions,
                 "measures": measures,
                 "metrics": {},
-                "filters": (
-                    [f for f in model.filters if f.data_object in island] if static_filters else []
-                ),
+                "filters": [
+                    f
+                    for f in model.filters
+                    if f.data_object in island
+                    and (filters_on is None or f.data_object in filters_on)
+                ],
                 "rules": {},
                 "expose_counts": False,
                 # Read by no compilation, and kept by a plan that injects keys.
@@ -2171,9 +2304,55 @@ def _uses_relative(item: QueryFilterItem) -> bool:
     return item.op == FilterOperator.RELATIVE
 
 
-def _subquery_objects(item: QueryFilterItem) -> set[str]:
-    if isinstance(item, QueryFilterGroup):
-        return {o for sub in item.filters for o in _subquery_objects(sub)}
-    if isinstance(item, QueryFilter) and item.subquery is not None:
-        return {item.subquery.data_object}
-    return set()
+def _exists_filters(items: Iterable[QueryFilterItem]) -> Iterator[QueryFilter]:
+    """Each ``exists`` / ``nonexists`` filter of *items*, those in groups too."""
+    for item in items:
+        if isinstance(item, QueryFilterGroup):
+            yield from _exists_filters(item.filters)
+        elif item.subquery is not None:
+            yield item
+
+
+def _exists_subject(item: QueryFilter, model: SemanticModel) -> str | None:
+    """The data object an ``exists`` filter correlates to: its dimension's, or its ``Object``'s."""
+    dimension = model.dimensions.get(DimensionRef.parse(item.field).name)
+    if dimension is not None:
+        return dimension.view
+    obj, dot, _ = item.field.partition(".")
+    return obj.strip() if dot else None
+
+
+def _exists_objects(item: QueryFilter, model: SemanticModel) -> set[str]:
+    """The data objects an ``exists`` filter's subquery reads.
+
+    Its target, the objects on the join path from the subject to it, and
+    those its filters read, inner ``exists`` included, as
+    :func:`~orionbelt.compiler.filters.build_exists_filter_expr` joins them;
+    the subject is the outer query's.
+    """
+    if item.subquery is None:
+        return set()
+    return _subquery_reads(item.subquery, _exists_subject(item, model), model)
+
+
+def _subquery_reads(sub: Subquery, subject: str | None, model: SemanticModel) -> set[str]:
+    graph = JoinGraph.of(model)
+    found = {sub.data_object}
+    if subject is not None and sub.path_name is None:
+        found |= _step_objects(graph.find_join_path_undirected(subject, sub.data_object))
+        found.discard(subject)
+    for item in sub.filter:
+        ref = _resolve_subquery_filter_field(item.field, model, sub.data_object, [])
+        if ref is None:
+            continue
+        obj, column = ref
+        found |= {obj} | model.column_reference_objects(obj, column)
+        if obj != sub.data_object:
+            found |= _step_objects(graph.find_join_path({sub.data_object}, {obj}))
+        if item.subquery is not None:
+            found |= _subquery_reads(item.subquery, obj, model)
+    return found
+
+
+def _step_objects(steps: Iterable[JoinStep]) -> set[str]:
+    return {o for step in steps for o in (step.from_object, step.to_object)}
