@@ -385,12 +385,6 @@ database would return, without a refusal.
 | More federated queries than `FEDERATION_MAX_CONCURRENT` waiting past `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `FEDERATION_BUSY` (HTTP 503) |
 | A query spilling past `FEDERATION_SPILL_MAX_MB`, or all queries past `FEDERATION_SPILL_BUDGET_MB` | `FEDERATION_SPILL_TOO_LARGE` (502), `FEDERATION_SPILL_FULL` (503) |
 
-### Whole-model operations
-
-| Limitation | Effect |
-|---|---|
-| Online validation (`obsl validate --online`, `POST .../validate?online=true`), which connects to the database to check each data object's table and columns, runs on one data source | on a model reading several, the check does not run: validation reports `DATASOURCE_UNAVAILABLE` (`FEDERATION_NOT_ENABLED`) and the model as invalid. Validation without `--online` is unaffected |
-
 ### Results that can differ from one database
 
 Not refused, and documented here so they are known:

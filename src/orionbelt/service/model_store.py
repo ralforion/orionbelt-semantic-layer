@@ -1056,7 +1056,9 @@ class ModelStore:
         offline ones. Left as ``None``, validation stays entirely offline and
         opens no connection. With ``follow_model_source``, ``datasource_dialect``
         is only a default: a model naming a configured data source is probed
-        with that source's dialect, the connection its queries open.
+        with that source's dialect, the connection its queries open, and a
+        model read from several has each data object probed on its own source,
+        in that source's dialect.
         """
         _model, raw, errors, warnings = self._parse_and_validate(
             yaml_str,
@@ -1076,7 +1078,9 @@ class ModelStore:
                 from orionbelt.service.datasource_selection import named_source_dialect
 
                 datasource_dialect = named_source_dialect(_model) or datasource_dialect
-            errors = errors + self._datasource_errors(_model, datasource_dialect)
+            errors = errors + self._datasource_errors(
+                _model, datasource_dialect, follow_sources=follow_model_source
+            )
         return ValidationSummary(
             valid=len(errors) == 0,
             errors=errors,
@@ -1084,7 +1088,9 @@ class ModelStore:
         )
 
     @staticmethod
-    def _datasource_errors(model: SemanticModel, dialect: str) -> list[ErrorInfo]:
+    def _datasource_errors(
+        model: SemanticModel, dialect: str, *, follow_sources: bool = False
+    ) -> list[ErrorInfo]:
         """Online findings for *model*, as ``ErrorInfo``.
 
         Imported here rather than at module scope so that the offline path —
@@ -1102,7 +1108,7 @@ class ModelStore:
                 hint=f.hint,
                 context=f.context,
             )
-            for f in probe_datasource(model, dialect=dialect)
+            for f in probe_datasource(model, dialect=dialect, follow_sources=follow_sources)
         ]
 
     @staticmethod

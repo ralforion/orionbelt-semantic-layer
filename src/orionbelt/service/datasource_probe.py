@@ -429,15 +429,21 @@ def _probe_object(
     )
 
 
-def _unavailable(dialect: str, exc: Exception) -> SemanticError:
+def _unavailable(
+    dialect: str, exc: Exception, path: str | None = None, source: str | None = None
+) -> SemanticError:
+    context = {"dialect": dialect, "error": str(exc)}
+    if source is not None:
+        context["dataSource"] = source
     return SemanticError(
         code="DATASOURCE_UNAVAILABLE",
         message=f"The datasource check could not run: {exc}",
+        path=path,
         hint=(
             "Configure the vendor connection (DB_VENDOR and its credentials), "
             "or validate without the datasource check."
         ),
-        context={"dialect": dialect, "error": str(exc)},
+        context=context,
     )
 
 
@@ -459,12 +465,18 @@ def _table_missing(obj_name: str, obj: DataObject, error: str) -> SemanticError:
     )
 
 
-def probe_datasource(model: SemanticModel, *, dialect: str) -> list[SemanticError]:
+def probe_datasource(
+    model: SemanticModel, *, dialect: str, follow_sources: bool = False
+) -> list[SemanticError]:
     """Check every data object in *model* against the configured datasource.
 
     Returns one finding per problem, in data object declaration order, or an
     empty list when the model matches the warehouse. The caller decides what a
     finding means; nothing here raises for a mismatch.
+
+    A model whose data objects are read from several data sources has each
+    probed on its own source (:func:`_probe_each_source`), as its queries read
+    it; with *follow_sources*, in that source's dialect, else in *dialect*.
 
     Objects sourced by ``nestedIn`` are skipped: their rows come from unnesting
     an array on another object, so their columns belong to that array's element
@@ -472,7 +484,7 @@ def probe_datasource(model: SemanticModel, *, dialect: str) -> list[SemanticErro
     codes against the fallback ``code`` table would report drift that is not
     there.
     """
-    from orionbelt.service.datasource_selection import resolve_datasource
+    from orionbelt.service.datasource_selection import reads_several_sources, resolve_datasource
     from orionbelt.service.db_executor import ExecutionUnavailableError, ensure_arrow
 
     ensure_arrow()
@@ -488,15 +500,78 @@ def probe_datasource(model: SemanticModel, *, dialect: str) -> list[SemanticErro
             )
         ]
 
+    if reads_several_sources(model):
+        return _probe_each_source(model, dialect, follow_sources)
     try:
         source = resolve_datasource(model, dialect)
     except ExecutionUnavailableError as exc:
         return [_unavailable(dialect, exc)]
+    objects = [name for name, obj in model.data_objects.items() if obj.nested_in is None]
+    return _probe_objects(impl, dialect, model, objects, source)
+
+
+def _probe_each_source(
+    model: SemanticModel, dialect: str, follow_sources: bool
+) -> list[SemanticError]:
+    """Each data object probed on the data source its queries read it from.
+
+    Its ``dataSource``, else ``settings.defaultDataSource``, else the
+    dialect's own connection. A source is probed in its own dialect with
+    *follow_sources*, as a query on it is compiled, else in *dialect*, which
+    then reports a source of another one, as for a model read from one. A
+    source that cannot be reached is reported once, at the path naming it, and
+    the other sources are probed all the same.
+    """
+    from orionbelt.service.datasource_selection import (
+        resolve_named_source,
+        source_dialect,
+        source_key,
+    )
+    from orionbelt.service.db_executor import ExecutionUnavailableError
+
+    default = model.settings.default_data_source if model.settings else None
+    # Grouped as the registry compares names, in declaration order.
+    groups: dict[str | None, tuple[str | None, list[str]]] = {}
+    for name, obj in model.data_objects.items():
+        if obj.nested_in is None:
+            named = obj.data_source or default
+            key = source_key(named) if named is not None else None
+            groups.setdefault(key, (named, []))[1].append(name)
 
     findings: list[SemanticError] = []
-    for obj_name, obj in model.data_objects.items():
-        if obj.nested_in is not None:
+    for source_name, objects in groups.values():
+        source_dialect_name = (follow_sources and source_dialect(source_name)) or dialect
+        try:
+            source = resolve_named_source(source_name, source_dialect_name, model)
+        except ExecutionUnavailableError as exc:
+            # Where the source is named, or would be: an object naming none
+            # is read from the dialect's own, which can be ambiguous too.
+            path = next(
+                (
+                    f"dataObjects.{o}.dataSource"
+                    for o in objects
+                    if model.data_objects[o].data_source
+                ),
+                "settings.defaultDataSource"
+                if source_name is not None
+                else f"dataObjects.{objects[0]}.dataSource",
+            )
+            findings.append(_unavailable(source_dialect_name, exc, path, source_name))
             continue
+        impl = DialectRegistry.get(source_dialect_name)
+        findings.extend(_probe_objects(impl, source_dialect_name, model, objects, source))
+    return findings
+
+
+def _probe_objects(
+    impl: Any, dialect: str, model: SemanticModel, objects: list[str], source: DataSource | None
+) -> list[SemanticError]:
+    """The findings for *objects* of *model*, each probed on *source*."""
+    from orionbelt.service.db_executor import ExecutionUnavailableError
+
+    findings: list[SemanticError] = []
+    for obj_name in objects:
+        obj = model.data_objects[obj_name]
         try:
             findings.extend(_probe_object(impl, dialect, obj_name, obj, source))
         except ExecutionUnavailableError as exc:
