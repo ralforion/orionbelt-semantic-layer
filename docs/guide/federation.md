@@ -50,15 +50,18 @@ flowchart LR
 ```
 
 - **Islands.** The query's data objects that share a source and are joined
-  among themselves form an *island*. The island holding the measures, and the
-  query's base object, is the *fact island*; every other island is a
-  *dimension island*, reached from the fact island by one many-to-one join, a
-  *federation edge*.
+  among themselves form an *island*. The island the measures' values come
+  from, which also holds the query's base object, is the *fact island* (in a
+  [query without measures](#queries-without-measures), the base object's);
+  every other island is a *dimension island*, reached from the fact island by
+  one many-to-one join, a *federation edge*.
 - **Legs.** Each island becomes a *leg*: an ordinary OBSL query against a model
   holding that island alone, written in its source's dialect. The **fact leg**
   groups by the query's dimensions on its island and by the edge keys, and
-  pre-aggregates the measures. A **dimension leg** returns the distinct keys
-  with the dimensions the query reads there. A source not configured where the
+  pre-aggregates the measures, or returns its rows where a measure needs them
+  ([computed from rows](#computed-from-rows)). A **dimension leg** returns the
+  distinct keys with the dimensions the query reads there, and any column a
+  measure reads there ([measures reading another source](#measures-reading-another-source)). A source not configured where the
   query is compiled gets the dialect the query is compiled for.
 - **Combine.** The combine query is the original query, compiled for DuckDB
   against a model whose data objects are the legs: the fact leg joins each
