@@ -15,6 +15,7 @@ from __future__ import annotations
 import gc
 import weakref
 from collections.abc import Callable
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -60,6 +61,7 @@ def model_yaml(
     static: str = "",
     metric: str = "",
     settings: str = "",
+    dimension: str = "",
 ) -> str:
     shop = "    dataSource: shop\n" if federated else ""
     crm = "    dataSource: crm\n" if federated else ""
@@ -92,7 +94,7 @@ settings:
 dimensions:
   Region: {{dataObject: Customers, column: Region, resultType: string}}
   Order Date: {{dataObject: Orders, column: Order Date, resultType: date}}
-measures:
+{dimension}measures:
   Revenue: {{columns: [{AMOUNT}], aggregation: sum, resultType: decimal}}
   Top Order: {{columns: [{AMOUNT}], aggregation: max, resultType: decimal}}
   Smallest Order: {{columns: [{AMOUNT}], aggregation: min, resultType: decimal}}
@@ -1091,27 +1093,111 @@ REFUSALS = {
         {"select": {"dimensions": ["Region"], "measures": ["Revenue", "Customer Rows"]}},
         "FEDERATION_MULTI_FACT",
     ),
-    "relative_filter_on_dimension_side": (
-        "",
-        {
-            "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
-            "where": [
-                {
-                    "logic": "or",
-                    "filters": [
-                        {"field": "Region", "op": "=", "value": "EU"},
-                        {
-                            "field": "Order Date",
-                            "op": "relative",
-                            "value": {"unit": "day", "count": 30, "direction": "past"},
-                        },
-                    ],
-                }
-            ],
-        },
-        "FEDERATION_UNSUPPORTED_FILTER",
-    ),
 }
+
+
+def _either(*filters: dict[str, Any]) -> dict[str, Any]:
+    return {"logic": "or", "filters": list(filters)}
+
+
+US = {"field": "Region", "op": "=", "value": "US"}
+# Every order is of 2024: the past fifty years hold them all, the next thirty
+# days none, whichever day the tests run.
+PAST_YEARS = {"field": "Order Date", "op": "relative", "value": {"unit": "year", "count": 50}}
+NEXT_DAYS = {
+    "field": "Order Date",
+    "op": "relative",
+    "value": {"unit": "day", "count": 30, "direction": "future"},
+}
+LATE = {"field": "Order Date", "op": ">=", "value": "2024-02-14"}
+ORDER_MONTH = (
+    "  Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}\n"
+)
+AFTER_THE_JOIN = {
+    "relative_or_another_source": {
+        "select": {"dimensions": ["Region"], "measures": MEASURES},
+        "where": [_either(NEXT_DAYS, US)],
+    },
+    "relative_holding_for_all": {
+        "select": {"dimensions": ["Order Date:month"], "measures": MEASURES},
+        "where": [_either(PAST_YEARS, EU)],
+    },
+    "relative_beside_a_condition_true_for_null": {
+        "select": {"dimensions": ["Order Date:month", "Region"], "measures": MEASURES},
+        "where": [_either({"field": "Region", "op": "is_null"}, NEXT_DAYS)],
+    },
+    "on_a_dimension_selected_at_a_grain": {
+        "select": {"dimensions": ["Order Date:month"], "measures": MEASURES},
+        "where": [_either(LATE, EU)],
+    },
+    "on_a_dimension_selected_at_a_grain_without_measures": {
+        "select": {"dimensions": ["Order Date:month", "Region"]},
+        "where": [_either(LATE, EU)],
+    },
+    "on_a_dimension_selected_at_a_grain_from_rows": {
+        "select": {"dimensions": ["Order Date:quarter"], "measures": ["Median Order"]},
+        "where": [_either(LATE, EU)],
+    },
+}
+
+
+class TestFiltersAfterTheJoin:
+    """A filter reading several sources runs in the combine step, as one database runs it."""
+
+    @pytest.mark.parametrize("query", AFTER_THE_JOIN.values(), ids=AFTER_THE_JOIN.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        assert_same(files, query, extra=FROM_ROWS)
+
+    def test_a_dimension_selected_at_a_grain_is_compared_at_its_own(
+        self, files: dict[str, str]
+    ) -> None:
+        """The month of each order, beside its quarter: the leg returns both."""
+        query = {
+            "select": {"dimensions": ["Order Month:quarter"], "measures": MEASURES},
+            "where": [_either({"field": "Order Month", "op": "=", "value": "2024-02-01"}, US)],
+        }
+
+        assert_same(files, query, dimension=ORDER_MONTH)
+        # Orders 3 and 4 of February, and 7 of a US customer.
+        assert [r[2] for r in run_single(files, query, dimension=ORDER_MONTH)] == [3]
+
+    def test_a_dimension_of_another_source_selected_at_a_grain(self) -> None:
+        """The customers' signup month, on another source than their sales:
+        the customers' leg returns the day too. Sale 1's customer signed up
+        on May 2 and sale 5's is missing; sales 2 and 3 are of May, 4 of June."""
+
+        def customers_apart(yaml: str) -> str:
+            return _dated(yaml).replace(
+                "  Customers:\n    code: customers\n    dataSource: facts\n",
+                "  Customers:\n    code: customers\n    dataSource: labels\n",
+            )
+
+        query = {
+            "select": {"dimensions": ["Signup Date:month"], "measures": ["Sales Count"]},
+            "where": [
+                _either(
+                    {"field": "Signup Date", "op": ">=", "value": "2023-05-10"},
+                    {"field": "Product ID", "op": ">", "value": 10},
+                )
+            ],
+        }
+
+        expected, got = _repeated("sum", query, customers_apart, DATED_TABLES)
+
+        assert got == expected == [(date(2023, 5, 1), 2), (date(2023, 6, 1), 1)]
+
+    def test_a_relative_filter_after_the_join_reads_the_combine_steps_date(self) -> None:
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+            "where": [_either(NEXT_DAYS, US)],
+        }
+
+        plan = _compile(model_yaml(federated=True), query).federation
+
+        assert "CURRENT_DATE" not in plan.legs[0].sql
+        assert "CURRENT_DATE" in plan.combine_sql
 
 
 class TestRefusals:
@@ -1306,25 +1392,25 @@ class TestReviewFindings:
         ((count, _),) = run_federated(files, query)
         assert count == 0
 
-    def test_a_deferred_filter_on_a_dimension_selected_at_a_grain_is_refused(self) -> None:
-        with pytest.raises(ResolutionError) as caught:
-            _compile(
-                model_yaml(federated=True),
+    def test_a_deferred_filter_on_a_dimension_selected_at_a_grain_reads_its_day(
+        self, files: dict[str, str]
+    ) -> None:
+        """Order 2 is of January 20: its month, January 1, is before the 15th."""
+        query = {
+            "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+            "where": [
                 {
-                    "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
-                    "where": [
-                        {
-                            "logic": "or",
-                            "filters": [
-                                {"field": "Region", "op": "=", "value": "US"},
-                                {"field": "Order Date", "op": "<", "value": "2024-01-15"},
-                            ],
-                        }
+                    "logic": "or",
+                    "filters": [
+                        {"field": "Region", "op": "=", "value": "US"},
+                        {"field": "Order Date", "op": "<", "value": "2024-01-15"},
                     ],
-                },
-            )
+                }
+            ],
+        }
 
-        assert [e.code for e in caught.value.errors] == ["FEDERATION_UNSUPPORTED_FILTER"]
+        assert_same(files, query)
+        assert (date(2024, 1, 1), Decimal("100.50")) in run_federated(files, query)
 
 
 def chain_yaml(shop: str, crm: str, regions: str) -> str:
@@ -2045,10 +2131,11 @@ def _repeated(
     aggregation: str,
     query: dict[str, Any],
     change: Callable[[str], str] = lambda yaml: yaml,
+    tables: list[str] = REPEATED_TABLES,
 ) -> tuple[list[Any], list[Any]]:
     """*query* over the customers' ages on one source, and across two.
 
-    *change* rewrites the model, both ways.
+    *change* rewrites the model, both ways; *tables* hold its rows.
     """
 
     def yaml(federated: bool) -> str:
@@ -2060,7 +2147,7 @@ def _repeated(
     federated = _compile(yaml(True), query)
     con = duckdb.connect()
     try:
-        for statement in REPEATED_TABLES:
+        for statement in tables:
             con.execute(statement)
         expected = sorted(_rows(con, single.sql), key=repr)
         combine = duckdb.connect()
@@ -2312,6 +2399,85 @@ class TestRepeatedRows:
         expected, got = _repeated(aggregation, query)
 
         _assert_same_rows(got, expected)
+
+    @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
+    def test_a_filter_after_the_join_on_the_day_of_a_month_comes_from_rows(
+        self, aggregation: str
+    ) -> None:
+        """Customer 1 bought on two days of January: the fact leg groups by the
+        day the filter reads too, and counted the customer twice (40 for 30)."""
+        query = {
+            "select": {"dimensions": ["Sale Date:month"], "measures": ["Ages", "Sales Count"]},
+            "where": [
+                _either({"field": "Sale Date", "op": ">", "value": "2024-01-06"}, NORTH),
+            ],
+        }
+
+        expected, got = _repeated(aggregation, query, _dated, DATED_TABLES)
+
+        _assert_same_rows(got, expected)
+
+    def test_a_filter_after_the_join_on_a_parents_month_reads_it_once(self) -> None:
+        """Customer 4 signed up in June and bought nothing: one database
+        groups it in June, from the customers' relation, which holds the day
+        the filter reads too."""
+        query = {
+            "select": {
+                "dimensions": ["Signup Date:month"],
+                "measures": ["Ages", "Median Age", "Sales Count"],
+            },
+            "where": [
+                _either(
+                    {"field": "Signup Date", "op": ">=", "value": "2023-06-10"},
+                    {"field": "Region", "op": "=", "value": "nowhere"},
+                )
+            ],
+        }
+
+        expected, got = _repeated("sum", query, _dated, DATED_TABLES)
+
+        assert got == expected == [(date(2023, 6, 1), 70, 70.0, 0)]
+
+
+# Each sale with its day, each customer with the day it signed up.
+DATED_TABLES = [
+    "CREATE TABLE sales AS SELECT * FROM (VALUES (1, 1, 10, DATE '2024-01-05'),"
+    " (2, 1, 11, DATE '2024-01-20'), (3, 2, 10, DATE '2024-01-05'),"
+    " (4, 3, 11, DATE '2024-02-03'), (5, 9, 10, DATE '2024-02-10'))"
+    " t(id, customer, product, sale_date)",
+    "CREATE TABLE customers AS SELECT * FROM (VALUES (1, 10, 1, DATE '2023-05-02'),"
+    " (2, 20, 1, DATE '2023-05-20'), (3, 40, 2, DATE '2023-06-01'),"
+    " (4, 70, 2, DATE '2023-06-15')) t(id, age, region, signup)",
+    *REPEATED_TABLES[2:],
+]
+NORTH = {"field": "Region", "op": "=", "value": "north"}
+
+
+def _dated(yaml: str) -> str:
+    """The sales and customers model with each sale's day and customer's signup."""
+    return (
+        yaml.replace(
+            "      Product: {code: product, abstractType: int}\n",
+            "      Product: {code: product, abstractType: int}\n"
+            "      Sale Date: {code: sale_date, abstractType: date}\n",
+        )
+        .replace(
+            "      Region: {code: region, abstractType: int}\n",
+            "      Region: {code: region, abstractType: int}\n"
+            "      Signup: {code: signup, abstractType: date}\n",
+        )
+        .replace(
+            "dimensions:\n",
+            "dimensions:\n"
+            "  Sale Date: {dataObject: Sales, column: Sale Date, resultType: date}\n"
+            "  Signup Date: {dataObject: Customers, column: Signup, resultType: date}\n",
+        )
+        .replace(
+            "metrics:\n",
+            "  Median Age: {columns: [{dataObject: Customers, column: Age}], aggregation: median}\n"
+            "metrics:\n",
+        )
+    )
 
 
 PRICED = """\

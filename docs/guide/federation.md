@@ -133,6 +133,8 @@ Each leg asks for one row more than `FEDERATION_MAX_LEG_ROWS` (default
 | On the fact island's dimensions | the fact leg | as on one database |
 | On one dimension island's dimensions, never true where they are all NULL (`=`, `!=`, `in`, comparisons, `like`, `relative`, ...) | that dimension leg, and the combine query keeps the fact rows it matched | compared as its own engine compares; the fact leg may then read only the keys it returned |
 | True where the dimensions are NULL (`is_null`, `blank`, ...), or reading several islands (an OR across sources) | the combine query, after the join | in a dimension leg it would also match the fact rows whose key the leg dropped |
+| After the join, on a dimension the query selects at a time grain (`Order Date:month`, filtered on `Order Date`) | the combine query, on a column the dimension's leg returns beside it: the dimension at its own grain (the day, or its declared `timeGrain`) | as on one database: `Order Date < 2024-01-15` compares each order's day, not the month selected |
+| `relative`, after the join | the combine query, counting from the combine step's date | see [Results that can differ](#results-that-can-differ-from-one-database) |
 | A static model filter on the fact island | the fact leg | |
 | A static model filter on another island | the combine query, on a column that island's leg returns | it drops the rows it excludes and keeps an unmatched row when it holds for NULL; `enforce: always` applies even when the query reads nothing else of that island, and in the body of an `exists` subquery on that island too, as on one database |
 | `exists` on its subject's island, `nonexists` on the fact island | the leg of the subject's island, with its subquery | as on one database |
@@ -488,9 +490,6 @@ database would return, without a refusal.
 | Limitation | Error |
 |---|---|
 | A filter on something other than a dimension | `FEDERATION_UNSUPPORTED_FILTER` |
-| A relative date filter that runs after the join (true for NULL, or reading several sources) | `FEDERATION_UNSUPPORTED_FILTER` |
-| A filter at a time grain that runs after the join | `FEDERATION_UNSUPPORTED_FILTER` |
-| A filter after the join on a dimension the query selects at a time grain | `FEDERATION_UNSUPPORTED_FILTER` |
 | An `exists` / `nonexists` whose subquery reads another source than its subject (its target, the join path to it, or an object its filters read) | `FEDERATION_UNSUPPORTED_FILTER` |
 | An `exists` / `nonexists` that would run after the join: in an OR with a condition on another source, or in a group that holds where its subject is missing | `FEDERATION_UNSUPPORTED_FILTER` |
 
@@ -511,6 +510,7 @@ Not refused, and documented here so they are known:
 |---|---|
 | No snapshot across sources | the legs read their sources at slightly different moments |
 | Naive timestamps | combined as each source returns them; sources whose sessions run in different time zones can disagree |
+| Today's date | a `relative` filter counts from the date of the engine that runs it: a leg's source in its session's time zone, or, after the join, the combine step's DuckDB in the time zone of the OBSL server's process. Around midnight, where the zones differ, one query can count from two dates |
 | Filters after the join compare as DuckDB | a filter in the combine query (one reading several sources, or true for NULL) compares the value a MySQL leg returned, not its collation class |
 | ClickHouse float dimensions | DuckDB makes one group of `0.0` and `-0.0`, where ClickHouse makes two |
 | Join keys across sources | compare bytewise, whatever a source's collation |

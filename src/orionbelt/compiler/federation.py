@@ -420,12 +420,18 @@ def plan_federated(
     rows_for = planner.check_measures(islands[fact])
     leg_filters, combine_filters, absent = planner.place_filters(islands, fact)
 
-    fact_dims, edge_dims = planner.dimensions_by_island(islands, fact, edges, combine_filters)
+    fact_dims, edge_dims, regrained = planner.dimensions_by_island(
+        islands, fact, edges, combine_filters
+    )
     # Partial results count a row of an object the joins repeat once per
     # value the fact leg groups by beyond the query, and other objects'
     # measures beside a count of distinct values once per value it counts;
     # from rows, the combine step counts each once itself.
-    rows_for = rows_for or planner.repeats(edges, fact_dims) or planner.counts_beside_others()
+    rows_for = (
+        rows_for
+        or planner.repeats(edges, fact_dims, regrained.get(fact, []))
+        or planner.counts_beside_others()
+    )
     if rows_for:
         planner.check_rows(rows_for[0])
     from_rows = bool(rows_for)
@@ -440,6 +446,13 @@ def plan_federated(
     # Compared without case, as DuckDB compares identifiers, quoted or not.
     taken = {
         name.casefold() for name in (*model.effective_measures, *model.dimensions, *model.metrics)
+    }
+    # A combine filter on a dimension the query selects at a time grain reads
+    # it at its own grain, from a column of its own: by island, each column's
+    # name with the dimension's.
+    own_grain = {
+        island: {_unused(f"__og{island}_{n}", taken): name for n, name in enumerate(names)}
+        for island, names in regrained.items()
     }
     # The edge keys, one name per key column, the same in both legs it joins.
     key_names = [
@@ -505,15 +518,17 @@ def plan_federated(
         if own and (obj, col, own) not in elsewhere
     }
     in_own_zone = frozenset((row_values[column][0], column) for column in own_zone)
+    fact_own_grain = own_grain.get(fact, {})
     fact_model = planner.island_model(
         islands[fact],
         {**fact_keys, **fact_values, **row_values},
         leg_measures,
         own_zone=own_zone,
+        own_grain=fact_own_grain,
     )
     fact_query = QueryObject(
         select=QuerySelect(
-            dimensions=[*fact_dims, *fact_keys, *fact_values, *row_values],
+            dimensions=[*fact_dims, *fact_own_grain, *fact_keys, *fact_values, *row_values],
             measures=sorted(leg_measures),
         ),
         where=leg_filters.get(fact, []),
@@ -521,6 +536,7 @@ def plan_federated(
     )
     fact_columns = [
         *[_dimension_column(model, DimensionRef.parse(d).name) for d in fact_dims],
+        *[_dimension_column(model, name, column) for column, name in fact_own_grain.items()],
         *[
             _key_column(model, name, obj, col)
             for name, (obj, col) in {**fact_keys, **fact_values}.items()
@@ -543,7 +559,7 @@ def plan_federated(
     }
     filtered = {f for item in combine_filters for f in _filter_fields(item)}
     kept = {name: _unused(f"__eqv{n}", taken) for n, name in enumerate(sorted(grouped & filtered))}
-    renamed: dict[str, str] = {}
+    renamed = {name: column for found in own_grain.values() for column, name in found.items()}
     fact_columns, fact_rekeyed, fact_kept = _rekeyed(
         planner.leg_dialect(islands[fact]),
         fact_columns,
@@ -597,7 +613,9 @@ def plan_federated(
     once_joins: dict[str, list[DataObjectJoin]] = {}
     on_once = {
         column: once[parent]
-        for column, parent in planner.read_once(parents, fact_dims, edges, key_names).items()
+        for column, parent in planner.read_once(
+            parents, fact_dims, edges, key_names, fact_own_grain
+        ).items()
     }
     on_once |= {
         hidden: on_once[source] for hidden, source in fact_kept.items() if source in on_once
@@ -608,6 +626,9 @@ def plan_federated(
     for hidden, source in fact_kept.items():
         view = on_once.get(hidden, "leg_0")
         combine_dimensions[hidden] = _combine_dimension(model, source, view, hidden)
+    for column, name in fact_own_grain.items():
+        view = on_once.get(column, "leg_0")
+        combine_dimensions[column] = _combine_dimension(model, name, view, column)
 
     # One leg per dimension island: its keys and the dimensions read there.
     for e, edge in enumerate(edges, start=1):
@@ -617,6 +638,7 @@ def plan_federated(
             for i, column in enumerate(edge.to_columns)
         }
         dims = edge_dims[e - 1]
+        dim_own_grain = own_grain.get(edge.island, {})
         island = islands[edge.island]
         # A static model filter on this island runs in the combine step, on
         # the column this leg returns for it, as it runs on a left-joined
@@ -648,14 +670,18 @@ def plan_federated(
             {**keys, **static_columns, **read_here},
             {},
             own_zone=read_own_zone,
+            own_grain=dim_own_grain,
         )
         dim_query = QueryObject(
-            select=QuerySelect(dimensions=[*dims, *keys, *static_columns, *read_here]),
+            select=QuerySelect(
+                dimensions=[*dims, *dim_own_grain, *keys, *static_columns, *read_here]
+            ),
             where=leg_filters.get(edge.island, []),
             limit=leg_limit,
         )
         dim_columns = [
             *[_dimension_column(model, DimensionRef.parse(d).name) for d in dims],
+            *[_dimension_column(model, name, column) for column, name in dim_own_grain.items()],
             *[
                 _key_column(model, name, obj, col)
                 for name, (obj, col) in {**keys, **static_columns}.items()
@@ -719,6 +745,8 @@ def plan_federated(
             combine_dimensions[name] = _combine_dimension(model, name, leg_name)
         for hidden, source in dim_kept.items():
             combine_dimensions[hidden] = _combine_dimension(model, source, leg_name, hidden)
+        for column, name in dim_own_grain.items():
+            combine_dimensions[column] = _combine_dimension(model, name, leg_name, column)
         owner = on_once.get(next(iter(keys)))
         (once_joins.setdefault(owner, []) if owner else fact_joins).append(
             DataObjectJoin(
@@ -1346,7 +1374,9 @@ class _Planner:
                         hint=_apart(reason, name),
                     )
 
-    def repeats(self, edges: list[_Edge], fact_dims: list[str]) -> list[str]:
+    def repeats(
+        self, edges: list[_Edge], fact_dims: list[str], own_grain: Iterable[str]
+    ) -> list[str]:
         """The measures counted once per row of their object that partial results repeat.
 
         One database aggregates a measure of an object the query's joins repeat
@@ -1354,7 +1384,8 @@ class _Planner:
         per group of the query's dimensions (``grain_dedup``). The fact leg
         does the same, but per group of what *it* groups by, which is more:
         the federation keys, the dimensions only a filter after the join reads
-        (*fact_dims* beyond the selected ones), and the values a count of
+        (*fact_dims* beyond the selected ones, and those selected at a time
+        grain it reads at their own, *own_grain*), and the values a count of
         distinct values counts (:func:`_leg_measures`). The selected ones
         count too where the combine step adds groups across them: a
         ``rollup`` or ``cube`` subtotal, and a measure's ``total``. A customer
@@ -1382,6 +1413,7 @@ class _Planner:
         ]
         fact_names = [DimensionRef.parse(d).name for d in fact_dims]
         always += [self._dimension_objects(name) for name in fact_names if name not in selected]
+        always += [self._dimension_objects(name) for name in own_grain]
         effective = model.effective_measures
         for name in self.atomic_measures():
             if _counts_distinct_column(effective[name]):
@@ -1426,8 +1458,12 @@ class _Planner:
         fact_dims: list[str],
         edges: list[_Edge],
         key_names: list[list[str]],
+        own_grain: dict[str, str],
     ) -> dict[str, str]:
         """The fact leg's dimensions and keys read through an object measures read, each to it.
+
+        The dimensions at their own grain too (*own_grain*: each column's name
+        with the dimension's).
 
         Such an object (:meth:`parents`, from rows) and the objects it joins
         many-to-one have one row per row of it: one database reads those
@@ -1453,6 +1489,9 @@ class _Planner:
         for name in (DimensionRef.parse(d).name for d in fact_dims):
             if owner := through(self._dimension_objects(name), f"dimension '{name}'"):
                 read[name] = owner
+        for column, name in own_grain.items():
+            if owner := through(self._dimension_objects(name), f"dimension '{name}'"):
+                read[column] = owner
         for edge, names in zip(edges, key_names, strict=True):
             objects = set().union(
                 *(self._column_objects(edge.from_object, c) for c in edge.from_columns)
@@ -1549,7 +1588,6 @@ class _Planner:
         combine: list[QueryFilterItem] = []
         absent: list[_Absent] = []
         for item in self.query.where:
-            fields = _filter_fields(item)
             owners = {island_of.get(o) for o in self._filter_objects(item)}
             owner = owners.pop() if len(owners) == 1 else None
             if owner is not None and (owner == fact or _on_null(item) is not True):
@@ -1570,16 +1608,6 @@ class _Planner:
                     "missing) is not supported yet",
                     hint="Filter with exists apart, or beside conditions of its subject's "
                     "data source.",
-                )
-            if _uses_relative(item):
-                raise self.refuse(
-                    "UNSUPPORTED_FILTER",
-                    "A relative date filter on another data source is not supported yet",
-                )
-            if any(":" in f for f in fields):
-                raise self.refuse(
-                    "UNSUPPORTED_FILTER",
-                    "A filter at a time grain on another data source is not supported yet",
                 )
             combine.append(item)
         return legs, combine, absent
@@ -1604,23 +1632,26 @@ class _Planner:
         fact: int,
         edges: list[_Edge],
         combine_filters: list[QueryFilterItem],
-    ) -> tuple[list[str], list[list[str]]]:
-        """The dimensions each leg returns: selected, or read by a combine filter."""
+    ) -> tuple[list[str], list[list[str]], dict[int, list[str]]]:
+        """The dimensions each leg returns: selected, or read by a combine filter.
+
+        A leg returns a dimension once, at the grain the query selects it. A
+        combine filter on one the query selects at a time grain compares it
+        at its own grain, as one database does: its leg returns it so too, a
+        column of its own. The third value holds those dimensions, by island.
+        """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         wanted = [d for d in self.query.select.dimensions if isinstance(d, str)]
         selected = {DimensionRef.parse(d).name for d in wanted}
         at_grain = {DimensionRef.parse(d).name for d in wanted if DimensionRef.parse(d).grain}
+        regrained: dict[int, list[str]] = {}
         for item in combine_filters:
             for field in _filter_fields(item):
                 if field in at_grain:
-                    raise self.refuse(
-                        "UNSUPPORTED_FILTER",
-                        f"The filter on '{field}' runs after the join, where '{field}' is "
-                        "only available at the grain the query selects",
-                        hint="Filter it in a condition of its own data source alone, or "
-                        "select it without a grain.",
-                    )
-                if field not in selected:
+                    island = island_of[self.model.dimensions[field].view]
+                    if field not in regrained.get(island, []):
+                        regrained.setdefault(island, []).append(field)
+                elif field not in selected:
                     wanted.append(field)
                     selected.add(field)
         fact_dims: list[str] = []
@@ -1632,7 +1663,7 @@ class _Planner:
                 fact_dims.append(d)
             else:
                 edge_dims[edge_of[island]].append(d)
-        return fact_dims, edge_dims
+        return fact_dims, edge_dims, regrained
 
     # -- legs ---------------------------------------------------------------
 
@@ -1643,11 +1674,14 @@ class _Planner:
         measures: dict[str, Measure],
         *,
         own_zone: Iterable[str] = (),
+        own_grain: dict[str, str] | None = None,
     ) -> SemanticModel:
         """The model a leg compiles against: the island alone, keys as dimensions.
 
         It keeps the static filters of the island's objects; a dimension leg
         leaves some to the combine step (:func:`static_filters_after_join`).
+        Each of *own_grain* (a column's name, a dimension's) is that dimension
+        under the column's name, at its own grain.
         *measures* are partial results (:func:`_leg_measures`): no ``total``,
         no ``defaultValue`` (an empty group's default would become an input to
         the combined aggregate), and a sum at a width that does not round
@@ -1663,6 +1697,8 @@ class _Planner:
             if name in island
         }
         dimensions = {name: dim for name, dim in model.dimensions.items() if dim.view in island}
+        for column, name in (own_grain or {}).items():
+            dimensions[column] = model.dimensions[name].model_copy(update={"name": column})
         copies = set(own_zone)
         for key, (obj, column) in keys.items():
             col = model.data_objects[obj].columns[column]
@@ -1756,8 +1792,14 @@ def _physical_tables(model: SemanticModel, objects: Iterable[str]) -> tuple[str,
     return tuple(tables)
 
 
-def _dimension_column(model: SemanticModel, name: str) -> DataObjectColumn:
-    return DataObjectColumn(name=name, code=name, abstract_type=model.dimensions[name].result_type)
+def _dimension_column(
+    model: SemanticModel, name: str, column: str | None = None
+) -> DataObjectColumn:
+    """Dimension *name* as a leg returns it, as *column* (its own name)."""
+    column = column or name
+    return DataObjectColumn(
+        name=column, code=column, abstract_type=model.dimensions[name].result_type
+    )
 
 
 def _key_column(model: SemanticModel, name: str, obj: str, column: str) -> DataObjectColumn:
@@ -2302,12 +2344,6 @@ def _on_null(item: QueryFilterItem) -> bool | None:
     decisive = item.logic == FilterLogic.OR
     value = decisive if decisive in values else None if None in values else not decisive
     return not value if item.negated and value is not None else value
-
-
-def _uses_relative(item: QueryFilterItem) -> bool:
-    if isinstance(item, QueryFilterGroup):
-        return any(_uses_relative(sub) for sub in item.filters)
-    return item.op == FilterOperator.RELATIVE
 
 
 def _exists_filters(items: Iterable[QueryFilterItem]) -> Iterator[QueryFilter]:
