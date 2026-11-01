@@ -1511,7 +1511,7 @@ def chain_files(tmp_path_factory: Any) -> dict[str, str]:
     tables = {
         "all": list(CHAIN_TABLES),
         "shop": ["orders", "regions", "embargoes"],
-        "crm": ["customers"],
+        "crm": ["customers", "regions"],
         "geo": ["regions", "embargoes"],
     }
     paths = {name: str(root / f"{name}.duckdb") for name in tables}
@@ -3537,3 +3537,74 @@ class TestRoles:
         assert 'FROM "employees" AS "Employees__Orders__support"' in support.sql
         assert '"Orders"."sales_id" AS "__fk0_0"' in orders.sql
         assert '"Orders"."support_id" AS "__fk1_0"' in orders.sql
+
+
+def computed_chain_yaml(*sources: str, direct: bool = False) -> str:
+    """The chain with each customer's region name computed on the customers,
+    and with *direct*, the orders joined to the regions too."""
+    yaml = chain_yaml(*sources).replace(
+        "      Customer Region: {code: region_id, abstractType: int}\n",
+        "      Customer Region: {code: region_id, abstractType: int}\n"
+        '      Home Region: {expression: "{[Regions].[Region Name]}", abstractType: string}\n',
+    )
+    yaml = yaml.replace(
+        "dimensions:\n",
+        "dimensions:\n"
+        "  Home Region: {dataObject: Customers, column: Home Region, resultType: string}\n",
+    )
+    if direct:
+        yaml = yaml.replace(
+            "      Amount: {code: amount, abstractType: decimal}\n    joins:\n",
+            "      Amount: {code: amount, abstractType: decimal}\n"
+            "      Order Region: {code: region_id, abstractType: int}\n    joins:\n"
+            "      - joinType: many-to-one\n        joinTo: Regions\n"
+            "        columnsFrom: [Order Region]\n        columnsTo: [Region ID]\n",
+        )
+    return yaml
+
+
+class TestComputedDimensions:
+    """A dimension computed from another data object's column is computed in its leg."""
+
+    QUERY = {"select": {"dimensions": ["Home Region"], "measures": ["Revenue"]}}
+
+    def test_from_an_object_joined_within_its_source(self, chain_files: dict[str, str]) -> None:
+        """The customers' regions in the CRM too: one leg joins both."""
+        single = _compile(computed_chain_yaml("all", "all", "all"), self.QUERY)
+        compiled = _compile(computed_chain_yaml("shop", "crm", "crm"), self.QUERY)
+        con = duckdb.connect(chain_files["all"], read_only=True)
+        try:
+            expected = sorted(_rows(con, single.sql), key=repr)
+        finally:
+            con.close()
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(chain_files[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+
+        assert sorted(_rows(combine, compiled.sql), key=repr) == expected
+        assert ("EU", Decimal("120.75")) in expected
+
+    @pytest.mark.parametrize(
+        ("sources", "direct"),
+        [(("shop", "crm", "geo"), False), (("shop", "crm", "crm"), True)],
+        ids=["on_another_source", "through_another_join"],
+    )
+    def test_from_an_object_joined_apart_is_refused(
+        self, sources: tuple[str, str, str], direct: bool
+    ) -> None:
+        """Its leg would name a table it does not read. Joined to the orders
+        directly, the regions are reached that way, on one database too: not
+        through the customers."""
+        with pytest.raises(ResolutionError) as caught:
+            _compile(computed_chain_yaml(*sources, direct=direct), self.QUERY)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert error.message.startswith(
+            "Dimension 'Home Region' is computed from Regions, which the query does not "
+            "join to 'Customers' within its data source"
+        )

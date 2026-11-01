@@ -415,6 +415,7 @@ def plan_federated(
     leg_limit = leg_row_limit + 1 if leg_row_limit is not None else None
     planner.check_query_shape()
     islands = planner.islands()
+    planner.check_dimensions(islands)
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
     rows_for = planner.check_measures(islands[fact])
@@ -1092,6 +1093,37 @@ class _Planner:
         for o in sorted(self.objects):
             groups.setdefault(find(o), set()).add(o)
         return list(groups.values())
+
+    def check_dimensions(self, islands: list[set[str]]) -> None:
+        """Each dimension the query reads is computed in its own data object's leg.
+
+        A column computed from another data object's column reads it as the
+        query joins it. One the query joins outside the island of the
+        dimension's own object, on another data source or through another
+        join (an order's sales rep, not the customer's manager), is not in
+        that leg: its query would name a table it does not read.
+        """
+        island_of = {o: i for i, island in enumerate(islands) for o in island}
+        q = self.query
+        names = {DimensionRef.parse(d).name for d in q.select.dimensions if isinstance(d, str)}
+        names |= {f for item in q.where for f in _filter_fields(item)}
+        names |= {DimensionRef.parse(o.field).name for o in q.order_by}
+        for name in sorted(names):
+            dimension = self.model.dimensions.get(name)
+            if dimension is None:
+                continue
+            home = island_of.get(dimension.view)
+            apart = sorted(
+                o for o in self.model.dimension_join_objects(name) if island_of.get(o) != home
+            )
+            if apart:
+                raise self.refuse(
+                    "UNSUPPORTED_JOIN",
+                    f"Dimension '{name}' is computed from {', '.join(apart)}, which the "
+                    f"query does not join to '{dimension.view}' within its data source",
+                    hint=f"Compute it from columns of objects '{dimension.view}' joins "
+                    "on its own data source, or query it on one data source.",
+                )
 
     def fact_island(self, islands: list[set[str]]) -> int:
         """The island of the measures, which must also hold the base object.

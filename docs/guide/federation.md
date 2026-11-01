@@ -550,6 +550,7 @@ database would return, without a refusal.
 | Data objects of another source that no join from the measures' source reaches | `FEDERATION_UNSUPPORTED_JOIN` |
 | Inside a dimension source, a join that is not many-to-one from where the edge enters (it would repeat the key's rows) | `FEDERATION_UNSUPPORTED_JOIN` |
 | A nested data object (`nestedIn`) on the dimension side | `FEDERATION_UNSUPPORTED_JOIN` |
+| A dimension computed from a column of a data object the query does not join to the dimension's own within its source: on another source, or reached through another join (the regions joined to the orders directly, read by a column of the customers) | `FEDERATION_UNSUPPORTED_JOIN` |
 
 ### Measures and metrics
 
