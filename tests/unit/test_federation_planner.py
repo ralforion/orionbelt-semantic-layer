@@ -2879,3 +2879,115 @@ class TestExists:
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
         assert "reads Reasons, of another data source than 'Orders'" in error.message
+
+
+# Charge c1's labels name owners prod and env, c2's ops, c3 has none: dev is
+# named by no label. Owners prod and dev are of team 1, ops and env of 2.
+NESTED_TABLES = {
+    "billing": [
+        "CREATE TABLE owners AS SELECT * FROM (VALUES ('prod', 1), ('dev', 1), ('ops', 2),"
+        " ('env', 2)) t(owner_key, team_id)",
+        'CREATE TABLE charges (id VARCHAR, labels STRUCT("Key" VARCHAR, "Value" VARCHAR)[])',
+        "INSERT INTO charges VALUES ('c1', [{'Key': 'team', 'Value': 'prod'},"
+        " {'Key': 'env', 'Value': 'env'}]), ('c2', [{'Key': 'team', 'Value': 'ops'}]),"
+        " ('c3', [])",
+    ],
+    "crm": [
+        "CREATE TABLE teams AS SELECT * FROM (VALUES (1, 'Platform'), (2, 'Data')) t(team_id, name)"
+    ],
+}
+
+
+def nested_model(federated: bool) -> str:
+    """Owners and the charges whose labels name them on billing, teams in the CRM."""
+    billing = "    dataSource: billing\n" if federated else ""
+    crm = "    dataSource: crm\n" if federated else ""
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Owners:
+    code: owners
+{billing}    columns:
+      Owner Key: {{code: owner_key, abstractType: string, primaryKey: true}}
+      Owner Team: {{code: team_id, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Teams, columnsFrom: [Owner Team], columnsTo: [Team ID]}}
+  Charges:
+    code: charges
+{billing}    columns:
+      Charge ID: {{code: id, abstractType: string, primaryKey: true}}
+  Charge Labels:
+    nestedIn: {{dataObject: Charges, column: Labels}}
+    columns:
+      Label Key: {{code: Key, abstractType: string}}
+      Label Value: {{code: Value, abstractType: string}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Owners
+        columnsFrom: [Label Value]
+        columnsTo: [Owner Key]
+  Teams:
+    code: teams
+{crm}    columns:
+      Team ID: {{code: team_id, abstractType: int}}
+      Team Name: {{code: name, abstractType: string}}
+dimensions:
+  Team Name: {{dataObject: Teams, column: Team Name, resultType: string}}
+"""
+
+
+@pytest.fixture(scope="module")
+def nested_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("nested")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "billing", "crm")}
+    for name, statements in (
+        ("all", [*NESTED_TABLES["billing"], *NESTED_TABLES["crm"]]),
+        ("billing", NESTED_TABLES["billing"]),
+        ("crm", NESTED_TABLES["crm"]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+class TestExistsOverNested:
+    """An exists subquery over a nested object reads its parent's table there."""
+
+    @pytest.mark.parametrize(
+        ("op", "expected"),
+        [("exists", [("Data", 2), ("Platform", 1)]), ("nonexists", [("Platform", 1)])],
+    )
+    def test_a_nested_target_reached_by_a_join_walked_backwards(
+        self, nested_files: dict[str, str], op: str, expected: list[Any]
+    ) -> None:
+        """Owners some charge's label names, by team: the body reads the
+        charges and unnests their labels, on billing."""
+        named = {
+            "field": "Owners.Owner Key",
+            "op": op,
+            "subquery": {"dataObject": "Charge Labels"},
+        }
+        query = {
+            "select": {"dimensions": ["Team Name"], "measures": ["Owners Count"]},
+            "where": [named],
+        }
+        single = _compile(nested_model(False), query)
+        con = duckdb.connect(nested_files["all"], read_only=True)
+        try:
+            assert sorted(_rows(con, single.sql)) == expected
+        finally:
+            con.close()
+
+        plan = _compile(nested_model(True), query).federation
+        combine = duckdb.connect()
+        for leg in plan.legs:
+            con = duckdb.connect(nested_files[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+        assert sorted(_rows(combine, plan.combine_sql)) == expected

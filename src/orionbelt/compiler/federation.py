@@ -2331,9 +2331,10 @@ def _exists_subject(item: QueryFilter, model: SemanticModel) -> str | None:
 def _exists_objects(item: QueryFilter, model: SemanticModel) -> set[str]:
     """The data objects an ``exists`` filter's subquery reads.
 
-    Its target, the objects on the join path from the subject to it, and
-    those its filters and the enforced static filters read, with the objects
-    joined to reach them, inner ``exists`` included, as
+    Its target, the objects on the join path from the subject to it and the
+    parents of the nested ones, and those its filters and the enforced static
+    filters read, with the objects joined to reach them, inner ``exists``
+    included, as
     :func:`~orionbelt.compiler.filters.build_exists_filter_expr` joins them;
     the subject is the outer query's.
     """
@@ -2347,6 +2348,11 @@ def _subquery_reads(sub: Subquery, subject: str | None, model: SemanticModel) ->
     body = {sub.data_object}
     if subject is not None and sub.path_name is None:
         body |= _step_objects(graph.find_join_path_undirected(subject, sub.data_object))
+    # A nested object's rows are its parent's array: the body reads the
+    # parent's table and unnests them.
+    nested = (model.data_objects[name].nested_in for name in body if name in model.data_objects)
+    body |= {parent.data_object for parent in nested if parent is not None}
+    if subject is not None:
         body.discard(subject)
     inner: set[str] = set()
 
