@@ -3563,6 +3563,11 @@ def computed_chain_yaml(*sources: str, direct: bool = False) -> str:
     return yaml
 
 
+HOME_EU = (
+    "filters:\n  - {dataObject: Customers, column: Home Region, operator: equals, value: EU}\n"
+)
+
+
 class TestComputedDimensions:
     """A dimension computed from another data object's column is computed in its leg."""
 
@@ -3607,6 +3612,49 @@ class TestComputedDimensions:
         assert error.message.startswith(
             "Dimension 'Home Region' is computed from Regions, which the query does not "
             "join to 'Customers' within its data source"
+        )
+
+    def test_a_static_filter_computed_within_its_source(self, chain_files: dict[str, str]) -> None:
+        """The customers' leg filters on their region, which it joins."""
+        query = {"select": {"dimensions": ["Customer Region"], "measures": ["Revenue"]}}
+        single = _compile(computed_chain_yaml("all", "all", "all") + HOME_EU, query)
+        compiled = _compile(computed_chain_yaml("shop", "crm", "crm") + HOME_EU, query)
+        con = duckdb.connect(chain_files["all"], read_only=True)
+        try:
+            expected = sorted(_rows(con, single.sql), key=repr)
+        finally:
+            con.close()
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(chain_files[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+
+        assert sorted(_rows(combine, compiled.sql), key=repr) == expected
+        assert expected == [(1, Decimal("120.75"))]
+
+    @pytest.mark.parametrize(
+        ("sources", "direct"),
+        [(("shop", "crm", "geo"), False), (("shop", "crm", "crm"), True)],
+        ids=["on_another_source", "through_another_join"],
+    )
+    def test_a_static_filter_computed_from_an_object_joined_apart_is_refused(
+        self, sources: tuple[str, str, str], direct: bool
+    ) -> None:
+        """Its leg named a table it does not read: DuckDB, ``Referenced table
+        "Regions" not found``."""
+        query = {"select": {"dimensions": ["Customer Region"], "measures": ["Revenue"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(computed_chain_yaml(*sources, direct=direct) + HOME_EU, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert error.message.startswith(
+            "The static filter on 'Customers.Home Region' is computed from Regions, which "
+            "the query does not join to 'Customers' within its data source"
         )
 
 
@@ -3766,6 +3814,27 @@ class TestExistsReadingAnOuterObject:
 
         assert sorted(_rows(combine, compiled.sql), key=repr) == expected
         assert expected
+
+    def test_a_static_filter_computed_from_the_shared_object_is_refused(self) -> None:
+        """The customers' rep name is the employee the outer query joins, the
+        order's rep: in the customers' leg it would read the tickets' agent."""
+        yaml = shared_yaml(
+            True,
+            "  - {dataObject: Customers, column: Rep Name, operator: equals, value: Ann}\n",
+        ).replace(
+            "      Customer Name: {code: name, abstractType: string}\n",
+            "      Customer Name: {code: name, abstractType: string}\n"
+            '      Rep Name: {expression: "{[Employees].[Name]}", abstractType: string}\n',
+        )
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, SHARED_QUERIES["exists_by_the_rep"])
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert error.message.startswith(
+            "The static filter on 'Customers.Rep Name' is computed from Employees"
+        )
 
     def test_the_subjects_leg_reads_the_object_for_the_subquery(self) -> None:
         query = SHARED_QUERIES["exists_by_the_rep"]

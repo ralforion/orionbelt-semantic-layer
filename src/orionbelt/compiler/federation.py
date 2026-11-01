@@ -419,7 +419,7 @@ def plan_federated(
     leg_limit = leg_row_limit + 1 if leg_row_limit is not None else None
     planner.check_query_shape()
     islands = planner.islands()
-    planner.check_dimensions(islands)
+    planner.check_computed_columns(islands)
     body_reads = planner.body_reads(islands)
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
@@ -1123,35 +1123,48 @@ class _Planner:
                 reads.setdefault(home, set()).update(apart)
         return reads
 
-    def check_dimensions(self, islands: list[set[str]]) -> None:
-        """Each dimension the query reads is computed in its own data object's leg.
+    def check_computed_columns(self, islands: list[set[str]]) -> None:
+        """Each dimension the query reads, and each static filter on an object it
+        reads, is computed in its own data object's leg.
 
         A column computed from another data object's column reads it as the
-        query joins it. One the query joins outside the island of the
-        dimension's own object, on another data source or through another
-        join (an order's sales rep, not the customer's manager), is not in
-        that leg: its query would name a table it does not read.
+        query joins it. One the query joins outside the island of the column's
+        own object, on another data source or through another join (an
+        order's sales rep, not the customer's manager), is not in that leg:
+        its query would name a table it does not read, or, where an
+        ``exists`` subquery reads that object there too (:meth:`body_reads`),
+        the subquery's join of it. A static filter on an object only a
+        subquery reads applies in the subquery, which joins what it reads.
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         q = self.query
         names = {DimensionRef.parse(d).name for d in q.select.dimensions if isinstance(d, str)}
         names |= {f for item in q.where for f in _filter_fields(item)}
         names |= {DimensionRef.parse(o.field).name for o in q.order_by}
-        for name in sorted(names):
-            dimension = self.model.dimensions.get(name)
-            if dimension is None:
-                continue
-            home = island_of.get(dimension.view)
+        reads = [
+            (f"Dimension '{name}'", dimension.view, dimension.column)
+            for name in sorted(names)
+            if (dimension := self.model.dimensions.get(name)) is not None
+        ]
+        reads += [
+            (f"The static filter on '{f.data_object}.{f.column}'", f.data_object, f.column)
+            for f in self.model.filters
+            if f.data_object in island_of and f.data_object not in self.in_subqueries
+        ]
+        for what, obj, column in reads:
+            home = island_of.get(obj)
             apart = sorted(
-                o for o in self.model.dimension_join_objects(name) if island_of.get(o) != home
+                o
+                for o in self.model.column_reference_objects(obj, column)
+                if island_of.get(o) != home
             )
             if apart:
                 raise self.refuse(
                     "UNSUPPORTED_JOIN",
-                    f"Dimension '{name}' is computed from {', '.join(apart)}, which the "
-                    f"query does not join to '{dimension.view}' within its data source",
-                    hint=f"Compute it from columns of objects '{dimension.view}' joins "
-                    "on its own data source, or query it on one data source.",
+                    f"{what} is computed from {', '.join(apart)}, which the query does "
+                    f"not join to '{obj}' within its data source",
+                    hint=f"Compute it from columns of objects '{obj}' joins on its own "
+                    "data source, or query it on one data source.",
                 )
 
     def fact_island(self, islands: list[set[str]]) -> int:
