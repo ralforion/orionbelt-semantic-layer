@@ -1022,13 +1022,6 @@ class _Planner:
                 "UNSUPPORTED_QUERY",
                 "A federated query cannot select one dimension at two grains",
             )
-        for name in names:
-            if self.model.dimensions[name].via:
-                raise self.refuse(
-                    "UNSUPPORTED_QUERY",
-                    f"Dimension '{name}' plays a role (via), which a federated query "
-                    "does not support yet",
-                )
 
     # -- islands and edges --------------------------------------------------
 
@@ -1696,9 +1689,18 @@ class _Planner:
             for name, obj in model.data_objects.items()
             if name in island
         }
-        dimensions = {name: dim for name, dim in model.dimensions.items() if dim.view in island}
+        # A role's object (``models.roles``) is joined from its ``via``: one on
+        # another island is the edge into this one, which the combine step
+        # joins, so the leg reads the role's object as any other.
+        dimensions = {
+            name: dim
+            if dim.via is None or dim.via in island
+            else dim.model_copy(update={"via": None})
+            for name, dim in model.dimensions.items()
+            if dim.view in island
+        }
         for column, name in (own_grain or {}).items():
-            dimensions[column] = model.dimensions[name].model_copy(update={"name": column})
+            dimensions[column] = dimensions[name].model_copy(update={"name": column})
         copies = set(own_zone)
         for key, (obj, column) in keys.items():
             col = model.data_objects[obj].columns[column]

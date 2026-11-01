@@ -3157,3 +3157,217 @@ class TestExistsOverNested:
             finally:
                 con.close()
         assert sorted(_rows(combine, plan.combine_sql)) == expected
+
+
+# Orders on the shop, employees and customers in the CRM. Order 3 has no
+# support employee, order 5's support employee 9 and customer 999 are missing,
+# and customer 102 has no account manager.
+ROLE_TABLES = {
+    "shop": [
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 1, 2, 10.50, 100), (2, 1, 1, 20.25, 100),"
+        " (3, 2, NULL, 5.00, 101), (4, 3, 2, 7.00, 102), (5, 2, 9, 1.25, 999))"
+        " t(order_id, sales_id, support_id, amount, customer_id)"
+    ],
+    "crm": [
+        "CREATE TABLE employees AS SELECT * FROM (VALUES (1, 'Ann', 'east', DATE '2020-03-01'),"
+        " (2, 'Bob', 'west', DATE '2021-07-15'), (3, 'Cid', NULL, DATE '2021-01-10'))"
+        " t(employee_id, name, team, hired)",
+        "CREATE TABLE customers AS SELECT * FROM (VALUES (100, 2), (101, 1), (102, NULL))"
+        " t(customer_id, manager_id)",
+    ],
+}
+
+
+def roles_model(federated: bool, static: str = "") -> str:
+    """Orders with a sales and a support employee, customers with an account manager."""
+    shop = "    dataSource: shop\n" if federated else ""
+    crm = "    dataSource: crm\n" if federated else ""
+    filters = f"filters:\n{static}" if static else ""
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Orders:
+    code: orders
+{shop}    columns:
+      Order ID: {{code: order_id, abstractType: int}}
+      Sales Employee ID: {{code: sales_id, abstractType: int}}
+      Support Employee ID: {{code: support_id, abstractType: int}}
+      Amount: {{code: amount, abstractType: decimal, numClass: additive}}
+      Order Customer: {{code: customer_id, abstractType: int}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Employees
+        pathName: sales
+        columnsFrom: [Sales Employee ID]
+        columnsTo: [Employee ID]
+      - joinType: many-to-one
+        joinTo: Employees
+        secondary: true
+        pathName: support
+        columnsFrom: [Support Employee ID]
+        columnsTo: [Employee ID]
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+  Customers:
+    code: customers
+{crm}    columns:
+      Customer ID: {{code: customer_id, abstractType: int}}
+      Manager ID: {{code: manager_id, abstractType: int}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Employees
+        pathName: manager
+        columnsFrom: [Manager ID]
+        columnsTo: [Employee ID]
+  Employees:
+    code: employees
+{crm}    columns:
+      Employee ID: {{code: employee_id, abstractType: int}}
+      Name: {{code: name, abstractType: string}}
+      Team: {{code: team, abstractType: string}}
+      Hired: {{code: hired, abstractType: date}}
+dimensions:
+  Employee Name: {{dataObject: Employees, column: Name, resultType: string}}
+  Sales Employee:
+    {{dataObject: Employees, column: Name, resultType: string, via: Orders, pathName: sales}}
+  Support Employee:
+    {{dataObject: Employees, column: Name, resultType: string, via: Orders, pathName: support}}
+  Support Team:
+    {{dataObject: Employees, column: Team, resultType: string, via: Orders, pathName: support}}
+  Account Manager:
+    {{dataObject: Employees, column: Name, resultType: string, via: Customers, pathName: manager}}
+  Order Employee: {{dataObject: Employees, column: Name, resultType: string, via: Orders}}
+  Support Hired:
+    {{dataObject: Employees, column: Hired, resultType: date, via: Orders, pathName: support}}
+  Order ID: {{dataObject: Orders, column: Order ID, resultType: int}}
+measures:
+  Revenue:
+    {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum, resultType: decimal}}
+{filters}"""
+
+
+@pytest.fixture(scope="module")
+def role_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("roles")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+    for name, statements in (
+        ("all", [*ROLE_TABLES["shop"], *ROLE_TABLES["crm"]]),
+        ("shop", ROLE_TABLES["shop"]),
+        ("crm", ROLE_TABLES["crm"]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+ROLE_QUERIES = {
+    "two_roles_of_one_join_target": {
+        "select": {"dimensions": ["Sales Employee", "Support Employee"], "measures": ["Revenue"]}
+    },
+    "a_role_beside_the_plain_dimension": {
+        "select": {"dimensions": ["Employee Name", "Support Employee"], "measures": ["Revenue"]}
+    },
+    "two_columns_of_one_role": {
+        "select": {"dimensions": ["Support Employee", "Support Team"], "measures": ["Revenue"]}
+    },
+    "filtered_on_another_role": {
+        "select": {"dimensions": ["Support Employee"], "measures": ["Revenue"]},
+        "where": [{"field": "Sales Employee", "op": "=", "value": "Ann"}],
+    },
+    "a_role_missing_or_another": {
+        "select": {"dimensions": ["Sales Employee"], "measures": ["Revenue"]},
+        "where": [
+            _either(
+                {"field": "Support Employee", "op": "is_null"},
+                {"field": "Sales Employee", "op": "=", "value": "Ann"},
+            )
+        ],
+    },
+    "or_across_sources": {
+        "select": {"dimensions": ["Sales Employee"], "measures": ["Revenue"]},
+        "where": [
+            _either(
+                {"field": "Support Team", "op": "=", "value": "east"},
+                {"field": "Order ID", "op": ">", "value": 4},
+            )
+        ],
+    },
+    "a_role_within_the_dimension_source": {
+        "select": {"dimensions": ["Account Manager", "Sales Employee"], "measures": ["Revenue"]}
+    },
+    "without_measures": {"select": {"dimensions": ["Sales Employee", "Support Employee"]}},
+    "a_role_selected_at_a_grain_filtered_after_the_join": {
+        "select": {"dimensions": ["Support Hired:year"], "measures": ["Revenue"]},
+        "where": [
+            _either(
+                {"field": "Support Hired", "op": ">=", "value": "2021-07-01"},
+                {"field": "Order ID", "op": "<", "value": 3},
+            )
+        ],
+    },
+    "via_without_a_path_name": {
+        "select": {"dimensions": ["Order Employee", "Support Employee"], "measures": ["Revenue"]}
+    },
+}
+TEAM_NOT_WEST = "  - {dataObject: Employees, column: Team, operator: notequals, value: west}\n"
+
+
+class TestRoles:
+    """Each role of a dimension source is a leg of its own, as one database joins it."""
+
+    def _run(
+        self, paths: dict[str, str], federated: bool, query: dict[str, Any], **model: Any
+    ) -> list[Any]:
+        compiled = _compile(roles_model(federated, **model), query)
+        if not federated:
+            assert compiled.federation is None
+            con = duckdb.connect(paths["all"], read_only=True)
+            try:
+                return sorted(_rows(con, compiled.sql), key=repr)
+            finally:
+                con.close()
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(paths[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+        return sorted(_rows(combine, compiled.sql), key=repr)
+
+    @pytest.mark.parametrize("query", ROLE_QUERIES.values(), ids=ROLE_QUERIES.keys())
+    @pytest.mark.parametrize(
+        "static",
+        ["", TEAM_NOT_WEST, TEAM_NOT_WEST.replace("}\n", ", enforce: always}\n")],
+        ids=["", "static", "enforced"],
+    )
+    def test_federated_returns_what_one_source_returns(
+        self, role_files: dict[str, str], query: dict[str, Any], static: str
+    ) -> None:
+        single = self._run(role_files, False, query, static=static)
+
+        assert self._run(role_files, True, query, static=static) == single
+        assert single
+
+    def test_each_role_reads_the_target_under_its_own_name(self) -> None:
+        query = {
+            "select": {
+                "dimensions": ["Sales Employee", "Support Employee"],
+                "measures": ["Revenue"],
+            }
+        }
+
+        plan = _compile(roles_model(True), query).federation
+
+        orders, sales, support = plan.legs
+        assert (sales.data_source, support.data_source) == ("crm", "crm")
+        assert 'FROM "employees" AS "Employees__Orders__sales"' in sales.sql
+        assert 'FROM "employees" AS "Employees__Orders__support"' in support.sql
+        assert '"Orders"."sales_id" AS "__fk0_0"' in orders.sql
+        assert '"Orders"."support_id" AS "__fk1_0"' in orders.sql
