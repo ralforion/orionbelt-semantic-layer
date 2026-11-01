@@ -482,8 +482,11 @@ time span, a change against an earlier period, a rank, a lag.
   the combine step applies the grains: the one a dimension declares
   (`timeGrain`) and the one the query selects (`Order Date:month`). A rolling
   window over months then counts months, and a time span reads each order's
-  date. Every dimension over one date column (`Order Date`, `Order Month`)
-  reads that one column there.
+  date. Every dimension over one date column (`Order Date`, `Order Month`,
+  whatever result type it declares) reads that one column there, and the
+  metric's time dimension is returned, and its data object joined, even when
+  the query does not select it: a running total by region alone sums up to
+  the last date of the calendar it is on.
 - A filter on the metric's time dimension, or on another dimension over its
   date column, runs in the combine step. It says which periods to show, not
   which the metric reads: shown from February, February's change is against

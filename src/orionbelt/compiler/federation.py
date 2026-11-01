@@ -350,22 +350,48 @@ def source_name(model: SemanticModel, obj: str) -> str | None:
 
 def query_objects(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> set[str]:
     """Every data object a resolved query reads, ``exists`` subqueries included."""
-    objects = _outer_objects(resolved)
+    objects = _outer_objects(resolved, model)
     for item in _exists_filters([*query.where, *query.having]):
         objects |= _exists_objects(item, model)
     objects.discard("")
     return objects
 
 
-def _outer_objects(resolved: ResolvedQuery) -> set[str]:
+def _outer_objects(resolved: ResolvedQuery, model: SemanticModel) -> set[str]:
     """The data objects a resolved query reads outside its ``exists`` subqueries."""
     objects = set(resolved.required_objects) | {resolved.base_object}
-    for step in resolved.join_steps:
+    for step in query_join_steps(resolved, model):
         objects |= {step.from_object, step.to_object}
     objects |= {d.object_name for d in resolved.dimensions}
     objects |= set(resolved.measure_source_objects)
     objects.discard("")
     return objects
+
+
+def query_join_steps(resolved: ResolvedQuery, model: SemanticModel) -> list[JoinStep]:
+    """The query's joins, and those to the time dimension of a metric across periods.
+
+    A metric reads its time dimension's dates whether or not the query
+    selects it: a running total by region alone sums up to the last date,
+    which one database reads in a query of its own, joining the calendar
+    the dimension is on. The query's own joins do not reach it then.
+    """
+    steps = list(resolved.join_steps)
+    joined = {resolved.base_object} | {o for s in steps for o in (s.from_object, s.to_object)}
+    names = {
+        m.cumulative_time_dimension or m.pop_time_dimension or m.window_time_dimension
+        for m in resolved.measures
+        if m.is_cumulative or m.is_pop or m.is_window
+    }
+    graph = JoinGraph.of(model)
+    for name in sorted(n for n in names if n in model.dimensions):
+        target = model.dimensions[name].view
+        if target in joined:
+            continue
+        path = graph.find_join_path(set(joined), {target})
+        steps += path
+        joined |= _step_objects(path)
+    return steps
 
 
 def is_federated(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> bool:
@@ -569,7 +595,7 @@ def plan_federated(
     )
     fact_columns = [
         *[_dimension_column(model, DimensionRef.parse(d).name) for d in fact_dims],
-        *[_dimension_column(model, name, column) for column, name in fact_own_grain.items()],
+        *[planner.own_column(name, column) for column, name in fact_own_grain.items()],
         *[
             _key_column(model, name, obj, col)
             for name, (obj, col) in {**fact_keys, **fact_values}.items()
@@ -740,7 +766,7 @@ def plan_federated(
         )
         dim_columns = [
             *[_dimension_column(model, DimensionRef.parse(d).name) for d in dims],
-            *[_dimension_column(model, name, column) for column, name in dim_own_grain.items()],
+            *[planner.own_column(name, column) for column, name in dim_own_grain.items()],
             *[
                 _key_column(model, name, obj, col)
                 for name, (obj, col) in {**keys, **onward, **static_columns}.items()
@@ -1069,7 +1095,8 @@ class _Planner:
         self.objects = query_objects(resolved, query, model)
         # The objects only an ``exists`` subquery reads: the outer query of a
         # leg does not join them, and their static filters apply in the body.
-        self.in_subqueries = self.objects - _outer_objects(resolved)
+        self.in_subqueries = self.objects - _outer_objects(resolved, model)
+        self.join_steps = query_join_steps(resolved, model)
 
     # -- refusals -----------------------------------------------------------
 
@@ -1122,7 +1149,7 @@ class _Planner:
                 o = parent[o]
             return o
 
-        for step in self.resolved.join_steps:
+        for step in self.join_steps:
             a, b = step.from_object, step.to_object
             if a in parent and b in parent and self.sources.get(a) == self.sources.get(b):
                 parent[find(a)] = find(b)
@@ -1259,7 +1286,7 @@ class _Planner:
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         steps = [
             step
-            for step in self.resolved.join_steps
+            for step in self.join_steps
             if island_of.get(step.from_object) != island_of.get(step.to_object)
         ]
         edges: list[_Edge] = []
@@ -1323,7 +1350,7 @@ class _Planner:
         changed = True
         while changed:
             changed = False
-            for step in self.resolved.join_steps:
+            for step in self.join_steps:
                 if (
                     step.from_object in reached
                     and step.to_object in island
@@ -1370,6 +1397,15 @@ class _Planner:
         and the combine step applies the query's grains.
         """
         return any(rm.is_cumulative or rm.is_pop or rm.is_window for rm in self.resolved.measures)
+
+    def _metric_time_dimensions(self) -> list[str]:
+        """The time dimensions of the query's metrics across periods, in the model."""
+        names = {
+            m.cumulative_time_dimension or m.pop_time_dimension or m.window_time_dimension
+            for m in self.resolved.measures
+            if m.is_cumulative or m.is_pop or m.is_window
+        }
+        return sorted(n for n in names if n in self.model.dimensions)
 
     def lookback_axes(self) -> set[tuple[str, str]]:
         """The ``(data object, column)`` of each time dimension a metric looks back along.
@@ -1702,7 +1738,7 @@ class _Planner:
         changed = True
         while changed:
             changed = False
-            for step in self.resolved.join_steps:
+            for step in self.join_steps:
                 if step.nested or step.cardinality == Cardinality.MANY_TO_MANY:
                     continue
                 pairs = [(step.from_object, step.to_object)]
@@ -1866,9 +1902,14 @@ class _Planner:
                     wanted.append(field)
                     selected.add(field)
         if periods:
-            dated = [
-                d for d in wanted if self.model.dimensions[d].result_type in DATE_BEARING_TYPES
-            ]
+            # A metric reads its time dimension's dates whether or not the
+            # query selects it: a running total by region alone sums up to
+            # the last of them.
+            for name in self._metric_time_dimensions():
+                if name not in selected:
+                    wanted.append(name)
+                    selected.add(name)
+            dated = [d for d in wanted if self.stored_type(d) is not None]
             for name in dated:
                 self._check_stored(name, grains.get(name))
                 island = island_of[self.model.dimensions[name].view]
@@ -1884,6 +1925,25 @@ class _Planner:
             else:
                 edge_dims[edge_of[island]].append(d)
         return fact_dims, edge_dims, regrained
+
+    def own_column(self, name: str, column: str) -> DataObjectColumn:
+        """The leg column of dimension *name* under a name of its own: typed as
+        the date its column holds, beside a metric across periods."""
+        own = _dimension_column(self.model, name, column)
+        held = self.stored_type(name) if self.reads_periods() else None
+        return own.model_copy(update={"abstract_type": held}) if held else own
+
+    def stored_type(self, name: str) -> DataType | None:
+        """The date type dimension *name*'s column holds, or ``None`` for another.
+
+        The column's, not the dimension's: a dimension over a date may
+        declare, or default to, a string, and its grain is still a period.
+        """
+        dimension = self.model.dimensions[name]
+        column = self.model.data_objects[dimension.view].columns.get(dimension.column)
+        held = column.abstract_type if column is not None and column.abstract_type else None
+        held = held or dimension.result_type
+        return held if held in DATE_BEARING_TYPES else None
 
     def _check_stored(self, name: str, grain: TimeGrain | None) -> None:
         """Refuse a date dimension the combine step would read in its own time zone.
@@ -1948,9 +2008,11 @@ class _Planner:
             for name, dim in model.dimensions.items()
             if dim.view in island
         }
-        as_stored = {"time_grain": None} if self.reads_periods() else {}
+        periods = self.reads_periods()
         for column, name in (own_grain or {}).items():
-            dimensions[column] = dimensions[name].model_copy(update={"name": column, **as_stored})
+            # Beside a metric across periods, the date as stored.
+            stored = {"time_grain": None, "result_type": self.stored_type(name)} if periods else {}
+            dimensions[column] = dimensions[name].model_copy(update={"name": column, **stored})
         copies = set(own_zone)
         for key, (obj, column) in keys.items():
             col = model.data_objects[obj].columns[column]

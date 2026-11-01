@@ -1292,6 +1292,54 @@ def _metrics_over(measure: str) -> str:
     )
 
 
+CALENDAR = (
+    "CREATE TABLE calendar AS SELECT CAST(d AS DATE) AS day"
+    " FROM range(DATE '2024-01-01', DATE '2024-04-01', INTERVAL 1 DAY) t(d)"
+)
+
+
+def calendar_yaml(federated: bool, calendar_source: str = "shop") -> str:
+    """The orders joined to a calendar by their date, with a running total
+    over the calendar's day."""
+    yaml = model_yaml(
+        federated=federated,
+        metric=PERIOD_METRICS + "  Calendar Running:\n"
+        "    {type: cumulative, measure: Revenue, timeDimension: Calendar Date}\n",
+        dimension="  Calendar Date: {dataObject: Calendar, column: Day, resultType: date}\n",
+    ).replace(
+        "        columnsTo: [Customer ID]\n  Customers:",
+        "        columnsTo: [Customer ID]\n"
+        "      - {joinType: many-to-one, joinTo: Calendar, columnsFrom: [Order Date], "
+        "columnsTo: [Day]}\n"
+        "  Customers:",
+    )
+    source = f"    dataSource: {calendar_source}\n" if federated else ""
+    calendar = (
+        f"  Calendar:\n    code: calendar\n{source}    columns:\n"
+        "      Day: {code: day, abstractType: date}\n"
+    )
+    return yaml.replace("dimensions:\n", calendar + "dimensions:\n", 1)
+
+
+@pytest.fixture(scope="module")
+def calendar_files(tmp_path_factory: Any) -> dict[str, str]:
+    """The calendar beside the orders, and on a source of its own, ``geo``."""
+    root = tmp_path_factory.mktemp("calendar")
+    tables = {
+        "all": [ORDERS, CUSTOMERS, CALENDAR],
+        "shop": [ORDERS, CALENDAR],
+        "crm": [CUSTOMERS],
+        "geo": [CALENDAR],
+    }
+    paths = {name: str(root / f"{name}.duckdb") for name in tables}
+    for name, statements in tables.items():
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
 class TestPeriodMetrics:
     """Cumulative, period-over-period and window metrics run in the combine step."""
 
@@ -1384,6 +1432,81 @@ class TestPeriodMetrics:
         }
 
         assert_same(files, query, metric=PERIOD_METRICS, dimension=ORDER_MONTH)
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {
+                "select": {"dimensions": ["Order Date:month"], "measures": ["Running Revenue"]},
+                "where": [
+                    {"field": "Order Month", "op": ">=", "value": "2024-02-01"},
+                    KNOWN_REGION,
+                ],
+            },
+            {
+                "select": {
+                    "dimensions": ["Order Month:day", "Region"],
+                    "measures": ["Rank in Region"],
+                }
+            },
+        ],
+        ids=["filtered_from_february", "selected_by_day"],
+    )
+    def test_a_dimension_over_a_date_declared_as_text(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        """Order Month reads Order Date's column, a date, though it declares no
+        result type (a string): its leg returns the date, and its filter and
+        grain read it, as one database's do."""
+        month = "  Order Month: {dataObject: Orders, column: Order Date, timeGrain: month}\n"
+
+        assert_same(files, query, metric=PERIOD_METRICS, dimension=month)
+
+    @pytest.mark.parametrize(
+        "measures", [["Running Revenue", "Revenue"], ["QTD Revenue", "Rolling Revenue"]]
+    )
+    def test_without_the_time_dimension_selected(
+        self, files: dict[str, str], measures: list[str]
+    ) -> None:
+        """A running total by region alone sums up to the last date: the fact
+        leg returns the dates for it, which the query does not select."""
+        query = {"select": {"dimensions": ["Region"], "measures": measures}}
+
+        assert_same(files, query, metric=PERIOD_METRICS)
+
+    @pytest.mark.parametrize("calendar_source", ["shop", "geo"])
+    @pytest.mark.parametrize(
+        "dimensions", [["Region"], ["Calendar Date:month", "Region"], []], ids=["", "month", "none"]
+    )
+    def test_over_a_joined_calendar(
+        self, calendar_files: dict[str, str], dimensions: list[str], calendar_source: str
+    ) -> None:
+        """The running total's dates are the calendar's, which the query does
+        not join when it does not select them: the planner joins it, beside
+        the orders or on a source of its own. By the total alone, the orders
+        and the calendar's source are federated, not compiled for the shop."""
+        query = {"select": {"dimensions": dimensions, "measures": ["Calendar Running", "Revenue"]}}
+        single = _compile(calendar_yaml(False), query)
+        con = duckdb.connect(calendar_files["all"], read_only=True)
+        try:
+            expected = sorted(_rows(con, single.sql), key=repr)
+        finally:
+            con.close()
+        compiled = _compile(calendar_yaml(True, calendar_source), query)
+        if compiled.federation is None:
+            # The shop's orders and calendar alone: one source.
+            assert calendar_source == "shop" and not dimensions
+            return
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(calendar_files[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+
+        assert sorted(_rows(combine, compiled.sql), key=repr) == expected
+        assert expected
 
     @pytest.mark.parametrize("metric", ["Running Of", "Rolling Of", "Span Of", "Change Of"])
     @pytest.mark.parametrize(
