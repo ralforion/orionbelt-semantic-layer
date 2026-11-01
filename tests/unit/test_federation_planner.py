@@ -1745,6 +1745,32 @@ class TestEngineEquality:
             error.message
         )
 
+    def test_a_value_of_another_source_its_engine_compares_otherwise_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A filter on a MySQL label would compare 'a' and 'A' as two values in
+        the combine step, where MySQL sees one."""
+        pytest.importorskip("ob_flight")
+        monkeypatch.setenv("OBSL_DATABASES", "facts,labels")
+        monkeypatch.setenv("DB_FACTS_TYPE", "postgres")
+        monkeypatch.setenv("DB_LABELS_TYPE", "mysql")
+        yaml = EQUALITY + (
+            "  A Rows:\n"
+            "    columns: [{dataObject: Facts, column: Key}]\n"
+            "    aggregation: count\n"
+            "    filters:\n"
+            "      - column: {dataObject: Groups, column: Label}\n"
+            "        operator: equals\n"
+            "        values: [{dataType: string, valueString: a}]\n"
+        )
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, {"select": {"dimensions": ["Name"], "measures": ["A Rows"]}})
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_AGGREGATION"
+        assert "values of 'Groups.Label' otherwise than mysql" in error.message
+
     @pytest.mark.parametrize(
         ("dialect", "measure"),
         [("mysql", "Mode F"), ("clickhouse", "Mode Name"), ("clickhouse", "Least Name")],
@@ -2240,3 +2266,229 @@ class TestRepeatedRows:
         expected, got = _repeated(aggregation, query)
 
         _assert_same_rows(got, expected)
+
+
+PRICED = """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+  queryTimezone: Europe/Berlin
+dataObjects:
+  Lines:
+    code: lines
+{shop}    columns:
+      Line ID: {{code: line_id, abstractType: int}}
+      Line Product: {{code: product_id, abstractType: int}}
+      Line Batch: {{code: batch_id, abstractType: int}}
+      Qty: {{code: qty, abstractType: int, numClass: additive}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom: [Line Product]
+        columnsTo: [Product ID]
+      - {{joinType: many-to-one, joinTo: Batches, columnsFrom: [Line Batch], columnsTo: [Batch ID]}}
+  Batches:
+    code: batches
+{shop}    columns:
+      Batch ID: {{code: batch_id, abstractType: int}}
+      Weight: {{code: weight, abstractType: int}}
+  Products:
+    code: products
+{catalog}    columns:
+      Product ID: {{code: product_id, abstractType: int}}
+      Price: {{code: price, abstractType: decimal, sqlPrecision: 10, sqlScale: 2}}
+      Category: {{code: category, abstractType: string}}
+      Listed: {{code: listed, abstractType: timestamp_tz}}
+dimensions:
+  Category: {{dataObject: Products, column: Category, resultType: string}}
+  Batch: {{dataObject: Batches, column: Batch ID, resultType: int}}
+measures:
+  Units: {{columns: [{{dataObject: Lines, column: Qty}}], aggregation: sum, resultType: int}}
+  Sales:
+    expression: "{{[Lines].[Qty]}} * {{[Products].[Price]}}"
+    aggregation: sum
+    resultType: decimal
+  Average Line Value:
+    expression: "{{[Lines].[Qty]}} * {{[Products].[Price]}}"
+    aggregation: avg
+    resultType: decimal
+  Median Line Value:
+    expression: "{{[Lines].[Qty]}} * {{[Products].[Price]}}"
+    aggregation: median
+    resultType: decimal
+  Tool Units:
+    columns: [{{dataObject: Lines, column: Qty}}]
+    aggregation: sum
+    filters:
+      - column: {{dataObject: Products, column: Category}}
+        operator: equals
+        values: [{{dataType: string, valueString: tools}}]
+    resultType: int
+  First Listed Qty:
+    columns: [{{dataObject: Lines, column: Qty}}]
+    aggregation: first
+    withinGroup: {{column: {{dataObject: Products, column: Listed}}}}
+    resultType: int
+  Tool Weight:
+    columns: [{{dataObject: Batches, column: Weight}}]
+    aggregation: sum
+    filters:
+      - column: {{dataObject: Products, column: Category}}
+        operator: equals
+        values: [{{dataType: string, valueString: tools}}]
+    resultType: int
+metrics:
+  Price per Unit: {{expression: "{{[Sales]}} / {{[Units]}}"}}
+"""
+LINES = (
+    "CREATE TABLE lines AS SELECT * FROM (VALUES"
+    " (1, 1, 1, 2), (2, 1, 1, 3), (3, 2, 2, 1), (4, 3, 2, 5),"
+    " (5, 99, 1, 4), (6, 2, 2, 2), (7, 4, 1, 6)) t(line_id, product_id, batch_id, qty)"
+)
+BATCHES = "CREATE TABLE batches AS SELECT * FROM (VALUES (1, 10), (2, 20)) t(batch_id, weight)"
+# Products 1 and 2 are listed at 02:30 in Berlin both, the night it falls back.
+PRODUCTS = (
+    "CREATE TABLE products AS SELECT * FROM (VALUES"
+    " (1, 10.50::DECIMAL(10, 2), 'tools', TIMESTAMPTZ '2024-10-27 00:30:00+00'),"
+    " (2, 3.25, 'toys', TIMESTAMPTZ '2024-10-27 01:30:00+00'),"
+    " (3, NULL, 'tools', TIMESTAMPTZ '2024-10-28 09:00:00+00'),"
+    " (4, 7.00, NULL, NULL)) t(product_id, price, category, listed)"
+)
+
+
+@pytest.fixture(scope="module")
+def priced(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("priced")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "catalog")}
+    for name, statements in (
+        ("all", [LINES, BATCHES, PRODUCTS]),
+        ("shop", [LINES, BATCHES]),
+        ("catalog", [PRODUCTS]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+def _priced(federated: bool) -> str:
+    shop, catalog = ("    dataSource: shop\n", "    dataSource: catalog\n")
+    return PRICED.format(shop=shop if federated else "", catalog=catalog if federated else "")
+
+
+ACROSS_QUERIES = {
+    "by_the_other_sources_dimension": {
+        "select": {
+            "dimensions": ["Category"],
+            "measures": ["Units", "Sales", "Tool Units", "Price per Unit"],
+        }
+    },
+    "by_none": {"select": {"measures": ["Sales", "Tool Units", "First Listed Qty"]}},
+    "by_a_fact_side_dimension": {
+        "select": {
+            "dimensions": ["Batch"],
+            "measures": ["Sales", "Average Line Value", "Median Line Value"],
+        }
+    },
+    "filtered_on_the_other_source": {
+        "select": {"dimensions": ["Batch"], "measures": ["Sales", "Tool Units"]},
+        "where": [{"field": "Category", "op": "!=", "value": "toys"}],
+    },
+    "ordered_and_limited": {
+        "select": {"dimensions": ["Category"], "measures": ["Sales"]},
+        "orderBy": [{"field": "Sales", "direction": "desc"}],
+        "limit": 2,
+    },
+}
+
+
+class TestMeasuresReadingAnotherSource:
+    """A measure reading a column of another source: its dimension leg returns
+    the column, and the combine step computes the measure after the join."""
+
+    def _run(self, priced: dict[str, str], federated: bool, query: dict[str, Any]) -> list[Any]:
+        compiled = _compile(_priced(federated), query)
+        if not federated:
+            assert compiled.federation is None
+            con = duckdb.connect(priced["all"], read_only=True)
+            try:
+                return _rows(con, compiled.sql)
+            finally:
+                con.close()
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            con = duckdb.connect(priced[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+            finally:
+                con.close()
+        return _rows(combine, compiled.sql)
+
+    @pytest.mark.parametrize("query", ACROSS_QUERIES.values(), ids=ACROSS_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, priced: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        single = self._run(priced, False, query)
+        federated = self._run(priced, True, query)
+
+        if "orderBy" in query:
+            assert federated == single
+        else:
+            assert sorted(federated, key=repr) == sorted(single, key=repr)
+        assert single
+
+    def test_the_other_sources_leg_returns_the_columns_beside_its_keys(self) -> None:
+        plan = _compile(
+            _priced(True), {"select": {"dimensions": ["Batch"], "measures": ["Sales", "Units"]}}
+        ).federation
+
+        lines, products = plan.legs
+        assert lines.rows is not None
+        assert '"price"' in products.sql and '"price"' not in lines.sql
+        assert [kind for c, kind in products.columns if c.startswith("__value")] == ["decimal"]
+        assert '"leg_0"."__value0" * "leg_1"."__value1"' in plan.combine_sql
+
+    def test_an_ordering_key_there_is_read_in_its_own_time(self, priced: dict[str, str]) -> None:
+        """Read in Berlin time, products 1 and 2 were both listed at 02:30, and
+        the tie went to the smaller quantity: the first came back 1, not 2."""
+        query = {"select": {"measures": ["First Listed Qty"]}}
+
+        assert self._run(priced, True, query) == self._run(priced, False, query) == [(2,)]
+        products = _compile(_priced(True), query).federation.legs[1]
+        assert '"Products"."listed" AS' in products.sql
+
+    def test_a_measure_counted_once_per_row_of_its_object_is_refused(self) -> None:
+        with pytest.raises(ResolutionError) as caught:
+            _compile(
+                _priced(True), {"select": {"dimensions": ["Batch"], "measures": ["Tool Weight"]}}
+            )
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_MEASURE_ACROSS_SOURCES"
+        assert "counted once per row of 'Batches'" in error.message
+
+    def test_a_column_computed_from_another_source_is_refused(self) -> None:
+        yaml = (
+            _priced(True)
+            .replace(
+                "      Qty: {code: qty, abstractType: int, numClass: additive}\n",
+                "      Qty: {code: qty, abstractType: int, numClass: additive}\n"
+                "      Gross:\n"
+                '        expression: "{Qty} * {[Products].[Price]}"\n'
+                "        abstractType: decimal\n",
+            )
+            .replace(
+                "measures:\n",
+                "measures:\n"
+                "  Gross Sales: {columns: [{dataObject: Lines, column: Gross}], aggregation: sum,"
+                " resultType: decimal}\n",
+            )
+        )
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, {"select": {"dimensions": ["Batch"], "measures": ["Gross Sales"]}})
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_MEASURE_ACROSS_SOURCES"
+        assert "'Lines.Gross', which is computed from Products" in error.message
