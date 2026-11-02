@@ -589,6 +589,7 @@ def plan_federated(
     planner.check_per(islands)
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
+    planner.check_unnested_dimensions(islands, fact)
     if query.select.is_raw:
         return _plan_raw(
             planner, islands, fact, edges, body_reads, compile_leg=compile_leg, leg_limit=leg_limit
@@ -2070,11 +2071,7 @@ class _Planner:
             steps.remove(step)
             a, b = step.from_object, step.to_object
             label = f"'{a}' -> '{b}'"
-            if (
-                step.reversed
-                or step.cardinality != Cardinality.MANY_TO_ONE
-                or island_of.get(a) not in reached
-            ):
+            if _repeats_rows(step) or island_of.get(a) not in reached:
                 raise self.refuse(
                     "UNSUPPORTED_JOIN",
                     f"The join {label} between data sources is not many-to-one from the "
@@ -2114,8 +2111,12 @@ class _Planner:
     def _check_dimension_island(self, island: set[str], entry: str) -> None:
         """Every object of a dimension island is reached from its entry many-to-one.
 
-        Otherwise the dimension leg would return several rows per key, and
-        joining it would multiply the measures.
+        Or one-to-one. Otherwise the dimension leg would return several rows
+        per key, and joining it would multiply the measures: one database
+        repeats a fact row once per row of a many-to-many join, which a leg,
+        one row per value it groups by, does not. An object unnested from
+        one it reaches returns a row per element; the query is checked for
+        it (:meth:`check_unnested_dimensions`).
         """
         reached = {entry}
         changed = True
@@ -2127,7 +2128,7 @@ class _Planner:
                     and step.to_object in island
                     and step.to_object not in reached
                 ):
-                    if step.reversed or step.cardinality != Cardinality.MANY_TO_ONE:
+                    if _repeats_rows(step):
                         raise self.refuse(
                             "UNSUPPORTED_JOIN",
                             f"'{step.from_object}' -> '{step.to_object}' would repeat the "
@@ -2143,6 +2144,49 @@ class _Planner:
                     f"Nested data object '{name}' is not supported on the dimension side "
                     "of a federated query",
                 )
+
+    def check_unnested_dimensions(self, islands: list[set[str]], fact: int) -> None:
+        """Refuse an aggregate across a dimension unnested on another source.
+
+        The leg of such a dimension returns a row per element of the array,
+        several per key, and the combine step joins each fact row once per
+        element: grouped by the dimension, each group holds a fact row once,
+        as one database's does, which counts each once (``grain_dedup``).
+        What adds the groups up does not: a ``rollup`` or ``cube`` subtotal,
+        a measure's ``total``, or a ``grain`` without the dimension would
+        count an order once per tag of its customer.
+        """
+        island_of = {o: i for i, island in enumerate(islands) for o in island}
+        effective = self.model.effective_measures
+        across = [
+            (self.query.grouping is not None, f"a {self.query.grouping} subtotal"),
+            *(
+                (bool(effective[m].total), f"measure '{m}', a total")
+                for m in sorted(self.atomic_measures())
+            ),
+            *(
+                (effective[m].grain is not None, f"measure '{m}', at its own grain")
+                for m in sorted(self.atomic_measures())
+            ),
+        ]
+        why = next((why for adds_up, why in across if adds_up), None)
+        if why is None:
+            return
+        for ref in _dimension_refs(self.query):
+            name = DimensionRef.parse(ref).name
+            for obj in sorted(self._dimension_objects(name)):
+                if (
+                    self.model.data_objects[obj].nested_in is not None
+                    and island_of.get(obj, fact) != fact
+                ):
+                    raise self.refuse(
+                        "UNSUPPORTED_QUERY",
+                        f"Dimension '{name}' unnests '{obj}' on another data source than "
+                        f"the measures': its leg returns a row per element, and {why} "
+                        "would count a fact row once per element",
+                        hint="Select it without a subtotal, a total or a grain, or query it "
+                        "on one data source.",
+                    )
 
     def _declared_join(
         self, a: str, b: str, from_columns: list[str], to_columns: list[str]
@@ -3770,6 +3814,14 @@ def _compared_columns(measure: Measure, *, filters: bool = True) -> list[tuple[s
     if counts or measure.aggregation in _ORDERING:
         compared += [(ref.view or "", ref.column, counts) for ref in measure.columns if ref.column]
     return compared
+
+
+def _repeats_rows(step: JoinStep) -> bool:
+    """Whether *step* can repeat the rows it joins from: walked from the one side
+    of a many-to-one join, or many-to-many. A one-to-one join does not."""
+    if step.cardinality == Cardinality.ONE_TO_ONE:
+        return False
+    return step.reversed or step.cardinality != Cardinality.MANY_TO_ONE
 
 
 def _filter_leaves(items: Iterable[MeasureFilterItem]) -> list[MeasureFilter]:

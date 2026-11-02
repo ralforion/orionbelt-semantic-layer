@@ -5102,6 +5102,217 @@ class TestExistsOverNested:
         assert sorted(_rows(combine, plan.combine_sql)) == expected
 
 
+# Orders on the shop; customers in the CRM with their tags (an array), a
+# profile each (one-to-one) and links to topics (many-to-many); profiles on a
+# source of their own where asked. Customer 10 is tagged vip and gold, 11 vip,
+# 12 has no tags and 13 none at all; order 6's customer 99 is missing.
+ISLAND_TABLES = {
+    "shop": [
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10, 100.50), (2, 10, 20.25),"
+        " (3, 11, 7.00), (4, 12, 55.10), (5, 13, 3.15), (6, 99, 40.00))"
+        " t(order_id, customer_id, amount)"
+    ],
+    "crm": [
+        "CREATE TABLE customers (customer_id INT, region VARCHAR, tags STRUCT(Name VARCHAR)[])",
+        "INSERT INTO customers VALUES (10, 'EU', [{'Name': 'vip'}, {'Name': 'gold'}]),"
+        " (11, 'US', [{'Name': 'vip'}]), (12, NULL, []), (13, 'EU', NULL)",
+        "CREATE TABLE links AS SELECT * FROM (VALUES (10, 'x'), (10, 'y'), (11, 'x'))"
+        " t(customer_id, topic)",
+    ],
+    "geo": [
+        "CREATE TABLE profiles AS SELECT * FROM (VALUES (10, 'a'), (11, 'b'), (13, 'c'))"
+        " t(customer_id, segment)"
+    ],
+}
+
+
+def island_model(federated: bool, profiles: str = "crm") -> str:
+    """Orders, and customers with what they join one-to-one, many-to-many and unnest."""
+
+    def source(name: str) -> str:
+        return f"    dataSource: {name}\n" if federated else ""
+
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Orders:
+    code: orders
+{source("shop")}    columns:
+      Order ID: {{code: order_id, abstractType: int, primaryKey: true}}
+      Order Customer: {{code: customer_id, abstractType: int}}
+      Amount: {{code: amount, abstractType: decimal}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+  Customers:
+    code: customers
+{source("crm")}    columns:
+      Customer ID: {{code: customer_id, abstractType: int}}
+      Region: {{code: region, abstractType: string}}
+    joins:
+      - joinType: one-to-one
+        joinTo: Profiles
+        columnsFrom: [Customer ID]
+        columnsTo: [Profile Customer]
+      - joinType: many-to-many
+        joinTo: Links
+        columnsFrom: [Customer ID]
+        columnsTo: [Link Customer]
+  Customer Tags:
+    nestedIn: {{dataObject: Customers, column: Tags}}
+    columns:
+      Tag: {{code: Name, abstractType: string}}
+  Profiles:
+    code: profiles
+{source(profiles)}    columns:
+      Profile Customer: {{code: customer_id, abstractType: int}}
+      Segment: {{code: segment, abstractType: string}}
+  Links:
+    code: links
+{source("crm")}    columns:
+      Link Customer: {{code: customer_id, abstractType: int}}
+      Topic: {{code: topic, abstractType: string}}
+dimensions:
+  Region: {{dataObject: Customers, column: Region, resultType: string}}
+  Tag: {{dataObject: Customer Tags, column: Tag, resultType: string}}
+  Segment: {{dataObject: Profiles, column: Segment, resultType: string}}
+  Topic: {{dataObject: Links, column: Topic, resultType: string}}
+measures:
+  Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
+  Median Order: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: median}}
+  Revenue Total:
+    {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum, total: true}}
+  Revenue per Region:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    grain: {{mode: FIXED, include: [Region]}}
+"""
+
+
+@pytest.fixture(scope="module")
+def island_files(tmp_path_factory: Any) -> dict[str, dict[str, str]]:
+    """The tables on one source, and on the shop, the CRM and the profiles' own."""
+    root = tmp_path_factory.mktemp("islands")
+    every = [statement for statements in ISLAND_TABLES.values() for statement in statements]
+    layouts = {
+        "crm": {
+            "shop": ISLAND_TABLES["shop"],
+            "crm": [*ISLAND_TABLES["crm"], *ISLAND_TABLES["geo"]],
+        },
+        "geo": ISLAND_TABLES,
+    }
+    paths: dict[str, dict[str, str]] = {}
+    for layout, sources in layouts.items():
+        paths[layout] = {}
+        for name, statements in {"all": every, **sources}.items():
+            paths[layout][name] = str(root / f"{layout}_{name}.duckdb")
+            con = duckdb.connect(paths[layout][name])
+            for statement in statements:
+                con.execute(statement)
+            con.close()
+    return paths
+
+
+class TestDimensionSourceJoins:
+    """Joins inside a dimension source, and from one, that a leg returns as
+    one database joins them, or that it would return otherwise."""
+
+    @pytest.mark.parametrize("profiles", ["crm", "geo"], ids=["inside_the_crm", "between_sources"])
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Segment"], "measures": ["Revenue", "Median Order"]}},
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "where": [{"field": "Segment", "op": "=", "value": "a"}],
+            },
+        ],
+        ids=["by_segment", "filtered_on_segment"],
+    )
+    def test_a_one_to_one_join_repeats_no_rows(
+        self, island_files: dict[str, dict[str, str]], profiles: str, query: dict[str, Any]
+    ) -> None:
+        """A customer's one profile: refused as if it repeated the customer."""
+        paths = island_files[profiles]
+
+        single = _run_on(paths, island_model(False), query)
+
+        assert _compile(island_model(True, profiles), query).federation is not None
+        assert _run_on(paths, island_model(True, profiles), query) == single
+        assert single
+
+    def test_a_many_to_many_join_is_refused(self) -> None:
+        """One database repeats an order once per link of its customer; the
+        links' leg returns each customer's topic once."""
+        query = {"select": {"dimensions": ["Topic"], "measures": ["Revenue"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(island_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert "'Customers' -> 'Links' would repeat the rows of 'Customers'" in error.message
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Tag"], "measures": ["Revenue", "Median Order"]}},
+            {"select": {"dimensions": ["Tag", "Region"], "measures": ["Revenue"]}},
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "where": [{"field": "Tag", "op": "in", "value": ["vip", "gold"]}],
+            },
+        ],
+        ids=["by_tag", "by_tag_and_region", "filtered_on_tags"],
+    )
+    def test_a_dimension_unnested_on_another_source(
+        self, island_files: dict[str, dict[str, str]], query: dict[str, Any]
+    ) -> None:
+        """Customer 10's orders under vip and under gold, once each; filtered
+        on either tag, once."""
+        paths = island_files["crm"]
+
+        single = _run_on(paths, island_model(False), query)
+
+        assert _run_on(paths, island_model(True), query) == single
+        assert single
+
+    @pytest.mark.parametrize(
+        ("query", "why"),
+        [
+            (
+                {"select": {"dimensions": ["Tag"], "measures": ["Revenue"]}, "grouping": "rollup"},
+                "a rollup subtotal",
+            ),
+            (
+                {"select": {"dimensions": ["Tag"], "measures": ["Revenue", "Revenue Total"]}},
+                "measure 'Revenue Total', a total",
+            ),
+            (
+                {"select": {"dimensions": ["Tag", "Region"], "measures": ["Revenue per Region"]}},
+                "measure 'Revenue per Region', at its own grain",
+            ),
+        ],
+        ids=["a_rollup", "a_total", "a_grain"],
+    )
+    def test_an_aggregate_across_an_unnested_dimension_is_refused(
+        self, query: dict[str, Any], why: str
+    ) -> None:
+        """Across the tags, customer 10's orders came twice: a total of 346.75
+        for 226.00."""
+        with pytest.raises(ResolutionError) as caught:
+            _compile(island_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert "Dimension 'Tag' unnests 'Customer Tags'" in error.message
+        assert why in error.message
+
+
 # Orders on the shop, employees and customers in the CRM. Order 3 has no
 # support employee, order 5's support employee 9 and customer 999 are missing,
 # and customer 102 has no account manager.

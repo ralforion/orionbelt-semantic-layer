@@ -790,11 +790,11 @@ database would return, without a refusal.
 |---|---|
 | Measures whose values come from different sources where one database does not union them as [independent facts](#measures-of-independent-facts): a measure of an object the facts' rows join (revenue beside a count of the CRM's customers), also when the query only orders by it, or orders by a measure of another source's fact; one measure reading a column of another source is [computed from rows](#measures-reading-another-source) | `FEDERATION_MULTI_FACT` |
 | Measures grouped by dimensions of another source on the many side of their join | `FEDERATION_UNSUPPORTED_JOIN` |
-| A join between sources that is not many-to-one from the measures' side | `FEDERATION_UNSUPPORTED_JOIN` |
+| A join between sources that is not many-to-one (or one-to-one) from the measures' side | `FEDERATION_UNSUPPORTED_JOIN` |
 | One dimension source's objects reached by two joins from the measures' source | `FEDERATION_UNSUPPORTED_JOIN` |
 | Data objects of another source that no join from the measures' source reaches | `FEDERATION_UNSUPPORTED_JOIN` |
-| Inside a dimension source, a join that is not many-to-one from where the edge enters (it would repeat the key's rows) | `FEDERATION_UNSUPPORTED_JOIN` |
-| A nested data object (`nestedIn`) on the dimension side | `FEDERATION_UNSUPPORTED_JOIN` |
+| Inside a dimension source, a many-to-many join, or a many-to-one join walked from its one side, from where the edge enters: one database repeats a fact row once per match (an order once per topic its customer links to), where the leg returns each value once per key | `FEDERATION_UNSUPPORTED_JOIN` |
+| A dimension unnested (`nestedIn`) on another source than the measures', beside a `rollup` / `cube` subtotal, a measure's `total`, or a measure's `grain`: its leg returns a row per element, and these add the groups up, counting a fact row once per element (an order once per tag of its customer). Grouped by it, or filtered on it, each fact row counts once per group, as one database counts it | `FEDERATION_UNSUPPORTED_QUERY` |
 | A column of a source joined by a left join whose expression has a value where the source's row is missing (`COALESCE({[Customers].[Region]}, 'unknown')` for an order whose customer is not in the CRM), as a dimension, a raw-mode field, a filter (one a `filterContext` includes too), a measure's input, a static filter or a join key (`COALESCE({[Customers].[Customer Region]}, -1)`, which joins the order to an unknown region): one database computes it over NULLs, the combine step reads NULL. One certainly NULL over NULL inputs (`UPPER`, arithmetic), or of a source whose own join is `required`, is computed | `FEDERATION_UNSUPPORTED_JOIN` |
 | A dimension, a raw-mode field, or a static filter, whose column is computed from a column of a data object the query does not join to the column's own within its source: on another source, or reached through another join (the regions joined to the orders directly, read by a column of the customers) | `FEDERATION_UNSUPPORTED_JOIN` |
 
@@ -839,6 +839,7 @@ Not refused, and documented here so they are known:
 | What | Detail |
 |---|---|
 | No snapshot across sources | the legs read their sources at slightly different moments |
+| A dimension unnested on another source | one database counts each fact row once per element only through the fact's `primaryKey`, and refuses the query without one; across sources the leg's rows count each once, with or without it |
 | Naive timestamps | combined as each source returns them; sources whose sessions run in different time zones can disagree |
 | Today's date | a `relative` filter counts from the date of the engine that runs it: a leg's source in its session's time zone, or, after the join, the combine step's DuckDB in the time zone of the OBSL server's process. Around midnight, where the zones differ, one query can count from two dates |
 | Filters after the join compare as DuckDB | a filter in the combine query (one reading several sources, true for NULL, or left out by a measure's `filterContext`) compares the value a MySQL leg returned, not its collation class |
