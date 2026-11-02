@@ -71,7 +71,7 @@ if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
 
 
-def _kept_by_context[T](
+def kept_by_context[T](
     fc: FilterContext, filters: list[T], fields_of: Callable[[T], frozenset[str]]
 ) -> list[T]:
     """The filters a filter context keeps, matched on the fields each one reads."""
@@ -97,15 +97,15 @@ def _compute_effective_filters(
     says: a measure's ``FIXED`` scan of every tenant's rows is exactly what
     such a filter exists to prevent.
     """
-    kept = {id(f) for f in _kept_by_context(fc, where_filters, lambda f: f.referenced_fields)}
+    kept = {id(f) for f in kept_by_context(fc, where_filters, lambda f: f.referenced_fields)}
     return [f for f in where_filters if f.enforced or id(f) in kept]
 
 
-def _query_item_fields(item: QueryFilterItem) -> frozenset[str]:
+def query_item_fields(item: QueryFilterItem) -> frozenset[str]:
     """The fields a query WHERE item reads, as resolution records them: a leaf
     its own field, a group the union of its children's."""
     if isinstance(item, QueryFilterGroup):
-        return frozenset().union(*(_query_item_fields(child) for child in item.filters))
+        return frozenset().union(*(query_item_fields(child) for child in item.filters))
     return frozenset({item.field})
 
 
@@ -328,7 +328,7 @@ def _plan_isolated_scan(
             dimensions=[references.get(g, g) for g in grain],
             measures=[m.name for m in measure_group],
         ),
-        where=_kept_by_context(context, list(query.where), _query_item_fields),
+        where=kept_by_context(context, list(query.where), query_item_fields),
         use_path_names=list(query.use_path_names),
         allow_fan_out=query.allow_fan_out,
     )

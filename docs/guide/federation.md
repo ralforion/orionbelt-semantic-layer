@@ -76,7 +76,8 @@ flowchart LR
   join to the customers drops the orders whose customer has no region), and each measure is
   re-aggregated from the fact leg's results. Derived metrics,
   [cumulative, period-over-period and window metrics](#metrics-across-periods),
-  HAVING, ORDER BY, LIMIT, totals and `rollup` / `cube` subtotals run there. A fact row whose key
+  HAVING, ORDER BY, LIMIT, totals, `rollup` / `cube` subtotals and a
+  measure's [grain or filter context](#grain-and-filter-context) run there. A fact row whose key
   has no match keeps its values under an empty group, as in one database.
 
 ## An example
@@ -146,6 +147,7 @@ Each leg asks for one row more than `FEDERATION_MAX_LEG_ROWS` (default
 | `relative`, after the join | the combine query, counting from the combine step's date | see [Results that can differ](#results-that-can-differ-from-one-database) |
 | On the time dimension of a cumulative or period-over-period metric | the combine query | it says which periods to show, not which the metric reads: [metrics across periods](#metrics-across-periods) |
 | A static model filter on the fact island | the fact leg | |
+| A filter, or a static model filter of the fact island, that a measure's `filterContext` leaves out | the combine query, on columns the legs return | that measure's own scan leaves it out there: [grain and filter context](#grain-and-filter-context) |
 | A static model filter on another island | the combine query, on a column that island's leg returns | it drops the rows it excludes and keeps an unmatched row when it holds for NULL; `enforce: always` applies even when the query reads nothing else of that island, and in the body of an `exists` subquery on that island too, as on one database |
 | `exists` on its subject's island, `nonexists` on the fact island | the leg of the subject's island, with its subquery | as on one database |
 | `nonexists` on a dimension island | a leg of its own returning that island's keys the subquery holds for (`exists`); the combine query keeps the fact rows whose key is not among them | it holds for a fact row with no row there (an order whose customer is missing), which a filter in the dimension leg would drop |
@@ -584,6 +586,31 @@ across such a dimension) the query is computed from rows:
   reads of it, and counts each once per group: a customer without sales is in
   the group of its own region.
 
+### Grain and filter context
+
+A measure with a [`grain` or `filterContext`](grain-filter-context.md) is
+computed in the combine step, as one database computes it: at its own grain,
+over its own filters, and joined back to the query's rows on the grain's
+dimensions.
+
+- A `grain` adds up groups across the query's other dimensions, as
+  `total: true` does. An `avg`, a variance or a `count_distinct` with one is
+  computed from rows, and so is a measure of an object the joins repeat.
+- A filter that some measure's `filterContext` leaves out (`mode: FIXED`,
+  `exclude`, or a `keepOnly` that does not name it) runs in the combine step.
+  The legs return their groups before it, so that measure's scan can leave it
+  out. The same goes for a static filter of the fact island; one with
+  `enforce: always` is never left out. A filter every context keeps still runs
+  in its leg. The filters that move make the legs return more groups, bounded
+  by `FEDERATION_MAX_LEG_ROWS`, and a measure of an object the joins repeat
+  is then computed from rows, as with a filter after the join: the fact leg
+  groups by what the moved filters read.
+- A measure of an object the joins repeat counts each of its rows once, with
+  or without a filter context, as one database's scan of its own does.
+- The legs also return the dimensions that an `include` filter reads, and
+  those are checked as a filter's are: one computed with a value where its
+  source's row is missing is refused.
+
 ## Values compared across engines
 
 The combine step groups and counts values in DuckDB, which compares strings
@@ -651,7 +678,7 @@ database would return, without a refusal.
 | Data objects of another source that no join from the measures' source reaches | `FEDERATION_UNSUPPORTED_JOIN` |
 | Inside a dimension source, a join that is not many-to-one from where the edge enters (it would repeat the key's rows) | `FEDERATION_UNSUPPORTED_JOIN` |
 | A nested data object (`nestedIn`) on the dimension side | `FEDERATION_UNSUPPORTED_JOIN` |
-| A column of a source joined by a left join whose expression has a value where the source's row is missing (`COALESCE({[Customers].[Region]}, 'unknown')` for an order whose customer is not in the CRM), as a dimension, a raw-mode field, a filter, a measure's input, a static filter or a join key (`COALESCE({[Customers].[Customer Region]}, -1)`, which joins the order to an unknown region): one database computes it over NULLs, the combine step reads NULL. One certainly NULL over NULL inputs (`UPPER`, arithmetic), or of a source whose own join is `required`, is computed | `FEDERATION_UNSUPPORTED_JOIN` |
+| A column of a source joined by a left join whose expression has a value where the source's row is missing (`COALESCE({[Customers].[Region]}, 'unknown')` for an order whose customer is not in the CRM), as a dimension, a raw-mode field, a filter (one a `filterContext` includes too), a measure's input, a static filter or a join key (`COALESCE({[Customers].[Customer Region]}, -1)`, which joins the order to an unknown region): one database computes it over NULLs, the combine step reads NULL. One certainly NULL over NULL inputs (`UPPER`, arithmetic), or of a source whose own join is `required`, is computed | `FEDERATION_UNSUPPORTED_JOIN` |
 | A dimension, a raw-mode field, or a static filter, whose column is computed from a column of a data object the query does not join to the column's own within its source: on another source, or reached through another join (the regions joined to the orders directly, read by a column of the customers) | `FEDERATION_UNSUPPORTED_JOIN` |
 
 ### Measures and metrics
@@ -661,7 +688,6 @@ database would return, without a refusal.
 | Reaggregate metrics (derived, cumulative, period-over-period and window metrics work) | `FEDERATION_UNSUPPORTED_METRIC` |
 | A dimension over a timestamp with a time zone, at a grain or as a date, beside a cumulative, period-over-period or window metric | `FEDERATION_UNSUPPORTED_METRIC` |
 | A cumulative, period-over-period or window metric whose time dimension is on a data object the query does not join (a calendar it neither selects nor filters on) | `FEDERATION_UNSUPPORTED_METRIC` |
-| A measure with `filterContext` or `grain` | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | A measure counted once per row of an object read through the fact rows that reads a column of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | Computed from rows: a measure that compares values its engine compares otherwise than DuckDB, a MySQL string (in a filter, as its ordering or expression, or as the argument of `min`, `max`, a percentile, `mode`, `first`, `last`, `listagg` or a `distinct` aggregation), or a ClickHouse float it counts (`mode`, a `distinct` aggregation) | `FEDERATION_UNSUPPORTED_AGGREGATION` |
@@ -676,6 +702,8 @@ database would return, without a refusal.
 | An `exists` / `nonexists` whose subquery reads another source than its subject (its target, the join path to it, or an object its filters read) | `FEDERATION_UNSUPPORTED_FILTER` |
 | An `exists` / `nonexists` that would run after the join: in an OR with a condition on another source, or in a group that holds where its subject is missing | `FEDERATION_UNSUPPORTED_FILTER` |
 | In raw mode, an `exists` / `nonexists` on a subject of another source than the facts' | `FEDERATION_UNSUPPORTED_FILTER` |
+| An `exists` / `nonexists` that a measure's `filterContext` leaves out | `FEDERATION_UNSUPPORTED_FILTER` |
+| A `filterContext` `include` filter on a `DataObject.Column` rather than a dimension | `FEDERATION_UNSUPPORTED_FILTER` |
 | In raw mode without the model's `queryTimezone`, a filter after the join on a dimension that truncates or casts a timestamp with a time zone | `FEDERATION_UNSUPPORTED_FILTER` |
 
 ### At run time
@@ -696,7 +724,7 @@ Not refused, and documented here so they are known:
 | No snapshot across sources | the legs read their sources at slightly different moments |
 | Naive timestamps | combined as each source returns them; sources whose sessions run in different time zones can disagree |
 | Today's date | a `relative` filter counts from the date of the engine that runs it: a leg's source in its session's time zone, or, after the join, the combine step's DuckDB in the time zone of the OBSL server's process. Around midnight, where the zones differ, one query can count from two dates |
-| Filters after the join compare as DuckDB | a filter in the combine query (one reading several sources, or true for NULL) compares the value a MySQL leg returned, not its collation class |
+| Filters after the join compare as DuckDB | a filter in the combine query (one reading several sources, true for NULL, or left out by a measure's `filterContext`) compares the value a MySQL leg returned, not its collation class |
 | ClickHouse float dimensions | DuckDB makes one group of `0.0` and `-0.0`, where ClickHouse makes two |
 | Join keys across sources | compare bytewise, whatever a source's collation |
 | A timestamp with a time zone compared to a literal after the join | the combine step reads the literal (`'2023-12-01'`) in its DuckDB's time zone, the OBSL server process's, where a source reads it in its session's; a model's `queryTimezone` makes the legs return wall-clock times, which compare alike |

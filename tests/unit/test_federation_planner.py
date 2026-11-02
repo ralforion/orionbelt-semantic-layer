@@ -1913,6 +1913,199 @@ class TestRawMode:
         assert "cannot read independent facts" in error.message
 
 
+def _over_amount(name: str, override: str, aggregation: str = "sum") -> str:
+    return f"  {name}: {{columns: [{AMOUNT}], aggregation: {aggregation}, {override}}}\n"
+
+
+CONTEXT_MEASURES = (
+    _over_amount("Total Revenue", "grain: {mode: FIXED}")
+    + _over_amount("Region Revenue", "grain: {mode: FIXED, include: [Region]}")
+    + _over_amount("Region Average", "grain: {mode: FIXED, include: [Region]}", "avg")
+    + _over_amount("Unfiltered Revenue", "filterContext: {mode: FIXED}")
+    + _over_amount("Revenue Any Region", "filterContext: {exclude: [Region]}")
+    + _over_amount("Revenue Any Amount", "filterContext: {exclude: [Amount]}")
+    + _over_amount("Revenue Any Tenant", "filterContext: {exclude: [Tenant]}")
+    + _over_amount("Revenue Only Tenant", "filterContext: {keepOnly: [Tenant]}")
+    + _over_amount("Revenue Any Date", "filterContext: {exclude: [Order Date]}")
+    + _over_amount(
+        "EU Revenue",
+        "filterContext: {mode: FIXED, include: [{field: Region, op: '=', value: EU}]}",
+    )
+    + _over_amount(
+        "Revenue Since Valentine",
+        "filterContext: {mode: FIXED, include: [{field: Order Date, op: '>=', "
+        "value: '2024-02-14'}]}",
+    )
+    + _over_amount("Average Any Region", "filterContext: {exclude: [Region]}", "avg")
+    + _over_amount("Median Any Region", "filterContext: {exclude: [Region]}", "median")
+    + "  Orders Any Region: {columns: [{dataObject: Orders, column: Order ID}], "
+    "aggregation: count, filterContext: {exclude: [Region]}}\n"
+    + "  Customers Any Region: {columns: [{dataObject: Orders, column: Order Customer}], "
+    "aggregation: count_distinct, filterContext: {exclude: [Region]}}\n"
+    + _over_amount("Unfiltered Total", "grain: {mode: FIXED}, filterContext: {mode: FIXED}")
+    + _over_amount(
+        "Unfiltered Region Total",
+        "grain: {mode: FIXED, include: [Region]}, filterContext: {mode: FIXED}",
+    )
+)
+CONTEXT_DIMENSIONS = (
+    "  Tenant: {dataObject: Customers, column: Tenant, resultType: string}\n"
+    "  Amount: {dataObject: Orders, column: Amount, resultType: decimal}\n"
+)
+# Orders 3 (7.00) and 5 (3.15) fail it.
+ABOVE_TEN = "  - {dataObject: Orders, column: Amount, operator: gt, value: 10}\n"
+SHARE = '  Share: {expression: "{[Revenue]} / {[Unfiltered Revenue]}"}\n'
+RUNNING_ANY_REGION = (
+    "  Running Any Region:\n"
+    "    {type: cumulative, measure: Revenue Any Region, timeDimension: Order Date}\n"
+)
+BY_ORDER_MONTH = ["Order Date:month"]
+
+
+def _in_context(
+    dimensions: list[str], measures: list[str], *where: dict[str, Any], **model: Any
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A query over the measures with a grain or filter context, and its model."""
+    query: dict[str, Any] = {"select": {"dimensions": dimensions, "measures": measures}}
+    if where:
+        query["where"] = list(where)
+    return query, {"extra": CONTEXT_MEASURES, "dimension": CONTEXT_DIMENSIONS, **model}
+
+
+CONTEXT_QUERIES = {
+    "a_grand_total": _in_context(["Region"], ["Revenue", "Total Revenue"]),
+    "a_grain_on_the_other_source": _in_context(
+        ["Order Date:month", "Region"], ["Revenue", "Region Revenue"], LATE
+    ),
+    "an_average_at_a_grain_from_rows": _in_context(
+        ["Order Date:month", "Region"], ["Region Average"]
+    ),
+    "a_fixed_context": _in_context(["Region"], ["Revenue", "Unfiltered Revenue"], EU),
+    "a_context_without_one_filter": _in_context(
+        BY_ORDER_MONTH, ["Revenue", "Revenue Any Region"], EU, LATE
+    ),
+    "an_included_filter": _in_context(BY_ORDER_MONTH, ["Revenue", "EU Revenue"], LATE),
+    "an_included_filter_on_the_day_of_a_selected_month": _in_context(
+        ["Order Date:month", "Region"], ["Revenue", "Revenue Since Valentine"]
+    ),
+    "averages_medians_and_counts": _in_context(
+        BY_ORDER_MONTH,
+        [
+            "Revenue",
+            "Average Any Region",
+            "Median Any Region",
+            "Orders Any Region",
+            "Customers Any Region",
+        ],
+        EU,
+    ),
+    "a_context_and_a_grain": _in_context(
+        ["Region", "Order Date:month"],
+        ["Revenue", "Unfiltered Total", "Unfiltered Region Total"],
+        LATE,
+    ),
+    "a_metric_over_a_context": _in_context(BY_ORDER_MONTH, ["Revenue", "Share"], EU, metric=SHARE),
+    "a_running_total_over_a_context": _in_context(
+        ["Order Date:month", "Region"],
+        ["Revenue", "Running Any Region"],
+        EU,
+        metric=RUNNING_ANY_REGION,
+    ),
+    "a_filter_on_the_day_of_a_selected_month_left_out": _in_context(
+        ["Order Date:month", "Region"], ["Revenue", "Revenue Any Date"], LATE
+    ),
+    "a_static_filter_a_context_drops": _in_context(
+        ["Region"], ["Revenue", "Unfiltered Revenue"], static=ABOVE_TEN
+    ),
+    "a_static_filter_a_context_excludes": _in_context(
+        ["Region"], ["Revenue", "Revenue Any Amount", "Revenue Any Region"], EU, static=ABOVE_TEN
+    ),
+    "a_static_filter_on_the_other_source_excluded": _in_context(
+        BY_ORDER_MONTH, ["Revenue", "Revenue Any Tenant"], tenant_filter=True
+    ),
+    "a_static_filter_kept_only": _in_context(
+        BY_ORDER_MONTH,
+        ["Revenue", "Revenue Only Tenant"],
+        LATE,
+        tenant_filter=True,
+        static=ABOVE_TEN,
+    ),
+}
+
+
+class TestGrainAndFilterContext:
+    """A measure's grain or filter context: the combine step computes it, over
+    the legs' groups before any filter a context leaves out."""
+
+    @pytest.mark.parametrize(
+        ("query", "model"), CONTEXT_QUERIES.values(), ids=CONTEXT_QUERIES.keys()
+    )
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any], model: dict[str, Any]
+    ) -> None:
+        assert_same(files, query, **model)
+
+    def test_only_a_filter_every_context_keeps_runs_in_a_leg(self) -> None:
+        """The date filter in the fact leg, the region filter after the join."""
+        query, model = CONTEXT_QUERIES["a_context_without_one_filter"]
+
+        plan = _compile(model_yaml(federated=True, **model), query).federation
+
+        fact, customers = plan.legs
+        assert "2024-02-14" in fact.sql
+        assert "WHERE" not in customers.sql
+        assert "'EU'" in plan.combine_sql
+        assert not plan.injections
+
+    def test_a_static_filter_a_context_drops_runs_after_the_join(self) -> None:
+        query, model = CONTEXT_QUERIES["a_static_filter_a_context_drops"]
+
+        plan = _compile(model_yaml(federated=True, **model), query).federation
+
+        assert "WHERE" not in plan.legs[0].sql
+
+    def test_an_exists_every_context_keeps(self, subquery_files: dict[str, str]) -> None:
+        """Orders with a return, beside the revenue of every region: 100.50 in
+        January, not the 120.75 of all its orders."""
+        query, model = _in_context(
+            BY_ORDER_MONTH, ["Revenue", "Revenue Any Region"], _returns("exists"), EU
+        )
+        exists = TestExists()
+
+        single = exists._run(subquery_files, False, query, **model)
+
+        assert sorted(exists._run(subquery_files, True, query, **model), key=repr) == sorted(
+            single, key=repr
+        )
+        assert single
+
+    def test_an_exists_a_context_leaves_out_is_refused(self) -> None:
+        query, model = _in_context(
+            ["Region"], ["Revenue", "Unfiltered Revenue"], _returns("exists")
+        )
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(subquery_model(True, **model), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+        assert "filterContext leaves out" in error.message
+
+    def test_an_included_filter_on_a_column_is_refused(self) -> None:
+        extra = _over_amount(
+            "Large Revenue",
+            "filterContext: {include: [{field: Orders.Amount, op: '>', value: 50}]}",
+        )
+        query = {"select": {"dimensions": ["Region"], "measures": ["Large Revenue"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(model_yaml(federated=True, extra=extra), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+        assert "'Orders.Amount'" in error.message
+
+
 class TestRefusals:
     @pytest.mark.parametrize(("extra", "query", "code"), REFUSALS.values(), ids=REFUSALS.keys())
     def test_a_query_that_does_not_split_exactly_is_refused_by_name(
@@ -3248,6 +3441,101 @@ class TestRepeatedRows:
         query = {"select": {"dimensions": ["Region", dimension], "measures": ["Ages Total"]}}
 
         expected, got = _repeated("sum", query)
+
+        _assert_same_rows(got, expected)
+
+    def test_a_grain(self) -> None:
+        """A grain adds the groups across the others, as a total does: across
+        products, partial results made a region's ages 40 for 30."""
+        grain = (
+            "  Ages by Region:\n"
+            "    columns: [{dataObject: Customers, column: Age}]\n"
+            "    aggregation: sum\n"
+            "    grain: {mode: FIXED, include: [Region]}\n"
+        )
+        query = {"select": {"dimensions": ["Region", "Product ID"], "measures": ["Ages by Region"]}}
+
+        expected, got = _repeated(
+            "sum", query, lambda yaml: yaml.replace("metrics:\n", grain + "metrics:\n", 1)
+        )
+
+        _assert_same_rows(got, expected)
+
+    @pytest.mark.parametrize("aggregation", ["sum", "avg", "variance", "count"])
+    def test_a_filter_context(self, aggregation: str) -> None:
+        """The ages of customers buying in any category, beside those in A."""
+        context = (
+            "  Ages Any Category:\n"
+            "    columns: [{dataObject: Customers, column: Age}]\n"
+            f"    aggregation: {aggregation}\n"
+            "    filterContext: {exclude: [Category]}\n"
+        )
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Ages", "Ages Any Category"]},
+            "where": [{"field": "Category", "op": "=", "value": "A"}],
+        }
+
+        expected, got = _repeated(
+            aggregation, query, lambda yaml: yaml.replace("metrics:\n", context + "metrics:\n", 1)
+        )
+
+        _assert_same_rows(got, expected)
+
+    @pytest.mark.parametrize("aggregation", ["sum", "count"])
+    def test_a_filter_context_beside_the_sales_count(self, aggregation: str) -> None:
+        """The query's own deduplication leaves a filter context's measure to
+        its scan: as partial results across products, customer 1's age came
+        out 40 for 30 in the north, its count 3 for 2."""
+        context = (
+            "  Ages Any Category:\n"
+            "    columns: [{dataObject: Customers, column: Age}]\n"
+            f"    aggregation: {aggregation}\n"
+            "    filterContext: {exclude: [Category]}\n"
+        )
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Sales Count", "Ages Any Category"]},
+            "where": [{"field": "Category", "op": "=", "value": "A"}],
+        }
+
+        expected, got = _repeated(
+            aggregation, query, lambda yaml: yaml.replace("metrics:\n", context + "metrics:\n", 1)
+        )
+
+        _assert_same_rows(got, expected)
+
+    @pytest.mark.parametrize(
+        ("dimension", "static"),
+        [
+            ("Region", "{dataObject: Sales, column: ID, operator: gte, value: 1}"),
+            ("Category", "{dataObject: Customers, column: Age, operator: gte, value: 15}"),
+        ],
+        ids=["on_the_sales", "on_the_customers"],
+    )
+    def test_a_static_filter_a_context_leaves_out(self, dimension: str, static: str) -> None:
+        """The fact leg groups by the filter's column too. Each sale apart
+        made customer 1's age 40 for 30. The customers' filter is the
+        customers' own: customer 4, without sales, keeps its group."""
+        unfiltered = (
+            "  Ages Unfiltered:\n"
+            "    columns: [{dataObject: Customers, column: Age}]\n"
+            "    aggregation: sum\n"
+            "    filterContext: {mode: FIXED}\n"
+        )
+        query = {
+            "select": {
+                "dimensions": [dimension],
+                "measures": ["Sales Count", "Ages", "Ages Unfiltered"],
+            }
+        }
+
+        expected, got = _repeated(
+            "sum",
+            query,
+            lambda yaml: (
+                yaml.replace("metrics:\n", unfiltered + "metrics:\n", 1)
+                + f"filters:\n  - {static}\n"
+            ),
+        )
 
         _assert_same_rows(got, expected)
 
@@ -4970,6 +5258,27 @@ class TestComputedOverAMissingRow:
         assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
         assert "Region Label" in error.message
         assert "would read as NULL" in error.message
+
+    def test_a_filter_a_context_includes_is_refused(self) -> None:
+        """Order 6 is 'unknown' on one database: the unknown revenue is 95.10,
+        not the 55.10 of order 4 alone."""
+        unknown = (
+            "  Unknown Revenue:\n"
+            "    columns: [{dataObject: Orders, column: Amount}]\n"
+            "    aggregation: sum\n"
+            "    filterContext:\n"
+            "      mode: FIXED\n"
+            "      include: [{field: Region Label, op: '=', value: unknown}]\n"
+        )
+        yaml = labelled_yaml(True).replace("metrics:\n", unknown + "metrics:\n", 1)
+        query = {"select": {"dimensions": ["Region"], "measures": ["Revenue", "Unknown Revenue"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert "Region Label" in error.message
 
     @pytest.mark.parametrize(
         "query",
