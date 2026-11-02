@@ -3193,6 +3193,14 @@ measures:
       - column: {dataObject: Facts, column: Name}
         operator: like
         values: [{dataType: string, valueString: a}]
+  Median One F:
+    columns: [{dataObject: Facts, column: F}]
+    aggregation: median
+    resultType: float
+    filters:
+      - column: {dataObject: Facts, column: Name}
+        operator: equals
+        values: [{dataType: int, valueInt: 1}]
 """
 
 
@@ -3267,6 +3275,7 @@ class TestEngineEquality:
             ("mysql", "Least Name", "Name"),
             ("mysql", "Mode Name", "Name"),
             ("mysql", "Median Like A F", "Name"),
+            ("mysql", "Median One F", "Name"),
             ("clickhouse", "Mode F", "F"),
         ],
     )
@@ -3275,8 +3284,10 @@ class TestEngineEquality:
     ) -> None:
         """The combine step would compare them: 'a' and 'A' as two values,
         where MySQL sees one; 0.0 and -0.0 as one, where ClickHouse counts two.
-        Nor can the leg evaluate a pattern over its groups: MySQL groups 'a'
-        with 'a ' under utf8mb4_general_ci, and LIKE 'a' matches only the first."""
+        Nor can the leg evaluate a pattern, or a comparison with a number,
+        over its groups: MySQL groups 'a' with 'a ' under utf8mb4_general_ci,
+        and LIKE 'a' matches only the first; '1' with '１' under
+        utf8mb4_0900_ai_ci, and = 1 converts only the first to 1."""
         with pytest.raises(ResolutionError) as caught:
             facts_on(
                 dialect, {"select": {"dimensions": ["Label"], "measures": ["Median F", measure]}}

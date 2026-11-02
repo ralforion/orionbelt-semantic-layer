@@ -2553,29 +2553,38 @@ class _Planner:
         (:meth:`parents`) is read from its object's rows, which do not.
 
         The leg evaluates them over its groups, one per value its engine
-        calls equal: a comparison holds for every value of such a group or
-        for none, a pattern may not. MySQL groups ``'a'`` with ``'a '`` under
-        ``utf8mb4_general_ci``, and ``LIKE 'a'`` matches the first alone, so
-        a filter with a pattern (:data:`_PATTERN_OPERATORS`) stays refused.
+        calls equal: a comparison with values of the column's own type holds
+        for every value of such a group or for none; a pattern, or a value
+        of another type, may not. MySQL groups ``'a'`` with ``'a '`` under
+        ``utf8mb4_general_ci``, and ``LIKE 'a'`` matches the first alone
+        (:data:`_PATTERN_OPERATORS`); it groups ``'1'`` with ``'１'`` under
+        ``utf8mb4_0900_ai_ci``, and ``= 1`` converts them to numbers, which
+        tells them apart. Such filters stay refused.
         """
         measure = self.model.effective_measures[name]
         if not measure.filters or any(name in names for names in self.parents().values()):
             return False
-        if _filter_operators(measure.filters) & _PATTERN_OPERATORS:
-            return False
         dialect = self.leg_dialect(fact_island)
         compares = False
-        for obj, column in _filter_columns(measure.filters):
-            declared = self.model.data_objects[obj].columns[column]
+        for leaf in _filter_leaves(measure.filters):
+            ref = leaf.column
+            if ref is None or not ref.view or not ref.column:
+                return False
+            declared = self.model.data_objects[ref.view].columns[ref.column]
             if (
-                obj not in fact_island
+                ref.view not in fact_island
                 or declared.expression
                 or declared.abstract_type in DATE_BEARING_TYPES
             ):
                 return False
             kind = declared.abstract_type.value
-            if dialect.equality_key(ColumnRef(name=column), kind, counted=False) is not None:
-                compares = True
+            if dialect.equality_key(ColumnRef(name=ref.column), kind, counted=False) is None:
+                continue
+            compares = True
+            if leaf.operator.lower() in _PATTERN_OPERATORS or any(
+                value.data_type != declared.abstract_type for value in leaf.values
+            ):
+                return False
         return compares
 
     def repeats(
@@ -3722,15 +3731,15 @@ def _compared_columns(measure: Measure, *, filters: bool = True) -> list[tuple[s
     return compared
 
 
-def _filter_operators(items: Iterable[MeasureFilterItem]) -> set[str]:
-    """The operators of measure filters *items*, lowercased."""
-    operators: set[str] = set()
+def _filter_leaves(items: Iterable[MeasureFilterItem]) -> list[MeasureFilter]:
+    """The conditions of measure filters *items*, those in groups too."""
+    leaves: list[MeasureFilter] = []
     for item in items:
         if isinstance(item, MeasureFilterGroup):
-            operators |= _filter_operators(item.filters)
+            leaves += _filter_leaves(item.filters)
         else:
-            operators.add(item.operator.lower())
-    return operators
+            leaves.append(item)
+    return leaves
 
 
 def _filter_columns(items: Iterable[MeasureFilterItem]) -> list[tuple[str, str]]:
