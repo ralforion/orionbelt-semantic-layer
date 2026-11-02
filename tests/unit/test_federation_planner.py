@@ -4219,6 +4219,289 @@ class TestExists:
         assert "reads Reasons, of another data source than 'Orders'" in error.message
 
 
+INDEPENDENT_MEASURES = (
+    "  Ticket Ids: {columns: [{dataObject: Tickets, column: Ticket ID}], aggregation: sum,"
+    " resultType: int}\n"
+    f"  Average Order: {{columns: [{AMOUNT}], aggregation: avg}}\n"
+    "  Average Ticket: {columns: [{dataObject: Tickets, column: Ticket ID}], aggregation: avg}\n"
+    "  Severities: {columns: [{dataObject: Tickets, column: Severity}],"
+    " aggregation: count_distinct, resultType: int}\n"
+    f"  Revenue Total: {{columns: [{AMOUNT}], aggregation: sum, total: true}}\n"
+    f"  Median Order: {{columns: [{AMOUNT}], aggregation: median}}\n"
+)
+INDEPENDENT_MODEL = {
+    "extra": INDEPENDENT_MEASURES,
+    "metric": '  Revenue per Ticket: {expression: "{[Revenue]} / {[Tickets Count]}"}\n',
+    "dimension": "  Severity: {dataObject: Tickets, column: Severity, resultType: string}\n",
+}
+REVENUE_AND_TICKETS = ["Revenue", "Tickets Count"]
+BY_REGION_BOTH = {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS}
+INDEPENDENT_QUERIES = {
+    "by_region": {"select": BY_REGION_BOTH},
+    "by_a_dimension_one_fact_reaches": {
+        "select": {"dimensions": ["Order Date:month", "Region"], "measures": REVENUE_AND_TICKETS}
+    },
+    "by_a_dimension_of_each": {
+        "select": {"dimensions": ["Severity", "Region"], "measures": REVENUE_AND_TICKETS}
+    },
+    "without_dimensions": {"select": {"measures": REVENUE_AND_TICKETS}},
+    "filtered_where_both_reach": {"select": BY_REGION_BOTH, "where": [EU]},
+    "filtered_where_one_reaches": {"select": BY_REGION_BOTH, "where": [LATE]},
+    "filtered_where_the_other_reaches": {"select": BY_REGION_BOTH, "where": [HIGH]},
+    "an_and_group_of_conditions_of_each": {
+        "select": BY_REGION_BOTH,
+        "where": [{"logic": "and", "filters": [LATE, {"logic": "and", "filters": [HIGH]}]}],
+    },
+    "an_and_group_alone_in_an_or_group": {
+        "select": BY_REGION_BOTH,
+        "where": [{"logic": "or", "filters": [{"logic": "and", "filters": [LATE, HIGH]}]}],
+    },
+    "an_exists_both_reach": {"select": BY_REGION_BOTH, "where": [_tickets("exists")]},
+    "a_metric_across_them": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": [*REVENUE_AND_TICKETS, "Revenue per Ticket"],
+        }
+    },
+    "having_on_a_metric": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue per Ticket"]},
+        "having": [{"field": "Revenue per Ticket", "op": ">", "value": 10}],
+    },
+    "having_ordered_and_limited": {
+        "select": BY_REGION_BOTH,
+        "having": [{"field": "Tickets Count", "op": ">", "value": 0}],
+        "orderBy": [{"field": "Revenue", "direction": "desc"}],
+        "limit": 2,
+    },
+    "ordered_by_a_measure_of_one_of_them": {
+        "select": BY_REGION_BOTH,
+        "orderBy": [{"field": "Average Ticket", "direction": "desc"}, {"field": "Region"}],
+    },
+    "a_median_from_rows": {
+        "select": {"dimensions": ["Region"], "measures": ["Median Order", "Tickets Count"]},
+        "where": [LATE],
+    },
+    "averages_and_distinct_counts": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": ["Average Order", "Average Ticket", "Severities", "Ticket Ids"],
+        }
+    },
+}
+
+
+@pytest.fixture(scope="module")
+def independent_files(tmp_path_factory: Any) -> dict[str, dict[str, str]]:
+    """The tickets beside the customers, beside the orders, on a source of their
+    own, and none."""
+    root = tmp_path_factory.mktemp("independent")
+    crm = [CUSTOMERS, REASONS, TENANTS, PLANS]
+    layouts = {
+        "crm": {"shop": [ORDERS, RETURNS], "crm": [*crm, TICKETS]},
+        "shop": {"shop": [ORDERS, RETURNS, TICKETS], "crm": crm},
+        "support": {"shop": [ORDERS, RETURNS], "crm": crm, "support": [TICKETS]},
+        "no_tickets": {"shop": [ORDERS, RETURNS], "crm": [*crm, f"{TICKETS} WHERE false"]},
+    }
+    paths: dict[str, dict[str, str]] = {}
+    for layout, sources in layouts.items():
+        sources = {"all": [s for statements in sources.values() for s in statements], **sources}
+        paths[layout] = {}
+        for name, statements in sources.items():
+            paths[layout][name] = str(root / f"{layout}_{name}.duckdb")
+            con = duckdb.connect(paths[layout][name])
+            for statement in statements:
+                con.execute(statement)
+            con.close()
+    return paths
+
+
+def independent_model(federated: bool, tickets: str = "crm", **model: Any) -> str:
+    """The subquery model with the tickets on *tickets*."""
+    return subquery_model(federated, **{**INDEPENDENT_MODEL, **model}).replace(
+        "  Tickets:\n    code: tickets\n    dataSource: crm\n",
+        f"  Tickets:\n    code: tickets\n    dataSource: {tickets}\n",
+    )
+
+
+class TestMeasuresOfIndependentFacts:
+    """Revenue of the shop's orders beside the CRM's tickets: one database unions
+    the facts, each grouped by the dimensions it reaches; across sources each
+    fact is a query of its own, and the combine step unions their results."""
+
+    @pytest.mark.parametrize("query", INDEPENDENT_QUERIES.values(), ids=INDEPENDENT_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, independent_files: dict[str, dict[str, str]], query: dict[str, Any]
+    ) -> None:
+        paths = independent_files["crm"]
+        sort = not query.get("orderBy")
+
+        single = _run_on(paths, independent_model(False), query, sort=sort)
+
+        assert _run_on(paths, independent_model(True), query, sort=sort) == single
+        assert single
+
+    @pytest.mark.parametrize(
+        "tickets", ["shop", "support"], ids=["beside_the_orders", "on_a_source_of_their_own"]
+    )
+    def test_where_the_tickets_are(
+        self, independent_files: dict[str, dict[str, str]], tickets: str
+    ) -> None:
+        """Two facts of one source, joined there to nothing they share, and
+        three sources."""
+        paths = independent_files[tickets]
+        query = {"select": BY_REGION_BOTH, "where": [LATE]}
+
+        single = _run_on(paths, independent_model(False), query)
+
+        assert _run_on(paths, independent_model(True, tickets), query) == single
+        assert single
+
+    def test_each_fact_is_a_part(self) -> None:
+        query = {"select": BY_REGION_BOTH, "where": [LATE]}
+
+        compiled = _compile(independent_model(True), query)
+
+        plan = compiled.federation
+        assert [leg.name for leg in plan.legs] == [
+            "__part0_leg_0",
+            "__part0_leg_1",
+            "__part1_leg_0",
+        ]
+        assert not plan.injections
+        assert "2024-02-14" in plan.legs[0].sql
+        assert "2024-02-14" not in plan.legs[2].sql
+
+    @pytest.mark.parametrize(
+        ("where", "model", "codes"),
+        [
+            ([LATE], {}, ["FILTER_NOT_APPLIED"]),
+            ([], {"static": ABOVE_TEN}, ["STATIC_FILTER_NOT_APPLIED"]),
+            (
+                [{"logic": "and", "filters": [LATE, HIGH]}],
+                {},
+                ["FILTER_NOT_APPLIED", "FILTER_NOT_APPLIED"],
+            ),
+        ],
+        ids=["a_query_filter", "a_static_filter", "conditions_of_an_and_group"],
+    )
+    def test_a_filter_one_fact_does_not_reach_warns_as_on_one_source(
+        self,
+        independent_files: dict[str, dict[str, str]],
+        where: list[dict[str, Any]],
+        model: dict[str, Any],
+        codes: list[str],
+    ) -> None:
+        query = {"select": BY_REGION_BOTH, "where": where}
+
+        single = _compile(independent_model(False, **model), query)
+        federated = _compile(independent_model(True, **model), query)
+
+        assert [(w.code, w.message) for w in federated.warnings] == [
+            (w.code, w.message) for w in single.warnings
+        ]
+        assert [w.code for w in single.warnings] == codes
+        paths = independent_files["crm"]
+        assert _run_on(paths, independent_model(True, **model), query) == _run_on(
+            paths, independent_model(False, **model), query
+        )
+
+    @pytest.mark.parametrize(
+        ("layout", "where"),
+        [("no_tickets", []), ("crm", [{"field": "Severity", "op": "=", "value": "none"}])],
+        ids=["no_tickets", "no_ticket_passes_the_filter"],
+    )
+    def test_a_fact_without_rows_adds_no_group(
+        self, independent_files: dict[str, dict[str, str]], layout: str, where: list[Any]
+    ) -> None:
+        """By order month, a group of the tickets' is one of NULLs: their part
+        returned it, a count of 0, for no tickets too, where one database's
+        union leg returns no row."""
+        paths = independent_files[layout]
+        query = {
+            "select": {"dimensions": ["Order Date:month"], "measures": REVENUE_AND_TICKETS},
+            "where": where,
+        }
+
+        single = _run_on(paths, independent_model(False), query)
+
+        assert _run_on(paths, independent_model(True), query) == single
+        assert single
+        assert None not in [month for month, _, _ in single]
+
+    def test_a_fact_of_more_rows_than_an_integer_holds(
+        self, independent_files: dict[str, dict[str, str]]
+    ) -> None:
+        """By order month, the tickets' part counts them, to add no group for
+        none: as an ``integer``, a count over 2,147,483,647 failed the query,
+        which asks for no count. Each leg's count of that many, as returned."""
+        paths = independent_files["crm"]
+        query = {
+            "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Ticket Ids"]}
+        }
+        compiled = _compile(independent_model(True), query)
+        assert compiled.federation is not None
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            sql = leg.sql
+            if '"__present"' in sql:
+                sql = f'SELECT * REPLACE (2147483648 AS "__present") FROM ({sql})'
+            con = duckdb.connect(paths[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(sql).to_arrow_table())
+            finally:
+                con.close()
+
+        rows = sorted(_rows(combine, compiled.sql), key=repr)
+
+        assert rows == _run_on(paths, independent_model(False), query)
+        assert (None, None, 10) in rows
+
+    @pytest.mark.parametrize(
+        ("query", "message"),
+        [
+            (
+                {
+                    "select": {
+                        "dimensions": ["Region"],
+                        "measures": ["Revenue Total", "Tickets Count"],
+                    }
+                },
+                "has a total, grain or filterContext",
+            ),
+            ({"select": BY_REGION_BOTH, "grouping": "rollup"}, "has a rollup or cube"),
+        ],
+        ids=["a_total", "a_rollup"],
+    )
+    def test_what_is_not_combined_yet_is_refused(self, query: dict[str, Any], message: str) -> None:
+        with pytest.raises(ResolutionError) as caught:
+            _compile(independent_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert message in error.message
+
+    @pytest.mark.parametrize(
+        ("dimension", "measure"),
+        [("Region", "Tickets Count"), ("Order Date:month", "Customers Count")],
+        ids=["another_fact", "a_parent"],
+    )
+    def test_ordered_by_a_measure_of_another_source_is_refused(
+        self, dimension: str, measure: str
+    ) -> None:
+        """Ordered by the tickets' count, the fact leg counted a ticket of no
+        table, in the shop; by the customers' count, it read no customers."""
+        query = {
+            "select": {"dimensions": [dimension], "measures": ["Revenue"]},
+            "orderBy": [{"field": measure, "direction": "desc"}],
+        }
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(independent_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_MULTI_FACT"
+
+
 # Charge c1's labels name owners prod and env, c2's ops, c3 has none: dev is
 # named by no label. Owners prod and dev are of team 1, ops and env of 2.
 NESTED_TABLES = {
@@ -5044,11 +5327,16 @@ def _run_on(
     *,
     source_zone: str | None = None,
     combine_zone: str | None = None,
+    sort: bool = True,
 ) -> list[Any]:
     """*query* on *yaml*: on ``all`` if it reads one data source, else each leg on its own.
 
     Each source's session, and the combine step's, in the time zone given.
+    The rows sorted, unless *sort* is false.
     """
+
+    def ordered(rows: list[Any]) -> list[Any]:
+        return sorted(rows, key=repr) if sort else rows
 
     def connect(path: str) -> Any:
         con = duckdb.connect(path, read_only=True)
@@ -5060,7 +5348,7 @@ def _run_on(
     if compiled.federation is None:
         con = connect(paths["all"])
         try:
-            return sorted(_rows(con, compiled.sql), key=repr)
+            return ordered(_rows(con, compiled.sql))
         finally:
             con.close()
     combine = duckdb.connect()
@@ -5072,7 +5360,7 @@ def _run_on(
             combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
         finally:
             con.close()
-    return sorted(_rows(combine, compiled.sql), key=repr)
+    return ordered(_rows(combine, compiled.sql))
 
 
 def _regions_required(yaml: str) -> str:

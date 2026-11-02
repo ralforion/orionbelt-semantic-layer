@@ -55,7 +55,9 @@ flowchart LR
   [query without measures](#queries-without-measures), the base object's);
   every other island is a *dimension island*, reached by one many-to-one join,
   a *federation edge*, from the fact island or from a dimension island nearer
-  it ([a chain of sources](#chains-of-sources)).
+  it ([a chain of sources](#chains-of-sources)). Measures of independent facts
+  on several islands split the query into one query per fact first
+  ([measures of independent facts](#measures-of-independent-facts)).
 - **Legs.** Each island becomes a *leg*: an ordinary OBSL query against a model
   holding that island alone, written in its source's dialect. The **fact leg**
   groups by the query's dimensions on its island and by the edge keys, and
@@ -365,6 +367,54 @@ Filters, `nonexists` and measures reading a column of the far source work as
 for a source joined directly. Only [key injection](#key-injection) stops at
 the first source: the fact leg holds the customers' keys, not the regions'.
 
+## Measures of independent facts
+
+Revenue of the shop's orders beside a count of the CRM's support tickets, per
+region: two facts that join the customers, neither the other. One database
+unions them, one leg per fact, each grouping its rows by the dimensions it
+reaches (NULL for the others) under the filters it reaches, and groups the
+union by all of them. Where the facts are on different islands, each is a
+**part**: a query of its own with its measures, the dimensions and filters
+its fact reaches, planned as any query is (federated, or on one source). The
+combine query unions the parts' results and groups them by the dimensions:
+
+```sql
+-- part 0, the orders, federated: __part0_leg_0 on shop, __part0_leg_1 on crm
+-- part 1, the tickets, all on crm: __part1_leg_0
+SELECT "Customers"."region" AS "Region", CAST(COUNT(1) AS BIGINT) AS "Tickets Count"
+FROM "tickets" AS "Tickets"
+LEFT JOIN "customers" AS "Customers" ON "Tickets"."customer_id" = "Customers"."customer_id"
+GROUP BY ALL
+
+-- combine: each part's combine query over its legs, then their union
+WITH "__part0" AS (...), "__part1" AS (...),
+"__parts" AS (SELECT * FROM "__part0" UNION ALL BY NAME SELECT * FROM "__part1")
+SELECT "__parts"."Region" AS "Region", MAX("__parts"."Revenue") AS "Revenue",
+  CAST(COALESCE(MAX("__parts"."Tickets Count"), 0) AS INTEGER) AS "Tickets Count"
+FROM "__parts" AS "__parts"
+GROUP BY ALL
+```
+
+- A group holds each measure from one part at most. A group no row of a
+  fact reaches reads a count as 0 and any other measure as NULL (or its
+  `defaultValue`), as on one database.
+- A filter a fact does not reach (the orders' date, for the tickets) is left
+  out of its part, with the `FILTER_NOT_APPLIED` warning one database gives;
+  so is a static filter, with `STATIC_FILTER_NOT_APPLIED`. Of an `and` group,
+  only the conditions the fact does not reach are left out; an `or` group of
+  several conditions, or a negated group, is one filter.
+- A part grouping by none of the query's dimensions (the tickets, by order
+  month) returns its row only where its fact has rows the filters keep: no
+  tickets add no group of NULLs, as on one database.
+- Metrics across the facts (revenue per ticket), `having`, `orderBy` and
+  `limit` run in the combine query, after the union. A measure the query only
+  orders by is computed in the part of its fact.
+- The parts' legs all run at once; none is filtered by another's keys
+  ([key injection](#key-injection)).
+
+Two facts on one island (orders and returns both on the shop, joined there)
+stay one fact leg, which unions them itself.
+
 ## Query options
 
 | Option | How it runs |
@@ -666,12 +716,14 @@ database would return, without a refusal.
 | Limitation | Error |
 |---|---|
 | Raw mode (`select.fields`) over independent facts, which one database unions | `FEDERATION_UNSUPPORTED_QUERY` |
+| [Measures of independent facts](#measures-of-independent-facts) on several islands beside a measure with a total, `grain` or `filterContext`, a measure reading several of the facts or anchored to another, a `rollup` / `cube`, a cumulative, period-over-period, window or reaggregate metric, `fill`, `asOf`, one dimension at two grains, `dimensionsExclude` or a coalesce dimension | `FEDERATION_UNSUPPORTED_QUERY` |
+| Measures of independent facts ordered by a measure of a fact none of the selected measures is of | `FEDERATION_UNSUPPORTED_QUERY` |
 
 ### Joins between sources
 
 | Limitation | Error |
 |---|---|
-| Measures whose values come from different sources (revenue beside a count of the CRM's customers); one measure reading a column of another source is [computed from rows](#measures-reading-another-source) | `FEDERATION_MULTI_FACT` |
+| Measures whose values come from different sources where one database does not union them as [independent facts](#measures-of-independent-facts): a measure of an object the facts' rows join (revenue beside a count of the CRM's customers), also when the query only orders by it, or orders by a measure of another source's fact; one measure reading a column of another source is [computed from rows](#measures-reading-another-source) | `FEDERATION_MULTI_FACT` |
 | Measures grouped by dimensions of another source on the many side of their join | `FEDERATION_UNSUPPORTED_JOIN` |
 | A join between sources that is not many-to-one from the measures' side | `FEDERATION_UNSUPPORTED_JOIN` |
 | One dimension source's objects reached by two joins from the measures' source | `FEDERATION_UNSUPPORTED_JOIN` |

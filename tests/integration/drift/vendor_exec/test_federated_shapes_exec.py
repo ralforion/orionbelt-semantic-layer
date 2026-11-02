@@ -4,8 +4,9 @@ An ``exists`` / ``nonexists`` subquery in the leg of its subject's source, a
 chain of three sources, a role-playing dimension, a filter after the join on
 the day of a month the query selects, and cumulative, period-over-period and
 window metrics, whose legs return each date as stored for the combine step to
-truncate, raw-mode rows joined in the combine step, and measures with a grain or
-a filter context of their own. Every source is the engine itself, as in
+truncate, raw-mode rows joined in the combine step, measures with a grain or a
+filter context of their own, and measures of independent facts, a query of
+their own each, unioned in the combine step. Every source is the engine itself, as in
 ``test_federated_equality_exec``: the combined answer must be the engine's own
 over one source.
 """
@@ -249,6 +250,22 @@ QUERIES = {
             "measures": ["Revenue", "Revenue Any Region", "Revenue Since February"],
         },
         "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+    "independent_facts": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue", "Tickets Count"]},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+    },
+    "independent_facts_by_month": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Tickets Count"]},
+        "where": [
+            {
+                "logic": "and",
+                "filters": [
+                    {"field": "Order Date", "op": ">=", "value": "2024-02-01"},
+                    {"field": "Region", "op": "=", "value": "EU"},
+                ],
+            }
+        ],
     },
     "raw_rows": {
         "select": {

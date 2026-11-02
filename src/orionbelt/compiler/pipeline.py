@@ -273,6 +273,19 @@ def plan_in_own_right(
     return apply_aggregate_passes(plan.ast, ctx), resolved
 
 
+def _table_qualifier(dialect: Dialect) -> Callable[[DataObject], str]:
+    """How *dialect* names a data object's table in the SQL it is written in."""
+
+    def qualify_table(obj: DataObject) -> str:
+        # Guarded rather than trusting ``code`` to be non-empty: a nested
+        # object without the fallback has no table, and an unguarded empty
+        # code renders as FROM "" (#342 review).
+        obj.require_table_source()
+        return dialect.format_table_ref(obj.database, obj.schema_name, obj.code)
+
+    return qualify_table
+
+
 class CompilationPipeline:
     """Orchestrates: Query → Resolution → Planning → AST → SQL."""
 
@@ -362,12 +375,7 @@ class CompilationPipeline:
         if model.settings is not None:
             dialect.week_start = model.settings.week_start
 
-        def qualify_table(obj: DataObject) -> str:
-            # Guarded rather than trusting ``code`` to be non-empty: a nested
-            # object without the fallback has no table, and an unguarded empty
-            # code renders as FROM "" (#342 review).
-            obj.require_table_source()
-            return dialect.format_table_ref(obj.database, obj.schema_name, obj.code)
+        qualify_table = _table_qualifier(dialect)
 
         # Phase 1: Resolution
         resolved = self._resolver.resolve(query, model, qualify_table=qualify_table)
@@ -498,18 +506,7 @@ class CompilationPipeline:
         dialect_name: str,
         resolved: ResolvedQuery,
     ) -> CompilationResult:
-        from orionbelt.service.datasource_selection import source_dialect
-        from orionbelt.service.federated_executor import federation_limits
-
-        plan = plan_federated(
-            query,
-            model,
-            resolved,
-            dialect_name=dialect_name,
-            compile_leg=lambda q, m, d: self._compile(q, m, d).sql,
-            source_dialect=source_dialect,
-            leg_row_limit=federation_limits().max_leg_rows,
-        )
+        plan = self._plan_federated(query, model, dialect_name, resolved)
         validation_errors = validate_sql(plan.combine_sql, plan.combine_dialect)
         return CompilationResult(
             sql=plan.combine_sql,
@@ -527,6 +524,43 @@ class CompilationPipeline:
             ],
             sql_valid=not validation_errors,
             federation=plan,
+        )
+
+    def _plan_federated(
+        self,
+        query: QueryObject,
+        model: SemanticModel,
+        dialect_name: str,
+        resolved: ResolvedQuery,
+    ) -> FederatedPlan:
+        """The federated plan of *query*, and of each part a query split by fact has."""
+        from orionbelt.service.datasource_selection import source_dialect
+        from orionbelt.service.federated_executor import federation_limits
+
+        def plan_part(part: QueryObject, part_model: SemanticModel) -> FederatedPlan:
+            qualify_table = _table_qualifier(DialectRegistry.get(dialect_name))
+            part_resolved = self._resolver.resolve(part, part_model, qualify_table=qualify_table)
+            self.detect_replication(part_resolved, part_model)
+            plan = self._plan_federated(part, part_model, dialect_name, part_resolved)
+            # A part's warnings are the query's, but for a static filter its
+            # fact does not reach, which the planner reports as one database's
+            # union leg does (``_Planner.parts``).
+            resolved.warnings.extend(
+                w
+                for w in part_resolved.warnings
+                if w.code != WarningCode.STATIC_FILTER_NOT_APPLIED and w not in resolved.warnings
+            )
+            return plan
+
+        return plan_federated(
+            query,
+            model,
+            resolved,
+            dialect_name=dialect_name,
+            compile_leg=lambda q, m, d: self._compile(q, m, d).sql,
+            source_dialect=source_dialect,
+            leg_row_limit=federation_limits().max_leg_rows,
+            plan_part=plan_part,
         )
 
     @staticmethod
