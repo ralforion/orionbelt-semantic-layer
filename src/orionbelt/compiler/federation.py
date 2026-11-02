@@ -1098,7 +1098,12 @@ def plan_federated(
             if measure in distinct:
                 read.add(distinct[measure][0])
             else:
-                read |= {measure_columns[r] for r in _read_columns(effective[measure])}
+                on_rows = planner.reads_fact_rows(measure, parent, islands[fact])
+                read |= {
+                    measure_columns[r]
+                    for r in _read_columns(effective[measure])
+                    if r not in on_rows
+                }
         values = {
             leg: _value_column(model, leg, *row_values[leg]).model_copy(
                 update={"primary_key": leg in identity_columns}
@@ -1168,6 +1173,12 @@ def plan_federated(
                     once_of.get(m, "leg_0"),
                     elsewhere,
                     filtered_in_leg.get(m),
+                    {
+                        read: "leg_0"
+                        for parent, names in parents.items()
+                        if m in names
+                        for read in planner.reads_fact_rows(m, parent, islands[fact])
+                    },
                 )
                 if from_rows and m not in distinct
                 else _combine_measure(model, m, leg_columns.get(m), once_of.get(m, "leg_0")),
@@ -2505,7 +2516,8 @@ class _Planner:
         A measure of an object read through the fact rows (:meth:`parents`)
         is computed from that object's rows once each: what it reads must have
         one value per row of it, as columns of the object and of those it joins
-        many-to-one have.
+        many-to-one have; but for its filters, which may read the fact rows
+        too (:meth:`reads_fact_rows`).
 
         *reason* is the measure that needs the rows.
         """
@@ -2513,7 +2525,10 @@ class _Planner:
         for parent, names in self.parents().items():
             side = self._one_row_each(parent)
             for name in names:
-                for obj, column, _ in _read_columns(effective[name]):
+                on_rows = self.reads_fact_rows(name, parent, fact_island)
+                for obj, column, own in _read_columns(effective[name]):
+                    if (obj, column, own) in on_rows:
+                        continue
                     if not self._column_objects(obj, column) <= side:
                         raise self.refuse(
                             "UNSUPPORTED_AGGREGATION",
@@ -2538,6 +2553,27 @@ class _Planner:
                         f"of '{obj}.{column}' otherwise than {dialect.name}",
                         hint=_apart(reason, name),
                     )
+
+    def reads_fact_rows(
+        self, name: str, parent: str, fact_island: set[str]
+    ) -> set[tuple[str, str, bool]]:
+        """The columns measure *name*, of *parent*, reads from the fact rows, as read.
+
+        Such a measure is computed from its object's rows once each
+        (:meth:`parents`), but one database filters the rows of the query's
+        joins before it counts each of its object's rows once per group: a
+        customer's ages over the sales of a product count the customers with
+        such a sale (``grain_dedup``). The combine step's own does the same,
+        where a filter reads the fact rows' column rather than the object's:
+        a plain column of the fact's island its row has several values of.
+        """
+        side = self._one_row_each(parent)
+        reads: set[tuple[str, str, bool]] = set()
+        for obj, column in _filter_columns(self.model.effective_measures[name].filters):
+            declared = self.model.data_objects[obj].columns[column]
+            if obj in fact_island and obj not in side and not declared.expression:
+                reads.add((obj, column, False))
+        return reads
 
     def filters_in_leg(self, name: str, fact_island: set[str]) -> bool:
         """Whether measure *name*'s filters run in the fact leg, when computed from rows.
@@ -3593,6 +3629,7 @@ def _row_measure(
     view: str,
     elsewhere: dict[tuple[str, str, bool], str],
     filtered: str | None = None,
+    on_rows: dict[tuple[str, str, bool], str] | None = None,
 ) -> Measure:
     """The measure as the combine step computes it from the fact leg's rows.
 
@@ -3603,15 +3640,19 @@ def _row_measure(
     which the combine step joins to the fact rows. It keeps its type,
     default, ``total``, grain and filter context. A count of rows counts
     *view*'s rows. Its filters, where the fact leg evaluates them, read the
-    leg's column of their outcome, *filtered* (:func:`_leg_predicates`).
+    leg's column of their outcome, *filtered* (:func:`_leg_predicates`); a
+    filter of a measure counted once per row of its object reads the fact
+    rows' columns in *on_rows* from them (:meth:`_Planner.reads_fact_rows`).
     """
     measure = model.effective_measures[name]
+
+    rows = on_rows or {}
 
     def at(ref: DataColumnRef, own_zone: bool = False) -> DataColumnRef:
         if not ref.column:
             return DataColumnRef(view=view)
         read = (ref.view or "", ref.column, own_zone)
-        return DataColumnRef(view=elsewhere.get(read, view), column=columns[read])
+        return DataColumnRef(view=elsewhere.get(read, rows.get(read, view)), column=columns[read])
 
     update: dict[str, Any] = {
         "columns": [at(ref) for ref in measure.columns],
