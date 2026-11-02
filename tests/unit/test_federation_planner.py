@@ -1688,6 +1688,33 @@ class TestQueryOptions:
 
         assert_same(files, query, dimension=dimension)
 
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Order Stamp:month", "Order Stamp", "Region"]}},
+            {"select": {"dimensions": ["Order Stamp", "Order Stamp:month", "Region"]}},
+        ],
+        ids=["the_month_then_the_stamp", "the_stamp_then_the_month"],
+    )
+    def test_a_zoned_timestamp_returned_as_stored_and_truncated_is_refused(
+        self, query: dict[str, Any]
+    ) -> None:
+        """Truncated in the combine step's time zone, an order of Los Angeles'
+        New Year's Eve would move into January, whichever reference comes last."""
+        stamp = (
+            "  Order Stamp: {dataObject: Orders, column: Order Date, resultType: timestamp_tz}\n"
+        )
+        yaml = model_yaml(federated=True, dimension=stamp).replace(
+            "code: order_date, abstractType: date", "code: order_date, abstractType: timestamp_tz"
+        )
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert "'Order Stamp' reads a timestamp with a time zone" in error.message
+
     def test_fill_spans_the_periods_its_filter_bounds(self, files: dict[str, str]) -> None:
         """From December, before the first order: the filter runs in the combine
         step, which fills December too, as one database does."""

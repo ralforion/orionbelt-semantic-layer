@@ -40,7 +40,7 @@ plan.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -1919,7 +1919,9 @@ class _Planner:
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         wanted = _dimension_refs(self.query)
-        grains = {DimensionRef.parse(d).name: DimensionRef.parse(d).grain for d in wanted}
+        grains: dict[str, set[TimeGrain | None]] = {}
+        for d in wanted:
+            grains.setdefault(DimensionRef.parse(d).name, set()).add(DimensionRef.parse(d).grain)
         periods = self.stores_dates()
         if periods:
             wanted = [DimensionRef.parse(d).name for d in wanted]
@@ -1947,7 +1949,7 @@ class _Planner:
                     selected.add(name)
             dated = [d for d in wanted if self.stored_type(d) is not None]
             for name in dated:
-                self._check_stored(name, grains.get(name))
+                self._check_stored(name, grains.get(name, set()))
                 island = island_of[self.model.dimensions[name].view]
                 regrained.setdefault(island, []).append(name)
             wanted = [d for d in wanted if d not in dated]
@@ -1981,24 +1983,25 @@ class _Planner:
         held = held or dimension.result_type
         return held if held in DATE_BEARING_TYPES else None
 
-    def _check_stored(self, name: str, grain: TimeGrain | None) -> None:
+    def _check_stored(self, name: str, grains: Collection[TimeGrain | None]) -> None:
         """Refuse a date dimension the combine step would read in its own time zone.
 
         Returned as stored, a timestamp with a time zone stays one, and the
         combine step's truncation, or cast to a date, reads it in DuckDB's
         zone rather than the one its source read it in: an order of Los
-        Angeles' New Year's Eve moves into January.
+        Angeles' New Year's Eve moves into January. *grains* are every one
+        the query asks it at: one of them truncates it.
         """
         dimension = self.model.dimensions[name]
         column = self.model.data_objects[dimension.view].columns.get(dimension.column)
         zoned = DataType.TIMESTAMP_TZ in {dimension.result_type, column and column.abstract_type}
-        reshaped = (grain or dimension.time_grain) is not None
+        reshaped = dimension.time_grain is not None or any(g is not None for g in grains)
         if zoned and (reshaped or dimension.result_type != DataType.TIMESTAMP_TZ):
             raise self.refuse(
-                "UNSUPPORTED_METRIC",
+                "UNSUPPORTED_METRIC" if self.reads_periods() else "UNSUPPORTED_QUERY",
                 f"Dimension '{name}' reads a timestamp with a time zone, which the combine "
-                "step would truncate or cast in its own time zone beside a cumulative, "
-                "period-over-period or window metric",
+                "step would truncate or cast in its own time zone, returned as stored (beside "
+                "a metric across periods, with fill, or at two grains)",
                 hint="Select it as a timestamp with a time zone, without a grain.",
             )
 
