@@ -1851,6 +1851,17 @@ class TestRawMode:
         assert chains._run(chain_files, ("shop", "crm", "geo"), query) == single
         assert single
 
+    def test_a_dimension_named_like_a_generated_key(self, files: dict[str, str]) -> None:
+        """A key takes a name no declared dimension has: ``__fk0`` stays the amount."""
+        dimension = "  __fk0: {dataObject: Orders, column: Amount, resultType: decimal}\n"
+        query = {
+            "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+            "where": [{"field": "__fk0", "op": ">", "value": 50}],
+        }
+
+        assert_same(files, query, dimension=dimension)
+        assert run_single(files, query, dimension=dimension) == [(1, "EU"), (4, None)]
+
     def test_an_exists_on_the_facts_source(self, subquery_files: dict[str, str]) -> None:
         """Orders with a return: the subquery runs in the fact leg."""
         query = {
@@ -4991,6 +5002,68 @@ class TestComputedOverAMissingRow:
         single = _run_on(files, labelled_yaml(False, required=True), query)
 
         assert _run_on(files, labelled_yaml(True, required=True), query) == single
+        assert single
+
+
+def keyed_chain_yaml(sources: tuple[str, str, str], expression: str, required: bool) -> str:
+    """The chain, the customers joined to their regions by a key computed by *expression*."""
+    yaml = chain_yaml(*sources).replace(
+        "      Customer Region: {code: region_id, abstractType: int}\n",
+        "      Customer Region: {code: region_id, abstractType: int}\n"
+        f"      Region Key: {{code: region_key, abstractType: int, expression: '{expression}'}}\n",
+    )
+    return yaml.replace(
+        "        joinTo: Regions\n        columnsFrom: [Customer Region]",
+        "        joinTo: Regions\n"
+        + ("        required: true\n" if required else "")
+        + "        columnsFrom: [Region Key]",
+    )
+
+
+class TestAComputedJoinKeyOverAMissingRow:
+    """``COALESCE(region, -1)`` joins an order whose customer is missing to
+    the unknown region (-1) in one database; the customers' leg has no row
+    to compute the key from, and an inner join to the regions within it
+    does not drop that order there."""
+
+    COALESCED = "COALESCE({[Customers].[Customer Region]}, -1)"
+    QUERIES = [
+        {"select": {"dimensions": ["Region Name"], "measures": ["Revenue"]}},
+        {"select": {"fields": ["Orders.Amount", "Regions.Region Name"]}},
+    ]
+
+    @pytest.mark.parametrize("query", QUERIES, ids=["aggregated", "raw"])
+    @pytest.mark.parametrize("required", [False, True], ids=["left", "required"])
+    @pytest.mark.parametrize(
+        "sources",
+        [("shop", "crm", "geo"), ("shop", "crm", "crm")],
+        ids=["across_sources", "within_a_source"],
+    )
+    def test_is_refused(
+        self, sources: tuple[str, str, str], required: bool, query: dict[str, Any]
+    ) -> None:
+        with pytest.raises(ResolutionError) as caught:
+            _compile(keyed_chain_yaml(sources, self.COALESCED, required), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert "The join key 'Customers.Region Key'" in error.message
+
+    @pytest.mark.parametrize("query", QUERIES, ids=["aggregated", "raw"])
+    @pytest.mark.parametrize("required", [False, True], ids=["left", "required"])
+    def test_one_null_over_nulls_is_computed(
+        self, chain_files: dict[str, str], required: bool, query: dict[str, Any]
+    ) -> None:
+        expression = "{[Customers].[Customer Region]} * 1"
+        single = _run_on(
+            chain_files, keyed_chain_yaml(("all", "all", "all"), expression, required), query
+        )
+
+        federated = _run_on(
+            chain_files, keyed_chain_yaml(("shop", "crm", "crm"), expression, required), query
+        )
+
+        assert federated == single
         assert single
 
 

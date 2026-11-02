@@ -492,11 +492,7 @@ def plan_federated(
     # dimension, measure or metric has, nor another such column: a leg or the
     # combine model reading two columns of one name returned one for both.
     # Compared without case, as DuckDB compares identifiers, quoted or not.
-    # A key, read in its own time, is a copy of its column under the key's
-    # name (``island_model``), which no column of its data object may have.
-    taken = {
-        name.casefold() for name in (*model.effective_measures, *model.dimensions, *model.metrics)
-    } | {c.casefold() for island in islands for o in island for c in model.data_objects[o].columns}
+    taken = _reserved_names(model)
     # A combine filter on a dimension the query selects at a time grain reads
     # it at its own grain, from a column of its own: by island, each column's
     # name with the dimension's. Beside a metric across periods, each date
@@ -1087,7 +1083,7 @@ def _plan_raw(
     reads: dict[int, list[str]] = {island: [] for island in leg_of}
     keys: dict[int, dict[str, tuple[str, str]]] = {island: {} for island in leg_of}
     key_names: dict[tuple[str, str], str] = {}
-    taken = {c.casefold() for obj in model.data_objects.values() for c in obj.columns}
+    taken = _reserved_names(model)
 
     def read(obj: str, column: str) -> str:
         """*obj*'s *column* among its leg's columns; the combine step's reference to it."""
@@ -1241,6 +1237,9 @@ class _Edge:
 
     The parent is the fact island, or a dimension island nearer it: a chain of
     sources, orders to the CRM's customers to the regions of a third.
+    *required* is how the combine step joins it; *outer* whether its own join
+    is a left join, which leaves the island's row missing for a fact row it
+    does not match, before any inner join the leg makes.
     """
 
     from_object: str
@@ -1250,6 +1249,7 @@ class _Edge:
     island: int
     required: bool
     parent: int
+    outer: bool
 
 
 @dataclass(frozen=True)
@@ -1463,15 +1463,23 @@ class _Planner:
         computed column from those: ``COALESCE(region, 'unknown')`` is
         ``'unknown'``. The leg computes it over the rows it has, and the
         combine step reads NULL for the missing one, whether the query
-        selects the column, filters on it or a measure reads it. A column
-        certainly NULL over NULL inputs reads the same (``null_rejection``),
-        and one through a required join is never read for a missing row.
+        selects the column, filters on it or a measure reads it, and a join
+        key: ``COALESCE(region_id, -1)`` joins the missing customer to the
+        unknown region there. A column certainly NULL over NULL inputs reads
+        the same (``null_rejection``), and one through a required join is
+        never read for a missing row; an inner join within the island's leg
+        does not say so, its key may be such a column.
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
-        outer = {edge.island for edge in edges if not edge.required}
+        outer = {edge.island for edge in edges if edge.outer}
         reads = [
             *self._column_reads(island_of),
             *((f"A measure's column '{obj}.{col}'", obj, col) for obj, col in measure_reads),
+            *(
+                (f"The join key '{step.from_object}.{col}'", step.from_object, col)
+                for step in self.resolved.join_steps
+                for col in step.from_columns
+            ),
         ]
         for what, obj, column in reads:
             home = island_of.get(obj)
@@ -1589,6 +1597,7 @@ class _Planner:
                     island=target,
                     required=bool(declared and declared.required) or target in inner,
                     parent=island_of[a],
+                    outer=not (declared and declared.required),
                 )
             )
         for i, island in enumerate(islands):
@@ -2439,6 +2448,18 @@ def _paths_within(query: QueryObject, island: set[str]) -> list[UsePathName]:
     the resolver already took it for; one within an island is the leg's.
     """
     return [p for p in query.use_path_names if p.source in island and p.target in island]
+
+
+def _reserved_names(model: SemanticModel) -> set[str]:
+    """The names, casefolded, a leg column the model does not declare may not take.
+
+    Every dimension, measure and metric, and every column: a key is a
+    dimension of its leg, and a copy of its column under its own name
+    (:meth:`_Planner.island_model`).
+    """
+    return {
+        name.casefold() for name in (*model.effective_measures, *model.dimensions, *model.metrics)
+    } | {c.casefold() for obj in model.data_objects.values() for c in obj.columns}
 
 
 def _zone_pairs(
