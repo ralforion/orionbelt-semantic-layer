@@ -1671,6 +1671,23 @@ class TestQueryOptions:
     ) -> None:
         assert_same(files, query, metric=metric)
 
+    @pytest.mark.parametrize(
+        ("dimensions", "dimension"),
+        [
+            (["Order Date", "Order Date:month", "Region"], ""),
+            (["Order Date:month", "Order Date", "Region"], ""),
+            (["Order Month", "Order Month:quarter", "Region"], ORDER_MONTH),
+        ],
+        ids=["the_date_beside_its_month", "the_month_beside_its_date", "a_declared_grain_beside"],
+    )
+    def test_a_dimension_as_declared_beside_a_grain(
+        self, files: dict[str, str], dimensions: list[str], dimension: str
+    ) -> None:
+        """Order Date beside Order Date:month is one date at two grains too."""
+        query = {"select": {"dimensions": dimensions, "measures": ["Revenue"]}}
+
+        assert_same(files, query, dimension=dimension)
+
     def test_fill_spans_the_periods_its_filter_bounds(self, files: dict[str, str]) -> None:
         """From December, before the first order: the filter runs in the combine
         step, which fills December too, as one database does."""
@@ -4072,16 +4089,29 @@ class TestRoles:
         assert ("Bob", "Bob", Decimal("10.50")) in single
 
     @pytest.mark.parametrize(
-        "members", [["Sales Employee", "Support Employee"], ["Sales Employee", "Account Manager"]]
+        "dimensions",
+        [
+            [{"coalesce": ["Sales Employee", "Support Employee"], "as": "Employee"}],
+            [{"coalesce": ["Sales Employee", "Account Manager"], "as": "Employee"}],
+            [
+                {"coalesce": ["Sales Employee", "Support Employee"], "as": "Employee"},
+                "Sales Employee",
+            ],
+            [
+                {"coalesce": ["Sales Employee", "Support Employee"], "as": "Employee"},
+                {"coalesce": ["Sales Employee", "Account Manager"], "as": "Owner"},
+            ],
+        ],
+        ids=[
+            "two_roles",
+            "roles_of_two_sources",
+            "a_member_selected_too",
+            "a_member_in_two_groups",
+        ],
     )
-    def test_a_coalesce_group(self, role_files: dict[str, str], members: list[str]) -> None:
-        """The legs return each member; the combine step coalesces them."""
-        query = {
-            "select": {
-                "dimensions": [{"coalesce": members, "as": "Employee"}],
-                "measures": ["Revenue"],
-            }
-        }
+    def test_a_coalesce_group(self, role_files: dict[str, str], dimensions: list[Any]) -> None:
+        """The legs return each member once; the combine query keeps the groups."""
+        query = {"select": {"dimensions": dimensions, "measures": ["Revenue"]}}
 
         single = self._run(role_files, False, query)
 

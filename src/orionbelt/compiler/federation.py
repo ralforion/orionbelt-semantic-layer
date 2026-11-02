@@ -1419,10 +1419,12 @@ class _Planner:
 
         Beside a metric across periods (:meth:`reads_periods`); with ``fill``,
         whose periods the combine step spans; and for a dimension the query
-        selects at two grains, which one stored column holds both of.
+        selects at two grains (``Order Date`` beside ``Order Date:month``),
+        which one stored column holds both of.
         """
-        names = [DimensionRef.parse(d).name for d in _dimension_refs(self.query) if ":" in d]
-        return self.reads_periods() or self.query.fill or len(names) != len(set(names))
+        refs = set(_dimension_refs(self.query))
+        two_grains = len(refs) != len({DimensionRef.parse(d).name for d in refs})
+        return self.reads_periods() or self.query.fill or two_grains
 
     def _metric_time_dimensions(self) -> list[str]:
         """The time dimensions of the query's metrics across periods, in the model."""
@@ -1921,6 +1923,8 @@ class _Planner:
         periods = self.stores_dates()
         if periods:
             wanted = [DimensionRef.parse(d).name for d in wanted]
+        # Once each: a coalesce group's member may be selected beside it too.
+        wanted = list(dict.fromkeys(wanted))
         selected = {DimensionRef.parse(d).name for d in wanted}
         at_grain = {DimensionRef.parse(d).name for d in wanted if DimensionRef.parse(d).grain}
         regrained: dict[int, list[str]] = {}
