@@ -40,7 +40,7 @@ plan.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,6 +67,7 @@ from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.expressions import find_qualified_refs, repoint_references
 from orionbelt.models.query import (
+    CoalesceDimension,
     DimensionRef,
     FilterOperator,
     QueryFilter,
@@ -76,6 +77,7 @@ from orionbelt.models.query import (
     QueryOrderBy,
     QuerySelect,
     Subquery,
+    UsePathName,
 )
 from orionbelt.models.semantic import (
     DATE_BEARING_TYPES,
@@ -496,7 +498,7 @@ def plan_federated(
     stored: dict[int, dict[str, str]] = {}
     for home, names in regrained.items():
         columns = own_grain.setdefault(home, {})
-        if not planner.reads_periods():
+        if not planner.stores_dates():
             columns.update(
                 {_unused(f"__og{home}_{n}", taken): name for n, name in enumerate(names)}
             )
@@ -595,6 +597,7 @@ def plan_federated(
         ),
         where=leg_filters.get(fact, []),
         limit=leg_limit,
+        use_path_names=_paths_within(query, islands[fact]),
     )
     fact_columns = [
         *[_dimension_column(model, DimensionRef.parse(d).name) for d in fact_dims],
@@ -616,14 +619,14 @@ def plan_federated(
     # too, under a name of its own, so the filter compares what it compared.
     grouped = {
         DimensionRef.parse(d).name
-        for d in query.select.dimensions
-        if isinstance(d, str) and not DimensionRef.parse(d).grain
+        for d in _dimension_refs(query)
+        if not DimensionRef.parse(d).grain
     }
     filtered = {f for item in combine_filters for f in _filter_fields(item)}
     kept = {name: _unused(f"__eqv{n}", taken) for n, name in enumerate(sorted(grouped & filtered))}
     renamed = (
         {}
-        if planner.reads_periods()
+        if planner.stores_dates()
         else {name: column for found in own_grain.values() for column, name in found.items()}
     )
     fact_columns, fact_rekeyed, fact_kept = _rekeyed(
@@ -766,6 +769,7 @@ def plan_federated(
             ),
             where=leg_filters.get(edge.island, []),
             limit=leg_limit,
+            use_path_names=_paths_within(query, island),
         )
         dim_columns = [
             *[_dimension_column(model, DimensionRef.parse(d).name) for d in dims],
@@ -868,7 +872,10 @@ def plan_federated(
                     leg_name,
                     island,
                     QueryObject(
-                        select=QuerySelect(dimensions=[*keys]), where=[holds], limit=leg_limit
+                        select=QuerySelect(dimensions=[*keys]),
+                        where=[holds],
+                        limit=leg_limit,
+                        use_path_names=_paths_within(query, island),
                     ),
                     planner.island_model(island, keys, {}),
                     key_columns,
@@ -961,7 +968,7 @@ def plan_federated(
         **{m: values for m, (values, _, _) in distinct.items()},
         **{m: sums for m, (_, sums, _, _) in variances.items()},
     }
-    if planner.reads_periods():
+    if planner.stores_dates():
         # A dimension declaring its grain is a period there too: a rolling
         # window over months counts months. Its leg returned it at that grain.
         combine_dimensions = {
@@ -1002,7 +1009,9 @@ def plan_federated(
         update={
             "select": QuerySelect(
                 dimensions=[
-                    str(d) if planner.reads_periods() else DimensionRef.parse(str(d)).name
+                    d
+                    if isinstance(d, CoalesceDimension) or planner.stores_dates()
+                    else DimensionRef.parse(d).name
                     for d in query.select.dimensions
                 ],
                 measures=list(query.select.measures),
@@ -1133,22 +1142,9 @@ class _Planner:
 
     def check_query_shape(self) -> None:
         q = self.query
-        unsupported = {
-            "raw mode (select.fields)": bool(q.select.fields),
-            "coalesce dimensions": any(not isinstance(d, str) for d in q.select.dimensions),
-            "dimensionsExclude": q.dimensions_exclude,
-            "fill": q.fill,
-            "asOf": q.as_of is not None,
-            "usePathNames": bool(q.use_path_names),
-        }
-        for feature, used in unsupported.items():
-            if used:
-                raise self.refuse("UNSUPPORTED_QUERY", f"A federated query cannot use {feature}")
-        names = [DimensionRef.parse(d).name for d in q.select.dimensions if isinstance(d, str)]
-        if len(names) != len(set(names)):
+        if q.select.fields:
             raise self.refuse(
-                "UNSUPPORTED_QUERY",
-                "A federated query cannot select one dimension at two grains",
+                "UNSUPPORTED_QUERY", "A federated query cannot use raw mode (select.fields)"
             )
 
     # -- islands and edges --------------------------------------------------
@@ -1228,7 +1224,7 @@ class _Planner:
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         q = self.query
-        names = {DimensionRef.parse(d).name for d in q.select.dimensions if isinstance(d, str)}
+        names = {DimensionRef.parse(d).name for d in _dimension_refs(q)}
         names |= {f for item in q.where for f in _filter_fields(item)}
         names |= {DimensionRef.parse(o.field).name for o in q.order_by}
         reads = [
@@ -1418,6 +1414,18 @@ class _Planner:
         """
         return any(rm.is_cumulative or rm.is_pop or rm.is_window for rm in self.resolved.measures)
 
+    def stores_dates(self) -> bool:
+        """Whether the legs return date dimensions as stored, the combine step their grains.
+
+        Beside a metric across periods (:meth:`reads_periods`); with ``fill``,
+        whose periods the combine step spans; and for a dimension the query
+        selects at two grains (``Order Date`` beside ``Order Date:month``),
+        which one stored column holds both of.
+        """
+        refs = set(_dimension_refs(self.query))
+        two_grains = len(refs) != len({DimensionRef.parse(d).name for d in refs})
+        return self.reads_periods() or self.query.fill or two_grains
+
     def _metric_time_dimensions(self) -> list[str]:
         """The time dimensions of the query's metrics across periods, in the model."""
         names = {
@@ -1433,13 +1441,21 @@ class _Planner:
         A filter on one says which periods a cumulative or period-over-period
         metric shows, not which it reads (``compiler.time_lookback``): it runs
         in the combine step, which computes the metric over the periods
-        before it too.
+        before it too. With ``fill``, a filter on the time dimension bounds
+        the periods filled, which the combine step reads off it as well.
         """
         names = {
             m.cumulative_time_dimension if m.is_cumulative else m.pop_time_dimension
             for m in self.resolved.measures
             if m.is_cumulative or m.is_pop
         }
+        if self.query.fill:
+            names |= {
+                DimensionRef.parse(d).name
+                for d in _dimension_refs(self.query)
+                if DimensionRef.parse(d).grain
+                or self.model.dimensions[DimensionRef.parse(d).name].time_grain
+            }
         dims = [self.model.dimensions.get(n or "") for n in names]
         return {(d.view, d.column) for d in dims if d is not None}
 
@@ -1643,9 +1659,7 @@ class _Planner:
         rows do not change (``min``, ``count_distinct``) combines either way.
         """
         model = self.model
-        selected = {
-            DimensionRef.parse(d).name for d in self.query.select.dimensions if isinstance(d, str)
-        }
+        selected = {DimensionRef.parse(d).name for d in _dimension_refs(self.query)}
 
         # The objects each value the fact leg groups by beyond the query's
         # selected dimensions is read from.
@@ -1904,11 +1918,15 @@ class _Planner:
         and the query's.
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
-        wanted = [d for d in self.query.select.dimensions if isinstance(d, str)]
-        grains = {DimensionRef.parse(d).name: DimensionRef.parse(d).grain for d in wanted}
-        periods = self.reads_periods()
+        wanted = _dimension_refs(self.query)
+        grains: dict[str, set[TimeGrain | None]] = {}
+        for d in wanted:
+            grains.setdefault(DimensionRef.parse(d).name, set()).add(DimensionRef.parse(d).grain)
+        periods = self.stores_dates()
         if periods:
             wanted = [DimensionRef.parse(d).name for d in wanted]
+        # Once each: a coalesce group's member may be selected beside it too.
+        wanted = list(dict.fromkeys(wanted))
         selected = {DimensionRef.parse(d).name for d in wanted}
         at_grain = {DimensionRef.parse(d).name for d in wanted if DimensionRef.parse(d).grain}
         regrained: dict[int, list[str]] = {}
@@ -1931,7 +1949,7 @@ class _Planner:
                     selected.add(name)
             dated = [d for d in wanted if self.stored_type(d) is not None]
             for name in dated:
-                self._check_stored(name, grains.get(name))
+                self._check_stored(name, grains.get(name, set()))
                 island = island_of[self.model.dimensions[name].view]
                 regrained.setdefault(island, []).append(name)
             wanted = [d for d in wanted if d not in dated]
@@ -1950,7 +1968,7 @@ class _Planner:
         """The leg column of dimension *name* under a name of its own: typed as
         the date its column holds, beside a metric across periods."""
         own = _dimension_column(self.model, name, column)
-        held = self.stored_type(name) if self.reads_periods() else None
+        held = self.stored_type(name) if self.stores_dates() else None
         return own.model_copy(update={"abstract_type": held}) if held else own
 
     def stored_type(self, name: str) -> DataType | None:
@@ -1965,24 +1983,25 @@ class _Planner:
         held = held or dimension.result_type
         return held if held in DATE_BEARING_TYPES else None
 
-    def _check_stored(self, name: str, grain: TimeGrain | None) -> None:
+    def _check_stored(self, name: str, grains: Collection[TimeGrain | None]) -> None:
         """Refuse a date dimension the combine step would read in its own time zone.
 
         Returned as stored, a timestamp with a time zone stays one, and the
         combine step's truncation, or cast to a date, reads it in DuckDB's
         zone rather than the one its source read it in: an order of Los
-        Angeles' New Year's Eve moves into January.
+        Angeles' New Year's Eve moves into January. *grains* are every one
+        the query asks it at: one of them truncates it.
         """
         dimension = self.model.dimensions[name]
         column = self.model.data_objects[dimension.view].columns.get(dimension.column)
         zoned = DataType.TIMESTAMP_TZ in {dimension.result_type, column and column.abstract_type}
-        reshaped = (grain or dimension.time_grain) is not None
+        reshaped = dimension.time_grain is not None or any(g is not None for g in grains)
         if zoned and (reshaped or dimension.result_type != DataType.TIMESTAMP_TZ):
             raise self.refuse(
-                "UNSUPPORTED_METRIC",
+                "UNSUPPORTED_METRIC" if self.reads_periods() else "UNSUPPORTED_QUERY",
                 f"Dimension '{name}' reads a timestamp with a time zone, which the combine "
-                "step would truncate or cast in its own time zone beside a cumulative, "
-                "period-over-period or window metric",
+                "step would truncate or cast in its own time zone, returned as stored (beside "
+                "a metric across periods, with fill, or at two grains)",
                 hint="Select it as a timestamp with a time zone, without a grain.",
             )
 
@@ -2028,7 +2047,7 @@ class _Planner:
             for name, dim in model.dimensions.items()
             if dim.view in island
         }
-        periods = self.reads_periods()
+        periods = self.stores_dates()
         for column, name in (own_grain or {}).items():
             # Beside a metric across periods, the date as stored.
             stored = {"time_grain": None, "result_type": self.stored_type(name)} if periods else {}
@@ -2124,6 +2143,23 @@ def _physical_tables(model: SemanticModel, objects: Iterable[str]) -> tuple[str,
         if parts:
             tables[".".join(parts)] = None
     return tuple(tables)
+
+
+def _paths_within(query: QueryObject, island: set[str]) -> list[UsePathName]:
+    """The secondary join paths *query* picks between two objects of *island*.
+
+    A path between two islands is the edge the combine step joins, which
+    the resolver already took it for; one within an island is the leg's.
+    """
+    return [p for p in query.use_path_names if p.source in island and p.target in island]
+
+
+def _dimension_refs(query: QueryObject) -> list[str]:
+    """The dimensions *query* selects as written, a coalesce group's members in its place."""
+    refs: list[str] = []
+    for d in query.select.dimensions:
+        refs.extend(d.coalesce if isinstance(d, CoalesceDimension) else [d])
+    return refs
 
 
 def _adds_up(measure: Measure) -> bool:
