@@ -366,6 +366,40 @@ filters:
         assert [e.code for e in excinfo.value.errors] == ["STATIC_FILTER_UNREACHABLE"]
 
 
+class TestFalsyStaticFilterValues:
+    """A value of 0, false or '' is compared, not taken for no value: it read
+    ``"AMOUNT" > NULL``, true for no row."""
+
+    @pytest.mark.parametrize(
+        ("condition", "expected"),
+        [
+            ("{column: Amount, operator: gt, value: 0}", '"AMOUNT" > 0'),
+            ("{column: Amount, operator: equals, value: 0.0}", '"AMOUNT" = 0.0'),
+            ("{column: Paid, operator: equals, value: false}", '"PAID" = FALSE'),
+            ("{column: Status, operator: equals, value: ''}", "\"STATUS\" = ''"),
+        ],
+        ids=["zero", "zero_float", "false", "empty_string"],
+    )
+    @pytest.mark.parametrize("enforce", ["relevant", "always"])
+    def test_the_value_is_compared(self, condition: str, expected: str, enforce: str) -> None:
+        yaml = BASE_MODEL.replace(
+            "      Status:\n",
+            "      Paid:\n        code: PAID\n        abstractType: boolean\n      Status:\n",
+            1,
+        )
+        model = _load_model(
+            yaml + f"\nfilters:\n  - {{dataObject: Orders, enforce: {enforce}, {condition[1:]}\n"
+        )
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Customer Country"], measures=["Total Revenue"])
+        )
+
+        sql = PIPELINE.compile(query, model, "postgres").sql
+
+        assert expected in sql
+        assert "NULL" not in sql
+
+
 class TestStaticFilterValidation:
     """Static filter validation catches invalid references."""
 

@@ -1229,7 +1229,10 @@ def static_filter_predicate(
     from orionbelt.compiler.resolution import make_column_expr
 
     col_expr = make_column_expr(model, mf.data_object, mf.column)
-    qf = QueryFilter(field=mf.column, op=mf.operator, value=mf.value or mf.values or None)
+    # ``value`` when given, so 0, false and '' are compared rather than taken
+    # for no value: ``amount > 0`` became ``amount > NULL``, true for no row.
+    value = mf.value if mf.value is not None else (mf.values or None)
+    qf = QueryFilter(field=mf.column, op=mf.operator, value=value)
     date_bearing = column_is_date_bearing(model, mf.data_object, mf.column)
     return build_filter_expr(col_expr, qf, errors, date_bearing=date_bearing)
 
