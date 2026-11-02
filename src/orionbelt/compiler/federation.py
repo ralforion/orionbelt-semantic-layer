@@ -45,6 +45,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from orionbelt.ast.nodes import ColumnRef, Expr, JoinType
+from orionbelt.compiler.cfl import CFLPlanner
+from orionbelt.compiler.cfl_projection import group_measures_by_object
+from orionbelt.compiler.filter_resolution import (
+    report_unapplied_query_filter,
+    report_unapplied_static_filter,
+)
 from orionbelt.compiler.filter_wrap import kept_by_context, query_item_fields
 from orionbelt.compiler.filters import _resolve_subquery_filter_field
 from orionbelt.compiler.grain_dedup import (
@@ -57,6 +63,7 @@ from orionbelt.compiler.null_rejection import is_null_without
 from orionbelt.compiler.raw_resolution import raw_field_aliases
 from orionbelt.compiler.resolution import (
     ResolutionError,
+    ResolvedMeasure,
     ResolvedQuery,
     columns_in_own_zone,
     make_column_expr,
@@ -165,6 +172,9 @@ _COUNTING = frozenset({AggregationType.COUNT_DISTINCT, AggregationType.MODE})
 # read it through the fact rows (:meth:`_Planner.parents`).
 _ROWS_RELATION = "leg_0_rows"
 _ONCE_RELATION = "leg_0_once"
+# The result of each part of a query split by fact, and their union.
+_PART_RELATION = "__part"
+_PARTS_RELATION = "__parts"
 
 # The filter operators true where their field is NULL, and those false there.
 # Every other one compares the field, which is unknown (NULL) for NULL.
@@ -374,10 +384,19 @@ def _outer_objects(resolved: ResolvedQuery, model: SemanticModel) -> set[str]:
     A metric across periods reads its time dimension's data object too,
     whether or not the query joins it (:meth:`_Planner.check_period_dates`),
     and the objects one database joins to reach it from the base object: a
-    calendar reached through the CRM's customers reads the CRM.
+    calendar reached through the CRM's customers reads the CRM. So does a
+    measure the query only orders by, which one database computes in a
+    query of its own (``order_only``): the tickets' count of the CRM.
     """
     objects = _joined_objects(resolved)
-    unjoined = set(_period_dates(resolved, model).values()) - objects
+    effective = model.effective_measures
+    ordered = {
+        obj
+        for name in resolved.order_only_measures
+        if name in effective
+        for obj in effective[name].source_objects
+    }
+    unjoined = (set(_period_dates(resolved, model).values()) | ordered) - objects
     if unjoined:
         graph = JoinGraph.of(model)
         for obj in sorted(unjoined):
@@ -436,6 +455,7 @@ def plan_federated(
     compile_leg: Callable[[QueryObject, SemanticModel, str], str],
     source_dialect: Callable[[str | None], str | None],
     leg_row_limit: int | None = None,
+    plan_part: Callable[[QueryObject], FederatedPlan] | None = None,
 ) -> FederatedPlan:
     """Split a query reading several data sources into legs and a combine step.
 
@@ -451,6 +471,9 @@ def plan_federated(
         leg_row_limit: The most rows a leg may return. Each leg asks for one
             more, so the executor can tell a leg that reached the limit from
             one that fits it and refuse the first rather than combine a part.
+        plan_part: Plans one fact's part of a query whose facts one database
+            unions (:meth:`_Planner.parts`), as a query of its own: resolved
+            against *model* and planned as this function plans one.
 
     Raises:
         ResolutionError: A ``FEDERATION_*`` error for a query that does not
@@ -463,6 +486,10 @@ def plan_federated(
     islands = planner.islands()
     planner.check_computed_columns(islands)
     body_reads = planner.body_reads(islands)
+    parts = planner.parts(islands) if plan_part is not None else None
+    if parts is not None:
+        assert plan_part is not None
+        return _plan_parts(planner, [plan_part(part) for part in parts], compile_leg=compile_leg)
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
     if query.select.is_raw:
@@ -1262,6 +1289,113 @@ def _plan_raw(
     return FederatedPlan(legs=tuple(legs), combine_sql=combine_sql)
 
 
+def _plan_parts(
+    planner: _Planner,
+    plans: list[FederatedPlan],
+    *,
+    compile_leg: Callable[[QueryObject, SemanticModel, str], str],
+) -> FederatedPlan:
+    """A query split by fact (:meth:`_Planner.parts`): its parts' legs, and their union.
+
+    Each part's legs are renamed apart, and its combine query reads them
+    under their own names again, from common table expressions of its own.
+    The combine step unions the parts' results, each a row per group of the
+    dimensions its fact reaches, NULL for the others, and groups them by all
+    of them, as one database groups its union of the facts. A group holds a
+    measure from one part at most, which the combine query takes
+    (:func:`_part_measure`); there it computes the metrics, ``having``,
+    ``orderBy`` and ``limit``. The parts' legs run at once, none filtered
+    by another's keys.
+    """
+    query, model = planner.query, planner.model
+    q = DialectRegistry.get(COMBINE_DIALECT).quote_identifier
+    legs: list[FederatedLeg] = []
+    parts: list[str] = []
+    for k, plan in enumerate(plans):
+        names = {leg.name: f"{_PART_RELATION}{k}_{leg.name}" for leg in plan.legs}
+        legs += [dataclasses.replace(leg, name=names[leg.name]) for leg in plan.legs]
+        reading = ",\n".join(
+            f"{q(own)} AS (SELECT * FROM {q(name)})" for own, name in names.items()
+        )
+        sql = plan.combine_sql.removeprefix("WITH ")
+        sql = f"WITH {reading},\n{sql}" if sql != plan.combine_sql else f"WITH {reading}\n{sql}"
+        parts.append(f"{q(f'{_PART_RELATION}{k}')} AS (\n{sql}\n)")
+    union = "\nUNION ALL BY NAME\n".join(
+        f"SELECT * FROM {q(f'{_PART_RELATION}{k}')}" for k in range(len(plans))
+    )
+    parts.append(f"{q(_PARTS_RELATION)} AS (\n{union}\n)")
+
+    dimensions = [DimensionRef.parse(d).name for d in _dimension_refs(query)]
+    measures = planner.atomic_measures()
+    effective = model.effective_measures
+    columns = [
+        *(_dimension_column(model, name) for name in dimensions),
+        *(
+            DataObjectColumn(name=m, code=m, abstract_type=effective[m].result_type)
+            for m in sorted(measures)
+        ),
+    ]
+    parts_model = SemanticModel(
+        name=model.name,
+        settings=_combine_settings(model),
+        data_objects={
+            _PARTS_RELATION: DataObject(
+                name=_PARTS_RELATION,
+                code=_PARTS_RELATION,
+                database="",
+                schema_name="",
+                columns={c.name: c for c in columns},
+                countable=False,
+            )
+        },
+        dimensions={name: _combine_dimension(model, name, _PARTS_RELATION) for name in dimensions},
+        measures={m: _part_measure(model, m) for m in measures},
+        metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
+        expose_counts=False,
+    )
+    parts_query = query.model_copy(
+        update={
+            "select": QuerySelect(dimensions=dimensions, measures=list(query.select.measures)),
+            "where": [],
+            "order_by": [
+                QueryOrderBy(
+                    field=DimensionRef.parse(o.field).name, direction=o.direction, nulls=o.nulls
+                )
+                for o in query.order_by
+            ],
+            "use_path_names": [],
+        }
+    )
+    sql = compile_leg(parts_query, parts_model, COMBINE_DIALECT)
+    with_ = ",\n".join(parts)
+    if sql.startswith("WITH "):
+        sql = f"WITH {with_},\n{sql.removeprefix('WITH ')}"
+    else:
+        sql = f"WITH {with_}\n{sql}"
+    return FederatedPlan(legs=tuple(legs), combine_sql=sql)
+
+
+def _part_measure(model: SemanticModel, name: str) -> Measure:
+    """Measure *name* as the combine step takes it from the union of the parts.
+
+    The part computing it gave each of its groups the finished value, typed
+    and cast; a group of the union holds it once at most, so its ``MAX`` is
+    that value. A group no row of its fact reaches holds none: a count reads
+    0, as one database's count over no rows does, any other its default.
+    """
+    measure = model.effective_measures[name]
+    counts = measure.aggregation in (AggregationType.COUNT, AggregationType.COUNT_DISTINCT)
+    return Measure(
+        name=name,
+        columns=[DataColumnRef(view=_PARTS_RELATION, column=name)],
+        aggregation=AggregationType.MAX,
+        result_type=measure.result_type,
+        data_type=measure.data_type,
+        default_value=0 if counts else measure.default_value,
+        format=measure.format,
+    )
+
+
 def _raw_column(model: SemanticModel, ref: str) -> DataObjectColumn:
     """The leg column of the ``Object.Column`` *ref*, under that name, typed as declared."""
     obj, column = ref.split(".", 1)
@@ -1536,6 +1670,134 @@ class _Planner:
                     hint="Compute it so it is NULL where its inputs are, or query it on one "
                     "data source.",
                 )
+
+    def parts(self, islands: list[set[str]]) -> list[QueryObject] | None:
+        """The query split by fact, where one database unions facts of several islands.
+
+        One database computes the measures of independent facts in a union of
+        one leg per fact (``cfl``): each groups its fact's rows by the
+        dimensions it reaches, NULL for the others, under the filters it
+        reaches, and the union is grouped by all of them. Where those facts
+        are on different islands, each is a query of its own, holding its
+        measures and what its fact reaches, and the combine step unions their
+        results (:func:`_plan_parts`). A filter a fact does not reach is left
+        out of its part, with the warning one database gives, and so is a
+        static filter (an ``enforce: always`` one is refused, by the part's
+        own planning). ``None`` where
+        one island holds the facts: its leg unions them itself.
+
+        A measure the query only orders by is a part's whose fact reaches its
+        objects; one of another fact is refused: its groups would be rows of
+        the query, where one database's are its sort keys alone.
+        """
+        if not self.resolved.requires_cfl or self.query.select.is_raw:
+            return None
+        effective = self.model.effective_measures
+        graph = JoinGraph.of(self.model, use_path_names=self.resolved.use_path_names or None)
+
+        def reach(root: str) -> set[str]:
+            return graph.descendants_without_unnest(root) | {root}
+
+        groups, across = group_measures_by_object(CFLPlanner(), self.resolved, self.model)
+        island_of = {o: i for i, island in enumerate(islands) for o in island}
+        if len({island_of.get(root) for root in groups}) < 2:
+            return None
+        roots = {root: [m.name for m in measures] for root, measures in groups.items()}
+        for name in sorted(self.resolved.order_only_measures & effective.keys()):
+            sources = effective[name].source_objects
+            home = next((root for root in sorted(roots) if sources <= reach(root)), None)
+            if home is None:
+                raise self.refuse(
+                    "UNSUPPORTED_QUERY",
+                    f"The query is ordered by measure '{name}', of a fact none of its "
+                    "selected measures is of",
+                    hint="Select the measure, or order by a measure of a selected fact.",
+                )
+            roots[home].append(name)
+        self.check_parts(across)
+        parts = []
+        for root, measures in sorted(roots.items()):
+            fact = reach(root)
+            select = QuerySelect(
+                dimensions=[
+                    d
+                    for d in _dimension_refs(self.query)
+                    if self._dimension_objects(DimensionRef.parse(d).name) <= fact
+                ],
+                measures=measures,
+            )
+            where = []
+            for item in self.query.where:
+                missing = self._item_objects(item) - fact
+                if not missing:
+                    where.append(item)
+                    continue
+                report_unapplied_query_filter(
+                    self.resolved.warnings,
+                    ", ".join(sorted(missing)),
+                    ", ".join(f"'{m}'" for m in measures),
+                )
+            for f in self.model.filters:
+                missing = self._column_objects(f.data_object, f.column) - fact
+                if missing and f.enforce == FilterEnforcement.RELEVANT:
+                    report_unapplied_static_filter(
+                        [],
+                        self.resolved.warnings,
+                        None,
+                        ", ".join(sorted(missing)),
+                        ", ".join(f"'{m}'" for m in measures),
+                    )
+            update = {"where": where, "having": [], "order_by": [], "limit": None, "offset": None}
+            parts.append(self.query.model_copy(update={"select": select, **update}))
+        return parts
+
+    def check_parts(self, across: list[ResolvedMeasure]) -> None:
+        """Refuse what a query split by fact (:meth:`parts`) does not compute yet."""
+        effective = self.model.effective_measures
+        apart = [
+            name
+            for name in sorted(self.atomic_measures())
+            if effective[name].total
+            or effective[name].grain is not None
+            or effective[name].filter_context is not None
+        ]
+        refused = [
+            (bool(across), f"measure '{across[0].name}' reads several of them" if across else ""),
+            (
+                bool(apart),
+                f"measure '{apart[0]}' has a total, grain or filterContext" if apart else "",
+            ),
+            (bool(self.resolved.anchored_measures), "a measure is anchored to another fact"),
+            (self.query.grouping is not None, "the query has a rollup or cube"),
+            (
+                self.reads_periods() or any(m.is_reaggregate for m in self.resolved.measures),
+                "a metric reads values across periods or reaggregates",
+            ),
+            (
+                self.stores_dates() or self.query.as_of is not None,
+                "the query fills periods, sets asOf or selects one dimension at two grains",
+            ),
+            (
+                self.query.dimensions_exclude
+                or any(isinstance(d, CoalesceDimension) for d in self.query.select.dimensions),
+                "the query excludes dimensions or coalesces them",
+            ),
+        ]
+        for refuses, why in refused:
+            if refuses:
+                raise self.refuse(
+                    "UNSUPPORTED_QUERY",
+                    f"Measures of independent facts on several data sources are combined, "
+                    f"but {why}, which is not supported yet",
+                )
+
+    def _item_objects(self, item: QueryFilterItem) -> set[str]:
+        """The data objects filter *item* reads: a dimension's and those it joins."""
+        if isinstance(item, QueryFilterGroup):
+            return {o for sub in item.filters for o in self._item_objects(sub)}
+        if item.subquery is None and DimensionRef.parse(item.field).name in self.model.dimensions:
+            return self._dimension_objects(DimensionRef.parse(item.field).name)
+        return self._filter_objects(item)
 
     def fact_island(self, islands: list[set[str]]) -> int:
         """The island of the measures, which must also hold the base object.
