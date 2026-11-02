@@ -1851,7 +1851,7 @@ class TestReaggregateMetrics:
     @pytest.mark.parametrize(
         ("measure", "required", "message"),
         [
-            ("Revenue per Customer", True, "reached by a required join the query does not make"),
+            ("Revenue per Customer", True, "reached by a required join to Customers"),
             ("Every Customer", False, "its population would hold only the members with rows"),
         ],
         ids=["a_required_join", "the_population_of_the_dimension"],
@@ -1883,6 +1883,105 @@ class TestReaggregateMetrics:
             "select": {"dimensions": ["Calendar Date"], "measures": ["Revenue per Customer"]}
         }
         assert _compile(yaml.replace("        required: true\n", ""), unlimited).federation
+
+
+def bridged_model() -> str:
+    """Orders on the shop, reaching segments through a required bridge; the
+    customers in the CRM, reaching tiers by a required join and regions."""
+    return """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Orders:
+    code: orders
+    dataSource: shop
+    columns:
+      Order Customer: {code: customer_id, abstractType: int}
+      Order Bridge: {code: bridge_id, abstractType: int}
+      Amount: {code: amount, abstractType: decimal}
+    joins:
+      - {joinType: many-to-one, joinTo: Customers, columnsFrom: [Order Customer],
+         columnsTo: [Customer ID]}
+      - {joinType: many-to-one, joinTo: Bridge, columnsFrom: [Order Bridge],
+         columnsTo: [Bridge ID], required: true}
+  Bridge:
+    code: bridge
+    dataSource: shop
+    columns:
+      Bridge ID: {code: bridge_id, abstractType: int}
+      Bridge Segment: {code: segment_id, abstractType: string}
+    joins:
+      - {joinType: many-to-one, joinTo: Segments, columnsFrom: [Bridge Segment],
+         columnsTo: [Segment ID]}
+  Segments:
+    code: segments
+    dataSource: shop
+    columns:
+      Segment ID: {code: segment_id, abstractType: string}
+  Customers:
+    code: customers
+    dataSource: crm
+    columns:
+      Customer ID: {code: customer_id, abstractType: int}
+      Region: {code: region, abstractType: string}
+      Customer Tier: {code: tier_id, abstractType: int}
+      Customer Area: {code: area_id, abstractType: string}
+    joins:
+      - {joinType: many-to-one, joinTo: Tiers, columnsFrom: [Customer Tier],
+         columnsTo: [Tier ID], required: true}
+      - {joinType: many-to-one, joinTo: Areas, columnsFrom: [Customer Area],
+         columnsTo: [Area ID]}
+  Tiers:
+    code: tiers
+    dataSource: crm
+    columns:
+      Tier ID: {code: tier_id, abstractType: int}
+  Areas:
+    code: areas
+    dataSource: crm
+    columns:
+      Area ID: {code: area_id, abstractType: string}
+dimensions:
+  Region: {dataObject: Customers, column: Region, resultType: string}
+  Segment: {dataObject: Segments, column: Segment ID, resultType: string}
+  Tier: {dataObject: Tiers, column: Tier ID, resultType: int}
+  Area: {dataObject: Areas, column: Area ID, resultType: string}
+measures:
+  Revenue: {columns: [{dataObject: Orders, column: Amount}], aggregation: sum, defaultValue: 0}
+metrics:
+  Best Segment: {type: reaggregate, measure: Revenue, per: [Segment], aggregation: max}
+  Best Tier: {type: reaggregate, measure: Revenue, per: [Tier], aggregation: max}
+  Every Area:
+    {type: reaggregate, measure: Revenue, per: [Area], aggregation: count, population: dimension}
+"""
+
+
+class TestReaggregatePerDimensionsTheLegsLimit:
+    """A per dimension a leg the query reads too would limit, or list in part."""
+
+    @pytest.mark.parametrize(
+        ("dimensions", "measure", "message"),
+        [
+            (["Region"], "Best Segment", "a required join to Bridge the query does not make"),
+            (["Region"], "Best Tier", "a required join to Tiers the query does not make"),
+            ([], "Every Area", "read beside Customers on its data source"),
+        ],
+        ids=["required_on_the_way", "required_in_a_source_the_query_reads", "population_reached"],
+    )
+    def test_is_refused(self, dimensions: list[str], measure: str, message: str) -> None:
+        """The bridge's required join drops the orders without one from the
+        shop's leg, the tiers' the customers without one from the CRM's, which
+        the query reads by region; the CRM's leg lists the areas its customers
+        reach, not an area none does."""
+        query = {"select": {"dimensions": dimensions, "measures": ["Revenue", measure]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(bridged_model(), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert message in error.message
 
 
 class TestQueryOptions:

@@ -460,7 +460,12 @@ def _per_steps(resolved: ResolvedQuery, model: SemanticModel) -> list[JoinStep]:
     month. An object no join reaches from the base (on the many side of
     one) has no path, and the planner refuses the query.
     """
-    unjoined = _per_objects(resolved, model) - _joined_objects(resolved)
+    return _steps_to(resolved, model, _per_objects(resolved, model))
+
+
+def _steps_to(resolved: ResolvedQuery, model: SemanticModel, objects: set[str]) -> list[JoinStep]:
+    """The joins from the base object to *objects* that the query does not make."""
+    unjoined = objects - _joined_objects(resolved)
     graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
     steps: list[JoinStep] = []
     for obj in sorted(unjoined):
@@ -2160,44 +2165,59 @@ class _Planner:
 
         - whose base object may be another, the orders for the customers'
           count per order date, which no such join reaches;
-        - whose required join limits that stage alone, where the fact leg's
-          would drop the rows of every measure (the combine step joins another
-          source's leg only where a stage reads it, as one database does);
+        - whose required join limits that stage alone, where a leg the query
+          reads too would drop the rows of every measure: the fact leg, or
+          the leg of a source the query joins. The combine step joins the leg
+          of a source only the first stage reads only where it reads it, as
+          one database does;
         - whose members, with ``population: dimension``, are all of the
-          dimension's, where the fact leg holds only those with rows.
+          dimension's: a leg lists them so only where it reads nothing else,
+          not the fact leg, which holds those with rows, nor one reading them
+          through another object, which holds those its rows reach.
         """
         reached = _joined_objects(self.resolved) | _step_objects(self.join_steps)
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         fact = island_of.get(self.resolved.base_object)
-        required = {
-            step.to_object
-            for step in _per_steps(self.resolved, self.model)
-            if (step.join_type == JoinType.INNER or step.nested)
-            and island_of.get(step.to_object) == fact
-        }
+        # The islands whose legs the query reads beside the first stage.
+        shared = {island_of[o] for o in _joined_objects(self.resolved) if o in island_of}
         for name in _reaggregates(self.resolved, self.model):
             metric = self.model.metrics[name]
-            for entry in metric.per:
-                per = reaggregate_per_ref(self.model, entry).name
+            refs = [reaggregate_per_ref(self.model, entry).name for entry in metric.per]
+            members = {o for per in refs for o in self._dimension_objects(per)}
+            for per in refs:
                 objects = self._dimension_objects(per)
+                limiting = sorted(
+                    step.to_object
+                    for step in _steps_to(self.resolved, self.model, objects)
+                    if (step.join_type == JoinType.INNER or step.nested)
+                    and island_of.get(step.to_object) in shared
+                )
+                homes = {island_of.get(o) for o in objects}
                 why = None
                 if objects - reached:
                     why = (
                         f"of {', '.join(sorted(objects - reached))}, which no many-to-one "
                         "join reaches from the rows of its measure"
                     )
-                elif objects & required:
+                elif limiting:
                     why = (
-                        f"of {', '.join(sorted(objects & required))}, reached by a required "
-                        "join the query does not make: across data sources it would limit "
-                        "the query's other measures too"
+                        f"reached by a required join to {', '.join(limiting)} the query "
+                        "does not make: across data sources it would limit the query's "
+                        "other measures too"
                     )
-                elif metric.population == ReaggregatePopulation.DIMENSION and any(
-                    island_of.get(o) == fact for o in objects
-                ):
+                elif metric.population == ReaggregatePopulation.DIMENSION and fact in homes:
                     why = (
                         "on the data source of its measure: across data sources its "
                         "population would hold only the members with rows of the measure"
+                    )
+                elif metric.population == ReaggregatePopulation.DIMENSION and any(
+                    not islands[i] <= members for i in homes if i is not None
+                ):
+                    others = {o for i in homes if i is not None for o in islands[i]} - members
+                    why = (
+                        f"read beside {', '.join(sorted(others))} on its data source: across "
+                        "data sources its population would hold only the members their "
+                        "rows reach"
                     )
                 if why is not None:
                     raise self.refuse(
