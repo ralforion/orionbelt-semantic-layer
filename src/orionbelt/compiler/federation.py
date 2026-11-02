@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from orionbelt.ast.nodes import ColumnRef, Expr, JoinType
+from orionbelt.compiler.filter_wrap import kept_by_context, query_item_fields
 from orionbelt.compiler.filters import _resolve_subquery_filter_field
 from orionbelt.compiler.grain_dedup import MULTIPLICITY_SAFE_AGGREGATIONS, dedup_identity
 from orionbelt.compiler.graph import JoinGraph, JoinStep
@@ -92,6 +93,7 @@ from orionbelt.models.semantic import (
     DataObjectJoin,
     DataType,
     Dimension,
+    FilterContext,
     FilterEnforcement,
     FilterLogic,
     Measure,
@@ -465,10 +467,13 @@ def plan_federated(
         )
     rows_for = planner.check_measures(islands[fact])
     leg_filters, combine_filters, absent = planner.place_filters(islands, fact)
-
-    fact_dims, edge_dims, regrained = planner.dimensions_by_island(
-        islands, fact, edges, combine_filters
-    )
+    # The fields the combine step filters on: in ``where``, and in the
+    # filters a measure's filter context includes.
+    filtered = [
+        *(field for item in combine_filters for field in _filter_fields(item)),
+        *(item.field for context in planner.contexts() for item in context.include),
+    ]
+    fact_dims, edge_dims, regrained = planner.dimensions_by_island(islands, fact, edges, filtered)
     # The edges from the fact island: the fact leg returns their keys.
     from_fact = [edge for edge in edges if edge.parent == fact]
     # Partial results count a row of an object the joins repeat once per
@@ -487,6 +492,9 @@ def plan_federated(
     combine_objects: dict[str, DataObject] = {}
     combine_dimensions: dict[str, Dimension] = {}
     combine_filters_static: list[ModelFilter] = []
+    # The leg columns static filters read in the combine step, by the column
+    # each one filters: a measure's filter context names that one.
+    static_names: dict[str, list[str]] = {}
 
     # Every column a leg gets that the model does not declare takes a name no
     # dimension, measure or metric has, nor another such column: a leg or the
@@ -583,16 +591,36 @@ def plan_federated(
     in_own_zone = _zone_pairs({**fact_keys, **row_values}, own_zone)
     fact_own_grain = own_grain.get(fact, {})
     fact_body = frozenset(body_reads.get(fact, set()))
+    # A static filter of the fact island a measure's filter context leaves
+    # out runs in the combine step, on the column the fact leg returns for
+    # it, as one of a dimension island does: that measure's scan there
+    # leaves it out, as one database's does.
+    fact_static = {
+        _unused(f"__sf{n}", taken): (f.data_object, f.column, f)
+        for n, f in enumerate(model.filters)
+        if f.data_object in islands[fact] - planner.in_subqueries
+        and f.enforce == FilterEnforcement.RELEVANT
+        and not planner.kept_everywhere(frozenset({f.column}))
+    }
+    fact_static_columns = {name: (obj, col) for name, (obj, col, _) in fact_static.items()}
     fact_model = planner.island_model(
         islands[fact] | fact_body,
-        {**fact_keys, **fact_values, **row_values},
+        {**fact_keys, **fact_values, **row_values, **fact_static_columns},
         leg_measures,
         own_zone=own_zone,
         own_grain=fact_own_grain,
+        after_join=[f for _, _, f in fact_static.values()],
     )
     fact_query = QueryObject(
         select=QuerySelect(
-            dimensions=[*fact_dims, *fact_own_grain, *fact_keys, *fact_values, *row_values],
+            dimensions=[
+                *fact_dims,
+                *fact_own_grain,
+                *fact_keys,
+                *fact_values,
+                *row_values,
+                *fact_static_columns,
+            ],
             measures=sorted(leg_measures),
         ),
         where=leg_filters.get(fact, []),
@@ -607,11 +635,15 @@ def plan_federated(
             for name, (obj, col) in {**fact_keys, **fact_values}.items()
         ],
         *[_value_column(model, name, obj, col) for name, (obj, col) in row_values.items()],
+        *[_key_column(model, name, obj, col) for name, (obj, col) in fact_static_columns.items()],
         *[
             DataObjectColumn(name=n, code=n, abstract_type=m.result_type)
             for n, m in sorted(leg_measures.items())
         ],
     ]
+    for name, (_, column, f) in fact_static.items():
+        combine_filters_static.append(f.model_copy(update={"data_object": "leg_0", "column": name}))
+        static_names.setdefault(column, []).append(name)
     # Values the combine step groups by or counts are compared there as their
     # own engine compares them (:meth:`Dialect.equality_key`): the selected
     # dimensions without a grain, and the values a count of distinct values
@@ -622,8 +654,9 @@ def plan_federated(
         for d in _dimension_refs(query)
         if not DimensionRef.parse(d).grain
     }
-    filtered = {f for item in combine_filters for f in _filter_fields(item)}
-    kept = {name: _unused(f"__eqv{n}", taken) for n, name in enumerate(sorted(grouped & filtered))}
+    kept = {
+        name: _unused(f"__eqv{n}", taken) for n, name in enumerate(sorted(grouped & set(filtered)))
+    }
     renamed = (
         {}
         if planner.stores_dates()
@@ -812,10 +845,11 @@ def plan_federated(
             columns={c.name: c for c in dim_columns},
             countable=False,
         )
-        combine_filters_static.extend(
-            f.model_copy(update={"data_object": leg_name, "column": name})
-            for name, (_, _, f) in static.items()
-        )
+        for name, (_, column, f) in static.items():
+            combine_filters_static.append(
+                f.model_copy(update={"data_object": leg_name, "column": name})
+            )
+            static_names.setdefault(column, []).append(name)
         if edge.island in leg_filters:
             # The leg dropped the rows its filters reject: the combine step
             # keeps the fact rows it matched, which joins it also when the
@@ -986,10 +1020,12 @@ def plan_federated(
         data_objects=combine_objects,
         dimensions=combine_dimensions,
         measures={
-            m: (
+            m: _combine_context(
                 _row_measure(model, m, measure_columns, once_of.get(m, "leg_0"), elsewhere)
                 if from_rows and m not in distinct
-                else _combine_measure(model, m, leg_columns.get(m), once_of.get(m, "leg_0"))
+                else _combine_measure(model, m, leg_columns.get(m), once_of.get(m, "leg_0")),
+                renamed,
+                static_names,
             )
             for m in measures
         },
@@ -1726,6 +1762,24 @@ class _Planner:
         names |= {o.field for o in self.query.order_by if o.field in effective}
         return names
 
+    def contexts(self) -> list[FilterContext]:
+        """The filter contexts of the measures the query computes."""
+        effective = self.model.effective_measures
+        return [
+            context
+            for name in sorted(self.atomic_measures())
+            if (context := effective[name].filter_context) is not None
+        ]
+
+    def kept_everywhere(self, fields: frozenset[str]) -> bool:
+        """Whether every measure's filter context keeps a filter reading *fields*.
+
+        Only such a filter runs in a leg. One a context drops runs in the
+        combine step, over the legs' unfiltered groups, where that measure's
+        own scan leaves it out, as one database's does (``filter_wrap``).
+        """
+        return all(kept_by_context(context, [fields], lambda f: f) for context in self.contexts())
+
     def check_measures(self, fact_island: set[str]) -> list[str]:
         """Refuse a measure no federated query computes; return those needing rows.
 
@@ -1750,12 +1804,15 @@ class _Planner:
         names = sorted(self.atomic_measures())
         for name in names:
             measure = effective[name]
-            if measure.filter_context is not None or measure.grain is not None:
-                raise self.refuse(
-                    "UNSUPPORTED_AGGREGATION",
-                    f"Measure '{name}' sets filterContext or grain, which a federated "
-                    "query does not support yet",
-                )
+            context = measure.filter_context
+            for item in context.include if context is not None else []:
+                if item.field not in self.model.dimensions:
+                    raise self.refuse(
+                        "UNSUPPORTED_FILTER",
+                        f"Measure '{name}' includes a filter on '{item.field}' in its "
+                        "filterContext, which is not a dimension",
+                        hint="Filter on a dimension over the column.",
+                    )
             for obj, column, _ in _read_columns(measure):
                 apart = sorted(
                     o
@@ -1807,19 +1864,20 @@ class _Planner:
         values of one column counts them across the groups they reach. A
         variance or standard deviation combines from its moments when its
         values are integers or decimals the leg squares exactly
-        (:meth:`squares_exactly`). None of them with a total but the
-        re-aggregated ones, nor any other aggregation.
+        (:meth:`squares_exactly`). None of them with a total or a grain
+        override but the re-aggregated ones, nor any other aggregation.
         """
+        apart = measure.total or measure.grain is not None
         if _counts_distinct(measure):
-            return _counts_distinct_column(measure) and not measure.total
+            return _counts_distinct_column(measure) and not apart
         if measure.distinct:
             return False
         if measure.aggregation in _REAGGREGATE:
             return True
         if measure.aggregation == AggregationType.AVG:
-            return not measure.total
+            return not apart
         if measure.aggregation in _VARIANCES:
-            return not measure.total and self.squares_exactly(measure, fact_island)
+            return not apart and self.squares_exactly(measure, fact_island)
         return False
 
     def squares_exactly(self, measure: Measure, fact_island: set[str]) -> bool:
@@ -1901,7 +1959,7 @@ class _Planner:
         grain it reads at their own, *own_grain*), and the values a count of
         distinct values counts (:func:`_leg_measures`). The selected ones
         count too where the combine step adds groups across them: a
-        ``rollup`` or ``cube`` subtotal, and a measure's ``total``. A customer
+        ``rollup`` or ``cube`` subtotal, a measure's ``total`` or grain. A customer
         whose sales reach two products is one row in each product's group,
         and the combine step, adding the groups, counted it twice. Measured,
         the variance of ages 10 and 20 came out 33.3 for 50 and their sum 40
@@ -1937,7 +1995,7 @@ class _Planner:
             if measure.distinct or measure.aggregation in MULTIPLICITY_SAFE_AGGREGATIONS:
                 continue
             groupings = list(always)
-            if self.query.grouping is not None or measure.total:
+            if self.query.grouping is not None or measure.total or measure.grain is not None:
                 # The combine step adds groups across the selected ones too.
                 groupings += [self._dimension_objects(d) for d in fact_names if d in selected]
             one = self._one_row_each(target)
@@ -2093,6 +2151,9 @@ class _Planner:
         becomes the absence of the fact row's key among those the subquery
         holds for (:class:`_Absent`). The combine step cannot run a subquery:
         an ``exists`` that would run there is refused.
+
+        A condition a measure's filter context drops runs in the combine step
+        too (:meth:`kept_everywhere`).
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         legs: dict[int, list[QueryFilterItem]] = {}
@@ -2105,6 +2166,16 @@ class _Planner:
                 and not any(True for _ in _exists_filters([item]))
                 and self._on_axes(item, axes)
             ):
+                combine.append(item)
+                continue
+            if not self.kept_everywhere(query_item_fields(item)):
+                if any(True for _ in _exists_filters([item])):
+                    raise self.refuse(
+                        "UNSUPPORTED_FILTER",
+                        "An exists filter a measure's filterContext leaves out is not "
+                        "supported yet",
+                        hint="Keep the exists filter in every measure's filterContext.",
+                    )
                 combine.append(item)
                 continue
             owners = {island_of.get(o) for o in self._filter_objects(item)}
@@ -2173,9 +2244,9 @@ class _Planner:
         islands: list[set[str]],
         fact: int,
         edges: list[_Edge],
-        combine_filters: list[QueryFilterItem],
+        filtered: Iterable[str],
     ) -> tuple[list[str], list[list[str]], dict[int, list[str]]]:
-        """The dimensions each leg returns: selected, or read by a combine filter.
+        """The dimensions each leg returns: selected, or *filtered* in the combine step.
 
         A leg returns a dimension once, at the grain the query selects it. A
         combine filter on one the query selects at a time grain compares it
@@ -2200,15 +2271,14 @@ class _Planner:
         selected = {DimensionRef.parse(d).name for d in wanted}
         at_grain = {DimensionRef.parse(d).name for d in wanted if DimensionRef.parse(d).grain}
         regrained: dict[int, list[str]] = {}
-        for item in combine_filters:
-            for field in _filter_fields(item):
-                if field in at_grain:
-                    island = island_of[self.model.dimensions[field].view]
-                    if field not in regrained.get(island, []):
-                        regrained.setdefault(island, []).append(field)
-                elif field not in selected:
-                    wanted.append(field)
-                    selected.add(field)
+        for field in filtered:
+            if field in at_grain:
+                island = island_of[self.model.dimensions[field].view]
+                if field not in regrained.get(island, []):
+                    regrained.setdefault(island, []).append(field)
+            elif field not in selected:
+                wanted.append(field)
+                selected.add(field)
         if periods:
             # A metric reads its time dimension's dates whether or not the
             # query selects it: a running total by region alone sums up to
@@ -2311,11 +2381,13 @@ class _Planner:
         *,
         own_zone: Iterable[str] = (),
         own_grain: dict[str, str] | None = None,
+        after_join: Collection[ModelFilter] = (),
     ) -> SemanticModel:
         """The model a leg compiles against: the island alone, keys as dimensions.
 
-        It keeps the static filters of the island's objects; a dimension leg
-        leaves some to the combine step (:func:`static_filters_after_join`).
+        It keeps the static filters of the island's objects but *after_join*;
+        a dimension leg leaves some to the combine step as well
+        (:func:`static_filters_after_join`).
         Each of *own_grain* (a column's name, a dimension's) is that dimension
         under the column's name, at its own grain; beside a metric across
         periods, as stored (:meth:`dimensions_by_island`).
@@ -2364,7 +2436,9 @@ class _Planner:
                 "dimensions": dimensions,
                 "measures": measures,
                 "metrics": {},
-                "filters": [f for f in model.filters if f.data_object in island],
+                "filters": [
+                    f for f in model.filters if f.data_object in island and f not in after_join
+                ],
                 "rules": {},
                 "expose_counts": False,
                 # Read by no compilation, and kept by a plan that injects keys.
@@ -2617,10 +2691,18 @@ def _partial_measure(measure: Measure) -> Measure:
 
     The output type and the default are the combined measure's to apply once:
     no ``dataType``, no ``defaultValue`` (an empty group's default would become
-    an input to the combined aggregate), no ``total``. A sum is also left
-    uncast while the fact leg compiles (``partial_sums``).
+    an input to the combined aggregate), no ``total``, grain or filter context.
+    A sum is also left uncast while the fact leg compiles (``partial_sums``).
     """
-    return measure.model_copy(update={"total": False, "default_value": None, "data_type": None})
+    return measure.model_copy(
+        update={
+            "total": False,
+            "grain": None,
+            "filter_context": None,
+            "default_value": None,
+            "data_type": None,
+        }
+    )
 
 
 def _leg_measures(
@@ -2842,7 +2924,8 @@ def _row_measure(
     once per row of its object, that object's rows once each. A column of
     another data source it reads from the dimension leg *elsewhere* names,
     which the combine step joins to the fact rows. It keeps its type,
-    default and ``total``. A count of rows counts *view*'s rows.
+    default, ``total``, grain and filter context. A count of rows counts
+    *view*'s rows.
     """
     measure = model.effective_measures[name]
 
@@ -2990,15 +3073,15 @@ def _combine_measure(
 ) -> Measure:
     """The measure re-aggregated from the fact leg's partial results.
 
-    It carries the measure's type, default and ``total``. A count is combined
-    as a ``SUM`` of counts, which over no rows is NULL where a count is 0: it
-    falls back to 0, whatever default it declares, since a SQL ``COUNT`` never
-    applies one. An ``avg`` is the ``SUM`` of its leg *column* of sums, which
-    the combine compile divides by its counts; a variance keeps its
-    aggregation over its leg *column* of sums, which the combine compile
-    reads with its counts and squares; and a count of distinct values counts
-    its leg *column* of values (:func:`_leg_measures`), from *view* where the
-    fact leg returns rows (:func:`_row_measures`).
+    It carries the measure's type, default, ``total``, grain and filter
+    context. A count is combined as a ``SUM`` of counts, which over no rows is
+    NULL where a count is 0: it falls back to 0, whatever default it declares,
+    since a SQL ``COUNT`` never applies one. An ``avg`` is the ``SUM`` of its
+    leg *column* of sums, which the combine compile divides by its counts; a
+    variance keeps its aggregation over its leg *column* of sums, which the
+    combine compile reads with its counts and squares; and a count of
+    distinct values counts its leg *column* of values (:func:`_leg_measures`),
+    from *view* where the fact leg returns rows (:func:`_row_measures`).
     """
     measure = model.effective_measures[name]
     counts_distinct = _counts_distinct(measure)
@@ -3029,9 +3112,47 @@ def _combine_measure(
         data_type=measure.data_type
         or (resolved.render() if isinstance(resolved, DecimalType) else None),
         total=measure.total,
+        grain=measure.grain,
+        filter_context=measure.filter_context,
         default_value=default,
         format=measure.format,
     )
+
+
+def _combine_context(
+    measure: Measure, renamed: dict[str, str], static: dict[str, list[str]]
+) -> Measure:
+    """*measure* with its filter context naming the fields the combine step filters.
+
+    The combine query reads some fields under a name of their own (*renamed*),
+    and a static filter's column under a leg column's (*static*, by the
+    column): the context leaves out, or keeps only, the filters on those as
+    well, as one database's matches them by the field or column they read.
+    Its included filters read the renamed fields.
+    """
+    context = measure.filter_context
+    if context is None:
+        return measure
+
+    def names(fields: list[str]) -> list[str]:
+        return list(
+            dict.fromkeys(
+                name
+                for field in fields
+                for name in (field, renamed.get(field, field), *static.get(field, []))
+            )
+        )
+
+    included = [
+        item.model_copy(update={"field": renamed.get(item.field, item.field)})
+        for item in context.include
+    ]
+    update = {
+        "exclude": names(context.exclude),
+        "keep_only": names(context.keep_only),
+        "include": included,
+    }
+    return measure.model_copy(update={"filter_context": context.model_copy(update=update)})
 
 
 def _filter_fields(item: QueryFilterItem) -> list[str]:

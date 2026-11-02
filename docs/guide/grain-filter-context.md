@@ -400,3 +400,6 @@ change, rather than compiled into a number that looks right:
 ## Dialect Support
 
 Grain and filter context overrides produce standard SQL (window functions and CTEs) and work identically across all eight supported dialects. No dialect-specific compilation is needed.
+
+A query reading several data sources computes them after the join; see
+[Federated Queries](federation.md#grain-and-filter-context).

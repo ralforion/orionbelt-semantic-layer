@@ -4,7 +4,8 @@ An ``exists`` / ``nonexists`` subquery in the leg of its subject's source, a
 chain of three sources, a role-playing dimension, a filter after the join on
 the day of a month the query selects, and cumulative, period-over-period and
 window metrics, whose legs return each date as stored for the combine step to
-truncate, and raw-mode rows joined in the combine step. Every source is the engine itself, as in
+truncate, raw-mode rows joined in the combine step, and measures with a grain or
+a filter context of their own. Every source is the engine itself, as in
 ``test_federated_equality_exec``: the combined answer must be the engine's own
 over one source.
 """
@@ -85,6 +86,20 @@ dimensions:
     {{dataObject: Employees, column: Name, resultType: string, via: Orders, pathName: sales}}
 measures:
   Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
+  Region Revenue:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    grain: {{mode: FIXED, include: [Region]}}
+  Revenue Any Region:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filterContext: {{exclude: [Region]}}
+  Revenue Since February:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filterContext:
+      mode: FIXED
+      include: [{{field: Order Date, op: ">=", value: "2024-02-01"}}]
 metrics:
   Running Revenue: {{type: cumulative, measure: Revenue, timeDimension: Order Date}}
   Rolling Revenue: {{type: cumulative, measure: Revenue, timeDimension: Order Date, window: 2}}
@@ -224,6 +239,16 @@ QUERIES = {
             {"field": "Order Date", "op": ">=", "value": "2024-02-01"},
             {"field": "Region", "op": "in", "value": ["EU", "US"]},
         ],
+    },
+    "a_grain": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Revenue", "Region Revenue"]}
+    },
+    "a_filter_context": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Revenue", "Revenue Any Region", "Revenue Since February"],
+        },
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
     },
     "raw_rows": {
         "select": {
