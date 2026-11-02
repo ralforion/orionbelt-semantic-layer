@@ -674,7 +674,18 @@ across such a dimension) the query is computed from rows:
 - the combine model reads each such object's rows once each, as a relation of
   its own, with what its measures read and the dimensions and keys the query
   reads of it, and counts each once per group: a customer without sales is in
-  the group of its own region.
+  the group of its own region;
+- a filter of such a measure on the sales themselves (the ages of the
+  customers with a sale of one product) reads the fact rows, as one database
+  filters the joined rows before it counts each customer once: the relation
+  of the customers' rows holds none of the sales' columns.
+
+Still refused: such a measure reading a sales column other than in a filter
+(as its argument, expression or ordering), or a column of its own object
+computed from the sales, which one database refuses as well; and a dimension
+or key read through two such objects at once, one joined from the other (the
+accounts' credits beside their owners' ages, by the owners' region), where
+each measure adds the rows of its own object no sale reaches.
 
 ### Grain and filter context
 
@@ -797,7 +808,7 @@ database would return, without a refusal.
 | A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | A measure counted once per row of an object read through the fact rows that reads a column of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | Computed from rows: a measure that compares values its engine compares otherwise than DuckDB, a MySQL string (in a filter that also reads another source, a computed column or a date, as its ordering or expression, or as the argument of `min`, `max`, a percentile, `mode`, `first`, `last`, `listagg` or a `distinct` aggregation), or a ClickHouse float it counts (`mode`, a `distinct` aggregation). A filter comparing only plain columns of the fact's source, a string with strings and without a pattern, runs in the fact leg | `FEDERATION_UNSUPPORTED_AGGREGATION` |
-| Computed from rows: a measure of an object read through the fact rows that reads a value of which one row of that object has several (a sales column in a customer measure) | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+| Computed from rows: a measure of an object read through the fact rows that reads a value of which one row of that object has several (a sales column in a customer measure) other than in a filter on the fact's source, which reads the fact rows | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | Computed from rows: a dimension or key read through two such objects at once | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 
 ### Filters

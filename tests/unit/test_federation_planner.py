@@ -3720,23 +3720,115 @@ class TestRepeatedRows:
         assert got == expected
         assert (None, 70, 0) in expected
 
-    def test_a_measure_reading_the_many_side_is_refused(self) -> None:
-        """Ages filtered on the sale's product: one customer has several."""
-        yaml = REPEATED.format(
-            facts="    dataSource: facts\n", labels="    dataSource: labels\n", aggregation="sum"
-        ).replace(
-            "      - column: {dataObject: Customers, column: Age}\n        operator: gte\n",
-            "      - column: {dataObject: Sales, column: Product}\n        operator: gte\n",
+    @pytest.mark.parametrize(
+        "condition",
+        [
+            "      - column: {dataObject: Sales, column: Product}\n"
+            "        operator: gte\n"
+            "        values: [{dataType: int, valueInt: 11}]\n",
+            "      - logic: or\n"
+            "        filters:\n"
+            "          - column: {dataObject: Customers, column: Age}\n"
+            "            operator: gte\n"
+            "            values: [{dataType: int, valueInt: 40}]\n"
+            "          - column: {dataObject: Sales, column: Product}\n"
+            "            operator: equals\n"
+            "            values: [{dataType: int, valueInt: 11}]\n",
+            "      - column: {dataObject: Sales, column: Product}\n        operator: notset\n",
+        ],
+        ids=["a_sale_column", "or_a_customer_column", "unset"],
+    )
+    def test_a_measure_filtered_on_the_many_side(self, condition: str) -> None:
+        """Ages of the customers with a sale of product 11: one database
+        filters the joined rows, then counts each customer once per group;
+        the combine step filters the fact rows, the customers' rows once
+        each holding none of the sales' columns."""
+
+        def on_sales(yaml: str) -> str:
+            return yaml.replace(
+                "      - column: {dataObject: Customers, column: Age}\n"
+                "        operator: gte\n"
+                "        values: [{dataType: int, valueInt: 18}]\n",
+                condition,
+            )
+
+        query = {"select": {"dimensions": ["Category"], "measures": ["Adult Ages", "Ages"]}}
+
+        expected, got = _repeated("sum", query, on_sales)
+
+        assert got == expected
+        assert expected
+        yaml = on_sales(
+            REPEATED.format(
+                facts="    dataSource: facts\n",
+                labels="    dataSource: labels\n",
+                aggregation="sum",
+            )
         )
+        combine_sql = _compile(yaml, query).sql
+        once = combine_sql[combine_sql.index('"leg_0_once0" AS (') :]
+        assert once[: once.index("FROM")].count('"__value') == 2
+
+    def test_a_dimension_read_through_two_such_objects_is_refused(self) -> None:
+        """The owners' region beside the accounts' credits and the owners'
+        ages: one database adds each measure's own rows no sale reaches, an
+        account without sales to its owner's region; one relation of the
+        owners' rows cannot hold both."""
+        yaml = """\
+version: 1.0
+dataObjects:
+  Sales:
+    code: sales
+    dataSource: facts
+    columns:
+      ID: {code: id, abstractType: int, primaryKey: true}
+      Account: {code: account, abstractType: int}
+      Product: {code: product, abstractType: int}
+    joins:
+      - {joinType: many-to-one, joinTo: Accounts, columnsFrom: [Account], columnsTo: [ID]}
+      - {joinType: many-to-one, joinTo: Products, columnsFrom: [Product], columnsTo: [ID]}
+  Accounts:
+    code: accounts
+    dataSource: facts
+    columns:
+      ID: {code: id, abstractType: int, primaryKey: true}
+      Owner: {code: owner, abstractType: int}
+      Credit: {code: credit, abstractType: int}
+    joins:
+      - {joinType: many-to-one, joinTo: Owners, columnsFrom: [Owner], columnsTo: [ID]}
+  Owners:
+    code: owners
+    dataSource: facts
+    columns:
+      ID: {code: id, abstractType: int, primaryKey: true}
+      Age: {code: age, abstractType: int}
+      Region: {code: region, abstractType: string}
+  Products:
+    code: products
+    dataSource: labels
+    columns:
+      ID: {code: id, abstractType: int, primaryKey: true}
+      Category: {code: category, abstractType: string}
+dimensions:
+  Category: {dataObject: Products, column: Category, resultType: string}
+  Region: {dataObject: Owners, column: Region, resultType: string}
+measures:
+  Ages: {columns: [{dataObject: Owners, column: Age}], aggregation: sum}
+  Credits: {columns: [{dataObject: Accounts, column: Credit}], aggregation: sum}
+"""
+        query = {
+            "select": {
+                "dimensions": ["Region", "Category"],
+                "measures": ["Ages", "Credits", "Sales Count"],
+            }
+        }
 
         with pytest.raises(ResolutionError) as caught:
-            _compile(yaml, {"select": {"dimensions": ["Category"], "measures": ["Adult Ages"]}})
+            _compile(yaml, query)
 
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_AGGREGATION"
-        assert "reads 'Sales.Product', which one row of 'Customers' can have several" in (
-            error.message
-        )
+        assert "reads dimension 'Region' through each of Accounts, Owners" in error.message
 
     def test_the_combine_step_reads_the_objects_rows_once_each(self) -> None:
         yaml = REPEATED.format(
