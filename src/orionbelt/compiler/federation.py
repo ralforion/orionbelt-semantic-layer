@@ -175,6 +175,20 @@ _ORDERING = frozenset(
     }
 )
 _COUNTING = frozenset({AggregationType.COUNT_DISTINCT, AggregationType.MODE})
+# The measure filter operators that match a pattern, which can tell apart
+# values a comparison calls equal (:meth:`_Planner.filters_in_leg`).
+_PATTERN_OPERATORS = frozenset(
+    {
+        "contains",
+        "notcontains",
+        "starts_with",
+        "ends_with",
+        "like",
+        "notlike",
+        "ilike",
+        "notilike",
+    }
+)
 
 # The relation the combine step reads a fact leg returning rows as: the leg,
 # each row repeated as often as it counts (:func:`_with_rows`); and the prefix
@@ -2537,9 +2551,17 @@ class _Planner:
         stored: of its own island, neither computed nor a date, which it
         returns in the query's time. A measure read through the fact rows
         (:meth:`parents`) is read from its object's rows, which do not.
+
+        The leg evaluates them over its groups, one per value its engine
+        calls equal: a comparison holds for every value of such a group or
+        for none, a pattern may not. MySQL groups ``'a'`` with ``'a '`` under
+        ``utf8mb4_general_ci``, and ``LIKE 'a'`` matches the first alone, so
+        a filter with a pattern (:data:`_PATTERN_OPERATORS`) stays refused.
         """
         measure = self.model.effective_measures[name]
         if not measure.filters or any(name in names for names in self.parents().values()):
+            return False
+        if _filter_operators(measure.filters) & _PATTERN_OPERATORS:
             return False
         dialect = self.leg_dialect(fact_island)
         compares = False
@@ -3698,6 +3720,17 @@ def _compared_columns(measure: Measure, *, filters: bool = True) -> list[tuple[s
     if counts or measure.aggregation in _ORDERING:
         compared += [(ref.view or "", ref.column, counts) for ref in measure.columns if ref.column]
     return compared
+
+
+def _filter_operators(items: Iterable[MeasureFilterItem]) -> set[str]:
+    """The operators of measure filters *items*, lowercased."""
+    operators: set[str] = set()
+    for item in items:
+        if isinstance(item, MeasureFilterGroup):
+            operators |= _filter_operators(item.filters)
+        else:
+            operators.add(item.operator.lower())
+    return operators
 
 
 def _filter_columns(items: Iterable[MeasureFilterItem]) -> list[tuple[str, str]]:

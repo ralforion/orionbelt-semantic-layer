@@ -721,8 +721,12 @@ its own engine: the leg returns `1` where they hold, else `0`, beside the rows
 (`CASE WHEN __value1 = 'paid' THEN 1 ELSE 0 END AS __mf0`), and the combine
 step reads that column. A median of the paid orders then counts `'Paid'` and
 `'PAID'` as MySQL does. The filters may read only columns of the fact's own
-source, neither computed nor dates, which the leg returns as they are stored;
-otherwise the measure is refused.
+source, neither computed nor dates, which the leg returns as they are stored,
+and compare them (`equals`, `gt`, `inlist`, `between`, `set`, ...): the leg
+evaluates them over its groups, one per value its engine calls equal, and a
+pattern (`like`, `contains`, `starts_with`, `ends_with`, ...) can tell such
+values apart, `'a'` from `'a '` under `utf8mb4_general_ci`. Otherwise the
+measure is refused.
 
 ## Running a federated query
 
@@ -791,7 +795,7 @@ database would return, without a refusal.
 | A cumulative, period-over-period or window metric whose time dimension is on a data object the query does not join (a calendar it neither selects nor filters on) | `FEDERATION_UNSUPPORTED_METRIC` |
 | A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | A measure counted once per row of an object read through the fact rows that reads a column of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
-| Computed from rows: a measure that compares values its engine compares otherwise than DuckDB, a MySQL string (in a filter that also reads another source, a computed column or a date, as its ordering or expression, or as the argument of `min`, `max`, a percentile, `mode`, `first`, `last`, `listagg` or a `distinct` aggregation), or a ClickHouse float it counts (`mode`, a `distinct` aggregation). A filter reading only plain columns of the fact's source runs in the fact leg | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+| Computed from rows: a measure that compares values its engine compares otherwise than DuckDB, a MySQL string (in a filter that also reads another source, a computed column or a date, as its ordering or expression, or as the argument of `min`, `max`, a percentile, `mode`, `first`, `last`, `listagg` or a `distinct` aggregation), or a ClickHouse float it counts (`mode`, a `distinct` aggregation). A filter comparing only plain columns of the fact's source, without a pattern, runs in the fact leg | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | Computed from rows: a measure of an object read through the fact rows that reads a value of which one row of that object has several (a sales column in a customer measure) | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | Computed from rows: a dimension or key read through two such objects at once | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 
