@@ -1309,9 +1309,15 @@ class _Part:
     present: str | None = None
 
     def counting(self, fact: str) -> _Part:
-        """The part, also counting the rows of *fact*, its root, under a name of its own."""
+        """The part, also counting the rows of *fact*, its root, under a name of its own.
+
+        A ``bigint``: cast to the ``integer`` of a declared count, more rows
+        than one holds failed a query that asks for no count at all.
+        """
         present = _unused(_PRESENT, _reserved_names(self.model))
-        measure = synthesize_count_measure(fact, self.model.data_objects[fact], present)
+        measure = synthesize_count_measure(fact, self.model.data_objects[fact], present).model_copy(
+            update={"data_type": "bigint"}
+        )
         model = self.model.model_copy(
             update={"measures": {**self.model.measures, present: measure}}
         )
@@ -1439,11 +1445,16 @@ def _item_conjuncts(item: QueryFilterItem) -> list[QueryFilterItem]:
     """The conditions query filter *item* ANDs together, an AND group's flattened.
 
     Each restricts rows on its own, so a part applies the ones its fact
-    reaches, as one database's union leg does (:func:`conjuncts`). An OR
-    group, and a negated group, is one condition.
+    reaches, as one database's union leg does (:func:`conjuncts`). A group
+    of one condition is that condition, whatever its logic, as one database
+    compiles it, and a group of none compiles to none. A negated group, and
+    an OR group of several conditions, is one condition.
     """
-    if isinstance(item, QueryFilterGroup) and item.logic == FilterLogic.AND and not item.negated:
-        return [condition for sub in item.filters for condition in _item_conjuncts(sub)]
+    if not isinstance(item, QueryFilterGroup) or item.negated:
+        return [item]
+    filters = [sub for sub in item.filters if _filter_fields(sub)]
+    if item.logic == FilterLogic.AND or len(filters) == 1:
+        return [condition for sub in filters for condition in _item_conjuncts(sub)]
     return [item]
 
 

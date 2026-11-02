@@ -401,8 +401,8 @@ GROUP BY ALL
 - A filter a fact does not reach (the orders' date, for the tickets) is left
   out of its part, with the `FILTER_NOT_APPLIED` warning one database gives;
   so is a static filter, with `STATIC_FILTER_NOT_APPLIED`. Of an `and` group,
-  only the conditions the fact does not reach are left out; an `or` group, or
-  a negated one, is one filter.
+  only the conditions the fact does not reach are left out; an `or` group of
+  several conditions, or a negated group, is one filter.
 - A part grouping by none of the query's dimensions (the tickets, by order
   month) returns its row only where its fact has rows the filters keep: no
   tickets add no group of NULLs, as on one database.

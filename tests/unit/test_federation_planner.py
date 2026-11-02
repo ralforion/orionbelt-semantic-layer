@@ -4252,6 +4252,10 @@ INDEPENDENT_QUERIES = {
         "select": BY_REGION_BOTH,
         "where": [{"logic": "and", "filters": [LATE, {"logic": "and", "filters": [HIGH]}]}],
     },
+    "an_and_group_alone_in_an_or_group": {
+        "select": BY_REGION_BOTH,
+        "where": [{"logic": "or", "filters": [{"logic": "and", "filters": [LATE, HIGH]}]}],
+    },
     "an_exists_both_reach": {"select": BY_REGION_BOTH, "where": [_tickets("exists")]},
     "a_metric_across_them": {
         "select": {
@@ -4423,6 +4427,34 @@ class TestMeasuresOfIndependentFacts:
         assert _run_on(paths, independent_model(True), query) == single
         assert single
         assert None not in [month for month, _, _ in single]
+
+    def test_a_fact_of_more_rows_than_an_integer_holds(
+        self, independent_files: dict[str, dict[str, str]]
+    ) -> None:
+        """By order month, the tickets' part counts them, to add no group for
+        none: as an ``integer``, a count over 2,147,483,647 failed the query,
+        which asks for no count. Each leg's count of that many, as returned."""
+        paths = independent_files["crm"]
+        query = {
+            "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Ticket Ids"]}
+        }
+        compiled = _compile(independent_model(True), query)
+        assert compiled.federation is not None
+        combine = duckdb.connect()
+        for leg in compiled.federation.legs:
+            sql = leg.sql
+            if '"__present"' in sql:
+                sql = f'SELECT * REPLACE (2147483648 AS "__present") FROM ({sql})'
+            con = duckdb.connect(paths[leg.data_source], read_only=True)
+            try:
+                combine.register(leg.name, con.sql(sql).to_arrow_table())
+            finally:
+                con.close()
+
+        rows = sorted(_rows(combine, compiled.sql), key=repr)
+
+        assert rows == _run_on(paths, independent_model(False), query)
+        assert (None, None, 10) in rows
 
     @pytest.mark.parametrize(
         ("query", "message"),
