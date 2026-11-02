@@ -120,6 +120,13 @@ metrics:
     {{type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}}
   Revenue per Day:
     {{type: reaggregate, measure: Revenue, per: [Order Date], aggregation: max}}
+  Carried Revenue:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: sum
+    population: dimension
+    carryForward: true
 """
 
 # Order 6's customer 99 is missing; customer 12 has no region and customer 13's
@@ -264,6 +271,10 @@ QUERIES = {
     },
     "a_reaggregate_per_a_date": {
         "select": {"dimensions": ["Region"], "measures": ["Revenue per Day"]},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+    },
+    "a_reaggregate_carried_forward": {
+        "select": {"dimensions": ["Order Date:month", "Region"], "measures": ["Carried Revenue"]},
         "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
     },
     "independent_facts": {

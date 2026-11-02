@@ -1298,14 +1298,17 @@ CALENDAR = (
 )
 
 
-def calendar_yaml(federated: bool, calendar_source: str = "shop") -> str:
+def calendar_yaml(
+    federated: bool, calendar_source: str = "shop", metric: str = "", dimension: str = ""
+) -> str:
     """The orders joined to a calendar by their date, with a running total
-    over the calendar's day."""
+    over the calendar's day, and *metric* and *dimension* too."""
     yaml = model_yaml(
         federated=federated,
         metric=PERIOD_METRICS + "  Calendar Running:\n"
-        "    {type: cumulative, measure: Revenue, timeDimension: Calendar Date}\n",
-        dimension="  Calendar Date: {dataObject: Calendar, column: Day, resultType: date}\n",
+        "    {type: cumulative, measure: Revenue, timeDimension: Calendar Date}\n" + metric,
+        dimension="  Calendar Date: {dataObject: Calendar, column: Day, resultType: date}\n"
+        + dimension,
     ).replace(
         "        columnsTo: [Customer ID]\n  Customers:",
         "        columnsTo: [Customer ID]\n"
@@ -1679,8 +1682,25 @@ REAGGREGATE_METRICS = """\
     {type: cumulative, measure: Revenue per Customer, timeDimension: Order Date}
   Customers per Day:
     {type: reaggregate, measure: Customers Count, per: [Order Date], aggregation: max}
+  Carried:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: sum
+    population: dimension
+    carryForward: true
 """
 BY_ORDER_MONTH_ONLY = ["Order Date:month"]
+PER_CUSTOMER_ONLY = """\
+  Revenue per Customer:
+    {type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}
+  Every Customer:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: count
+    population: dimension
+"""
 REAGGREGATE_QUERIES = {
     "per_a_dimension_of_the_other_source": {
         "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Revenue per Customer"]}
@@ -1714,6 +1734,13 @@ REAGGREGATE_QUERIES = {
     },
     "under_a_cumulative_metric": {
         "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Running per Customer"]}
+    },
+    "carried_forward": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Carried", "Revenue"]}
+    },
+    "carried_forward_past_the_time_filter": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Carried"]},
+        "where": [FEB_ON],
     },
     "only_ordered_by": {
         "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Revenue"]},
@@ -1760,23 +1787,102 @@ class TestReaggregateMetrics:
         assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
         assert "groups its first stage by 'Order Date', of Orders" in error.message
 
-    def test_per_a_zoned_timestamp_is_refused_and_per_another_dimension_is_not(self) -> None:
-        """Per its date, the legs return it as stored and the combine step
-        would truncate it in its own time zone; per customer, by month, the
-        orders' leg truncates it in its own."""
-        yaml = model_yaml(federated=True, metric=REAGGREGATE_METRICS, dimension=CUSTOMER).replace(
-            "code: order_date, abstractType: date", "code: order_date, abstractType: timestamp_tz"
+    @pytest.mark.parametrize(
+        ("measure", "dimension", "refused"),
+        [
+            ("Worst Month", "Region", True),
+            ("Revenue per Day", "Region", False),
+            ("Revenue per Customer", "Order Date:month", False),
+        ],
+        ids=["per_its_month", "per_the_timestamp", "per_another_dimension_by_month"],
+    )
+    def test_per_a_zoned_timestamp_at_a_grain_is_refused(
+        self, measure: str, dimension: str, refused: bool
+    ) -> None:
+        """Per its month, the legs return the timestamp as stored and the
+        combine step would truncate it in its own time zone; per the timestamp
+        itself, it groups it as it is; per customer, by month, the orders'
+        leg truncates it in its own."""
+        yaml = (
+            model_yaml(federated=True, metric=REAGGREGATE_METRICS, dimension=CUSTOMER)
+            .replace("abstractType: date}", "abstractType: timestamp_tz}")
+            .replace(
+                "column: Order Date, resultType: date}",
+                "column: Order Date, resultType: timestamp_tz}",
+            )
         )
-        per_date = {"select": {"dimensions": ["Region"], "measures": ["Revenue per Day"]}}
-        per_customer = REAGGREGATE_QUERIES["per_a_dimension_of_the_other_source"]
+        query = {"select": {"dimensions": [dimension], "measures": [measure]}}
 
+        if not refused:
+            assert _compile(yaml, query).federation is not None
+            return
         with pytest.raises(ResolutionError) as caught:
-            _compile(yaml, per_date)
+            _compile(yaml, query)
 
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
         assert "reads a timestamp with a time zone" in error.message
-        assert _compile(yaml, per_customer).federation is not None
+
+    def test_a_required_join_to_another_source_limits_the_first_stage_alone(
+        self, files: dict[str, str]
+    ) -> None:
+        """The combine step joins the customers' leg where the first stage
+        reads it: order 6, of no customer, is March's revenue still."""
+        query = {
+            "select": {
+                "dimensions": BY_ORDER_MONTH_ONLY,
+                "measures": ["Revenue per Customer", "Revenue"],
+            }
+        }
+        yaml = {
+            federated: model_yaml(
+                federated=federated, metric=REAGGREGATE_METRICS, dimension=CUSTOMER
+            ).replace(
+                "        joinTo: Customers\n", "        joinTo: Customers\n        required: true\n"
+            )
+            for federated in (False, True)
+        }
+
+        assert _compile(yaml[True], query).federation is not None
+        rows = _run_on(files, yaml[True], query)
+        assert rows == _run_on(files, yaml[False], query)
+        assert (date(2024, 3, 1), Decimal("7.58"), Decimal("55.15")) in rows
+
+    @pytest.mark.parametrize(
+        ("measure", "required", "message"),
+        [
+            ("Revenue per Customer", True, "reached by a required join the query does not make"),
+            ("Every Customer", False, "its population would hold only the members with rows"),
+        ],
+        ids=["a_required_join", "the_population_of_the_dimension"],
+    )
+    def test_per_a_dimension_beside_the_measure_is_refused_where_the_fact_leg_would_limit_it(
+        self, measure: str, required: bool, message: str
+    ) -> None:
+        """The customers beside the orders, the calendar on a source of its
+        own: the orders' leg joins the customers, its required join dropping
+        the orders of no customer from every measure, and holds only the
+        customers with orders."""
+        yaml = calendar_yaml(True, "geo", metric=PER_CUSTOMER_ONLY, dimension=CUSTOMER).replace(
+            "    code: customers\n    dataSource: crm\n",
+            "    code: customers\n    dataSource: shop\n",
+        )
+        if required:
+            yaml = yaml.replace(
+                "        joinTo: Customers\n", "        joinTo: Customers\n        required: true\n"
+            )
+        query = {"select": {"dimensions": ["Calendar Date"], "measures": ["Revenue", measure]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert message in error.message
+        unlimited = {
+            "select": {"dimensions": ["Calendar Date"], "measures": ["Revenue per Customer"]}
+        }
+        assert _compile(yaml.replace("        required: true\n", ""), unlimited).federation
 
 
 class TestQueryOptions:

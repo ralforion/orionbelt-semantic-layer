@@ -632,14 +632,27 @@ to the query's grain.
   customers, where the query alone reads only the shop.
 - A `per` date is returned as stored, and the combine step applies its grain
   and the query's: the worst month of each year. As beside a metric across
-  periods, a timestamp with a time zone is then refused.
+  periods, a timestamp with a time zone is then refused at a grain.
+- With `carryForward`, the dates are returned as stored too, and a filter on
+  the query's dates runs in the combine step: a customer without orders in
+  February carries January's value into it, though the query starts in
+  February.
 - The metric's `having`, `population: dimension`, and a metric over it
   (derived, cumulative, window, or another reaggregate metric) work as on one
-  database, and so does a query ordering by it alone.
+  database, and so does a query ordering by it alone. A required join to
+  another source's leg limits the first stage alone: the combine step joins
+  that leg only where a stage reads it.
 
-A `per` dimension no many-to-one join reaches from the rows of the metric's
-measure is refused: one database's first stage reads the customers' count per
-order date from the orders, which the customers' rows do not join.
+Refused, where the legs cannot return a `per` dimension as one database's
+first stage groups by it:
+
+- one no many-to-one join reaches from the rows of the metric's measure: one
+  database's first stage reads the customers' count per order date from the
+  orders, which the customers' rows do not join;
+- one on the measure's own source, reached by a required join the query does
+  not make: the fact leg's join would drop the rows of every measure;
+- with `population: dimension`, one on the measure's own source: the fact
+  leg holds only the members with rows.
 
 ### Objects the joins repeat
 
@@ -759,7 +772,7 @@ database would return, without a refusal.
 
 | Limitation | Error |
 |---|---|
-| A reaggregate metric whose `per` dimension no many-to-one join reaches from the rows of its measure (the customers' count per order date) | `FEDERATION_UNSUPPORTED_METRIC` |
+| A reaggregate metric whose `per` dimension no many-to-one join reaches from the rows of its measure (the customers' count per order date); or, on the measure's own source, is reached by a required join the query does not make, or is the population of `population: dimension` | `FEDERATION_UNSUPPORTED_METRIC` |
 | A dimension over a timestamp with a time zone, at a grain or as a date, beside a cumulative, period-over-period or window metric, or a reaggregate metric per a date | `FEDERATION_UNSUPPORTED_METRIC` |
 | A cumulative, period-over-period or window metric whose time dimension is on a data object the query does not join (a calendar it neither selects nor filters on) | `FEDERATION_UNSUPPORTED_METRIC` |
 | A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
