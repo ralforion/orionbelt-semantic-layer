@@ -89,6 +89,14 @@ def can_hold_without(expr: Expr, tables: set[str]) -> bool:
     return _T in _truth(expr, tables)
 
 
+def is_null_without(expr: Expr, tables: set[str]) -> bool:
+    """Whether *expr* is certainly NULL when every column of *tables* is NULL.
+
+    An expression it does not model counts as possibly a value.
+    """
+    return _is_null(expr, tables)
+
+
 def _is_null(expr: Expr, tables: set[str]) -> bool:
     """Whether *expr* is certainly NULL with *tables*' columns NULL."""
     match expr:

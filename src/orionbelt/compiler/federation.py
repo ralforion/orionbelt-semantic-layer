@@ -44,15 +44,17 @@ from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from orionbelt.ast.nodes import ColumnRef, Expr
+from orionbelt.ast.nodes import ColumnRef, Expr, JoinType
 from orionbelt.compiler.filters import _resolve_subquery_filter_field
 from orionbelt.compiler.grain_dedup import MULTIPLICITY_SAFE_AGGREGATIONS, dedup_identity
 from orionbelt.compiler.graph import JoinGraph, JoinStep
+from orionbelt.compiler.null_rejection import is_null_without
 from orionbelt.compiler.raw_resolution import raw_field_aliases
 from orionbelt.compiler.resolution import (
     ResolutionError,
     ResolvedQuery,
     columns_in_own_zone,
+    make_column_expr,
     static_filters_after_join,
 )
 from orionbelt.compiler.type_resolver import (
@@ -490,9 +492,11 @@ def plan_federated(
     # dimension, measure or metric has, nor another such column: a leg or the
     # combine model reading two columns of one name returned one for both.
     # Compared without case, as DuckDB compares identifiers, quoted or not.
+    # A key, read in its own time, is a copy of its column under the key's
+    # name (``island_model``), which no column of its data object may have.
     taken = {
         name.casefold() for name in (*model.effective_measures, *model.dimensions, *model.metrics)
-    }
+    } | {c.casefold() for island in islands for o in island for c in model.data_objects[o].columns}
     # A combine filter on a dimension the query selects at a time grain reads
     # it at its own grain, from a column of its own: by island, each column's
     # name with the dimension's. Beside a metric across periods, each date
@@ -543,14 +547,6 @@ def plan_federated(
     parents: dict[str, list[str]] = {}
     identities: dict[str, list[str]] = {}
     if from_rows:
-        # A key read in its own time is a copy of its column, under the key's
-        # name, which no column of its data object may have.
-        taken |= {
-            c.casefold()
-            for island in islands
-            for o in island
-            for c in model.data_objects[o].columns
-        }
         parents = planner.parents()
         identities = {
             parent: dedup_identity(parent, names, resolved, model)
@@ -575,17 +571,20 @@ def plan_federated(
         for i, island in enumerate(islands)
         if read[0] in island and i != fact
     }
+    planner.check_missing_rows(islands, edges, [(obj, col) for obj, col, _ in elsewhere])
     row_values = {
         column: (obj, col)
         for (obj, col, own), column in measure_columns.items()
         if (obj, col, own) not in elsewhere
     }
+    # The keys are read in their own time, as one database's join reads
+    # them, and so are the columns measures are ordered by.
     own_zone = {
         column
         for (obj, col, own), column in measure_columns.items()
         if own and (obj, col, own) not in elsewhere
-    }
-    in_own_zone = frozenset((row_values[column][0], column) for column in own_zone)
+    } | set(fact_keys)
+    in_own_zone = _zone_pairs({**fact_keys, **row_values}, own_zone)
     fact_own_grain = own_grain.get(fact, {})
     fact_body = frozenset(body_reads.get(fact, set()))
     fact_model = planner.island_model(
@@ -760,7 +759,7 @@ def plan_federated(
             column
             for (obj, col, own), column in measure_columns.items()
             if own and column in read_here
-        }
+        } | {*keys, *onward}
         dim_model = planner.island_model(
             island | body,
             {**keys, **onward, **static_columns, **read_here},
@@ -794,7 +793,7 @@ def plan_federated(
         )
         renamed.update({source: hidden for hidden, source in dim_kept.items()})
         with (
-            columns_in_own_zone(frozenset((read_here[c][0], c) for c in read_own_zone)),
+            columns_in_own_zone(_zone_pairs({**keys, **onward, **read_here}, read_own_zone)),
             static_filters_after_join(after_join | body),
         ):
             legs.append(
@@ -871,7 +870,10 @@ def plan_federated(
         key_columns = [_key_column(model, name, obj, col) for name, (obj, col) in keys.items()]
         holds = missing.item.model_copy(update={"op": FilterOperator.EXISTS})
         island = islands[missing.island] | body_reads.get(missing.island, set())
-        with static_filters_after_join(island - planner.in_subqueries):
+        with (
+            columns_in_own_zone(_zone_pairs(keys, keys)),
+            static_filters_after_join(island - planner.in_subqueries),
+        ):
             legs.append(
                 planner.leg(
                     leg_name,
@@ -882,7 +884,7 @@ def plan_federated(
                         limit=leg_limit,
                         use_path_names=_paths_within(query, island),
                     ),
-                    planner.island_model(island, keys, {}),
+                    planner.island_model(island, keys, {}, own_zone=keys),
                     key_columns,
                     compile_leg,
                 )
@@ -1065,10 +1067,11 @@ def _plan_raw(
     """A raw-mode query (``select.fields``) across sources: rows, joined.
 
     Each leg returns its island's rows with the columns the query reads
-    there, as ``Object.Column``, and the join keys; the fact leg each fact
-    row once. The combine step joins them as one database joins the
-    objects, and returns the fields under the names the query gave them
-    (:func:`raw_field_aliases`), distinct, ordered and limited as asked.
+    there, as ``Object.Column``, and the join keys, read in their own time as
+    one database's join reads them; the fact leg each fact row once. The
+    combine step joins them as one database joins the objects, and returns
+    the fields under the names the query gave them (:func:`raw_field_aliases`),
+    distinct, ordered and limited as asked.
 
     A filter reading the fact island alone runs in the fact leg: the
     many-to-one joins repeat no fact row, so it keeps the rows one
@@ -1078,9 +1081,13 @@ def _plan_raw(
     ``exists`` there is refused: the combine step runs no subquery.
     """
     query, model, resolved = planner.query, planner.model, planner.resolved
+    planner.check_missing_rows(islands, edges)
     island_of = {o: i for i, island in enumerate(islands) for o in island}
     leg_of = {fact: "leg_0"} | {edge.island: f"leg_{e}" for e, edge in enumerate(edges, start=1)}
     reads: dict[int, list[str]] = {island: [] for island in leg_of}
+    keys: dict[int, dict[str, tuple[str, str]]] = {island: {} for island in leg_of}
+    key_names: dict[tuple[str, str], str] = {}
+    taken = {c.casefold() for obj in model.data_objects.values() for c in obj.columns}
 
     def read(obj: str, column: str) -> str:
         """*obj*'s *column* among its leg's columns; the combine step's reference to it."""
@@ -1089,12 +1096,21 @@ def _plan_raw(
             reads[island_of[obj]].append(ref)
         return f"{leg_of[island_of[obj]]}.{ref}"
 
+    def key(obj: str, column: str) -> str:
+        """The leg column of *obj*'s join key *column*: a copy of its own (``island_model``)."""
+        if (obj, column) not in key_names:
+            key_names[obj, column] = _unused(f"__fk{len(key_names)}", taken)
+            keys[island_of[obj]][key_names[obj, column]] = (obj, column)
+        return f"{obj}.{key_names[obj, column]}"
+
     fields = [read(f.object_name, f.column_name) for f in resolved.fields]
-    for edge in edges:
-        for column in edge.from_columns:
-            read(edge.from_object, column)
-        for column in edge.to_columns:
-            read(edge.to_object, column)
+    joins_on = {
+        edge: (
+            [key(edge.from_object, c) for c in edge.from_columns],
+            [key(edge.to_object, c) for c in edge.to_columns],
+        )
+        for edge in edges
+    }
 
     leg_where: list[QueryFilterItem] = []
     combine_where: list[QueryFilterItem] = []
@@ -1115,6 +1131,7 @@ def _plan_raw(
         for field in _filter_fields(item):
             dimension = model.dimensions.get(field)
             if dimension is not None:
+                planner.check_zone_after_join(field)
                 ref = read(dimension.view, dimension.column)
                 leg, column = ref.split(".", 1)
                 combine_dimensions[field] = dimension.model_copy(
@@ -1141,20 +1158,27 @@ def _plan_raw(
                     combine_filters_static.append(
                         f.model_copy(update={"data_object": leg_name, "column": column})
                     )
-        columns = [_raw_column(model, ref) for ref in reads[island]]
+        own = keys[island]
+        columns = [
+            *[_raw_column(model, ref) for ref in reads[island]],
+            *[_key_column(model, f"{obj}.{name}", obj, col) for name, (obj, col) in own.items()],
+        ]
         leg_query = QueryObject(
-            select=QuerySelect(fields=list(reads[island])),
+            select=QuerySelect(fields=[c.name for c in columns]),
             where=leg_where if island == fact else [],
             limit=leg_limit,
             use_path_names=_paths_within(query, islands[island]),
         )
-        with static_filters_after_join(after_join):
+        with (
+            columns_in_own_zone(_zone_pairs(own, own)),
+            static_filters_after_join(after_join),
+        ):
             legs.append(
                 planner.leg(
                     leg_name,
                     objects,
                     leg_query,
-                    planner.island_model(objects, {}, {}),
+                    planner.island_model(objects, own, {}, own_zone=own),
                     columns,
                     compile_leg,
                 )
@@ -1167,15 +1191,15 @@ def _plan_raw(
             columns={c.name: c for c in columns},
             countable=False,
         )
-    for edge in edges:
+    for edge, (columns_from, columns_to) in joins_on.items():
         parent = leg_of[edge.parent]
         joins = [
             *combine_objects[parent].joins,
             DataObjectJoin(
                 join_type=Cardinality.MANY_TO_ONE,
                 join_to=leg_of[edge.island],
-                columns_from=[f"{edge.from_object}.{c}" for c in edge.from_columns],
-                columns_to=[f"{edge.to_object}.{c}" for c in edge.to_columns],
+                columns_from=columns_from,
+                columns_to=columns_to,
                 required=edge.required,
             ),
         ]
@@ -1378,25 +1402,7 @@ class _Planner:
         subquery reads applies in the subquery, which joins what it reads.
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
-        q = self.query
-        names = {DimensionRef.parse(d).name for d in _dimension_refs(q)}
-        names |= {f for item in q.where for f in _filter_fields(item)}
-        names |= {DimensionRef.parse(o.field).name for o in q.order_by}
-        reads = [
-            (f"Dimension '{name}'", dimension.view, dimension.column)
-            for name in sorted(names)
-            if (dimension := self.model.dimensions.get(name)) is not None
-        ]
-        reads += [
-            (f"Field '{f.object_name}.{f.column_name}'", f.object_name, f.column_name)
-            for f in self.resolved.fields
-        ]
-        reads += [
-            (f"The static filter on '{f.data_object}.{f.column}'", f.data_object, f.column)
-            for f in self.model.filters
-            if f.data_object in island_of and f.data_object not in self.in_subqueries
-        ]
-        for what, obj, column in reads:
+        for what, obj, column in self._column_reads(island_of):
             home = island_of.get(obj)
             apart = sorted(
                 o
@@ -1410,6 +1416,77 @@ class _Planner:
                     f"not join to '{obj}' within its data source",
                     hint=f"Compute it from columns of objects '{obj}' joins on its own "
                     "data source, or query it on one data source.",
+                )
+
+    def _column_reads(self, island_of: dict[str, int]) -> list[tuple[str, str, str]]:
+        """The columns the query reads, each as ``(what, data object, column)``.
+
+        Its dimensions, its raw-mode fields and the columns its raw-mode
+        filters name, and the columns of the static filters on the objects
+        it reads (not only in a subquery).
+        """
+        q = self.query
+        names = {DimensionRef.parse(d).name for d in _dimension_refs(q)}
+        names |= {f for item in q.where for f in _filter_fields(item)}
+        names |= {DimensionRef.parse(o.field).name for o in q.order_by}
+        reads: list[tuple[str, str, str]] = []
+        for name in sorted(names):
+            dimension = self.model.dimensions.get(name)
+            if dimension is not None:
+                reads.append((f"Dimension '{name}'", dimension.view, dimension.column))
+            elif q.select.is_raw and "." in name:
+                obj, column = (part.strip() for part in name.split(".", 1))
+                if obj in island_of and column in self.model.data_objects[obj].columns:
+                    reads.append((f"Field '{obj}.{column}'", obj, column))
+        reads += [
+            (f"Field '{f.object_name}.{f.column_name}'", f.object_name, f.column_name)
+            for f in self.resolved.fields
+        ]
+        reads += [
+            (f"The static filter on '{f.data_object}.{f.column}'", f.data_object, f.column)
+            for f in self.model.filters
+            if f.data_object in island_of and f.data_object not in self.in_subqueries
+        ]
+        return reads
+
+    def check_missing_rows(
+        self,
+        islands: list[set[str]],
+        edges: list[_Edge],
+        measure_reads: Iterable[tuple[str, str]] = (),
+    ) -> None:
+        """Refuse a computed column the combine step reads as NULL where one database has a value.
+
+        A fact row whose left join from another data source matches no row
+        (an order whose customer is not in the CRM) reads every column of
+        that source's objects as NULL in one database, and computes a
+        computed column from those: ``COALESCE(region, 'unknown')`` is
+        ``'unknown'``. The leg computes it over the rows it has, and the
+        combine step reads NULL for the missing one, whether the query
+        selects the column, filters on it or a measure reads it. A column
+        certainly NULL over NULL inputs reads the same (``null_rejection``),
+        and one through a required join is never read for a missing row.
+        """
+        island_of = {o: i for i, island in enumerate(islands) for o in island}
+        outer = {edge.island for edge in edges if not edge.required}
+        reads = [
+            *self._column_reads(island_of),
+            *((f"A measure's column '{obj}.{col}'", obj, col) for obj, col in measure_reads),
+        ]
+        for what, obj, column in reads:
+            home = island_of.get(obj)
+            declared = self.model.data_objects[obj].columns.get(column)
+            if home not in outer or declared is None or not declared.expression:
+                continue
+            expr = make_column_expr(self.model, obj, column, in_query_timezone=False)
+            if not is_null_without(expr, islands[home]):
+                raise self.refuse(
+                    "UNSUPPORTED_JOIN",
+                    f"{what} is computed by an expression with a value where its row of "
+                    f"'{obj}' is missing (a fact row its join from another data source does "
+                    "not match), which the combine step would read as NULL",
+                    hint="Compute it so it is NULL where its inputs are, or query it on one "
+                    "data source.",
                 )
 
     def fact_island(self, islands: list[set[str]]) -> int:
@@ -1456,9 +1533,19 @@ class _Planner:
         """The joins between islands, each from an island nearer the measures.
 
         In the order they are reached from the fact island: an edge's parent
-        comes before it.
+        comes before it. An edge is required, an inner join, where its join is,
+        or where its island's leg makes one: one database's inner join to the
+        regions after the left join to the customers drops the orders whose
+        customer has no region, and so does an inner join to the leg of the
+        customers that holds only those with one.
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
+        inner = {
+            island_of.get(step.from_object)
+            for step in self.resolved.join_steps
+            if step.join_type == JoinType.INNER
+            and island_of.get(step.from_object) == island_of.get(step.to_object)
+        }
         steps = [
             step
             for step in self.resolved.join_steps
@@ -1500,7 +1587,7 @@ class _Planner:
                     from_columns=tuple(step.from_columns),
                     to_columns=tuple(step.to_columns),
                     island=target,
-                    required=declared.required if declared else False,
+                    required=bool(declared and declared.required) or target in inner,
                     parent=island_of[a],
                 )
             )
@@ -2179,6 +2266,32 @@ class _Planner:
                 hint="Select it as a timestamp with a time zone, without a grain.",
             )
 
+    def check_zone_after_join(self, name: str) -> None:
+        """Refuse a filter after the join on a date dimension its leg returns with a zone.
+
+        In the model's ``queryTimezone``, a leg returns a timestamp with a
+        time zone as that zone's wall-clock time, which the combine step
+        truncates as the source does. Without one it comes back zoned, and the
+        combine step's truncation, or cast to a date, reads it in DuckDB's
+        zone, not the source's: an order placed at 00:30 UTC on New Year's Day
+        is December's in Los Angeles and January's in UTC.
+        """
+        if self.model.settings is not None and self.model.settings.query_timezone:
+            return
+        dimension = self.model.dimensions[name]
+        column = self.model.data_objects[dimension.view].columns.get(dimension.column)
+        zoned = DataType.TIMESTAMP_TZ in {dimension.result_type, column and column.abstract_type}
+        if zoned and (
+            dimension.time_grain is not None or dimension.result_type != DataType.TIMESTAMP_TZ
+        ):
+            raise self.refuse(
+                "UNSUPPORTED_FILTER",
+                f"Dimension '{name}' truncates or casts a timestamp with a time zone, which "
+                "a filter after the join would do in the combine step's time zone, not its "
+                "data source's",
+                hint="Set the model's queryTimezone, or query it on one data source.",
+            )
+
     # -- legs ---------------------------------------------------------------
 
     def island_model(
@@ -2326,6 +2439,17 @@ def _paths_within(query: QueryObject, island: set[str]) -> list[UsePathName]:
     the resolver already took it for; one within an island is the leg's.
     """
     return [p for p in query.use_path_names if p.source in island and p.target in island]
+
+
+def _zone_pairs(
+    columns: dict[str, tuple[str, str]], names: Iterable[str]
+) -> frozenset[tuple[str, str]]:
+    """*names*, leg columns of *columns*, as :func:`columns_in_own_zone` takes them.
+
+    Each is a copy of its column on its data object, under its own name
+    (:meth:`_Planner.island_model`).
+    """
+    return frozenset((columns[name][0], name) for name in names)
 
 
 def _combine_settings(model: SemanticModel) -> ModelSettings:
