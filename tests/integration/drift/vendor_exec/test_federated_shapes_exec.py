@@ -40,6 +40,7 @@ dataObjects:
       Order Rep: {{code: r, abstractType: int}}
       Order Date: {{code: d, abstractType: date}}
       Amount: {{code: a, abstractType: decimal, numClass: additive}}
+      Status: {{code: s, abstractType: string}}
     joins:
       - joinType: many-to-one
         joinTo: Customers
@@ -88,6 +89,14 @@ dimensions:
     {{dataObject: Employees, column: Name, resultType: string, via: Orders, pathName: sales}}
 measures:
   Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
+  Median Order: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: median}}
+  Paid Revenue:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filters:
+      - column: {{dataObject: Orders, column: Status}}
+        operator: equals
+        values: [{{dataType: string, valueString: paid}}]
   Region Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -132,13 +141,13 @@ metrics:
 # Order 6's customer 99 is missing; customer 12 has no region and customer 13's
 # region 3 is missing. Ticket 4's customer 98 is not a customer.
 ORDERS = [
-    (1, 10, 1, "2024-01-05", "100.50"),
-    (2, 10, 2, "2024-01-20", "20.25"),
-    (3, 11, 1, "2024-02-03", "7.00"),
-    (4, 12, 3, "2024-02-14", "55.10"),
-    (5, 13, 2, "2024-03-01", "3.15"),
-    (6, 99, 1, "2024-03-09", "40.00"),
-    (7, 11, 2, "2024-03-30", "12.00"),
+    (1, 10, 1, "2024-01-05", "100.50", "paid"),
+    (2, 10, 2, "2024-01-20", "20.25", "Paid"),
+    (3, 11, 1, "2024-02-03", "7.00", "open"),
+    (4, 12, 3, "2024-02-14", "55.10", "PAID"),
+    (5, 13, 2, "2024-03-01", "3.15", "paid"),
+    (6, 99, 1, "2024-03-09", "40.00", "open"),
+    (7, 11, 2, "2024-03-30", "12.00", "paid"),
 ]
 CUSTOMERS = [(10, 1), (11, 2), (12, None), (13, 3)]
 REGIONS = [(1, "EU"), (2, "US")]
@@ -186,7 +195,14 @@ def _tables(dialect: str) -> str:
         [
             table(
                 "o",
-                [("id", whole), ("c", whole), ("r", whole), ("d", day), ("a", decimal)],
+                [
+                    ("id", whole),
+                    ("c", whole),
+                    ("r", whole),
+                    ("d", day),
+                    ("a", decimal),
+                    ("s", text),
+                ],
                 ORDERS,
             ),
             table("c", [("id", whole), ("rc", whole)], CUSTOMERS),
@@ -276,6 +292,12 @@ QUERIES = {
     "a_reaggregate_carried_forward": {
         "select": {"dimensions": ["Order Date:month", "Region"], "measures": ["Carried Revenue"]},
         "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+    },
+    # Ordered by a median, the measures are computed from the fact leg's
+    # rows: MySQL's leg evaluates the filter, 'Paid' and 'PAID' are paid.
+    "a_sum_from_rows_filtered_on_a_string": {
+        "select": {"dimensions": ["Region"], "measures": ["Paid Revenue", "Revenue"]},
+        "orderBy": [{"field": "Median Order", "direction": "desc"}],
     },
     "independent_facts": {
         "select": {"dimensions": ["Region"], "measures": ["Revenue", "Tickets Count"]},

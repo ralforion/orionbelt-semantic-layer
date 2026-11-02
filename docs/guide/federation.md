@@ -580,8 +580,9 @@ to it. A filter on the other source still runs in its leg, and its keys are
 injected into the fact leg as for any filter there.
 
 Its values are compared as DuckDB compares them, so a value its own engine
-compares otherwise (a MySQL string in the measure's filter, say) is refused,
-as for a column of the fact's source. A measure counted once per row of
+compares otherwise (a MySQL string in the measure's filter, say) is refused.
+A filter on such a value of the fact's own source runs in the fact leg
+([values compared across engines](#values-compared-across-engines)). A measure counted once per row of
 another object of the fact's source (a customer's credit beside their orders)
 cannot read another source yet, nor can a measure read a column computed from
 columns of two sources.
@@ -714,6 +715,15 @@ legs return what DuckDB then compares as they do:
 The other six engines compare as DuckDB does, measured. What still compares as
 DuckDB does is listed under [limitations](#results-that-can-differ-from-one-database).
 
+A measure [computed from rows](#objects-the-joins-repeat) whose filter compares
+such a value, a MySQL string, has its filters evaluated by the fact leg, in
+its own engine: the leg returns `1` where they hold, else `0`, beside the rows
+(`CASE WHEN __value1 = 'paid' THEN 1 ELSE 0 END AS __mf0`), and the combine
+step reads that column. A median of the paid orders then counts `'Paid'` and
+`'PAID'` as MySQL does. The filters may read only columns of the fact's own
+source, neither computed nor dates, which the leg returns as they are stored;
+otherwise the measure is refused.
+
 ## Running a federated query
 
 Every surface that executes queries runs a federated one the same way: REST
@@ -781,7 +791,7 @@ database would return, without a refusal.
 | A cumulative, period-over-period or window metric whose time dimension is on a data object the query does not join (a calendar it neither selects nor filters on) | `FEDERATION_UNSUPPORTED_METRIC` |
 | A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | A measure counted once per row of an object read through the fact rows that reads a column of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
-| Computed from rows: a measure that compares values its engine compares otherwise than DuckDB, a MySQL string (in a filter, as its ordering or expression, or as the argument of `min`, `max`, a percentile, `mode`, `first`, `last`, `listagg` or a `distinct` aggregation), or a ClickHouse float it counts (`mode`, a `distinct` aggregation) | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+| Computed from rows: a measure that compares values its engine compares otherwise than DuckDB, a MySQL string (in a filter that also reads another source, a computed column or a date, as its ordering or expression, or as the argument of `min`, `max`, a percentile, `mode`, `first`, `last`, `listagg` or a `distinct` aggregation), or a ClickHouse float it counts (`mode`, a `distinct` aggregation). A filter reading only plain columns of the fact's source runs in the fact leg | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | Computed from rows: a measure of an object read through the fact rows that reads a value of which one row of that object has several (a sales column in a customer measure) | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | Computed from rows: a dimension or key read through two such objects at once | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 

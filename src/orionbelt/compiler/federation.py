@@ -44,16 +44,20 @@ from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from orionbelt.ast.nodes import ColumnRef, Expr, JoinType
+from orionbelt.ast.nodes import CaseExpr, ColumnRef, Expr, JoinType, Literal
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.cfl_projection import group_measures_by_object
 from orionbelt.compiler.composability import metric_leaf_measures, metric_measure_names
+from orionbelt.compiler.expr_rewrite import rewrite_column_refs
 from orionbelt.compiler.filter_resolution import (
     report_unapplied_query_filter,
     report_unapplied_static_filter,
 )
 from orionbelt.compiler.filter_wrap import kept_by_context, query_item_fields
-from orionbelt.compiler.filters import _resolve_subquery_filter_field
+from orionbelt.compiler.filters import (
+    _resolve_subquery_filter_field,
+    build_measure_filter_condition,
+)
 from orionbelt.compiler.grain_dedup import (
     MULTIPLICITY_SAFE_AGGREGATIONS,
     dedup_identity,
@@ -109,7 +113,9 @@ from orionbelt.models.semantic import (
     FilterContext,
     FilterEnforcement,
     FilterLogic,
+    FilterValue,
     Measure,
+    MeasureFilter,
     MeasureFilterGroup,
     MeasureFilterItem,
     MetricType,
@@ -287,6 +293,7 @@ class KeyInjector:
             static filters it leaves out (:func:`static_filters_after_join`).
         rekeyed: Its columns compared as their engine compares them.
         kept: The copies of rekeyed columns a combine filter reads.
+        predicates: Its columns of measure filters it evaluates (:func:`_leg_predicates`).
         compile_leg: As :func:`plan_federated` takes it.
     """
 
@@ -299,6 +306,7 @@ class KeyInjector:
     body: frozenset[str]
     rekeyed: dict[str, tuple[str, bool]]
     kept: dict[str, str]
+    predicates: dict[str, Expr]
     compile_leg: Callable[[QueryObject, SemanticModel, str], str] = dataclasses.field(
         compare=False, repr=False
     )
@@ -325,8 +333,10 @@ class KeyInjector:
             static_filters_after_join(self.body),
         ):
             sql = self.compile_leg(query, self.model, dialect.name)
-        if self.rekeyed:
-            sql = _rewrite_leg(dialect, sql, list(self.columns), self.rekeyed, self.kept)
+        if self.rekeyed or self.predicates:
+            sql = _rewrite_leg(
+                dialect, sql, list(self.columns), self.rekeyed, self.kept, self.predicates
+            )
         return dataclasses.replace(self.leg, sql=sql)
 
 
@@ -592,7 +602,7 @@ def plan_federated(
         or planner.counts_beside_others()
     )
     if rows_for:
-        planner.check_rows(rows_for[0])
+        planner.check_rows(rows_for[0], islands[fact])
     from_rows = bool(rows_for)
     legs: list[FederatedLeg] = []
     combine_objects: dict[str, DataObject] = {}
@@ -695,6 +705,14 @@ def plan_federated(
         if own and (obj, col, own) not in elsewhere
     } | set(fact_keys)
     in_own_zone = _zone_pairs({**fact_keys, **row_values}, own_zone)
+    # The filters the fact leg evaluates in its own engine, of measures
+    # computed from rows, each measure's outcome a column of the leg.
+    filtered_in_leg, predicates = _leg_predicates(
+        model,
+        [m for m in sorted(measures) if from_rows and planner.filters_in_leg(m, islands[fact])],
+        row_values,
+        taken,
+    )
     fact_own_grain = own_grain.get(fact, {})
     fact_body = frozenset(body_reads.get(fact, set()))
     # A static filter of the fact island a measure's filter context leaves
@@ -771,6 +789,10 @@ def plan_federated(
         kept,
     )
     renamed.update({source: hidden for hidden, source in fact_kept.items()})
+    fact_columns += [
+        DataObjectColumn(name=column, code=column, abstract_type=DataType.INT)
+        for column in predicates
+    ]
     squares = {squared: scale for _, _, squared, scale in variances.values()}
     with (
         partial_sums(),
@@ -797,6 +819,7 @@ def plan_federated(
                 rows=row_count,
                 rekeyed=fact_rekeyed,
                 kept=fact_kept,
+                predicates=predicates,
             )
         )
     injections: list[KeyInjection] = []
@@ -1124,7 +1147,14 @@ def plan_federated(
         dimensions=combine_dimensions,
         measures={
             m: _combine_context(
-                _row_measure(model, m, measure_columns, once_of.get(m, "leg_0"), elsewhere)
+                _row_measure(
+                    model,
+                    m,
+                    measure_columns,
+                    once_of.get(m, "leg_0"),
+                    elsewhere,
+                    filtered_in_leg.get(m),
+                )
                 if from_rows and m not in distinct
                 else _combine_measure(model, m, leg_columns.get(m), once_of.get(m, "leg_0")),
                 renamed,
@@ -1179,6 +1209,7 @@ def plan_federated(
             body=fact_body,
             rekeyed=fact_rekeyed,
             kept=fact_kept,
+            predicates=predicates,
             compile_leg=compile_leg,
         )
     return FederatedPlan(
@@ -2443,7 +2474,7 @@ class _Planner:
         dialect = self.leg_dialect(fact_island)
         return dialect.exact_square(ColumnRef(name=measure.name), scale) is not None
 
-    def check_rows(self, reason: str) -> None:
+    def check_rows(self, reason: str, fact_island: set[str]) -> None:
         """Refuse what the combine step cannot compute from the fact leg's rows.
 
         The fact leg returns the rows of the query's base object grouped by
@@ -2454,7 +2485,8 @@ class _Planner:
         DuckDB, where a measure compares it (:func:`_compared_columns`): the
         combine step compares it as DuckDB does (:meth:`Dialect.equality_key`).
         A count of the distinct values of one column is counted as its engine
-        counts, as when the leg combines partial results.
+        counts, as when the leg combines partial results, and a measure's
+        filters may run in the fact leg, in its engine (:meth:`filters_in_leg`).
 
         A measure of an object read through the fact rows (:meth:`parents`)
         is computed from that object's rows once each: what it reads must have
@@ -2480,7 +2512,8 @@ class _Planner:
             measure = effective[name]
             if _counts_distinct_column(measure):
                 continue
-            for obj, column, counted in _compared_columns(measure):
+            in_leg = self.filters_in_leg(name, fact_island)
+            for obj, column, counted in _compared_columns(measure, filters=not in_leg):
                 # Read on its own data source: the fact leg's, or another's.
                 dialect = self.leg_dialect({obj})
                 kind = self.model.data_objects[obj].columns[column].abstract_type.value
@@ -2491,6 +2524,37 @@ class _Planner:
                         f"of '{obj}.{column}' otherwise than {dialect.name}",
                         hint=_apart(reason, name),
                     )
+
+    def filters_in_leg(self, name: str, fact_island: set[str]) -> bool:
+        """Whether measure *name*'s filters run in the fact leg, when computed from rows.
+
+        One database evaluates a measure's filters in its own engine; the
+        combine step would in DuckDB, which compares some values otherwise: a
+        MySQL string by bytes, not by its collation, so ``'Paid'`` would not
+        equal ``'paid'``. Where a filter reads such a value, the fact leg
+        evaluates them all and returns the outcome (:func:`_leg_predicates`).
+        It can where they read only columns the leg returns as they are
+        stored: of its own island, neither computed nor a date, which it
+        returns in the query's time. A measure read through the fact rows
+        (:meth:`parents`) is read from its object's rows, which do not.
+        """
+        measure = self.model.effective_measures[name]
+        if not measure.filters or any(name in names for names in self.parents().values()):
+            return False
+        dialect = self.leg_dialect(fact_island)
+        compares = False
+        for obj, column in _filter_columns(measure.filters):
+            declared = self.model.data_objects[obj].columns[column]
+            if (
+                obj not in fact_island
+                or declared.expression
+                or declared.abstract_type in DATE_BEARING_TYPES
+            ):
+                return False
+            kind = declared.abstract_type.value
+            if dialect.equality_key(ColumnRef(name=column), kind, counted=False) is not None:
+                compares = True
+        return compares
 
     def repeats(
         self,
@@ -3040,13 +3104,15 @@ class _Planner:
         rows: str | None = None,
         rekeyed: dict[str, tuple[str, bool]] | None = None,
         kept: dict[str, str] | None = None,
+        predicates: dict[str, Expr] | None = None,
     ) -> FederatedLeg:
-        """One leg; *rekeyed* and *kept* as :func:`_rekeyed` returns them."""
+        """One leg; *rekeyed* and *kept* as :func:`_rekeyed` returns them, and
+        the measure filters it evaluates, *predicates* (:func:`_leg_predicates`)."""
         source = source_name(self.model, next(iter(sorted(island))))
         dialect = self.leg_dialect(island)
         sql = compile_leg(query, model, dialect.name)
-        if rekeyed:
-            sql = _rewrite_leg(dialect, sql, columns, rekeyed, kept or {})
+        if rekeyed or predicates:
+            sql = _rewrite_leg(dialect, sql, columns, rekeyed or {}, kept or {}, predicates)
         return FederatedLeg(
             name=name,
             data_source=source,
@@ -3234,10 +3300,18 @@ def _rewrite_leg(
     columns: list[DataObjectColumn],
     rekeyed: dict[str, tuple[str, bool]],
     kept: dict[str, str],
+    predicates: dict[str, Expr] | None = None,
 ) -> str:
-    """*sql* wrapped so its *rekeyed* columns compare in DuckDB as in their engine."""
+    """*sql* wrapped so its *rekeyed* columns compare in DuckDB as in their engine.
+
+    And with the columns of *predicates*, each evaluated there over the
+    leg's own columns (:func:`_leg_predicates`).
+    """
     projection: list[tuple[str, Expr]] = []
     for column in columns:
+        if predicates and column.name in predicates:
+            projection.append((column.name, predicates[column.name]))
+            continue
         source = kept.get(column.name, column.name)
         ref = ColumnRef(name=source, table=_LEG_ALIAS)
         if column.name in rekeyed:
@@ -3487,6 +3561,7 @@ def _row_measure(
     columns: dict[tuple[str, str, bool], str],
     view: str,
     elsewhere: dict[tuple[str, str, bool], str],
+    filtered: str | None = None,
 ) -> Measure:
     """The measure as the combine step computes it from the fact leg's rows.
 
@@ -3496,7 +3571,8 @@ def _row_measure(
     another data source it reads from the dimension leg *elsewhere* names,
     which the combine step joins to the fact rows. It keeps its type,
     default, ``total``, grain and filter context. A count of rows counts
-    *view*'s rows.
+    *view*'s rows. Its filters, where the fact leg evaluates them, read the
+    leg's column of their outcome, *filtered* (:func:`_leg_predicates`).
     """
     measure = model.effective_measures[name]
 
@@ -3511,6 +3587,14 @@ def _row_measure(
         "filters": [_filter_at(item, at) for item in measure.filters],
         "anchor": None,
     }
+    if filtered is not None:
+        update["filters"] = [
+            MeasureFilter(
+                column=DataColumnRef(view=view, column=filtered),
+                operator="equals",
+                values=[FilterValue(data_type=DataType.INT, value_int=1)],
+            )
+        ]
     if measure.expression:
         update["expression"] = repoint_references(
             measure.expression,
@@ -3526,6 +3610,42 @@ def _row_measure(
             update={"column": at(ordering, _orders_in_own_zone(measure))}
         )
     return measure.model_copy(update=update)
+
+
+def _leg_predicates(
+    model: SemanticModel,
+    names: list[str],
+    row_values: dict[str, tuple[str, str]],
+    taken: set[str],
+) -> tuple[dict[str, str], dict[str, Expr]]:
+    """The fact leg's columns of the measure filters it evaluates (:meth:`_Planner.filters_in_leg`).
+
+    Each measure's filters as one database writes them, over the leg's
+    columns of what they read (*row_values*), in its engine: ``1`` where they
+    hold, else ``0``, as a filter keeps no row it does not hold for. Returns
+    the column of each measure in *names*, and the expression of each
+    column, which takes a name none of *taken* (casefolded) is.
+    """
+    leg_of = {read: column for column, read in row_values.items()}
+    outcome: dict[str, str] = {}
+    predicates: dict[str, Expr] = {}
+    for name in names:
+        measure = model.effective_measures[name]
+        condition = build_measure_filter_condition(measure.filters, model, [])
+        assert condition is not None
+        mapping: dict[tuple[str, str | None], ColumnRef] = {
+            (model.data_objects[obj].columns[col].code, obj): ColumnRef(
+                name=leg_of[(obj, col)], table=_LEG_ALIAS
+            )
+            for obj, col in _filter_columns(measure.filters)
+        }
+        column = _unused(f"__mf{len(outcome)}", taken)
+        predicates[column] = CaseExpr(
+            when_clauses=[(rewrite_column_refs(condition, mapping), Literal(value=1))],
+            else_clause=Literal(value=0),
+        )
+        outcome[name] = column
+    return outcome, predicates
 
 
 def _read_columns(measure: Measure) -> list[tuple[str, str, bool]]:
@@ -3554,17 +3674,22 @@ def _orders_in_own_zone(measure: Measure) -> bool:
     return measure.aggregation in (AggregationType.FIRST, AggregationType.LAST)
 
 
-def _compared_columns(measure: Measure) -> list[tuple[str, str, bool]]:
+def _compared_columns(measure: Measure, *, filters: bool = True) -> list[tuple[str, str, bool]]:
     """The columns whose values *measure* compares, each with whether it counts them.
 
-    Its filters, its ordering and its expression compare what they read; its
-    arguments are compared by an aggregation that orders them, or counts
-    equal ones once (:data:`_ORDERING`, :data:`_COUNTING`, ``distinct``).
-    Counting compares equality alone, which an engine may judge otherwise
-    than order (:meth:`Dialect.equality_key`).
+    Its filters (unless *filters* is false: the fact leg evaluates them),
+    its ordering and its expression compare what they read; its arguments
+    are compared by an aggregation that orders them, or counts equal ones
+    once (:data:`_ORDERING`, :data:`_COUNTING`, ``distinct``). Counting
+    compares equality alone, which an engine may judge otherwise than order
+    (:meth:`Dialect.equality_key`).
     """
     counts = measure.distinct or measure.aggregation in _COUNTING
-    compared = [(obj, column, False) for obj, column in _filter_columns(measure.filters)]
+    compared = (
+        [(obj, column, False) for obj, column in _filter_columns(measure.filters)]
+        if filters
+        else []
+    )
     ordering = measure.within_group.column if measure.within_group is not None else None
     if ordering is not None and ordering.column:
         compared.append((ordering.view or "", ordering.column, False))
