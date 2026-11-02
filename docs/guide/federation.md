@@ -311,6 +311,19 @@ Filters, `nonexists` and measures reading a column of the far source work as
 for a source joined directly. Only [key injection](#key-injection) stops at
 the first source: the fact leg holds the customers' keys, not the regions'.
 
+## Query options
+
+| Option | How it runs |
+|---|---|
+| One dimension at two grains (`Order Date:month`, `Order Date:quarter`) | the leg returns the date once, as stored, and the combine step applies both grains |
+| `fill` | the legs return the dates as stored, and the combine step fills the periods; a filter on the time dimension runs there too, so the periods span its bounds as on one database (from December, before the first order) |
+| `asOf` | the combine step evaluates the cumulative metric at that date, over the [dates the legs return](#metrics-across-periods) |
+| `usePathNames` | a path between two sources is the edge the combine step joins; one within a source is the leg's own join, so an order's support employee beside the orders reads the shop's employees by the support key |
+| Coalesce dimensions | the legs return each member, and the combine step coalesces them |
+| `dimensionsExclude` | over one group of dimensions, the pairs the joined rows hold minus themselves, none, as on one database; dimensions of two roots are refused (they are joined from two facts) |
+
+Raw mode (`select.fields`) is refused.
+
 ## Role-playing dimensions
 
 A dimension that plays a role ([`via`](model-format.md#role-playing-dimensions-via),
@@ -576,12 +589,6 @@ database would return, without a refusal.
 | Limitation | Error |
 |---|---|
 | Raw mode (`select.fields`) | `FEDERATION_UNSUPPORTED_QUERY` |
-| Coalesce dimensions | `FEDERATION_UNSUPPORTED_QUERY` |
-| `dimensionsExclude` | `FEDERATION_UNSUPPORTED_QUERY` |
-| `fill` | `FEDERATION_UNSUPPORTED_QUERY` |
-| `asOf` | `FEDERATION_UNSUPPORTED_QUERY` |
-| `usePathNames` | `FEDERATION_UNSUPPORTED_QUERY` |
-| One dimension selected at two grains | `FEDERATION_UNSUPPORTED_QUERY` |
 
 ### Joins between sources
 

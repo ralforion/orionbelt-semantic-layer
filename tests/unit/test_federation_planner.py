@@ -1617,6 +1617,93 @@ class TestPeriodMetrics:
         )
 
 
+TWO_GRAINS = ["Order Date:month", "Order Date:quarter", "Region"]
+OPTION_QUERIES = {
+    "two_grains": ({"select": {"dimensions": TWO_GRAINS, "measures": ["Revenue"]}}, ""),
+    "two_grains_beside_a_running_total": (
+        {"select": {"dimensions": TWO_GRAINS, "measures": ["Running Revenue", "Revenue"]}},
+        PERIOD_METRICS,
+    ),
+    "as_of": (
+        {
+            "select": {"dimensions": ["Region"], "measures": ["Running Revenue"]},
+            "asOf": "2024-01-31",
+            "where": [KNOWN_REGION],
+        },
+        PERIOD_METRICS,
+    ),
+    "fill": (
+        {
+            "select": {"dimensions": ["Order Date:month", "Region"], "measures": ["Revenue"]},
+            "fill": True,
+        },
+        "",
+    ),
+    "fill_filtered_on_the_other_source": (
+        {
+            "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+            "where": [EU],
+            "fill": True,
+        },
+        "",
+    ),
+    "fill_beside_a_running_total": (
+        {
+            "select": {
+                "dimensions": ["Order Date:month", "Region"],
+                "measures": ["Running Revenue"],
+            },
+            "fill": True,
+        },
+        PERIOD_METRICS,
+    ),
+}
+
+
+class TestQueryOptions:
+    """asOf, fill, dimensionsExclude and a dimension at two grains run in the combine step."""
+
+    @pytest.mark.parametrize(
+        ("query", "metric"), OPTION_QUERIES.values(), ids=OPTION_QUERIES.keys()
+    )
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any], metric: str
+    ) -> None:
+        assert_same(files, query, metric=metric)
+
+    def test_fill_spans_the_periods_its_filter_bounds(self, files: dict[str, str]) -> None:
+        """From December, before the first order: the filter runs in the combine
+        step, which fills December too, as one database does."""
+        query = {
+            "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+            "where": [{"field": "Order Date", "op": ">=", "value": "2023-12-01"}, KNOWN_REGION],
+            "fill": True,
+        }
+
+        assert_same(files, query)
+        assert (date(2023, 12, 1), None) in run_federated(files, query)
+
+    def test_dimensions_exclude_over_one_group(self, files: dict[str, str]) -> None:
+        """The months and regions the orders reach are one group: none of their
+        pairs is missing, on one database as federated."""
+        query = {
+            "select": {"dimensions": ["Order Date:month", "Region"]},
+            "dimensionsExclude": True,
+        }
+
+        assert run_federated(files, query) == run_single(files, query) == []
+
+    def test_raw_mode_is_refused(self) -> None:
+        query = {"select": {"fields": ["Orders.Order ID", "Customers.Region"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(model_yaml(federated=True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert "raw mode (select.fields)" in error.message
+
+
 class TestRefusals:
     @pytest.mark.parametrize(("extra", "query", "code"), REFUSALS.values(), ids=REFUSALS.keys())
     def test_a_query_that_does_not_split_exactly_is_refused_by_name(
@@ -3766,10 +3853,14 @@ ROLE_TABLES = {
 }
 
 
-def roles_model(federated: bool, static: str = "") -> str:
-    """Orders with a sales and a support employee, customers with an account manager."""
+def roles_model(federated: bool, static: str = "", employees: str = "crm") -> str:
+    """Orders with a sales and a support employee, customers with an account manager.
+
+    The employees in the CRM, or on *employees*' source.
+    """
     shop = "    dataSource: shop\n" if federated else ""
     crm = "    dataSource: crm\n" if federated else ""
+    staff = f"    dataSource: {employees}\n" if federated else ""
     filters = f"filters:\n{static}" if static else ""
     return f"""\
 version: 1.0
@@ -3813,7 +3904,7 @@ dataObjects:
         columnsTo: [Employee ID]
   Employees:
     code: employees
-{crm}    columns:
+{staff}    columns:
       Employee ID: {{code: employee_id, abstractType: int}}
       Name: {{code: name, abstractType: string}}
       Team: {{code: team, abstractType: string}}
@@ -3844,7 +3935,8 @@ def role_files(tmp_path_factory: Any) -> dict[str, str]:
     paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
     for name, statements in (
         ("all", [*ROLE_TABLES["shop"], *ROLE_TABLES["crm"]]),
-        ("shop", ROLE_TABLES["shop"]),
+        # The employees on the shop too, where a test keeps them beside the orders.
+        ("shop", [*ROLE_TABLES["shop"], ROLE_TABLES["crm"][0]]),
         ("crm", ROLE_TABLES["crm"]),
     ):
         con = duckdb.connect(paths[name])
@@ -3961,6 +4053,40 @@ class TestRoles:
 
         assert rows == self._run(role_files, False, query, static=static)
         assert ("Ann", "Bob", Decimal("10.50")) in rows
+
+    @pytest.mark.parametrize("employees", ["crm", "shop"], ids=["across", "within_a_source"])
+    def test_a_secondary_path_the_query_picks(
+        self, role_files: dict[str, str], employees: str
+    ) -> None:
+        """Employee Name by the orders' support employee, not the sales one: on
+        another source, the edge; beside the orders, the shop leg's join."""
+        query = {
+            "select": {"dimensions": ["Employee Name", "Account Manager"], "measures": ["Revenue"]},
+            "usePathNames": [{"source": "Orders", "target": "Employees", "pathName": "support"}],
+        }
+
+        single = self._run(role_files, False, query)
+
+        assert self._run(role_files, True, query, employees=employees) == single
+        # Order 1's support employee is Bob; by sales, Ann would have 30.75.
+        assert ("Bob", "Bob", Decimal("10.50")) in single
+
+    @pytest.mark.parametrize(
+        "members", [["Sales Employee", "Support Employee"], ["Sales Employee", "Account Manager"]]
+    )
+    def test_a_coalesce_group(self, role_files: dict[str, str], members: list[str]) -> None:
+        """The legs return each member; the combine step coalesces them."""
+        query = {
+            "select": {
+                "dimensions": [{"coalesce": members, "as": "Employee"}],
+                "measures": ["Revenue"],
+            }
+        }
+
+        single = self._run(role_files, False, query)
+
+        assert self._run(role_files, True, query) == single
+        assert single
 
     def test_each_role_reads_the_target_under_its_own_name(self) -> None:
         query = {
