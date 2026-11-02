@@ -116,6 +116,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
     TimeGrain,
 )
+from orionbelt.models.synthesis import synthesize_count_measure
 from orionbelt.models.types import DecimalType
 
 COMBINE_DIALECT = "duckdb"
@@ -172,9 +173,11 @@ _COUNTING = frozenset({AggregationType.COUNT_DISTINCT, AggregationType.MODE})
 # read it through the fact rows (:meth:`_Planner.parents`).
 _ROWS_RELATION = "leg_0_rows"
 _ONCE_RELATION = "leg_0_once"
-# The result of each part of a query split by fact, and their union.
+# The result of each part of a query split by fact, and their union; and the
+# count of its fact's rows a part grouping by no dimension returns (:class:`_Part`).
 _PART_RELATION = "__part"
 _PARTS_RELATION = "__parts"
+_PRESENT = "__present"
 
 # The filter operators true where their field is NULL, and those false there.
 # Every other one compares the field, which is unknown (NULL) for NULL.
@@ -455,7 +458,7 @@ def plan_federated(
     compile_leg: Callable[[QueryObject, SemanticModel, str], str],
     source_dialect: Callable[[str | None], str | None],
     leg_row_limit: int | None = None,
-    plan_part: Callable[[QueryObject], FederatedPlan] | None = None,
+    plan_part: Callable[[QueryObject, SemanticModel], FederatedPlan] | None = None,
 ) -> FederatedPlan:
     """Split a query reading several data sources into legs and a combine step.
 
@@ -473,7 +476,8 @@ def plan_federated(
             one that fits it and refuse the first rather than combine a part.
         plan_part: Plans one fact's part of a query whose facts one database
             unions (:meth:`_Planner.parts`), as a query of its own: resolved
-            against *model* and planned as this function plans one.
+            against the model given, *model* or a copy with a measure more,
+            and planned as this function plans one.
 
     Raises:
         ResolutionError: A ``FEDERATION_*`` error for a query that does not
@@ -489,7 +493,8 @@ def plan_federated(
     parts = planner.parts(islands) if plan_part is not None else None
     if parts is not None:
         assert plan_part is not None
-        return _plan_parts(planner, [plan_part(part) for part in parts], compile_leg=compile_leg)
+        plans = [plan_part(part.query, part.model) for part in parts]
+        return _plan_parts(planner, parts, plans, compile_leg=compile_leg)
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
     if query.select.is_raw:
@@ -1289,8 +1294,35 @@ def _plan_raw(
     return FederatedPlan(legs=tuple(legs), combine_sql=combine_sql)
 
 
+@dataclass(frozen=True)
+class _Part:
+    """One fact's part of a query split by fact (:meth:`_Planner.parts`).
+
+    *query* is planned against *model* as a query of its own. Grouping by no
+    dimension, it returns a row however many rows its fact has, none too,
+    where one database's union leg returns none: such a part also counts
+    them, as the measure *present* of *model* (:meth:`counting`).
+    """
+
+    query: QueryObject
+    model: SemanticModel
+    present: str | None = None
+
+    def counting(self, fact: str) -> _Part:
+        """The part, also counting the rows of *fact*, its root, under a name of its own."""
+        present = _unused(_PRESENT, _reserved_names(self.model))
+        measure = synthesize_count_measure(fact, self.model.data_objects[fact], present)
+        model = self.model.model_copy(
+            update={"measures": {**self.model.measures, present: measure}}
+        )
+        measures = [*self.query.select.measures, present]
+        select = self.query.select.model_copy(update={"measures": measures})
+        return _Part(self.query.model_copy(update={"select": select}), model, present)
+
+
 def _plan_parts(
     planner: _Planner,
+    parts: list[_Part],
     plans: list[FederatedPlan],
     *,
     compile_leg: Callable[[QueryObject, SemanticModel, str], str],
@@ -1301,17 +1333,20 @@ def _plan_parts(
     under their own names again, from common table expressions of its own.
     The combine step unions the parts' results, each a row per group of the
     dimensions its fact reaches, NULL for the others, and groups them by all
-    of them, as one database groups its union of the facts. A group holds a
-    measure from one part at most, which the combine query takes
-    (:func:`_part_measure`); there it computes the metrics, ``having``,
-    ``orderBy`` and ``limit``. The parts' legs run at once, none filtered
-    by another's keys.
+    of them, as one database groups its union of the facts. A part grouping
+    by no dimension is in the union where it counted rows of its fact
+    (:class:`_Part`): a fact with none adds no group, as in one database. A
+    group holds a measure from one part at most, which the combine query
+    takes (:func:`_part_measure`); there it computes the metrics,
+    ``having``, ``orderBy`` and ``limit``. The parts' legs run at once, none
+    filtered by another's keys.
     """
     query, model = planner.query, planner.model
     q = DialectRegistry.get(COMBINE_DIALECT).quote_identifier
     legs: list[FederatedLeg] = []
-    parts: list[str] = []
-    for k, plan in enumerate(plans):
+    ctes: list[str] = []
+    union: list[str] = []
+    for k, (part, plan) in enumerate(zip(parts, plans, strict=True)):
         names = {leg.name: f"{_PART_RELATION}{k}_{leg.name}" for leg in plan.legs}
         legs += [dataclasses.replace(leg, name=names[leg.name]) for leg in plan.legs]
         reading = ",\n".join(
@@ -1319,11 +1354,15 @@ def _plan_parts(
         )
         sql = plan.combine_sql.removeprefix("WITH ")
         sql = f"WITH {reading},\n{sql}" if sql != plan.combine_sql else f"WITH {reading}\n{sql}"
-        parts.append(f"{q(f'{_PART_RELATION}{k}')} AS (\n{sql}\n)")
-    union = "\nUNION ALL BY NAME\n".join(
-        f"SELECT * FROM {q(f'{_PART_RELATION}{k}')}" for k in range(len(plans))
-    )
-    parts.append(f"{q(_PARTS_RELATION)} AS (\n{union}\n)")
+        ctes.append(f"{q(f'{_PART_RELATION}{k}')} AS (\n{sql}\n)")
+        if part.present is None:
+            union.append(f"SELECT * FROM {q(f'{_PART_RELATION}{k}')}")
+            continue
+        present = q(part.present)
+        union.append(
+            f"SELECT * EXCLUDE ({present}) FROM {q(f'{_PART_RELATION}{k}')} WHERE {present} > 0"
+        )
+    ctes.append(f"{q(_PARTS_RELATION)} AS (\n" + "\nUNION ALL BY NAME\n".join(union) + "\n)")
 
     dimensions = [DimensionRef.parse(d).name for d in _dimension_refs(query)]
     measures = planner.atomic_measures()
@@ -1367,7 +1406,7 @@ def _plan_parts(
         }
     )
     sql = compile_leg(parts_query, parts_model, COMBINE_DIALECT)
-    with_ = ",\n".join(parts)
+    with_ = ",\n".join(ctes)
     if sql.startswith("WITH "):
         sql = f"WITH {with_},\n{sql.removeprefix('WITH ')}"
     else:
@@ -1394,6 +1433,18 @@ def _part_measure(model: SemanticModel, name: str) -> Measure:
         default_value=0 if counts else measure.default_value,
         format=measure.format,
     )
+
+
+def _item_conjuncts(item: QueryFilterItem) -> list[QueryFilterItem]:
+    """The conditions query filter *item* ANDs together, an AND group's flattened.
+
+    Each restricts rows on its own, so a part applies the ones its fact
+    reaches, as one database's union leg does (:func:`conjuncts`). An OR
+    group, and a negated group, is one condition.
+    """
+    if isinstance(item, QueryFilterGroup) and item.logic == FilterLogic.AND and not item.negated:
+        return [condition for sub in item.filters for condition in _item_conjuncts(sub)]
+    return [item]
 
 
 def _raw_column(model: SemanticModel, ref: str) -> DataObjectColumn:
@@ -1671,7 +1722,7 @@ class _Planner:
                     "data source.",
                 )
 
-    def parts(self, islands: list[set[str]]) -> list[QueryObject] | None:
+    def parts(self, islands: list[set[str]]) -> list[_Part] | None:
         """The query split by fact, where one database unions facts of several islands.
 
         One database computes the measures of independent facts in a union of
@@ -1683,8 +1734,9 @@ class _Planner:
         results (:func:`_plan_parts`). A filter a fact does not reach is left
         out of its part, with the warning one database gives, and so is a
         static filter (an ``enforce: always`` one is refused, by the part's
-        own planning). ``None`` where
-        one island holds the facts: its leg unions them itself.
+        own planning); of an AND group, only the conditions it does not
+        reach. ``None`` where one island holds the facts: its leg unions them
+        itself.
 
         A measure the query only orders by is a part's whose fact reaches its
         objects; one of another fact is refused: its groups would be rows of
@@ -1726,11 +1778,15 @@ class _Planner:
                 ],
                 measures=measures,
             )
-            where = []
+            where: list[QueryFilterItem] = []
             for item in self.query.where:
-                missing = self._item_objects(item) - fact
+                missing: set[str] = set()
+                for condition in _item_conjuncts(item):
+                    outside = self._item_objects(condition) - fact
+                    if not outside:
+                        where.append(condition)
+                    missing |= outside
                 if not missing:
-                    where.append(item)
                     continue
                 report_unapplied_query_filter(
                     self.resolved.warnings,
@@ -1748,7 +1804,10 @@ class _Planner:
                         ", ".join(f"'{m}'" for m in measures),
                     )
             update = {"where": where, "having": [], "order_by": [], "limit": None, "offset": None}
-            parts.append(self.query.model_copy(update={"select": select, **update}))
+            part = _Part(self.query.model_copy(update={"select": select, **update}), self.model)
+            if not select.dimensions:
+                part = part.counting(root)
+            parts.append(part)
         return parts
 
     def check_parts(self, across: list[ResolvedMeasure]) -> None:

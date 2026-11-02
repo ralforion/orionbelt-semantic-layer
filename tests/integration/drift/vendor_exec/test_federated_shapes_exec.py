@@ -255,6 +255,18 @@ QUERIES = {
         "select": {"dimensions": ["Region"], "measures": ["Revenue", "Tickets Count"]},
         "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
     },
+    "independent_facts_by_month": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Tickets Count"]},
+        "where": [
+            {
+                "logic": "and",
+                "filters": [
+                    {"field": "Order Date", "op": ">=", "value": "2024-02-01"},
+                    {"field": "Region", "op": "=", "value": "EU"},
+                ],
+            }
+        ],
+    },
     "raw_rows": {
         "select": {
             "fields": [

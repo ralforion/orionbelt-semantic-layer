@@ -4248,6 +4248,10 @@ INDEPENDENT_QUERIES = {
     "filtered_where_both_reach": {"select": BY_REGION_BOTH, "where": [EU]},
     "filtered_where_one_reaches": {"select": BY_REGION_BOTH, "where": [LATE]},
     "filtered_where_the_other_reaches": {"select": BY_REGION_BOTH, "where": [HIGH]},
+    "an_and_group_of_conditions_of_each": {
+        "select": BY_REGION_BOTH,
+        "where": [{"logic": "and", "filters": [LATE, {"logic": "and", "filters": [HIGH]}]}],
+    },
     "an_exists_both_reach": {"select": BY_REGION_BOTH, "where": [_tickets("exists")]},
     "a_metric_across_them": {
         "select": {
@@ -4284,17 +4288,19 @@ INDEPENDENT_QUERIES = {
 
 @pytest.fixture(scope="module")
 def independent_files(tmp_path_factory: Any) -> dict[str, dict[str, str]]:
-    """The tickets beside the customers, beside the orders, and on a source of their own."""
+    """The tickets beside the customers, beside the orders, on a source of their
+    own, and none."""
     root = tmp_path_factory.mktemp("independent")
     crm = [CUSTOMERS, REASONS, TENANTS, PLANS]
     layouts = {
         "crm": {"shop": [ORDERS, RETURNS], "crm": [*crm, TICKETS]},
         "shop": {"shop": [ORDERS, RETURNS, TICKETS], "crm": crm},
         "support": {"shop": [ORDERS, RETURNS], "crm": crm, "support": [TICKETS]},
+        "no_tickets": {"shop": [ORDERS, RETURNS], "crm": [*crm, f"{TICKETS} WHERE false"]},
     }
     paths: dict[str, dict[str, str]] = {}
     for layout, sources in layouts.items():
-        sources = {"all": [ORDERS, CUSTOMERS, TICKETS, RETURNS, REASONS, TENANTS, PLANS], **sources}
+        sources = {"all": [s for statements in sources.values() for s in statements], **sources}
         paths[layout] = {}
         for name, statements in sources.items():
             paths[layout][name] = str(root / f"{layout}_{name}.duckdb")
@@ -4362,19 +4368,24 @@ class TestMeasuresOfIndependentFacts:
         assert "2024-02-14" not in plan.legs[2].sql
 
     @pytest.mark.parametrize(
-        ("where", "model", "code"),
+        ("where", "model", "codes"),
         [
-            ([LATE], {}, "FILTER_NOT_APPLIED"),
-            ([], {"static": ABOVE_TEN}, "STATIC_FILTER_NOT_APPLIED"),
+            ([LATE], {}, ["FILTER_NOT_APPLIED"]),
+            ([], {"static": ABOVE_TEN}, ["STATIC_FILTER_NOT_APPLIED"]),
+            (
+                [{"logic": "and", "filters": [LATE, HIGH]}],
+                {},
+                ["FILTER_NOT_APPLIED", "FILTER_NOT_APPLIED"],
+            ),
         ],
-        ids=["a_query_filter", "a_static_filter"],
+        ids=["a_query_filter", "a_static_filter", "conditions_of_an_and_group"],
     )
     def test_a_filter_one_fact_does_not_reach_warns_as_on_one_source(
         self,
         independent_files: dict[str, dict[str, str]],
         where: list[dict[str, Any]],
         model: dict[str, Any],
-        code: str,
+        codes: list[str],
     ) -> None:
         query = {"select": BY_REGION_BOTH, "where": where}
 
@@ -4384,11 +4395,34 @@ class TestMeasuresOfIndependentFacts:
         assert [(w.code, w.message) for w in federated.warnings] == [
             (w.code, w.message) for w in single.warnings
         ]
-        assert [w.code for w in single.warnings] == [code]
+        assert [w.code for w in single.warnings] == codes
         paths = independent_files["crm"]
         assert _run_on(paths, independent_model(True, **model), query) == _run_on(
             paths, independent_model(False, **model), query
         )
+
+    @pytest.mark.parametrize(
+        ("layout", "where"),
+        [("no_tickets", []), ("crm", [{"field": "Severity", "op": "=", "value": "none"}])],
+        ids=["no_tickets", "no_ticket_passes_the_filter"],
+    )
+    def test_a_fact_without_rows_adds_no_group(
+        self, independent_files: dict[str, dict[str, str]], layout: str, where: list[Any]
+    ) -> None:
+        """By order month, a group of the tickets' is one of NULLs: their part
+        returned it, a count of 0, for no tickets too, where one database's
+        union leg returns no row."""
+        paths = independent_files[layout]
+        query = {
+            "select": {"dimensions": ["Order Date:month"], "measures": REVENUE_AND_TICKETS},
+            "where": where,
+        }
+
+        single = _run_on(paths, independent_model(False), query)
+
+        assert _run_on(paths, independent_model(True), query) == single
+        assert single
+        assert None not in [month for month, _, _ in single]
 
     @pytest.mark.parametrize(
         ("query", "message"),

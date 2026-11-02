@@ -537,11 +537,11 @@ class CompilationPipeline:
         from orionbelt.service.datasource_selection import source_dialect
         from orionbelt.service.federated_executor import federation_limits
 
-        def plan_part(part: QueryObject) -> FederatedPlan:
+        def plan_part(part: QueryObject, part_model: SemanticModel) -> FederatedPlan:
             qualify_table = _table_qualifier(DialectRegistry.get(dialect_name))
-            part_resolved = self._resolver.resolve(part, model, qualify_table=qualify_table)
-            self.detect_replication(part_resolved, model)
-            plan = self._plan_federated(part, model, dialect_name, part_resolved)
+            part_resolved = self._resolver.resolve(part, part_model, qualify_table=qualify_table)
+            self.detect_replication(part_resolved, part_model)
+            plan = self._plan_federated(part, part_model, dialect_name, part_resolved)
             # A part's warnings are the query's, but for a static filter its
             # fact does not reach, which the planner reports as one database's
             # union leg does (``_Planner.parts``).

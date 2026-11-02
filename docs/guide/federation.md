@@ -400,7 +400,12 @@ GROUP BY ALL
   `defaultValue`), as on one database.
 - A filter a fact does not reach (the orders' date, for the tickets) is left
   out of its part, with the `FILTER_NOT_APPLIED` warning one database gives;
-  so is a static filter, with `STATIC_FILTER_NOT_APPLIED`.
+  so is a static filter, with `STATIC_FILTER_NOT_APPLIED`. Of an `and` group,
+  only the conditions the fact does not reach are left out; an `or` group, or
+  a negated one, is one filter.
+- A part grouping by none of the query's dimensions (the tickets, by order
+  month) returns its row only where its fact has rows the filters keep: no
+  tickets add no group of NULLs, as on one database.
 - Metrics across the facts (revenue per ticket), `having`, `orderBy` and
   `limit` run in the combine query, after the union. A measure the query only
   orders by is computed in the part of its fact.
