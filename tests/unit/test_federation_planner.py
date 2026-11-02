@@ -1737,15 +1737,169 @@ class TestQueryOptions:
 
         assert run_federated(files, query) == run_single(files, query) == []
 
-    def test_raw_mode_is_refused(self) -> None:
-        query = {"select": {"fields": ["Orders.Order ID", "Customers.Region"]}}
+
+RAW_FIELDS = ["Orders.Order ID", "Customers.Region", "Orders.Amount"]
+RAW_QUERIES = {
+    "fields_of_both_sources": ({"select": {"fields": RAW_FIELDS}}, {}),
+    "filtered_on_the_facts_source": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "where": [{"field": "Orders.Amount", "op": ">", "value": 10}],
+        },
+        {},
+    ),
+    "filtered_on_a_dimension_of_the_other_source": (
+        {"select": {"fields": RAW_FIELDS}, "where": [EU]},
+        {},
+    ),
+    "filtered_on_a_column_of_the_other_source": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "where": [{"field": "Customers.Region", "op": "=", "value": "EU"}],
+        },
+        {},
+    ),
+    "a_missing_region": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "where": [{"field": "Customers.Region", "op": "is_null"}],
+        },
+        {},
+    ),
+    "an_or_across_sources": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "where": [_either(US, {"field": "Orders.Amount", "op": ">", "value": 50})],
+        },
+        {},
+    ),
+    "ordered_and_limited": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "orderBy": [{"field": "Orders.Amount", "direction": "desc"}],
+            "limit": 3,
+        },
+        {},
+    ),
+    "distinct": (
+        {"select": {"fields": ["Orders.Order Customer", "Customers.Region"], "distinct": True}},
+        {},
+    ),
+    "ordered_by_position": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "orderBy": [{"field": "2", "direction": "desc"}, {"field": "1"}],
+        },
+        {},
+    ),
+    "a_static_filter_on_the_other_source": (
+        {"select": {"fields": RAW_FIELDS}},
+        {"tenant_filter": True},
+    ),
+    "an_enforced_static_filter_there": (
+        {"select": {"fields": ["Orders.Order ID", "Orders.Amount"]}},
+        {
+            "static": "  - {dataObject: Customers, column: Region, operator: notequals, "
+            "value: US, enforce: always}\n"
+        },
+    ),
+    "filtered_on_a_dimension_declaring_its_grain": (
+        {
+            "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+            "where": [_either({"field": "Order Month", "op": "=", "value": "2024-02-01"}, EU)],
+        },
+        {"dimension": ORDER_MONTH},
+    ),
+}
+
+
+class TestRawMode:
+    """Raw-mode rows across sources: each leg its rows, joined in the combine step."""
+
+    @pytest.mark.parametrize(("query", "model"), RAW_QUERIES.values(), ids=RAW_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any], model: dict[str, Any]
+    ) -> None:
+        assert_same(files, query, **model)
+
+    def test_the_fields_keep_their_names(self, files: dict[str, str]) -> None:
+        query = {"select": {"fields": RAW_FIELDS}}
+
+        plan = _compile(model_yaml(federated=True), query).federation
+
+        assert '"Orders.Order ID"' in plan.combine_sql
+        assert all(f'AS "{field}"' in plan.combine_sql for field in RAW_FIELDS)
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"fields": ["Orders.Amount", "Regions.Region Name"]}},
+            {
+                "select": {
+                    "fields": ["Orders.Amount", "Customers.Customer Region", "Regions.Region Name"]
+                },
+                "where": [{"field": "Region Name", "op": "is_null"}],
+            },
+        ],
+        ids=["", "missing_on_the_far_source"],
+    )
+    def test_a_chain_of_sources(self, chain_files: dict[str, str], query: dict[str, Any]) -> None:
+        chains = TestSourceChains()
+
+        single = chains._run(chain_files, None, query)
+
+        assert chains._run(chain_files, ("shop", "crm", "geo"), query) == single
+        assert single
+
+    def test_an_exists_on_the_facts_source(self, subquery_files: dict[str, str]) -> None:
+        """Orders with a return: the subquery runs in the fact leg."""
+        query = {
+            "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+            "where": [_returns("exists")],
+        }
+
+        exists = TestExists()
+
+        single = exists._run(subquery_files, False, query)
+
+        assert sorted(exists._run(subquery_files, True, query), key=repr) == sorted(
+            single, key=repr
+        )
+        assert single
+
+    def test_an_exists_on_the_other_source_is_refused(self) -> None:
+        query = {
+            "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+            "where": [_tickets("exists")],
+        }
 
         with pytest.raises(ResolutionError) as caught:
-            _compile(model_yaml(federated=True), query)
+            _compile(subquery_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+
+    def test_independent_facts_are_refused(self) -> None:
+        """Fields of the orders and the returns: one database unions them."""
+        from tests.unit.test_dimension_only_roots import MODEL_YAML
+
+        yaml = MODEL_YAML.replace(
+            "  Customers:\n    code: customers\n",
+            "  Customers:\n    code: customers\n    dataSource: crm\n",
+        )
+        for obj in ("Products", "Calendar", "Orders", "Returns"):
+            yaml = yaml.replace(
+                f"  {obj}:\n    code: {obj.lower()}\n",
+                f"  {obj}:\n    code: {obj.lower()}\n    dataSource: shop\n",
+            )
+        query = {"select": {"fields": ["Orders.Order Id", "Returns.Return Id", "Customers.Region"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
 
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
-        assert "raw mode (select.fields)" in error.message
+        assert "cannot read independent facts" in error.message
 
 
 class TestRefusals:

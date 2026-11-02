@@ -4,7 +4,7 @@ An ``exists`` / ``nonexists`` subquery in the leg of its subject's source, a
 chain of three sources, a role-playing dimension, a filter after the join on
 the day of a month the query selects, and cumulative, period-over-period and
 window metrics, whose legs return each date as stored for the combine step to
-truncate. Every source is the engine itself, as in
+truncate, and raw-mode rows joined in the combine step. Every source is the engine itself, as in
 ``test_federated_equality_exec``: the combined answer must be the engine's own
 over one source.
 """
@@ -225,6 +225,30 @@ QUERIES = {
             {"field": "Region", "op": "in", "value": ["EU", "US"]},
         ],
     },
+    "raw_rows": {
+        "select": {
+            "fields": [
+                "Orders.Order ID",
+                "Orders.Order Date",
+                "Orders.Amount",
+                "Regions.Region Name",
+            ]
+        },
+        "where": [
+            {
+                "logic": "or",
+                "filters": [
+                    {"field": "Region", "op": "=", "value": "US"},
+                    {"field": "Orders.Amount", "op": ">", "value": 50},
+                ],
+            }
+        ],
+    },
+    "raw_distinct_rows": {
+        "select": {"fields": ["Orders.Order Customer", "Regions.Region Name"], "distinct": True},
+        "orderBy": [{"field": "1"}],
+        "limit": 4,
+    },
 }
 
 
@@ -253,6 +277,10 @@ def _assert_shapes(target: VendorTarget) -> None:
     federated_id = store.load_model(_model(True)).model_id
     wrong = []
     for name, raw in QUERIES.items():
+        if raw["select"].get("fields") and target.dialect == "bigquery":
+            # BigQuery refuses the dot of a raw field's name, Orders.Order ID,
+            # as a column name: raw mode fails there on one source too.
+            continue
         query = QueryObject.model_validate(raw)
         single = store.compile_query(single_id, query, target.dialect)
         plan = store.compile_query(federated_id, query, target.dialect).federation

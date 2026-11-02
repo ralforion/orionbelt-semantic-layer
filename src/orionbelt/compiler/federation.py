@@ -48,6 +48,7 @@ from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.filters import _resolve_subquery_filter_field
 from orionbelt.compiler.grain_dedup import MULTIPLICITY_SAFE_AGGREGATIONS, dedup_identity
 from orionbelt.compiler.graph import JoinGraph, JoinStep
+from orionbelt.compiler.raw_resolution import raw_field_aliases
 from orionbelt.compiler.resolution import (
     ResolutionError,
     ResolvedQuery,
@@ -456,6 +457,10 @@ def plan_federated(
     body_reads = planner.body_reads(islands)
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
+    if query.select.is_raw:
+        return _plan_raw(
+            planner, islands, fact, edges, body_reads, compile_leg=compile_leg, leg_limit=leg_limit
+        )
     rows_for = planner.check_measures(islands[fact])
     leg_filters, combine_filters, absent = planner.place_filters(islands, fact)
 
@@ -979,18 +984,7 @@ def plan_federated(
         }
     combine_model = SemanticModel(
         name=model.name,
-        # What types and buckets the combined values; not the query's time
-        # zone, which the legs read their timestamps in already.
-        settings=ModelSettings(default_dialect=COMBINE_DIALECT).model_copy(
-            update=(
-                {
-                    "week_start": model.settings.week_start,
-                    "default_numeric_data_type": model.settings.default_numeric_data_type,
-                }
-                if model.settings
-                else {}
-            )
-        ),
+        settings=_combine_settings(model),
         data_objects=combine_objects,
         dimensions=combine_dimensions,
         measures={
@@ -1056,6 +1050,165 @@ def plan_federated(
         injections=tuple(injections),
         inject=inject,
     )
+
+
+def _plan_raw(
+    planner: _Planner,
+    islands: list[set[str]],
+    fact: int,
+    edges: list[_Edge],
+    body_reads: dict[int, set[str]],
+    *,
+    compile_leg: Callable[[QueryObject, SemanticModel, str], str],
+    leg_limit: int | None,
+) -> FederatedPlan:
+    """A raw-mode query (``select.fields``) across sources: rows, joined.
+
+    Each leg returns its island's rows with the columns the query reads
+    there, as ``Object.Column``, and the join keys; the fact leg each fact
+    row once. The combine step joins them as one database joins the
+    objects, and returns the fields under the names the query gave them
+    (:func:`raw_field_aliases`), distinct, ordered and limited as asked.
+
+    A filter reading the fact island alone runs in the fact leg: the
+    many-to-one joins repeat no fact row, so it keeps the rows one
+    database's ``WHERE`` keeps. Any other runs after the join, on the
+    columns the legs return, as one database runs it on the joined rows; a
+    static filter on another island too (see :func:`plan_federated`). An
+    ``exists`` there is refused: the combine step runs no subquery.
+    """
+    query, model, resolved = planner.query, planner.model, planner.resolved
+    island_of = {o: i for i, island in enumerate(islands) for o in island}
+    leg_of = {fact: "leg_0"} | {edge.island: f"leg_{e}" for e, edge in enumerate(edges, start=1)}
+    reads: dict[int, list[str]] = {island: [] for island in leg_of}
+
+    def read(obj: str, column: str) -> str:
+        """*obj*'s *column* among its leg's columns; the combine step's reference to it."""
+        ref = f"{obj}.{column}"
+        if ref not in reads[island_of[obj]]:
+            reads[island_of[obj]].append(ref)
+        return f"{leg_of[island_of[obj]]}.{ref}"
+
+    fields = [read(f.object_name, f.column_name) for f in resolved.fields]
+    for edge in edges:
+        for column in edge.from_columns:
+            read(edge.from_object, column)
+        for column in edge.to_columns:
+            read(edge.to_object, column)
+
+    leg_where: list[QueryFilterItem] = []
+    combine_where: list[QueryFilterItem] = []
+    renamed: dict[str, str] = {}
+    combine_dimensions: dict[str, Dimension] = {}
+    for item in query.where:
+        owners = {island_of.get(o) for o in planner.raw_filter_objects(item)}
+        if owners == {fact}:
+            leg_where.append(item)
+            continue
+        if any(True for _ in _exists_filters([item])):
+            raise planner.refuse(
+                "UNSUPPORTED_FILTER",
+                "An exists filter in a raw-mode query runs in the leg of the facts' data "
+                "source: on its subject there, and beside no condition on another source",
+            )
+        combine_where.append(item)
+        for field in _filter_fields(item):
+            dimension = model.dimensions.get(field)
+            if dimension is not None:
+                ref = read(dimension.view, dimension.column)
+                leg, column = ref.split(".", 1)
+                combine_dimensions[field] = dimension.model_copy(
+                    update={"view": leg, "column": column, "via": None}
+                )
+            else:
+                obj, column = (part.strip() for part in field.split(".", 1))
+                renamed[field] = read(obj, column)
+
+    combine_filters_static: list[ModelFilter] = []
+    legs: list[FederatedLeg] = []
+    combine_objects: dict[str, DataObject] = {}
+    for island, leg_name in leg_of.items():
+        body = body_reads.get(island, set())
+        objects = islands[island] | body
+        # As in the aggregated plan: a static filter on another island runs
+        # in the combine step, on the column its leg returns for it.
+        after_join = body
+        if island != fact:
+            after_join = (islands[island] - planner.in_subqueries) | body
+            for f in model.filters:
+                if f.data_object in islands[island] - planner.in_subqueries:
+                    column = read(f.data_object, f.column).split(".", 1)[1]
+                    combine_filters_static.append(
+                        f.model_copy(update={"data_object": leg_name, "column": column})
+                    )
+        columns = [_raw_column(model, ref) for ref in reads[island]]
+        leg_query = QueryObject(
+            select=QuerySelect(fields=list(reads[island])),
+            where=leg_where if island == fact else [],
+            limit=leg_limit,
+            use_path_names=_paths_within(query, islands[island]),
+        )
+        with static_filters_after_join(after_join):
+            legs.append(
+                planner.leg(
+                    leg_name,
+                    objects,
+                    leg_query,
+                    planner.island_model(objects, {}, {}),
+                    columns,
+                    compile_leg,
+                )
+            )
+        combine_objects[leg_name] = DataObject(
+            name=leg_name,
+            code=leg_name,
+            database="",
+            schema_name="",
+            columns={c.name: c for c in columns},
+            countable=False,
+        )
+    for edge in edges:
+        parent = leg_of[edge.parent]
+        joins = [
+            *combine_objects[parent].joins,
+            DataObjectJoin(
+                join_type=Cardinality.MANY_TO_ONE,
+                join_to=leg_of[edge.island],
+                columns_from=[f"{edge.from_object}.{c}" for c in edge.from_columns],
+                columns_to=[f"{edge.to_object}.{c}" for c in edge.to_columns],
+                required=edge.required,
+            ),
+        ]
+        combine_objects[parent] = combine_objects[parent].model_copy(update={"joins": joins})
+
+    combine_model = SemanticModel(
+        name=model.name,
+        settings=_combine_settings(model),
+        data_objects=combine_objects,
+        dimensions=combine_dimensions,
+        measures={},
+        metrics={},
+        filters=combine_filters_static,
+        expose_counts=False,
+    )
+    combine_query = query.model_copy(
+        update={
+            "select": QuerySelect(fields=fields, distinct=query.select.distinct),
+            "where": [_renamed(item, renamed) for item in combine_where],
+            "use_path_names": [],
+        }
+    )
+    aliases = {field: f.alias for field, f in zip(fields, resolved.fields, strict=True)}
+    with raw_field_aliases(aliases):
+        combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
+    return FederatedPlan(legs=tuple(legs), combine_sql=combine_sql)
+
+
+def _raw_column(model: SemanticModel, ref: str) -> DataObjectColumn:
+    """The leg column of the ``Object.Column`` *ref*, under that name, typed as declared."""
+    obj, column = ref.split(".", 1)
+    declared = model.data_objects[obj].columns[column]
+    return DataObjectColumn(name=ref, code=ref, abstract_type=declared.abstract_type)
 
 
 @dataclass(frozen=True)
@@ -1142,9 +1295,11 @@ class _Planner:
 
     def check_query_shape(self) -> None:
         q = self.query
-        if q.select.fields:
+        if q.select.is_raw and self.resolved.requires_cfl:
             raise self.refuse(
-                "UNSUPPORTED_QUERY", "A federated query cannot use raw mode (select.fields)"
+                "UNSUPPORTED_QUERY",
+                "A federated raw-mode query (select.fields) cannot read independent facts",
+                hint="Select the fields of one fact and the objects it joins.",
             )
 
     # -- islands and edges --------------------------------------------------
@@ -1231,6 +1386,10 @@ class _Planner:
             (f"Dimension '{name}'", dimension.view, dimension.column)
             for name in sorted(names)
             if (dimension := self.model.dimensions.get(name)) is not None
+        ]
+        reads += [
+            (f"Field '{f.object_name}.{f.column_name}'", f.object_name, f.column_name)
+            for f in self.resolved.fields
         ]
         reads += [
             (f"The static filter on '{f.data_object}.{f.column}'", f.data_object, f.column)
@@ -1884,6 +2043,21 @@ class _Planner:
                 return True
         return False
 
+    def raw_filter_objects(self, item: QueryFilterItem) -> set[str]:
+        """The data objects a raw-mode filter reads: a dimension's, or an ``Object.Column``'s.
+
+        With those its column is computed from; an ``exists``'s subject.
+        """
+        if isinstance(item, QueryFilterGroup):
+            return {o for sub in item.filters for o in self.raw_filter_objects(sub)}
+        if item.subquery is not None:
+            return {_exists_subject(item, self.model) or ""}
+        dimension = self.model.dimensions.get(item.field)
+        if dimension is not None:
+            return {dimension.view} | self.model.dimension_join_objects(item.field)
+        obj, _, column = (part.strip() for part in item.field.partition("."))
+        return {obj} | self.model.column_reference_objects(obj, column)
+
     def _filter_objects(self, item: QueryFilterItem) -> set[str]:
         """The data objects whose rows *item* is a condition on: an ``exists``'s subject."""
         if isinstance(item, QueryFilterGroup):
@@ -2152,6 +2326,23 @@ def _paths_within(query: QueryObject, island: set[str]) -> list[UsePathName]:
     the resolver already took it for; one within an island is the leg's.
     """
     return [p for p in query.use_path_names if p.source in island and p.target in island]
+
+
+def _combine_settings(model: SemanticModel) -> ModelSettings:
+    """What types and buckets the combined values.
+
+    Not the query's time zone, which the legs read their timestamps in already.
+    """
+    return ModelSettings(default_dialect=COMBINE_DIALECT).model_copy(
+        update=(
+            {
+                "week_start": model.settings.week_start,
+                "default_numeric_data_type": model.settings.default_numeric_data_type,
+            }
+            if model.settings
+            else {}
+        )
+    )
 
 
 def _dimension_refs(query: QueryObject) -> list[str]:

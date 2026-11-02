@@ -274,6 +274,49 @@ are refused as on one database: the customers do not reach the orders.
 Value search (`POST .../values`) runs such queries too, so a dimension's
 values can be listed under a filter on another source.
 
+## Raw mode
+
+A [raw-mode](query-language.md#raw-mode-selectfields) query (`select.fields`)
+returns rows, not groups, and is split the same way:
+
+- the fact leg returns the fact rows, each once, with the fields of its source
+  and the join keys;
+- each dimension leg returns its rows with the fields read there and its keys;
+- the combine query joins them as one database joins the objects, and returns
+  each field under its own name, distinct, ordered and limited as asked.
+
+The orders over 10 of EU customers, the largest first:
+
+```sql
+-- leg_0, on shop
+SELECT "Orders"."order_id" AS "Orders.Order ID", "Orders"."amount" AS "Orders.Amount", "Orders"."customer_id" AS "Orders.Order Customer"
+FROM "orders" AS "Orders"
+WHERE "Orders"."amount" > 10
+ORDER BY "Orders.Order ID" ASC, "Orders.Amount" ASC, "Orders.Order Customer" ASC
+LIMIT 1000001
+
+-- leg_1, on crm
+SELECT "Customers"."region" AS "Customers.Region", "Customers"."customer_id" AS "Customers.Customer ID"
+FROM "customers" AS "Customers"
+ORDER BY "Customers.Region" ASC, "Customers.Customer ID" ASC
+LIMIT 1000001
+
+-- combine
+SELECT "leg_0"."Orders.Order ID" AS "Orders.Order ID", "leg_0"."Orders.Amount" AS "Orders.Amount", "leg_1"."Customers.Region" AS "Customers.Region"
+FROM "leg_0" AS "leg_0"
+LEFT JOIN "leg_1" AS "leg_1" ON "leg_0"."Orders.Order Customer" = "leg_1"."Customers.Customer ID"
+WHERE "leg_1"."Customers.Region" = 'EU'
+ORDER BY "leg_0"."Orders.Amount" DESC
+```
+
+A filter reading the facts' source alone runs in the fact leg, an `exists`
+on a subject there too; any other runs after the join, on the columns the
+legs return, as one database runs it on the joined rows. Static filters run
+as beside a measure. No keys are injected, and the query's `limit` applies
+after the join, so the fact leg returns every fact row its filters keep:
+`FEDERATION_MAX_LEG_ROWS` bounds the facts a raw query can read. Fields of
+independent facts, which one database unions, are refused.
+
 ## Chains of sources
 
 A source reached through another dimension source, rather than from the
@@ -321,8 +364,6 @@ the first source: the fact leg holds the customers' keys, not the regions'.
 | `usePathNames` | a path between two sources is the edge the combine step joins; one within a source is the leg's own join, so an order's support employee beside the orders reads the shop's employees by the support key |
 | Coalesce dimensions | the legs return each member, and the combine step coalesces them |
 | `dimensionsExclude` | over one group of dimensions, the pairs the joined rows hold minus themselves, none, as on one database; dimensions of two roots are refused (they are joined from two facts) |
-
-Raw mode (`select.fields`) is refused.
 
 ## Role-playing dimensions
 
@@ -588,7 +629,7 @@ database would return, without a refusal.
 
 | Limitation | Error |
 |---|---|
-| Raw mode (`select.fields`) | `FEDERATION_UNSUPPORTED_QUERY` |
+| Raw mode (`select.fields`) over independent facts, which one database unions | `FEDERATION_UNSUPPORTED_QUERY` |
 
 ### Joins between sources
 
@@ -601,7 +642,7 @@ database would return, without a refusal.
 | Data objects of another source that no join from the measures' source reaches | `FEDERATION_UNSUPPORTED_JOIN` |
 | Inside a dimension source, a join that is not many-to-one from where the edge enters (it would repeat the key's rows) | `FEDERATION_UNSUPPORTED_JOIN` |
 | A nested data object (`nestedIn`) on the dimension side | `FEDERATION_UNSUPPORTED_JOIN` |
-| A dimension, or a static filter, whose column is computed from a column of a data object the query does not join to the column's own within its source: on another source, or reached through another join (the regions joined to the orders directly, read by a column of the customers) | `FEDERATION_UNSUPPORTED_JOIN` |
+| A dimension, a raw-mode field, or a static filter, whose column is computed from a column of a data object the query does not join to the column's own within its source: on another source, or reached through another join (the regions joined to the orders directly, read by a column of the customers) | `FEDERATION_UNSUPPORTED_JOIN` |
 
 ### Measures and metrics
 
@@ -621,9 +662,10 @@ database would return, without a refusal.
 
 | Limitation | Error |
 |---|---|
-| A filter on something other than a dimension | `FEDERATION_UNSUPPORTED_FILTER` |
+| A filter on something other than a dimension (in raw mode, a `DataObject.Column` is taken) | `FEDERATION_UNSUPPORTED_FILTER` |
 | An `exists` / `nonexists` whose subquery reads another source than its subject (its target, the join path to it, or an object its filters read) | `FEDERATION_UNSUPPORTED_FILTER` |
 | An `exists` / `nonexists` that would run after the join: in an OR with a condition on another source, or in a group that holds where its subject is missing | `FEDERATION_UNSUPPORTED_FILTER` |
+| In raw mode, an `exists` / `nonexists` on a subject of another source than the facts' | `FEDERATION_UNSUPPORTED_FILTER` |
 
 ### At run time
 
@@ -646,6 +688,7 @@ Not refused, and documented here so they are known:
 | Filters after the join compare as DuckDB | a filter in the combine query (one reading several sources, or true for NULL) compares the value a MySQL leg returned, not its collation class |
 | ClickHouse float dimensions | DuckDB makes one group of `0.0` and `-0.0`, where ClickHouse makes two |
 | Join keys across sources | compare bytewise, whatever a source's collation |
+| Raw-mode `distinct` across sources | deduplicates as DuckDB: two MySQL strings of one collation class (`'a'`, `'A'`) are two rows |
 | `min` / `max` of strings | the combine step orders strings bytewise |
 | Doubles computed from rows | far from zero the result depends on the order values are added in, as on one source |
 | Integer variance computed from rows | beside a measure that needs rows, a variance is DuckDB's double variance, not the exact one from moments |

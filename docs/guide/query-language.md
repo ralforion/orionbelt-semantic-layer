@@ -203,7 +203,7 @@ Raw mode is mutually exclusive with aggregate features. The following are reject
 
 ### Joins and fanout
 
-Raw mode reuses the model's directed join graph: when fields span multiple data objects connected by many-to-one joins, the planner walks the graph and emits the necessary `LEFT JOIN`s. Fanout protection still applies — reversed many-to-one joins (which would multiply rows on the "one" side) are rejected.
+Raw mode reuses the model's directed join graph: when fields span multiple data objects connected by many-to-one joins, the planner walks the graph and emits the necessary `LEFT JOIN`s. Fanout protection still applies — reversed many-to-one joins (which would multiply rows on the "one" side) are rejected. Fields of data objects on different data sources are read by a [federated query](federation.md#raw-mode).
 
 ### Multi-fact raw queries (raw CFL)
 
