@@ -650,8 +650,9 @@ first stage groups by it:
   database's first stage reads the customers' count per order date from the
   orders, which the customers' rows do not join;
 - one reached by a required join the query does not make, anywhere on the
-  way, in a leg the query reads too (the measure's own source, or one it
-  joins): that leg would drop the rows of every measure;
+  way, in a leg the query or another reaggregate metric's first stage reads
+  too (the measure's own source, or one either joins): that leg would drop
+  their rows as well;
 - with `population: dimension`, one whose source's leg reads anything else:
   the fact leg holds only the members with rows, and a leg reaching them
   through another object only those its rows reach. The `per` dimensions'
@@ -775,7 +776,7 @@ database would return, without a refusal.
 
 | Limitation | Error |
 |---|---|
-| A reaggregate metric whose `per` dimension no many-to-one join reaches from the rows of its measure (the customers' count per order date), is reached by a required join the query does not make in a leg the query reads too, or, with `population: dimension`, shares its source's leg with any other data object | `FEDERATION_UNSUPPORTED_METRIC` |
+| A reaggregate metric whose `per` dimension no many-to-one join reaches from the rows of its measure (the customers' count per order date), is reached by a required join the query does not make in a leg the query or another reaggregate metric reads too, or, with `population: dimension`, shares its source's leg with any other data object | `FEDERATION_UNSUPPORTED_METRIC` |
 | A dimension over a timestamp with a time zone, at a grain or as a date, beside a cumulative, period-over-period or window metric, or a reaggregate metric per a date | `FEDERATION_UNSUPPORTED_METRIC` |
 | A cumulative, period-over-period or window metric whose time dimension is on a data object the query does not join (a calendar it neither selects nor filters on) | `FEDERATION_UNSUPPORTED_METRIC` |
 | A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |

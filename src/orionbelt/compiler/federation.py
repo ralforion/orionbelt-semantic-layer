@@ -2166,10 +2166,10 @@ class _Planner:
         - whose base object may be another, the orders for the customers'
           count per order date, which no such join reaches;
         - whose required join limits that stage alone, where a leg the query
-          reads too would drop the rows of every measure: the fact leg, or
-          the leg of a source the query joins. The combine step joins the leg
-          of a source only the first stage reads only where it reads it, as
-          one database does;
+          or another metric's first stage reads too would drop their rows:
+          the fact leg, or the leg of a source either joins. The combine step
+          joins the leg of a source only the first stage reads only where it
+          reads it, as one database does;
         - whose members, with ``population: dimension``, are all of the
           dimension's: a leg lists them so only where it reads nothing else,
           not the fact leg, which holds those with rows, nor one reading them
@@ -2178,19 +2178,32 @@ class _Planner:
         reached = _joined_objects(self.resolved) | _step_objects(self.join_steps)
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         fact = island_of.get(self.resolved.base_object)
-        # The islands whose legs the query reads beside the first stage.
+        # The islands whose legs the query reads beside the first stages.
         shared = {island_of[o] for o in _joined_objects(self.resolved) if o in island_of}
-        for name in _reaggregates(self.resolved, self.model):
+        reaggregates = _reaggregates(self.resolved, self.model)
+        reads = {
+            name: {
+                o
+                for entry in self.model.metrics[name].per
+                for o in self._dimension_objects(reaggregate_per_ref(self.model, entry).name)
+            }
+            for name in reaggregates
+        }
+        for name in reaggregates:
             metric = self.model.metrics[name]
             refs = [reaggregate_per_ref(self.model, entry).name for entry in metric.per]
-            members = {o for per in refs for o in self._dimension_objects(per)}
+            members = reads[name]
+            # And beside the other metrics' first stages, by what they read.
+            others = {o for other in reaggregates if other != name for o in reads[other]}
+            others |= _step_objects(_steps_to(self.resolved, self.model, others))
+            beside = shared | {island_of[o] for o in others if o in island_of}
             for per in refs:
                 objects = self._dimension_objects(per)
                 limiting = sorted(
                     step.to_object
                     for step in _steps_to(self.resolved, self.model, objects)
                     if (step.join_type == JoinType.INNER or step.nested)
-                    and island_of.get(step.to_object) in shared
+                    and island_of.get(step.to_object) in beside
                 )
                 homes = {island_of.get(o) for o in objects}
                 why = None
@@ -2203,7 +2216,7 @@ class _Planner:
                     why = (
                         f"reached by a required join to {', '.join(limiting)} the query "
                         "does not make: across data sources it would limit the query's "
-                        "other measures too"
+                        "other measures and metrics too"
                     )
                 elif metric.population == ReaggregatePopulation.DIMENSION and fact in homes:
                     why = (

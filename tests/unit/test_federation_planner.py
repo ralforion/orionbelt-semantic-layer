@@ -1947,11 +1947,13 @@ dimensions:
   Segment: {dataObject: Segments, column: Segment ID, resultType: string}
   Tier: {dataObject: Tiers, column: Tier ID, resultType: int}
   Area: {dataObject: Areas, column: Area ID, resultType: string}
+  Customer: {dataObject: Customers, column: Customer ID, resultType: int}
 measures:
   Revenue: {columns: [{dataObject: Orders, column: Amount}], aggregation: sum, defaultValue: 0}
 metrics:
   Best Segment: {type: reaggregate, measure: Revenue, per: [Segment], aggregation: max}
   Best Tier: {type: reaggregate, measure: Revenue, per: [Tier], aggregation: max}
+  Per Customer: {type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}
   Every Area:
     {type: reaggregate, measure: Revenue, per: [Area], aggregation: count, population: dimension}
 """
@@ -1961,20 +1963,26 @@ class TestReaggregatePerDimensionsTheLegsLimit:
     """A per dimension a leg the query reads too would limit, or list in part."""
 
     @pytest.mark.parametrize(
-        ("dimensions", "measure", "message"),
+        ("dimensions", "measures", "message"),
         [
-            (["Region"], "Best Segment", "a required join to Bridge the query does not make"),
-            (["Region"], "Best Tier", "a required join to Tiers the query does not make"),
-            ([], "Every Area", "read beside Customers on its data source"),
+            (["Region"], ["Best Segment"], "a required join to Bridge the query does not make"),
+            (["Region"], ["Best Tier"], "a required join to Tiers the query does not make"),
+            ([], ["Best Tier", "Per Customer"], "a required join to Tiers the query does not"),
+            ([], ["Every Area"], "read beside Customers on its data source"),
         ],
-        ids=["required_on_the_way", "required_in_a_source_the_query_reads", "population_reached"],
+        ids=[
+            "required_on_the_way",
+            "required_in_a_source_the_query_reads",
+            "required_in_a_source_another_metric_reads",
+            "population_reached",
+        ],
     )
-    def test_is_refused(self, dimensions: list[str], measure: str, message: str) -> None:
+    def test_is_refused(self, dimensions: list[str], measures: list[str], message: str) -> None:
         """The bridge's required join drops the orders without one from the
         shop's leg, the tiers' the customers without one from the CRM's, which
-        the query reads by region; the CRM's leg lists the areas its customers
-        reach, not an area none does."""
-        query = {"select": {"dimensions": dimensions, "measures": ["Revenue", measure]}}
+        the query reads by region, or the average per customer reads; the
+        CRM's leg lists the areas its customers reach, not an area none does."""
+        query = {"select": {"dimensions": dimensions, "measures": ["Revenue", *measures]}}
 
         with pytest.raises(ResolutionError) as caught:
             _compile(bridged_model(), query)
@@ -1982,6 +1990,13 @@ class TestReaggregatePerDimensionsTheLegsLimit:
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
         assert message in error.message
+
+    @pytest.mark.parametrize("measure", ["Best Tier", "Per Customer"])
+    def test_a_source_one_first_stage_alone_reads_is_planned(self, measure: str) -> None:
+        """The CRM's leg is the tiers' first stage's alone, joined where it reads it."""
+        query = {"select": {"measures": ["Revenue", measure]}}
+
+        assert _compile(bridged_model(), query).federation is not None
 
 
 class TestQueryOptions:
