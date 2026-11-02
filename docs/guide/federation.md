@@ -602,8 +602,14 @@ dimensions.
   out. The same goes for a static filter of the fact island; one with
   `enforce: always` is never left out. A filter every context keeps still runs
   in its leg. The filters that move make the legs return more groups, bounded
-  by `FEDERATION_MAX_LEG_ROWS`.
-- The legs also return the dimensions that an `include` filter reads.
+  by `FEDERATION_MAX_LEG_ROWS`, and a measure of an object the joins repeat
+  is then computed from rows, as with a filter after the join: the fact leg
+  groups by what the moved filters read.
+- A measure of an object the joins repeat counts each of its rows once, with
+  or without a filter context, as one database's scan of its own does.
+- The legs also return the dimensions that an `include` filter reads, and
+  those are checked as a filter's are: one computed with a value where its
+  source's row is missing is refused.
 
 ## Values compared across engines
 
@@ -672,7 +678,7 @@ database would return, without a refusal.
 | Data objects of another source that no join from the measures' source reaches | `FEDERATION_UNSUPPORTED_JOIN` |
 | Inside a dimension source, a join that is not many-to-one from where the edge enters (it would repeat the key's rows) | `FEDERATION_UNSUPPORTED_JOIN` |
 | A nested data object (`nestedIn`) on the dimension side | `FEDERATION_UNSUPPORTED_JOIN` |
-| A column of a source joined by a left join whose expression has a value where the source's row is missing (`COALESCE({[Customers].[Region]}, 'unknown')` for an order whose customer is not in the CRM), as a dimension, a raw-mode field, a filter, a measure's input, a static filter or a join key (`COALESCE({[Customers].[Customer Region]}, -1)`, which joins the order to an unknown region): one database computes it over NULLs, the combine step reads NULL. One certainly NULL over NULL inputs (`UPPER`, arithmetic), or of a source whose own join is `required`, is computed | `FEDERATION_UNSUPPORTED_JOIN` |
+| A column of a source joined by a left join whose expression has a value where the source's row is missing (`COALESCE({[Customers].[Region]}, 'unknown')` for an order whose customer is not in the CRM), as a dimension, a raw-mode field, a filter (one a `filterContext` includes too), a measure's input, a static filter or a join key (`COALESCE({[Customers].[Customer Region]}, -1)`, which joins the order to an unknown region): one database computes it over NULLs, the combine step reads NULL. One certainly NULL over NULL inputs (`UPPER`, arithmetic), or of a source whose own join is `required`, is computed | `FEDERATION_UNSUPPORTED_JOIN` |
 | A dimension, a raw-mode field, or a static filter, whose column is computed from a column of a data object the query does not join to the column's own within its source: on another source, or reached through another join (the regions joined to the orders directly, read by a column of the customers) | `FEDERATION_UNSUPPORTED_JOIN` |
 
 ### Measures and metrics

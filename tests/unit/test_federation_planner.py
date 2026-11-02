@@ -3481,6 +3481,64 @@ class TestRepeatedRows:
 
         _assert_same_rows(got, expected)
 
+    @pytest.mark.parametrize("aggregation", ["sum", "count"])
+    def test_a_filter_context_beside_the_sales_count(self, aggregation: str) -> None:
+        """The query's own deduplication leaves a filter context's measure to
+        its scan: as partial results across products, customer 1's age came
+        out 40 for 30 in the north, its count 3 for 2."""
+        context = (
+            "  Ages Any Category:\n"
+            "    columns: [{dataObject: Customers, column: Age}]\n"
+            f"    aggregation: {aggregation}\n"
+            "    filterContext: {exclude: [Category]}\n"
+        )
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Sales Count", "Ages Any Category"]},
+            "where": [{"field": "Category", "op": "=", "value": "A"}],
+        }
+
+        expected, got = _repeated(
+            aggregation, query, lambda yaml: yaml.replace("metrics:\n", context + "metrics:\n", 1)
+        )
+
+        _assert_same_rows(got, expected)
+
+    @pytest.mark.parametrize(
+        ("dimension", "static"),
+        [
+            ("Region", "{dataObject: Sales, column: ID, operator: gte, value: 1}"),
+            ("Category", "{dataObject: Customers, column: Age, operator: gte, value: 15}"),
+        ],
+        ids=["on_the_sales", "on_the_customers"],
+    )
+    def test_a_static_filter_a_context_leaves_out(self, dimension: str, static: str) -> None:
+        """The fact leg groups by the filter's column too. Each sale apart
+        made customer 1's age 40 for 30. The customers' filter is the
+        customers' own: customer 4, without sales, keeps its group."""
+        unfiltered = (
+            "  Ages Unfiltered:\n"
+            "    columns: [{dataObject: Customers, column: Age}]\n"
+            "    aggregation: sum\n"
+            "    filterContext: {mode: FIXED}\n"
+        )
+        query = {
+            "select": {
+                "dimensions": [dimension],
+                "measures": ["Sales Count", "Ages", "Ages Unfiltered"],
+            }
+        }
+
+        expected, got = _repeated(
+            "sum",
+            query,
+            lambda yaml: (
+                yaml.replace("metrics:\n", unfiltered + "metrics:\n", 1)
+                + f"filters:\n  - {static}\n"
+            ),
+        )
+
+        _assert_same_rows(got, expected)
+
     @pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "variance"])
     def test_keys_of_the_object_itself_combine(self, aggregation: str) -> None:
         """The join to regions starts from customers: each has one key."""
@@ -5200,6 +5258,27 @@ class TestComputedOverAMissingRow:
         assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
         assert "Region Label" in error.message
         assert "would read as NULL" in error.message
+
+    def test_a_filter_a_context_includes_is_refused(self) -> None:
+        """Order 6 is 'unknown' on one database: the unknown revenue is 95.10,
+        not the 55.10 of order 4 alone."""
+        unknown = (
+            "  Unknown Revenue:\n"
+            "    columns: [{dataObject: Orders, column: Amount}]\n"
+            "    aggregation: sum\n"
+            "    filterContext:\n"
+            "      mode: FIXED\n"
+            "      include: [{field: Region Label, op: '=', value: unknown}]\n"
+        )
+        yaml = labelled_yaml(True).replace("metrics:\n", unknown + "metrics:\n", 1)
+        query = {"select": {"dimensions": ["Region"], "measures": ["Revenue", "Unknown Revenue"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert "Region Label" in error.message
 
     @pytest.mark.parametrize(
         "query",

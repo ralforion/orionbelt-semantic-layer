@@ -47,7 +47,11 @@ from typing import Any
 from orionbelt.ast.nodes import ColumnRef, Expr, JoinType
 from orionbelt.compiler.filter_wrap import kept_by_context, query_item_fields
 from orionbelt.compiler.filters import _resolve_subquery_filter_field
-from orionbelt.compiler.grain_dedup import MULTIPLICITY_SAFE_AGGREGATIONS, dedup_identity
+from orionbelt.compiler.grain_dedup import (
+    MULTIPLICITY_SAFE_AGGREGATIONS,
+    dedup_identity,
+    detect_dedup_measures,
+)
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.null_rejection import is_null_without
 from orionbelt.compiler.raw_resolution import raw_field_aliases
@@ -474,6 +478,7 @@ def plan_federated(
         *(item.field for context in planner.contexts() for item in context.include),
     ]
     fact_dims, edge_dims, regrained = planner.dimensions_by_island(islands, fact, edges, filtered)
+    deferred = planner.deferred_static_filters(islands[fact])
     # The edges from the fact island: the fact leg returns their keys.
     from_fact = [edge for edge in edges if edge.parent == fact]
     # Partial results count a row of an object the joins repeat once per
@@ -482,7 +487,7 @@ def plan_federated(
     # from rows, the combine step counts each once itself.
     rows_for = (
         rows_for
-        or planner.repeats(from_fact, fact_dims, regrained.get(fact, []))
+        or planner.repeats(from_fact, fact_dims, regrained.get(fact, []), deferred)
         or planner.counts_beside_others()
     )
     if rows_for:
@@ -593,14 +598,9 @@ def plan_federated(
     fact_body = frozenset(body_reads.get(fact, set()))
     # A static filter of the fact island a measure's filter context leaves
     # out runs in the combine step, on the column the fact leg returns for
-    # it, as one of a dimension island does: that measure's scan there
-    # leaves it out, as one database's does.
+    # it, as one of a dimension island does.
     fact_static = {
-        _unused(f"__sf{n}", taken): (f.data_object, f.column, f)
-        for n, f in enumerate(model.filters)
-        if f.data_object in islands[fact] - planner.in_subqueries
-        and f.enforce == FilterEnforcement.RELEVANT
-        and not planner.kept_everywhere(frozenset({f.column}))
+        _unused(f"__sf{n}", taken): (f.data_object, f.column, f) for n, f in enumerate(deferred)
     }
     fact_static_columns = {name: (obj, col) for name, (obj, col, _) in fact_static.items()}
     fact_model = planner.island_model(
@@ -641,9 +641,6 @@ def plan_federated(
             for n, m in sorted(leg_measures.items())
         ],
     ]
-    for name, (_, column, f) in fact_static.items():
-        combine_filters_static.append(f.model_copy(update={"data_object": "leg_0", "column": name}))
-        static_names.setdefault(column, []).append(name)
     # Values the combine step groups by or counts are compared there as their
     # own engine compares them (:meth:`Dialect.equality_key`): the selected
     # dimensions without a grain, and the values a count of distinct values
@@ -722,11 +719,16 @@ def plan_federated(
             from_fact,
             [names for edge, names in zip(edges, key_names, strict=True) if edge.parent == fact],
             fact_own_grain,
+            fact_static_columns,
         ).items()
     }
     on_once |= {
         hidden: on_once[source] for hidden, source in fact_kept.items() if source in on_once
     }
+    for name, (_, column, f) in fact_static.items():
+        view = on_once.get(name, "leg_0")
+        combine_filters_static.append(f.model_copy(update={"data_object": view, "column": name}))
+        static_names.setdefault(column, []).append(name)
     for d in fact_dims:
         name = DimensionRef.parse(d).name
         combine_dimensions[name] = _combine_dimension(model, name, on_once.get(name, "leg_0"))
@@ -1457,14 +1459,16 @@ class _Planner:
     def _column_reads(self, island_of: dict[str, int]) -> list[tuple[str, str, str]]:
         """The columns the query reads, each as ``(what, data object, column)``.
 
-        Its dimensions, its raw-mode fields and the columns its raw-mode
-        filters name, and the columns of the static filters on the objects
-        it reads (not only in a subquery).
+        Its dimensions, those a measure's filter context includes a filter
+        on, its raw-mode fields and the columns its raw-mode filters name,
+        and the columns of the static filters on the objects it reads (not
+        only in a subquery).
         """
         q = self.query
         names = {DimensionRef.parse(d).name for d in _dimension_refs(q)}
         names |= {f for item in q.where for f in _filter_fields(item)}
         names |= {DimensionRef.parse(o.field).name for o in q.order_by}
+        names |= {item.field for context in self.contexts() for item in context.include}
         reads: list[tuple[str, str, str]] = []
         for name in sorted(names):
             dimension = self.model.dimensions.get(name)
@@ -1780,6 +1784,22 @@ class _Planner:
         """
         return all(kept_by_context(context, [fields], lambda f: f) for context in self.contexts())
 
+    def deferred_static_filters(self, fact_island: set[str]) -> list[ModelFilter]:
+        """The static filters of the fact island a measure's filter context leaves out.
+
+        On one database a context leaves out the ``relevant`` ones it does
+        not keep, never the ``enforce: always`` ones. The fact leg returns
+        their columns, and the combine step applies them, where that
+        measure's scan leaves them out.
+        """
+        return [
+            f
+            for f in self.model.filters
+            if f.data_object in fact_island - self.in_subqueries
+            and f.enforce == FilterEnforcement.RELEVANT
+            and not self.kept_everywhere(frozenset({f.column}))
+        ]
+
     def check_measures(self, fact_island: set[str]) -> list[str]:
         """Refuse a measure no federated query computes; return those needing rows.
 
@@ -1946,7 +1966,11 @@ class _Planner:
                     )
 
     def repeats(
-        self, edges: list[_Edge], fact_dims: list[str], own_grain: Iterable[str]
+        self,
+        edges: list[_Edge],
+        fact_dims: list[str],
+        own_grain: Iterable[str],
+        deferred: Iterable[ModelFilter],
     ) -> list[str]:
         """The measures counted once per row of their object that partial results repeat.
 
@@ -1956,8 +1980,9 @@ class _Planner:
         does the same, but per group of what *it* groups by, which is more:
         the federation keys, the dimensions only a filter after the join reads
         (*fact_dims* beyond the selected ones, and those selected at a time
-        grain it reads at their own, *own_grain*), and the values a count of
-        distinct values counts (:func:`_leg_measures`). The selected ones
+        grain it reads at their own, *own_grain*), the columns of the static
+        filters it leaves to the combine step (*deferred*), and the values a
+        count of distinct values counts (:func:`_leg_measures`). The selected ones
         count too where the combine step adds groups across them: a
         ``rollup`` or ``cube`` subtotal, a measure's ``total`` or grain. A customer
         whose sales reach two products is one row in each product's group,
@@ -1983,14 +2008,20 @@ class _Planner:
         fact_names = [DimensionRef.parse(d).name for d in fact_dims]
         always += [self._dimension_objects(name) for name in fact_names if name not in selected]
         always += [self._dimension_objects(name) for name in own_grain]
+        always += [self._column_objects(f.data_object, f.column) for f in deferred]
         effective = model.effective_measures
         for name in self.atomic_measures():
             if _counts_distinct_column(effective[name]):
                 ref = effective[name].columns[0]
                 always.append(self._column_objects(ref.view or "", ref.column or ""))
 
+        # A measure with a filter context is deduplicated in a scan of its own
+        # on one database, so the query's plan leaves it out
+        # (``detect_replication``); the fact leg computes it beside the others.
+        plan = detect_dedup_measures(self.resolved, model)
+        targets = {**plan.measures, **plan.components, **self.resolved.dedup_targets}
         repeated = []
-        for name, target in sorted(self.resolved.dedup_targets.items()):
+        for name, target in sorted(targets.items()):
             measure = effective[name]
             if measure.distinct or measure.aggregation in MULTIPLICITY_SAFE_AGGREGATIONS:
                 continue
@@ -2028,11 +2059,14 @@ class _Planner:
         edges: list[_Edge],
         key_names: list[list[str]],
         own_grain: dict[str, str],
+        static: dict[str, tuple[str, str]],
     ) -> dict[str, str]:
         """The fact leg's dimensions and keys read through an object measures read, each to it.
 
         The dimensions at their own grain too (*own_grain*: each column's name
-        with the dimension's).
+        with the dimension's), and the columns of the static filters the
+        combine step applies (*static*: each column's name with the data
+        object and column it reads).
 
         Such an object (:meth:`parents`, from rows) and the objects it joins
         many-to-one have one row per row of it: one database reads those
@@ -2068,6 +2102,10 @@ class _Planner:
             what = f"the key of the join from '{edge.from_object}' to '{edge.to_object}'"
             if owner := through(objects, what):
                 read.update(dict.fromkeys(names, owner))
+        for name, (obj, column) in static.items():
+            what = f"the static filter on '{obj}.{column}'"
+            if owner := through(self._column_objects(obj, column), what):
+                read[name] = owner
         return read
 
     def _column_objects(self, obj: str, column: str) -> set[str]:
