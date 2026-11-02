@@ -3177,6 +3177,30 @@ measures:
   Least Name: {columns: [{dataObject: Facts, column: Name}], aggregation: min, resultType: string}
   Mode Name: {columns: [{dataObject: Facts, column: Name}], aggregation: mode, resultType: string}
   Mode F: {columns: [{dataObject: Facts, column: F}], aggregation: mode, resultType: float}
+  Median A F:
+    columns: [{dataObject: Facts, column: F}]
+    aggregation: median
+    resultType: float
+    filters:
+      - column: {dataObject: Facts, column: Name}
+        operator: equals
+        values: [{dataType: string, valueString: a}]
+  Median Like A F:
+    columns: [{dataObject: Facts, column: F}]
+    aggregation: median
+    resultType: float
+    filters:
+      - column: {dataObject: Facts, column: Name}
+        operator: like
+        values: [{dataType: string, valueString: a}]
+  Median One F:
+    columns: [{dataObject: Facts, column: F}]
+    aggregation: median
+    resultType: float
+    filters:
+      - column: {dataObject: Facts, column: Name}
+        operator: equals
+        values: [{dataType: int, valueInt: 1}]
 """
 
 
@@ -3250,6 +3274,8 @@ class TestEngineEquality:
         [
             ("mysql", "Least Name", "Name"),
             ("mysql", "Mode Name", "Name"),
+            ("mysql", "Median Like A F", "Name"),
+            ("mysql", "Median One F", "Name"),
             ("clickhouse", "Mode F", "F"),
         ],
     )
@@ -3257,7 +3283,11 @@ class TestEngineEquality:
         self, facts_on: Any, dialect: str, measure: str, column: str
     ) -> None:
         """The combine step would compare them: 'a' and 'A' as two values,
-        where MySQL sees one; 0.0 and -0.0 as one, where ClickHouse counts two."""
+        where MySQL sees one; 0.0 and -0.0 as one, where ClickHouse counts two.
+        Nor can the leg evaluate a pattern, or a comparison with a number,
+        over its groups: MySQL groups 'a' with 'a ' under utf8mb4_general_ci,
+        and LIKE 'a' matches only the first; '1' with '１' under
+        utf8mb4_0900_ai_ci, and = 1 converts only the first to 1."""
         with pytest.raises(ResolutionError) as caught:
             facts_on(
                 dialect, {"select": {"dimensions": ["Label"], "measures": ["Median F", measure]}}
@@ -3268,6 +3298,33 @@ class TestEngineEquality:
         assert f"compares the values of 'Facts.{column}' otherwise than {dialect}" in (
             error.message
         )
+
+    def test_from_rows_a_filter_on_a_mysql_string_runs_in_the_leg(self, facts_on: Any) -> None:
+        """'A' equals 'a' to MySQL: the leg evaluates the measure's filter in
+        MySQL, and the combine step reads its outcome; keys injected keep it."""
+        query = {
+            "select": {"dimensions": ["Label"], "measures": ["Median A F"]},
+            "where": [{"field": "Label", "op": "=", "value": "x"}],
+        }
+
+        plan = facts_on("mysql", query)
+
+        predicate = "CASE WHEN `__leg`.`__value1` = 'a' THEN 1 ELSE 0 END AS `__mf0`"
+        assert predicate in plan.legs[0].sql
+        assert dict(plan.legs[0].columns)["__mf0"] == "int"
+        assert 'CASE WHEN "leg_0"."__mf0" = 1 THEN' in plan.combine_sql
+        assert plan.inject is not None
+        assert predicate in plan.inject({"__fk0_0": [1]}).sql
+
+    def test_from_rows_a_filter_its_engine_compares_as_duckdb_runs_in_the_combine(
+        self, facts_on: Any
+    ) -> None:
+        plan = facts_on(
+            "postgres", {"select": {"dimensions": ["Label"], "measures": ["Median A F"]}}
+        )
+
+        assert "__mf" not in plan.legs[0].sql
+        assert "= 'a'" in plan.combine_sql
 
     def test_a_value_of_another_source_its_engine_compares_otherwise_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
