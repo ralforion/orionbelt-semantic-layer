@@ -78,6 +78,7 @@ from orionbelt.models.query import (
     Subquery,
 )
 from orionbelt.models.semantic import (
+    DATE_BEARING_TYPES,
     AggregationType,
     Cardinality,
     DataColumnRef,
@@ -95,6 +96,7 @@ from orionbelt.models.semantic import (
     ModelFilter,
     ModelSettings,
     SemanticModel,
+    TimeGrain,
 )
 from orionbelt.models.types import DecimalType
 
@@ -348,15 +350,32 @@ def source_name(model: SemanticModel, obj: str) -> str | None:
 
 def query_objects(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> set[str]:
     """Every data object a resolved query reads, ``exists`` subqueries included."""
-    objects = _outer_objects(resolved)
+    objects = _outer_objects(resolved, model)
     for item in _exists_filters([*query.where, *query.having]):
         objects |= _exists_objects(item, model)
     objects.discard("")
     return objects
 
 
-def _outer_objects(resolved: ResolvedQuery) -> set[str]:
-    """The data objects a resolved query reads outside its ``exists`` subqueries."""
+def _outer_objects(resolved: ResolvedQuery, model: SemanticModel) -> set[str]:
+    """The data objects a resolved query reads outside its ``exists`` subqueries.
+
+    A metric across periods reads its time dimension's data object too,
+    whether or not the query joins it (:meth:`_Planner.check_period_dates`),
+    and the objects one database joins to reach it from the base object: a
+    calendar reached through the CRM's customers reads the CRM.
+    """
+    objects = _joined_objects(resolved)
+    unjoined = set(_period_dates(resolved, model).values()) - objects
+    if unjoined:
+        graph = JoinGraph.of(model)
+        for obj in sorted(unjoined):
+            objects |= {obj} | _step_objects(graph.find_join_path({resolved.base_object}, {obj}))
+    return objects
+
+
+def _joined_objects(resolved: ResolvedQuery) -> set[str]:
+    """The data objects the resolved query itself reads and joins."""
     objects = set(resolved.required_objects) | {resolved.base_object}
     for step in resolved.join_steps:
         objects |= {step.from_object, step.to_object}
@@ -364,6 +383,17 @@ def _outer_objects(resolved: ResolvedQuery) -> set[str]:
     objects |= set(resolved.measure_source_objects)
     objects.discard("")
     return objects
+
+
+def _period_dates(resolved: ResolvedQuery, model: SemanticModel) -> dict[str, str]:
+    """Each metric across periods by name, with the data object of its time dimension."""
+    dates: dict[str, str] = {}
+    for m in resolved.measures:
+        if m.is_cumulative or m.is_pop or m.is_window:
+            name = m.cumulative_time_dimension or m.pop_time_dimension or m.window_time_dimension
+            if name in model.dimensions:
+                dates[m.name] = model.dimensions[name].view
+    return dates
 
 
 def is_federated(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> bool:
@@ -418,6 +448,7 @@ def plan_federated(
     planner = _Planner(query, model, resolved, dialect_name, source_dialect)
     leg_limit = leg_row_limit + 1 if leg_row_limit is not None else None
     planner.check_query_shape()
+    planner.check_period_dates()
     islands = planner.islands()
     planner.check_computed_columns(islands)
     body_reads = planner.body_reads(islands)
@@ -457,11 +488,27 @@ def plan_federated(
     }
     # A combine filter on a dimension the query selects at a time grain reads
     # it at its own grain, from a column of its own: by island, each column's
-    # name with the dimension's.
-    own_grain = {
-        island: {_unused(f"__og{island}_{n}", taken): name for n, name in enumerate(names)}
-        for island, names in regrained.items()
-    }
+    # name with the dimension's. Beside a metric across periods, each date
+    # column is returned once as stored, and every dimension over it reads it
+    # (*stored*, by island): the combine step applies its grains, and sees
+    # ``Order Month`` and ``Order Date`` filter one column.
+    own_grain: dict[int, dict[str, str]] = {}
+    stored: dict[int, dict[str, str]] = {}
+    for home, names in regrained.items():
+        columns = own_grain.setdefault(home, {})
+        if not planner.reads_periods():
+            columns.update(
+                {_unused(f"__og{home}_{n}", taken): name for n, name in enumerate(names)}
+            )
+            continue
+        of_column: dict[tuple[str, str], str] = {}
+        for name in names:
+            dimension = model.dimensions[name]
+            axis = (dimension.view, dimension.column)
+            if axis not in of_column:
+                of_column[axis] = _unused(f"__as{home}_{len(of_column)}", taken)
+                columns[of_column[axis]] = name
+            stored.setdefault(home, {})[name] = of_column[axis]
     # The edge keys, one name per key column, the same in both legs it joins.
     key_names = [
         [_unused(f"__fk{e}_{i}", taken) for i in range(len(edge.from_columns))]
@@ -551,7 +598,7 @@ def plan_federated(
     )
     fact_columns = [
         *[_dimension_column(model, DimensionRef.parse(d).name) for d in fact_dims],
-        *[_dimension_column(model, name, column) for column, name in fact_own_grain.items()],
+        *[planner.own_column(name, column) for column, name in fact_own_grain.items()],
         *[
             _key_column(model, name, obj, col)
             for name, (obj, col) in {**fact_keys, **fact_values}.items()
@@ -574,7 +621,11 @@ def plan_federated(
     }
     filtered = {f for item in combine_filters for f in _filter_fields(item)}
     kept = {name: _unused(f"__eqv{n}", taken) for n, name in enumerate(sorted(grouped & filtered))}
-    renamed = {name: column for found in own_grain.values() for column, name in found.items()}
+    renamed = (
+        {}
+        if planner.reads_periods()
+        else {name: column for found in own_grain.values() for column, name in found.items()}
+    )
     fact_columns, fact_rekeyed, fact_kept = _rekeyed(
         planner.leg_dialect(islands[fact]),
         fact_columns,
@@ -649,6 +700,11 @@ def plan_federated(
     for column, name in fact_own_grain.items():
         view = on_once.get(column, "leg_0")
         combine_dimensions[column] = _combine_dimension(model, name, view, column)
+    for name, column in stored.get(fact, {}).items():
+        view = on_once.get(column, "leg_0")
+        combine_dimensions[name] = _combine_dimension(model, name, view).model_copy(
+            update={"column": column}
+        )
 
     # The joins of the dimension legs a chained edge starts from, by leg.
     leg_joins: dict[str, list[DataObjectJoin]] = {}
@@ -713,7 +769,7 @@ def plan_federated(
         )
         dim_columns = [
             *[_dimension_column(model, DimensionRef.parse(d).name) for d in dims],
-            *[_dimension_column(model, name, column) for column, name in dim_own_grain.items()],
+            *[planner.own_column(name, column) for column, name in dim_own_grain.items()],
             *[
                 _key_column(model, name, obj, col)
                 for name, (obj, col) in {**keys, **onward, **static_columns}.items()
@@ -779,6 +835,10 @@ def plan_federated(
             combine_dimensions[hidden] = _combine_dimension(model, source, leg_name, hidden)
         for column, name in dim_own_grain.items():
             combine_dimensions[column] = _combine_dimension(model, name, leg_name, column)
+        for name, column in stored.get(edge.island, {}).items():
+            combine_dimensions[name] = _combine_dimension(model, name, leg_name).model_copy(
+                update={"column": column}
+            )
         joins_from(e - 1).append(
             DataObjectJoin(
                 join_type=Cardinality.MANY_TO_ONE,
@@ -901,6 +961,15 @@ def plan_federated(
         **{m: values for m, (values, _, _) in distinct.items()},
         **{m: sums for m, (_, sums, _, _) in variances.items()},
     }
+    if planner.reads_periods():
+        # A dimension declaring its grain is a period there too: a rolling
+        # window over months counts months. Its leg returned it at that grain.
+        combine_dimensions = {
+            name: dimension.model_copy(update={"time_grain": model.dimensions[name].time_grain})
+            if name in model.dimensions
+            else dimension
+            for name, dimension in combine_dimensions.items()
+        }
     combine_model = SemanticModel(
         name=model.name,
         # What types and buckets the combined values; not the query's time
@@ -925,14 +994,17 @@ def plan_federated(
             )
             for m in measures
         },
-        metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
+        metrics={n: m for n, m in model.metrics.items() if m.type != MetricType.REAGGREGATE},
         filters=combine_filters_static,
         expose_counts=False,
     )
     combine_query = query.model_copy(
         update={
             "select": QuerySelect(
-                dimensions=[DimensionRef.parse(str(d)).name for d in query.select.dimensions],
+                dimensions=[
+                    str(d) if planner.reads_periods() else DimensionRef.parse(str(d)).name
+                    for d in query.select.dimensions
+                ],
                 measures=list(query.select.measures),
             ),
             "where": [_renamed(item, renamed) for item in combine_filters],
@@ -1026,7 +1098,7 @@ class _Planner:
         self.objects = query_objects(resolved, query, model)
         # The objects only an ``exists`` subquery reads: the outer query of a
         # leg does not join them, and their static filters apply in the body.
-        self.in_subqueries = self.objects - _outer_objects(resolved)
+        self.in_subqueries = self.objects - _outer_objects(resolved, model)
 
     # -- refusals -----------------------------------------------------------
 
@@ -1040,6 +1112,24 @@ class _Planner:
                 )
             ]
         )
+
+    def check_period_dates(self) -> None:
+        """Refuse a metric across periods whose dates the query does not join.
+
+        Its time dimension's data object, when the query neither selects nor
+        filters on it (a running total by region alone, over a calendar):
+        one database joins it in a query of the metric's own, apart from the
+        others, by the base object's own join, so it limits no other measure.
+        A leg joining it would join it for every measure.
+        """
+        joined = _joined_objects(self.resolved)
+        for metric, obj in sorted(_period_dates(self.resolved, self.model).items()):
+            if obj not in joined:
+                raise self.refuse(
+                    "UNSUPPORTED_METRIC",
+                    f"Metric '{metric}' reads the dates of '{obj}', which the query does not join",
+                    hint="Select its time dimension, or query the metric on one data source.",
+                )
 
     def check_query_shape(self) -> None:
         q = self.query
@@ -1317,6 +1407,42 @@ class _Planner:
 
     # -- measures -----------------------------------------------------------
 
+    def reads_periods(self) -> bool:
+        """Whether a metric of the query reads its values across periods.
+
+        A cumulative, period-over-period or window metric orders, offsets or
+        frames the periods of its time dimension at the grain the query
+        selects. The combine step computes it, as one database does, over
+        the combined values: the legs return each dimension at its own grain,
+        and the combine step applies the query's grains.
+        """
+        return any(rm.is_cumulative or rm.is_pop or rm.is_window for rm in self.resolved.measures)
+
+    def _metric_time_dimensions(self) -> list[str]:
+        """The time dimensions of the query's metrics across periods, in the model."""
+        names = {
+            m.cumulative_time_dimension or m.pop_time_dimension or m.window_time_dimension
+            for m in self.resolved.measures
+            if m.is_cumulative or m.is_pop or m.is_window
+        }
+        return sorted(n for n in names if n in self.model.dimensions)
+
+    def lookback_axes(self) -> set[tuple[str, str]]:
+        """The ``(data object, column)`` of each time dimension a metric looks back along.
+
+        A filter on one says which periods a cumulative or period-over-period
+        metric shows, not which it reads (``compiler.time_lookback``): it runs
+        in the combine step, which computes the metric over the periods
+        before it too.
+        """
+        names = {
+            m.cumulative_time_dimension if m.is_cumulative else m.pop_time_dimension
+            for m in self.resolved.measures
+            if m.is_cumulative or m.is_pop
+        }
+        dims = [self.model.dimensions.get(n or "") for n in names]
+        return {(d.view, d.column) for d in dims if d is not None}
+
     def atomic_measures(self) -> set[str]:
         """The measures the fact leg computes: selected, and those metrics read."""
         effective = self.model.effective_measures
@@ -1343,11 +1469,11 @@ class _Planner:
         join, as one database computes it over the joined rows.
         """
         for rm in self.resolved.measures:
-            if rm.is_cumulative or rm.is_pop or rm.is_window or rm.is_reaggregate:
+            if rm.is_reaggregate:
                 raise self.refuse(
                     "UNSUPPORTED_METRIC",
-                    f"Metric '{rm.name}' is not a derived metric, which is all a "
-                    "federated query supports yet",
+                    f"Metric '{rm.name}' is a reaggregate metric, which a federated query "
+                    "does not support yet",
                 )
         effective = self.model.effective_measures
         names = sorted(self.atomic_measures())
@@ -1386,10 +1512,20 @@ class _Planner:
                     "not support yet",
                     hint=f"Query '{reading[0]}' on one data source.",
                 )
+        # A time span reads the measure over the rows in the span, not over
+        # periods: only a measure the leg's groups add up to there, a sum, a
+        # count, a minimum or a maximum, combines; any other from rows.
+        spans = {
+            m.cumulative_measure
+            for m in self.resolved.measures
+            if m.is_cumulative and m.cumulative_window_span is not None
+        }
         return [
             name
             for name in names
-            if name in across or not self.combines(effective[name], fact_island)
+            if name in across
+            or not self.combines(effective[name], fact_island)
+            or (name in spans and not _adds_up(effective[name]))
         ]
 
     def combines(self, measure: Measure, fact_island: set[str]) -> bool:
@@ -1693,7 +1829,15 @@ class _Planner:
         legs: dict[int, list[QueryFilterItem]] = {}
         combine: list[QueryFilterItem] = []
         absent: list[_Absent] = []
+        axes = self.lookback_axes()
         for item in self.query.where:
+            if (
+                axes
+                and not any(True for _ in _exists_filters([item]))
+                and self._on_axes(item, axes)
+            ):
+                combine.append(item)
+                continue
             owners = {island_of.get(o) for o in self._filter_objects(item)}
             owner = owners.pop() if len(owners) == 1 else None
             if owner is not None and (owner == fact or _on_null(item) is not True):
@@ -1717,6 +1861,14 @@ class _Planner:
                 )
             combine.append(item)
         return legs, combine, absent
+
+    def _on_axes(self, item: QueryFilterItem, axes: set[tuple[str, str]]) -> bool:
+        """Whether *item* reads a time dimension's own column a metric looks back along."""
+        for field in _filter_fields(item):
+            dimension = self.model.dimensions.get(DimensionRef.parse(field).name)
+            if dimension is not None and (dimension.view, dimension.column) in axes:
+                return True
+        return False
 
     def _filter_objects(self, item: QueryFilterItem) -> set[str]:
         """The data objects whose rows *item* is a condition on: an ``exists``'s subject."""
@@ -1745,9 +1897,18 @@ class _Planner:
         combine filter on one the query selects at a time grain compares it
         at its own grain, as one database does: its leg returns it so too, a
         column of its own. The third value holds those dimensions, by island.
+
+        Beside a metric across periods (:meth:`reads_periods`) the third
+        value holds every date dimension instead, which its leg returns as
+        stored, and the combine step applies its grains: the dimension's own
+        and the query's.
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         wanted = [d for d in self.query.select.dimensions if isinstance(d, str)]
+        grains = {DimensionRef.parse(d).name: DimensionRef.parse(d).grain for d in wanted}
+        periods = self.reads_periods()
+        if periods:
+            wanted = [DimensionRef.parse(d).name for d in wanted]
         selected = {DimensionRef.parse(d).name for d in wanted}
         at_grain = {DimensionRef.parse(d).name for d in wanted if DimensionRef.parse(d).grain}
         regrained: dict[int, list[str]] = {}
@@ -1760,6 +1921,20 @@ class _Planner:
                 elif field not in selected:
                     wanted.append(field)
                     selected.add(field)
+        if periods:
+            # A metric reads its time dimension's dates whether or not the
+            # query selects it: a running total by region alone sums up to
+            # the last of them.
+            for name in self._metric_time_dimensions():
+                if name not in selected:
+                    wanted.append(name)
+                    selected.add(name)
+            dated = [d for d in wanted if self.stored_type(d) is not None]
+            for name in dated:
+                self._check_stored(name, grains.get(name))
+                island = island_of[self.model.dimensions[name].view]
+                regrained.setdefault(island, []).append(name)
+            wanted = [d for d in wanted if d not in dated]
         fact_dims: list[str] = []
         edge_dims: list[list[str]] = [[] for _ in edges]
         edge_of = {edge.island: k for k, edge in enumerate(edges)}
@@ -1770,6 +1945,46 @@ class _Planner:
             else:
                 edge_dims[edge_of[island]].append(d)
         return fact_dims, edge_dims, regrained
+
+    def own_column(self, name: str, column: str) -> DataObjectColumn:
+        """The leg column of dimension *name* under a name of its own: typed as
+        the date its column holds, beside a metric across periods."""
+        own = _dimension_column(self.model, name, column)
+        held = self.stored_type(name) if self.reads_periods() else None
+        return own.model_copy(update={"abstract_type": held}) if held else own
+
+    def stored_type(self, name: str) -> DataType | None:
+        """The date type dimension *name*'s column holds, or ``None`` for another.
+
+        The column's, not the dimension's: a dimension over a date may
+        declare, or default to, a string, and its grain is still a period.
+        """
+        dimension = self.model.dimensions[name]
+        column = self.model.data_objects[dimension.view].columns.get(dimension.column)
+        held = column.abstract_type if column is not None and column.abstract_type else None
+        held = held or dimension.result_type
+        return held if held in DATE_BEARING_TYPES else None
+
+    def _check_stored(self, name: str, grain: TimeGrain | None) -> None:
+        """Refuse a date dimension the combine step would read in its own time zone.
+
+        Returned as stored, a timestamp with a time zone stays one, and the
+        combine step's truncation, or cast to a date, reads it in DuckDB's
+        zone rather than the one its source read it in: an order of Los
+        Angeles' New Year's Eve moves into January.
+        """
+        dimension = self.model.dimensions[name]
+        column = self.model.data_objects[dimension.view].columns.get(dimension.column)
+        zoned = DataType.TIMESTAMP_TZ in {dimension.result_type, column and column.abstract_type}
+        reshaped = (grain or dimension.time_grain) is not None
+        if zoned and (reshaped or dimension.result_type != DataType.TIMESTAMP_TZ):
+            raise self.refuse(
+                "UNSUPPORTED_METRIC",
+                f"Dimension '{name}' reads a timestamp with a time zone, which the combine "
+                "step would truncate or cast in its own time zone beside a cumulative, "
+                "period-over-period or window metric",
+                hint="Select it as a timestamp with a time zone, without a grain.",
+            )
 
     # -- legs ---------------------------------------------------------------
 
@@ -1787,7 +2002,8 @@ class _Planner:
         It keeps the static filters of the island's objects; a dimension leg
         leaves some to the combine step (:func:`static_filters_after_join`).
         Each of *own_grain* (a column's name, a dimension's) is that dimension
-        under the column's name, at its own grain.
+        under the column's name, at its own grain; beside a metric across
+        periods, as stored (:meth:`dimensions_by_island`).
         *measures* are partial results (:func:`_leg_measures`): no ``total``,
         no ``defaultValue`` (an empty group's default would become an input to
         the combined aggregate), and a sum at a width that does not round
@@ -1812,8 +2028,11 @@ class _Planner:
             for name, dim in model.dimensions.items()
             if dim.view in island
         }
+        periods = self.reads_periods()
         for column, name in (own_grain or {}).items():
-            dimensions[column] = dimensions[name].model_copy(update={"name": column})
+            # Beside a metric across periods, the date as stored.
+            stored = {"time_grain": None, "result_type": self.stored_type(name)} if periods else {}
+            dimensions[column] = dimensions[name].model_copy(update={"name": column, **stored})
         copies = set(own_zone)
         for key, (obj, column) in keys.items():
             col = model.data_objects[obj].columns[column]
@@ -1905,6 +2124,11 @@ def _physical_tables(model: SemanticModel, objects: Iterable[str]) -> tuple[str,
         if parts:
             tables[".".join(parts)] = None
     return tuple(tables)
+
+
+def _adds_up(measure: Measure) -> bool:
+    """Whether *measure* over a group's rows is that over its partial results' rows."""
+    return measure.aggregation in _REAGGREGATE and not measure.distinct
 
 
 def _dimension_column(
