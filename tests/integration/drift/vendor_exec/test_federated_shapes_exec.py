@@ -83,6 +83,7 @@ dataObjects:
 dimensions:
   Region: {{dataObject: Regions, column: Region Name, resultType: string}}
   Order Date: {{dataObject: Orders, column: Order Date, resultType: date}}
+  Customer: {{dataObject: Customers, column: Customer ID, resultType: int}}
   Sales Rep:
     {{dataObject: Employees, column: Name, resultType: string, via: Orders, pathName: sales}}
 measures:
@@ -115,6 +116,10 @@ metrics:
       comparison: difference
   Revenue Rank:
     {{type: window, windowFunction: dense_rank, measure: Revenue, partitionBy: [Region]}}
+  Revenue per Customer:
+    {{type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}}
+  Revenue per Day:
+    {{type: reaggregate, measure: Revenue, per: [Order Date], aggregation: max}}
 """
 
 # Order 6's customer 99 is missing; customer 12 has no region and customer 13's
@@ -250,6 +255,16 @@ QUERIES = {
             "measures": ["Revenue", "Revenue Any Region", "Revenue Since February"],
         },
         "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+    "a_reaggregate": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Revenue per Customer", "Revenue"],
+        },
+    },
+    "a_reaggregate_per_a_date": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue per Day"]},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
     },
     "independent_facts": {
         "select": {"dimensions": ["Region"], "measures": ["Revenue", "Tickets Count"]},

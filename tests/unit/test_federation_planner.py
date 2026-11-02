@@ -1377,16 +1377,6 @@ class TestPeriodMetrics:
         assert "2024-02-01" not in plan.legs[0].sql
         assert "date_trunc" not in plan.legs[0].sql.lower()
 
-    def test_a_reaggregate_metric_is_refused(self) -> None:
-        query = {"select": {"dimensions": BY_MONTH_REGION, "measures": ["Revenue per Day"]}}
-
-        with pytest.raises(ResolutionError) as caught:
-            _compile(model_yaml(federated=True, metric=PERIOD_METRICS), query)
-
-        (error,) = caught.value.errors
-        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
-        assert "'Revenue per Day' is a reaggregate metric" in error.message
-
     @pytest.mark.parametrize("selected", ["Order Month:day", "Order Month:week"])
     def test_a_finer_grain_than_a_dimension_declares(
         self, files: dict[str, str], selected: str
@@ -1658,6 +1648,135 @@ OPTION_QUERIES = {
         PERIOD_METRICS,
     ),
 }
+
+
+CUSTOMER = "  Customer: {dataObject: Customers, column: Customer ID, resultType: int}\n"
+REAGGREGATE_METRICS = """\
+  Revenue per Customer:
+    {type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}
+  Revenue per Day:
+    {type: reaggregate, measure: Revenue, per: [Order Date], aggregation: avg}
+  Worst Month:
+    {type: reaggregate, measure: Revenue, per: ['Order Date:month'], aggregation: min}
+  Median Customer:
+    {type: reaggregate, measure: Revenue, per: [Customer], aggregation: median}
+  Big Customers:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: count
+    having: [{field: Orders Count, op: '>', value: 1}]
+  Every Customer:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: count
+    population: dimension
+  Best Region of a Customer:
+    {type: reaggregate, measure: Revenue per Customer, per: [Region], aggregation: max}
+  Twice per Customer: {expression: "{[Revenue per Customer]} * 2"}
+  Running per Customer:
+    {type: cumulative, measure: Revenue per Customer, timeDimension: Order Date}
+  Customers per Day:
+    {type: reaggregate, measure: Customers Count, per: [Order Date], aggregation: max}
+"""
+BY_ORDER_MONTH_ONLY = ["Order Date:month"]
+REAGGREGATE_QUERIES = {
+    "per_a_dimension_of_the_other_source": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Revenue per Customer"]}
+    },
+    "per_a_dimension_of_the_fact": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue per Day"]}
+    },
+    "without_dimensions": {"select": {"measures": ["Revenue per Customer", "Revenue"]}},
+    "per_a_grain_of_a_dimension_selected_at_another": {
+        "select": {"dimensions": ["Order Date:year", "Region"], "measures": ["Worst Month"]}
+    },
+    "a_median_of_the_first_stage": {
+        "select": {"dimensions": ["Region"], "measures": ["Median Customer"]}
+    },
+    "a_having_of_the_metric": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Big Customers"]}
+    },
+    "the_population_of_the_dimension": {
+        "select": {"dimensions": ["Region"], "measures": ["Every Customer"]},
+        "where": [LATE],
+    },
+    "filtered_on_the_other_source": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Revenue per Customer"]},
+        "where": [EU],
+    },
+    "nested": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Best Region of a Customer"]}
+    },
+    "under_a_derived_metric": {
+        "select": {"dimensions": ["Region"], "measures": ["Twice per Customer"]}
+    },
+    "under_a_cumulative_metric": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Running per Customer"]}
+    },
+    "only_ordered_by": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Revenue"]},
+        "orderBy": [{"field": "Revenue per Customer", "direction": "desc"}],
+    },
+}
+
+
+class TestReaggregateMetrics:
+    """The combine step computes a reaggregate metric's two stages, each legs
+    returning the ``per`` dimensions beside the query's."""
+
+    @pytest.mark.parametrize("query", REAGGREGATE_QUERIES.values(), ids=REAGGREGATE_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        assert_same(files, query, metric=REAGGREGATE_METRICS, dimension=CUSTOMER)
+
+    def test_the_customers_leg_returns_the_per_dimension(self) -> None:
+        """By order month, the query joins no customers; the first stage,
+        a query of its own on one database, does."""
+        query = REAGGREGATE_QUERIES["per_a_dimension_of_the_other_source"]
+
+        compiled = _compile(
+            model_yaml(federated=True, metric=REAGGREGATE_METRICS, dimension=CUSTOMER), query
+        )
+
+        plan = compiled.federation
+        assert plan is not None
+        assert [leg.data_source for leg in plan.legs] == ["shop", "crm"]
+        assert '"customers"' in plan.legs[1].sql
+
+    def test_per_a_dimension_on_the_many_side_is_refused(self) -> None:
+        """The customers' count per order date: one database's first stage
+        reads it from the orders, which the customers' rows do not join."""
+        query = {"select": {"dimensions": ["Region"], "measures": ["Customers per Day"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(
+                model_yaml(federated=True, metric=REAGGREGATE_METRICS, dimension=CUSTOMER), query
+            )
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert "groups its first stage by 'Order Date', of Orders" in error.message
+
+    def test_per_a_zoned_timestamp_is_refused_and_per_another_dimension_is_not(self) -> None:
+        """Per its date, the legs return it as stored and the combine step
+        would truncate it in its own time zone; per customer, by month, the
+        orders' leg truncates it in its own."""
+        yaml = model_yaml(federated=True, metric=REAGGREGATE_METRICS, dimension=CUSTOMER).replace(
+            "code: order_date, abstractType: date", "code: order_date, abstractType: timestamp_tz"
+        )
+        per_date = {"select": {"dimensions": ["Region"], "measures": ["Revenue per Day"]}}
+        per_customer = REAGGREGATE_QUERIES["per_a_dimension_of_the_other_source"]
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, per_date)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert "reads a timestamp with a time zone" in error.message
+        assert _compile(yaml, per_customer).federation is not None
 
 
 class TestQueryOptions:

@@ -78,7 +78,7 @@ flowchart LR
   join to the customers drops the orders whose customer has no region), and each measure is
   re-aggregated from the fact leg's results. Derived metrics,
   [cumulative, period-over-period and window metrics](#metrics-across-periods),
-  HAVING, ORDER BY, LIMIT, totals, `rollup` / `cube` subtotals and a
+  [reaggregate metrics](#reaggregate-metrics), HAVING, ORDER BY, LIMIT, totals, `rollup` / `cube` subtotals and a
   measure's [grain or filter context](#grain-and-filter-context) run there. A fact row whose key
   has no match keeps its values under an empty group, as in one database.
 
@@ -613,11 +613,33 @@ time span, a change against an earlier period, a rank, a lag.
 A metric whose time dimension is on a data object the query does not join,
 a calendar it neither selects nor filters on, is refused: one database joins
 it in a query of the metric's own, so it limits no other measure, where a
-leg joining it would limit them all. A reaggregate metric is refused, and so
-is a date dimension over a timestamp
+leg joining it would limit them all. So is a date dimension over a timestamp
 with a time zone that the combine step would truncate, or cast to a date,
 beside such a metric: it would do so in its own time zone, and an order of Los
 Angeles' New Year's Eve would move into January.
+
+### Reaggregate metrics
+
+A [reaggregate metric](model-format.md#reaggregate-metrics) runs in the
+combine step, both stages, as one database runs them: the first stage, its
+measure grouped by the query's dimensions and its `per` dimensions, is a query
+of its own over the legs' results, and the second aggregates those values again
+to the query's grain.
+
+- The legs return the `per` dimensions beside the query's. One the query does
+  not join is joined as one database's first stage joins it, many-to-one from
+  the base object: revenue per customer by order month reads the CRM's
+  customers, where the query alone reads only the shop.
+- A `per` date is returned as stored, and the combine step applies its grain
+  and the query's: the worst month of each year. As beside a metric across
+  periods, a timestamp with a time zone is then refused.
+- The metric's `having`, `population: dimension`, and a metric over it
+  (derived, cumulative, window, or another reaggregate metric) work as on one
+  database, and so does a query ordering by it alone.
+
+A `per` dimension no many-to-one join reaches from the rows of the metric's
+measure is refused: one database's first stage reads the customers' count per
+order date from the orders, which the customers' rows do not join.
 
 ### Objects the joins repeat
 
@@ -737,8 +759,8 @@ database would return, without a refusal.
 
 | Limitation | Error |
 |---|---|
-| Reaggregate metrics (derived, cumulative, period-over-period and window metrics work) | `FEDERATION_UNSUPPORTED_METRIC` |
-| A dimension over a timestamp with a time zone, at a grain or as a date, beside a cumulative, period-over-period or window metric | `FEDERATION_UNSUPPORTED_METRIC` |
+| A reaggregate metric whose `per` dimension no many-to-one join reaches from the rows of its measure (the customers' count per order date) | `FEDERATION_UNSUPPORTED_METRIC` |
+| A dimension over a timestamp with a time zone, at a grain or as a date, beside a cumulative, period-over-period or window metric, or a reaggregate metric per a date | `FEDERATION_UNSUPPORTED_METRIC` |
 | A cumulative, period-over-period or window metric whose time dimension is on a data object the query does not join (a calendar it neither selects nor filters on) | `FEDERATION_UNSUPPORTED_METRIC` |
 | A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | A measure counted once per row of an object read through the fact rows that reads a column of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
