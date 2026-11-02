@@ -1298,14 +1298,17 @@ CALENDAR = (
 )
 
 
-def calendar_yaml(federated: bool, calendar_source: str = "shop") -> str:
+def calendar_yaml(
+    federated: bool, calendar_source: str = "shop", metric: str = "", dimension: str = ""
+) -> str:
     """The orders joined to a calendar by their date, with a running total
-    over the calendar's day."""
+    over the calendar's day, and *metric* and *dimension* too."""
     yaml = model_yaml(
         federated=federated,
         metric=PERIOD_METRICS + "  Calendar Running:\n"
-        "    {type: cumulative, measure: Revenue, timeDimension: Calendar Date}\n",
-        dimension="  Calendar Date: {dataObject: Calendar, column: Day, resultType: date}\n",
+        "    {type: cumulative, measure: Revenue, timeDimension: Calendar Date}\n" + metric,
+        dimension="  Calendar Date: {dataObject: Calendar, column: Day, resultType: date}\n"
+        + dimension,
     ).replace(
         "        columnsTo: [Customer ID]\n  Customers:",
         "        columnsTo: [Customer ID]\n"
@@ -1376,16 +1379,6 @@ class TestPeriodMetrics:
         assert dict(rows)[date(2024, 2, 1)] == Decimal("7.00") - Decimal("120.75")
         assert "2024-02-01" not in plan.legs[0].sql
         assert "date_trunc" not in plan.legs[0].sql.lower()
-
-    def test_a_reaggregate_metric_is_refused(self) -> None:
-        query = {"select": {"dimensions": BY_MONTH_REGION, "measures": ["Revenue per Day"]}}
-
-        with pytest.raises(ResolutionError) as caught:
-            _compile(model_yaml(federated=True, metric=PERIOD_METRICS), query)
-
-        (error,) = caught.value.errors
-        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
-        assert "'Revenue per Day' is a reaggregate metric" in error.message
 
     @pytest.mark.parametrize("selected", ["Order Month:day", "Order Month:week"])
     def test_a_finer_grain_than_a_dimension_declares(
@@ -1658,6 +1651,352 @@ OPTION_QUERIES = {
         PERIOD_METRICS,
     ),
 }
+
+
+CUSTOMER = "  Customer: {dataObject: Customers, column: Customer ID, resultType: int}\n"
+REAGGREGATE_METRICS = """\
+  Revenue per Customer:
+    {type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}
+  Revenue per Day:
+    {type: reaggregate, measure: Revenue, per: [Order Date], aggregation: avg}
+  Worst Month:
+    {type: reaggregate, measure: Revenue, per: ['Order Date:month'], aggregation: min}
+  Median Customer:
+    {type: reaggregate, measure: Revenue, per: [Customer], aggregation: median}
+  Big Customers:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: count
+    having: [{field: Orders Count, op: '>', value: 1}]
+  Every Customer:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: count
+    population: dimension
+  Best Region of a Customer:
+    {type: reaggregate, measure: Revenue per Customer, per: [Region], aggregation: max}
+  Twice per Customer: {expression: "{[Revenue per Customer]} * 2"}
+  Running per Customer:
+    {type: cumulative, measure: Revenue per Customer, timeDimension: Order Date}
+  Customers per Day:
+    {type: reaggregate, measure: Customers Count, per: [Order Date], aggregation: max}
+  Carried:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: sum
+    population: dimension
+    carryForward: true
+"""
+BY_ORDER_MONTH_ONLY = ["Order Date:month"]
+PER_CUSTOMER_ONLY = """\
+  Revenue per Customer:
+    {type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}
+  Every Customer:
+    type: reaggregate
+    measure: Revenue
+    per: [Customer]
+    aggregation: count
+    population: dimension
+"""
+REAGGREGATE_QUERIES = {
+    "per_a_dimension_of_the_other_source": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Revenue per Customer"]}
+    },
+    "per_a_dimension_of_the_fact": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue per Day"]}
+    },
+    "without_dimensions": {"select": {"measures": ["Revenue per Customer", "Revenue"]}},
+    "per_a_grain_of_a_dimension_selected_at_another": {
+        "select": {"dimensions": ["Order Date:year", "Region"], "measures": ["Worst Month"]}
+    },
+    "a_median_of_the_first_stage": {
+        "select": {"dimensions": ["Region"], "measures": ["Median Customer"]}
+    },
+    "a_having_of_the_metric": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Big Customers"]}
+    },
+    "the_population_of_the_dimension": {
+        "select": {"dimensions": ["Region"], "measures": ["Every Customer"]},
+        "where": [LATE],
+    },
+    "filtered_on_the_other_source": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Revenue per Customer"]},
+        "where": [EU],
+    },
+    "nested": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Best Region of a Customer"]}
+    },
+    "under_a_derived_metric": {
+        "select": {"dimensions": ["Region"], "measures": ["Twice per Customer"]}
+    },
+    "under_a_cumulative_metric": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Running per Customer"]}
+    },
+    "carried_forward": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Carried", "Revenue"]}
+    },
+    "carried_forward_past_the_time_filter": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Carried"]},
+        "where": [FEB_ON],
+    },
+    "only_ordered_by": {
+        "select": {"dimensions": BY_ORDER_MONTH_ONLY, "measures": ["Revenue"]},
+        "orderBy": [{"field": "Revenue per Customer", "direction": "desc"}],
+    },
+}
+
+
+class TestReaggregateMetrics:
+    """The combine step computes a reaggregate metric's two stages, each legs
+    returning the ``per`` dimensions beside the query's."""
+
+    @pytest.mark.parametrize("query", REAGGREGATE_QUERIES.values(), ids=REAGGREGATE_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        assert_same(files, query, metric=REAGGREGATE_METRICS, dimension=CUSTOMER)
+
+    def test_the_customers_leg_returns_the_per_dimension(self) -> None:
+        """By order month, the query joins no customers; the first stage,
+        a query of its own on one database, does."""
+        query = REAGGREGATE_QUERIES["per_a_dimension_of_the_other_source"]
+
+        compiled = _compile(
+            model_yaml(federated=True, metric=REAGGREGATE_METRICS, dimension=CUSTOMER), query
+        )
+
+        plan = compiled.federation
+        assert plan is not None
+        assert [leg.data_source for leg in plan.legs] == ["shop", "crm"]
+        assert '"customers"' in plan.legs[1].sql
+
+    def test_per_a_dimension_on_the_many_side_is_refused(self) -> None:
+        """The customers' count per order date: one database's first stage
+        reads it from the orders, which the customers' rows do not join."""
+        query = {"select": {"dimensions": ["Region"], "measures": ["Customers per Day"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(
+                model_yaml(federated=True, metric=REAGGREGATE_METRICS, dimension=CUSTOMER), query
+            )
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert "groups its first stage by 'Order Date', of Orders" in error.message
+
+    @pytest.mark.parametrize(
+        ("measure", "dimension", "refused"),
+        [
+            ("Worst Month", "Region", True),
+            ("Revenue per Day", "Region", False),
+            ("Revenue per Customer", "Order Date:month", False),
+        ],
+        ids=["per_its_month", "per_the_timestamp", "per_another_dimension_by_month"],
+    )
+    def test_per_a_zoned_timestamp_at_a_grain_is_refused(
+        self, measure: str, dimension: str, refused: bool
+    ) -> None:
+        """Per its month, the legs return the timestamp as stored and the
+        combine step would truncate it in its own time zone; per the timestamp
+        itself, it groups it as it is; per customer, by month, the orders'
+        leg truncates it in its own."""
+        yaml = (
+            model_yaml(federated=True, metric=REAGGREGATE_METRICS, dimension=CUSTOMER)
+            .replace("abstractType: date}", "abstractType: timestamp_tz}")
+            .replace(
+                "column: Order Date, resultType: date}",
+                "column: Order Date, resultType: timestamp_tz}",
+            )
+        )
+        query = {"select": {"dimensions": [dimension], "measures": [measure]}}
+
+        if not refused:
+            assert _compile(yaml, query).federation is not None
+            return
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert "reads a timestamp with a time zone" in error.message
+
+    def test_a_required_join_to_another_source_limits_the_first_stage_alone(
+        self, files: dict[str, str]
+    ) -> None:
+        """The combine step joins the customers' leg where the first stage
+        reads it: order 6, of no customer, is March's revenue still."""
+        query = {
+            "select": {
+                "dimensions": BY_ORDER_MONTH_ONLY,
+                "measures": ["Revenue per Customer", "Revenue"],
+            }
+        }
+        yaml = {
+            federated: model_yaml(
+                federated=federated, metric=REAGGREGATE_METRICS, dimension=CUSTOMER
+            ).replace(
+                "        joinTo: Customers\n", "        joinTo: Customers\n        required: true\n"
+            )
+            for federated in (False, True)
+        }
+
+        assert _compile(yaml[True], query).federation is not None
+        rows = _run_on(files, yaml[True], query)
+        assert rows == _run_on(files, yaml[False], query)
+        assert (date(2024, 3, 1), Decimal("7.58"), Decimal("55.15")) in rows
+
+    @pytest.mark.parametrize(
+        ("measure", "required", "message"),
+        [
+            ("Revenue per Customer", True, "reached by a required join to Customers"),
+            ("Every Customer", False, "its population would hold only the members with rows"),
+        ],
+        ids=["a_required_join", "the_population_of_the_dimension"],
+    )
+    def test_per_a_dimension_beside_the_measure_is_refused_where_the_fact_leg_would_limit_it(
+        self, measure: str, required: bool, message: str
+    ) -> None:
+        """The customers beside the orders, the calendar on a source of its
+        own: the orders' leg joins the customers, its required join dropping
+        the orders of no customer from every measure, and holds only the
+        customers with orders."""
+        yaml = calendar_yaml(True, "geo", metric=PER_CUSTOMER_ONLY, dimension=CUSTOMER).replace(
+            "    code: customers\n    dataSource: crm\n",
+            "    code: customers\n    dataSource: shop\n",
+        )
+        if required:
+            yaml = yaml.replace(
+                "        joinTo: Customers\n", "        joinTo: Customers\n        required: true\n"
+            )
+        query = {"select": {"dimensions": ["Calendar Date"], "measures": ["Revenue", measure]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert message in error.message
+        unlimited = {
+            "select": {"dimensions": ["Calendar Date"], "measures": ["Revenue per Customer"]}
+        }
+        assert _compile(yaml.replace("        required: true\n", ""), unlimited).federation
+
+
+def bridged_model() -> str:
+    """Orders on the shop, reaching segments through a required bridge; the
+    customers in the CRM, reaching tiers by a required join and regions."""
+    return """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Orders:
+    code: orders
+    dataSource: shop
+    columns:
+      Order Customer: {code: customer_id, abstractType: int}
+      Order Bridge: {code: bridge_id, abstractType: int}
+      Amount: {code: amount, abstractType: decimal}
+    joins:
+      - {joinType: many-to-one, joinTo: Customers, columnsFrom: [Order Customer],
+         columnsTo: [Customer ID]}
+      - {joinType: many-to-one, joinTo: Bridge, columnsFrom: [Order Bridge],
+         columnsTo: [Bridge ID], required: true}
+  Bridge:
+    code: bridge
+    dataSource: shop
+    columns:
+      Bridge ID: {code: bridge_id, abstractType: int}
+      Bridge Segment: {code: segment_id, abstractType: string}
+    joins:
+      - {joinType: many-to-one, joinTo: Segments, columnsFrom: [Bridge Segment],
+         columnsTo: [Segment ID]}
+  Segments:
+    code: segments
+    dataSource: shop
+    columns:
+      Segment ID: {code: segment_id, abstractType: string}
+  Customers:
+    code: customers
+    dataSource: crm
+    columns:
+      Customer ID: {code: customer_id, abstractType: int}
+      Region: {code: region, abstractType: string}
+      Customer Tier: {code: tier_id, abstractType: int}
+      Customer Area: {code: area_id, abstractType: string}
+    joins:
+      - {joinType: many-to-one, joinTo: Tiers, columnsFrom: [Customer Tier],
+         columnsTo: [Tier ID], required: true}
+      - {joinType: many-to-one, joinTo: Areas, columnsFrom: [Customer Area],
+         columnsTo: [Area ID]}
+  Tiers:
+    code: tiers
+    dataSource: crm
+    columns:
+      Tier ID: {code: tier_id, abstractType: int}
+  Areas:
+    code: areas
+    dataSource: crm
+    columns:
+      Area ID: {code: area_id, abstractType: string}
+dimensions:
+  Region: {dataObject: Customers, column: Region, resultType: string}
+  Segment: {dataObject: Segments, column: Segment ID, resultType: string}
+  Tier: {dataObject: Tiers, column: Tier ID, resultType: int}
+  Area: {dataObject: Areas, column: Area ID, resultType: string}
+  Customer: {dataObject: Customers, column: Customer ID, resultType: int}
+measures:
+  Revenue: {columns: [{dataObject: Orders, column: Amount}], aggregation: sum, defaultValue: 0}
+metrics:
+  Best Segment: {type: reaggregate, measure: Revenue, per: [Segment], aggregation: max}
+  Best Tier: {type: reaggregate, measure: Revenue, per: [Tier], aggregation: max}
+  Per Customer: {type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}
+  Every Area:
+    {type: reaggregate, measure: Revenue, per: [Area], aggregation: count, population: dimension}
+"""
+
+
+class TestReaggregatePerDimensionsTheLegsLimit:
+    """A per dimension a leg the query reads too would limit, or list in part."""
+
+    @pytest.mark.parametrize(
+        ("dimensions", "measures", "message"),
+        [
+            (["Region"], ["Best Segment"], "a required join to Bridge the query does not make"),
+            (["Region"], ["Best Tier"], "a required join to Tiers the query does not make"),
+            ([], ["Best Tier", "Per Customer"], "a required join to Tiers the query does not"),
+            ([], ["Every Area"], "read beside Customers on its data source"),
+        ],
+        ids=[
+            "required_on_the_way",
+            "required_in_a_source_the_query_reads",
+            "required_in_a_source_another_metric_reads",
+            "population_reached",
+        ],
+    )
+    def test_is_refused(self, dimensions: list[str], measures: list[str], message: str) -> None:
+        """The bridge's required join drops the orders without one from the
+        shop's leg, the tiers' the customers without one from the CRM's, which
+        the query reads by region, or the average per customer reads; the
+        CRM's leg lists the areas its customers reach, not an area none does."""
+        query = {"select": {"dimensions": dimensions, "measures": ["Revenue", *measures]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(bridged_model(), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_METRIC"
+        assert message in error.message
+
+    @pytest.mark.parametrize("measure", ["Best Tier", "Per Customer"])
+    def test_a_source_one_first_stage_alone_reads_is_planned(self, measure: str) -> None:
+        """The CRM's leg is the tiers' first stage's alone, joined where it reads it."""
+        query = {"select": {"measures": ["Revenue", measure]}}
+
+        assert _compile(bridged_model(), query).federation is not None
 
 
 class TestQueryOptions:

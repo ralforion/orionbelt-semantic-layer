@@ -47,6 +47,7 @@ from typing import Any
 from orionbelt.ast.nodes import ColumnRef, Expr, JoinType
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.cfl_projection import group_measures_by_object
+from orionbelt.compiler.composability import metric_leaf_measures, metric_measure_names
 from orionbelt.compiler.filter_resolution import (
     report_unapplied_query_filter,
     report_unapplied_static_filter,
@@ -59,6 +60,7 @@ from orionbelt.compiler.grain_dedup import (
     detect_dedup_measures,
 )
 from orionbelt.compiler.graph import JoinGraph, JoinStep
+from orionbelt.compiler.metric_resolution import reaggregate_per_ref
 from orionbelt.compiler.null_rejection import is_null_without
 from orionbelt.compiler.raw_resolution import raw_field_aliases
 from orionbelt.compiler.resolution import (
@@ -113,6 +115,7 @@ from orionbelt.models.semantic import (
     MetricType,
     ModelFilter,
     ModelSettings,
+    ReaggregatePopulation,
     SemanticModel,
     TimeGrain,
 )
@@ -389,7 +392,9 @@ def _outer_objects(resolved: ResolvedQuery, model: SemanticModel) -> set[str]:
     and the objects one database joins to reach it from the base object: a
     calendar reached through the CRM's customers reads the CRM. So does a
     measure the query only orders by, which one database computes in a
-    query of its own (``order_only``): the tickets' count of the CRM.
+    query of its own (``order_only``): the tickets' count of the CRM; and a
+    reaggregate metric's first stage, a query of its own too, reads the
+    objects of its ``per`` dimensions (:func:`_per_steps`).
     """
     objects = _joined_objects(resolved)
     effective = model.effective_measures
@@ -399,12 +404,74 @@ def _outer_objects(resolved: ResolvedQuery, model: SemanticModel) -> set[str]:
         if name in effective
         for obj in effective[name].source_objects
     }
+    objects |= _per_objects(resolved, model) | _step_objects(_per_steps(resolved, model))
     unjoined = (set(_period_dates(resolved, model).values()) | ordered) - objects
     if unjoined:
         graph = JoinGraph.of(model)
         for obj in sorted(unjoined):
             objects |= {obj} | _step_objects(graph.find_join_path({resolved.base_object}, {obj}))
     return objects
+
+
+def _reaggregates(resolved: ResolvedQuery, model: SemanticModel) -> list[str]:
+    """The reaggregate metrics a resolved query reads, those other metrics read too.
+
+    Selected, only in ``having`` or ``orderBy``, or read by another metric,
+    another reaggregate one included.
+    """
+    pending = [m.name for m in resolved.measures]
+    pending += [*resolved.metric_components, *resolved.order_only_measures]
+    pending += resolved.having_only_measures
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name not in seen and name in model.metrics:
+            seen.add(name)
+            pending += metric_measure_names(model, name)
+    return sorted(n for n in seen if model.metrics[n].type == MetricType.REAGGREGATE)
+
+
+def _per_dimensions(resolved: ResolvedQuery, model: SemanticModel) -> list[str]:
+    """The dimensions the query's reaggregate metrics group their first stage by."""
+    return list(
+        dict.fromkeys(
+            reaggregate_per_ref(model, entry).name
+            for name in _reaggregates(resolved, model)
+            for entry in model.metrics[name].per
+        )
+    )
+
+
+def _per_objects(resolved: ResolvedQuery, model: SemanticModel) -> set[str]:
+    """The data objects the ``per`` dimensions of the query's reaggregate metrics read."""
+    return {
+        obj
+        for name in _per_dimensions(resolved, model)
+        for obj in {model.dimensions[name].view or ""} | model.dimension_join_objects(name)
+    } - {""}
+
+
+def _per_steps(resolved: ResolvedQuery, model: SemanticModel) -> list[JoinStep]:
+    """The joins a reaggregate metric's first stage makes that the query does not.
+
+    One database groups the first stage by the query's dimensions and the
+    metric's ``per`` dimensions, a query of its own that joins their objects
+    from the base object: the customers, for revenue per customer by order
+    month. An object no join reaches from the base (on the many side of
+    one) has no path, and the planner refuses the query.
+    """
+    return _steps_to(resolved, model, _per_objects(resolved, model))
+
+
+def _steps_to(resolved: ResolvedQuery, model: SemanticModel, objects: set[str]) -> list[JoinStep]:
+    """The joins from the base object to *objects* that the query does not make."""
+    unjoined = objects - _joined_objects(resolved)
+    graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
+    steps: list[JoinStep] = []
+    for obj in sorted(unjoined):
+        path = graph.find_join_path({resolved.base_object}, {obj})
+        steps += [s for s in path if s not in steps and s not in resolved.join_steps]
+    return steps
 
 
 def _joined_objects(resolved: ResolvedQuery) -> set[str]:
@@ -495,6 +562,7 @@ def plan_federated(
         assert plan_part is not None
         plans = [plan_part(part.query, part.model) for part in parts]
         return _plan_parts(planner, parts, plans, compile_leg=compile_leg)
+    planner.check_per(islands)
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
     if query.select.is_raw:
@@ -508,6 +576,7 @@ def plan_federated(
     filtered = [
         *(field for item in combine_filters for field in _filter_fields(item)),
         *(item.field for context in planner.contexts() for item in context.include),
+        *planner.per(),
     ]
     fact_dims, edge_dims, regrained = planner.dimensions_by_island(islands, fact, edges, filtered)
     deferred = planner.deferred_static_filters(islands[fact])
@@ -1063,7 +1132,7 @@ def plan_federated(
             )
             for m in measures
         },
-        metrics={n: m for n, m in model.metrics.items() if m.type != MetricType.REAGGREGATE},
+        metrics=model.metrics,
         filters=combine_filters_static,
         expose_counts=False,
     )
@@ -1519,6 +1588,9 @@ class _Planner:
         # The objects only an ``exists`` subquery reads: the outer query of a
         # leg does not join them, and their static filters apply in the body.
         self.in_subqueries = self.objects - _outer_objects(resolved, model)
+        # The query's joins, and those a reaggregate metric's first stage
+        # makes to reach its ``per`` dimensions.
+        self.join_steps = [*resolved.join_steps, *_per_steps(resolved, model)]
 
     # -- refusals -----------------------------------------------------------
 
@@ -1578,7 +1650,7 @@ class _Planner:
                 o = parent[o]
             return o
 
-        for step in self.resolved.join_steps:
+        for step in self.join_steps:
             a, b = step.from_object, step.to_object
             if a in parent and b in parent and self.sources.get(a) == self.sources.get(b):
                 parent[find(a)] = find(b)
@@ -1713,7 +1785,7 @@ class _Planner:
             *((f"A measure's column '{obj}.{col}'", obj, col) for obj, col in measure_reads),
             *(
                 (f"The join key '{step.from_object}.{col}'", step.from_object, col)
-                for step in self.resolved.join_steps
+                for step in self.join_steps
                 for col in step.from_columns
             ),
         ]
@@ -1922,13 +1994,13 @@ class _Planner:
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         inner = {
             island_of.get(step.from_object)
-            for step in self.resolved.join_steps
+            for step in self.join_steps
             if step.join_type == JoinType.INNER
             and island_of.get(step.from_object) == island_of.get(step.to_object)
         }
         steps = [
             step
-            for step in self.resolved.join_steps
+            for step in self.join_steps
             if island_of.get(step.from_object) != island_of.get(step.to_object)
         ]
         edges: list[_Edge] = []
@@ -1993,7 +2065,7 @@ class _Planner:
         changed = True
         while changed:
             changed = False
-            for step in self.resolved.join_steps:
+            for step in self.join_steps:
                 if (
                     step.from_object in reached
                     and step.to_object in island
@@ -2047,11 +2119,125 @@ class _Planner:
         Beside a metric across periods (:meth:`reads_periods`); with ``fill``,
         whose periods the combine step spans; and for a dimension the query
         selects at two grains (``Order Date`` beside ``Order Date:month``),
-        which one stored column holds both of.
+        which one stored column holds both of; and beside a reaggregate
+        metric per a date (:meth:`per_dates`), or carrying values forward in
+        time (:meth:`carries`).
         """
         refs = set(_dimension_refs(self.query))
         two_grains = len(refs) != len({DimensionRef.parse(d).name for d in refs})
-        return self.reads_periods() or self.query.fill or two_grains
+        periods = self.reads_periods() or self.query.fill or two_grains
+        return periods or self.per_dates() or self.carries()
+
+    def per(self) -> list[str]:
+        """The dimensions the query's reaggregate metrics group their first stage by."""
+        return _per_dimensions(self.resolved, self.model)
+
+    def per_refs(self) -> list[DimensionRef]:
+        """Each ``per`` entry of the query's reaggregate metrics, at its grain."""
+        return [
+            reaggregate_per_ref(self.model, entry)
+            for name in _reaggregates(self.resolved, self.model)
+            for entry in self.model.metrics[name].per
+        ]
+
+    def carries(self) -> bool:
+        """Whether a reaggregate metric of the query carries values forward in time."""
+        return any(
+            self.model.metrics[name].carry_forward
+            for name in _reaggregates(self.resolved, self.model)
+        )
+
+    def per_dates(self) -> bool:
+        """Whether a reaggregate metric groups its first stage by a date dimension.
+
+        Its ``per`` grain may be finer than the query's (days, by month), so
+        the legs return the dates as stored (:meth:`stores_dates`), and the
+        combine step applies both grains.
+        """
+        return any(self.stored_type(name) is not None for name in self.per())
+
+    def check_per(self, islands: list[set[str]]) -> None:
+        """Refuse a ``per`` dimension the legs do not return as one database groups by it.
+
+        The combine step groups a reaggregate metric's first stage by it over
+        the legs' rows, which join it only many-to-one from the base object
+        (:func:`_per_steps`). One database's first stage is a query of its own:
+
+        - whose base object may be another, the orders for the customers'
+          count per order date, which no such join reaches;
+        - whose required join limits that stage alone, where a leg the query
+          or another metric's first stage reads too would drop their rows:
+          the fact leg, or the leg of a source either joins. The combine step
+          joins the leg of a source only the first stage reads only where it
+          reads it, as one database does;
+        - whose members, with ``population: dimension``, are all of the
+          dimension's: a leg lists them so only where it reads nothing else,
+          not the fact leg, which holds those with rows, nor one reading them
+          through another object, which holds those its rows reach.
+        """
+        reached = _joined_objects(self.resolved) | _step_objects(self.join_steps)
+        island_of = {o: i for i, island in enumerate(islands) for o in island}
+        fact = island_of.get(self.resolved.base_object)
+        # The islands whose legs the query reads beside the first stages.
+        shared = {island_of[o] for o in _joined_objects(self.resolved) if o in island_of}
+        reaggregates = _reaggregates(self.resolved, self.model)
+        reads = {
+            name: {
+                o
+                for entry in self.model.metrics[name].per
+                for o in self._dimension_objects(reaggregate_per_ref(self.model, entry).name)
+            }
+            for name in reaggregates
+        }
+        for name in reaggregates:
+            metric = self.model.metrics[name]
+            refs = [reaggregate_per_ref(self.model, entry).name for entry in metric.per]
+            members = reads[name]
+            # And beside the other metrics' first stages, by what they read.
+            others = {o for other in reaggregates if other != name for o in reads[other]}
+            others |= _step_objects(_steps_to(self.resolved, self.model, others))
+            beside = shared | {island_of[o] for o in others if o in island_of}
+            for per in refs:
+                objects = self._dimension_objects(per)
+                limiting = sorted(
+                    step.to_object
+                    for step in _steps_to(self.resolved, self.model, objects)
+                    if (step.join_type == JoinType.INNER or step.nested)
+                    and island_of.get(step.to_object) in beside
+                )
+                homes = {island_of.get(o) for o in objects}
+                why = None
+                if objects - reached:
+                    why = (
+                        f"of {', '.join(sorted(objects - reached))}, which no many-to-one "
+                        "join reaches from the rows of its measure"
+                    )
+                elif limiting:
+                    why = (
+                        f"reached by a required join to {', '.join(limiting)} the query "
+                        "does not make: across data sources it would limit the query's "
+                        "other measures and metrics too"
+                    )
+                elif metric.population == ReaggregatePopulation.DIMENSION and fact in homes:
+                    why = (
+                        "on the data source of its measure: across data sources its "
+                        "population would hold only the members with rows of the measure"
+                    )
+                elif metric.population == ReaggregatePopulation.DIMENSION and any(
+                    not islands[i] <= members for i in homes if i is not None
+                ):
+                    others = {o for i in homes if i is not None for o in islands[i]} - members
+                    why = (
+                        f"read beside {', '.join(sorted(others))} on its data source: across "
+                        "data sources its population would hold only the members their "
+                        "rows reach"
+                    )
+                if why is not None:
+                    raise self.refuse(
+                        "UNSUPPORTED_METRIC",
+                        f"Metric '{name}' groups its first stage by '{per}', {why}",
+                        hint="Query it on one data source.",
+                    )
 
     def _metric_time_dimensions(self) -> list[str]:
         """The time dimensions of the query's metrics across periods, in the model."""
@@ -2069,7 +2255,9 @@ class _Planner:
         metric shows, not which it reads (``compiler.time_lookback``): it runs
         in the combine step, which computes the metric over the periods
         before it too. With ``fill``, a filter on the time dimension bounds
-        the periods filled, which the combine step reads off it as well.
+        the periods filled, which the combine step reads off it as well. So
+        does a reaggregate metric's ``carryForward`` along the query's dates:
+        a member without a row in February takes its January value.
         """
         names = {
             m.cumulative_time_dimension if m.is_cumulative else m.pop_time_dimension
@@ -2083,6 +2271,12 @@ class _Planner:
                 if DimensionRef.parse(d).grain
                 or self.model.dimensions[DimensionRef.parse(d).name].time_grain
             }
+        if self.carries():
+            names |= {
+                DimensionRef.parse(d).name
+                for d in _dimension_refs(self.query)
+                if self.stored_type(DimensionRef.parse(d).name) is not None
+            }
         dims = [self.model.dimensions.get(n or "") for n in names]
         return {(d.view, d.column) for d in dims if d is not None}
 
@@ -2092,7 +2286,15 @@ class _Planner:
         # By name, not ``is_expression``: a measure written as an expression
         # is one too, and only a metric is left out.
         names = {m.name for m in self.resolved.measures if m.name in effective}
-        names |= set(self.resolved.metric_components)
+        names |= {name for name in self.resolved.metric_components if name in effective}
+        # A reaggregate metric's first stage, a query of its own in the
+        # combine step, computes its measure and those of its ``having``.
+        names |= {
+            leaf
+            for name in _reaggregates(self.resolved, self.model)
+            for leaf in metric_leaf_measures(self.model, name)
+            if leaf in effective
+        }
         for item in self.query.having:
             names |= {f for f in _filter_fields(item) if f in effective}
         names |= {o.field for o in self.query.order_by if o.field in effective}
@@ -2145,13 +2347,6 @@ class _Planner:
         beside its keys, and the combine step computes the measure after the
         join, as one database computes it over the joined rows.
         """
-        for rm in self.resolved.measures:
-            if rm.is_reaggregate:
-                raise self.refuse(
-                    "UNSUPPORTED_METRIC",
-                    f"Metric '{rm.name}' is a reaggregate metric, which a federated query "
-                    "does not support yet",
-                )
         effective = self.model.effective_measures
         names = sorted(self.atomic_measures())
         for name in names:
@@ -2455,7 +2650,7 @@ class _Planner:
         changed = True
         while changed:
             changed = False
-            for step in self.resolved.join_steps:
+            for step in self.join_steps:
                 if step.nested or step.cardinality == Cardinality.MANY_TO_MANY:
                     continue
                 pairs = [(step.from_object, step.to_object)]
@@ -2633,6 +2828,9 @@ class _Planner:
         grains: dict[str, set[TimeGrain | None]] = {}
         for d in wanted:
             grains.setdefault(DimensionRef.parse(d).name, set()).add(DimensionRef.parse(d).grain)
+        # A reaggregate metric's ``per`` grain truncates its date too.
+        for ref in self.per_refs():
+            grains.setdefault(ref.name, set()).add(ref.grain)
         periods = self.stores_dates()
         if periods:
             wanted = [DimensionRef.parse(d).name for d in wanted]
@@ -2708,10 +2906,13 @@ class _Planner:
         reshaped = dimension.time_grain is not None or any(g is not None for g in grains)
         if zoned and (reshaped or dimension.result_type != DataType.TIMESTAMP_TZ):
             raise self.refuse(
-                "UNSUPPORTED_METRIC" if self.reads_periods() else "UNSUPPORTED_QUERY",
+                "UNSUPPORTED_METRIC"
+                if self.reads_periods() or self.per_dates()
+                else "UNSUPPORTED_QUERY",
                 f"Dimension '{name}' reads a timestamp with a time zone, which the combine "
                 "step would truncate or cast in its own time zone, returned as stored (beside "
-                "a metric across periods, with fill, or at two grains)",
+                "a metric across periods or reaggregating per a date, with fill, or at two "
+                "grains)",
                 hint="Select it as a timestamp with a time zone, without a grain.",
             )
 
