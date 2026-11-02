@@ -232,6 +232,24 @@ class TestRawModeCompilation:
         assert "ORDER BY" in sql
         assert "DESC" in sql
 
+    def test_order_by_position(self) -> None:
+        model = _load_model()
+        query = QueryObject(
+            select=QuerySelect(fields=["Orders.Order ID", "Orders.Amount"]),
+            order_by=[QueryOrderBy(field="2", direction=SortDirection.DESC)],
+        )
+        sql = CompilationPipeline().compile(query, model, dialect_name="postgres").sql
+        assert "ORDER BY 2 DESC" in sql
+
+    def test_order_by_position_beyond_the_fields(self) -> None:
+        model = _load_model()
+        query = QueryObject(
+            select=QuerySelect(fields=["Orders.Order ID", "Orders.Amount"]),
+            order_by=[QueryOrderBy(field="3")],
+        )
+        with pytest.raises(ResolutionError, match="SELECT has 2 columns"):
+            CompilationPipeline().compile(query, model, dialect_name="postgres")
+
     def test_limit_propagates(self) -> None:
         model = _load_model()
         query = QueryObject(

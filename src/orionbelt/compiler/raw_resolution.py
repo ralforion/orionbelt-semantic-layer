@@ -2,17 +2,38 @@
 
 Functions take the owning ``QueryResolver`` as their first argument
 (``resolver``); ``QueryResolver`` keeps one-line delegators so its public
-surface is unchanged. Pure code movement — no behaviour change.
+surface is unchanged.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from orionbelt.models.errors import SemanticError
 
 if TYPE_CHECKING:
     from orionbelt.compiler.resolution import QueryResolver, _ResolutionContext
+
+_aliases: ContextVar[Mapping[str, str] | None] = ContextVar("raw_field_aliases", default=None)
+
+
+@contextmanager
+def raw_field_aliases(aliases: Mapping[str, str]) -> Iterator[None]:
+    """Name each raw-mode field in *aliases* by its value while the block runs.
+
+    A field is named by its reference, ``DataObject.Column``. A federated raw
+    query's combine step reads ``leg_0.Orders.Amount`` and returns it as the
+    query asked for it, ``Orders.Amount``: its ordering and its readers find
+    the name they gave.
+    """
+    token = _aliases.set(aliases)
+    try:
+        yield
+    finally:
+        _aliases.reset(token)
 
 
 def resolve_raw_field(resolver: QueryResolver, ctx: _ResolutionContext, ref: str) -> None:
@@ -66,7 +87,7 @@ def resolve_raw_field(resolver: QueryResolver, ctx: _ResolutionContext, ref: str
             object_name=obj_name,
             column_name=col_name,
             source_column=column.code,
-            alias=ref,
+            alias=(_aliases.get() or {}).get(ref, ref),
         )
     )
     ctx.result.required_objects.add(obj_name)

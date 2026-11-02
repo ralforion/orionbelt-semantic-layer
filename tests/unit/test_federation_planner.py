@@ -1737,15 +1737,180 @@ class TestQueryOptions:
 
         assert run_federated(files, query) == run_single(files, query) == []
 
-    def test_raw_mode_is_refused(self) -> None:
-        query = {"select": {"fields": ["Orders.Order ID", "Customers.Region"]}}
+
+RAW_FIELDS = ["Orders.Order ID", "Customers.Region", "Orders.Amount"]
+RAW_QUERIES = {
+    "fields_of_both_sources": ({"select": {"fields": RAW_FIELDS}}, {}),
+    "filtered_on_the_facts_source": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "where": [{"field": "Orders.Amount", "op": ">", "value": 10}],
+        },
+        {},
+    ),
+    "filtered_on_a_dimension_of_the_other_source": (
+        {"select": {"fields": RAW_FIELDS}, "where": [EU]},
+        {},
+    ),
+    "filtered_on_a_column_of_the_other_source": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "where": [{"field": "Customers.Region", "op": "=", "value": "EU"}],
+        },
+        {},
+    ),
+    "a_missing_region": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "where": [{"field": "Customers.Region", "op": "is_null"}],
+        },
+        {},
+    ),
+    "an_or_across_sources": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "where": [_either(US, {"field": "Orders.Amount", "op": ">", "value": 50})],
+        },
+        {},
+    ),
+    "ordered_and_limited": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "orderBy": [{"field": "Orders.Amount", "direction": "desc"}],
+            "limit": 3,
+        },
+        {},
+    ),
+    "distinct": (
+        {"select": {"fields": ["Orders.Order Customer", "Customers.Region"], "distinct": True}},
+        {},
+    ),
+    "ordered_by_position": (
+        {
+            "select": {"fields": RAW_FIELDS},
+            "orderBy": [{"field": "2", "direction": "desc"}, {"field": "1"}],
+        },
+        {},
+    ),
+    "a_static_filter_on_the_other_source": (
+        {"select": {"fields": RAW_FIELDS}},
+        {"tenant_filter": True},
+    ),
+    "an_enforced_static_filter_there": (
+        {"select": {"fields": ["Orders.Order ID", "Orders.Amount"]}},
+        {
+            "static": "  - {dataObject: Customers, column: Region, operator: notequals, "
+            "value: US, enforce: always}\n"
+        },
+    ),
+    "filtered_on_a_dimension_declaring_its_grain": (
+        {
+            "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+            "where": [_either({"field": "Order Month", "op": "=", "value": "2024-02-01"}, EU)],
+        },
+        {"dimension": ORDER_MONTH},
+    ),
+}
+
+
+class TestRawMode:
+    """Raw-mode rows across sources: each leg its rows, joined in the combine step."""
+
+    @pytest.mark.parametrize(("query", "model"), RAW_QUERIES.values(), ids=RAW_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, files: dict[str, str], query: dict[str, Any], model: dict[str, Any]
+    ) -> None:
+        assert_same(files, query, **model)
+
+    def test_the_fields_keep_their_names(self, files: dict[str, str]) -> None:
+        query = {"select": {"fields": RAW_FIELDS}}
+
+        plan = _compile(model_yaml(federated=True), query).federation
+
+        assert '"Orders.Order ID"' in plan.combine_sql
+        assert all(f'AS "{field}"' in plan.combine_sql for field in RAW_FIELDS)
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"fields": ["Orders.Amount", "Regions.Region Name"]}},
+            {
+                "select": {
+                    "fields": ["Orders.Amount", "Customers.Customer Region", "Regions.Region Name"]
+                },
+                "where": [{"field": "Region Name", "op": "is_null"}],
+            },
+        ],
+        ids=["", "missing_on_the_far_source"],
+    )
+    def test_a_chain_of_sources(self, chain_files: dict[str, str], query: dict[str, Any]) -> None:
+        chains = TestSourceChains()
+
+        single = chains._run(chain_files, None, query)
+
+        assert chains._run(chain_files, ("shop", "crm", "geo"), query) == single
+        assert single
+
+    def test_a_dimension_named_like_a_generated_key(self, files: dict[str, str]) -> None:
+        """A key takes a name no declared dimension has: ``__fk0`` stays the amount."""
+        dimension = "  __fk0: {dataObject: Orders, column: Amount, resultType: decimal}\n"
+        query = {
+            "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+            "where": [{"field": "__fk0", "op": ">", "value": 50}],
+        }
+
+        assert_same(files, query, dimension=dimension)
+        assert run_single(files, query, dimension=dimension) == [(1, "EU"), (4, None)]
+
+    def test_an_exists_on_the_facts_source(self, subquery_files: dict[str, str]) -> None:
+        """Orders with a return: the subquery runs in the fact leg."""
+        query = {
+            "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+            "where": [_returns("exists")],
+        }
+
+        exists = TestExists()
+
+        single = exists._run(subquery_files, False, query)
+
+        assert sorted(exists._run(subquery_files, True, query), key=repr) == sorted(
+            single, key=repr
+        )
+        assert single
+
+    def test_an_exists_on_the_other_source_is_refused(self) -> None:
+        query = {
+            "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+            "where": [_tickets("exists")],
+        }
 
         with pytest.raises(ResolutionError) as caught:
-            _compile(model_yaml(federated=True), query)
+            _compile(subquery_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+
+    def test_independent_facts_are_refused(self) -> None:
+        """Fields of the orders and the returns: one database unions them."""
+        from tests.unit.test_dimension_only_roots import MODEL_YAML
+
+        yaml = MODEL_YAML.replace(
+            "  Customers:\n    code: customers\n",
+            "  Customers:\n    code: customers\n    dataSource: crm\n",
+        )
+        for obj in ("Products", "Calendar", "Orders", "Returns"):
+            yaml = yaml.replace(
+                f"  {obj}:\n    code: {obj.lower()}\n",
+                f"  {obj}:\n    code: {obj.lower()}\n    dataSource: shop\n",
+            )
+        query = {"select": {"fields": ["Orders.Order Id", "Returns.Return Id", "Customers.Region"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
 
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
-        assert "raw mode (select.fields)" in error.message
+        assert "cannot read independent facts" in error.message
 
 
 class TestRefusals:
@@ -4579,3 +4744,412 @@ def test_a_subquery_on_the_facts_source_reads_the_object_with_injected_keys(
 
     assert sorted(_rows(combine, compiled.sql), key=repr) == expected
     assert expected == [("EU", Decimal("100.50"))]
+
+
+# -- What one database's joins make of a missing or zoned row -----------------
+
+
+def _run_on(
+    paths: dict[str, str],
+    yaml: str,
+    query: dict[str, Any],
+    *,
+    source_zone: str | None = None,
+    combine_zone: str | None = None,
+) -> list[Any]:
+    """*query* on *yaml*: on ``all`` if it reads one data source, else each leg on its own.
+
+    Each source's session, and the combine step's, in the time zone given.
+    """
+
+    def connect(path: str) -> Any:
+        con = duckdb.connect(path, read_only=True)
+        if source_zone:
+            con.execute(f"SET TimeZone = '{source_zone}'")
+        return con
+
+    compiled = _compile(yaml, query)
+    if compiled.federation is None:
+        con = connect(paths["all"])
+        try:
+            return sorted(_rows(con, compiled.sql), key=repr)
+        finally:
+            con.close()
+    combine = duckdb.connect()
+    if combine_zone:
+        combine.execute(f"SET TimeZone = '{combine_zone}'")
+    for leg in compiled.federation.legs:
+        con = connect(paths[leg.data_source])
+        try:
+            combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
+        finally:
+            con.close()
+    return sorted(_rows(combine, compiled.sql), key=repr)
+
+
+def _regions_required(yaml: str) -> str:
+    return yaml.replace(
+        "        joinTo: Regions\n        columnsFrom: [Customer Region]",
+        "        joinTo: Regions\n        required: true\n        columnsFrom: [Customer Region]",
+    )
+
+
+class TestAnInnerJoinInALeg:
+    """Orders left-joined to their customers and inner-joined on to the
+    customers' regions: one database drops the orders whose customer has no
+    region (12, 13) or is missing (99), and so does the combine step, where
+    the customers' leg holds only those with a region."""
+
+    @pytest.mark.parametrize(
+        ("query", "expected"),
+        [
+            (
+                {"select": {"fields": ["Orders.Amount", "Regions.Region Name"]}},
+                [(Decimal("100.50"), "EU"), (Decimal("20.25"), "EU"), (Decimal("7.00"), "US")],
+            ),
+            (
+                {"select": {"dimensions": ["Region Name"], "measures": ["Revenue"]}},
+                [("EU", Decimal("120.75")), ("US", Decimal("7.00"))],
+            ),
+        ],
+        ids=["raw", "aggregated"],
+    )
+    def test_drops_the_fact_rows_one_database_drops(
+        self, chain_files: dict[str, str], query: dict[str, Any], expected: list[Any]
+    ) -> None:
+        single = _run_on(chain_files, _regions_required(chain_yaml("all", "all", "all")), query)
+
+        federated = _run_on(chain_files, _regions_required(chain_yaml("shop", "crm", "crm")), query)
+
+        assert federated == single == expected
+
+
+# Two orders an hour apart, in the hour Berlin's clocks fall back: one wall-clock
+# time there, two instants. Each order's shift starts at the order's instant.
+DST_ORDERS = (
+    "CREATE TABLE orders AS SELECT * FROM (VALUES"
+    " (1, TIMESTAMPTZ '2024-10-27 00:30:00+00', 10.00),"
+    " (2, TIMESTAMPTZ '2024-10-27 01:30:00+00', 20.00)) t(order_id, placed, amount)"
+)
+DST_SHIFTS = (
+    "CREATE TABLE shifts AS SELECT * FROM (VALUES"
+    " (TIMESTAMPTZ '2024-10-27 00:30:00+00', 'early'),"
+    " (TIMESTAMPTZ '2024-10-27 01:30:00+00', 'late')) t(starts, label)"
+)
+
+
+def shifts_yaml(federated: bool) -> str:
+    shop = "    dataSource: shop\n" if federated else ""
+    crm = "    dataSource: crm\n" if federated else ""
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+  queryTimezone: Europe/Berlin
+dataObjects:
+  Orders:
+    code: orders
+{shop}    columns:
+      Order ID: {{code: order_id, abstractType: int}}
+      Placed: {{code: placed, abstractType: timestamp_tz}}
+      Amount: {{code: amount, abstractType: decimal}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Shifts
+        columnsFrom: [Placed]
+        columnsTo: [Starts]
+  Shifts:
+    code: shifts
+{crm}    columns:
+      Starts: {{code: starts, abstractType: timestamp_tz}}
+      Label: {{code: label, abstractType: string}}
+dimensions:
+  Shift: {{dataObject: Shifts, column: Label, resultType: string}}
+  Placed: {{dataObject: Orders, column: Placed, resultType: timestamp_tz}}
+measures:
+  Revenue:
+    {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum, resultType: decimal}}
+"""
+
+
+@pytest.fixture(scope="module")
+def shift_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("shifts")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+    for name, statements in (
+        ("all", [DST_ORDERS, DST_SHIFTS]),
+        ("shop", [DST_ORDERS]),
+        ("crm", [DST_SHIFTS]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+class TestKeysInTheirOwnTime:
+    """A timestamp join key is compared as stored, as one database's join
+    compares it, while the query reads the same column in Berlin's time."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"fields": ["Orders.Order ID", "Shifts.Label"]}},
+            {"select": {"fields": ["Orders.Order ID", "Orders.Placed", "Shifts.Label"]}},
+            {"select": {"dimensions": ["Shift"], "measures": ["Revenue"]}},
+            {"select": {"dimensions": ["Placed", "Shift"], "measures": ["Revenue"]}},
+        ],
+        ids=["raw", "raw_with_the_key_as_a_field", "aggregated", "aggregated_by_the_key"],
+    )
+    def test_two_instants_of_one_wall_clock_time_stay_two_keys(
+        self, shift_files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        single = _run_on(shift_files, shifts_yaml(False), query)
+
+        assert _run_on(shift_files, shifts_yaml(True), query) == single
+        assert len(single) == 2
+
+
+def labelled_yaml(federated: bool, required: bool = False) -> str:
+    """The test model, with customer columns computed from the region."""
+    yaml = model_yaml(federated=federated).replace(
+        "      Tenant: {code: tenant, abstractType: string}\n",
+        "      Tenant: {code: tenant, abstractType: string}\n"
+        "      Region Label:\n"
+        "        {code: region_label, abstractType: string,"
+        " expression: \"COALESCE({[Customers].[Region]}, 'unknown')\"}\n"
+        "      Region Code:\n"
+        "        {code: region_code, abstractType: string,"
+        ' expression: "UPPER({[Customers].[Region]})"}\n',
+    )
+    yaml = yaml.replace(
+        "dimensions:\n",
+        "dimensions:\n"
+        "  Region Label: {dataObject: Customers, column: Region Label, resultType: string}\n"
+        "  Region Code: {dataObject: Customers, column: Region Code, resultType: string}\n",
+        1,
+    )
+    if required:
+        yaml = yaml.replace(
+            "        joinTo: Customers\n",
+            "        joinTo: Customers\n        required: true\n",
+            1,
+        )
+    return yaml
+
+
+def _label(value: str) -> dict[str, Any]:
+    return {"field": "Region Label", "op": "=", "value": value}
+
+
+class TestComputedOverAMissingRow:
+    """Order 6's customer 99 is not in the CRM. One database computes the
+    customer's columns over NULLs, and COALESCE makes 'unknown' of them; the
+    customers' leg has no row to compute it from."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Region Label"], "measures": ["Revenue"]}},
+            {"select": {"measures": ["Revenue"]}, "where": [_label("unknown")]},
+            {"select": {"fields": ["Orders.Order ID", "Customers.Region Label"]}},
+            {"select": {"fields": ["Orders.Order ID"]}, "where": [_label("unknown")]},
+            {
+                "select": {"fields": ["Orders.Order ID"]},
+                "where": [{"field": "Customers.Region Label", "op": "=", "value": "EU"}],
+            },
+        ],
+        ids=["selected", "filtered", "raw_field", "raw_filter", "raw_column_filter"],
+    )
+    def test_a_value_over_nulls_is_refused(self, query: dict[str, Any]) -> None:
+        with pytest.raises(ResolutionError) as caught:
+            _compile(labelled_yaml(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert "Region Label" in error.message
+        assert "would read as NULL" in error.message
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Region Code"], "measures": ["Revenue"]}},
+            {"select": {"fields": ["Orders.Order ID", "Customers.Region Code"]}},
+        ],
+        ids=["aggregated", "raw"],
+    )
+    def test_null_over_nulls_is_computed(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        """UPPER of no region is NULL, as the combine step reads it."""
+        single = _run_on(files, labelled_yaml(False), query)
+
+        assert _run_on(files, labelled_yaml(True), query) == single
+        assert any(None in row for row in single)
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Region Label"], "measures": ["Revenue"]}},
+            {"select": {"fields": ["Orders.Order ID", "Customers.Region Label"]}},
+        ],
+        ids=["aggregated", "raw"],
+    )
+    def test_through_a_required_join_it_is_never_read_missing(
+        self, files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        single = _run_on(files, labelled_yaml(False, required=True), query)
+
+        assert _run_on(files, labelled_yaml(True, required=True), query) == single
+        assert single
+
+
+def keyed_chain_yaml(sources: tuple[str, str, str], expression: str, required: bool) -> str:
+    """The chain, the customers joined to their regions by a key computed by *expression*."""
+    yaml = chain_yaml(*sources).replace(
+        "      Customer Region: {code: region_id, abstractType: int}\n",
+        "      Customer Region: {code: region_id, abstractType: int}\n"
+        f"      Region Key: {{code: region_key, abstractType: int, expression: '{expression}'}}\n",
+    )
+    return yaml.replace(
+        "        joinTo: Regions\n        columnsFrom: [Customer Region]",
+        "        joinTo: Regions\n"
+        + ("        required: true\n" if required else "")
+        + "        columnsFrom: [Region Key]",
+    )
+
+
+class TestAComputedJoinKeyOverAMissingRow:
+    """``COALESCE(region, -1)`` joins an order whose customer is missing to
+    the unknown region (-1) in one database; the customers' leg has no row
+    to compute the key from, and an inner join to the regions within it
+    does not drop that order there."""
+
+    COALESCED = "COALESCE({[Customers].[Customer Region]}, -1)"
+    QUERIES = [
+        {"select": {"dimensions": ["Region Name"], "measures": ["Revenue"]}},
+        {"select": {"fields": ["Orders.Amount", "Regions.Region Name"]}},
+    ]
+
+    @pytest.mark.parametrize("query", QUERIES, ids=["aggregated", "raw"])
+    @pytest.mark.parametrize("required", [False, True], ids=["left", "required"])
+    @pytest.mark.parametrize(
+        "sources",
+        [("shop", "crm", "geo"), ("shop", "crm", "crm")],
+        ids=["across_sources", "within_a_source"],
+    )
+    def test_is_refused(
+        self, sources: tuple[str, str, str], required: bool, query: dict[str, Any]
+    ) -> None:
+        with pytest.raises(ResolutionError) as caught:
+            _compile(keyed_chain_yaml(sources, self.COALESCED, required), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert "The join key 'Customers.Region Key'" in error.message
+
+    @pytest.mark.parametrize("query", QUERIES, ids=["aggregated", "raw"])
+    @pytest.mark.parametrize("required", [False, True], ids=["left", "required"])
+    def test_one_null_over_nulls_is_computed(
+        self, chain_files: dict[str, str], required: bool, query: dict[str, Any]
+    ) -> None:
+        expression = "{[Customers].[Customer Region]} * 1"
+        single = _run_on(
+            chain_files, keyed_chain_yaml(("all", "all", "all"), expression, required), query
+        )
+
+        federated = _run_on(
+            chain_files, keyed_chain_yaml(("shop", "crm", "crm"), expression, required), query
+        )
+
+        assert federated == single
+        assert single
+
+
+# 00:30 UTC on New Year's Day is New Year's Eve in Los Angeles.
+ZONED_ORDERS = (
+    "CREATE TABLE orders AS SELECT * FROM (VALUES"
+    " (1, TIMESTAMPTZ '2024-01-01 00:30:00+00', 10),"
+    " (2, TIMESTAMPTZ '2024-01-15 12:00:00+00', 11),"
+    " (3, TIMESTAMPTZ '2023-12-10 12:00:00+00', 99)) t(order_id, placed, customer_id)"
+)
+ZONED_CUSTOMERS = (
+    "CREATE TABLE customers AS SELECT * FROM (VALUES (10, 'EU'), (11, 'US')) t(customer_id, region)"
+)
+
+
+def zoned_yaml(federated: bool, query_zone: bool) -> str:
+    shop = "    dataSource: shop\n" if federated else ""
+    crm = "    dataSource: crm\n" if federated else ""
+    zone = "  queryTimezone: America/Los_Angeles\n" if query_zone else ""
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+{zone}dataObjects:
+  Orders:
+    code: orders
+{shop}    columns:
+      Order ID: {{code: order_id, abstractType: int}}
+      Placed: {{code: placed, abstractType: timestamp_tz}}
+      Order Customer: {{code: customer_id, abstractType: int}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+  Customers:
+    code: customers
+{crm}    columns:
+      Customer ID: {{code: customer_id, abstractType: int}}
+      Region: {{code: region, abstractType: string}}
+dimensions:
+  Region: {{dataObject: Customers, column: Region, resultType: string}}
+  Order Month: {{dataObject: Orders, column: Placed, resultType: date, timeGrain: month}}
+"""
+
+
+@pytest.fixture(scope="module")
+def zoned_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("zoned")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+    for name, statements in (
+        ("all", [ZONED_ORDERS, ZONED_CUSTOMERS]),
+        ("shop", [ZONED_ORDERS]),
+        ("crm", [ZONED_CUSTOMERS]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+class TestZonedDatesAfterTheJoin:
+    """A raw-mode filter after the join on December, of orders placed in Los
+    Angeles: the combine step, in UTC, would put order 1 in January."""
+
+    QUERY = {
+        "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+        "where": [_either({"field": "Order Month", "op": "=", "value": "2023-12-01"}, US)],
+    }
+
+    def test_without_a_query_time_zone_it_is_refused(self) -> None:
+        with pytest.raises(ResolutionError) as caught:
+            _compile(zoned_yaml(True, query_zone=False), self.QUERY)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+        assert "Order Month" in error.message
+
+    def test_in_the_query_time_zone_the_leg_returns_its_wall_clock(
+        self, zoned_files: dict[str, str]
+    ) -> None:
+        zones = {"source_zone": "America/Los_Angeles", "combine_zone": "UTC"}
+        yaml = zoned_yaml(False, query_zone=True)
+        single = _run_on(zoned_files, yaml, self.QUERY, **zones)
+
+        federated = _run_on(zoned_files, zoned_yaml(True, query_zone=True), self.QUERY, **zones)
+
+        assert federated == single == [(1, "EU"), (2, "US"), (3, None)]

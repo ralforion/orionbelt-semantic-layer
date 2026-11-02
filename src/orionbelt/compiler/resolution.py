@@ -1676,7 +1676,9 @@ class QueryResolver:
 
         # 7. Resolve order by — a dimension or measure in SELECT, or a measure
         # or metric the query does not select.
-        select_count = len(ctx.result.dimensions) + len(ctx.result.measures)
+        select_count = (
+            len(ctx.result.dimensions) + len(ctx.result.measures) + len(ctx.result.fields)
+        )
         selected = {d.name for d in ctx.result.dimensions} | {m.name for m in ctx.result.measures}
         for ob in query.order_by:
             if self._order_only(ctx, ob.field, selected):
