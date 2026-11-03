@@ -933,7 +933,8 @@ def plan_federated(
         } | {*keys, *onward}
         planner.check_unnested_reads(
             unnested,
-            [*dims, *dim_own_grain.values()],
+            dims,
+            dim_own_grain.values(),
             {
                 **{
                     f"The join '{on.from_object}' -> '{on.to_object}'": [
@@ -2227,12 +2228,13 @@ class _Planner:
         self,
         unnested: dict[str, str],
         dimensions: Iterable[str],
+        own_grain: Iterable[str],
         columns: dict[str, Iterable[tuple[str, str]]],
     ) -> None:
         """Refuse a dimension leg returning a value read through an unnest that the
         query does not group by.
 
-        A leg returns a row per distinct row of what it returns: a column of
+        A leg returns a row per distinct row of what it returns: a value of
         an object read through an unnest (:meth:`unnested_objects`) that no
         dimension the query groups by returns gives it several rows per key
         and group, one per element, and the combine step would count a fact
@@ -2240,32 +2242,41 @@ class _Planner:
         (``grain_dedup``): by region, filtered on ``Amount > 90 OR Tag =
         'gold'``, an order of a customer with two tags would count twice.
 
-        *dimensions* are those the leg returns, a grain where the query
-        selects one at it; *columns* the others it returns, by what reads
-        them. A dimension the query, or a ``per``, groups by at no grain
-        returns its column; at a grain, its period.
+        A value is a column at a time grain: by month, the dates of the
+        month are values of their own. *dimensions* are those the leg
+        returns, at the grain the query selects them at or their own;
+        *own_grain* those it returns at their own grain, or as stored beside
+        a metric across periods; *columns* the other columns it returns, by
+        what reads them, with the objects their expressions read. A
+        ``per`` dimension groups its metric's first stage only, not the
+        query's other measures.
         """
-        grouped = [*map(DimensionRef.parse, _dimension_refs(self.query)), *self.per_refs()]
+        grouped = {self._leg_value(DimensionRef.parse(d)) for d in _dimension_refs(self.query)}
+        stored = self.stores_dates()
         dimensions_of = self.model.dimensions
-        returned = {
-            (dimensions_of[ref.name].view, dimensions_of[ref.name].column)
-            for ref in grouped
-            if ref.grain is None
-        }
         reads = [
-            (
-                f"Dimension '{ref.name}'",
-                self._dimension_objects(ref.name),
-                (dimensions_of[ref.name].view, dimensions_of[ref.name].column),
-            )
+            (f"Dimension '{ref.name}'", self._dimension_objects(ref.name), self._leg_value(ref))
             for ref in map(DimensionRef.parse, dimensions)
-            if ref.grain is None
         ]
         reads += [
-            (what, {obj}, (obj, col)) for what, pairs in columns.items() for obj, col in pairs
+            (
+                f"Dimension '{name}'",
+                self._dimension_objects(name),
+                (
+                    dimensions_of[name].view,
+                    dimensions_of[name].column,
+                    None if stored else dimensions_of[name].time_grain,
+                ),
+            )
+            for name in own_grain
         ]
-        for what, objects, pair in reads:
-            if pair in returned:
+        reads += [
+            (what, {obj} | self.model.column_reference_objects(obj, col), (obj, col, None))
+            for what, pairs in columns.items()
+            for obj, col in pairs
+        ]
+        for what, objects, value in reads:
+            if value in grouped:
                 continue
             for obj in sorted(objects & unnested.keys()):
                 raise self.refuse(
@@ -2275,6 +2286,11 @@ class _Planner:
                     "per element, and the combine step would count a fact row once per element",
                     hint="Select what it reads as a dimension too, or query it on one data source.",
                 )
+
+    def _leg_value(self, ref: DimensionRef) -> tuple[str, str, TimeGrain | None]:
+        """The value a leg returns for *ref*: its column, at its grain or the dimension's."""
+        dimension = self.model.dimensions[ref.name]
+        return (dimension.view, dimension.column, ref.grain or dimension.time_grain)
 
     def _declared_join(
         self, a: str, b: str, from_columns: list[str], to_columns: list[str]
