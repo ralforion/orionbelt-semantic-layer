@@ -475,7 +475,7 @@ group. Those that do not are computed **from the fact leg's rows**.
 | Aggregation | The fact leg returns | The combine query computes |
 |---|---|---|
 | `sum`, `count`, synthesized counts | the sum, the count | the sum of them; a count over no rows is 0 |
-| `min`, `max`, `any_value` | the minimum, maximum, any value | the minimum, maximum, any value of them |
+| `min`, `max`, `any_value` | the minimum, maximum, any value; of strings, each one's rank among the groups' too | the minimum, maximum, any value of them; of strings, the value at the least or greatest rank ([in the source's order](#values-compared-across-engines)) |
 | `avg` | its argument's sum and count | the summed sums over the summed counts, exactly |
 | `count_distinct` of one column | groups by that column too | its distinct values across every group they reach |
 | `variance`, `var_pop`, `stddev`, `stddev_pop` of integers or declared decimals | count, sum and sum of squares, each value squared exactly | the statistic from their totals, exactly |
@@ -740,6 +740,18 @@ a filtered dimension leg returned ([key injection](#key-injection)), it reads
 them as stored, and MySQL compares them by its collation. Keys between legs
 on two engines compare bytewise: neither's equality is one database's.
 
+Order is another matter: a source orders strings by its collation, which
+on PostgreSQL's `en_US.utf8`, the default of many installations, and on
+MySQL's `utf8mb4_0900_ai_ci` puts `'b'` before `'C'`, where DuckDB, ordering
+bytes, puts it after. A `min` or `max` of strings combines in its source's
+order: the fact leg ranks each group's value among the groups', in its own
+engine (`DENSE_RANK() OVER (ORDER BY __leg."Least Status")`), and the
+combine step takes the value at the least or greatest rank, with totals,
+grain overrides and `rollup` / `cube` subtotals too. Of values the engine
+calls equal, which share a rank, it takes the bytewise least or greatest,
+one of those one database may answer. What else orders strings in the
+combine step orders them bytewise, as [listed](#results-that-can-differ-from-one-database).
+
 A measure [computed from rows](#objects-the-joins-repeat) whose filter compares
 such a value, a MySQL string, has its filters evaluated by the fact leg, in
 its own engine: the leg returns `1` where they hold, else `0`, beside the rows
@@ -883,7 +895,7 @@ Not refused, and documented here so they are known:
 | Join keys across engines | between legs on two engines, keys compare bytewise, whatever a source's collation. Between two MySQL legs, [by their weight strings](#values-compared-across-engines): key columns of two collations, which one MySQL database compares by the binary one or refuses, match where their weight strings agree |
 | A timestamp with a time zone compared to a literal after the join | the combine step reads the literal (`'2023-12-01'`) in its DuckDB's time zone, the OBSL server process's, where a source reads it in its session's; a model's `queryTimezone` makes the legs return wall-clock times, which compare alike |
 | Raw-mode `distinct` across sources | deduplicates as DuckDB: two MySQL strings of one collation class (`'a'`, `'A'`) are two rows |
-| `min` / `max` of strings | the combine step orders strings bytewise |
+| Strings ordered after the join | a source may order strings by its collation (PostgreSQL's `en_US.utf8` puts `'b'` before `'C'`), the combine step orders them bytewise. A `min` or `max` of strings combines [in its source's order](#values-compared-across-engines), except [computed from rows](#computed-from-rows): there it orders bytewise, as does every aggregation ordering strings. So do an `orderBy`, a `having`, a window metric, a reaggregate metric's own `min` or `max`, and a filter after the join that compares strings by order (`gt`, `between`, ...), but on MySQL, where it [runs in its leg](#values-compared-across-engines) |
 | Doubles computed from rows | far from zero the result depends on the order values are added in, as on one source |
 | Integer variance computed from rows | beside a measure that needs rows, a variance is DuckDB's double variance, not the exact one from moments |
 | Decimal products computed from rows | typed as DuckDB types them, as on one DuckDB: two decimals of 18 digits or fewer multiply to `DECIMAL(18, s1 + s2)`, so two of 2 places raise an overflow past 10^14, where PostgreSQL and MySQL compute the product exactly |

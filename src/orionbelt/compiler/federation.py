@@ -44,7 +44,16 @@ from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from orionbelt.ast.nodes import CaseExpr, ColumnRef, Expr, JoinType, Literal, UnaryOp
+from orionbelt.ast.nodes import (
+    CaseExpr,
+    ColumnRef,
+    Expr,
+    JoinType,
+    Literal,
+    OrderByItem,
+    UnaryOp,
+    WindowFunction,
+)
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.cfl_projection import group_measures_by_object
 from orionbelt.compiler.composability import metric_leaf_measures, metric_measure_names
@@ -126,6 +135,7 @@ from orionbelt.models.semantic import (
     ReaggregatePopulation,
     SemanticModel,
     TimeGrain,
+    WithinGroup,
 )
 from orionbelt.models.synthesis import synthesize_count_measure
 from orionbelt.models.types import DecimalType
@@ -794,6 +804,9 @@ def plan_federated(
         variances: dict[str, tuple[str, str, str, int]] = {}
     else:
         leg_measures, averages, distinct, variances = _leg_measures(model, measures, taken)
+    # A minimum or maximum of strings combines as the value the fact leg ranks
+    # least or greatest among its groups, in its own engine (:func:`_ranks`).
+    ranks = {} if from_rows else _ranks(model, measures, taken)
     # The values a count of distinct values counts: the fact leg groups by them
     # too, so the combine step counts them across every group they reach.
     fact_values = {column: (obj, col) for column, obj, col in distinct.values()}
@@ -917,9 +930,19 @@ def plan_federated(
     renamed.update({source: hidden for hidden, source in fact_kept.items()})
     fact_columns += [
         DataObjectColumn(name=column, code=column, abstract_type=DataType.INT)
-        for column in predicates
+        for column in [*predicates, *ranks.values()]
     ]
-    fact_predicates = {**predicates, **matched.get(fact, {})}
+    fact_predicates = {
+        **predicates,
+        **matched.get(fact, {}),
+        **{
+            rank: WindowFunction(
+                func_name="DENSE_RANK",
+                order_by=[OrderByItem(expr=ColumnRef(name=name, table=_LEG_ALIAS))],
+            )
+            for name, rank in ranks.items()
+        },
+    }
     squares = {squared: scale for _, _, squared, scale in variances.values()}
     with (
         partial_sums(),
@@ -1364,7 +1387,9 @@ def plan_federated(
                     },
                 )
                 if from_rows and m not in distinct
-                else _combine_measure(model, m, leg_columns.get(m), once_of.get(m, "leg_0")),
+                else _combine_measure(
+                    model, m, leg_columns.get(m), once_of.get(m, "leg_0"), ranks.get(m)
+                ),
                 renamed,
                 {
                     field: [*static_names.get(field, []), *outcomes.get(field, [])]
@@ -3997,6 +4022,35 @@ def _leg_measures(
     return measures, averages, distinct, variances
 
 
+def _ranks(model: SemanticModel, names: set[str], taken: set[str]) -> dict[str, str]:
+    """The fact leg column ranking each minimum or maximum of strings of *names*.
+
+    A minimum of minima is the minimum, as one database's, only where the
+    combine step orders the values as their engine does, and DuckDB orders
+    strings by their bytes, where an engine orders them by their collation:
+    PostgreSQL's ``en_US.utf8`` puts ``'a'`` before ``'B'``, MySQL's
+    ``utf8mb4_0900_ai_ci`` ``'é'`` before ``'f'``. The fact leg ranks each
+    group's value among its groups', ``DENSE_RANK() OVER (ORDER BY ...)`` in
+    its own engine, and the combine step takes the value at the least (the
+    greatest) rank (:func:`_combine_measure`). Values their engine calls
+    equal share a rank, and the combine step takes the bytewise least (the
+    greatest) of them, which is one of the minima (the maxima) one database
+    may answer.
+
+    Each column takes a name none of *taken* (casefolded) is, and is added to
+    it.
+    """
+    effective = model.effective_measures
+    ranked = sorted(
+        name
+        for name in names
+        if effective[name].aggregation in (AggregationType.MIN, AggregationType.MAX)
+        and not effective[name].distinct
+        and effective[name].result_type == DataType.STRING
+    )
+    return {name: _unused(f"__rank{n}", taken) for n, name in enumerate(ranked)}
+
+
 def _counts_distinct(measure: Measure) -> bool:
     """Whether *measure* counts distinct values: ``count_distinct``, or a distinct ``count``."""
     return measure.aggregation == AggregationType.COUNT_DISTINCT or (
@@ -4406,7 +4460,11 @@ def _unused(name: str, taken: set[str]) -> str:
 
 
 def _combine_measure(
-    model: SemanticModel, name: str, column: str | None = None, view: str = "leg_0"
+    model: SemanticModel,
+    name: str,
+    column: str | None = None,
+    view: str = "leg_0",
+    rank: str | None = None,
 ) -> Measure:
     """The measure re-aggregated from the fact leg's partial results.
 
@@ -4418,7 +4476,9 @@ def _combine_measure(
     variance keeps its aggregation over its leg *column* of sums, which the
     combine compile reads with its counts and squares; and a count of
     distinct values counts its leg *column* of values (:func:`_leg_measures`),
-    from *view* where the fact leg returns rows (:func:`_row_measures`).
+    from *view* where the fact leg returns rows (:func:`_row_measures`). A
+    minimum or maximum of strings is the value at the least or greatest of
+    its leg column of *rank*s, a ``first`` or ``last`` (:func:`_ranks`).
     """
     measure = model.effective_measures[name]
     counts_distinct = _counts_distinct(measure)
@@ -4431,6 +4491,9 @@ def _combine_measure(
         aggregation = measure.aggregation
     elif column is not None:
         aggregation = AggregationType.SUM
+    elif rank is not None:
+        last = measure.aggregation == AggregationType.MAX
+        aggregation = AggregationType.LAST if last else AggregationType.FIRST
     else:
         aggregation = _REAGGREGATE[measure.aggregation]
     averages = measure.aggregation == AggregationType.AVG
@@ -4445,6 +4508,9 @@ def _combine_measure(
         name=name,
         columns=[DataColumnRef(view=view, column=column or name)],
         aggregation=aggregation,
+        within_group=(
+            WithinGroup(column=DataColumnRef(view=view, column=rank)) if rank is not None else None
+        ),
         result_type=measure.result_type,
         data_type=measure.data_type
         or (resolved.render() if isinstance(resolved, DecimalType) else None),

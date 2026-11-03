@@ -6,7 +6,10 @@ MySQL's default collation ignores case and accents, ClickHouse tells ``-0.0``
 from ``0.0`` - the leg rewrites the value (``Dialect.equality_key``) so the
 combine step agrees, and both legs of a join rewrite its keys
 (``Dialect.match_key``). A filter on one source's dimensions runs in its leg,
-where the engine compares as it does over one source. Each engine's answer
+where the engine compares as it does over one source. A minimum or maximum
+of strings is taken at the least or greatest rank its leg gave it, in the
+engine's own order: MySQL's collation and PostgreSQL's ``en_US.utf8`` put
+``'b'`` before ``'C'``, which DuckDB puts after it. Each engine's answer
 over one source is the reference: both of a query's sources are the engine
 itself here, and the same rows are read either way.
 """
@@ -59,6 +62,8 @@ measures:
   Rows: {{columns: [{{dataObject: Facts, column: Key}}], aggregation: count}}
   Names: {{columns: [{{dataObject: Facts, column: Name}}], aggregation: count_distinct}}
   Floats: {{columns: [{{dataObject: Facts, column: F}}], aggregation: count_distinct}}
+  Least Name: {{columns: [{{dataObject: Facts, column: Name}}], aggregation: min}}
+  Greatest Name: {{columns: [{{dataObject: Facts, column: Name}}], aggregation: max}}
 """
 
 # Values one engine or another calls equal, on different keys of one label,
@@ -75,8 +80,15 @@ FACTS: list[tuple[int, str | None, float | None]] = [
     (7, "æ", -0.0),
     (8, "ae", 0.0),
     (9, None, None),
+    # Ordered 'b' before 'C' by a collation, after it by bytes.
+    (10, "b", 4.0),
+    (11, "C", 4.5),
 ]
-GROUPS = [(1, "x"), (2, "x"), (3, "x"), (4, "x"), (5, "y"), (6, "y"), (7, "y"), (8, "y"), (9, "y")]
+GROUPS = [
+    *[(k, "x") for k in (1, 2, 3, 4)],
+    *[(k, "y") for k in (5, 6, 7, 8, 9)],
+    *[(k, "z") for k in (10, 11)],
+]
 # The names' kinds, keyed by a name: MySQL's collation joins 'a' and 'A' to
 # 'A', 'ß' to 'SS', where bytes match 'A' alone. 'b ' is not 'B' there.
 KINDS = [("A", "first"), ("É", "accent"), ("SS", "double"), ("B", "plain"), ("AE", "joined")]
@@ -211,6 +223,17 @@ def _assert_equality(target: VendorTarget) -> None:
     assert sorted(_fold(federated), key=repr) == sorted(_fold(single), key=repr), (
         f"{target.name}: the injected keys differ"
     )
+
+    # The least and greatest of the names of two keys, 'b' and 'C': in the
+    # engine's order, which a collation can make 'b' first.
+    single, federated = _answers(
+        target,
+        {
+            "select": {"dimensions": ["Label"], "measures": ["Least Name", "Greatest Name"]},
+            "where": [{"field": "Label", "op": "=", "value": "z"}],
+        },
+    )
+    assert _fold(federated) == _fold(single), f"{target.name}: the least and greatest differ"
 
 
 def test_duckdb_federated_equality(vendor_duckdb: VendorTarget) -> None:
