@@ -728,6 +728,18 @@ legs return what DuckDB then compares as they do:
 The other six engines compare as DuckDB does, measured. What still compares as
 DuckDB does is listed under [limitations](#results-that-can-differ-from-one-database).
 
+A join between two legs on MySQL matches its string keys by their collation
+too. Both legs return each key as its weight string, in hex
+(`HEX(WEIGHT_STRING(x))`, weighed without its trailing spaces where the
+collation pads them, as `utf8mb4_general_ci` does), which is the same
+whichever leg computes it: an order's `'a1'` finds the product stored as
+`'A1'`, as on one source. Measured against MySQL's `=` under twelve
+collations, they match alike but for a trailing ideographic space, which
+`utf8mb4_unicode_ci` pads as a space. Where the fact leg reads only the keys
+a filtered dimension leg returned ([key injection](#key-injection)), it reads
+them as stored, and MySQL compares them by its collation. Keys between legs
+on two engines compare bytewise: neither's equality is one database's.
+
 A measure [computed from rows](#objects-the-joins-repeat) whose filter compares
 such a value, a MySQL string, has its filters evaluated by the fact leg, in
 its own engine: the leg returns `1` where they hold, else `0`, beside the rows
@@ -868,7 +880,7 @@ Not refused, and documented here so they are known:
 | Today's date | a `relative` filter counts from the date of the engine that runs it: a leg's source in its session's time zone, or, after the join, the combine step's DuckDB in the time zone of the OBSL server's process. Around midnight, where the zones differ, one query can count from two dates |
 | Patterns after the join on the measures' MySQL strings compare as DuckDB | a pattern (`like`, `contains`, ...), or a comparison with a number, on a MySQL string of the measures' own source, in a filter after the join, compares the value the fact leg returned for its group, bytewise. [Other conditions](#values-compared-across-engines) run in their leg |
 | ClickHouse float dimensions | DuckDB makes one group of `0.0` and `-0.0`, where ClickHouse makes two |
-| Join keys across sources | compare bytewise, whatever a source's collation |
+| Join keys across engines | between legs on two engines, keys compare bytewise, whatever a source's collation. Between two MySQL legs, [by their weight strings](#values-compared-across-engines): key columns of two collations, which one MySQL database compares by the binary one or refuses, match where their weight strings agree |
 | A timestamp with a time zone compared to a literal after the join | the combine step reads the literal (`'2023-12-01'`) in its DuckDB's time zone, the OBSL server process's, where a source reads it in its session's; a model's `queryTimezone` makes the legs return wall-clock times, which compare alike |
 | Raw-mode `distinct` across sources | deduplicates as DuckDB: two MySQL strings of one collation class (`'a'`, `'A'`) are two rows |
 | `min` / `max` of strings | the combine step orders strings bytewise |

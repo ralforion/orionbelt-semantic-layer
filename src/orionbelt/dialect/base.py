@@ -774,6 +774,19 @@ class Dialect(ABC):
         """
         return None
 
+    def match_key(self, column: Expr, abstract_type: str) -> Expr | None:
+        """What a federated leg returns for join key *column* so DuckDB matches it as this engine.
+
+        The combine step joins two legs on their keys in DuckDB. Where this
+        engine calls two keys equal and DuckDB does not, both legs of a join
+        on this engine return the key rewritten as a string equal for equal
+        keys alone, the same whichever leg computes it, where the value
+        :meth:`equality_key` returns is one of a leg's own rows. *abstract_type*
+        is the key's OBML type. ``None``, the default, where DuckDB already
+        agrees.
+        """
+        return None
+
     def wrap_leg(self, sql: str, projection: list[tuple[str, Expr]], alias: str) -> str:
         """``SELECT projection FROM (sql) AS alias``: a leg with rewritten columns."""
         items = ",\n       ".join(

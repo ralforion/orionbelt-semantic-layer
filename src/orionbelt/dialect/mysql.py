@@ -7,6 +7,8 @@ from dataclasses import replace
 from decimal import Decimal
 
 from orionbelt.ast.nodes import (
+    BinaryOp,
+    CaseExpr,
     Cast,
     Expr,
     FunctionCall,
@@ -191,6 +193,38 @@ class MySQLDialect(Dialect):
             ),
             abstract_type,
         )
+
+    def match_key(self, column: Expr, abstract_type: str) -> Expr | None:
+        """A string key as its collation's weight string, in hex.
+
+        Two legs on MySQL return each key as ``WEIGHT_STRING``: equal where
+        the key column's collation calls the keys equal, ``'a'`` and ``'A'``,
+        ``'ß'`` and ``'ss'`` under ``utf8mb4_0900_ai_ci``, and the same
+        whichever leg computes it. A collation that pads with spaces
+        (``utf8mb4_general_ci``, ``latin1_swedish_ci``, the ``_bin`` ones but
+        ``utf8mb4_0900_bin``) calls ``'a'`` and ``'a '`` equal and weighs the
+        trailing space: such a key is weighed without its trailing spaces,
+        where ``CONCAT(x, ' ') = x`` tells the collation pads. Measured
+        against ``=`` over pairs of cased, accented, padded, ignorable and
+        full-width strings under twelve collations: equal alike, but for a
+        trailing ideographic space, which ``utf8mb4_unicode_ci`` pads as a
+        space. ``HEX`` makes it a string DuckDB reads as such.
+        """
+        if abstract_type != "string":
+            return None
+        pads = BinaryOp(
+            left=FunctionCall(name="CONCAT", args=[column, Literal.string(" ")]),
+            op="=",
+            right=column,
+        )
+        trimmed = FunctionCall(
+            name="WEIGHT_STRING", args=[FunctionCall(name="RTRIM", args=[column])]
+        )
+        weight = CaseExpr(
+            when_clauses=[(pads, trimmed)],
+            else_clause=FunctionCall(name="WEIGHT_STRING", args=[column]),
+        )
+        return FunctionCall(name="HEX", args=[weight])
 
     backslash_escapes_strings = True
 
