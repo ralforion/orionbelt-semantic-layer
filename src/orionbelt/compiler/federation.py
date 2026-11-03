@@ -2243,9 +2243,10 @@ class _Planner:
         'gold'``, an order of a customer with two tags would count twice.
 
         A value is a column at a time grain: by month, the dates of the
-        month are values of their own. A timestamp a dimension shows in the
+        month are values of their own. A dimension reading a timestamp in the
         model's ``queryTimezone`` is a value of its own too: in Berlin, 00:30
-        and 01:30 UTC on the night the clocks go back both show 02:30. *dimensions*
+        and 01:30 UTC on the night the clocks go back both show 02:30, and
+        their hours, 0 and 1 as stored, both 2. *dimensions*
         are those the leg returns, at the grain the query selects them at or
         their own; *own_grain* those it returns at their own grain, or as
         stored beside a metric across periods; *columns* the other columns it
@@ -2298,22 +2299,14 @@ class _Planner:
         self, name: str, grain: TimeGrain | None
     ) -> tuple[str, str, TimeGrain | None, str | None]:
         """The value a leg returns for dimension *name* at *grain*: its column at
-        that grain, and the dimension where it shows a timestamp in the
-        model's ``queryTimezone``, as resolution converts one: zoned, or
-        naive with a ``defaultTimezone``."""
+        that grain, and the dimension where it reads a timestamp in the model's
+        ``queryTimezone``, itself or one its expression reads (the hour of
+        one): its SQL is not the stored column's, which a join key reads."""
         dimension = self.model.dimensions[name]
-        column = self.model.data_objects[dimension.view].columns.get(dimension.column)
-        held = column.abstract_type if column is not None else None
-        settings = self.model.settings
-        zoned = (
-            settings is not None
-            and bool(settings.query_timezone)
-            and (
-                held is DataType.TIMESTAMP_TZ
-                or (held is DataType.TIMESTAMP and bool(settings.default_timezone))
-            )
-        )
-        return (dimension.view, dimension.column, grain, name if zoned else None)
+        view, column = dimension.view, dimension.column
+        shown = make_column_expr(self.model, view, column)
+        zoned = shown != make_column_expr(self.model, view, column, in_query_timezone=False)
+        return (view, column, grain, name if zoned else None)
 
     def _declared_join(
         self, a: str, b: str, from_columns: list[str], to_columns: list[str]

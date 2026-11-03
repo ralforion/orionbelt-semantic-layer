@@ -5296,8 +5296,8 @@ def island_files(tmp_path_factory: Any) -> dict[str, dict[str, str]]:
 
 
 # Customer 10 tagged at 00:30 and at 01:30 UTC on the night Berlin's clocks
-# go back, both shown as 02:30 there; each moment's tier on a source of its
-# own, both top.
+# go back, both shown as 02:30 there, their hours 0 and 1 as 2; each moment's
+# tier, and each hour's, on a source of their own, both top.
 MOMENT_TABLES = {
     "shop": ISLAND_TABLES["shop"],
     "crm": [
@@ -5310,14 +5310,17 @@ MOMENT_TABLES = {
         "CREATE TABLE moments AS SELECT * FROM (VALUES"
         " (TIMESTAMPTZ '2024-10-27 00:30:00+00', 'top'),"
         " (TIMESTAMPTZ '2024-10-27 01:30:00+00', 'top'),"
-        " (TIMESTAMPTZ '2024-11-01 10:00:00+00', 'mid')) t(moment, tier)"
+        " (TIMESTAMPTZ '2024-11-01 10:00:00+00', 'mid')) t(moment, tier)",
+        "CREATE TABLE hours AS SELECT * FROM (VALUES (0, 'top'), (1, 'top'), (10, 'mid'))"
+        " t(hour, tier)",
     ],
 }
 
 
 def moments_model(federated: bool, zone: bool) -> str:
-    """Orders, their customers' tags and each tag's moment's tier; in Berlin
-    where *zone*."""
+    """Orders, their customers' tags and each tag's moment's tier, and its
+    hour's; in Berlin where *zone*. The orders' join to their customers is
+    required, so a column computed from the tags has a value only where they do."""
 
     def source(name: str) -> str:
         return f"    dataSource: {name}\n" if federated else ""
@@ -5337,6 +5340,7 @@ settings:
     joins:
       - joinType: many-to-one
         joinTo: Customers
+        required: true
         columnsFrom: [Order Customer]
         columnsTo: [Customer ID]
   Customers:
@@ -5347,19 +5351,31 @@ settings:
     nestedIn: {{dataObject: Customers, column: Tags}}
     columns:
       Tagged At: {{code: Stamp, abstractType: timestamp_tz}}
+      Tagged Hour: {{expression: "extract('hour', {{Tagged At}})", abstractType: int}}
     joins:
       - joinType: one-to-one
         joinTo: Moments
         columnsFrom: [Tagged At]
         columnsTo: [Moment]
+      - joinType: one-to-one
+        joinTo: Hours
+        columnsFrom: [Tagged Hour]
+        columnsTo: [Hour]
   Moments:
     code: moments
 {source("geo")}    columns:
       Moment: {{code: moment, abstractType: timestamp_tz}}
       Tier: {{code: tier, abstractType: string}}
+  Hours:
+    code: hours
+{source("geo")}    columns:
+      Hour: {{code: hour, abstractType: int}}
+      Hour Tier: {{code: tier, abstractType: string}}
 dimensions:
   Tagged At: {{dataObject: Customer Tags, column: Tagged At, resultType: timestamp_tz}}
   Tier: {{dataObject: Moments, column: Tier, resultType: string}}
+  Tagged Hour: {{dataObject: Customer Tags, column: Tagged Hour, resultType: int}}
+  Hour Tier: {{dataObject: Hours, column: Hour Tier, resultType: string}}
 measures:
   Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
 """
@@ -5652,24 +5668,34 @@ class TestDimensionSourceJoins:
         assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
         assert "A model filter unnests 'Customer Tags'" in error.message
 
+    @pytest.mark.parametrize(
+        ("dimensions", "join"),
+        [
+            (["Tagged At", "Tier"], "'Customer Tags' -> 'Moments'"),
+            (["Tagged Hour", "Hour Tier"], "'Customer Tags' -> 'Hours'"),
+        ],
+        ids=["on_the_timestamp", "on_its_hour"],
+    )
     def test_a_timestamp_joined_on_from_an_unnested_object(
-        self, moment_files: dict[str, str]
+        self, moment_files: dict[str, str], dimensions: list[str], join: str
     ) -> None:
         """By moment and tier, customer 10's orders once per moment: as stored,
         00:30 and 01:30 UTC are two values, as the join to their tiers keeps
-        them. In Berlin both show 02:30, a group the join's two keys would
-        count customer 10's orders twice in, 241.50 for 120.75: refused."""
-        query = {"select": {"dimensions": ["Tagged At", "Tier"], "measures": ["Revenue"]}}
+        them, and so are their hours, 0 and 1. In Berlin both show 02:30, and
+        both hours 2, a group the join's two keys would count customer 10's
+        orders twice in, 241.50 for 120.75: refused."""
+        query = {"select": {"dimensions": dimensions, "measures": ["Revenue"]}}
+        utc = {"source_zone": "UTC", "combine_zone": "UTC"}
 
-        single = _run_on(moment_files, moments_model(False, zone=False), query)
+        single = _run_on(moment_files, moments_model(False, zone=False), query, **utc)
 
-        assert _run_on(moment_files, moments_model(True, zone=False), query) == single
+        assert _run_on(moment_files, moments_model(True, zone=False), query, **utc) == single
         assert single
         with pytest.raises(ResolutionError) as caught:
             _compile(moments_model(True, zone=True), query)
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
-        assert "The join 'Customer Tags' -> 'Moments' unnests 'Customer Tags'" in error.message
+        assert f"The join {join} unnests 'Customer Tags'" in error.message
 
     @pytest.mark.parametrize(
         ("static", "measure", "reader"),
