@@ -673,8 +673,10 @@ across such a dimension) the query is computed from rows:
   without a sale as well, as one database adds them;
 - the combine model reads each such object's rows once each, as a relation of
   its own, with what its measures read and the dimensions and keys the query
-  reads of it, and counts each once per group: a customer without sales is in
-  the group of its own region;
+  reads of it, or the outcome of a condition on them its leg evaluates
+  ([Values compared across engines](#values-compared-across-engines)), and
+  counts each once per group: a customer without sales is in the group of its
+  own region;
 - a filter of such a measure on the sales themselves (the ages of the
   customers with a sale of one product) reads the fact rows, as one database
   filters the joined rows before it counts each customer once: the relation
@@ -748,13 +750,19 @@ returns `1` where it holds, `0` where it fails and NULL where it is unknown
 (`CASE WHEN __leg.Region = 'eu' THEN 1 WHEN NOT __leg.Region = 'eu' THEN 0 END
 AS __wf0`), and the combine step tests that column, so `Region = 'eu' OR
 Amount > 90` keeps the orders of the region MySQL stores as `'EU'`, and a
-negated group stays unknown where MySQL's does. A filter context leaving out
-or keeping only the field names that column with it. The leg of a dimension
-source returns one value per key, and evaluates any condition; the fact leg
-returns its rows grouped, one value for all those its engine calls equal, and
-evaluates only a comparison with strings, as it does a measure's filters. A
-pattern, or a comparison with a number, on a MySQL string of the measures' own
-source stays in the combine step, and compares as DuckDB does.
+negated group stays unknown where MySQL's does. A row the join leaves
+unmatched reads NULL there, where a comparison is unknown too. A `blank` test
+holds for NULL and a `notblank` one fails, never unknown: for those the leg
+returns `1` where the condition fails (`blank`) or holds (`notblank`), NULL
+otherwise, and the combine step tests `IS NULL` or `IS NOT NULL`, so an order
+whose customer is missing passes `Region blank`, as in one database. A filter
+context leaving out or keeping only the field names that column with it. The
+leg of a dimension source returns one value per key, and evaluates any
+condition; the fact leg returns its rows grouped, one value for all those its
+engine calls equal, and evaluates only a comparison with strings, as it does a
+measure's filters. A pattern, or a comparison with a number, on a MySQL string
+of the measures' own source stays in the combine step, and compares as DuckDB
+does.
 
 ## Running a federated query
 

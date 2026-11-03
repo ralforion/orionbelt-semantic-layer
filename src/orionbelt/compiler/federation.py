@@ -204,6 +204,14 @@ _VALUELESS_OPERATORS = frozenset(
         FilterOperator.NONEXISTS,
     }
 )
+# The filter operators that hold for NULL, or fail for it, where any other
+# with a value is unknown: the null test the combine step tests their
+# outcome with, which a row the join leaves unmatched passes, or fails
+# (:func:`_outcome`).
+_NULL_TESTS = {
+    FilterOperator.BLANK: FilterOperator.IS_NULL,
+    FilterOperator.NOT_BLANK: FilterOperator.IS_NOT_NULL,
+}
 # The filter operators that hold for every value of a group its engine calls
 # equal, or for none, given values of the column's own type: comparisons.
 _COMPARISON_OPERATORS = frozenset(
@@ -726,7 +734,7 @@ def plan_federated(
             if condition is None:
                 return None
             outcome_of[key] = _unused(f"__wf{len(outcome_of)}", taken)
-            in_leg.setdefault(home, {})[outcome_of[key]] = _outcome(condition)
+            in_leg.setdefault(home, {})[outcome_of[key]] = _outcome(condition, leaf.op)
             outcomes.setdefault(leaf.field, []).append(outcome_of[key])
         return outcome_of[key]
 
@@ -949,7 +957,15 @@ def plan_federated(
             fact_dims,
             from_fact,
             [names for edge, names in zip(edges, key_names, strict=True) if edge.parent == fact],
-            fact_own_grain,
+            {
+                **fact_own_grain,
+                **{
+                    column: field
+                    for field, columns in outcomes.items()
+                    for column in columns
+                    if column in in_leg.get(fact, {})
+                },
+            },
             fact_static_columns,
         ).items()
     }
@@ -1448,12 +1464,12 @@ def _plan_raw(
     # static filter's: by island, each outcome column's. A leg returns rows.
     in_leg: dict[int, dict[str, Expr]] = {island: {} for island in leg_of}
 
-    def returned(island: int, condition: Expr | None) -> str | None:
-        """The leg column of *condition*'s outcome, evaluated by *island*'s leg."""
-        if condition is None:
+    def returned(island: int, outcome: Expr | None) -> str | None:
+        """The leg column of a condition's *outcome* (:func:`_outcome`), in *island*'s leg."""
+        if outcome is None:
             return None
         name = _unused(f"__wf{sum(map(len, in_leg.values()))}", taken)
-        in_leg[island][name] = _outcome(condition)
+        in_leg[island][name] = outcome
         combine_dimensions[name] = _outcome_dimension(name, leg_of[island])
         return name
 
@@ -1469,7 +1485,7 @@ def _plan_raw(
             return None
         value = read(obj, column).split(".", 1)[1]
         condition = build_filter_expr(ColumnRef(name=value, table=_LEG_ALIAS), leaf, [])
-        return returned(home, condition)
+        return returned(home, None if condition is None else _outcome(condition, leaf.op))
 
     for item in query.where:
         owners = {island_of.get(o) for o in planner.raw_filter_objects(item)}
@@ -3033,15 +3049,16 @@ class _Planner:
         fact_dims: list[str],
         edges: list[_Edge],
         key_names: list[list[str]],
-        own_grain: dict[str, str],
+        of_dimensions: dict[str, str],
         static: dict[str, tuple[str, str]],
     ) -> dict[str, str]:
         """The fact leg's dimensions and keys read through an object measures read, each to it.
 
-        The dimensions at their own grain too (*own_grain*: each column's name
-        with the dimension's), and the columns of the static filters the
-        combine step applies (*static*: each column's name with the data
-        object and column it reads).
+        Its other columns of a dimension too, at its own grain or a condition's
+        outcome on it (*of_dimensions*: each column's name with the
+        dimension's), and the columns of the static filters the combine step
+        applies (*static*: each column's name with the data object and column
+        it reads).
 
         Such an object (:meth:`parents`, from rows) and the objects it joins
         many-to-one have one row per row of it: one database reads those
@@ -3067,7 +3084,7 @@ class _Planner:
         for name in (DimensionRef.parse(d).name for d in fact_dims):
             if owner := through(self._dimension_objects(name), f"dimension '{name}'"):
                 read[name] = owner
-        for column, name in own_grain.items():
+        for column, name in of_dimensions.items():
             if owner := through(self._dimension_objects(name), f"dimension '{name}'"):
                 read[column] = owner
         for edge, names in zip(edges, key_names, strict=True):
@@ -3478,9 +3495,8 @@ class _Planner:
         bytewise; MySQL compares one by its column's collation, so ``Region
         = 'eu'`` holds for ``'EU'`` there (:meth:`Dialect.equality_key`) and
         not after the join. The leg of such a value evaluates the condition
-        in its own engine instead, and returns ``1`` where it holds, ``0``
-        where it fails and NULL where it is unknown (:func:`_outcome`), which
-        the combine step tests. A null test compares no value.
+        in its own engine instead, and returns its outcome (:func:`_outcome`),
+        which the combine step tests. A null test compares no value.
 
         A leg that *grouped* the rows it returns (the fact leg's partial
         results, or its rows) returns one of the values its engine calls
@@ -3519,7 +3535,7 @@ class _Planner:
             QueryFilter(field=name, op=f.operator, value=value),
             [],
         )
-        return None if condition is None else _outcome(condition)
+        return None if condition is None else _outcome(condition, f.operator)
 
     def leg_dialect(self, island: set[str]) -> Dialect:
         """The dialect the leg of *island* is written in."""
@@ -4069,12 +4085,25 @@ def _static_after_join(f: ModelFilter, leg: str, column: str, *, tested: bool) -
     declared, or the test of its outcome where the leg evaluated it."""
     update: dict[str, Any] = {"data_object": leg, "column": column}
     if tested:
-        update |= {"operator": FilterOperator.EQUALS.value, "value": 1, "values": []}
+        test, value = _test(f.operator)
+        update |= {"operator": test.value, "value": value, "values": []}
     return f.model_copy(update=update)
 
 
-def _outcome(condition: Expr) -> Expr:
-    """``1`` where *condition* holds, ``0`` where it fails, NULL where it is unknown."""
+def _outcome(condition: Expr, op: str) -> Expr:
+    """The leg column of *condition*, with operator *op*, the combine step tests (:func:`_test`).
+
+    ``1`` where it holds, ``0`` where it fails, NULL where it is unknown, as
+    is the condition on the NULL of a row the join leaves unmatched. One that
+    holds for NULL, or fails for it (:data:`_NULL_TESTS`), is never unknown:
+    its column is ``1`` where it fails, or holds, and NULL elsewhere.
+    """
+    test = _NULL_TESTS.get(FilterOperator(op))
+    if test is not None:
+        flagged = (
+            UnaryOp(op="NOT", operand=condition) if test == FilterOperator.IS_NULL else condition
+        )
+        return CaseExpr(when_clauses=[(flagged, Literal(value=1))])
     return CaseExpr(
         when_clauses=[
             (condition, Literal(value=1)),
@@ -4083,17 +4112,27 @@ def _outcome(condition: Expr) -> Expr:
     )
 
 
+def _test(op: str) -> tuple[FilterOperator, int | None]:
+    """The combine step's test of a leg's outcome of a condition with operator
+    *op* (:func:`_outcome`), and the value it tests for."""
+    test = _NULL_TESTS.get(FilterOperator(op))
+    return (FilterOperator.EQUALS, 1) if test is None else (test, None)
+
+
 def _tested(item: QueryFilterItem, outcome: Callable[[QueryFilter], str | None]) -> QueryFilterItem:
     """*item* with each condition a leg evaluates testing the leg's column of it.
 
     *outcome* names that column, or ``None`` for a condition the combine step
-    evaluates itself. A test of ``1`` is unknown where the outcome is, so a
-    negated group stays unknown where one database's is.
+    evaluates itself. The test (:func:`_test`) is unknown where the condition
+    is, so a negated group stays unknown where one database's is.
     """
     if isinstance(item, QueryFilterGroup):
         return item.model_copy(update={"filters": [_tested(f, outcome) for f in item.filters]})
     column = outcome(item)
-    return item if column is None else QueryFilter(field=column, op=FilterOperator.EQUALS, value=1)
+    if column is None:
+        return item
+    test, value = _test(item.op)
+    return QueryFilter(field=column, op=test, value=value)
 
 
 def _leg_predicates(
@@ -4354,16 +4393,17 @@ def _combine_context(
             )
         )
 
-    included = [
-        item.model_copy(update={"field": renamed.get(item.field, item.field)})
-        if (column := tested.get(_condition_key(item.field, item.op, item.value))) is None
-        else FilterContextFilter(field=column, op=FilterOperator.EQUALS.value, value=1)
-        for item in context.include
-    ]
+    def included(item: FilterContextFilter) -> FilterContextFilter:
+        column = tested.get(_condition_key(item.field, item.op, item.value))
+        if column is None:
+            return item.model_copy(update={"field": renamed.get(item.field, item.field)})
+        test, value = _test(item.op)
+        return FilterContextFilter(field=column, op=test.value, value=value)
+
     update = {
         "exclude": names(context.exclude),
         "keep_only": names(context.keep_only),
-        "include": included,
+        "include": [included(item) for item in context.include],
     }
     return measure.model_copy(update={"filter_context": context.model_copy(update=update)})
 

@@ -7,9 +7,9 @@ window metrics, whose legs return each date as stored for the combine step to
 truncate, raw-mode rows joined in the combine step, measures with a grain or a
 filter context of their own, measures of independent facts, a query of
 their own each, unioned in the combine step, and conditions after the join on
-strings, static filters too, each run in its leg. Every source is the engine itself, as in
-``test_federated_equality_exec``: the combined answer must be the engine's own
-over one source.
+strings, static filters and blank tests too, each run in its leg. Every source
+is the engine itself, as in ``test_federated_equality_exec``: the combined
+answer must be the engine's own over one source.
 """
 
 from __future__ import annotations
@@ -371,11 +371,29 @@ QUERIES = {
             }
         ],
     },
+    # A blank test holds for the region of orders 4, 5 and 6, none or missing.
+    "a_blank_test_after_the_join": {
+        "select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]},
+        "where": [
+            {
+                "logic": "or",
+                "filters": [
+                    {"field": "Region", "op": "blank"},
+                    {"field": "Status", "op": "=", "value": "OPEN"},
+                ],
+            }
+        ],
+    },
+    "raw_rows_of_a_negated_filled_test": {
+        "select": {"fields": ["Orders.Order ID", "Regions.Region Name"]},
+        "where": [{"negated": True, "filters": [{"field": "Region", "op": "notblank"}]}],
+    },
 }
 # A static filter on the regions, which runs after the join, in their leg.
 STATIC = (
     "filters:\n  - {dataObject: Regions, column: Region Name, operator: notequals, value: us}\n"
 )
+BLANK = "filters:\n  - {dataObject: Regions, column: Region Name, operator: blank}\n"
 STATIC_QUERIES: dict[str, Any] = {
     "a_static_string_filter": {"select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]}},
     "raw_rows_of_a_static_string_filter": {
@@ -406,7 +424,7 @@ def _rows(rows: list[dict[str, Any]]) -> list[tuple[tuple[str, Any], ...]]:
 def _assert_shapes(target: VendorTarget) -> None:
     store = ModelStore()
     wrong = []
-    for static, queries in (("", QUERIES), (STATIC, STATIC_QUERIES)):
+    for static, queries in (("", QUERIES), (STATIC, STATIC_QUERIES), (BLANK, STATIC_QUERIES)):
         wrong += _wrong_shapes(target, store, static, queries)
     assert not wrong, f"{target.name}:\n" + "\n".join(wrong)
 
