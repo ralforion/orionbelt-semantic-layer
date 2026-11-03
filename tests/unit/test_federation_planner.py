@@ -5102,6 +5102,630 @@ class TestExistsOverNested:
         assert sorted(_rows(combine, plan.combine_sql)) == expected
 
 
+# Orders on the shop; customers in the CRM with their tags (an array), a
+# profile each (one-to-one) and links to topics (many-to-many), and each tag's
+# tier (one-to-one); profiles and tiers on a source of their own where asked.
+# Customer 10 is tagged vip and gold, both in January, 11 vip in February,
+# 12 has no tags and 13 none at all; order 6's customer 99 is missing. A vip
+# is top tier, a gold one mid.
+ISLAND_TABLES = {
+    "shop": [
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10, 100.50), (2, 10, 20.25),"
+        " (3, 11, 7.00), (4, 12, 55.10), (5, 13, 3.15), (6, 99, 40.00))"
+        " t(order_id, customer_id, amount)"
+    ],
+    "crm": [
+        "CREATE TABLE customers"
+        " (customer_id INT, region VARCHAR, tags STRUCT(Name VARCHAR, Tagged DATE)[])",
+        "INSERT INTO customers VALUES"
+        " (10, 'EU', [{'Name': 'vip', 'Tagged': DATE '2024-01-05'},"
+        " {'Name': 'gold', 'Tagged': DATE '2024-01-20'}]),"
+        " (11, 'US', [{'Name': 'vip', 'Tagged': DATE '2024-02-01'}]), (12, NULL, []),"
+        " (13, 'EU', NULL)",
+        "CREATE TABLE links AS SELECT * FROM (VALUES (10, 'x'), (10, 'y'), (11, 'x'))"
+        " t(customer_id, topic)",
+    ],
+    "geo": [
+        "CREATE TABLE profiles AS SELECT * FROM (VALUES (10, 'a'), (11, 'b'), (13, 'c'))"
+        " t(customer_id, segment)",
+        "CREATE TABLE tiers AS SELECT * FROM (VALUES ('vip', 'top'), ('gold', 'mid')) t(tag, tier)",
+    ],
+}
+
+
+# An order over 90, or one of a customer tagged gold: one database's
+# ``Region`` keeps orders 1 and 2 of customer 10, once each.
+AMOUNT_OR_GOLD = {
+    "logic": "or",
+    "filters": [
+        {"field": "Order Amount", "op": ">", "value": 90},
+        {"field": "Tag", "op": "=", "value": "gold"},
+    ],
+}
+
+
+def island_model(federated: bool, geo: str = "crm", *, required: bool = False) -> str:
+    """Orders, and customers with what they join one-to-one, many-to-many and unnest.
+
+    The profiles and the tiers on *geo*; the orders' join to their customers
+    *required* where asked.
+    """
+
+    def source(name: str) -> str:
+        return f"    dataSource: {name}\n" if federated else ""
+
+    inner = "        required: true\n" if required else ""
+
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Orders:
+    code: orders
+{source("shop")}    columns:
+      Order ID: {{code: order_id, abstractType: int, primaryKey: true}}
+      Order Customer: {{code: customer_id, abstractType: int}}
+      Amount: {{code: amount, abstractType: decimal}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+{inner}        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+  Customers:
+    code: customers
+{source("crm")}    columns:
+      Customer ID: {{code: customer_id, abstractType: int}}
+      Region: {{code: region, abstractType: string}}
+      Tag Copy: {{expression: "{{[Customer Tags].[Tag]}}", abstractType: string}}
+    joins:
+      - joinType: one-to-one
+        joinTo: Profiles
+        columnsFrom: [Customer ID]
+        columnsTo: [Profile Customer]
+      - joinType: many-to-many
+        joinTo: Links
+        columnsFrom: [Customer ID]
+        columnsTo: [Link Customer]
+  Customer Tags:
+    nestedIn: {{dataObject: Customers, column: Tags}}
+    columns:
+      Tag: {{code: Name, abstractType: string}}
+      Tagged: {{code: Tagged, abstractType: date}}
+    joins:
+      - joinType: one-to-one
+        joinTo: Tiers
+        columnsFrom: [Tag]
+        columnsTo: [Tier Tag]
+  Tiers:
+    code: tiers
+{source(geo)}    columns:
+      Tier Tag: {{code: tag, abstractType: string}}
+      Tier: {{code: tier, abstractType: string}}
+  Profiles:
+    code: profiles
+{source(geo)}    columns:
+      Profile Customer: {{code: customer_id, abstractType: int}}
+      Segment: {{code: segment, abstractType: string}}
+  Links:
+    code: links
+{source("crm")}    columns:
+      Link Customer: {{code: customer_id, abstractType: int}}
+      Topic: {{code: topic, abstractType: string}}
+dimensions:
+  Region: {{dataObject: Customers, column: Region, resultType: string}}
+  Tag: {{dataObject: Customer Tags, column: Tag, resultType: string}}
+  Tagged On: {{dataObject: Customer Tags, column: Tagged, resultType: date}}
+  Tagged Month: {{dataObject: Customer Tags, column: Tagged, resultType: date, timeGrain: month}}
+  Segment: {{dataObject: Profiles, column: Segment, resultType: string}}
+  Topic: {{dataObject: Links, column: Topic, resultType: string}}
+  Tier: {{dataObject: Tiers, column: Tier, resultType: string}}
+  Order Amount: {{dataObject: Orders, column: Amount, resultType: decimal}}
+measures:
+  Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
+  Tagged Revenue:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filters:
+      - logic: or
+        filters:
+          - column: {{dataObject: Customer Tags, column: Tag}}
+            operator: equals
+            values: [{{dataType: string, valueString: vip}}]
+          - column: {{dataObject: Customer Tags, column: Tag}}
+            operator: equals
+            values: [{{dataType: string, valueString: gold}}]
+  Revenue Tagged Since 2024:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filters:
+      - column: {{dataObject: Customer Tags, column: Tagged}}
+        operator: gte
+        values: [{{dataType: date, valueDate: "2024-01-01"}}]
+  Revenue by Tag Copy:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filters:
+      - logic: or
+        filters:
+          - column: {{dataObject: Customers, column: Tag Copy}}
+            operator: equals
+            values: [{{dataType: string, valueString: vip}}]
+          - column: {{dataObject: Customers, column: Tag Copy}}
+            operator: equals
+            values: [{{dataType: string, valueString: gold}}]
+  Revenue Any Tag:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filterContext: {{exclude: [Tag]}}
+  Median Order: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: median}}
+  Revenue Total:
+    {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum, total: true}}
+  Revenue per Region:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    grain: {{mode: FIXED, include: [Region]}}
+metrics:
+  Revenue per Tag: {{type: reaggregate, measure: Revenue, per: [Tag], aggregation: avg}}
+  Running Revenue: {{type: cumulative, measure: Revenue, timeDimension: Tagged Month}}
+"""
+
+
+@pytest.fixture(scope="module")
+def island_files(tmp_path_factory: Any) -> dict[str, dict[str, str]]:
+    """The tables on one source, and on the shop, the CRM and the profiles' and tiers' own."""
+    root = tmp_path_factory.mktemp("islands")
+    every = [statement for statements in ISLAND_TABLES.values() for statement in statements]
+    layouts = {
+        "crm": {
+            "shop": ISLAND_TABLES["shop"],
+            "crm": [*ISLAND_TABLES["crm"], *ISLAND_TABLES["geo"]],
+        },
+        "geo": ISLAND_TABLES,
+    }
+    paths: dict[str, dict[str, str]] = {}
+    for layout, sources in layouts.items():
+        paths[layout] = {}
+        for name, statements in {"all": every, **sources}.items():
+            paths[layout][name] = str(root / f"{layout}_{name}.duckdb")
+            con = duckdb.connect(paths[layout][name])
+            for statement in statements:
+                con.execute(statement)
+            con.close()
+    return paths
+
+
+# Customer 10 tagged at 00:30 and at 01:30 UTC on the night Berlin's clocks
+# go back, both shown as 02:30 there, their hours 0 and 1 as 2; each moment's
+# tier, and each hour's, on a source of their own, both top.
+MOMENT_TABLES = {
+    "shop": ISLAND_TABLES["shop"],
+    "crm": [
+        "CREATE TABLE customers (customer_id INT, tags STRUCT(Name VARCHAR, Stamp TIMESTAMPTZ)[])",
+        "INSERT INTO customers VALUES (10, [{'Name': 'vip', 'Stamp': '2024-10-27 00:30:00+00'},"
+        " {'Name': 'gold', 'Stamp': '2024-10-27 01:30:00+00'}]),"
+        " (11, [{'Name': 'vip', 'Stamp': '2024-11-01 10:00:00+00'}])",
+    ],
+    "geo": [
+        "CREATE TABLE moments AS SELECT * FROM (VALUES"
+        " (TIMESTAMPTZ '2024-10-27 00:30:00+00', 'top'),"
+        " (TIMESTAMPTZ '2024-10-27 01:30:00+00', 'top'),"
+        " (TIMESTAMPTZ '2024-11-01 10:00:00+00', 'mid')) t(moment, tier)",
+        "CREATE TABLE hours AS SELECT * FROM (VALUES (0, 'top'), (1, 'top'), (10, 'mid'))"
+        " t(hour, tier)",
+    ],
+}
+
+
+def moments_model(federated: bool, zone: bool) -> str:
+    """Orders, their customers' tags and each tag's moment's tier, and its
+    hour's; in Berlin where *zone*. The orders' join to their customers is
+    required, so a column computed from the tags has a value only where they do."""
+
+    def source(name: str) -> str:
+        return f"    dataSource: {name}\n" if federated else ""
+
+    berlin = "  queryTimezone: Europe/Berlin\n" if zone else ""
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+{berlin}dataObjects:
+  Orders:
+    code: orders
+{source("shop")}    columns:
+      Order ID: {{code: order_id, abstractType: int, primaryKey: true}}
+      Order Customer: {{code: customer_id, abstractType: int}}
+      Amount: {{code: amount, abstractType: decimal}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        required: true
+        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+  Customers:
+    code: customers
+{source("crm")}    columns:
+      Customer ID: {{code: customer_id, abstractType: int}}
+  Customer Tags:
+    nestedIn: {{dataObject: Customers, column: Tags}}
+    columns:
+      Tagged At: {{code: Stamp, abstractType: timestamp_tz}}
+      Tagged Hour: {{expression: "extract('hour', {{Tagged At}})", abstractType: int}}
+    joins:
+      - joinType: one-to-one
+        joinTo: Moments
+        columnsFrom: [Tagged At]
+        columnsTo: [Moment]
+      - joinType: one-to-one
+        joinTo: Hours
+        columnsFrom: [Tagged Hour]
+        columnsTo: [Hour]
+  Moments:
+    code: moments
+{source("geo")}    columns:
+      Moment: {{code: moment, abstractType: timestamp_tz}}
+      Tier: {{code: tier, abstractType: string}}
+  Hours:
+    code: hours
+{source("geo")}    columns:
+      Hour: {{code: hour, abstractType: int}}
+      Hour Tier: {{code: tier, abstractType: string}}
+dimensions:
+  Tagged At: {{dataObject: Customer Tags, column: Tagged At, resultType: timestamp_tz}}
+  Tier: {{dataObject: Moments, column: Tier, resultType: string}}
+  Tagged Hour: {{dataObject: Customer Tags, column: Tagged Hour, resultType: int}}
+  Hour Tier: {{dataObject: Hours, column: Hour Tier, resultType: string}}
+measures:
+  Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
+"""
+
+
+@pytest.fixture(scope="module")
+def moment_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("moments")
+    every = [statement for statements in MOMENT_TABLES.values() for statement in statements]
+    paths = {}
+    for name, statements in {"all": every, **MOMENT_TABLES}.items():
+        paths[name] = str(root / f"{name}.duckdb")
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+class TestDimensionSourceJoins:
+    """Joins inside a dimension source, and from one, that a leg returns as
+    one database joins them, or that it would return otherwise."""
+
+    @pytest.mark.parametrize("profiles", ["crm", "geo"], ids=["inside_the_crm", "between_sources"])
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Segment"], "measures": ["Revenue", "Median Order"]}},
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "where": [{"field": "Segment", "op": "=", "value": "a"}],
+            },
+        ],
+        ids=["by_segment", "filtered_on_segment"],
+    )
+    def test_a_one_to_one_join_repeats_no_rows(
+        self, island_files: dict[str, dict[str, str]], profiles: str, query: dict[str, Any]
+    ) -> None:
+        """A customer's one profile: refused as if it repeated the customer."""
+        paths = island_files[profiles]
+
+        single = _run_on(paths, island_model(False), query)
+
+        assert _compile(island_model(True, profiles), query).federation is not None
+        assert _run_on(paths, island_model(True, profiles), query) == single
+        assert single
+
+    def test_a_many_to_many_join_is_refused(self) -> None:
+        """One database repeats an order once per link of its customer; the
+        links' leg returns each customer's topic once."""
+        query = {"select": {"dimensions": ["Topic"], "measures": ["Revenue"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(island_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert "'Customers' -> 'Links' would repeat the rows of 'Customers'" in error.message
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Tag"], "measures": ["Revenue", "Median Order"]}},
+            {"select": {"dimensions": ["Tag", "Region"], "measures": ["Revenue"]}},
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "where": [{"field": "Tag", "op": "in", "value": ["vip", "gold"]}],
+            },
+            {"select": {"dimensions": ["Tier"], "measures": ["Revenue", "Median Order"]}},
+            {
+                "select": {"dimensions": ["Tag"], "measures": ["Revenue"]},
+                "where": [AMOUNT_OR_GOLD],
+            },
+            {"select": {"dimensions": ["Tag"], "measures": ["Tagged Revenue"]}},
+            {"select": {"dimensions": ["Tagged Month"], "measures": ["Revenue"]}},
+            {"select": {"dimensions": ["Tagged On"], "measures": ["Revenue Tagged Since 2024"]}},
+        ],
+        ids=[
+            "by_tag",
+            "by_tag_and_region",
+            "filtered_on_tags",
+            "by_tier",
+            "by_tag_filtered_after_the_join",
+            "by_tag_filtered_by_a_measure",
+            "by_a_declared_month",
+            "by_date_filtered_by_a_measure",
+        ],
+    )
+    def test_a_dimension_unnested_on_another_source(
+        self, island_files: dict[str, dict[str, str]], query: dict[str, Any]
+    ) -> None:
+        """Customer 10's orders under vip and under gold, once each, and so
+        under each tag's tier; filtered on either tag, once. Filtered after
+        the join, or by a measure, each tag's group holds them once too."""
+        paths = island_files["crm"]
+
+        single = _run_on(paths, island_model(False), query)
+
+        assert _run_on(paths, island_model(True), query) == single
+        assert single
+
+    def test_a_join_on_from_an_unnested_object(
+        self, island_files: dict[str, dict[str, str]]
+    ) -> None:
+        """The tiers on a source of their own, joined on from the tags: by tag
+        and tier, an order once per tag of its customer."""
+        query = {"select": {"dimensions": ["Tag", "Tier"], "measures": ["Revenue"]}}
+        paths = island_files["geo"]
+
+        single = _run_on(paths, island_model(False), query)
+
+        assert _run_on(paths, island_model(True, "geo"), query) == single
+        assert single
+
+    @pytest.mark.parametrize(
+        ("query", "dimension", "why"),
+        [
+            (
+                {"select": {"dimensions": ["Tag"], "measures": ["Revenue"]}, "grouping": "rollup"},
+                "Dimension 'Tag' unnests 'Customer Tags'",
+                "a rollup subtotal",
+            ),
+            (
+                {"select": {"dimensions": ["Tag"], "measures": ["Revenue", "Revenue Total"]}},
+                "Dimension 'Tag' unnests 'Customer Tags'",
+                "measure 'Revenue Total', a total",
+            ),
+            (
+                {"select": {"dimensions": ["Tag", "Region"], "measures": ["Revenue per Region"]}},
+                "Dimension 'Tag' unnests 'Customer Tags'",
+                "measure 'Revenue per Region', at its own grain",
+            ),
+            (
+                {"select": {"dimensions": ["Tier"], "measures": ["Revenue"]}, "grouping": "rollup"},
+                "Dimension 'Tier' reads 'Tiers' through the unnest of 'Customer Tags'",
+                "a rollup subtotal",
+            ),
+            (
+                {"select": {"dimensions": ["Tier"], "measures": ["Revenue", "Revenue Total"]}},
+                "Dimension 'Tier' reads 'Tiers' through the unnest of 'Customer Tags'",
+                "measure 'Revenue Total', a total",
+            ),
+        ],
+        ids=["a_rollup", "a_total", "a_grain", "a_rollup_by_tier", "a_total_by_tier"],
+    )
+    def test_an_aggregate_across_an_unnested_dimension_is_refused(
+        self, query: dict[str, Any], dimension: str, why: str
+    ) -> None:
+        """Across the tags, customer 10's orders came twice: a total of 346.75
+        for 226.00. Across the tiers too, the tags' a tier joins one-to-one."""
+        with pytest.raises(ResolutionError) as caught:
+            _compile(island_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert dimension in error.message
+        assert why in error.message
+
+    @pytest.mark.parametrize(
+        ("query", "geo", "reader"),
+        [
+            (
+                {
+                    "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                    "where": [AMOUNT_OR_GOLD],
+                },
+                "crm",
+                "Dimension 'Tag' unnests 'Customer Tags'",
+            ),
+            (
+                {"select": {"measures": ["Revenue"]}, "where": [AMOUNT_OR_GOLD]},
+                "crm",
+                "Dimension 'Tag' unnests 'Customer Tags'",
+            ),
+            (
+                {
+                    "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                    "where": [
+                        {
+                            "logic": "or",
+                            "filters": [
+                                {"field": "Order Amount", "op": ">", "value": 90},
+                                {"field": "Tier", "op": "=", "value": "top"},
+                            ],
+                        }
+                    ],
+                },
+                "crm",
+                "Dimension 'Tier' reads 'Tiers' through the unnest of 'Customer Tags'",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Region"],
+                        "measures": ["Revenue", "Revenue Any Tag"],
+                    },
+                    "where": [{"field": "Tag", "op": "in", "value": ["vip", "gold"]}],
+                },
+                "crm",
+                "Dimension 'Tag' unnests 'Customer Tags'",
+            ),
+            (
+                {"select": {"dimensions": ["Region"], "measures": ["Tagged Revenue"]}},
+                "crm",
+                "A measure unnests 'Customer Tags'",
+            ),
+            (
+                {"select": {"dimensions": ["Tier"], "measures": ["Revenue"]}},
+                "geo",
+                "The join 'Customer Tags' -> 'Tiers' unnests 'Customer Tags'",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Tagged Month"],
+                        "measures": ["Revenue Tagged Since 2024"],
+                    }
+                },
+                "crm",
+                "A measure unnests 'Customer Tags'",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Region"],
+                        "measures": ["Tagged Revenue", "Revenue per Tag"],
+                    }
+                },
+                "crm",
+                "Dimension 'Tag' unnests 'Customer Tags'",
+            ),
+            (
+                {"select": {"dimensions": ["Tagged Month"], "measures": ["Running Revenue"]}},
+                "crm",
+                "Dimension 'Tagged Month' unnests 'Customer Tags'",
+            ),
+        ],
+        ids=[
+            "filtered_after_the_join",
+            "filtered_after_the_join_ungrouped",
+            "filtered_through_a_one_to_one_join",
+            "filtered_beside_a_filter_context",
+            "a_measure_filtered_on_tags",
+            "joined_on_to_another_source",
+            "a_measure_filtered_on_dates_by_their_declared_month",
+            "a_measure_filtered_on_tags_beside_a_reaggregate_per_tag",
+            "a_running_total_by_a_declared_month",
+        ],
+    )
+    def test_a_value_read_through_an_unnest_ungrouped_is_refused(
+        self, query: dict[str, Any], geo: str, reader: str
+    ) -> None:
+        """The leg returns a row per tag that the query does not group by: by
+        region, filtered on an amount over 90 or the gold tag, customer 10's
+        first order came once per tag, 221.25 for 120.75. With the tiers on a
+        source of their own, two tags of one tier would count an order twice:
+        were gold a top tier too, 248.50 for 127.75. By month, customer 10's
+        two January tags are two dates, and a reaggregate per tag groups only
+        its own first stage: 241.50 for 120.75 each. Beside a running total,
+        the leg returns the dates as stored: 346.75 for 226.00."""
+        with pytest.raises(ResolutionError) as caught:
+            _compile(island_model(True, geo), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert reader in error.message
+        assert "which the query does not group by" in error.message
+
+    def test_a_static_filter_on_an_unnested_object(
+        self, island_files: dict[str, dict[str, str]]
+    ) -> None:
+        """A static filter on the tags runs after the join: by tag, each tag's
+        group holds an order once; by region, customer 10's orders came once
+        per tag, 241.50 for 120.75."""
+        static = (
+            "filters:\n"
+            "  - {dataObject: Customer Tags, column: Tag, operator: notequals, value: x}\n"
+        )
+        by_tag = {"select": {"dimensions": ["Tag"], "measures": ["Revenue"]}}
+        by_region = {"select": {"dimensions": ["Region"], "measures": ["Revenue"]}}
+        paths = island_files["crm"]
+
+        single = _run_on(paths, island_model(False) + static, by_tag)
+
+        assert _run_on(paths, island_model(True) + static, by_tag) == single
+        assert single
+        with pytest.raises(ResolutionError) as caught:
+            _compile(island_model(True) + static, by_region)
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert "A model filter unnests 'Customer Tags'" in error.message
+
+    @pytest.mark.parametrize(
+        ("dimensions", "join"),
+        [
+            (["Tagged At", "Tier"], "'Customer Tags' -> 'Moments'"),
+            (["Tagged Hour", "Hour Tier"], "'Customer Tags' -> 'Hours'"),
+        ],
+        ids=["on_the_timestamp", "on_its_hour"],
+    )
+    def test_a_timestamp_joined_on_from_an_unnested_object(
+        self, moment_files: dict[str, str], dimensions: list[str], join: str
+    ) -> None:
+        """By moment and tier, customer 10's orders once per moment: as stored,
+        00:30 and 01:30 UTC are two values, as the join to their tiers keeps
+        them, and so are their hours, 0 and 1. In Berlin both show 02:30, and
+        both hours 2, a group the join's two keys would count customer 10's
+        orders twice in, 241.50 for 120.75: refused."""
+        query = {"select": {"dimensions": dimensions, "measures": ["Revenue"]}}
+        utc = {"source_zone": "UTC", "combine_zone": "UTC"}
+
+        single = _run_on(moment_files, moments_model(False, zone=False), query, **utc)
+
+        assert _run_on(moment_files, moments_model(True, zone=False), query, **utc) == single
+        assert single
+        with pytest.raises(ResolutionError) as caught:
+            _compile(moments_model(True, zone=True), query)
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert f"The join {join} unnests 'Customer Tags'" in error.message
+
+    @pytest.mark.parametrize(
+        ("static", "measure", "reader"),
+        [
+            ("", "Revenue by Tag Copy", "A measure unnests 'Customer Tags'"),
+            (
+                "filters:\n"
+                "  - {dataObject: Customers, column: Tag Copy, operator: notequals, value: x}\n",
+                "Revenue",
+                "A model filter unnests 'Customer Tags'",
+            ),
+        ],
+        ids=["a_measure_filter", "a_static_filter"],
+    )
+    def test_a_column_computed_from_an_unnested_object_is_refused(
+        self, static: str, measure: str, reader: str
+    ) -> None:
+        """A customer column computed from their tags is one per tag: by
+        region, customer 10's orders came once per tag, 241.50 for 120.75. The
+        orders' join required, the combine step reads it where it has a value."""
+        query = {"select": {"dimensions": ["Region"], "measures": [measure]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(island_model(True, required=True) + static, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert reader in error.message
+
+
 # Orders on the shop, employees and customers in the CRM. Order 3 has no
 # support employee, order 5's support employee 9 and customer 999 are missing,
 # and customer 102 has no account manager.
