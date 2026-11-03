@@ -1464,7 +1464,7 @@ def _plan_raw(
     leg_of = {fact: "leg_0"} | {edge.island: f"leg_{e}" for e, edge in enumerate(edges, start=1)}
     reads: dict[int, list[str]] = {island: [] for island in leg_of}
     keys: dict[int, dict[str, tuple[str, str]]] = {island: {} for island in leg_of}
-    key_names: dict[tuple[str, str], str] = {}
+    key_names: dict[tuple[str, str, bool], str] = {}
     taken = _reserved_names(model)
 
     def read(obj: str, column: str) -> str:
@@ -1474,21 +1474,32 @@ def _plan_raw(
             reads[island_of[obj]].append(ref)
         return f"{leg_of[island_of[obj]]}.{ref}"
 
-    def key(obj: str, column: str) -> str:
-        """The leg column of *obj*'s join key *column*: a copy of its own (``island_model``)."""
-        if (obj, column) not in key_names:
-            key_names[obj, column] = _unused(f"__fk{len(key_names)}", taken)
-            keys[island_of[obj]][key_names[obj, column]] = (obj, column)
-        return f"{obj}.{key_names[obj, column]}"
+    def key(obj: str, column: str, matched: bool) -> str:
+        """The leg column of *obj*'s join key *column*: a copy of its own (``island_model``).
+
+        One for the joins reading it as stored, another for those reading it
+        as its engine matches it (:meth:`_Planner.match_keys`): a column
+        joined to legs on two engines has both.
+        """
+        if (obj, column, matched) not in key_names:
+            key_names[obj, column, matched] = _unused(f"__fk{len(key_names)}", taken)
+            keys[island_of[obj]][key_names[obj, column, matched]] = (obj, column)
+        return f"{obj}.{key_names[obj, column, matched]}"
 
     fields = [read(f.object_name, f.column_name) for f in resolved.fields]
-    joins_on = {
-        edge: (
-            [key(edge.from_object, c) for c in edge.from_columns],
-            [key(edge.to_object, c) for c in edge.to_columns],
+    joins_on: dict[_Edge, tuple[list[str], list[str]]] = {}
+    for edge in edges:
+        types = planner.matched_types(edge, islands[edge.parent], islands[edge.island])
+        joins_on[edge] = (
+            [
+                key(edge.from_object, c, kind is not None)
+                for c, kind in zip(edge.from_columns, types, strict=True)
+            ],
+            [
+                key(edge.to_object, c, kind is not None)
+                for c, kind in zip(edge.to_columns, types, strict=True)
+            ],
         )
-        for edge in edges
-    }
     # The keys each leg returns as its engine matches them, as in the
     # aggregated plan (:meth:`_Planner.match_keys`).
     matched: dict[int, dict[str, Expr]] = {island: {} for island in leg_of}
@@ -3581,30 +3592,40 @@ class _Planner:
         )
         return None if condition is None else _outcome(condition, f.operator)
 
-    def match_keys(
-        self, edge: _Edge, parent: set[str], child: set[str], names: list[str]
-    ) -> dict[str, Expr]:
-        """*edge*'s keys its legs return as their engine matches them (:meth:`Dialect.match_key`).
+    def matched_types(self, edge: _Edge, parent: set[str], child: set[str]) -> list[str | None]:
+        """How *edge*'s legs return each of its key columns: as stored (``None``),
+        or as their engine matches it (:meth:`Dialect.match_key`), by its type.
 
-        By the leg column of each, *names* naming them in the order of the
-        edge's columns, its expression over that column. The legs are those
-        of *parent* and *child*, on one engine; a key of one type on both
-        sides. Legs on two engines match keys bytewise: neither's equality is
-        one database's.
+        The legs are those of *parent* and *child*, on one engine; a key of
+        one type on both sides. Legs on two engines match keys bytewise:
+        neither's equality is one database's.
         """
         dialect = self.leg_dialect(parent)
         if dialect.name != self.leg_dialect(child).name:
-            return {}
+            return [None] * len(edge.from_columns)
         objects = self.model.data_objects
+        types: list[str | None] = []
+        for from_column, to_column in zip(edge.from_columns, edge.to_columns, strict=True):
+            kind = objects[edge.from_object].columns[from_column].abstract_type.value
+            other = objects[edge.to_object].columns[to_column].abstract_type.value
+            matched = kind == other and dialect.match_key(ColumnRef(name=""), kind) is not None
+            types.append(kind if matched else None)
+        return types
+
+    def match_keys(
+        self, edge: _Edge, parent: set[str], child: set[str], names: list[str]
+    ) -> dict[str, Expr]:
+        """*edge*'s keys its legs return as their engine matches them (:meth:`matched_types`).
+
+        By the leg column of each, *names* naming the edge's key columns in
+        order, its expression over that column.
+        """
+        dialect = self.leg_dialect(parent)
         matched: dict[str, Expr] = {}
-        for name, from_column, to_column in zip(
-            names, edge.from_columns, edge.to_columns, strict=True
-        ):
-            kind = objects[edge.from_object].columns[from_column].abstract_type
-            if kind != objects[edge.to_object].columns[to_column].abstract_type:
-                continue
-            key = dialect.match_key(ColumnRef(name=name, table=_LEG_ALIAS), kind.value)
-            if key is not None:
+        for name, kind in zip(names, self.matched_types(edge, parent, child), strict=True):
+            if kind is not None:
+                key = dialect.match_key(ColumnRef(name=name, table=_LEG_ALIAS), kind)
+                assert key is not None
                 matched[name] = key
         return matched
 

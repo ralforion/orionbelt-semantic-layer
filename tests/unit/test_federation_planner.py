@@ -6706,7 +6706,8 @@ def test_a_subquery_on_the_facts_source_reads_the_object_with_injected_keys(
 
 # Orders on the shop, their products' lines in a catalog and the lines' names
 # on a third source, each joined on a string key; the reviews of a product in
-# the catalog. Order 3's product is missing, order 4 has none.
+# the catalog; the orders' list prices and the products' stock in a warehouse,
+# on their SKUs too. Order 3's product is missing, order 4 has none.
 KEYED = """\
 version: 1.0
 settings:
@@ -6720,6 +6721,7 @@ dataObjects:
       Amount: {{code: amount, abstractType: decimal}}
     joins:
       - {{joinType: many-to-one, joinTo: Products, columnsFrom: [Order SKU], columnsTo: [SKU]}}
+      - {{joinType: many-to-one, joinTo: Prices, columnsFrom: [Order SKU], columnsTo: [Price SKU]}}
   Products:
     code: products
 {catalog}    columns:
@@ -6727,6 +6729,7 @@ dataObjects:
       Product Line: {{code: line, abstractType: string}}
     joins:
       - {{joinType: many-to-one, joinTo: Lines, columnsFrom: [Product Line], columnsTo: [Code]}}
+      - {{joinType: many-to-one, joinTo: Stock, columnsFrom: [SKU], columnsTo: [Stock SKU]}}
   Lines:
     code: lines
 {lines}    columns:
@@ -6739,9 +6742,21 @@ dataObjects:
       Stars: {{code: stars, abstractType: int}}
     joins:
       - {{joinType: many-to-one, joinTo: Products, columnsFrom: [Review SKU], columnsTo: [SKU]}}
+  Stock:
+    code: stock
+{warehouse}    columns:
+      Stock SKU: {{code: sku, abstractType: string}}
+      Qty: {{code: qty, abstractType: int}}
+  Prices:
+    code: prices
+{warehouse}    columns:
+      Price SKU: {{code: sku, abstractType: string}}
+      List Price: {{code: price, abstractType: decimal}}
 dimensions:
   Line: {{dataObject: Products, column: Product Line, resultType: string}}
   Line Name: {{dataObject: Lines, column: Line Name, resultType: string}}
+  List Price: {{dataObject: Prices, column: List Price, resultType: decimal}}
+  Qty: {{dataObject: Stock, column: Qty, resultType: int}}
 measures:
   Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
 """
@@ -6758,6 +6773,10 @@ KEYED_TABLES = {
         "CREATE TABLE lines AS SELECT * FROM (VALUES ('L1', 'First'), ('L2', 'Second'))"
         " t(code, name)"
     ],
+    "warehouse": [
+        "CREATE TABLE stock AS SELECT * FROM (VALUES ('a1', 3), ('b2', 4)) t(sku, qty)",
+        "CREATE TABLE prices AS SELECT * FROM (VALUES ('a1', 9.99), ('b2', 19.99)) t(sku, price)",
+    ],
 }
 
 
@@ -6765,7 +6784,12 @@ def keyed_model(federated: bool) -> str:
     def source(name: str) -> str:
         return f"    dataSource: {name}\n" if federated else ""
 
-    return KEYED.format(shop=source("shop"), catalog=source("catalog"), lines=source("lines"))
+    return KEYED.format(
+        shop=source("shop"),
+        catalog=source("catalog"),
+        lines=source("lines"),
+        warehouse=source("warehouse"),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -6869,6 +6893,42 @@ class TestKeysMatchedByTheirEngine:
 
         assert plan is not None
         assert all("hex(" in leg.sql for leg in plan.legs)
+        assert _run_on(keyed_files, keyed_model(True), query) == single
+        assert single
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {
+                "select": {
+                    "fields": ["Orders.Order ID", "Products.Product Line", "Prices.List Price"]
+                }
+            },
+            {"select": {"fields": ["Orders.Order ID", "Products.Product Line", "Stock.Qty"]}},
+            {"select": {"dimensions": ["Line", "List Price"], "measures": ["Revenue"]}},
+            {"select": {"dimensions": ["Line Name", "Qty"], "measures": ["Revenue"]}},
+        ],
+        ids=["raw_rows_branching", "raw_rows_chained", "branching", "chained"],
+    )
+    @pytest.mark.usefixtures("hexed")
+    def test_a_key_joined_to_legs_on_two_engines(
+        self,
+        keyed_files: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+        query: dict[str, Any],
+    ) -> None:
+        """A SKU joins the catalog's products, on DuckDB, as DuckDB matches it
+        (in hex here), and the warehouse's prices or stock, on PostgreSQL, as
+        stored: each join reads a column of its own."""
+        pytest.importorskip("ob_flight")
+        monkeypatch.setenv("OBSL_DATABASES", "warehouse")
+        monkeypatch.setenv("DB_WAREHOUSE_TYPE", "postgres")
+        plan = _compile(keyed_model(True), query).federation
+
+        single = _run_on(keyed_files, keyed_model(False), query)
+
+        assert plan is not None
+        assert "postgres" in [leg.dialect for leg in plan.legs]
         assert _run_on(keyed_files, keyed_model(True), query) == single
         assert single
 
