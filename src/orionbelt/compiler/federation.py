@@ -2243,35 +2243,42 @@ class _Planner:
         'gold'``, an order of a customer with two tags would count twice.
 
         A value is a column at a time grain: by month, the dates of the
-        month are values of their own. *dimensions* are those the leg
-        returns, at the grain the query selects them at or their own;
-        *own_grain* those it returns at their own grain, or as stored beside
-        a metric across periods; *columns* the other columns it returns, by
-        what reads them, with the objects their expressions read. A
-        ``per`` dimension groups its metric's first stage only, not the
-        query's other measures.
+        month are values of their own. A timestamp a dimension shows in the
+        model's ``queryTimezone`` is a value of its own too: in Berlin, 00:30
+        and 01:30 UTC on the night the clocks go back both show 02:30. *dimensions*
+        are those the leg returns, at the grain the query selects them at or
+        their own; *own_grain* those it returns at their own grain, or as
+        stored beside a metric across periods; *columns* the other columns it
+        returns, as stored, by what reads them, with the objects their
+        expressions read. A ``per`` dimension groups its metric's first stage
+        only, not the query's other measures.
         """
-        grouped = {self._leg_value(DimensionRef.parse(d)) for d in _dimension_refs(self.query)}
-        stored = self.stores_dates()
         dimensions_of = self.model.dimensions
+        grouped = {
+            self._leg_value(ref.name, ref.grain or dimensions_of[ref.name].time_grain)
+            for ref in map(DimensionRef.parse, _dimension_refs(self.query))
+        }
+        stored = self.stores_dates()
         reads = [
-            (f"Dimension '{ref.name}'", self._dimension_objects(ref.name), self._leg_value(ref))
+            (
+                f"Dimension '{ref.name}'",
+                self._dimension_objects(ref.name),
+                self._leg_value(ref.name, ref.grain or dimensions_of[ref.name].time_grain),
+            )
             for ref in map(DimensionRef.parse, dimensions)
         ]
         reads += [
             (
                 f"Dimension '{name}'",
                 self._dimension_objects(name),
-                (
-                    dimensions_of[name].view,
-                    dimensions_of[name].column,
-                    None if stored else dimensions_of[name].time_grain,
-                ),
+                (dimensions_of[name].view, dimensions_of[name].column, None, None)
+                if stored
+                else self._leg_value(name, dimensions_of[name].time_grain),
             )
             for name in own_grain
         ]
         reads += [
-            (what, {obj} | self.model.column_reference_objects(obj, col), (obj, col, None))
+            (what, {obj} | self.model.column_reference_objects(obj, col), (obj, col, None, None))
             for what, pairs in columns.items()
             for obj, col in pairs
         ]
@@ -2287,10 +2294,26 @@ class _Planner:
                     hint="Select what it reads as a dimension too, or query it on one data source.",
                 )
 
-    def _leg_value(self, ref: DimensionRef) -> tuple[str, str, TimeGrain | None]:
-        """The value a leg returns for *ref*: its column, at its grain or the dimension's."""
-        dimension = self.model.dimensions[ref.name]
-        return (dimension.view, dimension.column, ref.grain or dimension.time_grain)
+    def _leg_value(
+        self, name: str, grain: TimeGrain | None
+    ) -> tuple[str, str, TimeGrain | None, str | None]:
+        """The value a leg returns for dimension *name* at *grain*: its column at
+        that grain, and the dimension where it shows a timestamp in the
+        model's ``queryTimezone``, as resolution converts one: zoned, or
+        naive with a ``defaultTimezone``."""
+        dimension = self.model.dimensions[name]
+        column = self.model.data_objects[dimension.view].columns.get(dimension.column)
+        held = column.abstract_type if column is not None else None
+        settings = self.model.settings
+        zoned = (
+            settings is not None
+            and bool(settings.query_timezone)
+            and (
+                held is DataType.TIMESTAMP_TZ
+                or (held is DataType.TIMESTAMP and bool(settings.default_timezone))
+            )
+        )
+        return (dimension.view, dimension.column, grain, name if zoned else None)
 
     def _declared_join(
         self, a: str, b: str, from_columns: list[str], to_columns: list[str]

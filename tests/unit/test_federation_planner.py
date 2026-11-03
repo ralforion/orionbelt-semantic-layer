@@ -5295,6 +5295,90 @@ def island_files(tmp_path_factory: Any) -> dict[str, dict[str, str]]:
     return paths
 
 
+# Customer 10 tagged at 00:30 and at 01:30 UTC on the night Berlin's clocks
+# go back, both shown as 02:30 there; each moment's tier on a source of its
+# own, both top.
+MOMENT_TABLES = {
+    "shop": ISLAND_TABLES["shop"],
+    "crm": [
+        "CREATE TABLE customers (customer_id INT, tags STRUCT(Name VARCHAR, Stamp TIMESTAMPTZ)[])",
+        "INSERT INTO customers VALUES (10, [{'Name': 'vip', 'Stamp': '2024-10-27 00:30:00+00'},"
+        " {'Name': 'gold', 'Stamp': '2024-10-27 01:30:00+00'}]),"
+        " (11, [{'Name': 'vip', 'Stamp': '2024-11-01 10:00:00+00'}])",
+    ],
+    "geo": [
+        "CREATE TABLE moments AS SELECT * FROM (VALUES"
+        " (TIMESTAMPTZ '2024-10-27 00:30:00+00', 'top'),"
+        " (TIMESTAMPTZ '2024-10-27 01:30:00+00', 'top'),"
+        " (TIMESTAMPTZ '2024-11-01 10:00:00+00', 'mid')) t(moment, tier)"
+    ],
+}
+
+
+def moments_model(federated: bool, zone: bool) -> str:
+    """Orders, their customers' tags and each tag's moment's tier; in Berlin
+    where *zone*."""
+
+    def source(name: str) -> str:
+        return f"    dataSource: {name}\n" if federated else ""
+
+    berlin = "  queryTimezone: Europe/Berlin\n" if zone else ""
+    return f"""\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+{berlin}dataObjects:
+  Orders:
+    code: orders
+{source("shop")}    columns:
+      Order ID: {{code: order_id, abstractType: int, primaryKey: true}}
+      Order Customer: {{code: customer_id, abstractType: int}}
+      Amount: {{code: amount, abstractType: decimal}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+  Customers:
+    code: customers
+{source("crm")}    columns:
+      Customer ID: {{code: customer_id, abstractType: int}}
+  Customer Tags:
+    nestedIn: {{dataObject: Customers, column: Tags}}
+    columns:
+      Tagged At: {{code: Stamp, abstractType: timestamp_tz}}
+    joins:
+      - joinType: one-to-one
+        joinTo: Moments
+        columnsFrom: [Tagged At]
+        columnsTo: [Moment]
+  Moments:
+    code: moments
+{source("geo")}    columns:
+      Moment: {{code: moment, abstractType: timestamp_tz}}
+      Tier: {{code: tier, abstractType: string}}
+dimensions:
+  Tagged At: {{dataObject: Customer Tags, column: Tagged At, resultType: timestamp_tz}}
+  Tier: {{dataObject: Moments, column: Tier, resultType: string}}
+measures:
+  Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
+"""
+
+
+@pytest.fixture(scope="module")
+def moment_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("moments")
+    every = [statement for statements in MOMENT_TABLES.values() for statement in statements]
+    paths = {}
+    for name, statements in {"all": every, **MOMENT_TABLES}.items():
+        paths[name] = str(root / f"{name}.duckdb")
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
 class TestDimensionSourceJoins:
     """Joins inside a dimension source, and from one, that a leg returns as
     one database joins them, or that it would return otherwise."""
@@ -5567,6 +5651,25 @@ class TestDimensionSourceJoins:
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
         assert "A model filter unnests 'Customer Tags'" in error.message
+
+    def test_a_timestamp_joined_on_from_an_unnested_object(
+        self, moment_files: dict[str, str]
+    ) -> None:
+        """By moment and tier, customer 10's orders once per moment: as stored,
+        00:30 and 01:30 UTC are two values, as the join to their tiers keeps
+        them. In Berlin both show 02:30, a group the join's two keys would
+        count customer 10's orders twice in, 241.50 for 120.75: refused."""
+        query = {"select": {"dimensions": ["Tagged At", "Tier"], "measures": ["Revenue"]}}
+
+        single = _run_on(moment_files, moments_model(False, zone=False), query)
+
+        assert _run_on(moment_files, moments_model(True, zone=False), query) == single
+        assert single
+        with pytest.raises(ResolutionError) as caught:
+            _compile(moments_model(True, zone=True), query)
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert "The join 'Customer Tags' -> 'Moments' unnests 'Customer Tags'" in error.message
 
     @pytest.mark.parametrize(
         ("static", "measure", "reader"),
