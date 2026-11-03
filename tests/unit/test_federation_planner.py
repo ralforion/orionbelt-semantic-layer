@@ -5103,9 +5103,10 @@ class TestExistsOverNested:
 
 
 # Orders on the shop; customers in the CRM with their tags (an array), a
-# profile each (one-to-one) and links to topics (many-to-many); profiles on a
-# source of their own where asked. Customer 10 is tagged vip and gold, 11 vip,
-# 12 has no tags and 13 none at all; order 6's customer 99 is missing.
+# profile each (one-to-one) and links to topics (many-to-many), and each tag's
+# tier (one-to-one); profiles and tiers on a source of their own where asked.
+# Customer 10 is tagged vip and gold, 11 vip, 12 has no tags and 13 none at
+# all; order 6's customer 99 is missing. A vip is top tier, a gold one mid.
 ISLAND_TABLES = {
     "shop": [
         "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10, 100.50), (2, 10, 20.25),"
@@ -5121,13 +5122,28 @@ ISLAND_TABLES = {
     ],
     "geo": [
         "CREATE TABLE profiles AS SELECT * FROM (VALUES (10, 'a'), (11, 'b'), (13, 'c'))"
-        " t(customer_id, segment)"
+        " t(customer_id, segment)",
+        "CREATE TABLE tiers AS SELECT * FROM (VALUES ('vip', 'top'), ('gold', 'mid')) t(tag, tier)",
     ],
 }
 
 
-def island_model(federated: bool, profiles: str = "crm") -> str:
-    """Orders, and customers with what they join one-to-one, many-to-many and unnest."""
+# An order over 90, or one of a customer tagged gold: one database's
+# ``Region`` keeps orders 1 and 2 of customer 10, once each.
+AMOUNT_OR_GOLD = {
+    "logic": "or",
+    "filters": [
+        {"field": "Order Amount", "op": ">", "value": 90},
+        {"field": "Tag", "op": "=", "value": "gold"},
+    ],
+}
+
+
+def island_model(federated: bool, geo: str = "crm") -> str:
+    """Orders, and customers with what they join one-to-one, many-to-many and unnest.
+
+    The profiles and the tiers on *geo*.
+    """
 
     def source(name: str) -> str:
         return f"    dataSource: {name}\n" if federated else ""
@@ -5166,9 +5182,19 @@ dataObjects:
     nestedIn: {{dataObject: Customers, column: Tags}}
     columns:
       Tag: {{code: Name, abstractType: string}}
+    joins:
+      - joinType: one-to-one
+        joinTo: Tiers
+        columnsFrom: [Tag]
+        columnsTo: [Tier Tag]
+  Tiers:
+    code: tiers
+{source(geo)}    columns:
+      Tier Tag: {{code: tag, abstractType: string}}
+      Tier: {{code: tier, abstractType: string}}
   Profiles:
     code: profiles
-{source(profiles)}    columns:
+{source(geo)}    columns:
       Profile Customer: {{code: customer_id, abstractType: int}}
       Segment: {{code: segment, abstractType: string}}
   Links:
@@ -5181,8 +5207,26 @@ dimensions:
   Tag: {{dataObject: Customer Tags, column: Tag, resultType: string}}
   Segment: {{dataObject: Profiles, column: Segment, resultType: string}}
   Topic: {{dataObject: Links, column: Topic, resultType: string}}
+  Tier: {{dataObject: Tiers, column: Tier, resultType: string}}
+  Order Amount: {{dataObject: Orders, column: Amount, resultType: decimal}}
 measures:
   Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
+  Tagged Revenue:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filters:
+      - logic: or
+        filters:
+          - column: {{dataObject: Customer Tags, column: Tag}}
+            operator: equals
+            values: [{{dataType: string, valueString: vip}}]
+          - column: {{dataObject: Customer Tags, column: Tag}}
+            operator: equals
+            values: [{{dataType: string, valueString: gold}}]
+  Revenue Any Tag:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filterContext: {{exclude: [Tag]}}
   Median Order: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: median}}
   Revenue Total:
     {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum, total: true}}
@@ -5195,7 +5239,7 @@ measures:
 
 @pytest.fixture(scope="module")
 def island_files(tmp_path_factory: Any) -> dict[str, dict[str, str]]:
-    """The tables on one source, and on the shop, the CRM and the profiles' own."""
+    """The tables on one source, and on the shop, the CRM and the profiles' and tiers' own."""
     root = tmp_path_factory.mktemp("islands")
     every = [statement for statements in ISLAND_TABLES.values() for statement in statements]
     layouts = {
@@ -5266,14 +5310,28 @@ class TestDimensionSourceJoins:
                 "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
                 "where": [{"field": "Tag", "op": "in", "value": ["vip", "gold"]}],
             },
+            {"select": {"dimensions": ["Tier"], "measures": ["Revenue", "Median Order"]}},
+            {
+                "select": {"dimensions": ["Tag"], "measures": ["Revenue"]},
+                "where": [AMOUNT_OR_GOLD],
+            },
+            {"select": {"dimensions": ["Tag"], "measures": ["Tagged Revenue"]}},
         ],
-        ids=["by_tag", "by_tag_and_region", "filtered_on_tags"],
+        ids=[
+            "by_tag",
+            "by_tag_and_region",
+            "filtered_on_tags",
+            "by_tier",
+            "by_tag_filtered_after_the_join",
+            "by_tag_filtered_by_a_measure",
+        ],
     )
     def test_a_dimension_unnested_on_another_source(
         self, island_files: dict[str, dict[str, str]], query: dict[str, Any]
     ) -> None:
-        """Customer 10's orders under vip and under gold, once each; filtered
-        on either tag, once."""
+        """Customer 10's orders under vip and under gold, once each, and so
+        under each tag's tier; filtered on either tag, once. Filtered after
+        the join, or by a measure, each tag's group holds them once too."""
         paths = island_files["crm"]
 
         single = _run_on(paths, island_model(False), query)
@@ -5281,36 +5339,165 @@ class TestDimensionSourceJoins:
         assert _run_on(paths, island_model(True), query) == single
         assert single
 
+    def test_a_join_on_from_an_unnested_object(
+        self, island_files: dict[str, dict[str, str]]
+    ) -> None:
+        """The tiers on a source of their own, joined on from the tags: by tag
+        and tier, an order once per tag of its customer."""
+        query = {"select": {"dimensions": ["Tag", "Tier"], "measures": ["Revenue"]}}
+        paths = island_files["geo"]
+
+        single = _run_on(paths, island_model(False), query)
+
+        assert _run_on(paths, island_model(True, "geo"), query) == single
+        assert single
+
     @pytest.mark.parametrize(
-        ("query", "why"),
+        ("query", "dimension", "why"),
         [
             (
                 {"select": {"dimensions": ["Tag"], "measures": ["Revenue"]}, "grouping": "rollup"},
+                "Dimension 'Tag' unnests 'Customer Tags'",
                 "a rollup subtotal",
             ),
             (
                 {"select": {"dimensions": ["Tag"], "measures": ["Revenue", "Revenue Total"]}},
+                "Dimension 'Tag' unnests 'Customer Tags'",
                 "measure 'Revenue Total', a total",
             ),
             (
                 {"select": {"dimensions": ["Tag", "Region"], "measures": ["Revenue per Region"]}},
+                "Dimension 'Tag' unnests 'Customer Tags'",
                 "measure 'Revenue per Region', at its own grain",
             ),
+            (
+                {"select": {"dimensions": ["Tier"], "measures": ["Revenue"]}, "grouping": "rollup"},
+                "Dimension 'Tier' reads 'Tiers' through the unnest of 'Customer Tags'",
+                "a rollup subtotal",
+            ),
+            (
+                {"select": {"dimensions": ["Tier"], "measures": ["Revenue", "Revenue Total"]}},
+                "Dimension 'Tier' reads 'Tiers' through the unnest of 'Customer Tags'",
+                "measure 'Revenue Total', a total",
+            ),
         ],
-        ids=["a_rollup", "a_total", "a_grain"],
+        ids=["a_rollup", "a_total", "a_grain", "a_rollup_by_tier", "a_total_by_tier"],
     )
     def test_an_aggregate_across_an_unnested_dimension_is_refused(
-        self, query: dict[str, Any], why: str
+        self, query: dict[str, Any], dimension: str, why: str
     ) -> None:
         """Across the tags, customer 10's orders came twice: a total of 346.75
-        for 226.00."""
+        for 226.00. Across the tiers too, the tags' a tier joins one-to-one."""
         with pytest.raises(ResolutionError) as caught:
             _compile(island_model(True), query)
 
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
-        assert "Dimension 'Tag' unnests 'Customer Tags'" in error.message
+        assert dimension in error.message
         assert why in error.message
+
+    @pytest.mark.parametrize(
+        ("query", "geo", "reader"),
+        [
+            (
+                {
+                    "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                    "where": [AMOUNT_OR_GOLD],
+                },
+                "crm",
+                "Dimension 'Tag' unnests 'Customer Tags'",
+            ),
+            (
+                {"select": {"measures": ["Revenue"]}, "where": [AMOUNT_OR_GOLD]},
+                "crm",
+                "Dimension 'Tag' unnests 'Customer Tags'",
+            ),
+            (
+                {
+                    "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                    "where": [
+                        {
+                            "logic": "or",
+                            "filters": [
+                                {"field": "Order Amount", "op": ">", "value": 90},
+                                {"field": "Tier", "op": "=", "value": "top"},
+                            ],
+                        }
+                    ],
+                },
+                "crm",
+                "Dimension 'Tier' reads 'Tiers' through the unnest of 'Customer Tags'",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Region"],
+                        "measures": ["Revenue", "Revenue Any Tag"],
+                    },
+                    "where": [{"field": "Tag", "op": "in", "value": ["vip", "gold"]}],
+                },
+                "crm",
+                "Dimension 'Tag' unnests 'Customer Tags'",
+            ),
+            (
+                {"select": {"dimensions": ["Region"], "measures": ["Tagged Revenue"]}},
+                "crm",
+                "A measure unnests 'Customer Tags'",
+            ),
+            (
+                {"select": {"dimensions": ["Tier"], "measures": ["Revenue"]}},
+                "geo",
+                "The join 'Customer Tags' -> 'Tiers' unnests 'Customer Tags'",
+            ),
+        ],
+        ids=[
+            "filtered_after_the_join",
+            "filtered_after_the_join_ungrouped",
+            "filtered_through_a_one_to_one_join",
+            "filtered_beside_a_filter_context",
+            "a_measure_filtered_on_tags",
+            "joined_on_to_another_source",
+        ],
+    )
+    def test_a_value_read_through_an_unnest_ungrouped_is_refused(
+        self, query: dict[str, Any], geo: str, reader: str
+    ) -> None:
+        """The leg returns a row per tag that the query does not group by: by
+        region, filtered on an amount over 90 or the gold tag, customer 10's
+        first order came once per tag, 221.25 for 120.75. With the tiers on a
+        source of their own, two tags of one tier would count an order twice:
+        were gold a top tier too, 248.50 for 127.75."""
+        with pytest.raises(ResolutionError) as caught:
+            _compile(island_model(True, geo), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert reader in error.message
+        assert "which the query does not group by" in error.message
+
+    def test_a_static_filter_on_an_unnested_object(
+        self, island_files: dict[str, dict[str, str]]
+    ) -> None:
+        """A static filter on the tags runs after the join: by tag, each tag's
+        group holds an order once; by region, customer 10's orders came once
+        per tag, 241.50 for 120.75."""
+        static = (
+            "filters:\n"
+            "  - {dataObject: Customer Tags, column: Tag, operator: notequals, value: x}\n"
+        )
+        by_tag = {"select": {"dimensions": ["Tag"], "measures": ["Revenue"]}}
+        by_region = {"select": {"dimensions": ["Region"], "measures": ["Revenue"]}}
+        paths = island_files["crm"]
+
+        single = _run_on(paths, island_model(False) + static, by_tag)
+
+        assert _run_on(paths, island_model(True) + static, by_tag) == single
+        assert single
+        with pytest.raises(ResolutionError) as caught:
+            _compile(island_model(True) + static, by_region)
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert "A model filter unnests 'Customer Tags'" in error.message
 
 
 # Orders on the shop, employees and customers in the CRM. Order 3 has no
