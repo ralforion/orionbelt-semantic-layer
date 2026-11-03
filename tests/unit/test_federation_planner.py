@@ -64,6 +64,7 @@ def model_yaml(
     metric: str = "",
     settings: str = "",
     dimension: str = "",
+    order_columns: str = "",
 ) -> str:
     shop = "    dataSource: shop\n" if federated else ""
     crm = "    dataSource: crm\n" if federated else ""
@@ -82,7 +83,7 @@ settings:
       Order Customer: {{code: customer_id, abstractType: int}}
       Order Date: {{code: order_date, abstractType: date}}
       Amount: {{code: amount, abstractType: decimal, numClass: additive}}
-    joins:
+{order_columns}    joins:
       - joinType: many-to-one
         joinTo: Customers
         columnsFrom: [Order Customer]
@@ -507,6 +508,87 @@ class TestCountDistinct:
         assert "__distinct0" in dict(fact.columns)
         # The combine step counts the leg's values, not the leg's own counts.
         assert 'COUNT(DISTINCT "leg_0"."__distinct0")' in plan.combine_sql
+
+
+# Each order's status, under a collation that ignores case: one database
+# orders 'b' before 'C', where the combine step, comparing bytes, puts it after.
+COLLATED_ORDERS = """
+CREATE TABLE orders AS SELECT order_id, customer_id, order_date, amount,
+    status COLLATE NOCASE AS status
+FROM (VALUES
+    (1, 10, DATE '2024-01-05', 100.50, 'b'),
+    (2, 10, DATE '2024-01-20', 20.25, 'C'),
+    (3, 11, DATE '2024-02-03', 7.00, 'a'),
+    (4, 12, DATE '2024-02-14', 55.10, 'B'),
+    (5, 13, DATE '2024-03-01', 3.15, 'D'),
+    (6, 99, DATE '2024-03-09', 40.00, 'e'),
+    (7, 11, DATE '2024-03-30', 12.00, 'Z')
+) t(order_id, customer_id, order_date, amount, status)
+"""
+STATUS = "      Status: {code: status, abstractType: string}\n"
+STRING_BOUNDS = (
+    "  Least Status: {columns: [{dataObject: Orders, column: Status}], aggregation: min}\n"
+    "  Greatest Status: {columns: [{dataObject: Orders, column: Status}], aggregation: max}\n"
+    "  Least Overall:\n"
+    "    columns: [{dataObject: Orders, column: Status}]\n"
+    "    aggregation: min\n"
+    "    grain: {mode: FIXED}\n"
+    "  Greatest Total:\n"
+    "    {columns: [{dataObject: Orders, column: Status}], aggregation: max, total: true}\n"
+)
+BOUNDS = ["Least Status", "Greatest Status", "Revenue"]
+# Per customer, the least status is 'b', 'a', 'B', 'D' and 'e', the greatest
+# 'C', 'Z', 'B', 'D' and 'e': each region's or all of them, one database's
+# differ from their bytewise least and greatest.
+BOUND_QUERIES = {
+    "by_region": {"select": {"dimensions": ["Region"], "measures": BOUNDS}},
+    "rollup": {"select": {"dimensions": ["Region"], "measures": BOUNDS}, "grouping": "rollup"},
+    "grain_and_total": {
+        "select": {"dimensions": ["Region"], "measures": ["Least Overall", "Greatest Total"]}
+    },
+}
+
+
+@pytest.fixture(scope="module")
+def collated(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("collated")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+    for name, statements in (
+        ("all", [COLLATED_ORDERS, CUSTOMERS]),
+        ("shop", [COLLATED_ORDERS]),
+        ("crm", [CUSTOMERS]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+class TestStringsInTheirSourcesOrder:
+    """A least or greatest string is its source's: the fact leg ranks the values."""
+
+    @pytest.mark.parametrize("query", BOUND_QUERIES.values(), ids=BOUND_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, collated: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        assert_same(collated, query, order_columns=STATUS, extra=STRING_BOUNDS)
+
+    def test_the_fact_leg_ranks_its_strings(self) -> None:
+        plan = _compile(
+            model_yaml(federated=True, order_columns=STATUS, extra=STRING_BOUNDS),
+            {"select": {"dimensions": ["Region"], "measures": [*BOUNDS, "Top Order"]}},
+        ).federation
+
+        fact = plan.legs[0]
+        ranks = [c for c, kind in fact.columns if c.startswith("__rank")]
+        # The strings alone: a decimal orders alike in every engine.
+        assert len(ranks) == 2
+        for measure in ("Least Status", "Greatest Status"):
+            assert f'DENSE_RANK() OVER (ORDER BY "__leg"."{measure}" ASC)' in fact.sql
+        assert 'arg_min("leg_0"."Least Status"' in plan.combine_sql
+        assert 'arg_max("leg_0"."Greatest Status"' in plan.combine_sql
+        assert 'MAX("leg_0"."Top Order")' in plan.combine_sql
 
 
 A = "{dataObject: Orders, column: Amount}"
@@ -3236,6 +3318,14 @@ class TestEngineEquality:
         # Only the compared value is rewritten; keys and measures pass through.
         assert "`__leg`.`__fk0_0` AS `__fk0_0`" in facts.sql
         assert "__leg" not in labels.sql
+
+    def test_a_least_mysql_string_is_ranked_by_its_collation(self, facts_on: Any) -> None:
+        """MySQL orders 'é' before 'f': the leg ranks the minima in its engine."""
+        plan = facts_on("mysql", {"select": {"dimensions": ["Label"], "measures": ["Least Name"]}})
+
+        assert ("DENSE_RANK() OVER (ORDER BY `__leg`.`Least Name` ASC) AS `__rank0`") in plan.legs[
+            0
+        ].sql
 
     def test_a_count_of_distinct_mysql_strings_counts_classes(self, facts_on: Any) -> None:
         plan = facts_on(
