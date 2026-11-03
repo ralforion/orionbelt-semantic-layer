@@ -740,6 +740,22 @@ calls equal, and a pattern (`like`, `contains`, `starts_with`, `ends_with`,
 `utf8mb4_general_ci`, and so can a comparison with a number, `'1'` from `'１'`
 under `utf8mb4_0900_ai_ci`. Otherwise the measure is refused.
 
+A condition after the join (in `where` beside a condition on another source,
+true for NULL, or left out by a measure's `filterContext`, in a
+`filterContext`'s `include`, or a static filter on another source than the
+measures') that compares such a value runs in that value's leg too. The leg
+returns `1` where it holds, `0` where it fails and NULL where it is unknown
+(`CASE WHEN __leg.Region = 'eu' THEN 1 WHEN NOT __leg.Region = 'eu' THEN 0 END
+AS __wf0`), and the combine step tests that column, so `Region = 'eu' OR
+Amount > 90` keeps the orders of the region MySQL stores as `'EU'`, and a
+negated group stays unknown where MySQL's does. A filter context leaving out
+or keeping only the field names that column with it. The leg of a dimension
+source returns one value per key, and evaluates any condition; the fact leg
+returns its rows grouped, one value for all those its engine calls equal, and
+evaluates only a comparison with strings, as it does a measure's filters. A
+pattern, or a comparison with a number, on a MySQL string of the measures' own
+source stays in the combine step, and compares as DuckDB does.
+
 ## Running a federated query
 
 Every surface that executes queries runs a federated one the same way: REST
@@ -842,7 +858,7 @@ Not refused, and documented here so they are known:
 | A dimension unnested on another source | one database counts each fact row once per element only through the fact's `primaryKey`, and refuses the query without one; across sources the leg's rows count each once, with or without it |
 | Naive timestamps | combined as each source returns them; sources whose sessions run in different time zones can disagree |
 | Today's date | a `relative` filter counts from the date of the engine that runs it: a leg's source in its session's time zone, or, after the join, the combine step's DuckDB in the time zone of the OBSL server's process. Around midnight, where the zones differ, one query can count from two dates |
-| Filters after the join compare as DuckDB | a filter in the combine query (one reading several sources, true for NULL, or left out by a measure's `filterContext`) compares the value a MySQL leg returned, not its collation class |
+| Patterns after the join on the measures' MySQL strings compare as DuckDB | a pattern (`like`, `contains`, ...), or a comparison with a number, on a MySQL string of the measures' own source, in a filter after the join, compares the value the fact leg returned for its group, bytewise. [Other conditions](#values-compared-across-engines) run in their leg |
 | ClickHouse float dimensions | DuckDB makes one group of `0.0` and `-0.0`, where ClickHouse makes two |
 | Join keys across sources | compare bytewise, whatever a source's collation |
 | A timestamp with a time zone compared to a literal after the join | the combine step reads the literal (`'2023-12-01'`) in its DuckDB's time zone, the OBSL server process's, where a source reads it in its session's; a model's `queryTimezone` makes the legs return wall-clock times, which compare alike |

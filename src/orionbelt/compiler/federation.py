@@ -44,7 +44,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from orionbelt.ast.nodes import CaseExpr, ColumnRef, Expr, JoinType, Literal
+from orionbelt.ast.nodes import CaseExpr, ColumnRef, Expr, JoinType, Literal, UnaryOp
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.cfl_projection import group_measures_by_object
 from orionbelt.compiler.composability import metric_leaf_measures, metric_measure_names
@@ -56,6 +56,7 @@ from orionbelt.compiler.filter_resolution import (
 from orionbelt.compiler.filter_wrap import kept_by_context, query_item_fields
 from orionbelt.compiler.filters import (
     _resolve_subquery_filter_field,
+    build_filter_expr,
     build_measure_filter_condition,
 )
 from orionbelt.compiler.grain_dedup import (
@@ -111,6 +112,7 @@ from orionbelt.models.semantic import (
     DataType,
     Dimension,
     FilterContext,
+    FilterContextFilter,
     FilterEnforcement,
     FilterLogic,
     FilterValue,
@@ -187,6 +189,43 @@ _PATTERN_OPERATORS = frozenset(
         "notlike",
         "ilike",
         "notilike",
+    }
+)
+# The filter operators that compare no value, which no engine compares
+# otherwise than DuckDB (:meth:`_Planner.compared_in_leg`).
+_VALUELESS_OPERATORS = frozenset(
+    {
+        FilterOperator.SET,
+        FilterOperator.NOT_SET,
+        FilterOperator.IS_NULL,
+        FilterOperator.IS_NOT_NULL,
+        FilterOperator.RELATIVE,
+        FilterOperator.EXISTS,
+        FilterOperator.NONEXISTS,
+    }
+)
+# The filter operators that hold for every value of a group its engine calls
+# equal, or for none, given values of the column's own type: comparisons.
+_COMPARISON_OPERATORS = frozenset(
+    {
+        FilterOperator.EQUALS,
+        FilterOperator.NOT_EQUALS,
+        FilterOperator.EQ,
+        FilterOperator.NEQ,
+        FilterOperator.GT,
+        FilterOperator.GTE,
+        FilterOperator.LT,
+        FilterOperator.LTE,
+        FilterOperator.GREATER,
+        FilterOperator.GREATER_EQ,
+        FilterOperator.LESS,
+        FilterOperator.LESS_EQ,
+        FilterOperator.IN_LIST,
+        FilterOperator.NOT_IN_LIST,
+        FilterOperator.IN,
+        FilterOperator.NOT_IN,
+        FilterOperator.BETWEEN,
+        FilterOperator.NOT_BETWEEN,
     }
 )
 
@@ -661,6 +700,47 @@ def plan_federated(
         [_unused(f"__fk{e}_{i}", taken) for i in range(len(edge.from_columns))]
         for e, edge in enumerate(edges)
     ]
+    # Each condition after the join, in ``where`` or a filter context's
+    # ``include``, on a value its leg's engine compares otherwise than DuckDB,
+    # evaluated by that leg (:meth:`_Planner.compared_in_leg`): by island, each
+    # leg column's outcome; by condition, its column; and by field, those
+    # columns, which a filter context names with the field. Its leg returns
+    # the value too, a field the combine step filters on.
+    island_of = {o: i for i, island in enumerate(islands) for o in island}
+    in_leg: dict[int, dict[str, Expr]] = {}
+    outcome_of: dict[tuple[str, str, str], str] = {}
+    outcomes: dict[str, list[str]] = {}
+
+    def outcome(leaf: QueryFilter) -> str | None:
+        dimension = model.dimensions.get(leaf.field)
+        if leaf.subquery is not None or dimension is None:
+            return None
+        home = island_of[dimension.view]
+        if not planner.compared_in_leg(
+            islands[home], dimension.result_type, leaf.op, leaf.value, grouped=home == fact
+        ):
+            return None
+        key = _condition_key(leaf.field, leaf.op, leaf.value)
+        if key not in outcome_of:
+            condition = build_filter_expr(ColumnRef(name=leaf.field, table=_LEG_ALIAS), leaf, [])
+            if condition is None:
+                return None
+            outcome_of[key] = _unused(f"__wf{len(outcome_of)}", taken)
+            in_leg.setdefault(home, {})[outcome_of[key]] = _outcome(condition)
+            outcomes.setdefault(leaf.field, []).append(outcome_of[key])
+        return outcome_of[key]
+
+    combine_filters = [_tested(item, outcome) for item in combine_filters]
+    for context in planner.contexts():
+        for included in context.include:
+            outcome(QueryFilter(field=included.field, op=included.op, value=included.value))
+    # The fields the combine step's filters still compare themselves.
+    compared = {field for item in combine_filters for field in _filter_fields(item)} | {
+        included.field
+        for context in planner.contexts()
+        for included in context.include
+        if _condition_key(included.field, included.op, included.value) not in outcome_of
+    }
 
     # The fact leg: the island's dimensions, the keys of the edges from it and
     # the measures. A dimension leg returns the keys of the edges from its own.
@@ -729,6 +809,7 @@ def plan_federated(
         row_values,
         taken,
     )
+    predicates.update(in_leg.get(fact, {}))
     fact_own_grain = own_grain.get(fact, {})
     fact_body = frozenset(body_reads.get(fact, set()))
     # A static filter of the fact island a measure's filter context leaves
@@ -738,6 +819,14 @@ def plan_federated(
         _unused(f"__sf{n}", taken): (f.data_object, f.column, f) for n, f in enumerate(deferred)
     }
     fact_static_columns = {name: (obj, col) for name, (obj, col, _) in fact_static.items()}
+    # Such a filter its leg evaluates (:meth:`_Planner.static_outcome`): the
+    # leg column is its outcome, which the combine step tests.
+    fact_static_outcomes = {
+        name: found
+        for name, (_, _, f) in fact_static.items()
+        if (found := planner.static_outcome(islands[fact], name, f, grouped=True)) is not None
+    }
+    predicates.update(fact_static_outcomes)
     fact_model = planner.island_model(
         islands[fact] | fact_body,
         {**fact_keys, **fact_values, **row_values, **fact_static_columns},
@@ -770,7 +859,11 @@ def plan_federated(
             for name, (obj, col) in {**fact_keys, **fact_values}.items()
         ],
         *[_value_column(model, name, obj, col) for name, (obj, col) in row_values.items()],
-        *[_key_column(model, name, obj, col) for name, (obj, col) in fact_static_columns.items()],
+        *[
+            _key_column(model, name, obj, col)
+            for name, (obj, col) in fact_static_columns.items()
+            if name not in fact_static_outcomes
+        ],
         *[
             DataObjectColumn(name=n, code=n, abstract_type=m.result_type)
             for n, m in sorted(leg_measures.items())
@@ -779,16 +872,14 @@ def plan_federated(
     # Values the combine step groups by or counts are compared there as their
     # own engine compares them (:meth:`Dialect.equality_key`): the selected
     # dimensions without a grain, and the values a count of distinct values
-    # counts. A rewritten dimension a combine filter reads keeps its value
+    # counts. A rewritten dimension a combine filter compares keeps its value
     # too, under a name of its own, so the filter compares what it compared.
     grouped = {
         DimensionRef.parse(d).name
         for d in _dimension_refs(query)
         if not DimensionRef.parse(d).grain
     }
-    kept = {
-        name: _unused(f"__eqv{n}", taken) for n, name in enumerate(sorted(grouped & set(filtered)))
-    }
+    kept = {name: _unused(f"__eqv{n}", taken) for n, name in enumerate(sorted(grouped & compared))}
     renamed = (
         {}
         if planner.stores_dates()
@@ -867,11 +958,15 @@ def plan_federated(
     }
     for name, (_, column, f) in fact_static.items():
         view = on_once.get(name, "leg_0")
-        combine_filters_static.append(f.model_copy(update={"data_object": view, "column": name}))
+        combine_filters_static.append(
+            _static_after_join(f, view, name, tested=name in fact_static_outcomes)
+        )
         static_names.setdefault(column, []).append(name)
     for d in fact_dims:
         name = DimensionRef.parse(d).name
         combine_dimensions[name] = _combine_dimension(model, name, on_once.get(name, "leg_0"))
+    for column in in_leg.get(fact, {}):
+        combine_dimensions[column] = _outcome_dimension(column, on_once.get(column, "leg_0"))
     for hidden, source in fact_kept.items():
         view = on_once.get(hidden, "leg_0")
         combine_dimensions[hidden] = _combine_dimension(model, source, view, hidden)
@@ -962,14 +1057,29 @@ def plan_federated(
             limit=leg_limit,
             use_path_names=_paths_within(query, island),
         )
+        # The conditions after the join this leg evaluates, its static
+        # filters' among them: their columns are their outcomes.
+        dim_predicates = {
+            **in_leg.get(edge.island, {}),
+            **{
+                name: found
+                for name, (_, _, f) in static.items()
+                if (found := planner.static_outcome(island, name, f, grouped=False)) is not None
+            },
+        }
         dim_columns = [
             *[_dimension_column(model, DimensionRef.parse(d).name) for d in dims],
             *[planner.own_column(name, column) for column, name in dim_own_grain.items()],
             *[
                 _key_column(model, name, obj, col)
                 for name, (obj, col) in {**keys, **onward, **static_columns}.items()
+                if name not in dim_predicates
             ],
             *[_value_column(model, name, obj, col) for name, (obj, col) in read_here.items()],
+            *[
+                DataObjectColumn(name=column, code=column, abstract_type=DataType.INT)
+                for column in dim_predicates
+            ],
         ]
         dim_columns, dim_rekeyed, dim_kept = _rekeyed(
             planner.leg_dialect(island),
@@ -993,6 +1103,7 @@ def plan_federated(
                     compile_leg,
                     rekeyed=dim_rekeyed,
                     kept=dim_kept,
+                    predicates=dim_predicates,
                 )
             )
         combine_objects[leg_name] = DataObject(
@@ -1005,7 +1116,7 @@ def plan_federated(
         )
         for name, (_, column, f) in static.items():
             combine_filters_static.append(
-                f.model_copy(update={"data_object": leg_name, "column": name})
+                _static_after_join(f, leg_name, name, tested=name in dim_predicates)
             )
             static_names.setdefault(column, []).append(name)
         if edge.island in leg_filters:
@@ -1027,6 +1138,8 @@ def plan_federated(
         for d in dims:
             name = DimensionRef.parse(d).name
             combine_dimensions[name] = _combine_dimension(model, name, leg_name)
+        for column in in_leg.get(edge.island, {}):
+            combine_dimensions[column] = _outcome_dimension(column, leg_name)
         for hidden, source in dim_kept.items():
             combine_dimensions[hidden] = _combine_dimension(model, source, leg_name, hidden)
         for column, name in dim_own_grain.items():
@@ -1201,7 +1314,11 @@ def plan_federated(
                 if from_rows and m not in distinct
                 else _combine_measure(model, m, leg_columns.get(m), once_of.get(m, "leg_0")),
                 renamed,
-                static_names,
+                {
+                    field: [*static_names.get(field, []), *outcomes.get(field, [])]
+                    for field in {*static_names, *outcomes}
+                },
+                outcome_of,
             )
             for m in measures
         },
@@ -1325,6 +1442,35 @@ def _plan_raw(
     combine_where: list[QueryFilterItem] = []
     renamed: dict[str, str] = {}
     combine_dimensions: dict[str, Dimension] = {}
+    # As in the aggregated plan, a condition after the join on a value its
+    # leg's engine compares otherwise than DuckDB runs in that leg, which
+    # returns its outcome (:meth:`_Planner.compared_in_leg`), and so does a
+    # static filter's: by island, each outcome column's. A leg returns rows.
+    in_leg: dict[int, dict[str, Expr]] = {island: {} for island in leg_of}
+
+    def returned(island: int, condition: Expr | None) -> str | None:
+        """The leg column of *condition*'s outcome, evaluated by *island*'s leg."""
+        if condition is None:
+            return None
+        name = _unused(f"__wf{sum(map(len, in_leg.values()))}", taken)
+        in_leg[island][name] = _outcome(condition)
+        combine_dimensions[name] = _outcome_dimension(name, leg_of[island])
+        return name
+
+    def outcome(leaf: QueryFilter) -> str | None:
+        dimension = model.dimensions.get(leaf.field)
+        if dimension is not None:
+            obj, column, kind = dimension.view, dimension.column, dimension.result_type
+        else:
+            obj, column = (part.strip() for part in leaf.field.split(".", 1))
+            kind = model.data_objects[obj].columns[column].abstract_type
+        home = island_of[obj]
+        if not planner.compared_in_leg(islands[home], kind, leaf.op, leaf.value, grouped=False):
+            return None
+        value = read(obj, column).split(".", 1)[1]
+        condition = build_filter_expr(ColumnRef(name=value, table=_LEG_ALIAS), leaf, [])
+        return returned(home, condition)
+
     for item in query.where:
         owners = {island_of.get(o) for o in planner.raw_filter_objects(item)}
         if owners == {fact}:
@@ -1336,7 +1482,6 @@ def _plan_raw(
                 "An exists filter in a raw-mode query runs in the leg of the facts' data "
                 "source: on its subject there, and beside no condition on another source",
             )
-        combine_where.append(item)
         for field in _filter_fields(item):
             dimension = model.dimensions.get(field)
             if dimension is not None:
@@ -1349,6 +1494,7 @@ def _plan_raw(
             else:
                 obj, column = (part.strip() for part in field.split(".", 1))
                 renamed[field] = read(obj, column)
+        combine_where.append(_tested(item, outcome))
 
     combine_filters_static: list[ModelFilter] = []
     legs: list[FederatedLeg] = []
@@ -1364,16 +1510,22 @@ def _plan_raw(
             for f in model.filters:
                 if f.data_object in islands[island] - planner.in_subqueries:
                     column = read(f.data_object, f.column).split(".", 1)[1]
+                    found = planner.static_outcome(islands[island], column, f, grouped=False)
+                    tested = returned(island, found)
                     combine_filters_static.append(
-                        f.model_copy(update={"data_object": leg_name, "column": column})
+                        _static_after_join(f, leg_name, tested or column, tested=tested is not None)
                     )
         own = keys[island]
         columns = [
             *[_raw_column(model, ref) for ref in reads[island]],
             *[_key_column(model, f"{obj}.{name}", obj, col) for name, (obj, col) in own.items()],
+            *[
+                DataObjectColumn(name=name, code=name, abstract_type=DataType.INT)
+                for name in in_leg[island]
+            ],
         ]
         leg_query = QueryObject(
-            select=QuerySelect(fields=[c.name for c in columns]),
+            select=QuerySelect(fields=[c.name for c in columns if c.name not in in_leg[island]]),
             where=leg_where if island == fact else [],
             limit=leg_limit,
             use_path_names=_paths_within(query, islands[island]),
@@ -1390,6 +1542,7 @@ def _plan_raw(
                     planner.island_model(objects, own, {}, own_zone=own),
                     columns,
                     compile_leg,
+                    predicates=in_leg[island],
                 )
             )
         combine_objects[leg_name] = DataObject(
@@ -3316,6 +3469,58 @@ class _Planner:
             }
         )
 
+    def compared_in_leg(
+        self, island: set[str], kind: DataType | None, op: str, value: Any, *, grouped: bool
+    ) -> bool:
+        """Whether a condition after the join on a value of *kind* runs in *island*'s leg.
+
+        The combine step compares values in DuckDB, which compares strings
+        bytewise; MySQL compares one by its column's collation, so ``Region
+        = 'eu'`` holds for ``'EU'`` there (:meth:`Dialect.equality_key`) and
+        not after the join. The leg of such a value evaluates the condition
+        in its own engine instead, and returns ``1`` where it holds, ``0``
+        where it fails and NULL where it is unknown (:func:`_outcome`), which
+        the combine step tests. A null test compares no value.
+
+        A leg that *grouped* the rows it returns (the fact leg's partial
+        results, or its rows) returns one of the values its engine calls
+        equal for all of them: only a comparison with values of the column's
+        own type holds for every one of them or for none (as
+        :meth:`filters_in_leg` evaluates a measure's). A pattern, or a
+        number, stays in the combine step. A dimension leg returns one value
+        per key.
+        """
+        if kind is None:
+            return False
+        dialect = self.leg_dialect(island)
+        if dialect.equality_key(ColumnRef(name=""), kind.value, counted=False) is None:
+            return False
+        operator = FilterOperator(op)
+        if operator in _VALUELESS_OPERATORS:
+            return False
+        if not grouped:
+            return True
+        values = value if isinstance(value, list) else [value]
+        return operator in _COMPARISON_OPERATORS and all(isinstance(v, str) for v in values)
+
+    def static_outcome(
+        self, island: set[str], name: str, f: ModelFilter, *, grouped: bool
+    ) -> Expr | None:
+        """Static filter *f*'s outcome over the leg column *name* of its value,
+        where its leg evaluates it (:meth:`compared_in_leg`), or ``None``."""
+        declared = self.model.data_objects[f.data_object].columns.get(f.column)
+        value = f.value if f.value is not None else (f.values or None)
+        if declared is None or not self.compared_in_leg(
+            island, declared.abstract_type, f.operator, value, grouped=grouped
+        ):
+            return None
+        condition = build_filter_expr(
+            ColumnRef(name=name, table=_LEG_ALIAS),
+            QueryFilter(field=name, op=f.operator, value=value),
+            [],
+        )
+        return None if condition is None else _outcome(condition)
+
     def leg_dialect(self, island: set[str]) -> Dialect:
         """The dialect the leg of *island* is written in."""
         source = source_name(self.model, next(iter(sorted(island))))
@@ -3848,6 +4053,49 @@ def _row_measure(
     return measure.model_copy(update=update)
 
 
+def _condition_key(field: str, op: str, value: Any) -> tuple[str, str, str]:
+    """A condition as compared: its field, operator and value."""
+    leaf = QueryFilter(field=field, op=op, value=value)
+    return (leaf.field, leaf.op.value, repr(leaf.value))
+
+
+def _outcome_dimension(column: str, leg: str) -> Dimension:
+    """The combine step's dimension of *leg*'s outcome *column* (:func:`_outcome`)."""
+    return Dimension(name=column, view=leg, column=column, result_type=DataType.INT)
+
+
+def _static_after_join(f: ModelFilter, leg: str, column: str, *, tested: bool) -> ModelFilter:
+    """Static filter *f* as the combine step runs it, on *column* of *leg*: as
+    declared, or the test of its outcome where the leg evaluated it."""
+    update: dict[str, Any] = {"data_object": leg, "column": column}
+    if tested:
+        update |= {"operator": FilterOperator.EQUALS.value, "value": 1, "values": []}
+    return f.model_copy(update=update)
+
+
+def _outcome(condition: Expr) -> Expr:
+    """``1`` where *condition* holds, ``0`` where it fails, NULL where it is unknown."""
+    return CaseExpr(
+        when_clauses=[
+            (condition, Literal(value=1)),
+            (UnaryOp(op="NOT", operand=condition), Literal(value=0)),
+        ]
+    )
+
+
+def _tested(item: QueryFilterItem, outcome: Callable[[QueryFilter], str | None]) -> QueryFilterItem:
+    """*item* with each condition a leg evaluates testing the leg's column of it.
+
+    *outcome* names that column, or ``None`` for a condition the combine step
+    evaluates itself. A test of ``1`` is unknown where the outcome is, so a
+    negated group stays unknown where one database's is.
+    """
+    if isinstance(item, QueryFilterGroup):
+        return item.model_copy(update={"filters": [_tested(f, outcome) for f in item.filters]})
+    column = outcome(item)
+    return item if column is None else QueryFilter(field=column, op=FilterOperator.EQUALS, value=1)
+
+
 def _leg_predicates(
     model: SemanticModel,
     names: list[str],
@@ -4078,15 +4326,20 @@ def _combine_measure(
 
 
 def _combine_context(
-    measure: Measure, renamed: dict[str, str], static: dict[str, list[str]]
+    measure: Measure,
+    renamed: dict[str, str],
+    static: dict[str, list[str]],
+    tested: dict[tuple[str, str, str], str],
 ) -> Measure:
     """*measure* with its filter context naming the fields the combine step filters.
 
     The combine query reads some fields under a name of their own (*renamed*),
-    and a static filter's column under a leg column's (*static*, by the
-    column): the context leaves out, or keeps only, the filters on those as
-    well, as one database's matches them by the field or column they read.
-    Its included filters read the renamed fields.
+    and a static filter's column, or the outcome of a condition its leg
+    evaluates, under a leg column's (*static*, by the column or field): the
+    context leaves out, or keeps only, the filters on those as well, as one
+    database's matches them by the field or column they read. Its included
+    filters read the renamed fields, or test the outcome a leg returns of
+    them (*tested*, by :func:`_condition_key`).
     """
     context = measure.filter_context
     if context is None:
@@ -4103,6 +4356,8 @@ def _combine_context(
 
     included = [
         item.model_copy(update={"field": renamed.get(item.field, item.field)})
+        if (column := tested.get(_condition_key(item.field, item.op, item.value))) is None
+        else FilterContextFilter(field=column, op=FilterOperator.EQUALS.value, value=1)
         for item in context.include
     ]
     update = {

@@ -5,8 +5,9 @@ chain of three sources, a role-playing dimension, a filter after the join on
 the day of a month the query selects, and cumulative, period-over-period and
 window metrics, whose legs return each date as stored for the combine step to
 truncate, raw-mode rows joined in the combine step, measures with a grain or a
-filter context of their own, and measures of independent facts, a query of
-their own each, unioned in the combine step. Every source is the engine itself, as in
+filter context of their own, measures of independent facts, a query of
+their own each, unioned in the combine step, and conditions after the join on
+strings, static filters too, each run in its leg. Every source is the engine itself, as in
 ``test_federated_equality_exec``: the combined answer must be the engine's own
 over one source.
 """
@@ -85,6 +86,7 @@ dimensions:
   Region: {{dataObject: Regions, column: Region Name, resultType: string}}
   Order Date: {{dataObject: Orders, column: Order Date, resultType: date}}
   Customer: {{dataObject: Customers, column: Customer ID, resultType: int}}
+  Status: {{dataObject: Orders, column: Status, resultType: string}}
   Sales Rep:
     {{dataObject: Employees, column: Name, resultType: string, via: Orders, pathName: sales}}
 measures:
@@ -220,11 +222,11 @@ def _on_tables(dialect: str, sql: str) -> str:
     return f"{_tables(dialect)}\n{sql}"
 
 
-def _model(federated: bool) -> str:
+def _model(federated: bool, static: str = "") -> str:
     def source(name: str) -> str:
         return f"    dataSource: {name}\n" if federated else ""
 
-    return MODEL.format(shop=source("shop"), crm=source("crm"), geo=source("geo"))
+    return MODEL.format(shop=source("shop"), crm=source("crm"), geo=source("geo")) + static
 
 
 def _tickets(op: str) -> dict[str, Any]:
@@ -339,6 +341,46 @@ QUERIES = {
         "orderBy": [{"field": "1"}],
         "limit": 4,
     },
+    # Conditions after the join on strings, each run in its leg: MySQL's
+    # collation calls 'eu' 'EU' and 'PAID' 'paid', where DuckDB compares bytes.
+    "a_string_filter_after_the_join": {
+        "select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]},
+        "where": [
+            {
+                "logic": "or",
+                "filters": [
+                    {"field": "Region", "op": "=", "value": "eu"},
+                    {"field": "Status", "op": "=", "value": "PAID"},
+                ],
+            }
+        ],
+    },
+    "a_string_filter_a_filter_context_drops": {
+        "select": {"measures": ["Revenue", "Revenue Any Region"]},
+        "where": [{"field": "Region", "op": "in", "value": ["eu", "us"]}],
+    },
+    "raw_rows_filtered_on_a_string": {
+        "select": {"fields": ["Orders.Order ID", "Regions.Region Name"]},
+        "where": [
+            {
+                "logic": "or",
+                "filters": [
+                    {"field": "Region", "op": "like", "value": "e%"},
+                    {"field": "Sales Rep", "op": "=", "value": "Cid"},
+                ],
+            }
+        ],
+    },
+}
+# A static filter on the regions, which runs after the join, in their leg.
+STATIC = (
+    "filters:\n  - {dataObject: Regions, column: Region Name, operator: notequals, value: us}\n"
+)
+STATIC_QUERIES: dict[str, Any] = {
+    "a_static_string_filter": {"select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]}},
+    "raw_rows_of_a_static_string_filter": {
+        "select": {"fields": ["Orders.Order ID", "Employees.Name"]}
+    },
 }
 
 
@@ -363,10 +405,20 @@ def _rows(rows: list[dict[str, Any]]) -> list[tuple[tuple[str, Any], ...]]:
 
 def _assert_shapes(target: VendorTarget) -> None:
     store = ModelStore()
-    single_id = store.load_model(_model(False)).model_id
-    federated_id = store.load_model(_model(True)).model_id
     wrong = []
-    for name, raw in QUERIES.items():
+    for static, queries in (("", QUERIES), (STATIC, STATIC_QUERIES)):
+        wrong += _wrong_shapes(target, store, static, queries)
+    assert not wrong, f"{target.name}:\n" + "\n".join(wrong)
+
+
+def _wrong_shapes(
+    target: VendorTarget, store: ModelStore, static: str, queries: dict[str, Any]
+) -> list[str]:
+    """The shapes of *queries* whose combined answer is not the engine's own."""
+    single_id = store.load_model(_model(False, static)).model_id
+    federated_id = store.load_model(_model(True, static)).model_id
+    wrong = []
+    for name, raw in queries.items():
         if raw["select"].get("fields") and target.dialect == "bigquery":
             # BigQuery refuses the dot of a raw field's name, Orders.Order ID,
             # as a column name: raw mode fails there on one source too.
@@ -385,7 +437,7 @@ def _assert_shapes(target: VendorTarget) -> None:
         expected = target.execute(_on_tables(target.dialect, single.sql))
         if _rows(combined) != _rows(expected) or not expected:
             wrong.append(f"{name}: {combined} != {expected}")
-    assert not wrong, f"{target.name}:\n" + "\n".join(wrong)
+    return wrong
 
 
 def test_duckdb_federated_shapes(vendor_duckdb: VendorTarget) -> None:
