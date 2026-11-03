@@ -25,6 +25,7 @@ duckdb = pytest.importorskip("duckdb")
 
 from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
 from orionbelt.compiler.resolution import ResolutionError  # noqa: E402
+from orionbelt.dialect.duckdb import DuckDBDialect  # noqa: E402
 from orionbelt.models.query import QueryObject  # noqa: E402
 from orionbelt.service.compilation_cache import CompilationCache  # noqa: E402
 from orionbelt.service.model_store import ModelStore  # noqa: E402
@@ -3372,9 +3373,10 @@ class TestEngineEquality:
 
         assert "__leg" not in plan.legs[0].sql
 
-    def test_a_combine_filter_reads_the_value_not_its_class(self, facts_on: Any) -> None:
-        """A filter run in the combine step compares the value the leg had,
-        as it did; the dimension shown and grouped is its class."""
+    def test_a_combine_filter_on_a_class_runs_in_its_leg(self, facts_on: Any) -> None:
+        """A condition after the join on a MySQL string runs in its leg, by
+        MySQL's collation, which returns its outcome for the combine step to
+        test; the dimension shown and grouped is its class."""
         plan = facts_on(
             "mysql",
             {
@@ -3392,13 +3394,17 @@ class TestEngineEquality:
         )
 
         facts = plan.legs[0]
-        (kept,) = [c for c in dict(facts.columns) if c.startswith("__eqv")]
-        assert f"`__leg`.`Name` AS `{kept}`" in facts.sql
-        assert dict(facts.columns)[kept] == "string"
-        assert f'"leg_0"."{kept}" = \'a\'' in plan.combine_sql
-        assert '"leg_0"."Name" = \'a\'' not in plan.combine_sql
-        # Label is read from a source comparing as DuckDB: no copy needed.
-        assert all(not c.startswith("__eqv") for c in dict(plan.legs[1].columns))
+        (tested,) = [c for c in dict(facts.columns) if c.startswith("__wf")]
+        assert (
+            f"CASE WHEN `__leg`.`Name` = 'a' THEN 1 WHEN NOT `__leg`.`Name` = 'a' THEN 0 END"
+            f" AS `{tested}`"
+        ) in facts.sql
+        assert dict(facts.columns)[tested] == "int"
+        assert f'"leg_0"."{tested}" = 1' in plan.combine_sql
+        assert "'a'" not in plan.combine_sql
+        # Label is read from a source comparing as DuckDB: the combine step compares it.
+        assert '"leg_1"."Label" = \'x\'' in plan.combine_sql
+        assert all(not c.startswith("__wf") for c in dict(plan.legs[1].columns))
 
     def test_a_dimension_only_filtered_is_not_rewritten(self, facts_on: Any) -> None:
         plan = facts_on(
@@ -3417,7 +3423,8 @@ class TestEngineEquality:
             },
         )
 
-        assert "__leg" not in plan.legs[0].sql
+        assert "FIRST_VALUE" not in plan.legs[0].sql
+        assert "`__leg`.`Name` AS `Name`" in plan.legs[0].sql
 
     @pytest.mark.parametrize("dialect", ["postgres", "snowflake", "bigquery", "databricks"])
     def test_an_engine_comparing_as_duckdb_is_left_alone(self, facts_on: Any, dialect: str) -> None:
@@ -3435,8 +3442,9 @@ class TestGeneratedNames:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A dimension named ``__eqv0``, an integer, selected beside a MySQL
-        string a combine filter reads: the string's kept value took that name,
-        and the integer column showed strings."""
+        string a combine filter compares (a pattern, which the grouped fact leg
+        cannot evaluate): the string's kept value took that name, and the
+        integer column showed strings."""
         pytest.importorskip("ob_flight")
         monkeypatch.setenv("OBSL_DATABASES", "facts,labels")
         monkeypatch.setenv("DB_FACTS_TYPE", "mysql")
@@ -3456,7 +3464,7 @@ class TestGeneratedNames:
                         "logic": "or",
                         "filters": [
                             {"field": "Label", "op": "=", "value": "x"},
-                            {"field": "Name", "op": "=", "value": "a"},
+                            {"field": "Name", "op": "like", "value": "a%"},
                         ],
                     }
                 ],
@@ -3469,7 +3477,7 @@ class TestGeneratedNames:
         assert dict(facts.columns)["__eqv0"] == "int"
         (kept,) = [n for n in names if "eqv" in n and n != "__eqv0"]
         assert f"`__leg`.`Name` AS `{kept}`" in facts.sql
-        assert f'"leg_0"."{kept}" = \'a\'' in plan.combine_sql
+        assert f'"leg_0"."{kept}" LIKE \'a%\'' in plan.combine_sql
         assert '"leg_0"."__eqv0" AS "__eqv0"' in plan.combine_sql
 
     def test_keys_and_static_filters_do_not_take_a_dimensions_name(
@@ -5110,9 +5118,10 @@ class TestExistsOverNested:
 # is top tier, a gold one mid.
 ISLAND_TABLES = {
     "shop": [
-        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10, 100.50), (2, 10, 20.25),"
-        " (3, 11, 7.00), (4, 12, 55.10), (5, 13, 3.15), (6, 99, 40.00))"
-        " t(order_id, customer_id, amount)"
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10, 100.50, 'paid'),"
+        " (2, 10, 20.25, 'Paid'), (3, 11, 7.00, 'open'), (4, 12, 55.10, 'PAID'),"
+        " (5, 13, 3.15, 'paid'), (6, 99, 40.00, 'open'))"
+        " t(order_id, customer_id, amount, status)"
     ],
     "crm": [
         "CREATE TABLE customers"
@@ -5167,6 +5176,7 @@ dataObjects:
       Order ID: {{code: order_id, abstractType: int, primaryKey: true}}
       Order Customer: {{code: customer_id, abstractType: int}}
       Amount: {{code: amount, abstractType: decimal}}
+      Status: {{code: status, abstractType: string}}
     joins:
       - joinType: many-to-one
         joinTo: Customers
@@ -5221,6 +5231,7 @@ dimensions:
   Topic: {{dataObject: Links, column: Topic, resultType: string}}
   Tier: {{dataObject: Tiers, column: Tier, resultType: string}}
   Order Amount: {{dataObject: Orders, column: Amount, resultType: decimal}}
+  Order Status: {{dataObject: Orders, column: Status, resultType: string}}
 measures:
   Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
   Tagged Revenue:
@@ -5254,6 +5265,20 @@ measures:
           - column: {{dataObject: Customers, column: Tag Copy}}
             operator: equals
             values: [{{dataType: string, valueString: gold}}]
+  Revenue Any Region:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filterContext: {{exclude: [Region]}}
+  EU Revenue:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filterContext:
+      mode: FIXED
+      include: [{{field: Region, op: "=", value: EU}}]
+  No Region Revenue:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filterContext: {{mode: FIXED, include: [{{field: Region, op: blank}}]}}
   Revenue Any Tag:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -5293,6 +5318,254 @@ def island_files(tmp_path_factory: Any) -> dict[str, dict[str, str]]:
                 con.execute(statement)
             con.close()
     return paths
+
+
+AMOUNT_OR_EU = {
+    "logic": "or",
+    "filters": [
+        {"field": "Order Amount", "op": ">", "value": 90},
+        {"field": "Region", "op": "=", "value": "EU"},
+    ],
+}
+
+
+AMOUNT_OR_BLANK = {
+    "logic": "or",
+    "filters": [
+        {"field": "Order Amount", "op": ">", "value": 90},
+        {"field": "Region", "op": "blank"},
+    ],
+}
+
+
+ZONE_OR_CATEGORY = {
+    "logic": "or",
+    "filters": [
+        {"field": "Zone", "op": "=", "value": "south"},
+        {"field": "Category", "op": "=", "value": "Z"},
+    ],
+}
+
+
+class TestConditionsInTheirLeg:
+    """Conditions after the join on strings an engine compares otherwise than
+    DuckDB run in their leg, which returns their outcome for the combine step
+    to test. DuckDB's legs stand in for such an engine here, comparing as
+    DuckDB does: the answers stay one database's, NULLs, negations, missing
+    rows and filter contexts included. ``test_federated_shapes_exec.py``
+    runs them on MySQL's collation."""
+
+    @pytest.fixture(autouse=True)
+    def strings_compared_otherwise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def key(_: Any, column: Any, abstract_type: str, *, counted: bool) -> Any:
+            return (column, abstract_type) if abstract_type == "string" else None
+
+        monkeypatch.setattr(DuckDBDialect, "equality_key", key)
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"measures": ["Revenue"]}, "where": [AMOUNT_OR_EU]},
+            {"select": {"measures": ["Revenue"]}, "where": [{**AMOUNT_OR_EU, "negated": True}]},
+            {
+                "select": {"measures": ["Revenue"]},
+                "where": [
+                    {
+                        "logic": "or",
+                        "filters": [
+                            {"field": "Order Amount", "op": ">", "value": 90},
+                            {"field": "Region", "op": "!=", "value": "EU"},
+                        ],
+                    }
+                ],
+            },
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "where": [
+                    {
+                        "logic": "or",
+                        "filters": [
+                            {"field": "Order Status", "op": "=", "value": "paid"},
+                            {"field": "Region", "op": "like", "value": "U%"},
+                        ],
+                    }
+                ],
+            },
+            {
+                "select": {"measures": ["Revenue", "Revenue Any Region"]},
+                "where": [{"field": "Region", "op": "in", "value": ["EU"]}],
+            },
+            {"select": {"measures": ["Revenue", "EU Revenue"]}},
+            {
+                "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+                "where": [AMOUNT_OR_EU],
+            },
+            {"select": {"measures": ["Revenue"]}, "where": [AMOUNT_OR_BLANK]},
+            {
+                "select": {"measures": ["Revenue"]},
+                "where": [{"negated": True, "filters": [{"field": "Region", "op": "notblank"}]}],
+            },
+            {"select": {"dimensions": ["Order Status"], "measures": ["No Region Revenue"]}},
+            {
+                "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+                "where": [AMOUNT_OR_BLANK],
+            },
+        ],
+        ids=[
+            "beside_another_source",
+            "negated",
+            "unknown_where_null",
+            "on_the_facts_and_a_pattern",
+            "a_filter_context_drops",
+            "a_filter_context_includes",
+            "raw_rows",
+            "blank",
+            "not_blank_negated",
+            "a_filter_context_includes_blanks",
+            "raw_rows_blank",
+        ],
+    )
+    def test_a_condition_on_a_string_after_the_join(
+        self, island_files: dict[str, dict[str, str]], query: dict[str, Any]
+    ) -> None:
+        """Order 6's customer is missing, customer 12 has no region: there a
+        comparison is unknown, and a blank test holds, as in one database."""
+        paths = island_files["crm"]
+        plan = _compile(island_model(True), query).federation
+
+        single = _run_on(paths, island_model(False), query)
+
+        assert plan is not None
+        tested = [c for leg in plan.legs for c, _ in leg.columns if c.startswith("__wf")]
+        assert tested
+        assert all(
+            any(f'"{c}" {test}' in plan.combine_sql for test in ("= 1", "IS NULL", "IS NOT NULL"))
+            for c in tested
+        )
+        assert _run_on(paths, island_model(True), query) == single
+        assert single
+
+    @pytest.mark.parametrize(
+        ("condition", "outcome"),
+        [
+            ("operator: notequals, value: US", "THEN 1 WHEN NOT"),
+            ("operator: blank", "THEN 1 END"),
+        ],
+        ids=["compared", "blank"],
+    )
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Order Status"], "measures": ["Revenue"]}},
+            {"select": {"fields": ["Orders.Order ID", "Customers.Region"]}},
+        ],
+        ids=["grouped", "raw_rows"],
+    )
+    def test_a_static_filter_on_a_string_after_the_join(
+        self,
+        island_files: dict[str, dict[str, str]],
+        query: dict[str, Any],
+        condition: str,
+        outcome: str,
+    ) -> None:
+        """A static filter on the customers runs after the join, in their leg:
+        its column there is its outcome, which a blank test's keeps order 6,
+        whose customer is missing."""
+        static = f"filters:\n  - {{dataObject: Customers, column: Region, {condition}}}\n"
+        paths = island_files["crm"]
+        plan = _compile(island_model(True) + static, query).federation
+
+        single = _run_on(paths, island_model(False) + static, query)
+
+        assert plan is not None
+        assert outcome in plan.legs[1].sql
+        assert _run_on(paths, island_model(True) + static, query) == single
+        assert single
+
+    def test_a_pattern_on_the_grouped_facts_stays_after_the_join(self) -> None:
+        """The fact leg groups the values its engine calls equal: a pattern may
+        hold for one of them and not another, so the combine step evaluates it."""
+        query = {
+            "select": {"measures": ["Revenue"]},
+            "where": [
+                {
+                    "logic": "or",
+                    "filters": [
+                        {"field": "Order Status", "op": "like", "value": "pa%"},
+                        {"field": "Region", "op": "=", "value": "US"},
+                    ],
+                }
+            ],
+        }
+
+        plan = _compile(island_model(True), query).federation
+
+        assert plan is not None
+        assert all(not c.startswith("__wf") for c, _ in plan.legs[0].columns)
+        assert "LIKE 'pa%'" in plan.combine_sql
+        assert any(c.startswith("__wf") for c, _ in plan.legs[1].columns)
+
+    @pytest.mark.parametrize("aggregation", ["sum", "avg", "median"])
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {
+                "select": {"dimensions": ["Category"], "measures": ["Ages", "Sales Count"]},
+                "where": [ZONE_OR_CATEGORY],
+            },
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Ages"]},
+                "where": [{**ZONE_OR_CATEGORY, "negated": True}],
+            },
+            {"select": {"dimensions": ["Category"], "measures": ["Ages", "South Ages"]}},
+        ],
+        ids=["or", "negated", "a_filter_context_includes"],
+    )
+    def test_a_condition_on_an_object_read_once(
+        self, aggregation: str, query: dict[str, Any]
+    ) -> None:
+        """The customers' zones are read once per customer, as their ages: so
+        is the outcome of a condition on them. Customer 4 in the south has no
+        sales, one database groups its age under no category."""
+
+        def zoned(yaml: str) -> str:
+            yaml = yaml.replace(
+                "      Region: {code: region, abstractType: int}\n",
+                "      Region: {code: region, abstractType: int}\n"
+                "      Zone: {code: zone, abstractType: string}\n",
+            ).replace(
+                "dimensions:\n",
+                "dimensions:\n  Zone: {dataObject: Customers, column: Zone, resultType: string}\n",
+            )
+            return yaml.replace(
+                "metrics:\n",
+                "  South Ages:\n"
+                "    columns: [{dataObject: Customers, column: Age}]\n"
+                f"    aggregation: {aggregation}\n"
+                "    filterContext:\n"
+                "      {mode: FIXED, include: [{field: Zone, op: '=', value: south}]}\n"
+                "metrics:\n",
+            )
+
+        tables = [
+            "CREATE TABLE customers AS SELECT * FROM (VALUES (1, 10, 1, 'north'),"
+            " (2, 20, 1, 'north'), (3, 40, 2, 'south'), (4, 70, 2, 'south'))"
+            " t(id, age, region, zone)"
+            if statement.startswith("CREATE TABLE customers")
+            else statement
+            for statement in REPEATED_TABLES
+        ]
+        sources = {"facts": "    dataSource: facts\n", "labels": "    dataSource: labels\n"}
+        federated = _compile(
+            zoned(REPEATED.format(**sources, aggregation=aggregation)), query
+        ).federation
+
+        expected, got = _repeated(aggregation, query, zoned, tables)
+
+        assert federated is not None
+        assert any(c.startswith("__wf") for c, _ in federated.legs[0].columns)
+        assert got == expected
+        assert expected
 
 
 # Customer 10 tagged at 00:30 and at 01:30 UTC on the night Berlin's clocks
