@@ -23,6 +23,7 @@ import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
+from orionbelt.ast.nodes import FunctionCall  # noqa: E402
 from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
 from orionbelt.compiler.resolution import ResolutionError  # noqa: E402
 from orionbelt.dialect.duckdb import DuckDBDialect  # noqa: E402
@@ -6688,7 +6689,8 @@ def test_a_subquery_on_the_facts_source_reads_the_object_with_injected_keys(
         finally:
             con.close()
     (injection,) = plan.injections
-    keys = sorted(v for v in tables[injection.leg].column(injection.column).to_pylist() if v)
+    values = tables[injection.leg].column(injection.values or injection.column)
+    keys = sorted(v for v in values.to_pylist() if v)
     con = duckdb.connect(paths["shop"], read_only=True)
     try:
         tables["leg_0"] = con.sql(plan.inject({injection.column: keys}).sql).to_arrow_table()
@@ -6700,6 +6702,268 @@ def test_a_subquery_on_the_facts_source_reads_the_object_with_injected_keys(
 
     assert sorted(_rows(combine, compiled.sql), key=repr) == expected
     assert expected == [("EU", Decimal("100.50"))]
+
+
+# Orders on the shop, their products' lines in a catalog and the lines' names
+# on a third source, each joined on a string key; the reviews of a product in
+# the catalog; the orders' list prices and the products' stock in a warehouse,
+# on their SKUs too. Order 3's product is missing, order 4 has none.
+KEYED = """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Orders:
+    code: orders
+{shop}    columns:
+      Order ID: {{code: order_id, abstractType: int}}
+      Order SKU: {{code: sku, abstractType: string}}
+      Amount: {{code: amount, abstractType: decimal}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Products, columnsFrom: [Order SKU], columnsTo: [SKU]}}
+      - {{joinType: many-to-one, joinTo: Prices, columnsFrom: [Order SKU], columnsTo: [Price SKU]}}
+  Products:
+    code: products
+{catalog}    columns:
+      SKU: {{code: sku, abstractType: string}}
+      Product Line: {{code: line, abstractType: string}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Lines, columnsFrom: [Product Line], columnsTo: [Code]}}
+      - {{joinType: many-to-one, joinTo: Stock, columnsFrom: [SKU], columnsTo: [Stock SKU]}}
+  Lines:
+    code: lines
+{lines}    columns:
+      Code: {{code: code, abstractType: string}}
+      Line Name: {{code: name, abstractType: string}}
+  Reviews:
+    code: reviews
+{catalog}    columns:
+      Review SKU: {{code: sku, abstractType: string}}
+      Stars: {{code: stars, abstractType: int}}
+    joins:
+      - {{joinType: many-to-one, joinTo: Products, columnsFrom: [Review SKU], columnsTo: [SKU]}}
+  Stock:
+    code: stock
+{warehouse}    columns:
+      Stock SKU: {{code: sku, abstractType: string}}
+      Qty: {{code: qty, abstractType: int}}
+  Prices:
+    code: prices
+{warehouse}    columns:
+      Price SKU: {{code: sku, abstractType: string}}
+      List Price: {{code: price, abstractType: decimal}}
+dimensions:
+  Line: {{dataObject: Products, column: Product Line, resultType: string}}
+  Line Name: {{dataObject: Lines, column: Line Name, resultType: string}}
+  List Price: {{dataObject: Prices, column: List Price, resultType: decimal}}
+  Qty: {{dataObject: Stock, column: Qty, resultType: int}}
+measures:
+  Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
+"""
+KEYED_TABLES = {
+    "shop": [
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 'a1', 10.00), (2, 'b2', 20.00),"
+        " (3, 'zz', 5.00), (4, NULL, 7.00), (5, 'a1', 1.50)) t(order_id, sku, amount)"
+    ],
+    "catalog": [
+        "CREATE TABLE products AS SELECT * FROM (VALUES ('a1', 'L1'), ('b2', 'L2')) t(sku, line)",
+        "CREATE TABLE reviews AS SELECT * FROM (VALUES ('a1', 5), ('b2', 2)) t(sku, stars)",
+    ],
+    "lines": [
+        "CREATE TABLE lines AS SELECT * FROM (VALUES ('L1', 'First'), ('L2', 'Second'))"
+        " t(code, name)"
+    ],
+    "warehouse": [
+        "CREATE TABLE stock AS SELECT * FROM (VALUES ('a1', 3), ('b2', 4)) t(sku, qty)",
+        "CREATE TABLE prices AS SELECT * FROM (VALUES ('a1', 9.99), ('b2', 19.99)) t(sku, price)",
+    ],
+}
+
+
+def keyed_model(federated: bool) -> str:
+    def source(name: str) -> str:
+        return f"    dataSource: {name}\n" if federated else ""
+
+    return KEYED.format(
+        shop=source("shop"),
+        catalog=source("catalog"),
+        lines=source("lines"),
+        warehouse=source("warehouse"),
+    )
+
+
+@pytest.fixture(scope="module")
+def keyed_files(tmp_path_factory: Any) -> dict[str, str]:
+    """The tables on one source, and on the shop, the catalog and the lines' own."""
+    root = tmp_path_factory.mktemp("keyed")
+    every = [statement for statements in KEYED_TABLES.values() for statement in statements]
+    paths: dict[str, str] = {}
+    for name, statements in {"all": every, **KEYED_TABLES}.items():
+        paths[name] = str(root / f"{name}.duckdb")
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+class TestKeysMatchedByTheirEngine:
+    """Join keys both of whose legs run on one engine that compares strings
+    otherwise than DuckDB (MySQL's collations) are returned as that engine
+    matches them, by both legs (``Dialect.match_key``); the fact leg still
+    reads the keys as stored where a dimension leg's filter injects them."""
+
+    @pytest.fixture
+    def sources(self, monkeypatch: pytest.MonkeyPatch) -> Callable[..., Any]:
+        pytest.importorskip("ob_flight")
+        monkeypatch.setenv("OBSL_DATABASES", "shop,catalog,lines")
+
+        def plan(shop: str, catalog: str, query: dict[str, Any]) -> Any:
+            monkeypatch.setenv("DB_SHOP_TYPE", shop)
+            monkeypatch.setenv("DB_CATALOG_TYPE", catalog)
+            monkeypatch.setenv("DB_LINES_TYPE", catalog)
+            return _compile(keyed_model(True), query).federation
+
+        return plan
+
+    def test_mysql_legs_match_keys_by_their_weight(self, sources: Callable[..., Any]) -> None:
+        plan = sources(
+            "mysql",
+            "mysql",
+            {
+                "select": {"dimensions": ["Line Name"], "measures": ["Revenue"]},
+                "where": [{"field": "Line", "op": "=", "value": "L1"}],
+            },
+        )
+
+        weight = "HEX(CASE WHEN CONCAT(`__leg`.`{0}`, ' ') = `__leg`.`{0}` THEN "
+        orders, products, lines = plan.legs
+        assert weight.format("__fk0_0") in orders.sql
+        assert weight.format("__fk0_0") in products.sql
+        assert weight.format("__fk1_0") in products.sql
+        assert weight.format("__fk1_0") in lines.sql
+        # The fact leg reads the products' keys as stored, a column of their own.
+        (injection,) = plan.injections
+        assert (injection.column, injection.values) == ("__fk0_0", "__fv0")
+        assert "`__leg`.`__fk0_0` AS `__fv0`" in products.sql
+
+    def test_legs_on_two_engines_match_keys_bytewise(self, sources: Callable[..., Any]) -> None:
+        plan = sources(
+            "mysql", "postgres", {"select": {"dimensions": ["Line Name"], "measures": ["Revenue"]}}
+        )
+
+        assert all("WEIGHT_STRING" not in leg.sql for leg in plan.legs)
+
+    @pytest.fixture
+    def hexed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """DuckDB's legs return their string keys in hex: matched as DuckDB
+        matches them, through every path a match key takes."""
+
+        def key(_: Any, column: Any, abstract_type: str) -> Any:
+            return FunctionCall(name="hex", args=[column]) if abstract_type == "string" else None
+
+        monkeypatch.setattr(DuckDBDialect, "match_key", key)
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Line Name"], "measures": ["Revenue"]}},
+            {
+                "select": {"dimensions": ["Line"], "measures": ["Revenue"]},
+                "where": [
+                    {
+                        "field": "Products.SKU",
+                        "op": "nonexists",
+                        "subquery": {
+                            "dataObject": "Reviews",
+                            "filter": [{"field": "Stars", "op": ">=", "value": 4}],
+                        },
+                    }
+                ],
+            },
+            {"select": {"fields": ["Orders.Order ID", "Lines.Line Name"]}},
+        ],
+        ids=["a_chain", "nonexists", "raw_rows"],
+    )
+    @pytest.mark.usefixtures("hexed")
+    def test_keys_matched_alike(self, keyed_files: dict[str, str], query: dict[str, Any]) -> None:
+        plan = _compile(keyed_model(True), query).federation
+
+        single = _run_on(keyed_files, keyed_model(False), query)
+
+        assert plan is not None
+        assert all("hex(" in leg.sql for leg in plan.legs)
+        assert _run_on(keyed_files, keyed_model(True), query) == single
+        assert single
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {
+                "select": {
+                    "fields": ["Orders.Order ID", "Products.Product Line", "Prices.List Price"]
+                }
+            },
+            {"select": {"fields": ["Orders.Order ID", "Products.Product Line", "Stock.Qty"]}},
+            {"select": {"dimensions": ["Line", "List Price"], "measures": ["Revenue"]}},
+            {"select": {"dimensions": ["Line Name", "Qty"], "measures": ["Revenue"]}},
+        ],
+        ids=["raw_rows_branching", "raw_rows_chained", "branching", "chained"],
+    )
+    @pytest.mark.usefixtures("hexed")
+    def test_a_key_joined_to_legs_on_two_engines(
+        self,
+        keyed_files: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+        query: dict[str, Any],
+    ) -> None:
+        """A SKU joins the catalog's products, on DuckDB, as DuckDB matches it
+        (in hex here), and the warehouse's prices or stock, on PostgreSQL, as
+        stored: each join reads a column of its own."""
+        pytest.importorskip("ob_flight")
+        monkeypatch.setenv("OBSL_DATABASES", "warehouse")
+        monkeypatch.setenv("DB_WAREHOUSE_TYPE", "postgres")
+        plan = _compile(keyed_model(True), query).federation
+
+        single = _run_on(keyed_files, keyed_model(False), query)
+
+        assert plan is not None
+        assert "postgres" in [leg.dialect for leg in plan.legs]
+        assert _run_on(keyed_files, keyed_model(True), query) == single
+        assert single
+
+    @pytest.mark.usefixtures("hexed")
+    def test_injected_keys_are_read_as_stored(self, keyed_files: dict[str, str]) -> None:
+        """The products' leg runs the filter on their line: the fact leg reads
+        the SKUs it returned, as stored, and not in hex."""
+        query = {
+            "select": {"dimensions": ["Line Name"], "measures": ["Revenue"]},
+            "where": [{"field": "Line", "op": "=", "value": "L1"}],
+        }
+        compiled = _compile(keyed_model(True), query)
+        plan = compiled.federation
+        tables = {}
+        for leg in plan.legs[1:]:
+            con = duckdb.connect(keyed_files[leg.data_source], read_only=True)
+            try:
+                tables[leg.name] = con.sql(leg.sql).to_arrow_table()
+            finally:
+                con.close()
+        (injection,) = plan.injections
+        keys = tables[injection.leg].column(injection.values).to_pylist()
+        con = duckdb.connect(keyed_files["shop"], read_only=True)
+        try:
+            fact = plan.inject({injection.column: keys})
+            tables["leg_0"] = con.sql(fact.sql).to_arrow_table()
+        finally:
+            con.close()
+        combine = duckdb.connect()
+        for name, table in tables.items():
+            combine.register(name, table)
+
+        assert keys == ["a1"]
+        assert sorted(_rows(combine, compiled.sql), key=repr) == [("First", Decimal("11.50"))]
+        assert _run_on(keyed_files, keyed_model(False), query) == [("First", Decimal("11.50"))]
 
 
 # -- What one database's joins make of a missing or zoned row -----------------

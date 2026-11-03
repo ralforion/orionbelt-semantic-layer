@@ -4,7 +4,8 @@ The combine step runs in DuckDB, over rows a leg returned from different
 groups. Where the source engine calls two values equal and DuckDB does not -
 MySQL's default collation ignores case and accents, ClickHouse tells ``-0.0``
 from ``0.0`` - the leg rewrites the value (``Dialect.equality_key``) so the
-combine step agrees. A filter on one source's dimensions runs in its leg,
+combine step agrees, and both legs of a join rewrite its keys
+(``Dialect.match_key``). A filter on one source's dimensions runs in its leg,
 where the engine compares as it does over one source. Each engine's answer
 over one source is the reference: both of a query's sources are the engine
 itself here, and the same rows are read either way.
@@ -18,9 +19,10 @@ from typing import Any
 import pyarrow as pa
 import pytest
 
+from orionbelt.compiler.federation import FederatedLeg
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import QueryObject
-from orionbelt.service.federated_executor import combine, normalize_leg
+from orionbelt.service.federated_executor import combine, injected_fact_leg, normalize_leg
 from orionbelt.service.model_store import ModelStore
 
 from .conftest import VendorTarget
@@ -38,13 +40,20 @@ dataObjects:
       F: {{code: f, abstractType: float}}
     joins:
       - {{joinType: many-to-one, joinTo: Groups, columnsFrom: [Key], columnsTo: [Group Key]}}
+      - {{joinType: many-to-one, joinTo: Kinds, columnsFrom: [Name], columnsTo: [Kind Name]}}
   Groups:
     code: g
 {groups}    columns:
       Group Key: {{code: k, abstractType: int}}
       Label: {{code: l, abstractType: string}}
+  Kinds:
+    code: s
+{groups}    columns:
+      Kind Name: {{code: n, abstractType: string}}
+      Kind: {{code: k, abstractType: string}}
 dimensions:
   Label: {{dataObject: Groups, column: Label, resultType: string}}
+  Kind: {{dataObject: Kinds, column: Kind, resultType: string}}
   Name: {{dataObject: Facts, column: Name, resultType: string}}
 measures:
   Rows: {{columns: [{{dataObject: Facts, column: Key}}], aggregation: count}}
@@ -68,6 +77,9 @@ FACTS: list[tuple[int, str | None, float | None]] = [
     (9, None, None),
 ]
 GROUPS = [(1, "x"), (2, "x"), (3, "x"), (4, "x"), (5, "y"), (6, "y"), (7, "y"), (8, "y"), (9, "y")]
+# The names' kinds, keyed by a name: MySQL's collation joins 'a' and 'A' to
+# 'A', 'ß' to 'SS', where bytes match 'A' alone. 'b ' is not 'B' there.
+KINDS = [("A", "first"), ("É", "accent"), ("SS", "double"), ("B", "plain"), ("AE", "joined")]
 
 # string, float, int
 TYPES = {
@@ -101,7 +113,10 @@ def _tables(dialect: str) -> str:
         f"SELECT {value(k, whole)} AS {q('k')}, {value(label, text)} AS {q('l')}"
         for k, label in GROUPS
     )
-    return f"WITH {q('t')} AS ({facts}), {q('g')} AS ({groups})\n"
+    kinds = " UNION ALL ".join(
+        f"SELECT {value(n, text)} AS {q('n')}, {value(kind, text)} AS {q('k')}" for n, kind in KINDS
+    )
+    return f"WITH {q('t')} AS ({facts}), {q('g')} AS ({groups}), {q('s')} AS ({kinds})\n"
 
 
 def _model(federated: bool) -> str:
@@ -123,12 +138,14 @@ def _answers(target: VendorTarget, query: dict[str, Any]) -> tuple[list[dict], l
     )
     plan = federated.federation
     assert plan is not None
-    tables = {
-        leg.name: normalize_leg(
-            leg, pa.Table.from_pylist(target.execute(_tables(target.dialect) + leg.sql))
-        )
-        for leg in plan.legs
-    }
+
+    def run(leg: FederatedLeg) -> pa.Table:
+        rows = target.execute(_tables(target.dialect) + leg.sql)
+        return normalize_leg(leg, pa.Table.from_pylist(rows))
+
+    tables = {leg.name: run(leg) for leg in plan.legs[1:]}
+    # The fact leg reading only the keys its filtered dimension legs returned.
+    tables["leg_0"] = run(injected_fact_leg(plan, tables, 100))
     combined = combine(plan, tables, None).arrow_table.to_pylist()
     return target.execute(_tables(target.dialect) + single.sql), combined
 
@@ -175,6 +192,25 @@ def _assert_equality(target: VendorTarget) -> None:
         },
     )
     assert _fold(federated) == _fold(single), f"{target.name}: the filter differs"
+
+    # Joined on a string key: MySQL matches 'a' to 'A' and 'ß' to 'SS'.
+    single, federated = _answers(target, {"select": {"dimensions": ["Kind"], "measures": ["Rows"]}})
+    assert sorted(_fold(federated), key=repr) == sorted(_fold(single), key=repr), (
+        f"{target.name}: the string join differs"
+    )
+
+    # Filtered on the kinds, whose keys the fact leg then reads alone: as
+    # MySQL compares them, 'A' reads 'a' too.
+    single, federated = _answers(
+        target,
+        {
+            "select": {"dimensions": ["Label"], "measures": ["Rows"]},
+            "where": [{"field": "Kind", "op": "in", "value": ["first", "double"]}],
+        },
+    )
+    assert sorted(_fold(federated), key=repr) == sorted(_fold(single), key=repr), (
+        f"{target.name}: the injected keys differ"
+    )
 
 
 def test_duckdb_federated_equality(vendor_duckdb: VendorTarget) -> None:

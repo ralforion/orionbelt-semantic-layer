@@ -326,11 +326,15 @@ class KeyInjection:
         leg: The dimension leg (``leg_1``).
         column: The key column, of the same name in that leg and the fact leg.
         abstract_type: The key's OBML type, ``int`` or ``string``.
+        values: The dimension leg's column of the key's values, where the
+            key column holds the key as its engine matches it
+            (:meth:`Dialect.match_key`); else the key column holds them.
     """
 
     leg: str
     column: str
     abstract_type: str
+    values: str | None = None
 
 
 @dataclass(frozen=True)
@@ -708,6 +712,13 @@ def plan_federated(
         [_unused(f"__fk{e}_{i}", taken) for i in range(len(edge.from_columns))]
         for e, edge in enumerate(edges)
     ]
+    # The keys both legs of an edge return as their engine matches them
+    # (:meth:`_Planner.match_keys`): by island, each key column's expression.
+    matched: dict[int, dict[str, Expr]] = {}
+    for edge, names in zip(edges, key_names, strict=True):
+        edge_keys = planner.match_keys(edge, islands[edge.parent], islands[edge.island], names)
+        for side in (edge.parent, edge.island):
+            matched.setdefault(side, {}).update(edge_keys)
     # Each condition after the join, in ``where`` or a filter context's
     # ``include``, on a value its leg's engine compares otherwise than DuckDB,
     # evaluated by that leg (:meth:`_Planner.compared_in_leg`): by island, each
@@ -908,6 +919,7 @@ def plan_federated(
         DataObjectColumn(name=column, code=column, abstract_type=DataType.INT)
         for column in predicates
     ]
+    fact_predicates = {**predicates, **matched.get(fact, {})}
     squares = {squared: scale for _, _, squared, scale in variances.values()}
     with (
         partial_sums(),
@@ -934,7 +946,7 @@ def plan_federated(
                 rows=row_count,
                 rekeyed=fact_rekeyed,
                 kept=fact_kept,
-                predicates=predicates,
+                predicates=fact_predicates,
             )
         )
     injections: list[KeyInjection] = []
@@ -1083,6 +1095,18 @@ def plan_federated(
                 if (found := planner.static_outcome(island, name, f, grouped=False)) is not None
             },
         }
+        # Where the leg runs filters of the query, the fact leg may read only
+        # the keys it returns: as stored, where it returns a key as its
+        # engine matches it (``matched``), in a column of their own.
+        key_type = (
+            _injectable_key_type(model, edge)
+            if edge.island in leg_filters and edge.parent == fact
+            else None
+        )
+        injected = next(iter(keys))
+        key_values = None
+        if key_type is not None and injected in matched.get(edge.island, {}):
+            key_values = _unused(f"__fv{e - 1}", taken)
         dim_columns = [
             *[_dimension_column(model, DimensionRef.parse(d).name) for d in dims],
             *[planner.own_column(name, column) for column, name in dim_own_grain.items()],
@@ -1096,6 +1120,7 @@ def plan_federated(
                 DataObjectColumn(name=column, code=column, abstract_type=DataType.INT)
                 for column in dim_predicates
             ],
+            *([_key_column(model, key_values, *keys[injected])] if key_values else []),
         ]
         dim_columns, dim_rekeyed, dim_kept = _rekeyed(
             planner.leg_dialect(island),
@@ -1119,7 +1144,15 @@ def plan_federated(
                     compile_leg,
                     rekeyed=dim_rekeyed,
                     kept=dim_kept,
-                    predicates=dim_predicates,
+                    predicates={
+                        **dim_predicates,
+                        **matched.get(edge.island, {}),
+                        **(
+                            {key_values: ColumnRef(name=injected, table=_LEG_ALIAS)}
+                            if key_values
+                            else {}
+                        ),
+                    },
                 )
             )
         combine_objects[leg_name] = DataObject(
@@ -1142,15 +1175,13 @@ def plan_federated(
             combine_filters_static.append(
                 ModelFilter(
                     data_object=leg_name,
-                    column=next(iter(keys)),
+                    column=injected,
                     operator=FilterOperator.IS_NOT_NULL,
                     enforce=FilterEnforcement.ALWAYS,
                 )
             )
-            # So the fact leg may read only the keys this leg returns.
-            key_type = _injectable_key_type(model, edge) if edge.parent == fact else None
             if key_type is not None:
-                injections.append(KeyInjection(leg_name, next(iter(keys)), key_type))
+                injections.append(KeyInjection(leg_name, injected, key_type, key_values))
         for d in dims:
             name = DimensionRef.parse(d).name
             combine_dimensions[name] = _combine_dimension(model, name, leg_name)
@@ -1204,6 +1235,11 @@ def plan_federated(
                     planner.island_model(island, keys, {}, own_zone=keys),
                     key_columns,
                     compile_leg,
+                    predicates={
+                        name: key
+                        for name, key in matched.get(missing.island, {}).items()
+                        if name in keys
+                    },
                 )
             )
         combine_objects[leg_name] = DataObject(
@@ -1385,7 +1421,7 @@ def plan_federated(
             body=fact_body,
             rekeyed=fact_rekeyed,
             kept=fact_kept,
-            predicates=predicates,
+            predicates=fact_predicates,
             compile_leg=compile_leg,
         )
     return FederatedPlan(
@@ -1428,7 +1464,7 @@ def _plan_raw(
     leg_of = {fact: "leg_0"} | {edge.island: f"leg_{e}" for e, edge in enumerate(edges, start=1)}
     reads: dict[int, list[str]] = {island: [] for island in leg_of}
     keys: dict[int, dict[str, tuple[str, str]]] = {island: {} for island in leg_of}
-    key_names: dict[tuple[str, str], str] = {}
+    key_names: dict[tuple[str, str, bool], str] = {}
     taken = _reserved_names(model)
 
     def read(obj: str, column: str) -> str:
@@ -1438,21 +1474,40 @@ def _plan_raw(
             reads[island_of[obj]].append(ref)
         return f"{leg_of[island_of[obj]]}.{ref}"
 
-    def key(obj: str, column: str) -> str:
-        """The leg column of *obj*'s join key *column*: a copy of its own (``island_model``)."""
-        if (obj, column) not in key_names:
-            key_names[obj, column] = _unused(f"__fk{len(key_names)}", taken)
-            keys[island_of[obj]][key_names[obj, column]] = (obj, column)
-        return f"{obj}.{key_names[obj, column]}"
+    def key(obj: str, column: str, matched: bool) -> str:
+        """The leg column of *obj*'s join key *column*: a copy of its own (``island_model``).
+
+        One for the joins reading it as stored, another for those reading it
+        as its engine matches it (:meth:`_Planner.match_keys`): a column
+        joined to legs on two engines has both.
+        """
+        if (obj, column, matched) not in key_names:
+            key_names[obj, column, matched] = _unused(f"__fk{len(key_names)}", taken)
+            keys[island_of[obj]][key_names[obj, column, matched]] = (obj, column)
+        return f"{obj}.{key_names[obj, column, matched]}"
 
     fields = [read(f.object_name, f.column_name) for f in resolved.fields]
-    joins_on = {
-        edge: (
-            [key(edge.from_object, c) for c in edge.from_columns],
-            [key(edge.to_object, c) for c in edge.to_columns],
+    joins_on: dict[_Edge, tuple[list[str], list[str]]] = {}
+    for edge in edges:
+        types = planner.matched_types(edge, islands[edge.parent], islands[edge.island])
+        joins_on[edge] = (
+            [
+                key(edge.from_object, c, kind is not None)
+                for c, kind in zip(edge.from_columns, types, strict=True)
+            ],
+            [
+                key(edge.to_object, c, kind is not None)
+                for c, kind in zip(edge.to_columns, types, strict=True)
+            ],
         )
-        for edge in edges
-    }
+    # The keys each leg returns as its engine matches them, as in the
+    # aggregated plan (:meth:`_Planner.match_keys`).
+    matched: dict[int, dict[str, Expr]] = {island: {} for island in leg_of}
+    for edge, sides in joins_on.items():
+        for island, names in zip((edge.parent, edge.island), sides, strict=True):
+            matched[island] |= planner.match_keys(
+                edge, islands[edge.parent], islands[edge.island], names
+            )
 
     leg_where: list[QueryFilterItem] = []
     combine_where: list[QueryFilterItem] = []
@@ -1558,7 +1613,7 @@ def _plan_raw(
                     planner.island_model(objects, own, {}, own_zone=own),
                     columns,
                     compile_leg,
-                    predicates=in_leg[island],
+                    predicates={**in_leg[island], **matched[island]},
                 )
             )
         combine_objects[leg_name] = DataObject(
@@ -3536,6 +3591,43 @@ class _Planner:
             [],
         )
         return None if condition is None else _outcome(condition, f.operator)
+
+    def matched_types(self, edge: _Edge, parent: set[str], child: set[str]) -> list[str | None]:
+        """How *edge*'s legs return each of its key columns: as stored (``None``),
+        or as their engine matches it (:meth:`Dialect.match_key`), by its type.
+
+        The legs are those of *parent* and *child*, on one engine; a key of
+        one type on both sides. Legs on two engines match keys bytewise:
+        neither's equality is one database's.
+        """
+        dialect = self.leg_dialect(parent)
+        if dialect.name != self.leg_dialect(child).name:
+            return [None] * len(edge.from_columns)
+        objects = self.model.data_objects
+        types: list[str | None] = []
+        for from_column, to_column in zip(edge.from_columns, edge.to_columns, strict=True):
+            kind = objects[edge.from_object].columns[from_column].abstract_type.value
+            other = objects[edge.to_object].columns[to_column].abstract_type.value
+            matched = kind == other and dialect.match_key(ColumnRef(name=""), kind) is not None
+            types.append(kind if matched else None)
+        return types
+
+    def match_keys(
+        self, edge: _Edge, parent: set[str], child: set[str], names: list[str]
+    ) -> dict[str, Expr]:
+        """*edge*'s keys its legs return as their engine matches them (:meth:`matched_types`).
+
+        By the leg column of each, *names* naming the edge's key columns in
+        order, its expression over that column.
+        """
+        dialect = self.leg_dialect(parent)
+        matched: dict[str, Expr] = {}
+        for name, kind in zip(names, self.matched_types(edge, parent, child), strict=True):
+            if kind is not None:
+                key = dialect.match_key(ColumnRef(name=name, table=_LEG_ALIAS), kind)
+                assert key is not None
+                matched[name] = key
+        return matched
 
     def leg_dialect(self, island: set[str]) -> Dialect:
         """The dialect the leg of *island* is written in."""

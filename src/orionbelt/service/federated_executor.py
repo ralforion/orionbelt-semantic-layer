@@ -337,9 +337,8 @@ def injected_fact_leg(plan: FederatedPlan, tables: dict[str, Any], max_keys: int
     """
     lists: list[tuple[str, list[Any]]] = []
     for injection in plan.injections:
-        keys = _key_values(
-            tables[injection.leg].column(injection.column), injection.abstract_type, max_keys
-        )
+        values = tables[injection.leg].column(injection.values or injection.column)
+        keys = _key_values(values, injection.abstract_type, max_keys)
         if keys is not None:
             lists.append((injection.column, keys))
     chosen: dict[str, list[Any]] = {}
