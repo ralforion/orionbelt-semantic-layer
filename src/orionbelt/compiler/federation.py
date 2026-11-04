@@ -2590,12 +2590,14 @@ class _Planner:
         self, name: str, grain: TimeGrain | None
     ) -> tuple[str, str, TimeGrain | None, str | None]:
         """The value a leg returns for dimension *name* at *grain*: its column at
-        that grain, and the dimension where it reads a timestamp in the model's
-        ``queryTimezone``, itself or one its expression reads (the hour of
+        that grain, and the dimension where it reads a timestamp in the query's
+        zone, the model's ``queryTimezone`` or one its leg converts it to
+        (:meth:`leg_zone`), itself or one its expression reads (the hour of
         one): its SQL is not the stored column's, which a join key reads."""
         dimension = self.model.dimensions[name]
         view, column = dimension.view, dimension.column
-        shown = make_column_expr(self.model, view, column)
+        with timestamps_in_zone(self.leg_zone({view})):
+            shown = make_column_expr(self.model, view, column)
         zoned = shown != make_column_expr(self.model, view, column, in_query_timezone=False)
         return (view, column, grain, name if zoned else None)
 

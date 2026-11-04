@@ -807,7 +807,11 @@ one database; a leg in the query's zone returns them as stored. An order
 placed at 23:30 UTC on 31 January is February's in Berlin, in its leg and
 after the join alike, and `Placed At >= 2024-02-01` keeps it. The result is
 labeled with the query's zone (the response's `timezone`): its values are the
-instants each source holds, as wall-clock times there.
+instants each source holds, as wall-clock times there. A join key between
+sources that is such a timestamp is compared as an instant: its leg returns it
+in UTC, where the query's zone would show two instants of the hour the clocks
+go back as one time, and a value read through an
+[unnest](#limitations) is refused there as one read in `queryTimezone` is.
 
 A model that says which zone its timestamps were written in, its
 `defaultTimezone` beside a `queryTimezone`, or with
