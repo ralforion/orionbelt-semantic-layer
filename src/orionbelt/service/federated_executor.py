@@ -539,18 +539,17 @@ def result_table(result: ExecutionResult) -> Any:
 def hold_leg(leg: FederatedLeg, table: Any, *, spilled: bool) -> Any:
     """*table* normalized for the combine step, within ``FEDERATION_MAX_LEG_MB``.
 
-    A leg in memory holds the whole normalized table. A spilled leg holds the
-    columns normalizing converted (a PostgreSQL ``numeric`` read as text
-    becomes a decimal): new buffers beside the mapped file, which count
-    against the limit as a leg in memory does.
+    A leg in memory holds its table, and a spilled leg nothing but the mapped
+    file. Beside it, each column normalizing converts (a PostgreSQL
+    ``numeric`` read as text becomes a decimal) is new memory, counted
+    against the limit before it is allocated: a leg is refused at the column
+    that would take it past, not once every column is converted.
 
     Raises:
         FederatedLegError: ``FEDERATION_LEG_TOO_LARGE``, or a value no exact
             type holds (:func:`normalize_leg`).
     """
-    normalized, converted = _normalize(leg, table)
-    check_leg_bytes(leg, converted if spilled else normalized.nbytes)
-    return normalized
+    return _normalize(leg, table, held=0 if spilled else table.nbytes)[0]
 
 
 def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
@@ -581,8 +580,12 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
     return _normalize(leg, table)[0]
 
 
-def _normalize(leg: FederatedLeg, table: Any) -> tuple[Any, int]:
-    """:func:`normalize_leg`'s table, and the bytes of the columns it converted."""
+def _normalize(leg: FederatedLeg, table: Any, held: int | None = None) -> tuple[Any, int]:
+    """:func:`normalize_leg`'s table, and the bytes of the columns it converted.
+
+    With *held*, the bytes the leg holds already, a conversion that would take
+    it past ``FEDERATION_MAX_LEG_MB`` is refused before it is made.
+    """
     import pyarrow as pa
     import pyarrow.compute as pc
 
@@ -591,8 +594,8 @@ def _normalize(leg: FederatedLeg, table: Any) -> tuple[Any, int]:
     declared = dict(leg.columns)
     exact = dict(leg.exact_sums)
     units = dict(leg.integer_sums)
+    budget = _Budget(leg, held)
     columns = []
-    converted = 0
     for name in table.column_names:
         column = table.column(name)
         storage = getattr(column.type, "storage_type", None)
@@ -600,28 +603,83 @@ def _normalize(leg: FederatedLeg, table: Any) -> tuple[Any, int]:
             # The same buffers, read as their storage type: nothing is copied.
             column = pa.chunked_array([chunk.storage for chunk in column.chunks], type=storage)
         stored = column
+        length = len(column)
         kind = declared.get(name)
         if pa.types.is_null(column.type) and kind is not None:
-            column = column.cast(obml_type_to_arrow(kind))
+            target = obml_type_to_arrow(kind)
+            budget.reserve(target, length)
+            column = column.cast(target)
         elif kind in _NUMERIC_TYPES and (
             pa.types.is_string(column.type) or pa.types.is_large_string(column.type)
         ):
+            budget.reserve(pa.decimal128(_DECIMAL128_MAX_PRECISION, 0), length)
             column = _decimal_from_text(leg, name, column)
         elif kind in _TEMPORAL_TYPES and pa.types.is_string(column.type):
-            column = _temporal_from_text(column, obml_type_to_arrow(kind))
+            target = obml_type_to_arrow(kind)
+            budget.reserve(target, length)
+            column = _temporal_from_text(column, target)
         elif kind == "timestamp" and pa.types.is_timestamp(column.type) and column.type.tz:
+            budget.reserve(pa.timestamp(column.type.unit), length)
             column = pc.local_timestamp(column)
         elif pa.types.is_decimal256(column.type) and name not in units:
             # A sum of squares arrives at the scale the engine computed it in,
             # BigQuery's 38 places, and narrows only once rescaled to its own.
+            budget.reserve(pa.decimal128(_DECIMAL128_MAX_PRECISION, 0), length)
             column = _narrow_decimal(leg, name, column)
-        if name in exact:
-            column = _exact_sum(leg, name, column, exact[name])
-        elif name in units:
-            column = _whole_units(_exact_sum(leg, name, column, units[name], variance=True))
-        converted += _allocated(stored, column)
+        if name in exact or name in units:
+            scale = exact[name] if name in exact else units[name]
+            target = pa.decimal128(_DECIMAL128_MAX_PRECISION, scale)
+            if column.type != target:
+                budget.reserve(target, length)
+            column = _exact_sum(leg, name, column, scale, variance=name in units)
+            if name in units:
+                column = _whole_units(column)
+        budget.settle(stored, column)
         columns.append(column)
-    return pa.table(columns, names=table.column_names), converted
+    return pa.table(columns, names=table.column_names), budget.converted
+
+
+class _Budget:
+    """What normalizing a leg allocates, within ``FEDERATION_MAX_LEG_MB``.
+
+    Each conversion reserves the column it makes before making it, so a leg
+    past the limit is refused at the column that would take it there; once
+    made, the column counts the buffers it allocated. *held* is what the leg
+    holds already; ``None`` counts without a limit.
+    """
+
+    def __init__(self, leg: FederatedLeg, held: int | None) -> None:
+        self._leg = leg
+        self._held = held
+        self._pending = 0
+        self.converted = 0
+
+    def reserve(self, kind: Any, length: int) -> None:
+        """Make room for a column of *length* values of Arrow type *kind*."""
+        self._pending += _column_bytes(kind, length)
+        self._check(self.converted + self._pending)
+
+    def settle(self, stored: Any, column: Any) -> None:
+        """Count what converting *stored* into *column* allocated."""
+        self._pending = 0
+        self.converted += _allocated(stored, column)
+        self._check(self.converted)
+
+    def _check(self, nbytes: int) -> None:
+        if self._held is not None:
+            check_leg_bytes(self._leg, self._held + nbytes)
+
+
+def _column_bytes(kind: Any, length: int) -> int:
+    """What a column of *length* values of Arrow type *kind* allocates: values and validity.
+
+    A type without a fixed width counts its offsets.
+    """
+    try:
+        bits = int(kind.bit_width)
+    except ValueError:
+        bits = 32
+    return (bits * length + 7) // 8 + (length + 7) // 8
 
 
 def _allocated(stored: Any, column: Any) -> int:

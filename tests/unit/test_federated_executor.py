@@ -1162,6 +1162,32 @@ class TestLegTooLarge:
             federation.hold_leg(leg(("Revenue", "decimal")), spilled(amounts), spilled=True)
         spill.close()
 
+    def test_a_spilled_leg_is_refused_before_converting_past_its_memory(
+        self, tmp_path: Any
+    ) -> None:
+        limits = spilling(tmp_path, max_leg_bytes=1024 * 1024, spill_threshold_bytes=1024)
+        federation.configure(limits)
+        spill = federation.QuerySpill(limits)
+        names = [f"m{i}" for i in range(20)]
+        table = pa.table({n: [f"{i}.25" for i in range(20_000)] for n in names})
+        numbers = leg(*((n, "decimal") for n in names))
+        sink = federation.LegSink(numbers, spill)
+        spilled = sink(pa.RecordBatchReader.from_batches(table.schema, table.to_batches(1000)))
+        assert sink.spilled
+
+        with (
+            patch.object(
+                federation, "_decimal_from_text", wraps=federation._decimal_from_text
+            ) as conversions,
+            pytest.raises(FederatedLegError, match="FEDERATION_MAX_LEG_MB"),
+        ):
+            federation.hold_leg(numbers, spilled, spilled=True)
+
+        # 0.3 MB of decimals a column: three fit in 1 MB, and the fourth is
+        # refused before it is made, not after all twenty.
+        assert conversions.call_count == 3
+        spill.close()
+
     def test_a_leg_in_memory_holds_its_whole_table(self) -> None:
         federation.configure(FederationLimits(max_leg_bytes=1024 * 1024))
         table = batches(100_000)[1]
