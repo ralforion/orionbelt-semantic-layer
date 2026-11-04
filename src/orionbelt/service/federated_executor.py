@@ -100,8 +100,8 @@ class FederationLimits:
         leg_threads: Legs fetched at once in the process.
         max_leg_rows: The most rows one leg may return.
         max_leg_bytes: The most memory one leg may hold; a leg spilled to disk
-            holds ``spill_threshold_bytes`` at most, and is bounded by
-            ``spill_max_bytes`` instead.
+            holds the columns normalizing converts (:func:`hold_leg`), and is
+            bounded by ``spill_max_bytes`` otherwise.
         combine_threads: DuckDB threads per combine step.
         combine_memory_limit: DuckDB ``memory_limit`` per combine step.
         spill_dir: Where large legs are spilled; ``None`` keeps every leg in
@@ -362,8 +362,9 @@ def check_leg_bytes(leg: FederatedLeg, nbytes: int) -> None:
     """Refuse a leg holding more than ``FEDERATION_MAX_LEG_MB`` in memory.
 
     Rows alone do not say what a leg takes: an integer key takes 8 bytes a
-    row, a text field its length plus 4. A leg spilled to disk is bounded by
-    ``FEDERATION_SPILL_MAX_MB`` instead.
+    row, a text field its length plus 4. A leg spilled to disk counts the
+    columns normalizing converts (:func:`hold_leg`), and is bounded by
+    ``FEDERATION_SPILL_MAX_MB`` otherwise.
 
     Raises:
         FederatedLegError: ``FEDERATION_LEG_TOO_LARGE``.
@@ -523,12 +524,8 @@ def _key_values(column: Any, abstract_type: str, max_keys: int) -> list[Any] | N
     return sorted(keys)
 
 
-def leg_table(leg: FederatedLeg, result: ExecutionResult) -> Any:
-    """A leg's rows as Arrow, in the types its declared columns combine as.
-
-    Raises:
-        FederatedLegError: A value no exact type holds.
-    """
+def result_table(result: ExecutionResult) -> Any:
+    """A leg's rows as Arrow, in the types its driver returned."""
     import pyarrow as pa
 
     table = result.arrow_table
@@ -536,7 +533,24 @@ def leg_table(leg: FederatedLeg, result: ExecutionResult) -> Any:
         rows = result.rows
         names = [c.name for c in result.columns]
         table = pa.table({name: [row[i] for row in rows] for i, name in enumerate(names)})
-    return normalize_leg(leg, table)
+    return table
+
+
+def hold_leg(leg: FederatedLeg, table: Any, *, spilled: bool) -> Any:
+    """*table* normalized for the combine step, within ``FEDERATION_MAX_LEG_MB``.
+
+    A leg in memory holds the whole normalized table. A spilled leg holds the
+    columns normalizing converted (a PostgreSQL ``numeric`` read as text
+    becomes a decimal): new buffers beside the mapped file, which count
+    against the limit as a leg in memory does.
+
+    Raises:
+        FederatedLegError: ``FEDERATION_LEG_TOO_LARGE``, or a value no exact
+            type holds (:func:`normalize_leg`).
+    """
+    normalized, converted = _normalize(leg, table)
+    check_leg_bytes(leg, converted if spilled else normalized.nbytes)
+    return normalized
 
 
 def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
@@ -564,6 +578,11 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
     Other columns pass unchanged: the combine step casts its results to the
     model's types, as a query on one source does.
     """
+    return _normalize(leg, table)[0]
+
+
+def _normalize(leg: FederatedLeg, table: Any) -> tuple[Any, int]:
+    """:func:`normalize_leg`'s table, and the bytes of the columns it converted."""
     import pyarrow as pa
     import pyarrow.compute as pc
 
@@ -573,11 +592,14 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
     exact = dict(leg.exact_sums)
     units = dict(leg.integer_sums)
     columns = []
+    converted = 0
     for name in table.column_names:
         column = table.column(name)
         storage = getattr(column.type, "storage_type", None)
         if storage is not None:
+            # The same buffers, read as their storage type: nothing is copied.
             column = pa.chunked_array([chunk.storage for chunk in column.chunks], type=storage)
+        stored = column
         kind = declared.get(name)
         if pa.types.is_null(column.type) and kind is not None:
             column = column.cast(obml_type_to_arrow(kind))
@@ -597,8 +619,29 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
             column = _exact_sum(leg, name, column, exact[name])
         elif name in units:
             column = _whole_units(_exact_sum(leg, name, column, units[name], variance=True))
+        converted += _allocated(stored, column)
         columns.append(column)
-    return pa.table(columns, names=table.column_names)
+    return pa.table(columns, names=table.column_names), converted
+
+
+def _allocated(stored: Any, column: Any) -> int:
+    """The bytes of *column*'s buffers that *stored*'s do not hold.
+
+    A column normalizing left alone, or only read again as another type
+    (:func:`_whole_units`), allocated nothing.
+    """
+    held = {
+        buffer.address
+        for chunk in stored.chunks
+        for buffer in chunk.buffers()
+        if buffer is not None
+    }
+    return sum(
+        buffer.size
+        for chunk in column.chunks
+        for buffer in chunk.buffers()
+        if buffer is not None and buffer.address not in held
+    )
 
 
 def _decimal_from_text(leg: FederatedLeg, name: str, column: Any) -> Any:
@@ -607,7 +650,9 @@ def _decimal_from_text(leg: FederatedLeg, name: str, column: Any) -> Any:
 
     scale = 0
     integer_digits = 0
-    for text in column.to_pylist():
+    # A chunk at a time: a spilled leg's values are read from its file, and
+    # only one chunk's become Python objects at once.
+    for text in (text for chunk in column.chunks for text in chunk.to_pylist()):
         if text is None:
             continue
         try:
@@ -903,8 +948,9 @@ __all__ = [
     "injected_fact_leg",
     "key_injection_max_keys",
     "leg_executor",
+    "hold_leg",
     "leg_label",
-    "leg_table",
     "normalize_leg",
+    "result_table",
     "spill_directory",
 ]

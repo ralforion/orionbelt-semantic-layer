@@ -56,7 +56,7 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `30` | How long a federated query waits for a slot before `FEDERATION_BUSY` (503) |
 | `FEDERATION_LEG_THREADS`   | `16`        | Legs of federated queries fetched at once per process |
 | `FEDERATION_MAX_LEG_ROWS`  | `5000000`   | Most rows one leg may return; a larger leg is refused with `FEDERATION_LEG_TOO_LARGE`, which names the joins whose keys make it that large. Held in memory, about 75 MB per million narrow rows ([leg size](../guide/federation.md#running-a-federated-query)) |
-| `FEDERATION_MAX_LEG_MB`    | `512`       | Most memory one leg may hold, counted as it streams in; a larger leg is refused with `FEDERATION_LEG_TOO_LARGE`. A leg spilled to disk holds `FEDERATION_SPILL_THRESHOLD_MB` at most, and the spill limits bound it instead |
+| `FEDERATION_MAX_LEG_MB`    | `512`       | Most memory one leg may hold, counted as it streams in; a larger leg is refused with `FEDERATION_LEG_TOO_LARGE`. A leg spilled to disk holds in memory only what the combine step converts (a PostgreSQL `numeric` read as text becomes a decimal), within this limit, and the spill limits bound the rest |
 | `FEDERATION_COMBINE_THREADS` | `2`       | DuckDB threads of each federated query's combine step |
 | `FEDERATION_COMBINE_MEMORY_LIMIT` | `512MB` | DuckDB `memory_limit` of each combine step |
 | `FEDERATION_SPILL_DIR`     | temp directory | Directory on real disk where large federated legs are [spilled](../guide/federation.md#running-a-federated-query). Unset, the system's temp directory, unless it is in memory (a tmpfs or ramfs, or Cloud Run's filesystem), where every leg stays in memory; `off` turns spilling off. Not an in-memory filesystem |

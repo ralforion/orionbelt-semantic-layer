@@ -449,6 +449,33 @@ measures:
         assert again.status_code == 502
         assert "FEDERATION_MAX_LEG_MB" in again.json()["detail"]
 
+    async def test_a_spilled_leg_is_not_held_to_its_memory(
+        self, client: AsyncClient, tmp_path: Any
+    ) -> None:
+        federation.configure(spilling(tmp_path, spill_threshold_bytes=1, max_leg_bytes=1))
+
+        response = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+
+        assert response.status_code == 200, response.text
+
+    async def test_a_spilled_leg_holds_what_normalizing_converts_within_its_memory(
+        self, client: AsyncClient, sources: dict[str, str], tmp_path: Any
+    ) -> None:
+        """PostgreSQL hands a ``numeric`` over as text: the leg spills the text,
+        and the decimals it becomes are held in memory beside the file."""
+        con = duckdb.connect(sources["shop"])
+        con.execute("ALTER TABLE orders ALTER amount TYPE VARCHAR")
+        con.close()
+        federation.configure(spilling(tmp_path, spill_threshold_bytes=1, max_leg_bytes=1))
+        fields = {"select": {"fields": ["Orders.Amount", "Customers.Region"]}}
+
+        response = await execute(client, model_yaml(federated=True), fields)
+
+        assert response.status_code == 502
+        detail = response.json()["detail"]
+        assert "leg leg_0 on shop" in detail
+        assert "FEDERATION_MAX_LEG_MB" in detail
+
     async def test_a_raw_leg_over_the_limit_is_explained_by_its_rows(
         self, client: AsyncClient
     ) -> None:
@@ -1114,6 +1141,43 @@ class TestLegTooLarge:
         assert out.equals(table)
         spill.close()
 
+    def test_a_spilled_leg_holds_the_columns_normalizing_converts(self, tmp_path: Any) -> None:
+        limits = spilling(tmp_path, max_leg_bytes=1024 * 1024, spill_threshold_bytes=1024)
+        federation.configure(limits)
+        spill = federation.QuerySpill(limits)
+        amounts = pa.table({"Revenue": [f"{i}.25" for i in range(100_000)]})
+        ids = batches(100_000)[1].select(["id"])
+
+        def spilled(table: Any) -> Any:
+            sink = federation.LegSink(leg(("Revenue", "decimal"), ("id", "int")), spill)
+            out = sink(pa.RecordBatchReader.from_batches(table.schema, table.to_batches(1000)))
+            assert sink.spilled
+            return out
+
+        # 0.8 MB of integers read from the file: nothing converted, nothing held.
+        kept = federation.hold_leg(leg(("id", "int")), spilled(ids), spilled=True)
+        assert kept.num_rows == 100_000
+        # Text that becomes 1.6 MB of decimals in memory.
+        with pytest.raises(FederatedLegError, match="holds more than 1 MB in memory"):
+            federation.hold_leg(leg(("Revenue", "decimal")), spilled(amounts), spilled=True)
+        spill.close()
+
+    def test_a_leg_in_memory_holds_its_whole_table(self) -> None:
+        federation.configure(FederationLimits(max_leg_bytes=1024 * 1024))
+        table = batches(100_000)[1]
+
+        with pytest.raises(FederatedLegError, match="FEDERATION_MAX_LEG_MB"):
+            federation.hold_leg(leg(("Revenue", "decimal")), table, spilled=False)
+
+    def test_reading_buffers_again_as_another_type_allocates_nothing(self) -> None:
+        sums = pa.chunked_array([pa.array([Decimal("1.25")] * 1000, pa.decimal128(38, 2))])
+        variance = replace(leg(("s", "decimal")), integer_sums=(("s", 2),))
+
+        out, converted = federation._normalize(variance, pa.table({"s": sums}))
+
+        assert out.column("s").type == pa.decimal128(38, 0)
+        assert converted == 0
+
     def test_with_spilling_on_the_advice_is_to_raise_the_limit(self, tmp_path: Any) -> None:
         federation.configure(spilling(tmp_path, max_leg_rows=1, max_leg_bytes=1))
 
@@ -1307,7 +1371,9 @@ class TestNormalizeLeg:
             execution_time_ms=0,
         )
 
-        out = federation.leg_table(leg(("Order Date", "date"), ("Revenue", "decimal")), result)
+        out = federation.normalize_leg(
+            leg(("Order Date", "date"), ("Revenue", "decimal")), federation.result_table(result)
+        )
 
         assert out.schema.field("Order Date").type == pa.date32()
         assert out.column("Revenue").to_pylist() == [Decimal("100.50"), Decimal("20.25")]

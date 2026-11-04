@@ -774,16 +774,14 @@ async def execute_federated_with_cache(
                 if ran.cached:
                     if ran.expires_at is not None:
                         leg_expiries.append(ran.expires_at)
-                    table = federation.normalize_leg(leg, ran.data_table)
+                    table = ran.data_table
                 else:
                     assert ran.exec_result is not None
-                    table = federation.leg_table(leg, ran.exec_result)
-                if not sink.spilled:
-                    # The sink counted it as it streamed, but not a leg served
-                    # from the cache or fetched whole by a driver that does not
-                    # stream.
-                    federation.check_leg_bytes(leg, table.nbytes)
-                return table
+                    table = federation.result_table(ran.exec_result)
+                # The sink counted the leg as it streamed, but not as
+                # normalizing converts it, nor a leg served from the cache or
+                # fetched whole by a driver that does not stream.
+                return federation.hold_leg(leg, table, spilled=sink.spilled)
 
             async def run_at_once(
                 legs: list[tuple[FederatedLeg, DataSource | None]],
