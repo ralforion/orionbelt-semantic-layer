@@ -742,7 +742,7 @@ async def execute_federated_with_cache(
 
         async def run_spilling(spill: federation.QuerySpill | None) -> ExecutionResult:
             async def run_leg(leg: FederatedLeg, source: DataSource | None) -> Any:
-                sink = spill.sink(leg) if spill is not None else None
+                sink = federation.LegSink(leg, spill)
                 try:
                     ran = await execute_query_with_cache(
                         store=store,
@@ -761,7 +761,7 @@ async def execute_federated_with_cache(
                         sink=sink,
                         # A spilled leg is not cached: storing it would read
                         # it all back into memory.
-                        cache_if=(lambda: not sink.spilled) if sink is not None else None,
+                        cache_if=lambda: not sink.spilled,
                     )
                 except federation.FederatedLegError:
                     raise
@@ -774,9 +774,14 @@ async def execute_federated_with_cache(
                 if ran.cached:
                     if ran.expires_at is not None:
                         leg_expiries.append(ran.expires_at)
-                    return federation.normalize_leg(leg, ran.data_table)
-                assert ran.exec_result is not None
-                return federation.leg_table(leg, ran.exec_result)
+                    table = ran.data_table
+                else:
+                    assert ran.exec_result is not None
+                    table = federation.result_table(ran.exec_result)
+                # The sink counted the leg as it streamed, but not as
+                # normalizing converts it, nor a leg served from the cache or
+                # fetched whole by a driver that does not stream.
+                return federation.hold_leg(leg, table, spilled=sink.spilled)
 
             async def run_at_once(
                 legs: list[tuple[FederatedLeg, DataSource | None]],

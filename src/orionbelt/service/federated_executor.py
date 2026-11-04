@@ -22,13 +22,16 @@ module holds what running that plan needs, whatever the surface:
 * **The combine** runs in a fresh in-memory DuckDB, with its threads and
   memory set rather than DuckDB's defaults (all cores, 80% of RAM, per
   instance).
-* **Spilling** a large leg to disk, when ``FEDERATION_SPILL_DIR`` names one: a
-  leg streamed batch by batch is held in memory up to
-  ``FEDERATION_SPILL_THRESHOLD_MB``, then written to a file in the Arrow IPC
-  stream format, which the combine step reads memory-mapped, so the operating
-  system can page it out. Each query writes into a directory of its own,
-  removed when it ends, within ``FEDERATION_SPILL_MAX_MB`` and a process-wide
-  ``FEDERATION_SPILL_BUDGET_MB``.
+* **Leg size.** A leg is streamed batch by batch, and refused once it holds
+  more than ``FEDERATION_MAX_LEG_MB`` in memory or returns more than
+  ``FEDERATION_MAX_LEG_ROWS`` rows: rows alone do not say what a leg takes.
+* **Spilling** a large leg to disk, into ``FEDERATION_SPILL_DIR``, else the
+  system's temp directory unless that is in memory (:func:`spill_directory`):
+  a leg is held in memory up to ``FEDERATION_SPILL_THRESHOLD_MB``, then written
+  to a file in the Arrow IPC stream format, which the combine step reads
+  memory-mapped, so the operating system can page it out. Each query writes
+  into a directory of its own, removed when it ends, within
+  ``FEDERATION_SPILL_MAX_MB`` and a process-wide ``FEDERATION_SPILL_BUDGET_MB``.
 
 ``design/PLAN_federation.md`` §7 has the measurements behind these bounds.
 """
@@ -36,6 +39,7 @@ module holds what running that plan needs, whatever the surface:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -95,11 +99,15 @@ class FederationLimits:
         queue_timeout_seconds: How long a query waits for a slot.
         leg_threads: Legs fetched at once in the process.
         max_leg_rows: The most rows one leg may return.
+        max_leg_bytes: The most memory one leg may hold; a leg spilled to disk
+            holds the columns normalizing converts (:func:`hold_leg`), and is
+            bounded by ``spill_max_bytes`` otherwise.
         combine_threads: DuckDB threads per combine step.
         combine_memory_limit: DuckDB ``memory_limit`` per combine step.
         spill_dir: Where large legs are spilled; ``None`` keeps every leg in
             memory. It must be real disk: on an in-memory filesystem, such as
-            Cloud Run's, spilling saves nothing.
+            Cloud Run's, spilling saves nothing. :meth:`from_environment`
+            defaults it with :func:`spill_directory`.
         spill_threshold_bytes: A leg past this size is spilled.
         spill_max_bytes: The most one query may spill.
         spill_budget_bytes: The most the queries running at once may spill.
@@ -109,6 +117,7 @@ class FederationLimits:
     queue_timeout_seconds: float = 30.0
     leg_threads: int = 16
     max_leg_rows: int = 5_000_000
+    max_leg_bytes: int = 512 * _MB
     combine_threads: int = 2
     combine_memory_limit: str = "512MB"
     spill_dir: str | None = None
@@ -132,14 +141,75 @@ class FederationLimits:
             ),
             leg_threads=number("FEDERATION_LEG_THREADS", defaults.leg_threads),
             max_leg_rows=number("FEDERATION_MAX_LEG_ROWS", defaults.max_leg_rows),
+            max_leg_bytes=number("FEDERATION_MAX_LEG_MB", 512) * _MB,
             combine_threads=number("FEDERATION_COMBINE_THREADS", defaults.combine_threads),
             combine_memory_limit=os.environ.get("FEDERATION_COMBINE_MEMORY_LIMIT")
             or defaults.combine_memory_limit,
-            spill_dir=os.environ.get("FEDERATION_SPILL_DIR") or None,
+            spill_dir=spill_directory(os.environ.get("FEDERATION_SPILL_DIR")),
             spill_threshold_bytes=number("FEDERATION_SPILL_THRESHOLD_MB", 64) * _MB,
             spill_max_bytes=number("FEDERATION_SPILL_MAX_MB", 4096) * _MB,
             spill_budget_bytes=number("FEDERATION_SPILL_BUDGET_MB", 16384) * _MB,
         )
+
+
+#: Filesystems whose files are memory: a leg spilled there frees none.
+_IN_MEMORY_FILESYSTEMS = frozenset({"tmpfs", "ramfs"})
+
+#: Linux's table of the process's mounts.
+_MOUNTINFO = "/proc/self/mountinfo"
+
+
+def spill_directory(configured: str | None) -> str | None:
+    """Where large legs spill: ``FEDERATION_SPILL_DIR``, else the temp directory.
+
+    ``off`` turns spilling off. Unset, legs spill into the system's temp
+    directory (``TMPDIR``, else ``/tmp`` or the platform's), unless it is in
+    memory: a tmpfs or ramfs, or Cloud Run's filesystem, where a spilled leg
+    takes the memory it was meant to free. ``None`` keeps every leg in memory.
+    """
+    if configured is not None and configured.strip():
+        directory = configured.strip()
+        return None if directory.lower() == "off" else directory
+    try:
+        directory = tempfile.gettempdir()
+    except OSError:  # No writable temp directory at all.
+        return None
+    return None if _in_memory(directory) else directory
+
+
+def _in_memory(path: str) -> bool:
+    """Whether the files under *path* are held in memory rather than on disk."""
+    if os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"):
+        # Cloud Run's filesystem is in memory, whatever its mount says.
+        return True
+    return _filesystem_type(path) in _IN_MEMORY_FILESYSTEMS
+
+
+def _filesystem_type(path: str) -> str | None:
+    """The type of the filesystem *path* is on, from Linux's mount table; else ``None``.
+
+    The mount whose mount point is the longest one holding *path*, the last
+    one mounted where several share it. A line of the table is
+    ``id parent major:minor root mount-point options [optional...] - type
+    source super-options``, with a space in a path written ``\\040``.
+    """
+    try:
+        with open(_MOUNTINFO, encoding="utf-8") as mounts:
+            lines = mounts.read().splitlines()
+    except OSError:
+        return None
+    target = os.path.realpath(path)
+    found: tuple[int, str] | None = None
+    for line in lines:
+        fields, _, after = line.partition(" - ")
+        parts = fields.split()
+        if len(parts) < 5 or not after:
+            continue
+        point = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), parts[4])
+        inside = target == point or target.startswith(point.rstrip("/") + "/")
+        if inside and (found is None or len(point) >= found[0]):
+            found = (len(point), after.split()[0])
+    return found[1] if found is not None else None
 
 
 class AdmissionGate:
@@ -274,14 +344,47 @@ def check_leg_rows(leg: FederatedLeg, row_count: int) -> None:
     """
     limits = federation_limits()
     if row_count > limits.max_leg_rows:
+        larger = (
+            "or raise FEDERATION_MAX_LEG_ROWS: a leg past FEDERATION_SPILL_THRESHOLD_MB "
+            "goes to disk."
+            if limits.spill_dir is not None
+            else "or hold larger legs: raise FEDERATION_MAX_LEG_ROWS, with "
+            "FEDERATION_SPILL_DIR set to a directory on disk to keep them there."
+        )
         raise FederatedLegError(
             f"[FEDERATION_LEG_TOO_LARGE] {leg_label(leg)} returns more than "
             f"{limits.max_leg_rows} rows, the most one leg may return "
-            f"(FEDERATION_MAX_LEG_ROWS). {_why_so_many(leg)}"
+            f"(FEDERATION_MAX_LEG_ROWS). {_why_so_many(leg, larger)}"
         )
 
 
-def _why_so_many(leg: FederatedLeg) -> str:
+def check_leg_bytes(leg: FederatedLeg, nbytes: int) -> None:
+    """Refuse a leg holding more than ``FEDERATION_MAX_LEG_MB`` in memory.
+
+    Rows alone do not say what a leg takes: an integer key takes 8 bytes a
+    row, a text field its length plus 4. A leg spilled to disk counts the
+    columns normalizing converts (:func:`hold_leg`), and is bounded by
+    ``FEDERATION_SPILL_MAX_MB`` otherwise.
+
+    Raises:
+        FederatedLegError: ``FEDERATION_LEG_TOO_LARGE``.
+    """
+    limits = federation_limits()
+    if nbytes > limits.max_leg_bytes:
+        larger = (
+            "or raise FEDERATION_MAX_LEG_MB."
+            if limits.spill_dir is not None
+            else "or keep larger legs on disk: set FEDERATION_SPILL_DIR to a directory "
+            "on disk, or raise FEDERATION_MAX_LEG_MB to hold them in memory."
+        )
+        raise FederatedLegError(
+            f"[FEDERATION_LEG_TOO_LARGE] {leg_label(leg)} holds more than "
+            f"{limits.max_leg_bytes // _MB} MB in memory, the most one leg may hold "
+            f"(FEDERATION_MAX_LEG_MB). {_why_so_many(leg, larger)}"
+        )
+
+
+def _why_so_many(leg: FederatedLeg, larger: str) -> str:
     """What makes *leg* as large as it is, and what would make it smaller.
 
     A leg of groups returns a row per key of each join between data sources
@@ -289,11 +392,8 @@ def _why_so_many(leg: FederatedLeg) -> str:
     customers on another source, sums per customer, whatever the number of
     regions. A leg of rows, of a query of fields or of a measure computed
     from rows, returns its source's rows, which only a filter narrows.
+    *larger* closes the advice: how to let a larger leg through.
     """
-    larger = (
-        "or hold larger legs: raise FEDERATION_MAX_LEG_ROWS, with "
-        "FEDERATION_SPILL_DIR set to keep them on disk."
-    )
     if leg.raw:
         return (
             "A query of fields (select.fields) reads its data source's rows, a row "
@@ -424,12 +524,8 @@ def _key_values(column: Any, abstract_type: str, max_keys: int) -> list[Any] | N
     return sorted(keys)
 
 
-def leg_table(leg: FederatedLeg, result: ExecutionResult) -> Any:
-    """A leg's rows as Arrow, in the types its declared columns combine as.
-
-    Raises:
-        FederatedLegError: A value no exact type holds.
-    """
+def result_table(result: ExecutionResult) -> Any:
+    """A leg's rows as Arrow, in the types its driver returned."""
     import pyarrow as pa
 
     table = result.arrow_table
@@ -437,7 +533,23 @@ def leg_table(leg: FederatedLeg, result: ExecutionResult) -> Any:
         rows = result.rows
         names = [c.name for c in result.columns]
         table = pa.table({name: [row[i] for row in rows] for i, name in enumerate(names)})
-    return normalize_leg(leg, table)
+    return table
+
+
+def hold_leg(leg: FederatedLeg, table: Any, *, spilled: bool) -> Any:
+    """*table* normalized for the combine step, within ``FEDERATION_MAX_LEG_MB``.
+
+    A leg in memory holds its table, and a spilled leg nothing but the mapped
+    file. Beside it, each column normalizing converts (a PostgreSQL
+    ``numeric`` read as text becomes a decimal) is new memory, counted
+    against the limit before it is allocated: a leg is refused at the column
+    that would take it past, not once every column is converted.
+
+    Raises:
+        FederatedLegError: ``FEDERATION_LEG_TOO_LARGE``, or a value no exact
+            type holds (:func:`normalize_leg`).
+    """
+    return _normalize(leg, table, held=0 if spilled else table.nbytes)[0]
 
 
 def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
@@ -465,6 +577,15 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
     Other columns pass unchanged: the combine step casts its results to the
     model's types, as a query on one source does.
     """
+    return _normalize(leg, table)[0]
+
+
+def _normalize(leg: FederatedLeg, table: Any, held: int | None = None) -> tuple[Any, int]:
+    """:func:`normalize_leg`'s table, and the bytes of the columns it converted.
+
+    With *held*, the bytes the leg holds already, a conversion that would take
+    it past ``FEDERATION_MAX_LEG_MB`` is refused before it is made.
+    """
     import pyarrow as pa
     import pyarrow.compute as pc
 
@@ -473,33 +594,112 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
     declared = dict(leg.columns)
     exact = dict(leg.exact_sums)
     units = dict(leg.integer_sums)
+    budget = _Budget(leg, held)
     columns = []
     for name in table.column_names:
         column = table.column(name)
         storage = getattr(column.type, "storage_type", None)
         if storage is not None:
+            # The same buffers, read as their storage type: nothing is copied.
             column = pa.chunked_array([chunk.storage for chunk in column.chunks], type=storage)
+        stored = column
+        length = len(column)
         kind = declared.get(name)
         if pa.types.is_null(column.type) and kind is not None:
-            column = column.cast(obml_type_to_arrow(kind))
+            target = obml_type_to_arrow(kind)
+            budget.reserve(target, length)
+            column = column.cast(target)
         elif kind in _NUMERIC_TYPES and (
             pa.types.is_string(column.type) or pa.types.is_large_string(column.type)
         ):
+            budget.reserve(pa.decimal128(_DECIMAL128_MAX_PRECISION, 0), length)
             column = _decimal_from_text(leg, name, column)
         elif kind in _TEMPORAL_TYPES and pa.types.is_string(column.type):
-            column = _temporal_from_text(column, obml_type_to_arrow(kind))
+            target = obml_type_to_arrow(kind)
+            budget.reserve(target, length)
+            column = _temporal_from_text(column, target)
         elif kind == "timestamp" and pa.types.is_timestamp(column.type) and column.type.tz:
+            budget.reserve(pa.timestamp(column.type.unit), length)
             column = pc.local_timestamp(column)
         elif pa.types.is_decimal256(column.type) and name not in units:
             # A sum of squares arrives at the scale the engine computed it in,
             # BigQuery's 38 places, and narrows only once rescaled to its own.
+            budget.reserve(pa.decimal128(_DECIMAL128_MAX_PRECISION, 0), length)
             column = _narrow_decimal(leg, name, column)
-        if name in exact:
-            column = _exact_sum(leg, name, column, exact[name])
-        elif name in units:
-            column = _whole_units(_exact_sum(leg, name, column, units[name], variance=True))
+        if name in exact or name in units:
+            scale = exact[name] if name in exact else units[name]
+            target = pa.decimal128(_DECIMAL128_MAX_PRECISION, scale)
+            if column.type != target:
+                budget.reserve(target, length)
+            column = _exact_sum(leg, name, column, scale, variance=name in units)
+            if name in units:
+                column = _whole_units(column)
+        budget.settle(stored, column)
         columns.append(column)
-    return pa.table(columns, names=table.column_names)
+    return pa.table(columns, names=table.column_names), budget.converted
+
+
+class _Budget:
+    """What normalizing a leg allocates, within ``FEDERATION_MAX_LEG_MB``.
+
+    Each conversion reserves the column it makes before making it, so a leg
+    past the limit is refused at the column that would take it there; once
+    made, the column counts the buffers it allocated. *held* is what the leg
+    holds already; ``None`` counts without a limit.
+    """
+
+    def __init__(self, leg: FederatedLeg, held: int | None) -> None:
+        self._leg = leg
+        self._held = held
+        self._pending = 0
+        self.converted = 0
+
+    def reserve(self, kind: Any, length: int) -> None:
+        """Make room for a column of *length* values of Arrow type *kind*."""
+        self._pending += _column_bytes(kind, length)
+        self._check(self.converted + self._pending)
+
+    def settle(self, stored: Any, column: Any) -> None:
+        """Count what converting *stored* into *column* allocated."""
+        self._pending = 0
+        self.converted += _allocated(stored, column)
+        self._check(self.converted)
+
+    def _check(self, nbytes: int) -> None:
+        if self._held is not None:
+            check_leg_bytes(self._leg, self._held + nbytes)
+
+
+def _column_bytes(kind: Any, length: int) -> int:
+    """What a column of *length* values of Arrow type *kind* allocates: values and validity.
+
+    A type without a fixed width counts its offsets.
+    """
+    try:
+        bits = int(kind.bit_width)
+    except ValueError:
+        bits = 32
+    return (bits * length + 7) // 8 + (length + 7) // 8
+
+
+def _allocated(stored: Any, column: Any) -> int:
+    """The bytes of *column*'s buffers that *stored*'s do not hold.
+
+    A column normalizing left alone, or only read again as another type
+    (:func:`_whole_units`), allocated nothing.
+    """
+    held = {
+        buffer.address
+        for chunk in stored.chunks
+        for buffer in chunk.buffers()
+        if buffer is not None
+    }
+    return sum(
+        buffer.size
+        for chunk in column.chunks
+        for buffer in chunk.buffers()
+        if buffer is not None and buffer.address not in held
+    )
 
 
 def _decimal_from_text(leg: FederatedLeg, name: str, column: Any) -> Any:
@@ -508,7 +708,9 @@ def _decimal_from_text(leg: FederatedLeg, name: str, column: Any) -> Any:
 
     scale = 0
     integer_digits = 0
-    for text in column.to_pylist():
+    # A chunk at a time: a spilled leg's values are read from its file, and
+    # only one chunk's become Python objects at once.
+    for text in (text for chunk in column.chunks for text in chunk.to_pylist()):
         if text is None:
             continue
         try:
@@ -637,10 +839,6 @@ class QuerySpill:
         self._written = 0
         self._lock = threading.Lock()
 
-    def sink(self, leg: FederatedLeg) -> LegSink:
-        """What streams *leg*'s rows in, spilling them past the threshold."""
-        return LegSink(self, leg)
-
     def reserve(self, leg: FederatedLeg, nbytes: int) -> None:
         """Account for *nbytes* more written for *leg*.
 
@@ -679,11 +877,14 @@ class QuerySpill:
 
 
 class LegSink:
-    """Streams a leg's record batches into one Arrow table, spilling a large one.
+    """Streams a leg's record batches into one Arrow table, within its limits.
 
-    Batches are held in memory until they pass ``spill_threshold_bytes``; from
-    then on they, and the rest of the stream, go to a file in the query's
-    directory, and the table returned reads that file memory-mapped.
+    Batches are held in memory, at most ``FEDERATION_MAX_LEG_MB`` of them
+    (:func:`check_leg_bytes`), so a leg too large is refused as it arrives
+    rather than once it is whole. Given the query's :class:`QuerySpill`,
+    batches past its ``spill_threshold_bytes``, and the rest of the stream, go
+    to a file in the query's directory instead, and the table returned reads
+    that file memory-mapped.
 
     The file is in the IPC *stream* format, not the file format: a driver may
     send each batch with a dictionary of its own (ClickHouse does, for
@@ -693,52 +894,53 @@ class LegSink:
     A small leg never touches the disk. ``spilled`` says which happened.
     """
 
-    def __init__(self, spill: QuerySpill, leg: FederatedLeg) -> None:
-        self._spill = spill
+    def __init__(self, leg: FederatedLeg, spill: QuerySpill | None = None) -> None:
         self._leg = leg
+        self._spill = spill
         self.spilled = False
 
     def __call__(self, reader: Any) -> Any:
         import pyarrow as pa
 
-        threshold = self._spill._limits.spill_threshold_bytes
+        spill = self._spill
         held: list[Any] = []
         held_bytes = 0
         for batch in reader:
             held.append(batch)
             held_bytes += batch.nbytes
-            if held_bytes > threshold:
-                return self._spill_stream(reader, held)
+            if spill is not None and held_bytes > spill._limits.spill_threshold_bytes:
+                return self._spill_stream(spill, reader, held)
+            check_leg_bytes(self._leg, held_bytes)
         return pa.Table.from_batches(held, schema=reader.schema)
 
-    def _spill_stream(self, reader: Any, held: list[Any]) -> Any:
+    def _spill_stream(self, spill: QuerySpill, reader: Any, held: list[Any]) -> Any:
         """Write *held* and the rest of *reader* to a file; the file as a table."""
         import pyarrow as pa
         from pyarrow import ipc
 
         self.spilled = True
-        path = os.path.join(self._spill.directory, f"{self._leg.name}.arrows")
+        path = os.path.join(spill.directory, f"{self._leg.name}.arrows")
         try:
             with pa.OSFile(path, "wb") as sink, ipc.new_stream(sink, reader.schema) as writer:
                 for batch in held:
-                    self._write(writer, batch)
+                    self._write(spill, writer, batch)
                 held.clear()
                 for batch in reader:
-                    self._write(writer, batch)
+                    self._write(spill, writer, batch)
         except OSError as exc:
             # The disk, not the database: most often a volume smaller than
             # the limits allow for.
             raise FederationSpillFullError(
                 f"[FEDERATION_SPILL_FULL] {leg_label(self._leg)} could not be spilled to "
-                f"FEDERATION_SPILL_DIR '{self._spill._limits.spill_dir}': {exc}. Give the "
+                f"FEDERATION_SPILL_DIR '{spill._limits.spill_dir}': {exc}. Give the "
                 "directory more space, or lower FEDERATION_SPILL_BUDGET_MB to what it holds."
             ) from None
         # Left open: the table's buffers are the mapping. The file goes with
         # the query's directory; a mapped file outlives its name.
         return ipc.open_stream(pa.memory_map(path, "r")).read_all()
 
-    def _write(self, writer: Any, batch: Any) -> None:
-        self._spill.reserve(self._leg, batch.nbytes)
+    def _write(self, spill: QuerySpill, writer: Any, batch: Any) -> None:
+        spill.reserve(self._leg, batch.nbytes)
         writer.write_batch(batch)
 
 
@@ -795,6 +997,7 @@ __all__ = [
     "QuerySpill",
     "admission_gate",
     "busy_error",
+    "check_leg_bytes",
     "check_leg_rows",
     "check_rows_stood_for",
     "combine",
@@ -803,7 +1006,9 @@ __all__ = [
     "injected_fact_leg",
     "key_injection_max_keys",
     "leg_executor",
+    "hold_leg",
     "leg_label",
-    "leg_table",
     "normalize_leg",
+    "result_table",
+    "spill_directory",
 ]

@@ -63,7 +63,7 @@ from orionbelt.api.schemas import HealthResponse
 from orionbelt.cache.factory import build_cache
 from orionbelt.service import db_executor
 from orionbelt.service.compilation_cache import CompilationCache
-from orionbelt.service.federated_executor import FederationLimits
+from orionbelt.service.federated_executor import FederationLimits, spill_directory
 from orionbelt.service.federated_executor import configure as configure_federation
 from orionbelt.service.session_manager import SessionManager
 from orionbelt.service.value_search import ValueSearchConfig
@@ -259,9 +259,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             queue_timeout_seconds=settings.federation_queue_timeout_seconds,
             leg_threads=settings.federation_leg_threads,
             max_leg_rows=settings.federation_max_leg_rows,
+            max_leg_bytes=settings.federation_max_leg_mb * 1024 * 1024,
             combine_threads=settings.federation_combine_threads,
             combine_memory_limit=settings.federation_combine_memory_limit,
-            spill_dir=settings.federation_spill_dir or None,
+            spill_dir=spill_directory(settings.federation_spill_dir),
             spill_threshold_bytes=settings.federation_spill_threshold_mb * 1024 * 1024,
             spill_max_bytes=settings.federation_spill_max_mb * 1024 * 1024,
             spill_budget_bytes=settings.federation_spill_budget_mb * 1024 * 1024,
