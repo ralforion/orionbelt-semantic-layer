@@ -58,6 +58,8 @@ class DremioDialect(Dialect):
     #: Measured over 5 million rows: every key in 0.40-0.64 s, 1,000 keys in
     #: 0.14-0.36 s, 10,000 in 0.42-0.63 s.
     key_injection_max_keys = 1_000
+    #: 5 million groups by key in 2.4 s, joining a map in 0.78-0.95 s.
+    pushes_key_maps = True
 
     @property
     def name(self) -> str:

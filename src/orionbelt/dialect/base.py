@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -795,6 +795,16 @@ class Dialect(ABC):
         )
         return f"SELECT {items}\nFROM (\n{sql}\n) AS {self.quote_identifier(alias)}"
 
+    def key_map(self, key: str, ordinal: str, pairs: Sequence[tuple[int, int]]) -> str:
+        """*pairs* of an integer key and its ordinal as a relation of columns *key* and *ordinal*.
+
+        A parenthesized query, which a ``FROM`` or ``JOIN`` names with an alias
+        of its own: ``(VALUES ...)`` takes its column names beside its alias.
+        """
+        q = self.quote_identifier
+        rows = ", ".join(f"({k}, {n})" for k, n in pairs)
+        return f"(SELECT * FROM (VALUES {rows}) AS {q('m')}({q(key)}, {q(ordinal)}))"
+
     def exact_quotient(
         self, total: Expr, count: Expr, input_scale: int, obml_type: OBMLType
     ) -> Expr | None:
@@ -1192,6 +1202,18 @@ class Dialect(ABC):
     #: the dimension leg's. ``DB_<NAME>_KEY_INJECTION_MAX_KEYS`` sets it per
     #: data source.
     key_injection_max_keys: int = 0
+
+    #: Whether a federated fact leg on this engine may join a map of a small
+    #: dimension leg's keys, written as rows of literals (:meth:`key_map`),
+    #: and group by each key's ordinal there rather than by the key. Within
+    #: ``key_injection_max_keys``. Measured with 5 million fact rows in 5
+    #: million groups (``design/PLAN_federation.md`` §14.3), it gains on every
+    #: engine but where grouping is as fast as the join: ClickHouse 0.28 s by
+    #: key and 0.24-0.32 s mapped, DuckDB 0.05 s and 0.13 s; there the leg
+    #: still shrinks from 5 million rows to a row per group. Every engine took
+    #: a map of 50,000 rows but ClickHouse, whose statements
+    #: ``max_statement_bytes`` bounds.
+    pushes_key_maps: bool = False
 
     #: The longest statement the engine parses by default, in bytes, where it
     #: is short enough for a list of keys to reach: ClickHouse's

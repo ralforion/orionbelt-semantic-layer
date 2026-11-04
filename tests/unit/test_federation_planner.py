@@ -12,6 +12,7 @@ customer without a region, and several orders per customer.
 
 from __future__ import annotations
 
+import functools
 import gc
 import weakref
 from collections.abc import Callable
@@ -24,11 +25,14 @@ import pytest
 duckdb = pytest.importorskip("duckdb")
 
 from orionbelt.ast.nodes import FunctionCall  # noqa: E402
+from orionbelt.compiler.federation import KeyMap  # noqa: E402
 from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
 from orionbelt.compiler.resolution import ResolutionError  # noqa: E402
 from orionbelt.dialect.duckdb import DuckDBDialect  # noqa: E402
+from orionbelt.dialect.registry import DialectRegistry  # noqa: E402
 from orionbelt.models.query import QueryObject  # noqa: E402
 from orionbelt.service.compilation_cache import CompilationCache  # noqa: E402
+from orionbelt.service.federated_executor import injected_fact_leg  # noqa: E402
 from orionbelt.service.model_store import ModelStore  # noqa: E402
 
 ORDERS = """
@@ -143,17 +147,46 @@ def run_single(files: dict[str, str], query: dict[str, Any], **model: Any) -> li
         con.close()
 
 
+def _leg_table(paths: dict[str, str], leg: Any) -> Any:
+    con = duckdb.connect(paths[leg.data_source], read_only=True)
+    try:
+        return con.sql(leg.sql).to_arrow_table()
+    finally:
+        con.close()
+
+
+def _combined_rows(tables: dict[str, Any], sql: str) -> list[Any]:
+    combine = duckdb.connect()
+    for name, table in tables.items():
+        combine.register(name, table)
+    return sorted(_rows(combine, sql), key=repr)
+
+
+def legs_registered(paths: dict[str, str], plan: Any) -> Any:
+    """A DuckDB connection holding each leg of *plan*, run on its data source.
+
+    Where the fact leg may read only the keys its dimension legs return, or
+    join maps of them, the plan run as the executor runs it
+    (``injected_fact_leg``) must combine to the same rows: checked here for
+    each federated query these tests run.
+    """
+    tables = {leg.name: _leg_table(paths, leg) for leg in plan.legs}
+    if plan.injections or plan.key_maps:
+        fact, maps = injected_fact_leg(plan, tables, 10_000)
+        read = {**tables, **maps, fact.name: _leg_table(paths, fact)}
+        expected = _combined_rows(tables, plan.combine_sql)
+        assert _combined_rows(read, plan.combine_sql) == expected, fact.sql
+    combine = duckdb.connect()
+    for name, table in tables.items():
+        combine.register(name, table)
+    return combine
+
+
 def run_federated(files: dict[str, str], query: dict[str, Any], **model: Any) -> list[Any]:
     compiled = _compile(model_yaml(federated=True, **model), query)
     plan = compiled.federation
     assert plan is not None
-    combine = duckdb.connect()
-    for leg in plan.legs:
-        con = duckdb.connect(files[leg.data_source], read_only=True)
-        try:
-            combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-        finally:
-            con.close()
+    combine = legs_registered(files, plan)
     return _rows(combine, compiled.sql)
 
 
@@ -1066,13 +1099,7 @@ class TestFromRowsInTheQueryZone:
                 return _rows(con, compiled.sql)
             finally:
                 con.close()
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(zoned[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(zoned, compiled.federation)
         return _rows(combine, compiled.sql)
 
     def test_two_instants_of_one_wall_clock_time_keep_their_order(
@@ -1486,6 +1513,186 @@ AFTER_THE_JOIN = {
 }
 
 
+BY_MONTH_AND_REGION = {
+    "select": {"dimensions": ["Order Date:month", "Region"], "measures": ["Revenue"]}
+}
+STRING_KEYS = {
+    "Order Customer: {code: customer_id, abstractType: int}": (
+        "Order Customer: {code: customer_id, abstractType: string}"
+    ),
+    "Customer ID: {code: customer_id, abstractType: int}": (
+        "Customer ID: {code: customer_id, abstractType: string}"
+    ),
+}
+
+
+class TestKeyMaps:
+    """The fact leg joining a dimension leg as a map of its keys (``KeyMap``)."""
+
+    def test_the_fact_leg_groups_by_each_keys_ordinal_in_the_keys_column(self) -> None:
+        plan = _compile(model_yaml(federated=True), BY_MONTH_AND_REGION).federation
+
+        assert plan.key_maps == (KeyMap("leg_1", "__fk0_0"),)
+        assert plan.injections == ()
+        assert plan.inject is not None
+        sql = plan.inject({}, {"__fk0_0": [(10, 1), (11, 2), (13, 1)]}).sql
+        assert '"__map0"."n" AS "__fk0_0"' in sql
+        assert (
+            'LEFT JOIN (SELECT * FROM (VALUES (10, 1), (11, 2), (13, 1)) AS "m"("k", "n")) '
+            'AS "__map0" ON "Orders"."customer_id" = "__map0"."k"'
+        ) in sql
+        assert plan.inject({}).sql == plan.legs[0].sql
+
+    def test_a_filtered_dimension_legs_map_is_the_only_keys_the_fact_leg_reads(self) -> None:
+        """The combine step keeps only the fact rows the leg matched: an inner
+        join in the fact leg keeps the same ones."""
+        query = {
+            "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
+            "where": [EU],
+        }
+        plan = _compile(model_yaml(federated=True), query).federation
+
+        assert [m.leg for m in plan.key_maps] == [i.leg for i in plan.injections] == ["leg_1"]
+        sql = plan.inject({}, {"__fk0_0": [(10, 1), (13, 1)]}).sql
+        assert 'INNER JOIN (SELECT * FROM (VALUES (10, 1), (13, 1)) AS "m"("k", "n"))' in sql
+
+    @pytest.mark.parametrize(
+        ("yaml", "query"),
+        [
+            (
+                model_yaml(federated=True),
+                {"select": {"dimensions": ["Region"], "measures": ["Revenue"]}},
+            ),
+            (
+                functools.reduce(
+                    lambda text, pair: text.replace(*pair),
+                    STRING_KEYS.items(),
+                    model_yaml(federated=True),
+                ),
+                BY_MONTH_AND_REGION,
+            ),
+            (
+                model_yaml(federated=True, extra=FROM_ROWS),
+                {
+                    "select": {
+                        "dimensions": ["Order Date:month", "Region"],
+                        "measures": ["Median Order"],
+                    }
+                },
+            ),
+            (
+                model_yaml(federated=True, extra=DISTINCTS),
+                {
+                    "select": {
+                        "dimensions": ["Order Date:month", "Region"],
+                        "measures": ["Customers Ordering"],
+                    }
+                },
+            ),
+            (
+                model_yaml(
+                    federated=True,
+                    dimension=(
+                        "  Customer Number: "
+                        "{dataObject: Orders, column: Order Customer, resultType: int}\n"
+                    ),
+                ),
+                {"select": {"dimensions": ["Customer Number", "Region"], "measures": ["Revenue"]}},
+            ),
+        ],
+        ids=[
+            "grouped_by_the_key_alone",
+            "a_string_key",
+            "a_leg_of_rows",
+            "a_count_of_distinct_keys",
+            "a_dimension_on_the_key",
+        ],
+    )
+    def test_no_map_where_it_would_not_group_the_leg_by_less_or_the_key_is_read_otherwise(
+        self, yaml: str, query: dict[str, Any]
+    ) -> None:
+        plan = _compile(yaml, query).federation
+
+        assert plan is not None
+        assert plan.key_maps == ()
+
+    @pytest.mark.parametrize("grouping", [None, "rollup", "cube"], ids=["groups", "rollup", "cube"])
+    def test_a_mapped_fact_leg_combines_as_one_source_does(
+        self, files: dict[str, str], grouping: str | None
+    ) -> None:
+        query = {
+            "select": {"dimensions": ["Region", "Order Date:month"], "measures": MEASURES},
+            **({"grouping": grouping} if grouping else {}),
+        }
+        assert _compile(model_yaml(federated=True), query).federation.key_maps
+
+        assert_same(files, query)
+
+    def test_strings_a_mapped_fact_leg_ranks_keep_their_sources_order(
+        self, collated: dict[str, str]
+    ) -> None:
+        query = {"select": {"dimensions": ["Region", "Order Date:month"], "measures": BOUNDS}}
+        model = {"order_columns": STATUS, "extra": STRING_BOUNDS}
+        assert _compile(model_yaml(federated=True, **model), query).federation.key_maps
+
+        assert_same(collated, query, **model)
+
+    def test_no_map_of_keys_a_nonexists_leg_joins_on(self) -> None:
+        query = {**BY_MONTH_AND_REGION, "where": [_tickets("nonexists")]}
+
+        plan = _compile(subquery_model(True), query).federation
+
+        assert plan.key_maps == ()
+
+    @pytest.mark.parametrize(
+        "dialect",
+        [
+            "postgres",
+            "mysql",
+            "clickhouse",
+            "duckdb",
+            "snowflake",
+            "bigquery",
+            "databricks",
+            "dremio",
+        ],
+    )
+    def test_each_engine_measured_joins_a_map(
+        self, dialect: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """5 million groups by key against a map to 10 to 1,000 groups
+        (``design/PLAN_federation.md`` §14.3): faster on every engine but
+        ClickHouse and DuckDB, where the leg still shrinks to a row per group.
+        An engine not measured joins none."""
+        query = QueryObject.model_validate(BY_MONTH_AND_REGION)
+
+        def plan_for() -> Any:
+            store = ModelStore()
+            model_id = store.load_model(model_yaml(federated=True)).model_id
+            return store.compile_query(model_id, query, dialect).federation
+
+        plan = plan_for()
+        monkeypatch.setattr(type(DialectRegistry.get(dialect)), "pushes_key_maps", False)
+        unmeasured = plan_for()
+
+        assert plan.legs[0].dialect == dialect
+        assert plan.key_maps == (KeyMap("leg_1", "__fk0_0"),)
+        assert unmeasured.key_maps == ()
+
+    def test_the_map_is_named_apart_from_the_legs_data_objects(self) -> None:
+        yaml = functools.reduce(
+            lambda text, pair: text.replace(*pair),
+            [("  Orders:\n", "  __map0:\n"), ("Orders", "__map0")],
+            model_yaml(federated=True),
+        )
+        plan = _compile(yaml, BY_MONTH_AND_REGION).federation
+        assert plan.key_maps
+
+        sql = plan.inject({}, {"__fk0_0": [(10, 1)]}).sql
+
+        assert 'AS "___map0" ON "__map0"."customer_id" = "___map0"."k"' in sql
+
+
 class TestFiltersAfterTheJoin:
     """A filter reading several sources runs in the combine step, as one database runs it."""
 
@@ -1831,13 +2038,7 @@ class TestPeriodMetrics:
         finally:
             con.close()
         compiled = _compile(calendar_yaml(True, calendar_source), query)
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(calendar_files[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(calendar_files, compiled.federation)
 
         assert sorted(_rows(combine, compiled.sql), key=repr) == expected
         assert expected
@@ -3165,13 +3366,7 @@ class TestSourceChains:
                 return sorted(_rows(con, compiled.sql), key=repr)
             finally:
                 con.close()
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(paths[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(paths, compiled.federation)
         return sorted(_rows(combine, compiled.sql), key=repr)
 
     @pytest.mark.parametrize("query", CHAIN_QUERIES.values(), ids=CHAIN_QUERIES.keys())
@@ -3292,13 +3487,7 @@ def _run_typed(files: dict[str, str], query: dict[str, Any], *, federated: bool)
             return _rows(con, compiled.sql)
         finally:
             con.close()
-    combine = duckdb.connect()
-    for leg in compiled.federation.legs:
-        con = duckdb.connect(files[leg.data_source], read_only=True)
-        try:
-            combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-        finally:
-            con.close()
+    combine = legs_registered(files, compiled.federation)
     return _rows(combine, compiled.sql)
 
 
@@ -3431,13 +3620,7 @@ class TestCountDistinctBesideOtherObjects:
         finally:
             con.close()
         compiled = _compile(three_objects(True), query)
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(three_files[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(three_files, compiled.federation)
 
         assert sorted(_rows(combine, compiled.sql)) == single == [("AT", 1), ("HR", 1), ("SI", 1)]
 
@@ -3464,13 +3647,7 @@ class TestCountDistinctBesideOtherObjects:
             con.close()
         compiled = _compile(three_objects(True), query)
         assert compiled.federation.legs[0].rows is not None
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(three_files[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(three_files, compiled.federation)
 
         assert sorted(_rows(combine, compiled.sql), key=repr) == single
         assert single
@@ -4648,13 +4825,7 @@ class TestMeasuresReadingAnotherSource:
                 return _rows(con, compiled.sql)
             finally:
                 con.close()
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(priced[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(priced, compiled.federation)
         return _rows(combine, compiled.sql)
 
     @pytest.mark.parametrize("query", ACROSS_QUERIES.values(), ids=ACROSS_QUERIES.keys())
@@ -4930,13 +5101,7 @@ class TestExists:
                 return _rows(con, compiled.sql)
             finally:
                 con.close()
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(paths[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(paths, compiled.federation)
         return _rows(combine, compiled.sql)
 
     @pytest.mark.parametrize("query", SUBQUERY_QUERIES.values(), ids=SUBQUERY_QUERIES.keys())
@@ -5452,13 +5617,7 @@ class TestExistsOverNested:
             con.close()
 
         plan = _compile(nested_model(True), query).federation
-        combine = duckdb.connect()
-        for leg in plan.legs:
-            con = duckdb.connect(nested_files[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(nested_files, plan)
         assert sorted(_rows(combine, plan.combine_sql)) == expected
 
 
@@ -6559,13 +6718,7 @@ class TestRoles:
                 return sorted(_rows(con, compiled.sql), key=repr)
             finally:
                 con.close()
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(paths[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(paths, compiled.federation)
         return sorted(_rows(combine, compiled.sql), key=repr)
 
     @pytest.mark.parametrize("query", ROLE_QUERIES.values(), ids=ROLE_QUERIES.keys())
@@ -6709,13 +6862,7 @@ class TestComputedDimensions:
             expected = sorted(_rows(con, single.sql), key=repr)
         finally:
             con.close()
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(chain_files[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(chain_files, compiled.federation)
 
         assert sorted(_rows(combine, compiled.sql), key=repr) == expected
         assert ("EU", Decimal("120.75")) in expected
@@ -6751,13 +6898,7 @@ class TestComputedDimensions:
             expected = sorted(_rows(con, single.sql), key=repr)
         finally:
             con.close()
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(chain_files[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(chain_files, compiled.federation)
 
         assert sorted(_rows(combine, compiled.sql), key=repr) == expected
         assert expected == [(1, Decimal("120.75"))]
@@ -6931,13 +7072,7 @@ class TestExistsReadingAnOuterObject:
         finally:
             con.close()
         compiled = _compile(shared_yaml(True, static), query)
-        combine = duckdb.connect()
-        for leg in compiled.federation.legs:
-            con = duckdb.connect(shared_files[leg.data_source], read_only=True)
-            try:
-                combine.register(leg.name, con.sql(leg.sql).to_arrow_table())
-            finally:
-                con.close()
+        combine = legs_registered(shared_files, compiled.federation)
 
         assert sorted(_rows(combine, compiled.sql), key=repr) == expected
         assert expected

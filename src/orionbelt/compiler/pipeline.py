@@ -20,7 +20,7 @@ from orionbelt.compiler.grain_dedup import detect_dedup_measures, split_grain_co
 from orionbelt.compiler.graph import JoinStep, reuse_join_graphs
 from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
 from orionbelt.compiler.raw import RawPlanner
-from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
+from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery, key_map_rows
 from orionbelt.compiler.scope_check import out_of_scope_tables
 from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
 from orionbelt.compiler.validator import validate_sql
@@ -277,6 +277,11 @@ def _table_qualifier(dialect: Dialect) -> Callable[[DataObject], str]:
     """How *dialect* names a data object's table in the SQL it is written in."""
 
     def qualify_table(obj: DataObject) -> str:
+        # A federated fact leg's map of a dimension leg's keys is rows of
+        # literals, not a table (``tables_as_key_maps``).
+        rows = key_map_rows(obj.name)
+        if rows is not None:
+            return dialect.key_map(*rows)
         # Guarded rather than trusting ``code`` to be non-empty: a nested
         # object without the fallback has no table, and an unguarded empty
         # code renders as FROM "" (#342 review).

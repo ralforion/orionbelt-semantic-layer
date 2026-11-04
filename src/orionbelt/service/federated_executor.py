@@ -15,7 +15,8 @@ module holds what running that plan needs, whatever the surface:
   could otherwise hold the threads its legs need.
 * **Key injection.** A fact leg whose dimension legs run a filter of the
   query may wait for them and read only the keys they returned, up to the
-  fact source's ``KEY_INJECTION_MAX_KEYS``.
+  fact source's ``KEY_INJECTION_MAX_KEYS``; or join a small dimension leg's
+  keys as a map, which the combine step then reads in that leg's place.
 * **Normalising** a leg's Arrow table into types DuckDB combines exactly:
   Postgres ``numeric`` arrives as text, a wide decimal as ``decimal256``,
   which DuckDB cannot read, and an all-NULL column without a type.
@@ -464,36 +465,56 @@ def key_injection_max_keys(source: DataSource | None, dialect: str) -> int:
     return DialectRegistry.get(dialect).key_injection_max_keys
 
 
-def injected_fact_leg(plan: FederatedPlan, tables: dict[str, Any], max_keys: int) -> FederatedLeg:
-    """The fact leg reading only the keys its dimension legs returned.
+def injected_fact_leg(
+    plan: FederatedPlan, tables: dict[str, Any], max_keys: int
+) -> tuple[FederatedLeg, dict[str, Any]]:
+    """The fact leg reading only the keys its dimension legs returned, or maps of them.
 
-    At most *max_keys* in all, the legs with the fewest keys first; a leg
-    past what is left is not read from, and the fact leg reads every value
-    of that key. *tables* holds the dimension legs' results. A list making
-    the statement longer than the engine parses is not read either
+    A dimension leg the fact leg may join as a map of its keys (``plan.key_maps``)
+    is read so, else as a list where it may be. At most *max_keys* keys in
+    all, of lists and maps alike, the legs with the fewest first; a leg past
+    what is left is not read from, and the fact leg reads every value of that
+    key. *tables* holds the dimension legs' results. Lists and maps making the
+    statement longer than the engine parses are not read either
     (:attr:`Dialect.max_statement_bytes`).
+
+    Returns the fact leg, and for each leg it joins a map of, the rows the
+    combine step reads in that leg's place (:func:`_key_map`).
     """
-    lists: list[tuple[str, list[Any]]] = []
+    # Each column's keys: a list, or a map with the rows numbered.
+    found: dict[str, tuple[list[Any], tuple[str, Any] | None]] = {}
+    for key_map in plan.key_maps:
+        built = _key_map(tables[key_map.leg], key_map.column, max_keys)
+        if built is not None:
+            found[key_map.column] = (built[0], (key_map.leg, built[1]))
     for injection in plan.injections:
+        if injection.column in found:
+            continue
         values = tables[injection.leg].column(injection.values or injection.column)
         keys = _key_values(values, injection.abstract_type, max_keys)
         if keys is not None:
-            lists.append((injection.column, keys))
-    chosen: dict[str, list[Any]] = {}
+            found[injection.column] = (keys, None)
+    lists: dict[str, list[Any]] = {}
+    maps: dict[str, list[Any]] = {}
+    rows: dict[str, Any] = {}
     left = max_keys
-    for column, keys in sorted(lists, key=lambda item: len(item[1])):
+    for column, (keys, mapped) in sorted(found.items(), key=lambda item: len(item[1][0])):
         if len(keys) > left:
             break
-        chosen[column] = keys
+        if mapped is None:
+            lists[column] = keys
+        else:
+            maps[column] = keys
+            rows[mapped[0]] = mapped[1]
         left -= len(keys)
-    if not chosen or plan.inject is None:
-        return plan.legs[0]
-    fact = plan.inject(chosen)
+    if not (lists or maps) or plan.inject is None:
+        return plan.legs[0], {}
+    fact = plan.inject(lists, maps)
     longest = DialectRegistry.get(fact.dialect).max_statement_bytes
     # Longer than the engine parses: it would refuse the query.
     if longest is not None and len(fact.sql.encode()) > longest:
-        return plan.legs[0]
-    return fact
+        return plan.legs[0], {}
+    return fact, rows
 
 
 def _key_values(column: Any, abstract_type: str, max_keys: int) -> list[Any] | None:
@@ -512,16 +533,76 @@ def _key_values(column: Any, abstract_type: str, max_keys: int) -> list[Any] | N
     keys: list[Any] = []
     for value in distinct.to_pylist():
         if abstract_type == "int":
-            if isinstance(value, bool) or not isinstance(value, int | Decimal):
+            key = _integer(value)
+            if key is None:
                 return None
-            if value != int(value):
-                return None
-            keys.append(int(value))
+            keys.append(key)
         elif isinstance(value, str) and "\x00" not in value:
             keys.append(value)
         else:
             return None
     return sorted(keys)
+
+
+def _integer(value: Any) -> int | None:
+    """*value* as an integer key's literal; ``None`` for a fraction or a boolean."""
+    if isinstance(value, bool) or not isinstance(value, int | Decimal):
+        return None
+    if value != int(value):
+        return None
+    return int(value)
+
+
+def _key_map(table: Any, column: str, max_keys: int) -> tuple[list[Any], Any] | None:
+    """A map of *table*'s integer keys in *column*, and the rows its ordinals number.
+
+    Rows equal in every other column, as DuckDB groups them (the combine step
+    groups so), are one row of the map's and take one ordinal; ordinals count
+    from 1 in the order of those values, so the same rows make the same map,
+    and the fact leg joining it is the statement cached before. Returns the
+    ``(key, ordinal)`` pairs, sorted, and one row per ordinal, the ordinal in
+    *column*. ``None`` past *max_keys*, for no key, or for a key that is not
+    an integer (:func:`_key_values`).
+    """
+    import duckdb
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if pc.count_distinct(table.column(column)).as_py() > max_keys:
+        return None
+    q = DialectRegistry.get("duckdb").quote_identifier
+    position = "__row"
+    while position in table.column_names:
+        position = f"_{position}"
+    others = ", ".join(q(name) for name in table.column_names if name != column)
+    sql = (
+        f"SELECT min({q(position)}), list(DISTINCT {q(column)}) FROM leg "
+        f"WHERE {q(column)} IS NOT NULL"
+    )
+    if others:
+        sql += f" GROUP BY {others} ORDER BY {others}"
+    con = duckdb.connect(config={"threads": 1})
+    try:
+        con.register(
+            "leg", table.append_column(position, pa.array(range(table.num_rows), pa.int64()))
+        )
+        groups = [(first, keys) for first, keys in con.sql(sql).fetchall() if keys]
+    finally:
+        con.close()
+    pairs: list[tuple[int, int]] = []
+    for ordinal, (_, keys) in enumerate(groups, start=1):
+        for value in keys:
+            key = _integer(value)
+            if key is None:
+                return None
+            pairs.append((key, ordinal))
+    if not pairs or len(pairs) > max_keys:
+        return None
+    rows = table.take(pa.array([first for first, _ in groups], pa.int64()))
+    rows = rows.set_column(
+        rows.column_names.index(column), column, pa.array(range(1, len(groups) + 1), pa.int64())
+    )
+    return sorted(pairs), rows
 
 
 def result_table(result: ExecutionResult) -> Any:

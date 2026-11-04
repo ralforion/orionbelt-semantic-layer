@@ -152,7 +152,8 @@ def _assert_in_the_query_zone(target: VendorTarget, monkeypatch: pytest.MonkeyPa
         plan = store.compile_query(federated_id, query_object, target.dialect).federation
         assert plan is not None and plan.timezone == "Europe/Berlin"
         tables = {leg.name: run(leg) for leg in plan.legs[1:]}
-        fact = injected_fact_leg(plan, tables, 100) if plan.injections else plan.legs[0]
+        fact, maps = injected_fact_leg(plan, tables, 100)
+        tables.update(maps)
         tables["leg_0"] = run(fact)
         federated = combine(plan, tables, None).arrow_table.to_pylist()
         expected = target.execute(_tables(target.dialect) + single.sql)

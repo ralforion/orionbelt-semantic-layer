@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import replace
 from decimal import Decimal
 
@@ -159,6 +160,8 @@ class MySQLDialect(Dialect):
 
     avg_over_integers_is_exact = True
     key_injection_max_keys = 10_000
+    #: 5 million groups by key in 31 s, joining a map in 3.5-9.6 s.
+    pushes_key_maps = True
 
     def equality_key(
         self, column: Expr, abstract_type: str, *, counted: bool
@@ -225,6 +228,12 @@ class MySQLDialect(Dialect):
             else_clause=FunctionCall(name="WEIGHT_STRING", args=[column]),
         )
         return FunctionCall(name="HEX", args=[weight])
+
+    def key_map(self, key: str, ordinal: str, pairs: Sequence[tuple[int, int]]) -> str:
+        """``VALUES ROW(...)``: MySQL writes a row of ``VALUES`` so, from 8.0.19."""
+        q = self.quote_identifier
+        rows = ", ".join(f"ROW({k}, {n})" for k, n in pairs)
+        return f"(SELECT * FROM (VALUES {rows}) AS {q('m')}({q(key)}, {q(ordinal)}))"
 
     backslash_escapes_strings = True
 
