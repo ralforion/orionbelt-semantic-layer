@@ -34,7 +34,7 @@ from orionbelt.service.db_executor import (
     _DB_SESSION_TZ,
     _DB_TZ_DETECTED,
     _get_host_timezone,
-    resolve_timezone,
+    model_timezone,
     warm_db_tz_cache,
 )
 from orionbelt.service.session_manager import SessionManager
@@ -135,18 +135,18 @@ def _resolve_effective_timezone(model_settings: ModelSettings | None, db_vendor:
     """Mirror the runtime timezone resolution at request time.
 
     Effective TZ priority (matches ``service/db_executor.py``):
+    - if ``queryTimezone`` is set: that zone
     - if ``overrideDatabaseTimezone`` is true: model TZ → host → UTC
     - else: cached DB session TZ → model TZ → host → UTC
 
     The DB session TZ is read from the lazy cache only — never probed here.
     """
-    model_tz = model_settings.default_timezone if model_settings else None
-    override = bool(model_settings and model_settings.override_database_timezone)
+    zone, override = model_timezone(model_settings)
     if not override:
         db_tz = _DB_SESSION_TZ.get(db_vendor)
         if db_tz is not None:
             return str(db_tz)
-    return str(resolve_timezone(default_timezone=model_tz))
+    return str(zone)
 
 
 def _resolve_effective_dialect(model_settings: ModelSettings | None, db_vendor: str) -> str:

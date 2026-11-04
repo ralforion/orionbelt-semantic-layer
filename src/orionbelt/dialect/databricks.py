@@ -196,11 +196,17 @@ class DatabricksDialect(Dialect):
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """Databricks: ``from_utc_timestamp`` reads a value as wall clock in a
         zone, and ``to_utc_timestamp`` declares a naive one first.
+
+        Both answer a ``TIMESTAMP``, which shows that wall clock in the
+        session's zone and reaches a client zoned in it: probed, 10:00 UTC read
+        in Tokyo came back as 19:00 UTC, an instant nine hours late. Cast to
+        ``TIMESTAMP_NTZ`` it is the wall clock alone, as every other engine
+        returns it.
         """
         rendered = self.compile_expr(value)
         if from_zone is not None:
             rendered = f"to_utc_timestamp({rendered}, {self._quote_zone(from_zone)})"
-        return f"from_utc_timestamp({rendered}, {self._quote_zone(zone)})"
+        return f"CAST(from_utc_timestamp({rendered}, {self._quote_zone(zone)}) AS TIMESTAMP_NTZ)"
 
     def _render_week_start_sunday(self, value: Expr) -> str:
         """Spark's ``dayofweek`` numbers Sunday as 1, so the offset is one less."""

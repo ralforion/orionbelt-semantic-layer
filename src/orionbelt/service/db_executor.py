@@ -548,6 +548,23 @@ def resolve_timezone(
     return ZoneInfo("UTC")
 
 
+def model_timezone(settings: Any, request_zone: str | None = None) -> tuple[ZoneInfo, bool]:
+    """The zone a query's results are labeled with, and whether it wins over the session's.
+
+    A model's ``queryTimezone`` wins: its SQL returns timestamps as
+    wall-clock times there, whatever zone the session runs in or the request
+    names. Else the request's zone, the model's ``defaultTimezone`` or the
+    server's (:func:`resolve_timezone`) stand in for a session zone not
+    detected, and win where ``overrideDatabaseTimezone`` says so.
+    """
+    query_zone = getattr(settings, "query_timezone", None) if settings is not None else None
+    if query_zone:
+        return ZoneInfo(query_zone), True
+    default = request_zone or (settings.default_timezone if settings is not None else None)
+    override = bool(settings is not None and settings.override_database_timezone)
+    return resolve_timezone(default_timezone=default), override
+
+
 # ---------------------------------------------------------------------------
 # Database session timezone detection
 # ---------------------------------------------------------------------------

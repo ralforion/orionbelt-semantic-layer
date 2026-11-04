@@ -32,7 +32,7 @@ from orionbelt.service.db_executor import (
     ExecutionResult,
     ensure_arrow,
     execute_sql,
-    resolve_timezone,
+    model_timezone,
 )
 from orionbelt.service.diagram import generate_mermaid_er
 from orionbelt.service.model_store import (
@@ -197,11 +197,7 @@ def _run_compiled(model: SemanticModel, compiled: CompilationResult) -> Executio
     In the dialect it was compiled for: a query reading one source of a model
     read from several is written in that source's, not the model's default.
     """
-    settings = getattr(model, "settings", None)
-    tz = resolve_timezone(
-        default_timezone=getattr(settings, "default_timezone", None) if settings else None
-    )
-    override = bool(getattr(settings, "override_database_timezone", False)) if settings else False
+    tz, override = model_timezone(getattr(model, "settings", None))
     # See ``db_executor.ensure_arrow``: without it the executor cannot take a
     # driver's Arrow path, and the result's columns get typed by inference over
     # the values rather than from the driver's schema.

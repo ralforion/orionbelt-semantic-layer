@@ -35,7 +35,7 @@ from orionbelt.service.datasource_selection import resolve_query_source
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
-    resolve_timezone,
+    model_timezone,
 )
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.result_schema import (
@@ -477,12 +477,7 @@ async def _run_with_cache(
     TSV and Arrow — shares one entry and is rendered on delivery. Formatting is
     never baked into the cache.
     """
-    model_default_tz: str | None = None
-    override_db_tz = False
-    if model.settings:
-        model_default_tz = model.settings.default_timezone
-        override_db_tz = model.settings.override_database_timezone
-    tz = resolve_timezone(default_timezone=timezone_override or model_default_tz)
+    tz, override_db_tz = model_timezone(model.settings, timezone_override)
 
     # Both the canonical JSON shape and the Arrow stream cache the same typed,
     # locale-neutral rows, so they share entries. TSV and value-formatted JSON

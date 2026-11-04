@@ -16,6 +16,7 @@ from orionbelt.service.db_executor import (
     _reset_db_tz_cache,
     _serialize_value,
     declared_timezone,
+    model_timezone,
     resolve_timezone,
     timezone_epoch,
     zone_key,
@@ -85,6 +86,32 @@ class TestResolveTimezone:
         result = resolve_timezone(default_timezone="Invalid/Zone")
         # Falls through to host TZ or UTC
         assert result is not None
+
+
+class TestModelTimezone:
+    """The zone a query's results are labeled with, and whether it beats the session's."""
+
+    def test_a_query_zone_wins(self) -> None:
+        settings = ModelSettings(default_timezone="UTC", query_timezone="Asia/Tokyo")
+        assert model_timezone(settings, "America/Chicago") == (ZoneInfo("Asia/Tokyo"), True)
+
+    def test_else_the_requested_one_stands_in(self) -> None:
+        settings = ModelSettings(default_timezone="UTC")
+        assert model_timezone(settings, "America/Chicago") == (ZoneInfo("America/Chicago"), False)
+        assert model_timezone(settings) == (ZoneInfo("UTC"), False)
+
+    def test_override_makes_it_win(self) -> None:
+        settings = ModelSettings(default_timezone="UTC", override_database_timezone=True)
+        assert model_timezone(settings) == (ZoneInfo("UTC"), True)
+
+    def test_without_settings_the_server_s(self) -> None:
+        assert model_timezone(None) == (resolve_timezone(), False)
+
+    def test_the_settings_endpoint_shows_it(self) -> None:
+        from orionbelt.api.routers.settings import _resolve_effective_timezone
+
+        settings = ModelSettings(default_timezone="UTC", query_timezone="Asia/Tokyo")
+        assert _resolve_effective_timezone(settings, "postgres") == "Asia/Tokyo"
 
 
 class TestHostTimezone:
