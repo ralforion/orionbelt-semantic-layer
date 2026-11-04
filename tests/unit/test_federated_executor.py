@@ -983,6 +983,22 @@ class TestKeyMaps:
 
         assert read == [expected]
 
+    def test_no_map_of_a_leg_larger_than_a_leg_may_hold_in_memory(self) -> None:
+        """A leg spilled to disk is read memory-mapped, but its map's rows are
+        copied: past ``FEDERATION_MAX_LEG_MB``, the leg is read as it is."""
+        federation.configure(FederationLimits(max_leg_bytes=1024 * 1024))
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        plan = self._plan(read)
+        table = pa.table({"Label": ["x" * 100_000] * 20, "__fk0_0": list(range(20))})
+        assert table.nbytes > 1024 * 1024
+
+        fact, rows = federation.injected_fact_leg(plan, {"leg_1": table}, 100)
+
+        assert (fact, rows, read) == (plan.legs[0], {}, [])
+        federation.configure(FederationLimits())
+        federation.injected_fact_leg(plan, {"leg_1": table}, 100)
+        assert [maps for _, maps in read] == [{"__fk0_0": [(k, 1) for k in range(20)]}]
+
     def test_a_map_longer_than_the_engine_parses_is_not_read(self) -> None:
         read: list[tuple[dict[str, Any], dict[str, Any]]] = []
         plan = self._plan(read, dialect="clickhouse", sql="x" * (256 * 1024 + 1))

@@ -65,8 +65,9 @@ QUERIES = {
 }
 
 
-def _tables(dialect: str) -> str:
-    """``WITH t AS (...), g AS (...)``: the rows, as tables of this engine."""
+def _tables(dialect: str, key: str | None = None) -> str:
+    """``WITH t AS (...), g AS (...)``: the rows, as tables of this engine, the
+    keys of type *key* where given."""
     text, _, whole = TYPES[dialect]
     engine = DialectRegistry.get(dialect)
     q = engine.quote_identifier
@@ -78,12 +79,12 @@ def _tables(dialect: str) -> str:
         return f"CAST({literal} AS {kind})"
 
     # ClickHouse's Int32 holds no NULL key.
-    nullable = f"Nullable({whole})" if dialect == "clickhouse" else whole
+    nullable = f"Nullable({key or whole})" if dialect == "clickhouse" else whole
     facts = " UNION ALL ".join(
         f"SELECT {value(k, nullable)} AS {q('k')}, {value(d, whole)} AS {q('d')}" for k, d in FACTS
     )
     groups = " UNION ALL ".join(
-        f"SELECT {value(k, whole)} AS {q('k')}, {value(label, text)} AS {q('l')}"
+        f"SELECT {value(k, key or whole)} AS {q('k')}, {value(label, text)} AS {q('l')}"
         for k, label in GROUPS
     )
     return f"WITH {q('t')} AS ({facts}), {q('g')} AS ({groups})\n"
@@ -101,7 +102,7 @@ def _lowered(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(({k.lower(): v for k, v in row.items()} for row in rows), key=repr)
 
 
-def _assert_mapped(target: VendorTarget) -> None:
+def _assert_mapped(target: VendorTarget, key: str | None = None) -> None:
     for name, raw in QUERIES.items():
         store = ModelStore()
         query = QueryObject.model_validate(raw)
@@ -114,7 +115,7 @@ def _assert_mapped(target: VendorTarget) -> None:
         assert plan is not None and plan.key_maps, f"{target.name}: no key map"
 
         def run(leg: Any) -> Any:
-            rows = target.execute(_tables(target.dialect) + leg.sql)
+            rows = target.execute(_tables(target.dialect, key) + leg.sql)
             return normalize_leg(leg, pa.Table.from_pylist(rows))
 
         tables = {leg.name: run(leg) for leg in plan.legs[1:]}
@@ -124,7 +125,7 @@ def _assert_mapped(target: VendorTarget) -> None:
         tables[fact.name] = run(fact)
         combined = combine(plan, tables, None).arrow_table.to_pylist()
 
-        expected = _lowered(target.execute(_tables(target.dialect) + single.sql))
+        expected = _lowered(target.execute(_tables(target.dialect, key) + single.sql))
         assert _lowered(combined) == expected, f"{target.name}: {name}"
         assert expected
 
@@ -141,8 +142,11 @@ def test_mysql_key_maps(vendor_mysql: VendorTarget) -> None:
     _assert_mapped(vendor_mysql)
 
 
-def test_clickhouse_key_maps(vendor_clickhouse: VendorTarget) -> None:
-    _assert_mapped(vendor_clickhouse)
+@pytest.mark.parametrize("key", [None, "UInt64"], ids=["signed", "unsigned_64_bit"])
+def test_clickhouse_key_maps(vendor_clickhouse: VendorTarget, key: str | None) -> None:
+    """ClickHouse joins only keys of a common type: a map's keys join a
+    ``UInt64`` key, which ``Int64`` would not."""
+    _assert_mapped(vendor_clickhouse, key)
 
 
 def test_snowflake_key_maps(vendor_snowflake: VendorTarget) -> None:

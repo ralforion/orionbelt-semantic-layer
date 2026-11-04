@@ -563,11 +563,19 @@ def _key_map(table: Any, column: str, max_keys: int) -> tuple[list[Any], Any] | 
     ``(key, ordinal)`` pairs, sorted, and one row per ordinal, the ordinal in
     *column*. ``None`` past *max_keys*, for no key, or for a key that is not
     an integer (:func:`_key_values`).
+
+    The rows are copied out of *table*, as DuckDB copies the values it groups,
+    into memory, also from a leg spilled to disk: at most *table*'s bytes,
+    which must fit ``FEDERATION_MAX_LEG_MB`` before either is made, or the
+    leg is read as it is. A leg held in memory fits it already.
     """
     import duckdb
     import pyarrow as pa
     import pyarrow.compute as pc
 
+    limits = federation_limits()
+    if table.nbytes > limits.max_leg_bytes:
+        return None
     if pc.count_distinct(table.column(column)).as_py() > max_keys:
         return None
     q = DialectRegistry.get("duckdb").quote_identifier
@@ -581,7 +589,7 @@ def _key_map(table: Any, column: str, max_keys: int) -> tuple[list[Any], Any] | 
     )
     if others:
         sql += f" GROUP BY {others} ORDER BY {others}"
-    con = duckdb.connect(config={"threads": 1})
+    con = duckdb.connect(config={"threads": 1, "memory_limit": limits.combine_memory_limit})
     try:
         con.register(
             "leg", table.append_column(position, pa.array(range(table.num_rows), pa.int64()))

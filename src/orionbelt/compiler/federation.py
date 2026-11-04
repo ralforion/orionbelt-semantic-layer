@@ -1384,7 +1384,7 @@ def plan_federated(
             and edge.parent == fact
             and edge.island not in absent_islands
             and injected not in matched.get(fact, {})
-            and _maps_key(model, edge, fact_reads)
+            and _maps_key(model, edge, fact_reads, planner.leg_dialect(islands[fact]))
         ):
             key_maps.append(KeyMap(leg_name, injected))
             map_joins[injected] = MapJoin(
@@ -3994,16 +3994,22 @@ def _injectable_key_type(model: SemanticModel, edge: _Edge) -> str | None:
     return key_type.value if key_type == dim_type and key_type in _INJECTABLE_KEYS else None
 
 
-def _maps_key(model: SemanticModel, edge: _Edge, reads: set[tuple[str, str]]) -> bool:
+def _maps_key(
+    model: SemanticModel, edge: _Edge, reads: set[tuple[str, str]], dialect: Dialect
+) -> bool:
     """Whether *edge*'s key is one the fact leg may join a map of (:class:`KeyMap`).
 
     One column, an integer on both sides: an integer groups and matches alike
     on every engine, where a string compared in the fact engine's collation
-    would match a map row of each key that collation calls equal to it. And
-    one no other column of the fact leg reads (*reads*, ``(data object,
+    would match a map row of each key that collation calls equal to it. Of a
+    type the fact leg's *dialect* joins a map's keys to (:meth:`Dialect.maps_key`).
+    And one no other column of the fact leg reads (*reads*, ``(data object,
     column)`` pairs): that column would group the leg by the key anyway.
     """
     if _injectable_key_type(model, edge) != DataType.INT.value:
+        return False
+    key = model.data_objects[edge.from_object].columns[edge.from_columns[0]]
+    if not dialect.maps_key(key.sql_type):
         return False
     return (edge.from_object, edge.from_columns[0]) not in reads
 

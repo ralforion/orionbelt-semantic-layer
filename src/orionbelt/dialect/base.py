@@ -795,6 +795,11 @@ class Dialect(ABC):
         )
         return f"SELECT {items}\nFROM (\n{sql}\n) AS {self.quote_identifier(alias)}"
 
+    def maps_key(self, sql_type: str | None) -> bool:
+        """Whether a fact leg's key column, declared of *sql_type* (``sqlType``,
+        ``None`` where not), joins a key map (:meth:`key_map`). Any here."""
+        return True
+
     def key_map(self, key: str, ordinal: str, pairs: Sequence[tuple[int, int]]) -> str:
         """*pairs* of an integer key and its ordinal as a relation of columns *key* and *ordinal*.
 

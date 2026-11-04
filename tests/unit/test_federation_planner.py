@@ -1679,6 +1679,32 @@ class TestKeyMaps:
         assert plan.key_maps == (KeyMap("leg_1", "__fk0_0"),)
         assert unmeasured.key_maps == ()
 
+    @pytest.mark.parametrize(
+        ("sql_type", "mapped"),
+        [(None, True), ("UInt64", True), ("Nullable(UInt128)", False), ("Int256", False)],
+        ids=["undeclared", "64_bit", "128_bit", "256_bit"],
+    )
+    def test_a_clickhouse_key_too_wide_for_the_maps_keys_joins_no_map(
+        self, sql_type: str | None, mapped: bool
+    ) -> None:
+        """A ClickHouse join needs a common type: the map's ``Decimal(38, 0)``
+        keys have one with every integer up to 64 bits and every decimal."""
+        declared = f", sqlType: '{sql_type}'" if sql_type else ""
+        yaml = model_yaml(federated=True).replace(
+            "Order Customer: {code: customer_id, abstractType: int}",
+            f"Order Customer: {{code: customer_id, abstractType: int{declared}}}",
+        )
+        store = ModelStore()
+        model_id = store.load_model(yaml).model_id
+        query = QueryObject.model_validate(BY_MONTH_AND_REGION)
+
+        plan = store.compile_query(model_id, query, "clickhouse").federation
+
+        assert bool(plan.key_maps) is mapped
+        if mapped:
+            sql = plan.inject({}, {"__fk0_0": [(10, 1)]}).sql
+            assert "values('k Decimal(38, 0), n UInt32', (10, 1))" in sql
+
     def test_the_map_is_named_apart_from_the_legs_data_objects(self) -> None:
         yaml = functools.reduce(
             lambda text, pair: text.replace(*pair),
