@@ -288,6 +288,52 @@ class TestRestExecution:
         assert again.json()["cached"] is True
         assert first.json()["timezone"] == again.json()["timezone"] == "America/Chicago"
 
+    @pytest.mark.parametrize("request_zone", [None, "America/Chicago"], ids=["own", "requested"])
+    async def test_one_source_read_in_a_query_zone_is_labeled_with_it(
+        self,
+        client: AsyncClient,
+        sources: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+        request_zone: str | None,
+    ) -> None:
+        # Its SQL returns wall-clock times in Tokyo, whatever zone the session
+        # runs in (declared here) or the request names: 10:00 UTC is 19:00 there.
+        monkeypatch.setenv("DB_ALL_TIMEZONE", "Europe/Berlin")
+        con = duckdb.connect(sources["all"])
+        con.execute("CREATE TABLE events AS SELECT 1 AS id, TIMESTAMP '2024-01-05 10:00:00' AS at")
+        con.close()
+        yaml = """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+  defaultDataSource: all
+  defaultTimezone: UTC
+  queryTimezone: Asia/Tokyo
+dataObjects:
+  Events:
+    code: events
+    columns:
+      Event ID: {code: id, abstractType: int}
+      At: {code: at, abstractType: timestamp}
+dimensions:
+  At: {dataObject: Events, column: At, resultType: timestamp}
+measures:
+  Events: {columns: [{dataObject: Events, column: Event ID}], aggregation: count}
+"""
+        query = {"select": {"dimensions": ["At"], "measures": ["Events"]}}
+        session = (await client.post("/v1/sessions")).json()["session_id"]
+        loaded = await client.post(f"/v1/sessions/{session}/models", json={"model_yaml": yaml})
+        url = f"/v1/sessions/{session}/query/execute"
+        params = {"timezone": request_zone} if request_zone else {}
+        body = {"model_id": loaded.json()["model_id"], "query": query}
+        first = (await client.post(url, json=body, params=params)).json()
+        again = (await client.post(url, json=body, params=params)).json()
+
+        assert again["cached"] is True
+        for result in (first, again):
+            assert result["timezone"] == "Asia/Tokyo"
+            assert result["rows"] == [["2024-01-05T19:00:00+09:00", 1]]
+
     async def test_a_declared_zone_that_names_none_is_refused(
         self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:

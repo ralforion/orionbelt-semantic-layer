@@ -31,7 +31,7 @@ from orionbelt.service.datasource_selection import resolve_query_source
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
-    resolve_timezone,
+    model_timezone,
 )
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.result_schema import declared_arrow_types, reconcile_to_declared
@@ -79,7 +79,7 @@ async def run_value_search(
     dialect = _resolve_dialect(request_dialect=body.dialect, model=model, fallback=get_db_vendor())
     cache, cache_config = get_cache(), get_cache_config()
     settings = model.settings
-    tz = resolve_timezone(default_timezone=settings.default_timezone if settings else None)
+    tz, override_db_tz = model_timezone(settings)
 
     async def run(query: QueryObject) -> QueryRun:
         compiled = compile_query_or_raise(
@@ -94,7 +94,7 @@ async def run_value_search(
             "cache": cache,
             "cache_config": cache_config,
             "tz": tz,
-            "override_db_tz": bool(settings and settings.override_database_timezone),
+            "override_db_tz": override_db_tz,
             "cacheable": getattr(cache, "backend_name", "noop") != "noop",
             "declared_types": declared,
             "query": query,

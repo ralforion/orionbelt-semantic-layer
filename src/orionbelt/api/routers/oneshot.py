@@ -74,7 +74,7 @@ from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
     execute_sql,
-    resolve_timezone,
+    model_timezone,
 )
 from orionbelt.service.model_store import (
     ModelCapacityError,
@@ -289,12 +289,7 @@ async def _run_query(
             )
 
         model = store.get_model(model_id)
-        model_default_tz: str | None = None
-        override_db_tz = False
-        if model.settings:
-            model_default_tz = model.settings.default_timezone
-            override_db_tz = model.settings.override_database_timezone
-        tz = resolve_timezone(default_timezone=model_default_tz)
+        tz, override_db_tz = model_timezone(model.settings)
         if compile_result.federation is not None:
             return await _run_federated(
                 store=store,

@@ -779,7 +779,7 @@ measures:
             # BigQuery's wall clock is DATETIME, which has no two-argument
             # signature: the naive value is declared with TIMESTAMP first.
             ("bigquery", "DATETIME(TIMESTAMP("),
-            ("databricks", "from_utc_timestamp(to_utc_timestamp("),
+            ("databricks", "convert_timezone('UTC', 'Europe/Zagreb', "),
             ("dremio", "CONVERT_TIMEZONE('UTC', 'Europe/Zagreb'"),
         ],
     )
@@ -791,6 +791,15 @@ measures:
             dialect,
         )
         assert expected in sql
+
+    def test_databricks_reads_an_instant_in_utc_first(self) -> None:
+        # Not as the session's zone shows it, which shows two instants of the
+        # hour its clocks go back as one.
+        sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp_tz", "Occurred At", "databricks")
+        assert (
+            "convert_timezone('UTC', 'Europe/Zagreb', timestampadd(MICROSECOND, "
+            "unix_micros(`Events`.`occurred_at`), TIMESTAMP_NTZ'1970-01-01 00:00:00'))"
+        ) in sql
 
 
 class TestWeeklyGrainFollowsTheCalendar:

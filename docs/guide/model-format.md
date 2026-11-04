@@ -1945,10 +1945,11 @@ settings:
 
 The effective timezone for naive timestamp coercion is resolved in this order (first match wins):
 
-1. **Database session timezone** — `DB_<NAME>_TIMEZONE` (`DB_TIMEZONE` for every source) where the data source declares it, else auto-detected from the connection (one query, cached per data source)
-2. **Model setting** — `settings.defaultTimezone` (fallback when detection fails)
-3. **Host process timezone** — the server's system timezone by its IANA name (`TZ`, else the zone `/etc/localtime` links to), if not UTC
-4. **UTC** — automatic final fallback
+1. **Query timezone** — `settings.queryTimezone`, where the model sets one: its SQL returns every timestamp it converts as wall-clock time there, so that zone labels the result whatever zone the session runs in or a request's `?timezone=` names
+2. **Database session timezone** — `DB_<NAME>_TIMEZONE` (`DB_TIMEZONE` for every source) where the data source declares it, else auto-detected from the connection (one query, cached per data source)
+3. **Model setting** — `settings.defaultTimezone` (fallback when detection fails)
+4. **Host process timezone** — the server's system timezone by its IANA name (`TZ`, else the zone `/etc/localtime` links to), if not UTC
+5. **UTC** — automatic final fallback
 
 A result served from the cache is labeled as the query's run labels it.
 
