@@ -84,8 +84,9 @@ COPY --from=builder --chown=app:app /app/schema schema/
 COPY --chown=app:app examples/orionbelt_1_commerce.yaml examples/orionbelt_1_commerce.duckdb* /app/data/
 
 # Where federated queries spill large legs, when FEDERATION_SPILL_DIR=/app/spill
-# (off by default). Owned by the app user, so a named volume mounted here
-# starts out writable: Docker copies the directory's owner into a new volume.
+# (else into /tmp, the container's writable layer). Owned by the app user, so a
+# named volume mounted here starts out writable: Docker copies the directory's
+# owner into a new volume.
 #   docker run -v obsl-spill:/app/spill -e FEDERATION_SPILL_DIR=/app/spill ...
 RUN mkdir -p /app/spill && chown app:app /app/spill
 

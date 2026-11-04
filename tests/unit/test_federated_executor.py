@@ -413,6 +413,42 @@ measures:
         ) in detail
         assert "join the data sources on a column with fewer values" in detail
 
+    async def test_a_leg_over_its_memory_is_refused(self, client: AsyncClient) -> None:
+        federation.configure(FederationLimits(max_leg_bytes=1))
+
+        response = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+
+        assert response.status_code == 502
+        detail = response.json()["detail"]
+        assert "FEDERATION_LEG_TOO_LARGE" in detail
+        assert "in memory, the most one leg may hold (FEDERATION_MAX_LEG_MB)" in detail
+        assert "a row per key of the join Orders.Order Customer -> Customers.Customer ID" in detail
+        # Spilling is off: the advice says where larger legs could go.
+        assert "set FEDERATION_SPILL_DIR to a directory on disk" in detail
+
+    async def test_a_leg_served_from_the_cache_is_held_to_its_memory_too(
+        self, client: AsyncClient
+    ) -> None:
+        first = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+        assert first.status_code == 200
+        federation.configure(FederationLimits(max_leg_bytes=1))
+        streamed: list[str] = []
+        stream = federation.LegSink.__call__
+
+        def counted(sink: Any, reader: Any) -> Any:
+            streamed.append(sink._leg.name)
+            return stream(sink, reader)
+
+        # A new combine step over the same legs: they come from the cache.
+        with patch.object(federation.LegSink, "__call__", counted):
+            again = await execute(
+                client, model_yaml(federated=True), {**REVENUE_BY_REGION, "limit": 2}
+            )
+
+        assert streamed == []
+        assert again.status_code == 502
+        assert "FEDERATION_MAX_LEG_MB" in again.json()["detail"]
+
     async def test_a_raw_leg_over_the_limit_is_explained_by_its_rows(
         self, client: AsyncClient
     ) -> None:
@@ -1046,6 +1082,136 @@ class TestLegTooLarge:
         )
         assert "a row per key" not in str(refused.value)
 
+    def test_a_leg_held_past_its_memory_is_refused_as_it_streams(self) -> None:
+        federation.configure(FederationLimits(max_leg_bytes=1024 * 1024))
+        table = batches(100_000)[1]  # 2.4 MB: an id and an amount, 24 bytes a row
+        read: list[int] = []
+
+        def pages() -> Iterator[Any]:
+            for batch in table.to_batches(1000):
+                read.append(batch.num_rows)
+                yield batch
+
+        reader = pa.RecordBatchReader.from_batches(table.schema, pages())
+
+        with pytest.raises(FederatedLegError) as refused:
+            federation.LegSink(leg(("Revenue", "decimal")))(reader)
+
+        assert "holds more than 1 MB in memory" in str(refused.value)
+        # Refused at the limit, not once the whole leg was read.
+        assert sum(read) < 50_000
+
+    def test_a_leg_spilling_to_disk_is_not_held_to_the_memory_limit(self, tmp_path: Any) -> None:
+        limits = spilling(tmp_path, max_leg_bytes=1024 * 1024, spill_threshold_bytes=16 * 1024)
+        federation.configure(limits)
+        spill = federation.QuerySpill(limits)
+        reader, table = batches(100_000)
+
+        sink = federation.LegSink(leg(("Revenue", "decimal")), spill)
+        out = sink(reader)
+
+        assert sink.spilled
+        assert out.equals(table)
+        spill.close()
+
+    def test_with_spilling_on_the_advice_is_to_raise_the_limit(self, tmp_path: Any) -> None:
+        federation.configure(spilling(tmp_path, max_leg_rows=1, max_leg_bytes=1))
+
+        with pytest.raises(FederatedLegError) as rows:
+            federation.check_leg_rows(leg(("Region", "string")), 2)
+        with pytest.raises(FederatedLegError) as nbytes:
+            federation.check_leg_bytes(leg(("Region", "string")), 2)
+
+        assert str(rows.value).endswith(
+            "or raise FEDERATION_MAX_LEG_ROWS: a leg past FEDERATION_SPILL_THRESHOLD_MB "
+            "goes to disk."
+        )
+        assert str(nbytes.value).endswith("or raise FEDERATION_MAX_LEG_MB.")
+
+
+MOUNTS = (
+    "22 1 0:21 / / rw,relatime shared:1 - overlay overlay rw,lowerdir=/l,upperdir=/u\n"
+    "30 22 0:30 / /scratch rw,nosuid shared:9 - tmpfs tmpfs rw,size=65536k\n"
+    "31 22 8:1 / /data\\040disk rw shared:10 - ext4 /dev/sda1 rw\n"
+    "32 30 8:2 / /scratch/disk rw shared:11 master:2 - xfs /dev/sdb1 rw\n"
+)
+
+
+class TestSpillDirectory:
+    """Where legs spill by default: the temp directory, unless it is in memory."""
+
+    @pytest.fixture(autouse=True)
+    def _not_cloud_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for variable in ("K_SERVICE", "CLOUD_RUN_JOB"):
+            monkeypatch.delenv(variable, raising=False)
+
+    def test_a_directory_given_is_the_one_used(self) -> None:
+        assert federation.spill_directory("/srv/spill") == "/srv/spill"
+
+    @pytest.mark.parametrize("off", ["off", "OFF", " off "])
+    def test_off_turns_spilling_off(self, off: str) -> None:
+        assert federation.spill_directory(off) is None
+
+    @pytest.mark.parametrize("unset", [None, "", "  "])
+    def test_unset_it_is_the_temp_directory_on_disk(self, unset: str | None) -> None:
+        import tempfile
+
+        with patch.object(federation, "_filesystem_type", return_value="ext4"):
+            assert federation.spill_directory(unset) == tempfile.gettempdir()
+
+    def test_a_temp_directory_in_memory_spills_nothing(self) -> None:
+        with patch.object(federation, "_filesystem_type", return_value="tmpfs"):
+            assert federation.spill_directory(None) is None
+
+    @pytest.mark.parametrize("variable", ["K_SERVICE", "CLOUD_RUN_JOB"])
+    def test_on_cloud_run_nothing_spills_by_default(
+        self, variable: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(variable, "obsl")
+
+        assert federation.spill_directory(None) is None
+        # A volume given explicitly is the operator's choice.
+        assert federation.spill_directory("/mnt/disk") == "/mnt/disk"
+
+    def test_the_environment_defaults_to_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("FEDERATION_SPILL_DIR", raising=False)
+        monkeypatch.setenv("FEDERATION_MAX_LEG_MB", "64")
+
+        with patch.object(federation, "spill_directory", return_value="/disk") as resolved:
+            limits = FederationLimits.from_environment()
+
+        resolved.assert_called_once_with(None)
+        assert limits.spill_dir == "/disk"
+        assert limits.max_leg_bytes == 64 * 1024 * 1024
+
+    @pytest.mark.parametrize(
+        ("path", "kind"),
+        [
+            ("/app/spill", "overlay"),
+            ("/scratch", "tmpfs"),
+            ("/scratch/obsl", "tmpfs"),
+            # A mount point holds what is under it, not what merely starts alike.
+            ("/scratchpad", "overlay"),
+            ("/scratch/disk/obsl", "xfs"),
+            ("/data disk/spill", "ext4"),
+        ],
+    )
+    def test_the_filesystem_is_the_innermost_mount_holding_the_path(
+        self, path: str, kind: str, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        table = tmp_path / "mountinfo"
+        table.write_text(MOUNTS)
+        monkeypatch.setattr(federation, "_MOUNTINFO", str(table))
+
+        assert federation._filesystem_type(path) == kind
+
+    def test_without_a_mount_table_the_filesystem_is_unknown(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(federation, "_MOUNTINFO", str(tmp_path / "none"))
+
+        assert federation._filesystem_type("/tmp") is None
+
 
 class TestNormalizeLeg:
     def test_a_zoned_timestamp_without_a_zone_is_its_wall_clock_time(self) -> None:
@@ -1224,7 +1390,7 @@ def spilling(tmp_path: Any, **limits: Any) -> FederationLimits:
 class TestSpill:
     def test_a_small_leg_stays_in_memory(self, tmp_path: Any) -> None:
         spill = federation.QuerySpill(spilling(tmp_path))
-        sink = spill.sink(leg(("Revenue", "decimal")))
+        sink = federation.LegSink(leg(("Revenue", "decimal")), spill)
         reader, table = batches(5000)
 
         out = sink(reader)
@@ -1236,7 +1402,7 @@ class TestSpill:
 
     def test_a_leg_past_the_threshold_streams_to_a_file_read_mapped(self, tmp_path: Any) -> None:
         spill = federation.QuerySpill(spilling(tmp_path, spill_threshold_bytes=16 * 1024))
-        sink = spill.sink(leg(("Revenue", "decimal")))
+        sink = federation.LegSink(leg(("Revenue", "decimal")), spill)
         reader, table = batches(50_000)
 
         out = sink(reader)
@@ -1258,7 +1424,7 @@ class TestSpill:
         so a leg spilled in it failed where the same leg in memory did not.
         """
         spill = federation.QuerySpill(spilling(tmp_path, spill_threshold_bytes=1024))
-        sink = spill.sink(leg(("Region", "string")))
+        sink = federation.LegSink(leg(("Region", "string")), spill)
         kind = pa.dictionary(pa.int32(), pa.string())
         pages = [
             pa.record_batch(
@@ -1291,7 +1457,7 @@ class TestSpill:
         reader, _ = batches(50_000)
 
         with pytest.raises(FederatedLegError, match="FEDERATION_SPILL_TOO_LARGE"):
-            spill.sink(leg(("Revenue", "decimal")))(reader)
+            federation.LegSink(leg(("Revenue", "decimal")), spill)(reader)
         spill.close()
 
     def test_queries_spilling_past_the_process_budget_are_refused_until_one_ends(
@@ -1299,16 +1465,19 @@ class TestSpill:
     ) -> None:
         limits = spilling(tmp_path, spill_threshold_bytes=1024, spill_budget_bytes=600 * 1024)
         first = federation.QuerySpill(limits)
-        first.sink(leg(("Revenue", "decimal")))(batches(20_000)[0])
+        federation.LegSink(leg(("Revenue", "decimal")), first)(batches(20_000)[0])
         second = federation.QuerySpill(limits)
 
         with pytest.raises(federation.FederationSpillFullError, match="FEDERATION_SPILL_FULL"):
-            second.sink(leg(("Revenue", "decimal")))(batches(20_000)[0])
+            federation.LegSink(leg(("Revenue", "decimal")), second)(batches(20_000)[0])
         second.close()
         first.close()
 
         third = federation.QuerySpill(limits)
-        assert third.sink(leg(("Revenue", "decimal")))(batches(20_000)[0]).num_rows == 20_000
+        assert (
+            federation.LegSink(leg(("Revenue", "decimal")), third)(batches(20_000)[0]).num_rows
+            == 20_000
+        )
         third.close()
 
     def test_a_disk_that_fills_while_spilling_is_named_not_blamed_on_the_database(
@@ -1323,7 +1492,7 @@ class TestSpill:
             patch("pyarrow.OSFile", side_effect=full),
             pytest.raises(federation.FederationSpillFullError) as refused,
         ):
-            spill.sink(leg(("Revenue", "decimal")))(batches(20_000)[0])
+            federation.LegSink(leg(("Revenue", "decimal")), spill)(batches(20_000)[0])
         spill.close()
 
         assert "[FEDERATION_SPILL_FULL]" in str(refused.value)

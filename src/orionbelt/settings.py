@@ -93,17 +93,20 @@ class Settings(BaseSettings):
 
     # Queries across data sources (service/federated_executor.py). Bounds per
     # process: queries running at once (the rest wait in order, then 503),
-    # legs fetched at once, rows per leg, and each DuckDB combine step's size.
+    # legs fetched at once, rows and memory per leg, and each DuckDB combine
+    # step's size.
     federation_max_concurrent: int = 4
     federation_queue_timeout_seconds: float = 30.0
     federation_leg_threads: int = 16
     federation_max_leg_rows: int = 5_000_000
+    federation_max_leg_mb: int = 512
     federation_combine_threads: int = 2
     federation_combine_memory_limit: str = "512MB"
-    # Spilling large legs to disk: off unless a directory on real disk is
-    # given (an in-memory filesystem, such as Cloud Run's, saves nothing).
-    # A leg past the threshold streams to a file; per query and process-wide
-    # caps on what is spilled.
+    # Spilling large legs to disk: into this directory, else the system's
+    # temp directory unless that is in memory (a tmpfs, Cloud Run's
+    # filesystem), where spilling saves nothing; "off" turns it off. A leg
+    # past the threshold streams to a file; per query and process-wide caps
+    # on what is spilled.
     federation_spill_dir: str | None = None
     federation_spill_threshold_mb: int = 64
     federation_spill_max_mb: int = 4096

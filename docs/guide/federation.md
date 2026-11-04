@@ -137,6 +137,10 @@ show the plan as compiled, before any key is known.
 
 Each leg asks for one row more than `FEDERATION_MAX_LEG_ROWS` (default
 5,000,000), so a leg past the limit is refused rather than combined in part.
+It is read batch by batch: past `FEDERATION_SPILL_THRESHOLD_MB` (default 64)
+it goes to disk where spilling is on, as it is by default, and a leg held in
+memory is refused once it takes more than `FEDERATION_MAX_LEG_MB` (default
+512) ([running a federated query](#running-a-federated-query)).
 
 ## Where to join the sources
 
@@ -160,9 +164,9 @@ customer or an order:
 
 Where a join must stay on such a key, filter the query on the other source's
 dimensions, which narrows the keys the fact leg reads, or let legs grow: raise
-`FEDERATION_MAX_LEG_ROWS`, with `FEDERATION_SPILL_DIR` set to keep larger legs
-on disk ([running a federated query](#running-a-federated-query)). A leg
-refused for its size names the joins whose keys it returns. A leg returning
+`FEDERATION_MAX_LEG_ROWS`, and larger legs spill to disk
+([running a federated query](#running-a-federated-query)). A leg refused for
+its size names the joins whose keys it returns. A leg returning
 rows rather than groups, of a [query of fields](#raw-mode) or of a measure
 [computed from rows](#computed-from-rows), returns a row per row of its
 source the query reads, which no placement of a join narrows: only a filter
@@ -870,14 +874,20 @@ a plan for it.
 | Legs | Run at once, each on its own source; a fact leg reading [injected keys](#key-injection) runs after the dimension legs |
 | Types | Each leg's columns are made exact for DuckDB before combining: Postgres `numeric`, which arrives as text, becomes a decimal at the scale its values carry, and a decimal wider than 38 digits narrows when its values fit. A value no decimal holds (`NaN`, more than 38 digits) is refused with `FEDERATION_LEG_TYPE`, never rounded |
 | Errors | A leg that fails fails the query, and the error names the leg's data source and dialect (HTTP 502) |
-| Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 5,000,000), and a leg returning rows may stand for at most as many; past that, `FEDERATION_LEG_TOO_LARGE`, naming the joins whose keys the leg returns a row for each of ([where to join the sources](#where-to-join-the-sources)). Held in memory, narrow legs take about 75 MB per million rows: measured, revenue by region over 5,000,000 customers (a fact leg from PostgreSQL and a dimension leg of 5,000,000 rows each) took 730 MB and 6 s, and four such queries at once 2.7 GB. A server with less memory lowers `FEDERATION_MAX_LEG_ROWS` or `FEDERATION_MAX_CONCURRENT`, or spills |
+| Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 5,000,000), and a leg returning rows may stand for at most as many. A leg held in memory may also take at most `FEDERATION_MAX_LEG_MB` (default 512), counted batch by batch as it arrives, so a leg too large is refused before it is whole: rows alone do not say what a leg takes. Measured, a key and two partial results take 32 bytes a row (154 MB for 5,000,000 rows), a key and a region 15; each text field takes its length plus 4. Past either limit, `FEDERATION_LEG_TOO_LARGE`, naming the joins whose keys the leg returns a row for each of ([where to join the sources](#where-to-join-the-sources)). A leg spilled to disk is bounded by the spill limits below instead of `FEDERATION_MAX_LEG_MB`. Held in memory, narrow legs take about 75 MB of the process per million rows: measured, revenue by region over 5,000,000 customers (a fact leg from PostgreSQL and a dimension leg of 5,000,000 rows each) took 730 MB and 6 s, and four such queries at once 2.7 GB. A server with less memory lowers `FEDERATION_MAX_LEG_MB` or `FEDERATION_MAX_CONCURRENT`, or spills |
 | Concurrency | At most `FEDERATION_MAX_CONCURRENT` federated queries run at once per process (default 4). The others wait in order of arrival for up to `FEDERATION_QUEUE_TIMEOUT_SECONDS` (default 30), then get `FEDERATION_BUSY` (HTTP 503). Legs run on a pool of `FEDERATION_LEG_THREADS` threads (default 16) |
 | Combine | A fresh in-memory DuckDB per query, with `FEDERATION_COMBINE_THREADS` threads (default 2) and `FEDERATION_COMBINE_MEMORY_LIMIT` (default `512MB`) instead of DuckDB's defaults of every core and 80% of RAM per instance |
-| Spill to disk | Off unless `FEDERATION_SPILL_DIR` names a directory. A leg is then read batch by batch and held in memory up to `FEDERATION_SPILL_THRESHOLD_MB` (default 64); past that, it goes to an Arrow IPC file that the combine step reads memory-mapped, and DuckDB spills its own join and sort state next to it. Each query writes into its own directory, removed when the query ends, also when it fails. One query may spill at most `FEDERATION_SPILL_MAX_MB` (default 4096, else `FEDERATION_SPILL_TOO_LARGE`, HTTP 502), and the queries running at once at most `FEDERATION_SPILL_BUDGET_MB` together (default 16384, else `FEDERATION_SPILL_FULL`, HTTP 503). A spilled leg is not stored in the result cache; the combined result is |
+| Spill to disk | On by default: into `FEDERATION_SPILL_DIR`, else the system's temp directory (`TMPDIR`, else `/tmp` or the platform's), unless that is in memory, a tmpfs or ramfs on Linux or Cloud Run's filesystem, where nothing spills unless `FEDERATION_SPILL_DIR` names a directory. `FEDERATION_SPILL_DIR=off` turns it off. A leg is held in memory up to `FEDERATION_SPILL_THRESHOLD_MB` (default 64); past that, it goes to an Arrow IPC file that the combine step reads memory-mapped, and DuckDB spills its own join and sort state next to it. Each query writes into its own directory, readable by the server alone and removed when the query ends, also when it fails. One query may spill at most `FEDERATION_SPILL_MAX_MB` (default 4096, else `FEDERATION_SPILL_TOO_LARGE`, HTTP 502), and the queries running at once at most `FEDERATION_SPILL_BUDGET_MB` together (default 16384, else `FEDERATION_SPILL_FULL`, HTTP 503). A spilled leg is not stored in the result cache; the combined result is |
+
+Spilling trades time for memory, for legs past the threshold only. Measured
+with legs of 11,000,000 rows, one query took 5.6 s instead of 5.0 and four at
+once a median of 9.5 s instead of 6.0, holding 375 MB of memory the operating system
+cannot reclaim instead of 665, and 639 MB instead of 1,915.
 
 Spilling needs real disk. On an in-memory filesystem, such as Cloud Run's
-default one, a spilled file takes the same memory it was meant to free; leave
-`FEDERATION_SPILL_DIR` unset there, or point it at a disk-backed volume.
+default one, a spilled file takes the same memory it was meant to free, so by
+default nothing spills there. A `FEDERATION_SPILL_DIR` given is used as
+given: point it at a disk-backed volume.
 [Docker](../getting-started/docker.md#spilling-federated-queries-to-disk)
 shows the volume to mount, how large it needs to be, and the same for
 Kubernetes.
@@ -940,7 +950,7 @@ database would return, without a refusal.
 
 | Limitation | Error |
 |---|---|
-| A leg returning, or standing for, more than `FEDERATION_MAX_LEG_ROWS` rows: a join between sources on a key with many values makes a leg return a row per key ([where to join the sources](#where-to-join-the-sources)) | `FEDERATION_LEG_TOO_LARGE` (HTTP 502) |
+| A leg returning, or standing for, more than `FEDERATION_MAX_LEG_ROWS` rows, or holding more than `FEDERATION_MAX_LEG_MB` in memory: a join between sources on a key with many values makes a leg return a row per key ([where to join the sources](#where-to-join-the-sources)) | `FEDERATION_LEG_TOO_LARGE` (HTTP 502) |
 | A leg value no decimal holds (`NaN`, more than 38 digits), or an `avg` partial sum with more than 9 places | `FEDERATION_LEG_TYPE` (HTTP 502) |
 | More federated queries than `FEDERATION_MAX_CONCURRENT` waiting past `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `FEDERATION_BUSY` (HTTP 503) |
 | A query spilling past `FEDERATION_SPILL_MAX_MB`, or all queries past `FEDERATION_SPILL_BUDGET_MB` | `FEDERATION_SPILL_TOO_LARGE` (502), `FEDERATION_SPILL_FULL` (503) |
