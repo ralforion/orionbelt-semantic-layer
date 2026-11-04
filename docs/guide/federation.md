@@ -103,7 +103,7 @@ SELECT `Orders`.`customer_id` AS `__fk0_0`, CAST(COUNT(1) AS SIGNED) AS `Orders 
 FROM `orders` AS `Orders`
 GROUP BY `Orders`.`customer_id`
 ORDER BY `__fk0_0` ASC
-LIMIT 1000001
+LIMIT 5000001
 ```
 
 The dimension leg, on PostgreSQL, returns the customers of the region, and
@@ -115,7 +115,7 @@ FROM "customers" AS "Customers"
 WHERE "Customers"."region" = 'EU'
 GROUP BY "Customers"."region", "Customers"."customer_id"
 ORDER BY "Region" ASC, "__fk0_0" ASC
-LIMIT 1000001
+LIMIT 5000001
 ```
 
 The combine query, in DuckDB, joins them on the customer key, keeps the fact
@@ -136,7 +136,33 @@ its `WHERE` gains `"customer_id" IN (...)`. `query/sql` and `obsl compile`
 show the plan as compiled, before any key is known.
 
 Each leg asks for one row more than `FEDERATION_MAX_LEG_ROWS` (default
-1,000,000), so a leg past the limit is refused rather than combined in part.
+5,000,000), so a leg past the limit is refused rather than combined in part.
+
+## Where to join the sources
+
+A leg returns a row per key of each join between sources it holds, beside the
+query's dimensions: the fact leg above sums per customer, not per region. Its
+size follows how many keys the query reads, not how many groups the result
+has. With 20,000,000 customers who ordered, revenue by region returns
+20,000,000 rows from the shop for a result of eight, and is refused past
+`FEDERATION_MAX_LEG_ROWS`. Without the filter on the region, no
+[key injection](#key-injection) narrows it.
+
+Where the sources meet decides what a query costs. Put a join between sources
+on a dimension with few values that both share, a region, a product
+category, a legal entity, a day, rather than on a key of single records, a
+customer or an order:
+
+| Join between the sources | The shop's leg for revenue by region |
+|---|---|
+| Orders -> Customers on the customer, the customers in the CRM | a row per customer who ordered |
+| Customers -> Regions on the region code, orders and customers in the shop, the regions in the CRM | a row per region code |
+
+Where a join must stay on such a key, filter the query on the other source's
+dimensions, which narrows the keys the fact leg reads, or let legs grow: raise
+`FEDERATION_MAX_LEG_ROWS`, with `FEDERATION_SPILL_DIR` set to keep larger legs
+on disk ([running a federated query](#running-a-federated-query)). A leg
+refused for its size names the joins whose keys it returns.
 
 ## Where filters run
 
@@ -190,7 +216,7 @@ WHERE "Customers"."customer_id" = "Tickets"."customer_id" AND "Tickets"."severit
 )
 GROUP BY ALL
 ORDER BY "__fk0_0" ASC
-LIMIT 1000001
+LIMIT 5000001
 ```
 
 ```sql
@@ -303,13 +329,13 @@ SELECT "Orders"."order_id" AS "Orders.Order ID", "Orders"."amount" AS "Orders.Am
 FROM "orders" AS "Orders"
 WHERE "Orders"."amount" > 10
 ORDER BY "Orders.Order ID" ASC, "Orders.Amount" ASC, "Orders.__fk0" ASC
-LIMIT 1000001
+LIMIT 5000001
 
 -- leg_1, on crm
 SELECT "Customers"."region" AS "Customers.Region", "Customers"."customer_id" AS "Customers.__fk1"
 FROM "customers" AS "Customers"
 ORDER BY "Customers.Region" ASC, "Customers.__fk1" ASC
-LIMIT 1000001
+LIMIT 5000001
 
 -- combine
 SELECT "leg_0"."Orders.Order ID" AS "Orders.Order ID", "leg_0"."Orders.Amount" AS "Orders.Amount", "leg_1"."Customers.Region" AS "Customers.Region"
@@ -571,7 +597,7 @@ SELECT "Products"."product_id" AS "__fk0_0", "Products"."price" AS "__value1"
 FROM "products" AS "Products"
 GROUP BY ALL
 ORDER BY "__fk0_0" ASC, "__value1" ASC
-LIMIT 1000001
+LIMIT 5000001
 ```
 
 and the combine query computes
@@ -840,7 +866,7 @@ a plan for it.
 | Legs | Run at once, each on its own source; a fact leg reading [injected keys](#key-injection) runs after the dimension legs |
 | Types | Each leg's columns are made exact for DuckDB before combining: Postgres `numeric`, which arrives as text, becomes a decimal at the scale its values carry, and a decimal wider than 38 digits narrows when its values fit. A value no decimal holds (`NaN`, more than 38 digits) is refused with `FEDERATION_LEG_TYPE`, never rounded |
 | Errors | A leg that fails fails the query, and the error names the leg's data source and dialect (HTTP 502) |
-| Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 1,000,000), and a leg returning rows may stand for at most as many; past that, `FEDERATION_LEG_TOO_LARGE` |
+| Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 5,000,000), and a leg returning rows may stand for at most as many; past that, `FEDERATION_LEG_TOO_LARGE`, naming the joins whose keys the leg returns a row for each of ([where to join the sources](#where-to-join-the-sources)). Held in memory, narrow legs take about 75 MB per million rows: measured, revenue by region over 5,000,000 customers (a fact leg from PostgreSQL and a dimension leg of 5,000,000 rows each) took 730 MB and 6 s, and four such queries at once 2.7 GB. A server with less memory lowers `FEDERATION_MAX_LEG_ROWS` or `FEDERATION_MAX_CONCURRENT`, or spills |
 | Concurrency | At most `FEDERATION_MAX_CONCURRENT` federated queries run at once per process (default 4). The others wait in order of arrival for up to `FEDERATION_QUEUE_TIMEOUT_SECONDS` (default 30), then get `FEDERATION_BUSY` (HTTP 503). Legs run on a pool of `FEDERATION_LEG_THREADS` threads (default 16) |
 | Combine | A fresh in-memory DuckDB per query, with `FEDERATION_COMBINE_THREADS` threads (default 2) and `FEDERATION_COMBINE_MEMORY_LIMIT` (default `512MB`) instead of DuckDB's defaults of every core and 80% of RAM per instance |
 | Spill to disk | Off unless `FEDERATION_SPILL_DIR` names a directory. A leg is then read batch by batch and held in memory up to `FEDERATION_SPILL_THRESHOLD_MB` (default 64); past that, it goes to an Arrow IPC file that the combine step reads memory-mapped, and DuckDB spills its own join and sort state next to it. Each query writes into its own directory, removed when the query ends, also when it fails. One query may spill at most `FEDERATION_SPILL_MAX_MB` (default 4096, else `FEDERATION_SPILL_TOO_LARGE`, HTTP 502), and the queries running at once at most `FEDERATION_SPILL_BUDGET_MB` together (default 16384, else `FEDERATION_SPILL_FULL`, HTTP 503). A spilled leg is not stored in the result cache; the combined result is |
@@ -910,7 +936,7 @@ database would return, without a refusal.
 
 | Limitation | Error |
 |---|---|
-| A leg returning, or standing for, more than `FEDERATION_MAX_LEG_ROWS` rows | `FEDERATION_LEG_TOO_LARGE` (HTTP 502) |
+| A leg returning, or standing for, more than `FEDERATION_MAX_LEG_ROWS` rows: a join between sources on a key with many values makes a leg return a row per key ([where to join the sources](#where-to-join-the-sources)) | `FEDERATION_LEG_TOO_LARGE` (HTTP 502) |
 | A leg value no decimal holds (`NaN`, more than 38 digits), or an `avg` partial sum with more than 9 places | `FEDERATION_LEG_TYPE` (HTTP 502) |
 | More federated queries than `FEDERATION_MAX_CONCURRENT` waiting past `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `FEDERATION_BUSY` (HTTP 503) |
 | A query spilling past `FEDERATION_SPILL_MAX_MB`, or all queries past `FEDERATION_SPILL_BUDGET_MB` | `FEDERATION_SPILL_TOO_LARGE` (502), `FEDERATION_SPILL_FULL` (503) |

@@ -314,6 +314,10 @@ class FederatedLeg:
             stands for, when the leg returns rows rather than partial results
             (:func:`_row_measures`); the combine query repeats each row that
             many times.
+        joins: The joins between data sources whose keys it returns, as an
+            error names them (:meth:`_Planner.join_label`): it returns a row
+            per key of each, beside the query's dimensions, however few groups
+            the result has.
     """
 
     name: str
@@ -326,6 +330,7 @@ class FederatedLeg:
     exact_sums: tuple[tuple[str, int], ...] = ()
     integer_sums: tuple[tuple[str, int], ...] = ()
     rows: str | None = None
+    joins: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -747,6 +752,8 @@ def plan_federated(
         [_unused(f"__fk{e}_{i}", taken) for i in range(len(edge.from_columns))]
         for e, edge in enumerate(edges)
     ]
+    for edge, names in zip(edges, key_names, strict=True):
+        planner.register_keys(edge, names)
     # The keys both legs of an edge return as their engine matches them
     # (:meth:`_Planner.match_keys`): by island, each key column's expression.
     matched: dict[int, dict[str, Expr]] = {}
@@ -1552,6 +1559,8 @@ def _plan_raw(
                 for c, kind in zip(edge.to_columns, types, strict=True)
             ],
         )
+    for edge, (from_keys, to_keys) in joins_on.items():
+        planner.register_keys(edge, [*from_keys, *to_keys])
     # The keys each leg returns as its engine matches them, as in the
     # aggregated plan (:meth:`_Planner.match_keys`).
     matched: dict[int, dict[str, Expr]] = {island: {} for island in leg_of}
@@ -1946,6 +1955,8 @@ class _Planner:
         self.result_zone = query_zone or self.zone
         self.source_timezone = source_timezone
         self.leg_zones: dict[tuple[str | None, str], LegZone] = {}
+        # Each key column a leg may return, by name: the joins it is a key of.
+        self.key_joins: dict[str, list[str]] = {}
         self.model = model
         self.resolved = resolved
         self.sources = object_sources(model)
@@ -3698,6 +3709,30 @@ class _Planner:
                 matched[name] = key
         return matched
 
+    def register_keys(self, edge: _Edge, names: Iterable[str]) -> None:
+        """Note *names*, leg columns holding *edge*'s keys, for :attr:`FederatedLeg.joins`."""
+        label = self.join_label(edge)
+        for name in names:
+            joins = self.key_joins.setdefault(name, [])
+            if label not in joins:
+                joins.append(label)
+
+    def join_label(self, edge: _Edge) -> str:
+        """*edge* as an error names it: its key columns, and the data sources it joins."""
+
+        def side(obj: str, columns: tuple[str, ...]) -> str:
+            return f"{obj}.{columns[0]}" if len(columns) == 1 else f"{obj}.({', '.join(columns)})"
+
+        sources = (
+            source_name(self.model, edge.from_object),
+            source_name(self.model, edge.to_object),
+        )
+        between = " and ".join(f"'{s}'" if s else "no data source" for s in sources)
+        return (
+            f"{side(edge.from_object, edge.from_columns)} -> "
+            f"{side(edge.to_object, edge.to_columns)} (between {between})"
+        )
+
     def leg_dialect(self, island: set[str]) -> Dialect:
         """The dialect the leg of *island* is written in."""
         source = source_name(self.model, next(iter(sorted(island))))
@@ -3777,6 +3812,9 @@ class _Planner:
             exact_sums=exact_sums,
             integer_sums=integer_sums,
             rows=rows,
+            joins=tuple(
+                dict.fromkeys(join for c in columns for join in self.key_joins.get(c.name, ()))
+            ),
         )
 
 

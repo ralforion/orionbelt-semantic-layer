@@ -403,8 +403,15 @@ measures:
         response = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
 
         assert response.status_code == 502
-        assert "FEDERATION_LEG_TOO_LARGE" in response.json()["detail"]
-        assert "leg leg_0 on shop" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert "FEDERATION_LEG_TOO_LARGE" in detail
+        assert "leg leg_0 on shop" in detail
+        # Why it is as large as it is: a row per customer, beside the regions.
+        assert (
+            "a row per key of the join Orders.Order Customer -> Customers.Customer ID "
+            "(between 'shop' and 'crm')"
+        ) in detail
+        assert "join the data sources on a column with fewer values" in detail
 
     async def test_a_leg_standing_for_more_rows_than_the_limit_is_refused(
         self, client: AsyncClient
@@ -996,6 +1003,19 @@ def leg(*columns: tuple[str, str]) -> FederatedLeg:
         data_objects=("Orders",),
         columns=columns,
     )
+
+
+class TestLegTooLarge:
+    def test_a_leg_holding_no_join_names_none(self) -> None:
+        federation.configure(FederationLimits(max_leg_rows=1))
+
+        with pytest.raises(FederatedLegError) as refused:
+            federation.check_leg_rows(leg(("Region", "string")), 2)
+
+        assert "Filter the query, select fewer dimensions, or hold larger legs" in str(
+            refused.value
+        )
+        assert "a row per key" not in str(refused.value)
 
 
 class TestNormalizeLeg:

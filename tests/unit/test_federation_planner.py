@@ -1132,6 +1132,44 @@ class TestPlan:
         ]
         assert plan.combine_dialect == "duckdb"
 
+    def test_legs_name_the_joins_whose_keys_they_return(self) -> None:
+        # What makes a leg as large as it is: a row per customer, whatever the regions.
+        plan = _compile(
+            model_yaml(federated=True),
+            {"select": {"dimensions": ["Region"], "measures": ["Revenue"]}, "where": [EU]},
+        ).federation
+        join = "Orders.Order Customer -> Customers.Customer ID (between 'shop' and 'crm')"
+
+        assert [leg.joins for leg in plan.legs] == [(join,), (join,)]
+        assert plan.inject({plan.injections[0].column: [10]}).joins == (join,)
+
+    def test_a_leg_of_a_chain_names_both_its_joins(self) -> None:
+        plan = _compile(
+            chain_yaml("shop", "crm", "geo"),
+            {"select": {"dimensions": ["Region Name"], "measures": ["Revenue"]}},
+        ).federation
+        orders = "Orders.Order Customer -> Customers.Customer ID (between 'shop' and 'crm')"
+        regions = "Customers.Customer Region -> Regions.Region ID (between 'crm' and 'geo')"
+
+        assert {leg.data_source: leg.joins for leg in plan.legs} == {
+            "shop": (orders,),
+            "crm": (orders, regions),
+            "geo": (regions,),
+        }
+
+    def test_raw_legs_and_parts_name_their_joins_too(self) -> None:
+        join = "Orders.Order Customer -> Customers.Customer ID (between 'shop' and 'crm')"
+        raw = _compile(
+            model_yaml(federated=True),
+            {"select": {"fields": ["Orders.Amount", "Customers.Region"]}},
+        ).federation
+        parts = _compile(
+            independent_model(True, tickets="shop", **INDEPENDENT_MODEL), {"select": BY_REGION_BOTH}
+        ).federation
+
+        assert [leg.joins for leg in raw.legs] == [(join,), (join,)]
+        assert {leg.name: leg.joins for leg in parts.legs}["__part0_leg_0"] == (join,)
+
     def test_a_filter_on_the_fact_side_runs_in_its_leg(self) -> None:
         plan = _compile(
             model_yaml(federated=True),
@@ -1318,7 +1356,7 @@ class TestPlan:
         sql = plan.inject({"__fk0_0": ["a", "it's"]}).sql
 
         assert "\"Orders\".\"customer_id\" IN ('a', 'it''s')" in sql
-        assert sql.endswith("LIMIT 1000001")
+        assert sql.endswith("LIMIT 5000001")
 
     def test_a_query_changed_after_planning_leaves_the_injected_fact_leg_as_planned(
         self,

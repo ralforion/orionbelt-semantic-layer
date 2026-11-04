@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     federation_max_concurrent: int = 4
     federation_queue_timeout_seconds: float = 30.0
     federation_leg_threads: int = 16
-    federation_max_leg_rows: int = 1_000_000
+    federation_max_leg_rows: int = 5_000_000
     federation_combine_threads: int = 2
     federation_combine_memory_limit: str = "512MB"
     # Spilling large legs to disk: off unless a directory on real disk is
