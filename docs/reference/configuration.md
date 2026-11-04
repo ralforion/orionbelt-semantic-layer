@@ -55,7 +55,7 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `FEDERATION_MAX_CONCURRENT` | `4`       | [Queries across data sources](../guide/federation.md#running-a-federated-query) running at once per process; the others wait in order of arrival |
 | `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `30` | How long a federated query waits for a slot before `FEDERATION_BUSY` (503) |
 | `FEDERATION_LEG_THREADS`   | `16`        | Legs of federated queries fetched at once per process |
-| `FEDERATION_MAX_LEG_ROWS`  | `1000000`   | Most rows one leg may return; a larger leg is refused with `FEDERATION_LEG_TOO_LARGE` |
+| `FEDERATION_MAX_LEG_ROWS`  | `5000000`   | Most rows one leg may return; a larger leg is refused with `FEDERATION_LEG_TOO_LARGE`, which names the joins whose keys make it that large. Held in memory, about 75 MB per million narrow rows ([leg size](../guide/federation.md#running-a-federated-query)) |
 | `FEDERATION_COMBINE_THREADS` | `2`       | DuckDB threads of each federated query's combine step |
 | `FEDERATION_COMBINE_MEMORY_LIMIT` | `512MB` | DuckDB `memory_limit` of each combine step |
 | `FEDERATION_SPILL_DIR`     | —           | Directory on real disk where large federated legs are [spilled](../guide/federation.md#running-a-federated-query); unset keeps every leg in memory. Not an in-memory filesystem such as Cloud Run's default |

@@ -108,7 +108,7 @@ class FederationLimits:
     max_concurrent: int = 4
     queue_timeout_seconds: float = 30.0
     leg_threads: int = 16
-    max_leg_rows: int = 1_000_000
+    max_leg_rows: int = 5_000_000
     combine_threads: int = 2
     combine_memory_limit: str = "512MB"
     spill_dir: str | None = None
@@ -277,8 +277,46 @@ def check_leg_rows(leg: FederatedLeg, row_count: int) -> None:
         raise FederatedLegError(
             f"[FEDERATION_LEG_TOO_LARGE] {leg_label(leg)} returns more than "
             f"{limits.max_leg_rows} rows, the most one leg may return "
-            "(FEDERATION_MAX_LEG_ROWS). Filter the query or select fewer dimensions."
+            f"(FEDERATION_MAX_LEG_ROWS). {_why_so_many(leg)}"
         )
+
+
+def _why_so_many(leg: FederatedLeg) -> str:
+    """What makes *leg* as large as it is, and what would make it smaller.
+
+    A leg of groups returns a row per key of each join between data sources
+    it holds, beside the query's dimensions: revenue by region, with the
+    customers on another source, sums per customer, whatever the number of
+    regions. A leg of rows, of a query of fields or of a measure computed
+    from rows, returns its source's rows, which only a filter narrows.
+    """
+    larger = (
+        "or hold larger legs: raise FEDERATION_MAX_LEG_ROWS, with "
+        "FEDERATION_SPILL_DIR set to keep them on disk."
+    )
+    if leg.raw:
+        return (
+            "A query of fields (select.fields) reads its data source's rows, a row "
+            f"per row it reads: filter the query, {larger}"
+        )
+    if leg.rows is not None:
+        return (
+            "It returns the rows of its data source a measure computed from rows "
+            "reads (a median, a percentile, a mode, ...), each distinct one once: its "
+            f"size follows those rows, not how many groups the result has. Filter the "
+            f"query, {larger}"
+        )
+    if not leg.joins:
+        return f"Filter the query, select fewer dimensions, {larger}"
+    keys = "keys of the joins" if len(leg.joins) > 1 else "key of the join"
+    return (
+        f"It returns a row per {keys} {', '.join(leg.joins)}, beside the query's "
+        "dimensions: its size follows how many keys the query reads, not how many "
+        "groups the result has. Filter the query (a filter on a data source's "
+        "dimensions narrows its leg, and the measures' leg to the keys that leg "
+        "returns), join the data sources on a column with fewer values (a region "
+        f"or a category rather than a customer), {larger}"
+    )
 
 
 def check_rows_stood_for(leg: FederatedLeg, table: Any) -> None:
