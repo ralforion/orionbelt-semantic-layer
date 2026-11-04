@@ -310,7 +310,7 @@ class InTimeZone:
 
     ``AT TIME ZONE`` on DuckDB and Postgres, ``toTimeZone`` on ClickHouse,
     ``CONVERT_TIMEZONE`` on Snowflake and Dremio, ``CONVERT_TZ`` on MySQL,
-    ``DATETIME(x, zone)`` on BigQuery, ``from_utc_timestamp`` on Databricks.
+    ``DATETIME(x, zone)`` on BigQuery, ``convert_timezone`` on Databricks.
 
     ``from_zone`` is set when the value carries no zone of its own: a naive
     timestamp only means something once the model says which zone it was
