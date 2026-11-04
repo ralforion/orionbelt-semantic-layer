@@ -75,7 +75,7 @@ TIMESTAMP = {
     "mysql": "DATETIME",
     "snowflake": "TIMESTAMP_NTZ",
     "bigquery": "DATETIME",
-    "clickhouse": "Nullable(DateTime)",
+    "clickhouse": "Nullable(DateTime64(3))",
     "dremio": "TIMESTAMP",
     "databricks": "TIMESTAMP_NTZ",
     "duckdb": "TIMESTAMP",

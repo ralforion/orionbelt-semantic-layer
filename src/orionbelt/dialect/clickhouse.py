@@ -1086,13 +1086,16 @@ class ClickHouseDialect(Dialect):
         return self._render_null_guard(self._render_named_function(name, args), args)
 
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
-        """ClickHouse: ``toTimeZone``. A naive ``DateTime`` carries the column's
-        own zone, so *from_zone* is declared with ``toDateTime`` first.
+        """ClickHouse: ``toTimeZone``, which keeps the value's type.
+
+        A ``DateTime`` holds an instant, shown in the server's zone (its
+        session's, ``timezone()``), so *from_zone* changes nothing: probed,
+        ``toDateTime(x, 'America/New_York')`` keeps the instant, as from UTC.
+        It is not declared with ``toDateTime``, which also truncates a
+        ``DateTime64`` (OBML's ``timestamp``) to whole seconds, as a
+        ``DateTime``, which Arrow carries as ``uint32`` seconds.
         """
-        rendered = self.compile_expr(value)
-        if from_zone is not None:
-            rendered = f"toDateTime({rendered}, {self._quote_zone(from_zone)})"
-        return f"toTimeZone({rendered}, {self._quote_zone(zone)})"
+        return f"toTimeZone({self.compile_expr(value)}, {self._quote_zone(zone)})"
 
     def _render_week_start_sunday(self, value: Expr) -> str:
         """The day minus its weekday, where mode 2 numbers Sunday 0.

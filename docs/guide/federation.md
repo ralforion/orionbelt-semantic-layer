@@ -817,7 +817,8 @@ stored. A leg whose source's zone is not known returns its timestamps as
 stored, and the query warns `UNDECLARED_TIMESTAMP_ZONE`, naming the source;
 `DB_<NAME>_TIMEZONE` declares its zone. A value a driver hands over with a
 zone, Databricks' `TIMESTAMP` or a ClickHouse `DateTime` read in one, is its
-wall-clock time in that zone.
+wall-clock time in that zone. A ClickHouse `DateTime` holds an instant, which
+its leg converts as stored, whatever zone is declared.
 
 ## Running a federated query
 
