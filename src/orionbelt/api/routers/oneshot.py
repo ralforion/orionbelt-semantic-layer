@@ -26,6 +26,7 @@ from orionbelt.api.query_cache import (
     CachedEntry,
     execute_federated_with_cache,
     execution_result_from_data,
+    hit_timezone,
     try_cache_get,
     try_cache_set,
 )
@@ -380,7 +381,7 @@ async def _run_query(
             hit_exec = execution_result_from_data(
                 hit_table,
                 execution_time_ms=fetch_elapsed_ms,
-                tz=tz,
+                tz=await hit_timezone(dialect, source, tz, override_db_tz),
                 columns=cached_hit.columns,
             )
             hit_envelope = _build_execute_response(
@@ -599,7 +600,7 @@ async def _run_federated(
         exec_result = execution_result_from_data(
             table,
             execution_time_ms=ran.fetch_elapsed_ms or 0.0,
-            tz=tz,
+            tz=ran.timezone,
             columns=ran.hit_columns,
         )
     else:

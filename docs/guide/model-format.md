@@ -1945,27 +1945,31 @@ settings:
 
 The effective timezone for naive timestamp coercion is resolved in this order (first match wins):
 
-1. **Database session timezone** — auto-detected from the connection (one query, cached per dialect)
+1. **Database session timezone** — `DB_<NAME>_TIMEZONE` (`DB_TIMEZONE` for every source) where the data source declares it, else auto-detected from the connection (one query, cached per data source)
 2. **Model setting** — `settings.defaultTimezone` (fallback when detection fails)
-3. **Host process timezone** — the server's system timezone (if not UTC)
+3. **Host process timezone** — the server's system timezone by its IANA name (`TZ`, else the zone `/etc/localtime` links to), if not UTC
 4. **UTC** — automatic final fallback
+
+A result served from the cache is labeled as the query's run labels it.
 
 When `overrideDatabaseTimezone: true` is set and `defaultTimezone` is configured, the model timezone takes priority over the detected database session timezone. Use this when naive timestamps are stored in a known timezone that differs from the DB session (e.g. users storing local timestamps in a UTC-configured database).
 
-**Database session timezone detection** queries the connected database once per dialect:
+**Database session timezone detection** queries each data source once:
 
 | Dialect | Detection Query |
 |---------|----------------|
 | Snowflake | `SELECT CURRENT_TIMEZONE()` |
 | Postgres | `SELECT current_setting('TIMEZONE')` |
-| MySQL | `SELECT @@session.time_zone` |
+| MySQL | `SELECT @@session.time_zone, @@system_time_zone`: the session's zone, an offset (`+02:00`) read as its zone; for `SYSTEM`, the server's where it is UTC (an abbreviation such as `EST` names a fixed offset, not the server's zone) |
 | DuckDB | `SELECT current_setting('TimeZone')` |
 | ClickHouse | `SELECT timezone()` |
 | BigQuery | Fixed: UTC |
-| Databricks | Not detected (uses model fallback) |
-| Dremio | Not detected (uses model fallback) |
+| Databricks | Not detected (uses model fallback; declare with `DB_<NAME>_TIMEZONE`) |
+| Dremio | Not detected (uses model fallback; declare with `DB_<NAME>_TIMEZONE`) |
 
 This ensures naive timestamps from the database are labeled with the timezone they actually represent (the database session's timezone), not a potentially different model-level setting.
+
+A query [federated across data sources](federation.md#timestamps-without-a-time-zone) reads them in one zone instead: the model's `queryTimezone`, else its `defaultTimezone`, else the host process's, else UTC. Each leg converts its naive timestamps there from its source's session timezone, unless the model says the zone they were written in, and the result is labeled with it.
 
 ### Serialization Rules
 

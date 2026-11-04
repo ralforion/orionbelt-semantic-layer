@@ -22,6 +22,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from orionbelt.api.schemas import (
     ColumnMetadata,
@@ -42,6 +43,7 @@ from orionbelt.service.db_executor import (
     ExecutionUnavailableError,
     coarse_hint_from_type_name,
     execute_sql,
+    session_timezone,
 )
 from orionbelt.service.query_execution import resolve_cache_plan, resolve_effective_ttl
 
@@ -388,11 +390,28 @@ class CachedExecution:
     row_count: int | None = None
     # When the hit's entry expires, where the backend knows it.
     expires_at: datetime | None = None
+    # The zone a hit labels its timestamps without a zone with, as a run of
+    # its query labels them (``ExecutionResult.timezone`` on a miss).
+    timezone: ZoneInfo | None = None
     # Columns reconciliation could not cast to their declared type, as
     # ``(column, reason)``. Carried rather than recomputed because
     # reconciliation happens here - before the cache write - and is a no-op by
     # the time the response builder sees the result.
     declared_skips: list[tuple[str, str]] = field(default_factory=list)
+
+
+async def hit_timezone(
+    dialect: str, source: DataSource | None, tz: Any, override_db_tz: bool
+) -> Any:
+    """The zone a cache hit labels its timestamps without a zone with, as a run would.
+
+    The zone of the source's sessions (:func:`session_timezone`, which
+    connects to ask only where no query on the source has yet), unless
+    ``override_db_tz``; else ``tz``.
+    """
+    if override_db_tz and tz is not None:
+        return tz
+    return await asyncio.to_thread(session_timezone, dialect, source) or tz
 
 
 async def execute_query_with_cache(
@@ -454,6 +473,9 @@ async def execute_query_with_cache(
     ``sink`` builds a fresh result's table from its batches (see
     :func:`~orionbelt.service.db_executor.execute_sql`), and ``cache_if``,
     asked once the result is computed, may decline to store it.
+
+    A hit labels its timestamps without a zone as the run would have
+    (:func:`hit_timezone`); one ``run`` computes, with ``tz``.
     """
     if source is not None:
         # One set of settings for the key and the query: the source's
@@ -501,6 +523,11 @@ async def execute_query_with_cache(
                         if entry.data_table is not None
                         else entry.row_count or 0
                     )
+                timezone = (
+                    tz
+                    if run is not None
+                    else await hit_timezone(dialect, source, tz, override_db_tz)
+                )
                 return CachedExecution(
                     cached=True,
                     cache_key=cache_key,
@@ -514,6 +541,7 @@ async def execute_query_with_cache(
                     hit_columns=entry.columns,
                     row_count=entry.row_count,
                     expires_at=entry.expires_at,
+                    timezone=timezone,
                 )
 
     if run is not None:
@@ -662,6 +690,9 @@ async def execute_federated_with_cache(
     from orionbelt.service.datasource_selection import resolve_named_source
 
     plan = compile_result.federation
+    if plan.timezone is not None:
+        # The zone the legs read their timestamps without a zone in.
+        tz = ZoneInfo(plan.timezone)
     sources: list[DataSource | None] = []
     for leg in plan.legs:
         try:
@@ -863,7 +894,7 @@ def execute_federated(
     return execution_result_from_data(
         table,
         execution_time_ms=ran.fetch_elapsed_ms or 0.0,
-        tz=tz,
+        tz=ran.timezone,
         columns=ran.hit_columns,
     )
 

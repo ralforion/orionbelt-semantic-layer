@@ -772,7 +772,8 @@ measures:
         [
             ("duckdb", "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Zagreb'"),
             ("postgres", "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Zagreb'"),
-            ("clickhouse", "toTimeZone(toDateTime("),
+            # A DateTime is an instant: its type, a DateTime64's, is kept.
+            ("clickhouse", """toTimeZone("Events"."occurred_at", 'Europe/Zagreb')"""),
             ("mysql", "CONVERT_TZ("),
             ("snowflake", "CONVERT_TIMEZONE('UTC', 'Europe/Zagreb'"),
             # BigQuery's wall clock is DATETIME, which has no two-argument

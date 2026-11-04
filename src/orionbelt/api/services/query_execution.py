@@ -593,7 +593,7 @@ async def _run_with_cache(
                 warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
                 sql_valid=compile_result.sql_valid,
                 execution_time_ms=fetch_ms,
-                timezone=str(tz) if tz is not None else None,
+                timezone=str(cached.timezone) if cached.timezone is not None else None,
                 resolved=ResolvedInfoResponse(
                     fact_tables=compile_result.resolved.fact_tables,
                     dimensions=compile_result.resolved.dimensions,
@@ -626,7 +626,7 @@ async def _run_with_cache(
         hit_exec_result = execution_result_from_data(
             hit_table,
             execution_time_ms=fetch_ms,
-            tz=tz,
+            tz=cached.timezone,
             columns=cached.hit_columns,
         )
         response = _build_execute_response(

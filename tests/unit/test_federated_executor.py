@@ -15,6 +15,7 @@ import os
 import threading
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
@@ -248,6 +249,53 @@ class TestRestExecution:
         assert narrowed.json()["cached"] is False
         assert calls == ["shop", "crm"]
         assert narrowed.json()["rows"] == [r for r in first.json()["rows"] if float(r[1]) > 100]
+
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            "  defaultTimezone: Asia/Tokyo\n",
+            # The zone the legs read timestamps in, not the one they were written in.
+            "  defaultTimezone: UTC\n  queryTimezone: Asia/Tokyo\n",
+        ],
+        ids=["default", "query"],
+    )
+    async def test_a_result_is_labeled_with_the_zone_its_legs_read_timestamps_in(
+        self, client: AsyncClient, settings: str
+    ) -> None:
+        yaml = model_yaml(federated=True, settings=settings)
+        first = await execute(client, yaml, REVENUE_BY_REGION)
+        again = await execute(client, yaml, REVENUE_BY_REGION)
+
+        assert again.json()["cached"] is True
+        assert first.json()["timezone"] == again.json()["timezone"] == "Asia/Tokyo"
+
+    async def test_a_hit_on_one_source_is_labeled_as_its_run(self, client: AsyncClient) -> None:
+        # With the zone of the source's sessions, not the model's fallback.
+        yaml = single_model(settings="  defaultTimezone: Asia/Tokyo\n")
+        first = await execute(client, yaml, REVENUE_BY_REGION)
+        again = await execute(client, yaml, REVENUE_BY_REGION)
+
+        assert again.json()["cached"] is True
+        assert again.json()["timezone"] == first.json()["timezone"]
+
+    async def test_a_declared_zone_labels_its_source(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DB_ALL_TIMEZONE", "America/Chicago")
+        first = await execute(client, single_model(), REVENUE_BY_REGION)
+        again = await execute(client, single_model(), REVENUE_BY_REGION)
+
+        assert again.json()["cached"] is True
+        assert first.json()["timezone"] == again.json()["timezone"] == "America/Chicago"
+
+    async def test_a_declared_zone_that_names_none_is_refused(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DB_ALL_TIMEZONE", "Mars/Olympus")
+        response = await execute(client, single_model(), REVENUE_BY_REGION)
+
+        assert response.status_code == 503
+        assert "DB_ALL_TIMEZONE is 'Mars/Olympus'" in response.text
 
     async def test_a_filter_on_another_source_reruns_only_its_leg(
         self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
@@ -905,6 +953,18 @@ def leg(*columns: tuple[str, str]) -> FederatedLeg:
 
 
 class TestNormalizeLeg:
+    def test_a_zoned_timestamp_without_a_zone_is_its_wall_clock_time(self) -> None:
+        # Databricks hands over 11:00 in Berlin, read in its UTC session, as
+        # 11:00 UTC; DuckDB would read it in the server's zone.
+        instant = pa.array([datetime(2024, 1, 5, 11, tzinfo=UTC), None], pa.timestamp("us", "UTC"))
+        table = pa.table({"At": instant, "Logged": instant})
+
+        out = federation.normalize_leg(leg(("At", "timestamp"), ("Logged", "timestamp_tz")), table)
+
+        assert out.column("At").type == pa.timestamp("us")
+        assert out.column("At").to_pylist() == [datetime(2024, 1, 5, 11), None]
+        assert out.column("Logged").type == pa.timestamp("us", "UTC")
+
     def test_numbers_sent_as_text_become_exact_decimals(self) -> None:
         table = pa.table({"Revenue": ["100.50", "20.255", None, "-3"]})
 

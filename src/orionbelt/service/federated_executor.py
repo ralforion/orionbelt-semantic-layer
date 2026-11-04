@@ -413,6 +413,10 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
     * An all-NULL column without a type takes its declared one.
     * A date or timestamp that arrived as ISO text - a driver without Arrow
       hands rows over that way - is read back as one when every value parses.
+    * A timestamp without a zone that arrived with one is its wall-clock time
+      in that zone: Databricks hands its session's ``TIMESTAMP`` over zoned,
+      and ClickHouse a ``DateTime`` read in a zone (``toTimeZone``). DuckDB
+      would read the instant in the server's zone, moving the clock.
     * The partial sums an ``avg`` divides (``leg.exact_sums``) become
       ``decimal128(38, scale)``, the scale the combine query divides them at;
       one holding more places, or a float, is refused, never rounded.
@@ -424,6 +428,7 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
     model's types, as a query on one source does.
     """
     import pyarrow as pa
+    import pyarrow.compute as pc
 
     from orionbelt.service.result_schema import obml_type_to_arrow
 
@@ -445,6 +450,8 @@ def normalize_leg(leg: FederatedLeg, table: Any) -> Any:
             column = _decimal_from_text(leg, name, column)
         elif kind in _TEMPORAL_TYPES and pa.types.is_string(column.type):
             column = _temporal_from_text(column, obml_type_to_arrow(kind))
+        elif kind == "timestamp" and pa.types.is_timestamp(column.type) and column.type.tz:
+            column = pc.local_timestamp(column)
         elif pa.types.is_decimal256(column.type) and name not in units:
             # A sum of squares arrives at the scale the engine computed it in,
             # BigQuery's 38 places, and narrows only once rescaled to its own.

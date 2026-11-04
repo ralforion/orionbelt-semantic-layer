@@ -187,6 +187,32 @@ def source_dialect(name: str | None) -> str | None:
         return None
 
 
+def source_timezone(name: str | None, dialect: str) -> str | None:
+    """The zone the data source *name* runs its sessions in; ``None`` if unknown here.
+
+    The dialect's implicit source when *name* is ``None``. Declared or
+    detected as a query on it labels its timestamps
+    (:func:`~orionbelt.service.db_executor.session_timezone`): detection
+    connects once per source, so a federated plan asks only for a leg that
+    reads a timestamp without a zone.
+    """
+    from orionbelt.service.db_executor import session_timezone, zone_key
+
+    try:
+        source = None
+        if name is not None:
+            from ob_flight.datasources import DataSourceNotFoundError, find_datasource
+
+            try:
+                source = find_datasource(name, configured_datasource_list())
+            except DataSourceNotFoundError:
+                return None
+        zone = session_timezone(source.dialect if source is not None else dialect, source)
+    except (ImportError, ExecutionUnavailableError):
+        return None
+    return zone_key(zone) if zone is not None else None
+
+
 def configured_datasource_list() -> list[DataSource]:
     """Every configured data source; none when the driver extension predates them.
 

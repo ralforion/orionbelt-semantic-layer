@@ -629,6 +629,58 @@ def columns_in_own_zone(columns: Iterable[tuple[str, str]]) -> Iterator[None]:
         _own_zone.reset(token)
 
 
+class LegZone:
+    """The zone a federated leg reads its timestamps without a zone in.
+
+    ``zone`` is the query's: the model's ``queryTimezone``, else its
+    ``defaultTimezone``, else the server's. ``source`` looks up the zone the
+    leg's data source runs its sessions in, which a naive timestamp it returns
+    is in: once, and only when the leg reads one. ``None`` from it is a zone
+    not known, and the leg returns such timestamps as its source does;
+    ``unknown`` says it did.
+    """
+
+    def __init__(self, zone: str, source: Callable[[], str | None]) -> None:
+        self.zone = zone
+        self._source = source
+        self._source_zone: str | None = None
+        self._looked_up = False
+        self.unknown = False
+
+    def read(self, ref: Expr) -> Expr:
+        """*ref*, a timestamp without a zone, read in the query's zone."""
+        if not self._looked_up:
+            self._source_zone = self._source()
+            self._looked_up = True
+        if self._source_zone is None:
+            self.unknown = True
+            return ref
+        if self._source_zone == self.zone:
+            return ref
+        return InTimeZone(expr=ref, zone=self.zone, from_zone=self._source_zone)
+
+
+_leg_zone: ContextVar[LegZone | None] = ContextVar("leg_zone", default=None)
+
+
+@contextmanager
+def timestamps_in_zone(zone: LegZone | None) -> Iterator[None]:
+    """Read each timestamp without a zone in *zone*'s query zone while the block runs.
+
+    A federated leg's naive timestamps are in its data source's session
+    zone, and two sources' sessions may run in different ones. Each leg
+    converts them at the column, as ``queryTimezone`` does from the model's
+    ``defaultTimezone`` (and not where the model says that zone, which every
+    leg reads them in already), so a grain, a filter and the combine step see
+    one zone.
+    """
+    token = _leg_zone.set(zone)
+    try:
+        yield
+    finally:
+        _leg_zone.reset(token)
+
+
 _after_join: ContextVar[frozenset[str]] = ContextVar("after_join", default=frozenset())
 
 
@@ -714,6 +766,10 @@ _CONVERTIBLE_TYPES = frozenset({DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
 def _in_query_timezone(ref: Expr, column: DataObjectColumn, model: SemanticModel) -> Expr:
     """Read a timestamp column in the model's query zone, if it states one.
 
+    A federated leg reads a timestamp without a zone in the query's zone
+    from its source's (:func:`timestamps_in_zone`), where the model does not
+    say which zone it was written in.
+
     Attached here, at the column, rather than around the expressions that use
     it: a conversion applied twice moves the value twice (measured on MySQL,
     00:30 becoming 02:30), and an author's own conversion — through the
@@ -722,6 +778,9 @@ def _in_query_timezone(ref: Expr, column: DataObjectColumn, model: SemanticModel
     query zone the frame every expression starts from, so an author's
     conversion moves a value within it rather than on top of it.
     """
+    leg_zone = _leg_zone.get()
+    if leg_zone is not None and column.abstract_type is DataType.TIMESTAMP:
+        return leg_zone.read(ref)
     settings = model.settings
     if settings is None or not settings.query_timezone:
         return ref
@@ -752,7 +811,7 @@ def apply_query_timezone(expr: Expr, model: SemanticModel) -> Expr:
     so applying this twice cannot wrap a column twice.
     """
     settings = model.settings
-    if settings is None or not settings.query_timezone:
+    if (settings is None or not settings.query_timezone) and _leg_zone.get() is None:
         return expr
 
     def rewrite(node: Expr) -> Expr | None:

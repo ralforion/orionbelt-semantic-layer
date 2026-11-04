@@ -9,11 +9,17 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from orionbelt.models.semantic import ModelSettings
+from orionbelt.service import db_executor
 from orionbelt.service.db_executor import (
+    ExecutionUnavailableError,
     _detect_db_timezone,
     _reset_db_tz_cache,
     _serialize_value,
+    declared_timezone,
     resolve_timezone,
+    timezone_epoch,
+    zone_key,
+    zone_named,
 )
 
 
@@ -79,6 +85,89 @@ class TestResolveTimezone:
         result = resolve_timezone(default_timezone="Invalid/Zone")
         # Falls through to host TZ or UTC
         assert result is not None
+
+
+class TestHostTimezone:
+    """The server's zone, by the IANA name a database gives it."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(db_executor, "_HOST_TZ", None)
+
+    def test_named_by_tz(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TZ", "America/Chicago")
+        assert db_executor._get_host_timezone() == ZoneInfo("America/Chicago")
+
+    def test_utc_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TZ", "Etc/UTC")
+        assert db_executor._get_host_timezone() is None
+
+    def test_by_the_zone_localtime_links_to(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Not the clock's abbreviation, which names no zone in summer (CEST).
+        monkeypatch.delenv("TZ", raising=False)
+        monkeypatch.setattr(
+            db_executor.os.path,
+            "realpath",
+            lambda _: "/var/db/timezone/zoneinfo/Europe/Berlin",
+        )
+        monkeypatch.setattr(db_executor, "_clock_zone_name", lambda: "CEST")
+        assert db_executor._get_host_timezone() == ZoneInfo("Europe/Berlin")
+
+
+class TestZoneNames:
+    @pytest.mark.parametrize(
+        ("name", "zone"),
+        [
+            ("Europe/Berlin", "Europe/Berlin"),
+            ("+00:00", "UTC"),
+            ("+02:00", "Etc/GMT-2"),
+            ("-05:00", "Etc/GMT+5"),
+        ],
+    )
+    def test_a_zone_or_a_whole_hour_offset(self, name: str, zone: str) -> None:
+        assert zone_named(name) == ZoneInfo(zone)
+
+    @pytest.mark.parametrize("name", ["", "+05:30", "CEST", "Mars/Olympus"])
+    def test_none_names_no_zone(self, name: str) -> None:
+        assert zone_named(name) is None
+
+    def test_every_name_of_utc_is_utc(self) -> None:
+        assert {zone_key(ZoneInfo(n)) for n in ("UTC", "Etc/UTC", "Zulu", "GMT")} == {"UTC"}
+        assert zone_key(ZoneInfo("Europe/Berlin")) == "Europe/Berlin"
+
+
+class TestDeclaredTimezone:
+    @pytest.fixture
+    def source(self) -> Any:
+        from ob_flight.datasources import DataSource
+
+        return DataSource(
+            name="crm",
+            dialect="postgres",
+            prefix="DB_CRM_",
+            environ={"DB_CRM_TIMEZONE": "America/New_York", "DB_TIMEZONE": "UTC"},
+        )
+
+    def test_a_source_s_own_before_the_shared_one(self, source: Any) -> None:
+        assert declared_timezone(source) == ZoneInfo("America/New_York")
+
+    def test_the_shared_one(self, source: Any) -> None:
+        from dataclasses import replace
+
+        assert declared_timezone(replace(source, environ={"DB_TIMEZONE": "UTC"})) == ZoneInfo("UTC")
+        assert declared_timezone(replace(source, environ={})) is None
+
+    def test_a_dialect_s_own_source_reads_the_shared_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DB_TIMEZONE", "Asia/Tokyo")
+        assert declared_timezone("postgres") == ZoneInfo("Asia/Tokyo")
+
+    def test_a_name_of_no_zone_is_refused(self, source: Any) -> None:
+        from dataclasses import replace
+
+        with pytest.raises(ExecutionUnavailableError, match="DB_CRM_TIMEZONE is 'CEST'"):
+            declared_timezone(replace(source, environ={"DB_CRM_TIMEZONE": "CEST"}))
 
 
 class TestSerializeTemporalValues:
@@ -231,6 +320,39 @@ class TestDetectDbTimezone:
         cursor = self.MockCursor("UTC")
         result = _detect_db_timezone(cursor, "databricks")
         assert result is None
+
+    class MySQLCursor:
+        """``@@session.time_zone`` and ``@@system_time_zone``."""
+
+        def __init__(self, session: str, system: str) -> None:
+            self._row = (session, system)
+
+        def execute(self, sql: str) -> None:
+            assert "@@system_time_zone" in sql
+
+        def fetchone(self) -> tuple[str, str]:
+            return self._row
+
+    def test_mysql_in_a_utc_system_zone(self) -> None:
+        assert _detect_db_timezone(self.MySQLCursor("SYSTEM", "UTC"), "mysql") == ZoneInfo("UTC")
+
+    def test_mysql_in_another_system_zone_is_not_known(self) -> None:
+        # EST is a fixed offset; a server in New York keeps summer time.
+        assert _detect_db_timezone(self.MySQLCursor("SYSTEM", "EST"), "mysql") is None
+
+    def test_mysql_session_zone_before_the_system_one(self) -> None:
+        cursor = self.MySQLCursor("Europe/Berlin", "UTC")
+        assert _detect_db_timezone(cursor, "mysql") == ZoneInfo("Europe/Berlin")
+
+    def test_mysql_offset(self) -> None:
+        assert _detect_db_timezone(self.MockCursor("+02:00"), "mysql") == ZoneInfo("Etc/GMT-2")
+
+    def test_a_zone_becoming_known_changes_the_epoch(self) -> None:
+        before = timezone_epoch()
+        _detect_db_timezone(self.MockCursor("Asia/Tokyo"), "postgres")
+        known = timezone_epoch()
+        _detect_db_timezone(self.MockCursor("Asia/Tokyo"), "postgres")
+        assert before != known == timezone_epoch()
 
     def test_system_tz_returns_none(self) -> None:
         cursor = self.MockCursor("SYSTEM")

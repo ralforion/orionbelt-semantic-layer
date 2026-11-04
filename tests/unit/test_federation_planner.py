@@ -65,6 +65,7 @@ def model_yaml(
     settings: str = "",
     dimension: str = "",
     order_columns: str = "",
+    customer_columns: str = "",
 ) -> str:
     shop = "    dataSource: shop\n" if federated else ""
     crm = "    dataSource: crm\n" if federated else ""
@@ -94,7 +95,7 @@ settings:
       Customer ID: {{code: customer_id, abstractType: int}}
       Region: {{code: region, abstractType: string}}
       Tenant: {{code: tenant, abstractType: string}}
-dimensions:
+{customer_columns}dimensions:
   Region: {{dataObject: Customers, column: Region, resultType: string}}
   Order Date: {{dataObject: Orders, column: Order Date, resultType: date}}
 {dimension}measures:
@@ -589,6 +590,225 @@ class TestStringsInTheirSourcesOrder:
         assert 'arg_min("leg_0"."Least Status"' in plan.combine_sql
         assert 'arg_max("leg_0"."Greatest Status"' in plan.combine_sql
         assert 'MAX("leg_0"."Top Order")' in plan.combine_sql
+
+
+# When each order was placed, written in UTC, and each customer signed up,
+# written in New York: ``crm`` holds its customers in New York's wall-clock
+# time, and ``all`` both tables in UTC.
+PLACED = """
+CREATE TABLE orders AS SELECT order_id, customer_id, order_date, amount,
+    CAST(placed AS TIMESTAMP) AS placed_at
+FROM (VALUES
+    (1, 10, DATE '2024-01-05', 100.50, '2024-01-05 10:00:00'),
+    (2, 10, DATE '2024-01-20', 20.25, '2024-01-31 23:30:00'),
+    (3, 11, DATE '2024-02-03', 7.00, '2024-02-03 08:15:00'),
+    (4, 12, DATE '2024-02-14', 55.10, '2024-03-30 23:10:00'),
+    (5, 13, DATE '2024-03-01', 3.15, '2024-03-31 00:30:00'),
+    (6, 99, DATE '2024-03-09', 40.00, '2024-03-09 12:00:00'),
+    (7, 11, DATE '2024-03-30', 12.00, '2024-10-27 00:30:00')
+) t(order_id, customer_id, order_date, amount, placed)
+"""
+
+
+def signed_up(rows: list[str]) -> str:
+    return f"""
+CREATE TABLE customers AS SELECT customer_id, region, tenant,
+    CAST(signed AS TIMESTAMP) AS signed_up
+FROM (VALUES
+    (10, 'EU', 'acme', '{rows[0]}'),
+    (11, 'US', 'acme', '{rows[1]}'),
+    (12, NULL, 'acme', '{rows[2]}'),
+    (13, 'EU', 'other', '{rows[3]}')
+) t(customer_id, region, tenant, signed)
+"""
+
+
+SIGNED_UP_UTC = signed_up(
+    ["2024-01-01 00:30:00", "2024-03-01 01:00:00", "2024-06-01 16:00:00", "2024-11-03 02:00:00"]
+)
+SIGNED_UP_NEW_YORK = signed_up(
+    ["2023-12-31 19:30:00", "2024-02-29 20:00:00", "2024-06-01 12:00:00", "2024-11-02 22:00:00"]
+)
+ZONED = {
+    "order_columns": "      Placed At: {code: placed_at, abstractType: timestamp}\n",
+    "customer_columns": "      Signed Up: {code: signed_up, abstractType: timestamp}\n",
+    "dimension": (
+        "  Placed At: {dataObject: Orders, column: Placed At, resultType: timestamp}\n"
+        "  Signed Up: {dataObject: Customers, column: Signed Up, resultType: timestamp}\n"
+    ),
+    "extra": (
+        "  First Placed: {columns: [{dataObject: Orders, column: Placed At}], "
+        "aggregation: min, resultType: timestamp}\n"
+        "  Last Placed: {columns: [{dataObject: Orders, column: Placed At}], "
+        "aggregation: max, resultType: timestamp}\n"
+    ),
+}
+ZONED_QUERIES = {
+    "by_day_and_region": {
+        "select": {"dimensions": ["Placed At:day", "Region"], "measures": MEASURES}
+    },
+    "by_signup_month": {
+        "select": {"dimensions": ["Signed Up:month"], "measures": ["Revenue", "First Placed"]}
+    },
+    "bounds_by_region": {
+        "select": {"dimensions": ["Region"], "measures": ["First Placed", "Last Placed"]}
+    },
+    "as_stored": {"select": {"dimensions": ["Placed At", "Signed Up"], "measures": ["Revenue"]}},
+    "filters_in_both_legs": {
+        "select": {"dimensions": ["Placed At:month", "Region"], "measures": ["Revenue"]},
+        "where": [
+            {"field": "Placed At", "op": ">=", "value": "2024-02-01"},
+            {"field": "Signed Up", "op": "<", "value": "2024-03-01 01:30:00"},
+        ],
+    },
+}
+
+
+@pytest.fixture(scope="module")
+def placed(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("placed")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+    for name, statements in (
+        ("all", [PLACED, SIGNED_UP_UTC]),
+        ("shop", [PLACED]),
+        ("crm", [SIGNED_UP_NEW_YORK]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+@pytest.fixture
+def zones(placed: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """``shop`` and ``crm`` configured, their sessions declared in UTC and New York."""
+    monkeypatch.setenv("OBSL_DATABASES", "shop,crm")
+    for name, zone in (("shop", "UTC"), ("crm", "America/New_York")):
+        monkeypatch.setenv(f"DB_{name.upper()}_TYPE", "duckdb")
+        monkeypatch.setenv(f"DB_{name.upper()}_DUCKDB_DATABASE", placed[name])
+        monkeypatch.setenv(f"DB_{name.upper()}_TIMEZONE", zone)
+    return placed
+
+
+BERLIN = "  defaultTimezone: Europe/Berlin\n"
+UTC_READ_IN_BERLIN = "  defaultTimezone: UTC\n  queryTimezone: Europe/Berlin\n"
+
+
+class TestTimestampsInOneZone:
+    """Each leg reads a timestamp without a zone in the query's, from its source's."""
+
+    @pytest.mark.parametrize("query", ZONED_QUERIES.values(), ids=ZONED_QUERIES.keys())
+    @pytest.mark.parametrize(
+        "settings", [BERLIN, "  queryTimezone: Europe/Berlin\n"], ids=["default", "query"]
+    )
+    def test_federated_returns_what_one_source_in_the_query_zone_returns(
+        self, zones: dict[str, str], query: dict[str, Any], settings: str
+    ) -> None:
+        # One database holding both tables in UTC, read in Berlin's time.
+        single = run_single(zones, query, settings=UTC_READ_IN_BERLIN, **ZONED)
+        federated = run_federated(zones, query, settings=settings, **ZONED)
+        assert sorted(federated, key=repr) == sorted(single, key=repr)
+        assert single
+
+    def test_each_leg_converts_from_its_source_zone(self, zones: dict[str, str]) -> None:
+        compiled = _compile(
+            model_yaml(federated=True, settings=BERLIN, **ZONED),
+            ZONED_QUERIES["as_stored"],
+        )
+        plan = compiled.federation
+        shop, crm = (leg.sql for leg in plan.legs)
+        assert """"placed_at" AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Berlin'""" in shop
+        assert """"signed_up" AT TIME ZONE 'America/New_York' AT TIME ZONE 'Europe/Berlin'""" in crm
+        assert plan.timezone == "Europe/Berlin"
+        assert not compiled.warnings
+
+    def test_a_leg_reading_keys_given_converts_too(self, zones: dict[str, str]) -> None:
+        plan = _compile(
+            model_yaml(federated=True, settings=BERLIN, **ZONED),
+            {"select": {"dimensions": ["Placed At"], "measures": ["Revenue"]}, "where": [EU]},
+        ).federation
+        assert plan.injections
+        injected = plan.inject({plan.injections[0].column: [10, 13]}).sql
+        assert "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Berlin'" in injected
+
+    def test_a_source_in_the_query_zone_converts_nothing(
+        self, zones: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Another name of UTC is UTC.
+        monkeypatch.setenv("DB_SHOP_TIMEZONE", "Etc/UTC")
+        plan = _compile(
+            model_yaml(federated=True, settings="  defaultTimezone: UTC\n", **ZONED),
+            ZONED_QUERIES["as_stored"],
+        ).federation
+        shop, crm = (leg.sql for leg in plan.legs)
+        assert "AT TIME ZONE" not in shop
+        assert "AT TIME ZONE 'America/New_York' AT TIME ZONE 'UTC'" in crm
+        assert plan.timezone == "UTC"
+
+    @pytest.mark.parametrize(
+        ("settings", "converted", "label"),
+        [
+            (
+                UTC_READ_IN_BERLIN,
+                "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Berlin'",
+                "Europe/Berlin",
+            ),
+            ("  defaultTimezone: UTC\n  overrideDatabaseTimezone: true\n", None, None),
+        ],
+        ids=["query_zone", "override"],
+    )
+    def test_a_model_stating_the_zone_of_its_timestamps_leads(
+        self, zones: dict[str, str], settings: str, converted: str | None, label: str | None
+    ) -> None:
+        # Every leg reads them as the model says, whatever its source's sessions run in.
+        plan = _compile(
+            model_yaml(federated=True, settings=settings, **ZONED), ZONED_QUERIES["as_stored"]
+        ).federation
+        crm = plan.legs[1].sql
+        assert "America/New_York" not in crm
+        assert (converted in crm) if converted else "AT TIME ZONE" not in crm
+        assert plan.timezone == label
+
+    def test_a_query_zone_leads_the_default_one(self, zones: dict[str, str]) -> None:
+        # Without a zone they were written in, from each source's.
+        plan = _compile(
+            model_yaml(federated=True, settings="  queryTimezone: Asia/Tokyo\n", **ZONED),
+            ZONED_QUERIES["as_stored"],
+        ).federation
+        shop, crm = (leg.sql for leg in plan.legs)
+        assert "AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tokyo'" in shop
+        assert "AT TIME ZONE 'America/New_York' AT TIME ZONE 'Asia/Tokyo'" in crm
+        assert plan.timezone == "Asia/Tokyo"
+
+    def test_a_source_whose_zone_is_not_known_is_named(self) -> None:
+        # Neither source is configured here.
+        compiled = _compile(
+            model_yaml(federated=True, settings=BERLIN, **ZONED), ZONED_QUERIES["as_stored"]
+        )
+        assert all("AT TIME ZONE" not in leg.sql for leg in compiled.federation.legs)
+        unknown = [w for w in compiled.warnings if w.code == "UNDECLARED_TIMESTAMP_ZONE"]
+        assert [w.context["dataSource"] for w in unknown] == ["shop", "crm"]
+        assert "not converted to Europe/Berlin" in unknown[0].message
+
+    def test_a_leg_without_timestamps_looks_no_zone_up(
+        self, zones: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from orionbelt.service import datasource_selection
+
+        asked: list[str | None] = []
+        real = datasource_selection.source_timezone
+
+        def counting(name: str | None, dialect: str) -> str | None:
+            asked.append(name)
+            return real(name, dialect)
+
+        monkeypatch.setattr(datasource_selection, "source_timezone", counting)
+        _compile(
+            model_yaml(federated=True, settings=BERLIN, **ZONED),
+            {"select": {"dimensions": ["Placed At", "Region"], "measures": ["Revenue"]}},
+        )
+        assert asked == ["shop"]
 
 
 A = "{dataObject: Orders, column: Amount}"
@@ -6062,6 +6282,36 @@ class TestDimensionSourceJoins:
         assert f"The join {join} unnests 'Customer Tags'" in error.message
 
     @pytest.mark.parametrize(
+        ("dimensions", "join"),
+        [
+            (["Tagged At", "Tier"], "'Customer Tags' -> 'Moments'"),
+            (["Tagged Hour", "Hour Tier"], "'Customer Tags' -> 'Hours'"),
+        ],
+        ids=["on_the_timestamp", "on_its_hour"],
+    )
+    def test_a_timestamp_its_leg_converts_joined_on_from_an_unnested_object(
+        self, monkeypatch: pytest.MonkeyPatch, dimensions: list[str], join: str
+    ) -> None:
+        """As above, the tags stored without a zone in UTC, a source's, and read
+        in Berlin's, the model's ``defaultTimezone``: the leg converts them, and
+        both show 02:30, both hours 2."""
+        from orionbelt.service import datasource_selection
+
+        monkeypatch.setattr(datasource_selection, "source_timezone", lambda name, dialect: "UTC")
+        naive = (
+            moments_model(True, zone=False)
+            .replace("timestamp_tz", "timestamp")
+            .replace("  defaultDialect: duckdb\n", "  defaultDialect: duckdb\n" + BERLIN)
+        )
+        query = {"select": {"dimensions": dimensions, "measures": ["Revenue"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(naive, query)
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert f"The join {join} unnests 'Customer Tags'" in error.message
+
+    @pytest.mark.parametrize(
         ("static", "measure", "reader"),
         [
             ("", "Revenue by Tag Copy", "A measure unnests 'Customer Tags'"),
@@ -7223,6 +7473,112 @@ class TestKeysInTheirOwnTime:
         single = _run_on(shift_files, shifts_yaml(False), query)
 
         assert _run_on(shift_files, shifts_yaml(True), query) == single
+        assert len(single) == 2
+
+
+# The orders and shifts above without a zone, stored alike on both sources.
+NAIVE_ORDERS = (
+    "CREATE TABLE orders AS SELECT * FROM (VALUES"
+    " (1, TIMESTAMP '2024-10-27 00:30:00', 10.00),"
+    " (2, TIMESTAMP '2024-10-27 01:30:00', 20.00)) t(order_id, placed, amount)"
+)
+NAIVE_SHIFTS = (
+    "CREATE TABLE shifts AS SELECT * FROM (VALUES"
+    " (TIMESTAMP '2024-10-27 00:30:00', 'early'),"
+    " (TIMESTAMP '2024-10-27 01:30:00', 'late')) t(starts, label)"
+)
+# Orders placed at 11:00 and 12:00 in Berlin, stored without a zone, and
+# shifts starting at those instants, with one.
+BERLIN_ORDERS = (
+    "CREATE TABLE orders AS SELECT * FROM (VALUES"
+    " (1, TIMESTAMP '2024-01-05 11:00:00', 10.00),"
+    " (2, TIMESTAMP '2024-01-05 12:00:00', 20.00)) t(order_id, placed, amount)"
+)
+ZONED_SHIFTS = (
+    "CREATE TABLE shifts AS SELECT * FROM (VALUES"
+    " (TIMESTAMPTZ '2024-01-05 10:00:00+00', 'early'),"
+    " (TIMESTAMPTZ '2024-01-05 11:00:00+00', 'late')) t(starts, label)"
+)
+
+
+def _files(root: Any, orders: str, shifts: str) -> dict[str, str]:
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+    for name, statements in (("all", [orders, shifts]), ("shop", [orders]), ("crm", [shifts])):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+def _sources_in(monkeypatch: pytest.MonkeyPatch, zone: str) -> None:
+    """Every data source's sessions running in *zone*."""
+    from orionbelt.service import datasource_selection
+
+    monkeypatch.setattr(datasource_selection, "source_timezone", lambda name, dialect: zone)
+
+
+STARTS_COPY = '      Starts Copy: {expression: "{[Shifts].[Starts]}", abstractType: timestamp}\n'
+KEY_QUERIES = [
+    {"select": {"dimensions": ["Shift"], "measures": ["Revenue"]}},
+    {"select": {"fields": ["Orders.Order ID", "Shifts.Label"]}},
+]
+
+
+class TestKeysAsStored:
+    """A timestamp join key between sources compares as stored, as one database
+    holding both tables compares it, while the legs read the columns themselves
+    in the query's zone: a key computed from a column joins as the column, and
+    one without a zone meets one with a zone as one database's session reads it."""
+
+    @pytest.mark.parametrize("query", KEY_QUERIES, ids=["aggregated", "raw"])
+    def test_a_computed_key_joins_as_its_column(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, query: dict[str, Any]
+    ) -> None:
+        # Both sources in New York, read in Berlin's time.
+        _sources_in(monkeypatch, "America/New_York")
+        files = _files(tmp_path, NAIVE_ORDERS, NAIVE_SHIFTS)
+
+        def model(federated: bool) -> str:
+            return (
+                shifts_yaml(federated)
+                .replace("timestamp_tz", "timestamp")
+                .replace("  queryTimezone: Europe/Berlin\n", BERLIN)
+                .replace(
+                    "      Label: {code: label, abstractType: string}\n",
+                    "      Label: {code: label, abstractType: string}\n" + STARTS_COPY,
+                )
+                .replace("columnsTo: [Starts]", "columnsTo: [Starts Copy]")
+            )
+
+        single = _run_on(files, model(False), query)
+
+        assert _run_on(files, model(True), query) == single
+        assert len(single) == 2
+
+    @pytest.mark.parametrize("query", KEY_QUERIES, ids=["aggregated", "raw"])
+    def test_a_key_without_a_zone_meets_one_with_a_zone(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, query: dict[str, Any]
+    ) -> None:
+        # Sessions in Berlin, read in UTC: one database reads the order's
+        # stored time in its session's zone to compare it with a shift's.
+        _sources_in(monkeypatch, "Europe/Berlin")
+        files = _files(tmp_path, BERLIN_ORDERS, ZONED_SHIFTS)
+
+        def model(federated: bool) -> str:
+            return (
+                shifts_yaml(federated)
+                .replace("  queryTimezone: Europe/Berlin\n", "  defaultTimezone: UTC\n")
+                .replace(
+                    "      Placed: {code: placed, abstractType: timestamp_tz}",
+                    "      Placed: {code: placed, abstractType: timestamp}",
+                )
+            )
+
+        berlin = {"source_zone": "Europe/Berlin", "combine_zone": "Europe/Berlin"}
+        single = _run_on(files, model(False), query, **berlin)
+
+        assert _run_on(files, model(True), query, **berlin) == single
         assert len(single) == 2
 
 

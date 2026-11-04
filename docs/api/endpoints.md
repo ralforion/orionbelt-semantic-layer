@@ -676,7 +676,7 @@ you where the model wanted otherwise.
 | `format` | `json` \| `tsv` \| `arrow` | `json` | When `tsv`, returns `text/tab-separated-values`; cells with tab/newline/CR/double-quote are RFC 4180-quoted (implies `format_values=true`). When `arrow`, returns a length-prefixed result frame (`application/vnd.orionbelt.result+arrow`): `[u32 big-endian json_len][JSON envelope][gzip'd Arrow IPC data]`. The JSON envelope (row count, execution time, cache status, timezone, column types/formats) is assembled fresh per request; the Arrow sub-part carries the row data (its own gzip). Content negotiation via the `Accept` header is also supported. |
 | `format_values` | bool | `false` | When `true`, numeric cells in the JSON response are rendered as locale-aware display strings using each column's `format` pattern (matches the Gradio UI). |
 | `locale` | string | model `settings.defaultLocale`, then `DEFAULT_LOCALE` env | BCP-47 tag (e.g. `de`, `en-US`). Drives thousand/decimal separators. When omitted, falls back to the model's `settings.defaultLocale`, then the `DEFAULT_LOCALE` env. |
-| `timezone` | string | model `default_timezone` | IANA TZ name (e.g. `Europe/Berlin`). Overrides the model's default for naive timestamp coercion. |
+| `timezone` | string | model `default_timezone` | IANA TZ name (e.g. `Europe/Berlin`). Overrides the model's default for naive timestamp coercion. A [federated query](../guide/federation.md#timestamps-without-a-time-zone) is labeled with the zone its legs read them in. |
 
 **Example (TSV with German locale):**
 

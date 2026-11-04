@@ -533,9 +533,17 @@ class CompilationPipeline:
         dialect_name: str,
         resolved: ResolvedQuery,
     ) -> FederatedPlan:
-        """The federated plan of *query*, and of each part a query split by fact has."""
-        from orionbelt.service.datasource_selection import source_dialect
+        """The federated plan of *query*, and of each part a query split by fact has.
+
+        Its legs read their timestamps without a zone in the model's
+        ``defaultTimezone``, else the server's, each converting from the zone
+        its data source's sessions run in.
+        """
+        from orionbelt.service.datasource_selection import source_dialect, source_timezone
+        from orionbelt.service.db_executor import resolve_timezone, zone_key
         from orionbelt.service.federated_executor import federation_limits
+
+        default_timezone = model.settings.default_timezone if model.settings else None
 
         def plan_part(part: QueryObject, part_model: SemanticModel) -> FederatedPlan:
             qualify_table = _table_qualifier(DialectRegistry.get(dialect_name))
@@ -561,6 +569,8 @@ class CompilationPipeline:
             source_dialect=source_dialect,
             leg_row_limit=federation_limits().max_leg_rows,
             plan_part=plan_part,
+            timezone=zone_key(resolve_timezone(default_timezone=default_timezone)),
+            source_timezone=source_timezone,
         )
 
     @staticmethod
