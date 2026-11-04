@@ -564,17 +564,20 @@ def _key_map(table: Any, column: str, max_keys: int) -> tuple[list[Any], Any] | 
     *column*. ``None`` past *max_keys*, for no key, or for a key that is not
     an integer (:func:`_key_values`).
 
-    The rows are copied out of *table*, as DuckDB copies the values it groups,
-    into memory, also from a leg spilled to disk: at most *table*'s bytes,
-    which must fit ``FEDERATION_MAX_LEG_MB`` before either is made, or the
-    leg is read as it is. A leg held in memory fits it already.
+    The rows are copied out of *table* into memory, also from a leg spilled to
+    disk, while *table* is held: its bytes and the copy's together must fit
+    ``FEDERATION_MAX_LEG_MB``, counted before the copy is made, or the leg is
+    read as it is. A spilled leg's bytes are counted as held too, so its map
+    is held to no more than a leg in memory. DuckDB groups within the combine
+    step's ``FEDERATION_COMBINE_MEMORY_LIMIT``.
     """
     import duckdb
     import pyarrow as pa
     import pyarrow.compute as pc
 
     limits = federation_limits()
-    if table.nbytes > limits.max_leg_bytes:
+    held = table.nbytes
+    if held > limits.max_leg_bytes:
         return None
     if pc.count_distinct(table.column(column)).as_py() > max_keys:
         return None
@@ -606,11 +609,44 @@ def _key_map(table: Any, column: str, max_keys: int) -> tuple[list[Any], Any] | 
             pairs.append((key, ordinal))
     if not pairs or len(pairs) > max_keys:
         return None
-    rows = table.take(pa.array([first for first, _ in groups], pa.int64()))
+    firsts = pa.array([first for first, _ in groups], pa.int64())
+    if held + _taken_bytes(table, firsts) > limits.max_leg_bytes:
+        return None
+    rows = table.take(firsts)
     rows = rows.set_column(
         rows.column_names.index(column), column, pa.array(range(1, len(groups) + 1), pa.int64())
     )
     return sorted(pairs), rows
+
+
+def _taken_bytes(table: Any, indices: Any) -> int:
+    """What ``table.take(indices)`` allocates: each column's values, validity
+    and offsets, a text or binary column the lengths of the values taken. A
+    column of a type without a fixed width otherwise (a list, a dictionary)
+    counts all it holds, which is at least what is taken of it."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    taken = 0
+    for column in table.columns:
+        kind = column.type
+        if (
+            pa.types.is_string(kind)
+            or pa.types.is_large_string(kind)
+            or pa.types.is_binary(kind)
+            or pa.types.is_large_binary(kind)
+        ):
+            values = pc.sum(pc.take(pc.binary_length(column), indices)).as_py() or 0
+            taken += _column_bytes(kind, len(indices)) + values
+        elif (
+            pa.types.is_primitive(kind)
+            or pa.types.is_decimal(kind)
+            or pa.types.is_fixed_size_binary(kind)
+        ):
+            taken += _column_bytes(kind, len(indices))
+        else:
+            taken += column.nbytes
+    return taken
 
 
 def result_table(result: ExecutionResult) -> Any:

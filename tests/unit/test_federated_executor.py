@@ -999,6 +999,27 @@ class TestKeyMaps:
         federation.injected_fact_leg(plan, {"leg_1": table}, 100)
         assert [maps for _, maps in read] == [{"__fk0_0": [(k, 1) for k in range(20)]}]
 
+    @pytest.mark.parametrize(
+        ("labels", "mapped"),
+        [([f"{n:040000d}" for n in range(20)], False), (["x" * 40_000] * 20, True)],
+        ids=["a_row_each", "one_row"],
+    )
+    def test_a_maps_rows_and_the_leg_they_are_copied_from_fit_a_leg_together(
+        self, labels: list[str], mapped: bool
+    ) -> None:
+        """800 KB held under a 1 MiB limit: a copy of its 20 rows would take it
+        past, the one row they all map to would not."""
+        federation.configure(FederationLimits(max_leg_bytes=1024 * 1024))
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        plan = self._plan(read)
+        table = pa.table({"Label": labels, "__fk0_0": list(range(20))})
+        assert 800_000 < table.nbytes < 1024 * 1024
+
+        _, rows = federation.injected_fact_leg(plan, {"leg_1": table}, 100)
+
+        assert bool(read) is mapped
+        assert (rows["leg_1"].num_rows if rows else 0) == (1 if mapped else 0)
+
     def test_a_map_longer_than_the_engine_parses_is_not_read(self) -> None:
         read: list[tuple[dict[str, Any], dict[str, Any]]] = []
         plan = self._plan(read, dialect="clickhouse", sql="x" * (256 * 1024 + 1))
