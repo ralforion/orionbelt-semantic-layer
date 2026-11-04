@@ -621,9 +621,6 @@ def columns_in_own_zone(columns: Iterable[tuple[str, str]]) -> Iterator[None]:
     (:meth:`QueryResolver._within_group_order`): two instants an hour apart
     are one wall-clock time in the hour a zone falls back, so read in the
     query's time they would tie. The leg's column is read as that key is.
-    A timestamp without a zone that a leg converts from its source's zone
-    (:func:`timestamps_in_zone`) is read in UTC instead, which has no hour
-    twice, so two sources' keys compare as instants.
     """
     token = _own_zone.set(frozenset(columns))
     try:
@@ -652,28 +649,15 @@ class LegZone:
 
     def read(self, ref: Expr) -> Expr:
         """*ref*, a timestamp without a zone, read in the query's zone."""
-        return self._in(ref, self.zone)
-
-    def instant(self, ref: Expr) -> Expr:
-        """*ref*, a timestamp without a zone, in UTC.
-
-        A join key the leg returns as stored (:func:`columns_in_own_zone`),
-        which the combine step compares with another source's: in the query's
-        zone, two instants of the hour a zone falls back would be one key.
-        UTC has no hour twice.
-        """
-        return self._in(ref, "UTC")
-
-    def _in(self, ref: Expr, zone: str) -> Expr:
         if not self._looked_up:
             self._source_zone = self._source()
             self._looked_up = True
         if self._source_zone is None:
             self.unknown = True
             return ref
-        if self._source_zone == zone:
+        if self._source_zone == self.zone:
             return ref
-        return InTimeZone(expr=ref, zone=zone, from_zone=self._source_zone)
+        return InTimeZone(expr=ref, zone=self.zone, from_zone=self._source_zone)
 
 
 _leg_zone: ContextVar[LegZone | None] = ContextVar("leg_zone", default=None)
@@ -745,8 +729,7 @@ def make_column_expr(
     column = obj.columns.get(column_label)
     if column is None:
         return ColumnRef(name=column_label, table=object_name)
-    own_zone = (object_name, column_label) in _own_zone.get()
-    if own_zone:
+    if (object_name, column_label) in _own_zone.get():
         in_query_timezone = False
     if column.expression:
         return _build_computed_column_expr(column, obj, model, in_query_timezone=in_query_timezone)
@@ -770,9 +753,6 @@ def make_column_expr(
             abstract_type=str(column.abstract_type) if column.abstract_type else None,
         )
     if not in_query_timezone:
-        leg_zone = _leg_zone.get()
-        if own_zone and leg_zone is not None and column.abstract_type is DataType.TIMESTAMP:
-            return leg_zone.instant(ref)
         return ref
     return _in_query_timezone(ref, column, model)
 

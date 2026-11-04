@@ -808,10 +808,9 @@ placed at 23:30 UTC on 31 January is February's in Berlin, in its leg and
 after the join alike, and `Placed At >= 2024-02-01` keeps it. The result is
 labeled with the query's zone (the response's `timezone`): its values are the
 instants each source holds, as wall-clock times there. A join key between
-sources that is such a timestamp is compared as an instant: its leg returns it
-in UTC, where the query's zone would show two instants of the hour the clocks
-go back as one time, and a value read through an
-[unnest](#limitations) is refused there as one read in `queryTimezone` is.
+sources is compared as stored, as one database holding both tables compares
+it, and a converted value read through an [unnest](#limitations) is refused
+where one read in `queryTimezone` is.
 
 A model that says which zone its timestamps were written in, its
 `defaultTimezone` beside a `queryTimezone`, or with
@@ -925,6 +924,7 @@ Not refused, and documented here so they are known:
 | No snapshot across sources | the legs read their sources at slightly different moments |
 | A dimension unnested on another source | one database counts each fact row once per element only through the fact's `primaryKey`, and refuses the query without one; across sources the leg's rows count each once, with or without it |
 | Timestamps without a time zone from a source whose zone is not known | returned as the source holds them, where the other legs [read theirs](#timestamps-without-a-time-zone) in the query's zone: Databricks, Dremio, and a MySQL session in its server's zone (`SYSTEM`) where that is not UTC, unless `DB_<NAME>_TIMEZONE` declares it (`UNDECLARED_TIMESTAMP_ZONE`) |
+| Timestamp join keys between sources in different zones | compared as stored, as one database holding both tables compares them: without a zone, each source's wall-clock time, so a key stored in UTC on one source and in New York on another does not match its instant; against a key with a zone, read in the combine step's zone, the OBSL server process's |
 | The hour the clocks go back, on ClickHouse | a leg [reads timestamps](#timestamps-without-a-time-zone) as wall-clock times in the query's zone, where two instants an hour apart are one time (02:30 in Berlin): the combine step groups them as one, as the other engines do. ClickHouse alone keeps them apart |
 | Today's date | a `relative` filter counts from the date of the engine that runs it: a leg's source in its session's time zone, or, after the join, the combine step's DuckDB in the time zone of the OBSL server's process. Around midnight, where the zones differ, one query can count from two dates |
 | Patterns after the join on the measures' MySQL strings compare as DuckDB | a pattern (`like`, `contains`, ...), or a comparison with a number, on a MySQL string of the measures' own source, in a filter after the join, compares the value the fact leg returned for its group, bytewise. [Other conditions](#values-compared-across-engines) run in their leg |

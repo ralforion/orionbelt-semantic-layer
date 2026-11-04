@@ -7476,33 +7476,34 @@ class TestKeysInTheirOwnTime:
         assert len(single) == 2
 
 
-# The orders and shifts above without a zone: written in UTC, and the
-# shifts' in New York on ``crm``.
+# The orders and shifts above without a zone, stored alike on both sources.
 NAIVE_ORDERS = (
     "CREATE TABLE orders AS SELECT * FROM (VALUES"
     " (1, TIMESTAMP '2024-10-27 00:30:00', 10.00),"
     " (2, TIMESTAMP '2024-10-27 01:30:00', 20.00)) t(order_id, placed, amount)"
 )
+NAIVE_SHIFTS = (
+    "CREATE TABLE shifts AS SELECT * FROM (VALUES"
+    " (TIMESTAMP '2024-10-27 00:30:00', 'early'),"
+    " (TIMESTAMP '2024-10-27 01:30:00', 'late')) t(starts, label)"
+)
+# Orders placed at 11:00 and 12:00 in Berlin, stored without a zone, and
+# shifts starting at those instants, with one.
+BERLIN_ORDERS = (
+    "CREATE TABLE orders AS SELECT * FROM (VALUES"
+    " (1, TIMESTAMP '2024-01-05 11:00:00', 10.00),"
+    " (2, TIMESTAMP '2024-01-05 12:00:00', 20.00)) t(order_id, placed, amount)"
+)
+ZONED_SHIFTS = (
+    "CREATE TABLE shifts AS SELECT * FROM (VALUES"
+    " (TIMESTAMPTZ '2024-01-05 10:00:00+00', 'early'),"
+    " (TIMESTAMPTZ '2024-01-05 11:00:00+00', 'late')) t(starts, label)"
+)
 
 
-def naive_shifts(first: str, second: str) -> str:
-    return (
-        "CREATE TABLE shifts AS SELECT * FROM (VALUES"
-        f" (TIMESTAMP '{first}', 'early'), (TIMESTAMP '{second}', 'late')) t(starts, label)"
-    )
-
-
-@pytest.fixture(scope="module")
-def naive_shift_files(tmp_path_factory: Any) -> dict[str, str]:
-    root = tmp_path_factory.mktemp("naive_shifts")
+def _files(root: Any, orders: str, shifts: str) -> dict[str, str]:
     paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
-    in_utc = naive_shifts("2024-10-27 00:30:00", "2024-10-27 01:30:00")
-    in_new_york = naive_shifts("2024-10-26 20:30:00", "2024-10-26 21:30:00")
-    for name, statements in (
-        ("all", [NAIVE_ORDERS, in_utc]),
-        ("shop", [NAIVE_ORDERS]),
-        ("crm", [in_new_york]),
-    ):
+    for name, statements in (("all", [orders, shifts]), ("shop", [orders]), ("crm", [shifts])):
         con = duckdb.connect(paths[name])
         for statement in statements:
             con.execute(statement)
@@ -7510,45 +7511,74 @@ def naive_shift_files(tmp_path_factory: Any) -> dict[str, str]:
     return paths
 
 
-class TestKeysAcrossZones:
-    """A timestamp join key without a zone, between sources running in two zones,
-    is compared as an instant: each leg returns it in UTC, which has no hour
-    twice, where the query reads it in Berlin's time."""
+def _sources_in(monkeypatch: pytest.MonkeyPatch, zone: str) -> None:
+    """Every data source's sessions running in *zone*."""
+    from orionbelt.service import datasource_selection
 
-    @pytest.mark.parametrize(
-        "query",
-        [
-            {"select": {"dimensions": ["Shift"], "measures": ["Revenue"]}},
-            {"select": {"dimensions": ["Placed", "Shift"], "measures": ["Revenue"]}},
-            {"select": {"fields": ["Orders.Order ID", "Orders.Placed", "Shifts.Label"]}},
-        ],
-        ids=["aggregated", "aggregated_by_the_key", "raw"],
-    )
-    def test_the_same_instants_join(
-        self,
-        naive_shift_files: dict[str, str],
-        monkeypatch: pytest.MonkeyPatch,
-        query: dict[str, Any],
+    monkeypatch.setattr(datasource_selection, "source_timezone", lambda name, dialect: zone)
+
+
+STARTS_COPY = '      Starts Copy: {expression: "{[Shifts].[Starts]}", abstractType: timestamp}\n'
+KEY_QUERIES = [
+    {"select": {"dimensions": ["Shift"], "measures": ["Revenue"]}},
+    {"select": {"fields": ["Orders.Order ID", "Shifts.Label"]}},
+]
+
+
+class TestKeysAsStored:
+    """A timestamp join key between sources compares as stored, as one database
+    holding both tables compares it, while the legs read the columns themselves
+    in the query's zone: a key computed from a column joins as the column, and
+    one without a zone meets one with a zone as one database's session reads it."""
+
+    @pytest.mark.parametrize("query", KEY_QUERIES, ids=["aggregated", "raw"])
+    def test_a_computed_key_joins_as_its_column(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, query: dict[str, Any]
     ) -> None:
-        from orionbelt.service import datasource_selection
+        # Both sources in New York, read in Berlin's time.
+        _sources_in(monkeypatch, "America/New_York")
+        files = _files(tmp_path, NAIVE_ORDERS, NAIVE_SHIFTS)
 
-        zones = {"shop": "UTC", "crm": "America/New_York"}
-        monkeypatch.setattr(
-            datasource_selection, "source_timezone", lambda name, dialect: zones.get(name)
-        )
-
-        def naive(federated: bool, settings: str) -> str:
+        def model(federated: bool) -> str:
             return (
                 shifts_yaml(federated)
                 .replace("timestamp_tz", "timestamp")
-                .replace("  queryTimezone: Europe/Berlin\n", settings)
+                .replace("  queryTimezone: Europe/Berlin\n", BERLIN)
+                .replace(
+                    "      Label: {code: label, abstractType: string}\n",
+                    "      Label: {code: label, abstractType: string}\n" + STARTS_COPY,
+                )
+                .replace("columnsTo: [Starts]", "columnsTo: [Starts Copy]")
             )
 
-        # One database holding both tables in UTC, read in Berlin's time.
-        single = _run_on(naive_shift_files, naive(False, UTC_READ_IN_BERLIN), query)
-        federated = _run_on(naive_shift_files, naive(True, BERLIN), query)
+        single = _run_on(files, model(False), query)
 
-        assert federated == single
+        assert _run_on(files, model(True), query) == single
+        assert len(single) == 2
+
+    @pytest.mark.parametrize("query", KEY_QUERIES, ids=["aggregated", "raw"])
+    def test_a_key_without_a_zone_meets_one_with_a_zone(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, query: dict[str, Any]
+    ) -> None:
+        # Sessions in Berlin, read in UTC: one database reads the order's
+        # stored time in its session's zone to compare it with a shift's.
+        _sources_in(monkeypatch, "Europe/Berlin")
+        files = _files(tmp_path, BERLIN_ORDERS, ZONED_SHIFTS)
+
+        def model(federated: bool) -> str:
+            return (
+                shifts_yaml(federated)
+                .replace("  queryTimezone: Europe/Berlin\n", "  defaultTimezone: UTC\n")
+                .replace(
+                    "      Placed: {code: placed, abstractType: timestamp_tz}",
+                    "      Placed: {code: placed, abstractType: timestamp}",
+                )
+            )
+
+        berlin = {"source_zone": "Europe/Berlin", "combine_zone": "Europe/Berlin"}
+        single = _run_on(files, model(False), query, **berlin)
+
+        assert _run_on(files, model(True), query, **berlin) == single
         assert len(single) == 2
 
 
