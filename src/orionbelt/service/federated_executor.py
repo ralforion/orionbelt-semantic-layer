@@ -284,14 +284,28 @@ def check_leg_rows(leg: FederatedLeg, row_count: int) -> None:
 def _why_so_many(leg: FederatedLeg) -> str:
     """What makes *leg* as large as it is, and what would make it smaller.
 
-    A leg returns a row per key of each join between data sources it holds,
-    beside the query's dimensions: revenue by region, with the customers on
-    another source, sums per customer, whatever the number of regions.
+    A leg of groups returns a row per key of each join between data sources
+    it holds, beside the query's dimensions: revenue by region, with the
+    customers on another source, sums per customer, whatever the number of
+    regions. A leg of rows, of a query of fields or of a measure computed
+    from rows, returns its source's rows, which only a filter narrows.
     """
     larger = (
         "or hold larger legs: raise FEDERATION_MAX_LEG_ROWS, with "
         "FEDERATION_SPILL_DIR set to keep them on disk."
     )
+    if leg.raw:
+        return (
+            "A query of fields (select.fields) reads its data source's rows, a row "
+            f"per row it reads: filter the query, {larger}"
+        )
+    if leg.rows is not None:
+        return (
+            "It returns the rows of its data source a measure computed from rows "
+            "reads (a median, a percentile, a mode, ...), each distinct one once: its "
+            f"size follows those rows, not how many groups the result has. Filter the "
+            f"query, {larger}"
+        )
     if not leg.joins:
         return f"Filter the query, select fewer dimensions, {larger}"
     keys = "keys of the joins" if len(leg.joins) > 1 else "key of the join"

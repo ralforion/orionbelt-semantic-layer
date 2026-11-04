@@ -162,7 +162,11 @@ Where a join must stay on such a key, filter the query on the other source's
 dimensions, which narrows the keys the fact leg reads, or let legs grow: raise
 `FEDERATION_MAX_LEG_ROWS`, with `FEDERATION_SPILL_DIR` set to keep larger legs
 on disk ([running a federated query](#running-a-federated-query)). A leg
-refused for its size names the joins whose keys it returns.
+refused for its size names the joins whose keys it returns. A leg returning
+rows rather than groups, of a [query of fields](#raw-mode) or of a measure
+[computed from rows](#computed-from-rows), returns a row per row of its
+source the query reads, which no placement of a join narrows: only a filter
+does, and its refusal says so.
 
 ## Where filters run
 

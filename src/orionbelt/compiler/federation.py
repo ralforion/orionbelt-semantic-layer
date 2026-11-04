@@ -318,6 +318,8 @@ class FederatedLeg:
             error names them (:meth:`_Planner.join_label`): it returns a row
             per key of each, beside the query's dimensions, however few groups
             the result has.
+        raw: Whether it returns its data source's rows as a query of fields
+            (``select.fields``) reads them, rather than groups.
     """
 
     name: str
@@ -331,6 +333,7 @@ class FederatedLeg:
     integer_sums: tuple[tuple[str, int], ...] = ()
     rows: str | None = None
     joins: tuple[str, ...] = ()
+    raw: bool = False
 
 
 @dataclass(frozen=True)
@@ -1675,6 +1678,7 @@ def _plan_raw(
                     columns,
                     compile_leg,
                     predicates={**in_leg[island], **matched[island]},
+                    raw=True,
                 )
             )
         combine_objects[leg_name] = DataObject(
@@ -3789,9 +3793,11 @@ class _Planner:
         rekeyed: dict[str, tuple[str, bool]] | None = None,
         kept: dict[str, str] | None = None,
         predicates: dict[str, Expr] | None = None,
+        raw: bool = False,
     ) -> FederatedLeg:
-        """One leg; *rekeyed* and *kept* as :func:`_rekeyed` returns them, and
-        the measure filters it evaluates, *predicates* (:func:`_leg_predicates`)."""
+        """One leg; *rekeyed* and *kept* as :func:`_rekeyed` returns them, the
+        measure filters it evaluates, *predicates* (:func:`_leg_predicates`),
+        and *raw* for a leg of a query of fields."""
         source = source_name(self.model, next(iter(sorted(island))))
         dialect = self.leg_dialect(island)
         zone = self.leg_zone(island)
@@ -3815,6 +3821,7 @@ class _Planner:
             joins=tuple(
                 dict.fromkeys(join for c in columns for join in self.key_joins.get(c.name, ()))
             ),
+            raw=raw,
         )
 
 

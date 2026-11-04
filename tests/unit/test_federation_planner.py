@@ -1169,6 +1169,9 @@ class TestPlan:
 
         assert [leg.joins for leg in raw.legs] == [(join,), (join,)]
         assert {leg.name: leg.joins for leg in parts.legs}["__part0_leg_0"] == (join,)
+        # A leg of a query of fields returns rows, which no join placement narrows.
+        assert all(leg.raw for leg in raw.legs)
+        assert not any(leg.raw for leg in parts.legs)
 
     def test_a_filter_on_the_fact_side_runs_in_its_leg(self) -> None:
         plan = _compile(

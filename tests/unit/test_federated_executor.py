@@ -413,6 +413,24 @@ measures:
         ) in detail
         assert "join the data sources on a column with fewer values" in detail
 
+    async def test_a_raw_leg_over_the_limit_is_explained_by_its_rows(
+        self, client: AsyncClient
+    ) -> None:
+        # Seven orders of five customers: by region the shop's leg returns a row
+        # per customer, five; as fields, a row per order, seven.
+        federation.configure(FederationLimits(max_leg_rows=5))
+        fields = {"select": {"fields": ["Orders.Amount", "Customers.Region"]}}
+
+        grouped = await execute(client, model_yaml(federated=True), REVENUE_BY_REGION)
+        raw = await execute(client, model_yaml(federated=True), fields)
+
+        assert grouped.status_code == 200
+        assert raw.status_code == 502
+        detail = raw.json()["detail"]
+        assert "leg leg_0 on shop" in detail
+        assert "A query of fields (select.fields) reads its data source's rows" in detail
+        assert "join the data sources on a column with fewer values" not in detail
+
     async def test_a_leg_standing_for_more_rows_than_the_limit_is_refused(
         self, client: AsyncClient
     ) -> None:
@@ -1006,6 +1024,17 @@ def leg(*columns: tuple[str, str]) -> FederatedLeg:
 
 
 class TestLegTooLarge:
+    def test_a_leg_of_rows_a_measure_reads_is_explained_by_them(self) -> None:
+        federation.configure(FederationLimits(max_leg_rows=1))
+        rows = replace(leg(("Amount", "decimal"), ("__rows", "int")), rows="__rows")
+
+        with pytest.raises(FederatedLegError) as refused:
+            federation.check_leg_rows(rows, 2)
+
+        assert "the rows of its data source a measure computed from rows reads" in str(
+            refused.value
+        )
+
     def test_a_leg_holding_no_join_names_none(self) -> None:
         federation.configure(FederationLimits(max_leg_rows=1))
 
