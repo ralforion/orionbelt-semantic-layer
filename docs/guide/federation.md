@@ -788,6 +788,37 @@ measure's filters. A pattern, or a comparison with a number, on a MySQL string
 of the measures' own source stays in the combine step, and compares as DuckDB
 does.
 
+## Timestamps without a time zone
+
+A timestamp without a time zone (`abstractType: timestamp`) is a wall-clock
+time, in the zone its source's session runs in, and two sources may run in
+two: a shop's PostgreSQL in UTC, a CRM's DuckDB on a server in Berlin. The
+legs read such timestamps in one zone, the query's:
+
+| Zone | Which |
+|---|---|
+| The query's | the model's `queryTimezone`, else its `defaultTimezone`, else the OBSL server's (`TZ`, else the zone of its system clock), else UTC |
+| A source's | `DB_<NAME>_TIMEZONE`, else `DB_TIMEZONE`, else the zone its session reports, [detected](model-format.md#resolution-order) once per source; BigQuery's is UTC, and Databricks' and Dremio's are not detected |
+
+A leg whose source runs in another zone converts each such timestamp at its
+column, before a grain, a filter or an aggregate reads it (`"placed_at" AT
+TIME ZONE 'UTC' AT TIME ZONE 'Europe/Berlin'`), as `queryTimezone` does on
+one database; a leg in the query's zone returns them as stored. An order
+placed at 23:30 UTC on 31 January is February's in Berlin, in its leg and
+after the join alike, and `Placed At >= 2024-02-01` keeps it. The result is
+labeled with the query's zone (the response's `timezone`): its values are the
+instants each source holds, as wall-clock times there.
+
+A model that says which zone its timestamps were written in, its
+`defaultTimezone` beside a `queryTimezone`, or with
+`overrideDatabaseTimezone`, has every leg read them so, whatever zone a
+session runs in: from its `defaultTimezone` into its `queryTimezone`, or as
+stored. A leg whose source's zone is not known returns its timestamps as
+stored, and the query warns `UNDECLARED_TIMESTAMP_ZONE`, naming the source;
+`DB_<NAME>_TIMEZONE` declares its zone. A value a driver hands over with a
+zone, Databricks' `TIMESTAMP` or a ClickHouse `DateTime` read in one, is its
+wall-clock time in that zone.
+
 ## Running a federated query
 
 Every surface that executes queries runs a federated one the same way: REST
@@ -888,7 +919,8 @@ Not refused, and documented here so they are known:
 |---|---|
 | No snapshot across sources | the legs read their sources at slightly different moments |
 | A dimension unnested on another source | one database counts each fact row once per element only through the fact's `primaryKey`, and refuses the query without one; across sources the leg's rows count each once, with or without it |
-| Naive timestamps | combined as each source returns them; sources whose sessions run in different time zones can disagree |
+| Timestamps without a time zone from a source whose zone is not known | returned as the source holds them, where the other legs [read theirs](#timestamps-without-a-time-zone) in the query's zone: Databricks, Dremio, and a MySQL session in its server's zone (`SYSTEM`) where that is not UTC, unless `DB_<NAME>_TIMEZONE` declares it (`UNDECLARED_TIMESTAMP_ZONE`) |
+| The hour the clocks go back, on ClickHouse | a leg [reads timestamps](#timestamps-without-a-time-zone) as wall-clock times in the query's zone, where two instants an hour apart are one time (02:30 in Berlin): the combine step groups them as one, as the other engines do. ClickHouse alone keeps them apart |
 | Today's date | a `relative` filter counts from the date of the engine that runs it: a leg's source in its session's time zone, or, after the join, the combine step's DuckDB in the time zone of the OBSL server's process. Around midnight, where the zones differ, one query can count from two dates |
 | Patterns after the join on the measures' MySQL strings compare as DuckDB | a pattern (`like`, `contains`, ...), or a comparison with a number, on a MySQL string of the measures' own source, in a filter after the join, compares the value the fact leg returned for its group, bytewise. [Other conditions](#values-compared-across-engines) run in their leg |
 | ClickHouse float dimensions | DuckDB makes one group of `0.0` and `-0.0`, where ClickHouse makes two |

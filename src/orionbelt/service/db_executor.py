@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import logging
+import os
 import re
 import time
 from datetime import UTC, date, datetime, timedelta
@@ -22,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     # ob_flight is an optional extra: imported for the annotation only.
     from ob_flight.datasources import DataSource
@@ -456,21 +457,64 @@ _HOST_TZ: ZoneInfo | None = None
 
 
 def _get_host_timezone() -> ZoneInfo | None:
-    """Resolve and cache the host process timezone (from TZ env or system)."""
+    """Resolve and cache the host process timezone; ``None`` for UTC.
+
+    By its IANA name: ``TZ``, else the zone ``/etc/localtime`` links to. The
+    clock's abbreviation is the last resort only: it names no zone in summer
+    (``CEST``), and in winter a legacy one (``CET``) a database calls
+    ``Europe/Berlin``.
+    """
     global _HOST_TZ  # noqa: PLW0603
     if _HOST_TZ is not None:
         return _HOST_TZ
-    try:
-        local_tz = datetime.now(UTC).astimezone().tzinfo
-        if local_tz is not None:
-            tz_name = str(local_tz)
-            if tz_name and tz_name != "UTC":
-                _HOST_TZ = ZoneInfo(tz_name)
-                logger.info("Host timezone resolved: %s", tz_name)
-                return _HOST_TZ
-    except (ZoneInfoNotFoundError, KeyError, ValueError):
-        pass
+    link = os.path.realpath("/etc/localtime").partition("zoneinfo/")[2]
+    for tz_name in (os.environ.get("TZ", "").removeprefix(":"), link, _clock_zone_name()):
+        zone = zone_named(tz_name)
+        if zone is not None:
+            if tz_name in UTC_NAMES:
+                return None
+            _HOST_TZ = zone
+            logger.info("Host timezone resolved: %s", tz_name)
+            return _HOST_TZ
     return None
+
+
+def _clock_zone_name() -> str:
+    local_tz = datetime.now(UTC).astimezone().tzinfo
+    return str(local_tz) if local_tz is not None else ""
+
+
+#: The names a database or a host gives Coordinated Universal Time.
+UTC_NAMES = frozenset(
+    {"UTC", "Etc/UTC", "UCT", "Etc/UCT", "Universal", "Etc/Universal", "Zulu", "Etc/Zulu"}
+    | {"GMT", "Etc/GMT", "GMT0", "Etc/GMT0", "GMT+0", "Etc/GMT+0", "GMT-0", "Etc/GMT-0"}
+    | {"Greenwich", "Etc/Greenwich"}
+)
+
+
+def zone_key(zone: ZoneInfo) -> str:
+    """*zone*'s name, ``UTC`` for every name of UTC: two names of one zone compare equal."""
+    return "UTC" if zone.key in UTC_NAMES else zone.key
+
+
+def zone_named(name: str) -> ZoneInfo | None:
+    """The time zone *name* names: an IANA name, or a whole-hour UTC offset.
+
+    MySQL names a session's zone as an offset (``+02:00``) where it was set
+    as one; IANA's ``Etc/GMT-2`` is that offset, its sign inverted.
+    """
+    if not name:
+        return None
+    offset = re.fullmatch(r"([+-])(\d{2}):00", name)
+    if offset is not None:
+        hours = int(offset[2])
+        if hours == 0:
+            return ZoneInfo("UTC")
+        name = f"Etc/GMT{'-' if offset[1] == '+' else '+'}{hours}"
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, KeyError, ValueError):
+        return None
 
 
 def resolve_timezone(
@@ -510,11 +554,18 @@ def resolve_timezone(
 
 _DB_SESSION_TZ: dict[str, ZoneInfo] = {}
 _DB_TZ_DETECTED: set[str] = set()
+#: Changes whenever a session zone becomes known, or the cache is reset. A
+#: federated plan converts between its data sources' zones as known when it
+#: was compiled, so a compiled plan is reused only while this is unchanged
+#: (``service/compilation_cache.py``).
+_tz_epoch = 0
 
 _TZ_QUERIES: dict[str, str | None] = {
     "snowflake": "SELECT CURRENT_TIMEZONE()",
     "postgres": "SELECT current_setting('TIMEZONE')",
-    "mysql": "SELECT @@session.time_zone",
+    # A session in the server's zone says ``SYSTEM``, and the server's zone is
+    # named as its operating system abbreviates it (see _detect_db_timezone).
+    "mysql": "SELECT @@session.time_zone, @@system_time_zone",
     "duckdb": "SELECT current_setting('TimeZone')",
     "bigquery": None,
     "clickhouse": "SELECT timezone()",
@@ -541,7 +592,7 @@ def _detect_db_timezone(executor: Any, dialect: str, key: str | None = None) -> 
 
     if dialect == "bigquery":
         tz = ZoneInfo("UTC")
-        _DB_SESSION_TZ[key] = tz
+        _remember_timezone(key, tz)
         logger.info("Database session timezone for %s: UTC (fixed)", dialect)
         return tz
 
@@ -555,23 +606,85 @@ def _detect_db_timezone(executor: Any, dialect: str, key: str | None = None) -> 
         row = fetcher.fetchone()
         if row:
             tz_name = str(row[0]).strip()
-            if tz_name and tz_name != "SYSTEM":
-                zi = ZoneInfo(tz_name)
-                _DB_SESSION_TZ[key] = zi
+            if tz_name == "SYSTEM" and len(row) > 1 and str(row[1]).strip() in UTC_NAMES:
+                # MySQL's server zone, by its abbreviation, which is the zone
+                # only for UTC: ``EST`` names a fixed offset, New York has two.
+                tz_name = "UTC"
+            zi = zone_named(tz_name) if tz_name != "SYSTEM" else None
+            if zi is not None:
+                _remember_timezone(key, zi)
                 logger.info("Database session timezone for %s: %s", dialect, tz_name)
                 return zi
-    except (ZoneInfoNotFoundError, KeyError, ValueError):
-        logger.debug("Invalid timezone name from %s", dialect)
+            logger.debug("Invalid timezone name from %s", dialect)
     except Exception:
         logger.debug("Could not detect session timezone for %s", dialect, exc_info=True)
 
     return None
 
 
+def _remember_timezone(key: str, zone: ZoneInfo) -> None:
+    global _tz_epoch  # noqa: PLW0603
+    _DB_SESSION_TZ[key] = zone
+    _tz_epoch += 1
+
+
+def timezone_epoch() -> int:
+    """A number that changes whenever a data source's session zone becomes known."""
+    return _tz_epoch
+
+
 def _reset_db_tz_cache() -> None:
     """Reset the database timezone cache (for testing)."""
+    global _tz_epoch  # noqa: PLW0603
     _DB_SESSION_TZ.clear()
     _DB_TZ_DETECTED.clear()
+    _tz_epoch += 1
+
+
+def declared_timezone(target: DataSource | str) -> ZoneInfo | None:
+    """The zone a data source's sessions are declared to run in, if one is.
+
+    ``DB_<NAME>_TIMEZONE``, then ``DB_TIMEZONE``, which a dialect's implicit
+    source (*target* a dialect name) reads alone. It stands for the zone
+    detection would find, where there is none to find (Databricks, Dremio, a
+    MySQL session in its server's zone where that is not UTC) or the naive
+    timestamps a database returns were written in another.
+
+    Raises:
+        ExecutionUnavailableError: The variable names no time zone.
+    """
+    environ: Mapping[str, str]
+    if isinstance(target, str):
+        environ, variables = os.environ, ["DB_TIMEZONE"]
+    else:
+        environ = target.environ
+        variables = (
+            [f"{target.prefix}TIMEZONE", "DB_TIMEZONE"] if target.prefix else ["DB_TIMEZONE"]
+        )
+    for variable in variables:
+        name = environ.get(variable, "").strip()
+        if name:
+            zone = zone_named(name)
+            if zone is None:
+                raise ExecutionUnavailableError(
+                    f"{variable} is '{name}', which is not an IANA time zone (Europe/Berlin)"
+                )
+            return zone
+    return None
+
+
+def session_timezone(dialect: str, source: DataSource | None = None) -> ZoneInfo | None:
+    """The zone a data source's sessions run in, as a query on it labels its timestamps.
+
+    Declared (:func:`declared_timezone`), else detected
+    (:func:`warm_db_tz_cache`, which connects to ask once per source).
+    ``source`` defaults to the dialect's implicit source.
+
+    Raises:
+        ExecutionUnavailableError: The declared zone names none.
+    """
+    declared = declared_timezone(source if source is not None else dialect)
+    return declared if declared is not None else warm_db_tz_cache(dialect, source)
 
 
 def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo | None:
@@ -885,7 +998,9 @@ def execute_sql(
                 if override_db_tz and tz is not None:
                     effective_tz = tz
                 else:
-                    db_tz = _detect_db_timezone(cursor, dialect, _tz_key(datasource))
+                    db_tz = declared_timezone(datasource) or _detect_db_timezone(
+                        cursor, dialect, _tz_key(datasource)
+                    )
                     effective_tz = db_tz or tz
                 if sink is not None and hasattr(cursor, "execute_stream"):
                     # The driver buffers what ``execute()`` returns, so asking
@@ -1053,6 +1168,8 @@ def _execute_duckdb(
             effective_tz: ZoneInfo | None
             if override_db_tz and tz is not None:
                 effective_tz = tz
+            elif (declared := declared_timezone(source)) is not None:
+                effective_tz = declared
             else:
                 # On a cursor of its own: the probe reads one row and leaves its
                 # result unfinished, which DuckDB 2.0 holds against the query

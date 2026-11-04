@@ -3,7 +3,10 @@
 Compilation is a pure function of the query, the model and the dialect: it
 reads no environment, clock or settings. A repeated query against the same
 loaded model therefore compiles to the same :class:`CompilationResult`, and the
-cache returns a copy of the first one instead of compiling again.
+cache returns a copy of the first one instead of compiling again. The one
+exception is a query federated across data sources: its legs convert from the
+time zones their sources' sessions run in, as known when it compiles
+(``timezone_epoch`` in ``service/db_executor.py``).
 
 Keys:
 
@@ -14,6 +17,8 @@ Keys:
   (``ModelCache``) stays alive, and its entries stay valid, until the last one
   releases it. Loaded models are immutable once resolved.
 * the **dialect** name;
+* the **time zone epoch**, which changes when a data source's session zone
+  becomes known, so a federated plan compiled before it was is not reused;
 * the **query**, encoded from ``QueryObject.model_dump()`` with every scalar
   tagged by type (``1`` and ``True``, ``"2024-01-01"`` and ``date(2024, 1, 1)``
   and ``Decimal("1.0")`` and ``Decimal("1.00")`` all differ). Order is kept
@@ -48,6 +53,8 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+
+from orionbelt.service.db_executor import timezone_epoch
 
 if TYPE_CHECKING:
     from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
@@ -107,9 +114,9 @@ class CompilationCacheStats:
     evictions: int
 
 
-def _size(key: tuple[int, str, bytes], result: CompilationResult) -> int:
+def _size(key: tuple[int, str, int, bytes], result: CompilationResult) -> int:
     """Rough bytes held by one entry: the key plus the result's repr."""
-    return len(key[1]) + len(key[2]) + len(repr(result))
+    return len(key[1]) + len(key[3]) + len(repr(result))
 
 
 class CompilationCache:
@@ -128,7 +135,7 @@ class CompilationCache:
         self._max_bytes = max_bytes
         self._max_entry_bytes = max_entry_bytes
         self._lock = threading.Lock()
-        self._entries: OrderedDict[tuple[int, str, bytes], tuple[CompilationResult, int]] = (
+        self._entries: OrderedDict[tuple[int, str, int, bytes], tuple[CompilationResult, int]] = (
             OrderedDict()
         )
         self._bytes = 0
@@ -167,7 +174,7 @@ class CompilationCache:
 
         with self._lock:
             self._drain_retired()
-            key = (self._token(model), dialect, qkey)
+            key = (self._token(model), dialect, timezone_epoch(), qkey)
             entry = self._entries.get(key)
             if entry is not None:
                 self._entries.move_to_end(key)
@@ -176,6 +183,8 @@ class CompilationCache:
             self._misses += 1
 
         result = pipeline.compile(query, model, dialect)
+        if timezone_epoch() != key[2]:
+            return result  # a zone became known while compiling, which it may have read
         stored = copy.deepcopy(result)
         size = _size(key, stored)
         if size > self._max_entry_bytes:

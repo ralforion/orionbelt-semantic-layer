@@ -78,6 +78,17 @@ class TestHits:
         assert hit.sql_valid == fresh.sql_valid
         assert hit.explain == fresh.explain
 
+    def test_a_session_zone_becoming_known_compiles_again(self, model: SemanticModel) -> None:
+        # A federated leg converts from the zones known when it compiled.
+        from orionbelt.service.db_executor import _reset_db_tz_cache
+
+        cache, pipeline = _cache(), _Counting()
+        cache.compile(pipeline, _query(), model, "duckdb")
+        _reset_db_tz_cache()
+        cache.compile(pipeline, _query(), model, "duckdb")
+        cache.compile(pipeline, _query(), model, "duckdb")
+        assert pipeline.calls == 2
+
     def test_camel_case_and_snake_case_share_an_entry(self, model: SemanticModel) -> None:
         cache, pipeline = _cache(), _Counting()
         cache.compile(pipeline, _query(orderBy=[{"field": "Total Revenue"}]), model, "duckdb")

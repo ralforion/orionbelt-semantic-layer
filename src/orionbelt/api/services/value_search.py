@@ -38,19 +38,19 @@ from orionbelt.service.result_schema import declared_arrow_types, reconcile_to_d
 from orionbelt.service.value_search import QueryRun, ValueSearchError, search_values
 
 
-def _first_column(cached: Any, tz: Any, declared: dict[str, Any]) -> list[Any]:
+def _first_column(cached: Any, declared: dict[str, Any]) -> list[Any]:
     """The first column of a cached execution, fresh or a cache hit.
 
     A hit is rebuilt the way ``/query/execute`` rebuilds one: reconciled to the
-    model's declared types, then read in the model's time zone, so both paths
-    return the same values.
+    model's declared types, then read in the zone its run reads it in, so
+    both paths return the same values.
     """
     if cached.exec_result is not None:
         return [row[0] for row in cached.exec_result.rows]
     if cached.data_table is not None:
         table, _ = reconcile_to_declared(cached.data_table, declared)
         hit = execution_result_from_data(
-            table, execution_time_ms=0.0, tz=tz, columns=cached.hit_columns
+            table, execution_time_ms=0.0, tz=cached.timezone, columns=cached.hit_columns
         )
         return [row[0] for row in hit.rows]
     return []
@@ -115,7 +115,7 @@ async def run_value_search(
         except ExecutionError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from None
         return QueryRun(
-            values=_first_column(cached, tz, declared),
+            values=_first_column(cached, declared),
             sql=compiled.sql,
             warnings=[w.message for w in compiled.warnings],
         )

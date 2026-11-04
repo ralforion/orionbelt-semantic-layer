@@ -78,12 +78,14 @@ from orionbelt.compiler.metric_resolution import reaggregate_per_ref
 from orionbelt.compiler.null_rejection import is_null_without
 from orionbelt.compiler.raw_resolution import raw_field_aliases
 from orionbelt.compiler.resolution import (
+    LegZone,
     ResolutionError,
     ResolvedMeasure,
     ResolvedQuery,
     columns_in_own_zone,
     make_column_expr,
     static_filters_after_join,
+    timestamps_in_zone,
 )
 from orionbelt.compiler.type_resolver import (
     combined_averages,
@@ -139,6 +141,7 @@ from orionbelt.models.semantic import (
 )
 from orionbelt.models.synthesis import synthesize_count_measure
 from orionbelt.models.types import DecimalType
+from orionbelt.models.warnings import WarningCode, warning
 
 COMBINE_DIALECT = "duckdb"
 
@@ -370,6 +373,8 @@ class KeyInjector:
         kept: The copies of rekeyed columns a combine filter reads.
         predicates: Its columns of measure filters it evaluates (:func:`_leg_predicates`).
         compile_leg: As :func:`plan_federated` takes it.
+        zone: The zone it reads its timestamps without a zone in
+            (:func:`timestamps_in_zone`).
     """
 
     leg: FederatedLeg
@@ -385,6 +390,7 @@ class KeyInjector:
     compile_leg: Callable[[QueryObject, SemanticModel, str], str] = dataclasses.field(
         compare=False, repr=False
     )
+    zone: LegZone | None = dataclasses.field(default=None, compare=False, repr=False)
 
     def __call__(self, keys: dict[str, list[Any]]) -> FederatedLeg:
         """The fact leg reading only *keys*; an empty list for a column reads no rows."""
@@ -406,6 +412,7 @@ class KeyInjector:
             partial_squares(dialect, self.squares),
             columns_in_own_zone(self.own_zone),
             static_filters_after_join(self.body),
+            timestamps_in_zone(self.zone),
         ):
             sql = self.compile_leg(query, self.model, dialect.name)
         if self.rekeyed or self.predicates:
@@ -424,12 +431,17 @@ class FederatedPlan:
             (``legs[0]``), which then runs after them.
         inject: The fact leg reading only the keys given for each injection's
             column; an empty list for any of them reads no rows.
+        timezone: The zone the legs return timestamps in, which the result is
+            labeled with: the model's ``queryTimezone``, else the zone they
+            convert those without a zone to; ``None`` where the model says
+            its timestamps are in its ``defaultTimezone``.
     """
 
     legs: tuple[FederatedLeg, ...]
     combine_sql: str
     combine_dialect: str = COMBINE_DIALECT
     injections: tuple[KeyInjection, ...] = ()
+    timezone: str | None = None
     # In the repr, which the compilation cache sizes an entry by.
     inject: Callable[[dict[str, list[Any]]], FederatedLeg] | None = dataclasses.field(
         default=None, compare=False
@@ -611,6 +623,8 @@ def plan_federated(
     source_dialect: Callable[[str | None], str | None],
     leg_row_limit: int | None = None,
     plan_part: Callable[[QueryObject, SemanticModel], FederatedPlan] | None = None,
+    timezone: str | None = None,
+    source_timezone: Callable[[str | None, str], str | None] | None = None,
 ) -> FederatedPlan:
     """Split a query reading several data sources into legs and a combine step.
 
@@ -630,12 +644,23 @@ def plan_federated(
             unions (:meth:`_Planner.parts`), as a query of its own: resolved
             against the model given, *model* or a copy with a measure more,
             and planned as this function plans one.
+        timezone: The zone every leg reads its timestamps without a zone in
+            where the model sets no ``queryTimezone``: its ``defaultTimezone``,
+            else the server's.
+        source_timezone: The zone a data source (the dialect's own for
+            ``None``) runs its sessions in, or ``None``; asked for a leg that
+            reads a timestamp without a zone. Without it, or with a model
+            stating the zone they were written in (``overrideDatabaseTimezone``,
+            or ``queryTimezone`` with ``defaultTimezone``), the legs read them
+            as the model alone says.
 
     Raises:
         ResolutionError: A ``FEDERATION_*`` error for a query that does not
             split exactly.
     """
-    planner = _Planner(query, model, resolved, dialect_name, source_dialect)
+    planner = _Planner(
+        query, model, resolved, dialect_name, source_dialect, timezone, source_timezone
+    )
     leg_limit = leg_row_limit + 1 if leg_row_limit is not None else None
     planner.check_query_shape()
     planner.check_period_dates()
@@ -1448,12 +1473,14 @@ def plan_federated(
             kept=fact_kept,
             predicates=fact_predicates,
             compile_leg=compile_leg,
+            zone=planner.leg_zone(islands[fact] | fact_body),
         )
     return FederatedPlan(
         legs=tuple(legs),
         combine_sql=combine_sql,
         injections=tuple(injections),
         inject=inject,
+        timezone=planner.result_zone,
     )
 
 
@@ -1683,7 +1710,7 @@ def _plan_raw(
     aliases = {field: f.alias for field, f in zip(fields, resolved.fields, strict=True)}
     with raw_field_aliases(aliases):
         combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
-    return FederatedPlan(legs=tuple(legs), combine_sql=combine_sql)
+    return FederatedPlan(legs=tuple(legs), combine_sql=combine_sql, timezone=planner.result_zone)
 
 
 @dataclass(frozen=True)
@@ -1809,7 +1836,7 @@ def _plan_parts(
         sql = f"WITH {with_},\n{sql.removeprefix('WITH ')}"
     else:
         sql = f"WITH {with_}\n{sql}"
-    return FederatedPlan(legs=tuple(legs), combine_sql=sql)
+    return FederatedPlan(legs=tuple(legs), combine_sql=sql, timezone=planner.result_zone)
 
 
 def _part_measure(model: SemanticModel, name: str) -> Measure:
@@ -1900,10 +1927,25 @@ class _Planner:
         resolved: ResolvedQuery,
         dialect_name: str,
         source_dialect: Callable[[str | None], str | None],
+        timezone: str | None = None,
+        source_timezone: Callable[[str | None, str], str | None] | None = None,
     ) -> None:
         self.query = query
         self.dialect_name = dialect_name
         self.source_dialect = source_dialect
+        # A model that says which zone its timestamps were written in has every
+        # leg read them so: as its defaultTimezone where it overrides the
+        # database's, or from it into its queryTimezone. Else each leg converts
+        # them from its source's zone, into the queryTimezone if there is one.
+        settings = model.settings
+        query_zone = settings.query_timezone if settings is not None else None
+        stated = settings is not None and bool(
+            settings.override_database_timezone or (query_zone and settings.default_timezone)
+        )
+        self.zone = (query_zone or timezone) if source_timezone is not None and not stated else None
+        self.result_zone = query_zone or self.zone
+        self.source_timezone = source_timezone
+        self.leg_zones: dict[tuple[str | None, str], LegZone] = {}
         self.model = model
         self.resolved = resolved
         self.sources = object_sources(model)
@@ -3659,6 +3701,42 @@ class _Planner:
         source = source_name(self.model, next(iter(sorted(island))))
         return DialectRegistry.get(self.source_dialect(source) or self.dialect_name)
 
+    def leg_zone(self, island: set[str]) -> LegZone | None:
+        """The zone the leg of *island* reads its timestamps without a zone in.
+
+        One per data source, which looks its zone up once.
+        """
+        if self.zone is None or self.source_timezone is None:
+            return None
+        source = source_name(self.model, next(iter(sorted(island))))
+        dialect = self.leg_dialect(island).name
+        if (source, dialect) not in self.leg_zones:
+            lookup = self.source_timezone
+            self.leg_zones[source, dialect] = LegZone(self.zone, lambda: lookup(source, dialect))
+        return self.leg_zones[source, dialect]
+
+    def warn_unknown_zone(self, source: str | None, dialect: str) -> None:
+        """Warn, once, that *source*'s timestamps are combined in a zone not known."""
+        named = f"Data source '{source}'" if source is not None else f"The {dialect} data source"
+        message = (
+            f"{named} runs its sessions in a time zone not known here, so the timestamps "
+            f"without a zone it returns are combined as it returns them, not converted to "
+            f"{self.zone}"
+        )
+        if any(w.message == message for w in self.resolved.warnings):
+            return
+        self.resolved.warnings.append(
+            warning(
+                code=WarningCode.UNDECLARED_TIMESTAMP_ZONE,
+                message=message,
+                hint=(
+                    "Set DB_<NAME>_TIMEZONE for the data source (DB_TIMEZONE for every "
+                    "source) to the zone its timestamps are in."
+                ),
+                context={"dataSource": source, "dialect": dialect, "timezone": self.zone},
+            )
+        )
+
     def leg(
         self,
         name: str,
@@ -3679,7 +3757,11 @@ class _Planner:
         the measure filters it evaluates, *predicates* (:func:`_leg_predicates`)."""
         source = source_name(self.model, next(iter(sorted(island))))
         dialect = self.leg_dialect(island)
-        sql = compile_leg(query, model, dialect.name)
+        zone = self.leg_zone(island)
+        with timestamps_in_zone(zone):
+            sql = compile_leg(query, model, dialect.name)
+        if zone is not None and zone.unknown:
+            self.warn_unknown_zone(source, dialect.name)
         if rekeyed or predicates:
             sql = _rewrite_leg(dialect, sql, columns, rekeyed or {}, kept or {}, predicates)
         return FederatedLeg(
