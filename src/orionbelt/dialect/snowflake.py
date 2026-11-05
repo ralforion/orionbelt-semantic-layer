@@ -18,6 +18,10 @@ from orionbelt.models.types import DecimalType, OBMLType
 class SnowflakeDialect(Dialect):
     """Snowflake dialect — QUALIFY, case-sensitive identifiers, semi-structured types."""
 
+    #: "Number of grouping sets (256) exceeds maximum number of grouping sets
+    #: allowed (128)": a cube of 7 dimensions, probed.
+    _MAX_GROUPING_SETS = 128
+
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "NUMBER(38, 0)",
         "integer": "NUMBER(38, 0)",

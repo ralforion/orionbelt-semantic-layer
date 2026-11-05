@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from itertools import combinations
 
 from orionbelt.ast.nodes import (
     AliasedExpr,
@@ -371,6 +373,10 @@ class Dialect(ABC):
 
     _MAX_DECIMAL_PRECISION: int = 38
 
+    # The most grouping sets one ``GROUP BY`` takes: Snowflake's 128, BigQuery's
+    # and PostgreSQL's 4096 (probed). ``None`` for no limit met.
+    _MAX_GROUPING_SETS: int | None = None
+
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "BIGINT",
         "integer": "INTEGER",
@@ -381,6 +387,15 @@ class Dialect(ABC):
         "string": "VARCHAR",
         "boolean": "BOOLEAN",
     }
+
+    @property
+    def max_grouping_sets(self) -> int | None:
+        """The most grouping sets one ``GROUP BY`` takes, or ``None`` for no limit met.
+
+        A cube of more is a union of queries over chunks of its grouping sets
+        (:meth:`compile_select`).
+        """
+        return self._MAX_GROUPING_SETS
 
     @property
     def max_decimal_precision(self) -> int:
@@ -2499,7 +2514,96 @@ class Dialect(ABC):
         return "WITH " + ",\n".join(cte_parts) if cte_parts else ""
 
     def compile_select(self, node: Select) -> str:
-        """Compile a SELECT statement."""
+        """Compile a SELECT statement.
+
+        A ``CUBE`` of more grouping sets than the engine takes in one query
+        (:attr:`max_grouping_sets`: Snowflake's 128, so 7 dimensions) is the union
+        of one query per chunk of its grouping sets (:meth:`_compile_in_chunks`).
+        """
+        limit = self.max_grouping_sets
+        if node.grouping == "cube" and limit is not None and 2 ** len(node.group_by) > limit:
+            return self._compile_in_chunks(node, limit)
+        group_by = self.compile_group_by(node.group_by, node.grouping) if node.group_by else ""
+        return self._select_sql(node, group_by)
+
+    def _compile_in_chunks(self, node: Select, limit: int) -> str:
+        """*node*'s ``CUBE`` as a union of queries, each over *limit* of its grouping sets.
+
+        Each query groups by its chunk's ``GROUPING SETS``, where ``GROUPING()``
+        flags each row as the cube does; the union is sorted, limited and
+        offset as *node* is, and made distinct where it is. A sort key that is
+        no column of it, an aggregate or a source column, is a column of each
+        query the union returns without, under a name no column has. A window
+        over the cube's rows, in a column or a sort key, would read one
+        chunk's rows alone, and ``DISTINCT`` could not sort by such a key:
+        refused, as is a projection naming no column (``SELECT *``), which
+        the union's own could not list.
+        """
+        named = bool(node.columns) and all(isinstance(c, AliasedExpr) for c in node.columns)
+        if not named or any(
+            _holds(e, WindowFunction) for e in [*node.columns, *(o.expr for o in node.order_by)]
+        ):
+            raise UnsupportedGroupingError(dialect=self.name, grouping="cube")
+        aliases = [c.alias for c in node.columns if isinstance(c, AliasedExpr)]
+        taken = {alias.casefold() for alias in aliases}
+        keys: list[AliasedExpr] = []
+        order: list[OrderByItem] = []
+        for n, item in enumerate(node.order_by):
+            key = item.expr
+            if isinstance(key, ColumnRef) and key.table is None and key.name in aliases:
+                order.append(item)
+                continue
+            name = f"__cube_sort{n}"
+            while name.casefold() in taken:
+                name = f"_{name}"
+            taken.add(name.casefold())
+            keys.append(AliasedExpr(expr=item.expr, alias=name))
+            order.append(replace(item, expr=ColumnRef(name=name)))
+        if keys and node.distinct:
+            raise UnsupportedGroupingError(dialect=self.name, grouping="cube")
+        sets = [
+            list(kept)
+            for n in range(len(node.group_by), -1, -1)
+            for kept in combinations(node.group_by, n)
+        ]
+        body = replace(
+            node,
+            columns=[*node.columns, *keys],
+            ctes=[],
+            distinct=False,
+            order_by=[],
+            limit=None,
+            offset=None,
+        )
+        queries = [
+            self._select_sql(body, self.compile_grouping_sets(sets[start : start + limit]))
+            for start in range(0, len(sets), limit)
+        ]
+        q = self.quote_identifier
+        parts = [self._compile_with(node)] if node.ctes else []
+        keyword = "SELECT DISTINCT" if node.distinct else "SELECT"
+        parts.append(
+            f"{keyword} {', '.join(map(q, aliases))}\nFROM (\n"
+            + "\nUNION ALL\n".join(queries)
+            + f"\n) AS {q('__cube')}"
+        )
+        if order:
+            parts.append("ORDER BY " + ", ".join(self.compile_order_by(o) for o in order))
+        if node.limit is not None:
+            parts.append(f"LIMIT {node.limit}")
+        if node.offset is not None:
+            parts.append(f"OFFSET {node.offset}")
+        return "\n".join(parts)
+
+    def compile_grouping_sets(self, sets: list[list[Expr]]) -> str:
+        """``GROUP BY GROUPING SETS``, each set its expressions, ``()`` the grand total."""
+        rendered = ", ".join(
+            "(" + ", ".join(self.compile_expr(e) for e in kept) + ")" for kept in sets
+        )
+        return f"GROUP BY GROUPING SETS ({rendered})"
+
+    def _select_sql(self, node: Select, group_by: str) -> str:
+        """*node* as SQL, grouped by the rendered *group_by* (none where empty)."""
         parts: list[str] = []
 
         # CTEs
@@ -2530,8 +2634,8 @@ class Dialect(ABC):
             parts.append(f"WHERE {self.compile_expr(node.where)}")
 
         # GROUP BY
-        if node.group_by:
-            parts.append(self.compile_group_by(node.group_by, node.grouping))
+        if group_by:
+            parts.append(group_by)
 
         # HAVING
         if node.having:
@@ -2949,3 +3053,14 @@ class Dialect(ABC):
             start = self.date_add_sql(end, unit, -count)
 
         return f"({col_sql} >= {start} AND {col_sql} < {end})"
+
+
+def _holds(node: object, kind: type) -> bool:
+    """Whether *node*, an AST node, is or holds a node of *kind*, in any field."""
+    if isinstance(node, kind):
+        return True
+    if isinstance(node, (list, tuple)):
+        return any(_holds(item, kind) for item in node)
+    if dataclasses.is_dataclass(node) and not isinstance(node, type):
+        return any(_holds(getattr(node, f.name), kind) for f in dataclasses.fields(node))
+    return False
