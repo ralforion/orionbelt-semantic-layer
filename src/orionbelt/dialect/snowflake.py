@@ -130,6 +130,7 @@ class SnowflakeDialect(Dialect):
     @property
     def capabilities(self) -> DialectCapabilities:
         return DialectCapabilities(
+            max_grouping_sets=128,
             supports_cte=True,
             supports_qualify=True,
             supports_arrays=True,

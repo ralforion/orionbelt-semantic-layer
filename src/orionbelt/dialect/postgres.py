@@ -89,6 +89,7 @@ class PostgresDialect(Dialect):
     @property
     def capabilities(self) -> DialectCapabilities:
         return DialectCapabilities(
+            max_grouping_sets=4096,
             supports_cte=True,
             supports_qualify=False,
             supports_arrays=True,

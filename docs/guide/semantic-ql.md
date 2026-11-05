@@ -368,10 +368,21 @@ WITH ROLLUP
 
 The compiler emits the dialect-appropriate form:
 
-| Dialect | Emitted SQL |
-|---------|-------------|
-| Postgres, Snowflake, Databricks, DuckDB, Dremio, BigQuery, MySQL | `GROUP BY ROLLUP(a, b)` / `GROUP BY CUBE(a, b)` |
-| ClickHouse | `GROUP BY a, b WITH ROLLUP` / `GROUP BY a, b WITH CUBE` |
+| Dialect | `ROLLUP` | `CUBE` |
+|---------|----------|--------|
+| Databricks, DuckDB, Dremio | `GROUP BY ROLLUP(a, b)` | `GROUP BY CUBE(a, b)` |
+| Snowflake | `GROUP BY ROLLUP(a, b)` | `GROUP BY CUBE(a, b)`; past 128 grouping sets (7 dimensions), chunks of 128 |
+| Postgres, BigQuery | `GROUP BY ROLLUP(a, b)` | `GROUP BY CUBE(a, b)`; past 4096 grouping sets (12 dimensions), chunks of 4096 |
+| ClickHouse | `GROUP BY a, b WITH ROLLUP` | `GROUP BY a, b WITH CUBE` |
+| MySQL | `GROUP BY a, b WITH ROLLUP` | refused: MySQL has no `CUBE` |
+
+A cube of *n* dimensions has 2^*n* grouping sets, and Snowflake takes 128 in
+one `GROUP BY`, Postgres and BigQuery 4096. Past that, OBSL sends the cube as
+a union of queries, each grouped by `GROUPING SETS` over a chunk of them, and
+sorts, limits and offsets the union as the query asks: a cube of 8 dimensions
+on Snowflake is two queries of 128 grouping sets. The rows and the `_g_`
+flags are those of one `CUBE`. A cube whose own columns hold a window
+function is refused there, since each query would see its chunk's rows alone.
 
 For every selected dimension, a `GROUPING(dim) AS _g_<dim>` column is
 appended to the result schema. `0` means the row carries a real value for
