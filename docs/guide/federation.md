@@ -501,6 +501,24 @@ GROUP BY ALL
 - Metrics across the facts (revenue per ticket), `having`, `orderBy` and
   `limit` run in the combine query, after the union. A measure the query only
   orders by is computed in the part of its fact.
+- `rollup` and `cube`: each part rolls up the dimensions its fact reaches,
+  and the combine query puts each of its rows in every grouping set of the
+  query it belongs to. The tickets per region are a region's tickets of no
+  order month and its tickets of all months, as one database's rollup of the
+  union has them; the `_g_` flags come back as on one database. A fact
+  without rows adds no subtotal: each part counts its rows.
+- A measure with `total`, `grain` or `filterContext` is computed in the part
+  of its fact. The combine query gives a total, or a value at a coarser
+  grain, to every group that shares it, the other fact's groups too: the
+  tickets' total on the rows of revenue alone.
+- `fill` fills the periods of the union in the combine query, from the first
+  to the last period the query's filters on the date admit, as on one
+  database. One dimension at two grains is read from each part's column of
+  each grain; it and `asOf` work as on one database.
+- A measure of an object both facts join (the number of customers) works
+  where one database counts that object's rows alone: by region. By order
+  month, one database counts the customers through the orders, and the query
+  is refused (`FEDERATION_UNSUPPORTED_QUERY`).
 - The parts' legs all run at once; none is filtered by another's keys
   ([key injection](#key-injection)).
 
@@ -1076,13 +1094,16 @@ These cases are refused:
 | Revenue per region and a customer measure over MySQL text: its distinct count, `min`, `max`, or a filter on it. MySQL treats `'a'` and `'A'` as equal, DuckDB does not | Ask for the customer measure in its own query | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | Revenue per region, sorted by the number of tickets, without selecting the number of tickets | Add the number of tickets to the query | `FEDERATION_MULTI_FACT` |
 | Revenue and the number of tickets per region, sorted by the number of returns, without selecting the number of returns | Add the number of returns to the query | `FEDERATION_UNSUPPORTED_QUERY` |
+| Revenue, the number of tickets and the number of customers per order month. The customers are counted through the orders here, on one database | Ask for the number of customers beside the revenue alone | `FEDERATION_UNSUPPORTED_QUERY` |
 | Revenue and the number of tickets per region, with one of the options listed below the table | Ask for each table's measures in its own query, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |
 | Columns of the orders and of the tickets in [raw mode](#raw-mode) (`select.fields`) | One query per table, or ask for dimensions and measures instead | `FEDERATION_UNSUPPORTED_QUERY` |
 
-The options: `rollup` or `cube`; a measure with `total`, `grain` or
-`filterContext`; a measure that reads both tables; a running total, period
-comparison, window or reaggregate metric; `fill`; `asOf`; one dimension at
-two grains; `dimensionsExclude`; a coalesce dimension.
+The options: `rollup` or `cube` together with a measure with `total`,
+`grain` or `filterContext`, or together with one dimension at two grains; a
+measure that reads both tables; a running total, window or reaggregate
+metric; a coalesce dimension. A period comparison next to measures of both
+tables, and `dimensionsExclude` with measures, are refused on one database
+too.
 
 ### Joins between databases
 

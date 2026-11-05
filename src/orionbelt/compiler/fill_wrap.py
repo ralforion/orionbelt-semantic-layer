@@ -30,6 +30,9 @@ the data, so a period with rows is always on the spine.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 
 from orionbelt.ast.nodes import (
@@ -340,6 +343,27 @@ def _outer(bound: Expr | None, data: Expr, op: str) -> Expr:
     )
 
 
+# Filters bounding the periods of every fill compiled meanwhile, beside the
+# query's own: they filter no row (:func:`fill_bounds`).
+_EXTRA_BOUNDS: ContextVar[tuple[Expr, ...]] = ContextVar("fill_bounds", default=())
+
+
+@contextmanager
+def fill_bounds(predicates: Iterable[Expr]) -> Iterator[None]:
+    """Bound the periods of every fill compiled inside by *predicates* as well.
+
+    Each a filter on the time column, as a resolved ``where`` holds it, that
+    another query ran already: the federation's parts filter their facts' rows,
+    and the combine step fills the periods of their union, which their filters
+    bound as one database's ``where`` bounds its own.
+    """
+    token = _EXTRA_BOUNDS.set(tuple(predicates))
+    try:
+        yield
+    finally:
+        _EXTRA_BOUNDS.reset(token)
+
+
 def _bounds(
     resolved: ResolvedQuery, time: ResolvedDimension, model: SemanticModel, dialect: Dialect
 ) -> tuple[Expr | None, Expr | None, list[Expr]]:
@@ -373,7 +397,8 @@ def _bounds(
     # Conjunct by conjunct: a group that also filters another column has no
     # single subject, and its comparisons on the time column bound it all the
     # same.
-    for predicate in (p for f in resolved.where_filters for p in conjuncts(f.expression)):
+    filters = [p for f in resolved.where_filters for p in conjuncts(f.expression)]
+    for predicate in [*filters, *_EXTRA_BOUNDS.get()]:
         subject = predicate.expr if isinstance(predicate, Between) else None
         if isinstance(predicate, BinaryOp):
             subject = predicate.left

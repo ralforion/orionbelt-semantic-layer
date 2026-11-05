@@ -328,6 +328,28 @@ QUERIES = {
             }
         ],
     },
+    "independent_facts_rolled_up": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+    "independent_facts_with_a_grain": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Region Revenue", "Tickets Count"],
+        }
+    },
+    "independent_facts_with_a_filter_context": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue Any Region", "Tickets Count"]},
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+    "independent_facts_filled": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Tickets Count"]},
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+        "fill": True,
+    },
     "raw_rows": {
         "select": {
             "fields": [

@@ -5292,14 +5292,34 @@ INDEPENDENT_MEASURES = (
     " aggregation: count_distinct, resultType: int}\n"
     f"  Revenue Total: {{columns: [{AMOUNT}], aggregation: sum, total: true}}\n"
     f"  Median Order: {{columns: [{AMOUNT}], aggregation: median}}\n"
+    "  Ticket Total: {columns: [{dataObject: Tickets, column: Ticket ID}], aggregation: count,"
+    " total: true, resultType: int}\n"
+    f"  Average Total: {{columns: [{AMOUNT}], aggregation: avg, total: true}}\n"
+    f"  Region Revenue: {{columns: [{AMOUNT}], aggregation: sum,"
+    " grain: {mode: FIXED, include: [Region]}}\n"
+    f"  Revenue Any Region: {{columns: [{AMOUNT}], aggregation: sum,"
+    " filterContext: {exclude: [Region]}}\n"
+    "  Tickets Any Region: {columns: [{dataObject: Tickets, column: Ticket ID}],"
+    " aggregation: count, resultType: int, filterContext: {exclude: [Region]}}\n"
+    f"  Revenue All: {{columns: [{AMOUNT}], aggregation: sum, filterContext: {{mode: FIXED}}}}\n"
+    f"  Date Revenue: {{columns: [{AMOUNT}], aggregation: sum,"
+    " grain: {mode: FIXED, include: [Order Date]}}\n"
+    f"  Revenue Not By Date: {{columns: [{AMOUNT}], aggregation: sum,"
+    " grain: {exclude: [Order Date]}}\n"
 )
 INDEPENDENT_MODEL = {
     "extra": INDEPENDENT_MEASURES,
     "metric": '  Revenue per Ticket: {expression: "{[Revenue]} / {[Tickets Count]}"}\n',
-    "dimension": "  Severity: {dataObject: Tickets, column: Severity, resultType: string}\n",
+    "dimension": "  Severity: {dataObject: Tickets, column: Severity, resultType: string}\n"
+    "  Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}\n"
+    "  Order Day: {dataObject: Orders, column: Order Date, resultType: date}\n",
 }
 REVENUE_AND_TICKETS = ["Revenue", "Tickets Count"]
 BY_REGION_BOTH = {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS}
+BY_REGION_AND_MONTH = {
+    "dimensions": ["Region", "Order Date:month"],
+    "measures": REVENUE_AND_TICKETS,
+}
 INDEPENDENT_QUERIES = {
     "by_region": {"select": BY_REGION_BOTH},
     "beside_a_measure_of_the_customers": {
@@ -5353,6 +5373,197 @@ INDEPENDENT_QUERIES = {
             "dimensions": ["Region"],
             "measures": ["Average Order", "Average Ticket", "Severities", "Ticket Ids"],
         }
+    },
+    "a_rollup": {"select": BY_REGION_AND_MONTH, "grouping": "rollup"},
+    "a_cube": {"select": BY_REGION_AND_MONTH, "grouping": "cube"},
+    "a_rollup_from_rows": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Median Order", "Severities"],
+        },
+        "grouping": "rollup",
+    },
+    "a_rollup_sorted_and_limited": {
+        "select": BY_REGION_AND_MONTH,
+        "grouping": "rollup",
+        "orderBy": [{"field": "Region"}, {"field": "Revenue", "direction": "desc"}],
+        "limit": 5,
+    },
+    "a_cube_with_a_metric_and_having": {
+        "select": {"dimensions": ["Region"], "measures": ["Tickets Count", "Revenue per Ticket"]},
+        "grouping": "cube",
+        "having": [{"field": "Tickets Count", "op": ">", "value": 0}],
+    },
+    "a_total_of_each": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue Total", "Ticket Total"]},
+        "where": [LATE],
+    },
+    "a_total_of_an_average": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Average Total", "Tickets Count"],
+        }
+    },
+    "a_grain": {
+        "select": {
+            "dimensions": ["Order Date:month", "Region"],
+            "measures": ["Region Revenue", "Ticket Total"],
+        }
+    },
+    "a_filter_context_of_each": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": ["Revenue Any Region", "Tickets Any Region", "Revenue"],
+        },
+        "where": [EU],
+    },
+    "a_fixed_filter_context": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+        "where": [LATE],
+    },
+    "filled": {
+        "select": {"dimensions": ["Order Date:month"], "measures": REVENUE_AND_TICKETS},
+        "where": [EU],
+        "fill": True,
+    },
+    "at_two_grains": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month", "Order Date:quarter"],
+            "measures": REVENUE_AND_TICKETS,
+        }
+    },
+    "as_of_a_date": {"select": BY_REGION_AND_MONTH, "asOf": "2024-02-15"},
+    "at_a_coarser_grain_first": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month"],
+            "measures": REVENUE_AND_TICKETS,
+        }
+    },
+    "at_two_grains_with_a_week": {
+        "select": {
+            "dimensions": ["Order Date:year", "Region", "Order Date:week"],
+            "measures": REVENUE_AND_TICKETS,
+        }
+    },
+    "at_two_grains_sorted_by_the_second_and_limited": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month"],
+            "measures": REVENUE_AND_TICKETS,
+        },
+        "orderBy": [{"field": "Order Date:month", "direction": "desc"}],
+        "limit": 2,
+    },
+    "filled_between_bounds_beyond_the_data": {
+        "select": {"dimensions": ["Order Date:month"], "measures": REVENUE_AND_TICKETS},
+        "where": [
+            {"field": "Order Date", "op": ">", "value": "2023-11-15"},
+            {"field": "Order Date", "op": "<=", "value": "2024-05-20"},
+        ],
+        "fill": True,
+    },
+    "filled_and_sorted": {
+        "select": {"dimensions": ["Order Date:month"], "measures": REVENUE_AND_TICKETS},
+        "where": [{"field": "Order Date", "op": "between", "value": ["2023-12-01", "2024-05-31"]}],
+        "orderBy": [{"field": "Order Date", "direction": "desc"}],
+        "limit": 4,
+        "fill": True,
+    },
+    "a_rollup_from_the_other_end": {
+        "select": {"dimensions": ["Order Date:month", "Region"], "measures": REVENUE_AND_TICKETS},
+        "grouping": "rollup",
+    },
+    "a_month_and_the_date_itself": {
+        "select": {
+            "dimensions": ["Order Date:month", "Order Date"],
+            "measures": REVENUE_AND_TICKETS,
+        }
+    },
+    "at_three_grains_with_the_date_itself": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month", "Order Date"],
+            "measures": REVENUE_AND_TICKETS,
+        }
+    },
+    "sorted_by_the_first_of_two_grains": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month"],
+            "measures": REVENUE_AND_TICKETS,
+        },
+        "orderBy": [
+            {"field": "Order Date", "direction": "desc"},
+            {"field": "Order Date:month", "direction": "desc"},
+        ],
+        "limit": 2,
+    },
+    "a_grain_at_two_grains": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month", "Order Date:quarter"],
+            "measures": ["Region Revenue", "Tickets Count"],
+        }
+    },
+    "filled_at_a_declared_grain": {
+        "select": {"dimensions": ["Order Month"], "measures": REVENUE_AND_TICKETS},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2023-12-01"}],
+        "fill": True,
+    },
+    "filled_between_periods_of_a_declared_grain": {
+        "select": {"dimensions": ["Order Month"], "measures": REVENUE_AND_TICKETS},
+        "where": [
+            {"field": "Order Month", "op": ">=", "value": "2023-11-15"},
+            {"field": "Order Month", "op": "<", "value": "2024-05-10"},
+        ],
+        "fill": True,
+    },
+    "filled_between_bounds_on_another_dimension": {
+        "select": {"dimensions": ["Order Date:month"], "measures": REVENUE_AND_TICKETS},
+        "where": [
+            {"field": "Order Day", "op": ">=", "value": "2023-12-01"},
+            {"field": "Order Day", "op": "<", "value": "2024-06-01"},
+        ],
+        "fill": True,
+    },
+    "a_grain_on_a_dimension_at_two_grains": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month"],
+            "measures": ["Date Revenue", "Tickets Count"],
+        }
+    },
+    "a_grain_without_a_dimension_at_two_grains": {
+        "select": {
+            "dimensions": ["Region", "Order Date:quarter", "Order Date:month"],
+            "measures": ["Revenue Not By Date", "Tickets Count"],
+        }
+    },
+    "filled_beside_the_date_itself": {
+        "select": {
+            "dimensions": ["Order Date:month", "Order Date"],
+            "measures": REVENUE_AND_TICKETS,
+        },
+        "where": [
+            {"field": "Order Date", "op": ">=", "value": "2023-12-01"},
+            {"field": "Order Date", "op": "<", "value": "2024-06-01"},
+        ],
+        "fill": True,
+    },
+    "the_date_itself_beside_a_filled_month": {
+        "select": {
+            "dimensions": ["Order Date", "Order Date:month"],
+            "measures": REVENUE_AND_TICKETS,
+        },
+        "where": [{"field": "Order Date", "op": ">=", "value": "2023-12-01"}],
+        "orderBy": [{"field": "Revenue", "direction": "desc"}],
+        "limit": 3,
+        "fill": True,
+    },
+    "a_rollup_of_no_rows": {
+        "select": BY_REGION_AND_MONTH,
+        "where": [{"field": "Region", "op": "=", "value": "nowhere"}],
+        "grouping": "rollup",
+    },
+    "a_cube_of_no_rows": {
+        "select": BY_REGION_AND_MONTH,
+        "where": [{"field": "Region", "op": "=", "value": "nowhere"}],
+        "grouping": "cube",
     },
 }
 
@@ -5523,6 +5734,28 @@ class TestMeasuresOfIndependentFacts:
         assert rows == _run_on(paths, independent_model(False), query)
         assert (None, None, 10) in rows
 
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    @pytest.mark.parametrize(
+        "dimensions",
+        [["Region", "Order Date:month"], ["Order Date:month", "Region"]],
+        ids=["region_first", "month_first"],
+    )
+    def test_a_fact_without_rows_adds_no_subtotal(
+        self, independent_files: dict[str, dict[str, str]], grouping: str, dimensions: list[str]
+    ) -> None:
+        """Without tickets, their part's grand total stood for no rows, and
+        gave the cube a group of all regions in no month."""
+        paths = independent_files["no_tickets"]
+        query = {
+            "select": {"dimensions": dimensions, "measures": REVENUE_AND_TICKETS},
+            "grouping": grouping,
+        }
+
+        single = _run_on(paths, independent_model(False), query)
+
+        assert _run_on(paths, independent_model(True), query) == single
+        assert single
+
     @pytest.mark.parametrize(
         ("query", "message"),
         [
@@ -5531,13 +5764,46 @@ class TestMeasuresOfIndependentFacts:
                     "select": {
                         "dimensions": ["Region"],
                         "measures": ["Revenue Total", "Tickets Count"],
+                    },
+                    "grouping": "rollup",
+                },
+                "has a total, grain or filterContext beside a rollup or cube",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Order Date:year", "Order Date:month"],
+                        "measures": REVENUE_AND_TICKETS,
+                    },
+                    "grouping": "rollup",
+                },
+                "selects one dimension at two grains beside a rollup or cube",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Order Date:month"],
+                        "measures": [*REVENUE_AND_TICKETS, "Customers Count"],
                     }
                 },
-                "has a total, grain or filterContext",
+                "is of 'Customers', which one database counts through 'Orders'",
             ),
-            ({"select": BY_REGION_BOTH, "grouping": "rollup"}, "has a rollup or cube"),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Severity"],
+                        "measures": [*REVENUE_AND_TICKETS, "Customers Count"],
+                    }
+                },
+                "is of 'Customers', which one database counts through 'Tickets'",
+            ),
         ],
-        ids=["a_total", "a_rollup"],
+        ids=[
+            "a_total_beside_a_rollup",
+            "two_grains_beside_a_rollup",
+            "the_customers_by_order_month",
+            "the_customers_by_severity",
+        ],
     )
     def test_what_is_not_combined_yet_is_refused(self, query: dict[str, Any], message: str) -> None:
         with pytest.raises(ResolutionError) as caught:
