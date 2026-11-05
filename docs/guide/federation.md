@@ -961,12 +961,13 @@ Most refusals happen before any database is queried. The error message
 includes a hint with what to do instead. Here, "database" means a data source
 of the model; the errors say "data source".
 
-The examples use the model of [An example](#an-example): orders in the shop
-database (MySQL), customers in the CRM database (PostgreSQL).
+The examples use the model of [An example](#an-example), with two databases:
+the orders and their returns are in MySQL, the customers and their support
+tickets in PostgreSQL. Revenue is the sum of the order amounts.
 
 | What your query does | When it is refused | See |
 |---|---|---|
-| Asks for measures from two databases | one measure is of the customers, which the orders are joined to; or the query sorts by a measure from the other database that it does not select | [Measures from two databases](#measures-from-two-databases) |
+| Asks for measures from two databases | revenue together with the number of customers; or the query sorts by a measure from the other database that it does not select | [Measures from two databases](#measures-from-two-databases) |
 | Uses dimensions from another database | the join matches one order to several rows of the other database | [Joins between databases](#joins-between-databases) |
 | Uses a list of values, such as a customer's tags | the list is in another database and the query does not group by it | [Lists in another database](#lists-in-another-database) |
 | Uses calculated columns | the calculation reads another database, or gives orders without a customer a value (`COALESCE`) | [Calculated columns](#calculated-columns) |
@@ -979,19 +980,34 @@ database (MySQL), customers in the CRM database (PostgreSQL).
 ### Measures from two databases
 
 Measures from two databases work in one query when each comes from its own
-table and the two tables are not joined to each other: revenue from the
-shop's orders and the number of support tickets from the CRM, per region.
-The orders and the tickets are both joined to the customers, but not to each
-other. See [Measures of independent facts](#measures-of-independent-facts).
+table and the two tables are not joined to each other. This query runs: the
+revenue comes from the orders (MySQL), the number of tickets from the support
+tickets (PostgreSQL). The orders and the tickets are both joined to the
+customers, but not to each other. See
+[Measures of independent facts](#measures-of-independent-facts).
 
-These cases are refused:
+```yaml
+select:
+  dimensions: [Region]
+  measures: [Revenue, Tickets Count]
+```
+
+This query is refused, because the orders are joined to the customers:
+
+```yaml
+select:
+  dimensions: [Region]
+  measures: [Revenue, Customers Count]
+```
+
+All refused cases:
 
 | You ask for | Do this instead | Error |
 |---|---|---|
-| Revenue (shop) and the number of customers (CRM) in one query, also when the query only sorts by the number of customers. The orders are joined to the customers: each order has one customer | Ask for each in its own query. Or define a measure on the orders that counts their distinct customer IDs: it counts the customers who placed orders, from the shop alone | `FEDERATION_MULTI_FACT` |
+| Revenue per region and the number of customers per region. The revenue comes from the orders in MySQL, the number of customers from the customers table in PostgreSQL. Unlike the tickets, the customers are joined to the orders: each order has one customer. Also refused: revenue per region, sorted by the number of customers per region | Ask for the number of customers per region in its own query. It counts every customer of the region, also those without orders. To count only the customers who placed orders, define a measure on the orders that counts their distinct customer IDs: it runs together with revenue | `FEDERATION_MULTI_FACT` |
 | Revenue per region, sorted by the number of tickets, without selecting the number of tickets | Add the number of tickets to the query | `FEDERATION_MULTI_FACT` |
-| Revenue and the number of tickets, sorted by the number of returns, without selecting the number of returns | Add the number of returns to the query | `FEDERATION_UNSUPPORTED_QUERY` |
-| Revenue and the number of tickets, with one of the options listed below the table | Ask for each table's measures in its own query, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |
+| Revenue and the number of tickets per region, sorted by the number of returns, without selecting the number of returns | Add the number of returns to the query | `FEDERATION_UNSUPPORTED_QUERY` |
+| Revenue and the number of tickets per region, with one of the options listed below the table | Ask for each table's measures in its own query, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |
 | Columns of the orders and of the tickets in [raw mode](#raw-mode) (`select.fields`) | One query per table, or ask for dimensions and measures instead | `FEDERATION_UNSUPPORTED_QUERY` |
 
 The options: `rollup` or `cube`; a measure with `total`, `grain` or
@@ -1006,9 +1022,9 @@ database, as a many-to-one join does.
 
 | You ask for | Do this instead | Error |
 |---|---|---|
-| The number of customers (CRM) per order amount (shop). One customer has many orders | Count the orders' distinct customer IDs per amount, in the shop | `FEDERATION_UNSUPPORTED_JOIN` |
-| A dimension reached through a many-to-many join between two databases: customers (CRM) and the topics they follow, kept in a third database | Leave out that dimension, or keep both tables in one database | `FEDERATION_UNSUPPORTED_JOIN` |
-| A dimension reached through a join inside the CRM that matches one customer to several rows (a customer's topics), together with revenue | Leave out that dimension, or keep the orders and the CRM tables in one database | `FEDERATION_UNSUPPORTED_JOIN` |
+| The number of customers (PostgreSQL) per order amount (MySQL). One customer has many orders | Count the orders' distinct customer IDs per amount: that runs in MySQL alone | `FEDERATION_UNSUPPORTED_JOIN` |
+| A dimension reached through a many-to-many join between two databases: customers (PostgreSQL) and the topics they follow, kept in a third database | Leave out that dimension, or keep both tables in one database | `FEDERATION_UNSUPPORTED_JOIN` |
+| A dimension reached through a join inside PostgreSQL that matches one customer to several rows (a customer's topics), together with revenue | Leave out that dimension, or keep the orders, the customers and the topics in one database | `FEDERATION_UNSUPPORTED_JOIN` |
 | Tables of one database that the query reaches by two joins at once, or by none (rare) | Keep these tables in one database | `FEDERATION_UNSUPPORTED_JOIN` |
 
 ### Lists in another database
@@ -1031,8 +1047,8 @@ refused:
 
 | You ask for | Do this instead | Error |
 |---|---|---|
-| A CRM column calculated to have a value for orders without a customer: `COALESCE({[Customers].[Region]}, 'unknown')`. One database shows `'unknown'` for those orders, across databases they would show NULL | Use a calculation that stays NULL for a missing customer (`UPPER`, arithmetic) and rename the NULL group in your tool. Or mark the join `required`, which drops orders without a customer | `FEDERATION_UNSUPPORTED_JOIN` |
-| A calculated customer column that reads a table the customers are not joined to in the CRM: the customers' home region, read from a regions table in another database | Calculate it only from CRM tables that the customers table joins | `FEDERATION_UNSUPPORTED_JOIN` |
+| A customer column calculated to have a value for orders without a customer: `COALESCE({[Customers].[Region]}, 'unknown')`. One database shows `'unknown'` for those orders, across databases they would show NULL | Use a calculation that stays NULL for a missing customer (`UPPER`, arithmetic) and rename the NULL group in your tool. Or mark the join `required`, which drops orders without a customer | `FEDERATION_UNSUPPORTED_JOIN` |
+| A calculated customer column that reads a table the customers are not joined to in PostgreSQL: the customers' home region, read from a regions table in another database | Calculate it only from PostgreSQL tables that the customers table joins | `FEDERATION_UNSUPPORTED_JOIN` |
 | A measure that reads a column calculated from another database | Calculate the column from the measure's own database | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 | A measure defined on the customers, in a query of their orders, that reads a column of another database | Keep the tables in one database | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 
@@ -1076,7 +1092,7 @@ DuckDB compares values differently than the source database.
 
 | What happened | What to do | Error |
 |---|---|---|
-| One database returned more than 5,000,000 rows (`FEDERATION_MAX_LEG_ROWS`) or 512 MB (`FEDERATION_MAX_LEG_MB`). Usually the join key has many values: revenue per region makes the shop return one row per customer. The error names the join | Filter on the other database's dimensions, so OBSL reads only the matching keys. Join on a key with fewer values (region instead of customer). Or raise the limit | `FEDERATION_LEG_TOO_LARGE` (HTTP 502) |
+| One database returned more than 5,000,000 rows (`FEDERATION_MAX_LEG_ROWS`) or 512 MB (`FEDERATION_MAX_LEG_MB`). Usually the join key has many values: revenue per region makes MySQL return one row per customer. The error names the join | Filter on the other database's dimensions, so OBSL reads only the matching keys. Join on a key with fewer values (region instead of customer). Or raise the limit | `FEDERATION_LEG_TOO_LARGE` (HTTP 502) |
 | A number no exact decimal can hold (`NaN`, more than 38 digits), or an average whose sums came back as floats | Filter out the value. For an average, set the measure's `resultType` to `float` | `FEDERATION_LEG_TYPE` (HTTP 502) |
 | More than 4 federated queries at once (`FEDERATION_MAX_CONCURRENT`), and this one waited longer than `FEDERATION_QUEUE_TIMEOUT_SECONDS` | Retry, or raise the limit if the server has memory to spare | `FEDERATION_BUSY` (HTTP 503) |
 | A query wrote more than `FEDERATION_SPILL_MAX_MB` to disk, or all queries together more than `FEDERATION_SPILL_BUDGET_MB` | Filter the query, retry later, or raise the limits | `FEDERATION_SPILL_TOO_LARGE` (502), `FEDERATION_SPILL_FULL` (503) |
@@ -1104,5 +1120,5 @@ one database's. Most have a setting that makes them agree.
 | The last digits of a float sum | Floats are added in the sequence they arrive in. Far from zero, that sequence changes the last digits | Use decimal columns for exact sums |
 | An integer variance as a float | In a query with a median or another measure computed from rows, the variance is computed as a float | Ask for the variance in its own query |
 | An overflow error when multiplying decimals | In DuckDB, two decimals of up to 18 digits multiply into 18 digits: two values with 2 decimal places overflow above 10^14 | None yet |
-| The shop database reads all orders, though a filter on the CRM keeps only a few customers | OBSL passes the matching customer IDs to the shop ([key injection](#key-injection)) only when the join key is one integer or text column, and up to a limit | Raise `DB_<NAME>_KEY_INJECTION_MAX_KEYS` |
-| The shop database returns one row per customer, where fewer rows would do | [Key maps](#key-maps) work only when the join key is one integer column, and up to the same limit | Raise the same limit |
+| MySQL reads all orders, though a filter in PostgreSQL keeps only a few customers | OBSL passes the matching customer IDs to MySQL ([key injection](#key-injection)) only when the join key is one integer or text column, and up to a limit | Raise `DB_<NAME>_KEY_INJECTION_MAX_KEYS` |
+| MySQL returns one row per customer, where fewer rows would do | [Key maps](#key-maps) work only when the join key is one integer column, and up to the same limit | Raise the same limit |
