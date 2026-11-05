@@ -515,6 +515,16 @@ GROUP BY ALL
   to the last period the query's filters on the date admit, as on one
   database. One dimension at two grains is read from each part's column of
   each grain; it and `asOf` work as on one database.
+- Cumulative metrics (a running total, a rolling window, grain-to-date) and
+  window metrics (rank, lag, lead, ntile) are computed in the combine query,
+  over the union's periods at the grain the query selects, as one database
+  computes them over its own: revenue's running total by month beside the
+  tickets. Refused (`FEDERATION_UNSUPPORTED_QUERY`): a cumulative metric
+  whose date the query filters, which one database reads before the
+  filter's first period where each part kept only the periods it admits;
+  one whose time dimension the query does not select; one over a
+  `windowSpan` of rows; any of them beside `rollup`, `cube` or one dimension
+  at two grains; and reaggregate metrics.
 - A measure of an object both facts join (the number of customers) works
   where one database counts that object's rows alone: by region. By order
   month, one database counts the customers through the orders, and the query
@@ -1100,10 +1110,12 @@ These cases are refused:
 
 The options: `rollup` or `cube` together with a measure with `total`,
 `grain` or `filterContext`, or together with one dimension at two grains; a
-measure that reads both tables; a running total, window or reaggregate
-metric; a coalesce dimension. A period comparison next to measures of both
-tables, and `dimensionsExclude` with measures, are refused on one database
-too.
+measure that reads both tables; a running total or rolling window when the
+query filters its date or does not select it, or over a `windowSpan`; a
+running total or window metric together with `rollup`, `cube` or two grains
+of one dimension; a reaggregate metric; a coalesce dimension. A period
+comparison next to measures of both tables, and `dimensionsExclude` with
+measures, are refused on one database too.
 
 ### Joins between databases
 
@@ -1195,6 +1207,7 @@ one database's. Most have a setting that makes them agree.
 | What you may see | Why | What to do |
 |---|---|---|
 | Rows with NULL sorted last, where your database sorts them first | OBSL sorts in DuckDB, which puts NULL last. PostgreSQL puts NULL first when sorting descending, MySQL when sorting ascending | Set `nulls: first` or `nulls: last` in `orderBy` |
+| A window metric ranks a NULL value last, where your database ranks it first | DuckDB computes the rank, and puts NULL last when sorting descending, as BigQuery, ClickHouse, Databricks and MySQL do; PostgreSQL, Snowflake and Dremio put it first. Beside independent facts, a month of tickets alone has no revenue to rank | Rank a measure that is never NULL, such as a count |
 | Text sorted differently | DuckDB sorts text by its bytes, so `'C'` comes before `'b'`. Most databases put `'b'` first. The same goes for `having`, window metrics, a `min` or `max` computed from rows, and filters such as `gt` or `between` that mix both databases (on MySQL text, those filters run in MySQL) | Sort by a code or a number, or sort in your tool |
 | A row added while the query runs, counted in one database but not in the other | Each database is read at its own moment. There is no common snapshot | Query changing data at quiet times |
 | Times off by some hours | A database whose time zone OBSL does not know (Databricks, Dremio, MySQL set to `SYSTEM`) returns times as stored, while the others are converted. OBSL warns with `UNDECLARED_TIMESTAMP_ZONE` | Set `DB_<NAME>_TIMEZONE` |
