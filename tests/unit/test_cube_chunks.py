@@ -227,3 +227,10 @@ def test_a_window_in_a_sort_key_is_refused() -> None:
 
     with pytest.raises(UnsupportedGroupingError):
         DialectRegistry.get("duckdb").compile_select(node)
+
+
+@pytest.mark.usefixtures("chunked")
+def test_a_projection_naming_no_column_is_refused() -> None:
+    """``SELECT *`` over the chunks: the union's projection would list nothing."""
+    with pytest.raises(UnsupportedGroupingError):
+        DialectRegistry.get("duckdb").compile_select(_cube([]))

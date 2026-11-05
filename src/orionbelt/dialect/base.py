@@ -2536,9 +2536,11 @@ class Dialect(ABC):
         query the union returns without, under a name no column has. A window
         over the cube's rows, in a column or a sort key, would read one
         chunk's rows alone, and ``DISTINCT`` could not sort by such a key:
-        refused.
+        refused, as is a projection naming no column (``SELECT *``), which
+        the union's own could not list.
         """
-        if not all(isinstance(c, AliasedExpr) for c in node.columns) or any(
+        named = bool(node.columns) and all(isinstance(c, AliasedExpr) for c in node.columns)
+        if not named or any(
             _holds(e, WindowFunction) for e in [*node.columns, *(o.expr for o in node.order_by)]
         ):
             raise UnsupportedGroupingError(dialect=self.name, grouping="cube")
