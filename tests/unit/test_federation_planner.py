@@ -5302,6 +5302,9 @@ REVENUE_AND_TICKETS = ["Revenue", "Tickets Count"]
 BY_REGION_BOTH = {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS}
 INDEPENDENT_QUERIES = {
     "by_region": {"select": BY_REGION_BOTH},
+    "beside_a_measure_of_the_customers": {
+        "select": {"dimensions": ["Region"], "measures": [*REVENUE_AND_TICKETS, "Customers Count"]}
+    },
     "by_a_dimension_one_fact_reaches": {
         "select": {"dimensions": ["Order Date:month", "Region"], "measures": REVENUE_AND_TICKETS}
     },
