@@ -1771,8 +1771,8 @@ def _plan_raw(
                 "UNSUPPORTED_FILTER",
                 "An exists filter in a raw-mode query runs in the leg of the facts' data "
                 "source: on its subject there, and beside no condition on another source",
-                hint="Select dimensions and measures, or keep the exists filter on the facts' "
-                "data source, outside an OR with conditions of another.",
+                hint="Ask for dimensions and measures instead, or keep the exists filter on "
+                "the facts' data source and out of an OR with another source's conditions.",
             )
         for field in _filter_fields(item):
             dimension = model.dimensions.get(field)
@@ -2468,7 +2468,7 @@ class _Planner:
                     "UNSUPPORTED_QUERY",
                     f"Measures of independent facts on several data sources are combined, "
                     f"but {why}, which is not supported yet",
-                    hint="Query the measures of each fact apart, or without it.",
+                    hint="Query each fact's measures separately, or leave out this option.",
                 )
 
     def _item_objects(self, item: QueryFilterItem) -> set[str]:
@@ -2504,7 +2504,7 @@ class _Planner:
             raise self.refuse(
                 "MULTI_FACT",
                 f"The query's measures are read from more than one data source ({listed})",
-                hint="Query the measures of each data source apart.",
+                hint="Query each data source's measures separately.",
             )
         if owners and owners != {base}:
             (fact,) = owners
@@ -2557,8 +2557,8 @@ class _Planner:
                     "UNSUPPORTED_JOIN",
                     f"The join {label} between data sources is not many-to-one from the "
                     "measures' side",
-                    hint="Select dimensions the measures' data source joins many-to-one, or "
-                    "query them on one data source.",
+                    hint="Leave out the dimensions reached through this join, or keep these "
+                    "data objects in one data source.",
                 )
             target = island_of[b]
             if target in reached:
@@ -2619,8 +2619,8 @@ class _Planner:
                             "UNSUPPORTED_JOIN",
                             f"'{step.from_object}' -> '{step.to_object}' would repeat the "
                             f"rows of '{entry}' in its data source",
-                            hint=f"Select dimensions '{entry}' joins many-to-one, or query "
-                            "them on one data source.",
+                            hint="Leave out the dimensions reached through this join, or keep "
+                            "these data objects in one data source.",
                         )
                     reached.add(step.to_object)
                     changed = True

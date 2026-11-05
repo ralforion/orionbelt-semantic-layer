@@ -6245,7 +6245,8 @@ class TestDimensionSourceJoins:
         assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
         assert "'Customers' -> 'Links' would repeat the rows of 'Customers'" in error.message
         assert error.hint == (
-            "Select dimensions 'Customers' joins many-to-one, or query them on one data source."
+            "Leave out the dimensions reached through this join, or keep these data objects "
+            "in one data source."
         )
 
     @pytest.mark.parametrize(
@@ -6586,8 +6587,8 @@ class TestDimensionSourceJoins:
         assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
         assert "'Customers' -> 'Links' between data sources is not many-to-one" in error.message
         assert error.hint == (
-            "Select dimensions the measures' data source joins many-to-one, or query them "
-            "on one data source."
+            "Leave out the dimensions reached through this join, or keep these data objects "
+            "in one data source."
         )
 
     def test_an_exists_over_a_nested_object_there_is_refused(self) -> None:

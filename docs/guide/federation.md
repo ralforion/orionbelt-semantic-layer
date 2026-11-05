@@ -901,7 +901,7 @@ after the join alike, and `Placed At >= 2024-02-01` keeps it. The result is
 labeled with the query's zone (the response's `timezone`): its values are the
 instants each source holds, as wall-clock times there. A join key between
 sources is compared as stored, as one database holding both tables compares
-it, and a converted value read through an [unnest](#arrays-of-another-source) is refused
+it, and a converted value read through an [unnest](#lists-in-another-database) is refused
 where one read in `queryTimezone` is.
 
 A model that says which zone its timestamps were written in, its
@@ -952,146 +952,152 @@ Kubernetes.
 
 ## Limitations
 
-A federated query returns the answer one database holding every table would
-return, or it is refused with an error that says why. Most refusals come when
-the query is compiled, before any source is read; a few come
-[while it runs](#when-the-query-runs). The error names the dimension, measure
-or join it is about, and its hint says what to ask instead.
+A query across databases gives the same answer as one database holding all
+the tables. When OBSL cannot guarantee that, it refuses the query and says
+why. The few small differences it does not refuse are listed in
+[Results that can differ](#results-that-can-differ-from-one-database).
 
-The examples below use the shop's orders and the CRM's customers of
-[the example](#an-example). Find your query by what it does:
+Most refusals happen before any database is queried. The error message
+includes a hint with what to do instead. Here, "database" means a data source
+of the model; the errors say "data source".
 
-| Your query | Refused when | Section |
+The examples use the model of [An example](#an-example): orders in the shop
+database (MySQL), customers in the CRM database (PostgreSQL).
+
+| What your query does | When it is refused | See |
 |---|---|---|
-| Reads measures of two sources | a measure of the customers is beside the orders' revenue; facts that stand apart are combined with a subtotal, a total, a metric across periods, `fill` or a few other options | [Measures from several sources](#measures-from-several-sources) |
-| Joins the sources | measures are grouped by the many side of their join; a join repeats rows, many-to-many between the sources or inside the other one | [Joins between sources](#joins-between-sources) |
-| Reads an array of another source | an unnested value (a customer's tags) is read without grouping by it, or beside a subtotal | [Arrays of another source](#arrays-of-another-source) |
-| Reads computed columns | a column is computed from another source, or has a value where the join finds no row (`COALESCE`) | [Computed columns](#computed-columns) |
-| Computes a measure from rows | it compares MySQL strings or ClickHouse floats, which DuckDB compares otherwise | [Measures computed from rows](#measures-computed-from-rows) |
-| Uses a metric across periods or a reaggregate metric | its dates are on an object the query does not join; a date with a time zone is grouped by a period | [Metrics](#metrics) |
-| Filters | on a column rather than a dimension; with `exists` across sources | [Filters](#filters) |
-| Runs | a source returns too many rows, or too many queries run at once | [When the query runs](#when-the-query-runs) |
-| Is compared with one database's answer | nothing is refused: string and NULL order, time zones, no snapshot across sources | [Results that can differ](#results-that-can-differ-from-one-database) |
+| Asks for measures from two databases | for example revenue from the shop and the number of customers from the CRM | [Measures from two databases](#measures-from-two-databases) |
+| Uses dimensions from another database | the join matches one order to several rows of the other database | [Joins between databases](#joins-between-databases) |
+| Uses a list of values, such as a customer's tags | the list is in another database and the query does not group by it | [Lists in another database](#lists-in-another-database) |
+| Uses calculated columns | the calculation reads another database, or gives orders without a customer a value (`COALESCE`) | [Calculated columns](#calculated-columns) |
+| Uses a median, a distinct count or a similar measure | it reads MySQL text or ClickHouse floats | [Medians, distinct counts and similar measures](#medians-distinct-counts-and-similar-measures) |
+| Uses running totals, period comparisons or reaggregate metrics | the date is in a table the query does not use | [Metrics](#metrics) |
+| Filters | on a table column instead of a dimension, or with `exists` across databases | [Filters](#filters) |
+| Fails while it runs | a database returns too many rows, or too many queries run at once | [When the query runs](#when-the-query-runs) |
+| Gives a slightly different answer than one database | never refused: sorting, time zones | [Results that can differ](#results-that-can-differ-from-one-database) |
 
-### Measures from several sources
+### Measures from two databases
 
-Measures of the orders may read the customers: revenue of the EU customers'
-orders is [computed from rows](#measures-reading-another-source). Measures of
-facts that stand apart, orders and tickets that both join the customers, are
-[combined side by side](#measures-of-independent-facts).
+Revenue per customer region works: the revenue comes from the shop, the
+region from the CRM. Asking for measures (such as revenue or a count) from
+both databases in one query is refused in these cases.
 
-| You asked for | Ask instead | Error |
+| You ask for | Do this instead | Error |
 |---|---|---|
-| A measure of the customers beside the orders' revenue, a count of the CRM's customers per region. Also when the query only orders by such a measure | Query each source's measures apart. A distinct count of the orders' customer key, on the shop, counts the customers that have orders | `FEDERATION_MULTI_FACT` |
-| Facts that stand apart, on different sources, beside any of: a measure with `total`, `grain` or `filterContext`; a measure reading several of the facts, or anchored to another; `rollup` or `cube`; a cumulative, period-over-period, window or reaggregate metric; `fill`, `asOf`, or one dimension at two grains; `dimensionsExclude` or a coalesce dimension | Query each fact's measures apart, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |
-| Facts that stand apart, ordered by a measure of a fact none of the selected measures is of (revenue per region, ordered by the tickets' count) | Select that measure too | `FEDERATION_UNSUPPORTED_QUERY` |
-| Facts that stand apart, in raw mode (`select.fields`) | Select the fields of one fact and the objects it joins, one query per fact; or select dimensions and measures, which combine them | `FEDERATION_UNSUPPORTED_QUERY` |
+| Revenue (shop) and the number of customers (CRM) in one query, or revenue sorted by the number of customers | Ask for each in its own query. Or define a measure on the orders that counts their distinct customer IDs: it counts the customers who placed orders, from the shop alone | `FEDERATION_MULTI_FACT` |
+| Measures of two tables that are not joined to each other, in different databases (orders in the shop, support tickets in the CRM), with one of the options listed below the table | Ask for each table's measures in its own query, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |
+| Measures of two such unjoined tables, sorted by a measure the query does not select (revenue per region, sorted by ticket count) | Add that measure to the query | `FEDERATION_UNSUPPORTED_QUERY` |
+| Columns of two such unjoined tables in [raw mode](#raw-mode) (`select.fields`) | One query per table, or ask for dimensions and measures instead | `FEDERATION_UNSUPPORTED_QUERY` |
 
-### Joins between sources
+The options: `rollup` or `cube`; a measure with `total`, `grain` or
+`filterContext`; a measure that reads both tables; a running total, period
+comparison, window or reaggregate metric; `fill`; `asOf`; one dimension at
+two grains; `dimensionsExclude`; a coalesce dimension.
 
-Across sources, each fact row joins one row of the other source, as a
-many-to-one (or one-to-one) join does on one database.
+### Joins between databases
 
-| You asked for | Ask instead | Error |
+Across databases, each order must match at most one row in the other
+database, as a many-to-one join does.
+
+| You ask for | Do this instead | Error |
 |---|---|---|
-| Measures grouped by a dimension on the many side of their join: a count of the CRM's customers by the orders' amount, where a customer has many orders | Group by dimensions of the measures' own source, or of objects they join many-to-one. A distinct count of the orders' customer key, on the shop, counts the customers per amount | `FEDERATION_UNSUPPORTED_JOIN` |
-| A many-to-many join between sources, or a many-to-one join walked from its one side: the topics the CRM's customers link to, kept on another source. One database counts an order once per topic, where across sources each order joins one row | Group by dimensions joined many-to-one from the measures' side, or query it on one data source | `FEDERATION_UNSUPPORTED_JOIN` |
-| Inside the other source, a join that repeats rows: a many-to-many join, or a many-to-one join walked from its one side. An order's customer, and the topics the customer links to: one database counts the order once per topic, where the CRM's leg returns each customer once | Group by dimensions the other source reaches many-to-one from the object the join enters, or query it on one data source | `FEDERATION_UNSUPPORTED_JOIN` |
-| Objects of another source that the measures' source reaches by two joins at once, or by none | Query it on one data source | `FEDERATION_UNSUPPORTED_JOIN` |
+| The number of customers (CRM) per order amount (shop). One customer has many orders | Count the orders' distinct customer IDs per amount, in the shop | `FEDERATION_UNSUPPORTED_JOIN` |
+| A dimension reached through a many-to-many join between two databases: customers (CRM) and the topics they follow, kept in a third database | Leave out that dimension, or keep both tables in one database | `FEDERATION_UNSUPPORTED_JOIN` |
+| A dimension reached through a join inside the CRM that matches one customer to several rows (a customer's topics), together with revenue | Leave out that dimension, or keep the orders and the CRM tables in one database | `FEDERATION_UNSUPPORTED_JOIN` |
+| Tables of one database that the query reaches by two joins at once, or by none (rare) | Keep these tables in one database | `FEDERATION_UNSUPPORTED_JOIN` |
 
-### Arrays of another source
+### Lists in another database
 
-A [nested object](model-format.md#nested-data-objects-nestedin) (`nestedIn`)
-unnests an array, a customer's tags. On another source than the measures',
-its leg returns a row per tag, and the orders join each. Grouped by the tag,
-or filtered on it alone, an order counts once per group, as on one database.
-Anything that would count an order once per tag of its customer is refused,
-also for what is read through the tags (a tier joined to a tag, a customer
-column computed from them).
+A [nested object](model-format.md#nested-data-objects-nestedin) turns a list
+column into rows, for example a customer's tags. When the tags are in another
+database than the orders, you can group the orders by tag, and filter on a
+tag. Each order counts once per tag, as on one database. These uses are
+refused:
 
-| You asked for | Ask instead | Error |
+| You ask for | Do this instead | Error |
 |---|---|---|
-| A tag dimension beside a `rollup` or `cube` subtotal, a measure's `total`, or a measure's `grain`, which add the tags' groups up | Select it without the subtotal, total or grain, or query it on one data source | `FEDERATION_UNSUPPORTED_QUERY` |
-| A tag the query reads without grouping by it: in a measure's filter, a static filter, a filter beside a condition on another source (in an `or`, or one a measure's `filterContext` leaves out), a join on to a third source, a reaggregate metric's `per`, or beside a metric across periods. Grouping by a coarser value does not count: by month, for a measure reading the tag's date; by a value shown in the `queryTimezone`, or computed from one (its hour), for the stored timestamp | Select what it reads as a dimension too, as stored (the tag's date, not its month), or query it on one data source | `FEDERATION_UNSUPPORTED_QUERY` |
-| An `exists` on a customer whose subquery reads the tags: the orders of customers tagged `'vip'` | Filter on the tag dimension instead, `Tag = 'vip'`: the same orders | `FEDERATION_UNSUPPORTED_JOIN` |
+| A tag dimension together with a subtotal (`rollup`, `cube`), or with a measure that has `total` or `grain` | Leave out the subtotal, the `total` or the `grain` | `FEDERATION_UNSUPPORTED_QUERY` |
+| A tag used without grouping by it: in a measure's filter, in a model filter, in an `or` with a condition on another database, or to join a table in a third database | Add the tag as a dimension | `FEDERATION_UNSUPPORTED_QUERY` |
+| A measure that filters on a tag's date, while the query groups by the month of that date (or by its hour, or by its time in another time zone) | Group by the date itself | `FEDERATION_UNSUPPORTED_QUERY` |
+| A tag together with a running total or period comparison | Keep the tables in one database | `FEDERATION_UNSUPPORTED_QUERY` |
+| `exists` on customers with a subquery on their tags: the orders of customers tagged `'vip'` | Filter on the tag instead: `Tag = 'vip'` returns the same orders | `FEDERATION_UNSUPPORTED_JOIN` |
 
-### Computed columns
+### Calculated columns
 
-A column computed from other columns is computed in its own source's leg,
-from the objects that leg reads.
-
-| You asked for | Ask instead | Error |
+| You ask for | Do this instead | Error |
 |---|---|---|
-| A column of a left-joined source with a value where the row is missing: `COALESCE({[Customers].[Region]}, 'unknown')` for an order whose customer is not in the CRM. One database computes `'unknown'`, the combine step would read NULL. As a dimension, a field, a filter, a measure's input, a static filter or a join key | Compute it so it stays NULL where its inputs are (`UPPER`, arithmetic), and label the missing rows in your tool; or make the join `required`, which keeps only the orders whose customer is found | `FEDERATION_UNSUPPORTED_JOIN` |
-| A dimension, a field or a static filter computed from an object the query does not join to the column's own within its source: the customers' home region, computed from the regions, with the regions on another source, or joined to the orders directly | Compute it from objects of its own source that its object joins, or query it on one data source | `FEDERATION_UNSUPPORTED_JOIN` |
-| A measure reading a column computed from columns of another source | Compute the column from columns of the measure's own source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
-| A measure of an object the facts' rows reach ([counted once per row](#objects-the-joins-repeat), the customers' ages in a query of their sales) that reads a column of another source | Query that measure on one data source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
+| A CRM column calculated to have a value for orders without a customer: `COALESCE({[Customers].[Region]}, 'unknown')`. One database shows `'unknown'` for those orders, across databases they would show NULL | Use a calculation that stays NULL for a missing customer (`UPPER`, arithmetic) and rename the NULL group in your tool. Or mark the join `required`, which drops orders without a customer | `FEDERATION_UNSUPPORTED_JOIN` |
+| A calculated customer column that reads a table the customers are not joined to in the CRM: the customers' home region, read from a regions table in another database | Calculate it only from CRM tables that the customers table joins | `FEDERATION_UNSUPPORTED_JOIN` |
+| A measure that reads a column calculated from another database | Calculate the column from the measure's own database | `FEDERATION_MEASURE_ACROSS_SOURCES` |
+| A measure defined on the customers, in a query of their orders, that reads a column of another database | Keep the tables in one database | `FEDERATION_MEASURE_ACROSS_SOURCES` |
 
-### Measures computed from rows
+### Medians, distinct counts and similar measures
 
-A measure that does not add up from partial results (a median, a
-percentile, `mode`), or that reads a column of another source, is
-[computed from rows](#computed-from-rows) in the combine step's DuckDB.
+Some measures cannot be computed from per-group totals: a median, a
+percentile, `mode`, or a measure that reads a column of another database.
+OBSL computes them in DuckDB from the individual rows. That is refused where
+DuckDB compares values differently than the source database.
 
-| You asked for | Ask instead | Error |
+| You ask for | Do this instead | Error |
 |---|---|---|
-| Such a measure over values its engine compares otherwise than DuckDB. A MySQL string, whose collation makes `'a'` and `'A'` equal: in a filter that also reads another source, a computed column or a date; as the ordering or expression; or as the argument of `min`, `max`, a percentile, `mode`, `first`, `last`, `listagg` or a `distinct` aggregation. A ClickHouse float it counts (`mode`, a `distinct` aggregation), where `0.0` and `-0.0` are two | Query it on one data source. A `min` or `max` of strings is refused only beside a measure computed from rows: query it apart. A filter comparing only plain columns of the measures' source (strings with strings, without a pattern) runs in its leg and is not refused | `FEDERATION_UNSUPPORTED_AGGREGATION` |
-| A measure of an object the facts' rows reach, the customers' ages in a query of sales, reading a sales column other than in a filter (as its argument, expression or ordering): one customer has several | Query it on one data source | `FEDERATION_UNSUPPORTED_AGGREGATION` |
-| A dimension or key read through two such objects at once, one joined from the other: the accounts' credits beside their owners' ages, by the owners' region | Query the measures of each object apart | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+| MySQL text in such a measure: its `min`, `max`, `mode`, `listagg`, `first`, `last`, percentile or distinct count, the column it sorts by (`first`, `last`), or a filter that also reads another database. MySQL treats `'a'` and `'A'` as equal, DuckDB does not | Keep the tables in one database. A `min` or `max` of text works when no other measure in the query is computed from rows | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+| ClickHouse floats in a `mode` or a distinct count. ClickHouse counts `0.0` and `-0.0` as two values, DuckDB as one | Keep the tables in one database | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+| A measure defined on the customers that reads a column of their orders (one customer has many), other than in a filter | Keep the tables in one database | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+| Measures of two related tables at once, each computed from rows, grouped by the second table: the accounts' credits and their owners' ages, by the owners' region | Ask for each table's measures in its own query | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 
 ### Metrics
 
-| You asked for | Ask instead | Error |
+| You ask for | Do this instead | Error |
 |---|---|---|
-| A cumulative, period-over-period or window metric whose time dimension is on an object the query does not join: a running total by region alone, over a calendar it neither selects nor filters on | Select its time dimension, or query the metric on one data source | `FEDERATION_UNSUPPORTED_METRIC` |
-| A reaggregate metric whose `per` dimension the measure's rows do not reach many-to-one (the customers' count per order date); or whose `per` dimension a required join reaches that the query does not make, in a leg the query or another reaggregate metric reads too; or, with `population: dimension`, whose source's leg reads another object too | Query it on one data source | `FEDERATION_UNSUPPORTED_METRIC` |
-| A dimension over a timestamp with a time zone, at a grain or as a date, beside a cumulative, period-over-period or window metric, or a reaggregate metric per a date. Without the metric, with `fill` or at two grains in one query: the combine step would group it in its own time zone, not its source's | Select it as a timestamp with a time zone, without a grain | `FEDERATION_UNSUPPORTED_METRIC`, `FEDERATION_UNSUPPORTED_QUERY` |
+| A running total, period comparison or window metric whose date is in a table the query does not use: a running total by region, dated by a calendar table you do not select | Add the metric's date dimension to the query | `FEDERATION_UNSUPPORTED_METRIC` |
+| A reaggregate metric whose `per` dimension cannot be reached from its measure's table by many-to-one joins (customers counted per order date), and two rarer cases: a required join on the way, or `population: dimension` sharing its database with other tables | Keep the tables in one database | `FEDERATION_UNSUPPORTED_METRIC` |
+| A timestamp with a time zone, grouped by day, month or another period, together with a running total, period comparison, window metric, a reaggregate metric per date, `fill`, or the same dimension at two grains | Select the timestamp itself, without a period | `FEDERATION_UNSUPPORTED_METRIC`, `FEDERATION_UNSUPPORTED_QUERY` |
 
 ### Filters
 
-| You asked for | Ask instead | Error |
+| You ask for | Do this instead | Error |
 |---|---|---|
-| A filter on a data object's column, `Customers.Region`, rather than a dimension; also as a `filterContext` `include`. Raw mode takes such a filter | Declare a dimension over the column and filter on that | `FEDERATION_UNSUPPORTED_FILTER` |
-| An `exists` or `nonexists` whose subquery reads another source than its subject: its target, the join path to it, or an object its filters read | Keep the subquery on its subject's source | `FEDERATION_UNSUPPORTED_FILTER` |
-| An `exists` or `nonexists` in an `or` with a condition on another source, or in a group that is true for an order without a customer | Filter with it on its own, or beside conditions of its subject's source only | `FEDERATION_UNSUPPORTED_FILTER` |
-| An `exists` or `nonexists` that a measure's `filterContext` leaves out | Keep it in every measure's `filterContext` | `FEDERATION_UNSUPPORTED_FILTER` |
-| In raw mode, an `exists` or `nonexists` on a subject of another source than the facts' | Select dimensions and measures, or keep it on the facts' source | `FEDERATION_UNSUPPORTED_FILTER` |
-| In raw mode, without the model's `queryTimezone`, a filter after the join on a dimension that truncates or casts a timestamp with a time zone (its month, its date) | Set the model's `queryTimezone`, or query it on one data source | `FEDERATION_UNSUPPORTED_FILTER` |
+| A filter on a table column (`Customers.Region`) instead of a dimension, in `where` or in a measure's `filterContext` | Add a dimension for the column and filter on it | `FEDERATION_UNSUPPORTED_FILTER` |
+| `exists` or `nonexists` with a subquery that reads another database than the table it tests | Keep the subquery in the database of the table it tests | `FEDERATION_UNSUPPORTED_FILTER` |
+| `exists` or `nonexists` in an `or` with a condition on another database, or in a filter group that can be true for orders without a customer (one with `is_null`, for example) | Use it as a filter of its own, or combine it only with conditions on the same database | `FEDERATION_UNSUPPORTED_FILTER` |
+| `exists` or `nonexists` that a measure's `filterContext` leaves out | Keep it in every measure's `filterContext` | `FEDERATION_UNSUPPORTED_FILTER` |
+| Raw mode: `exists` or `nonexists` on a table of another database than the orders | Ask for dimensions and measures, or test a table of the orders' database | `FEDERATION_UNSUPPORTED_FILTER` |
+| Raw mode without a `queryTimezone`: a filter that mixes both databases, on a timestamp with a time zone grouped by period | Set the model's `queryTimezone` | `FEDERATION_UNSUPPORTED_FILTER` |
 
-An `exists` over an array of another source is listed under
-[Arrays of another source](#arrays-of-another-source).
+`exists` over a list in another database is under
+[Lists in another database](#lists-in-another-database).
 
 ### When the query runs
 
 | What happened | What to do | Error |
 |---|---|---|
-| A leg returned more than `FEDERATION_MAX_LEG_ROWS` rows (5,000,000), or held more than `FEDERATION_MAX_LEG_MB` (512) in memory. Mostly a join on a key with many values: revenue by region, with the customers on another source, returns a row per customer from the shop ([where to join the sources](#where-to-join-the-sources)). The error names those joins | Filter on the other source's dimensions, which narrows both legs to the keys it returns ([key injection](#key-injection)); join on a column with fewer values (a region rather than a customer); or raise the limit | `FEDERATION_LEG_TOO_LARGE` (HTTP 502) |
-| A leg returned a value no decimal holds (PostgreSQL's `NaN`, more than 38 digits), or the partial sums of an `avg` as floats or with more places than the combine step adds exactly | Filter the value out; for an average, declare the measure's `resultType` float, or average a fixed-point column | `FEDERATION_LEG_TYPE` (HTTP 502) |
-| More federated queries than `FEDERATION_MAX_CONCURRENT` (4) ran at once, and this one waited past `FEDERATION_QUEUE_TIMEOUT_SECONDS` | Retry, or raise the limit where the process has memory to spare | `FEDERATION_BUSY` (HTTP 503) |
-| A query spilled more than `FEDERATION_SPILL_MAX_MB` to disk, or all queries together more than `FEDERATION_SPILL_BUDGET_MB` | Filter the query; retry later; or raise the limits and the disk | `FEDERATION_SPILL_TOO_LARGE` (502), `FEDERATION_SPILL_FULL` (503) |
+| One database returned more than 5,000,000 rows (`FEDERATION_MAX_LEG_ROWS`) or 512 MB (`FEDERATION_MAX_LEG_MB`). Usually the join key has many values: revenue per region makes the shop return one row per customer. The error names the join | Filter on the other database's dimensions, so OBSL reads only the matching keys. Join on a key with fewer values (region instead of customer). Or raise the limit | `FEDERATION_LEG_TOO_LARGE` (HTTP 502) |
+| A number no exact decimal can hold (`NaN`, more than 38 digits), or an average whose sums came back as floats | Filter out the value. For an average, set the measure's `resultType` to `float` | `FEDERATION_LEG_TYPE` (HTTP 502) |
+| More than 4 federated queries at once (`FEDERATION_MAX_CONCURRENT`), and this one waited longer than `FEDERATION_QUEUE_TIMEOUT_SECONDS` | Retry, or raise the limit if the server has memory to spare | `FEDERATION_BUSY` (HTTP 503) |
+| A query wrote more than `FEDERATION_SPILL_MAX_MB` to disk, or all queries together more than `FEDERATION_SPILL_BUDGET_MB` | Filter the query, retry later, or raise the limits | `FEDERATION_SPILL_TOO_LARGE` (502), `FEDERATION_SPILL_FULL` (503) |
 
 ### Results that can differ from one database
 
-Not refused, and listed so they are known. Most have a setting that makes
-them agree.
+These queries are not refused, but the answer can differ in small ways from
+one database's. Most have a setting that makes them agree.
 
 | What you may see | Why | What to do |
 |---|---|---|
-| A NULL group sorted last where one database sorts it first | ordered after the join, NULLs sort as DuckDB sorts them: last, ascending and descending. PostgreSQL puts them first in a descending order, MySQL first in an ascending one | set `nulls: first` or `nulls: last` on the `orderBy` |
-| Strings in another order | ordered after the join, strings sort bytewise: `'C'` before `'b'`, where PostgreSQL's `en_US.utf8` or MySQL's collation puts `'b'` first. So do a `having`, a window metric, a reaggregate metric's own `min` or `max`, a filter after the join comparing strings by order (`gt`, `between`, ...; on MySQL it [runs in its leg](#values-compared-across-engines)), and a measure [computed from rows](#computed-from-rows). A `min` or `max` of strings otherwise combines in its source's order | order by a value with one order everywhere (a code, a number), or sort in your tool |
-| Rows read at slightly different moments | there is no snapshot across sources: each leg reads its source when it runs | read sources that change during the query at a quiet time |
-| Timestamps without a time zone off by the source's offset | from a source whose session zone is not known (Databricks, Dremio, a MySQL session in its server's zone, `SYSTEM`, where that is not UTC), they are returned as stored, where the other legs [convert theirs](#timestamps-without-a-time-zone) to the query's zone. The query warns with `UNDECLARED_TIMESTAMP_ZONE` | set `DB_<NAME>_TIMEZONE` for the source |
-| Timestamp join keys that do not match | keys are compared as stored, as one database holding both tables compares them: a key stored in UTC on one source and in New York time on another does not match its instant. A key with a time zone is read in the zone of the OBSL server process | store the keys in one zone, or join on another key |
-| Today's date off by one around midnight | a `relative` filter counts from the date of the engine that runs it: a leg's source in its session's zone; after the join, the OBSL server process's zone | run the OBSL server in the sources' zone, or filter on fixed dates |
-| A timestamp with a time zone compared with a date literal (`'2023-12-01'`) after the join | the combine step reads the literal in the OBSL server process's zone, a source reads it in its session's | set the model's `queryTimezone`: the legs return wall-clock times, which compare alike |
-| One group for the hour the clocks go back, on ClickHouse | legs [read timestamps](#timestamps-without-a-time-zone) as wall-clock times in the query's zone, where 02:30 in Berlin is two instants an hour apart: the combine step groups them as one, as the other engines do. ClickHouse alone keeps them apart | use a `queryTimezone` without daylight saving time, UTC |
-| `'a'` and `'A'` as two rows in raw mode | raw-mode `distinct` deduplicates as DuckDB: two MySQL strings its collation calls equal are two rows | select them as dimensions, which group as MySQL does |
-| A pattern after the join that MySQL would match | a pattern (`like`, `contains`, ...) or a comparison with a number, on a MySQL string of the measures' source, in a filter after the join (in an `or` with another source's condition), compares bytewise. [Other conditions](#values-compared-across-engines) run in their leg | keep the pattern out of an `or` with conditions of other sources |
-| Join keys that do not match by collation | between legs on two engines, keys compare bytewise, whatever a source's collation. Between two MySQL legs they compare [by their weight strings](#values-compared-across-engines), which match where one MySQL database would compare by the binary collation or refuse | join on keys with the same bytes on both sides (IDs, normalised codes) |
-| `0.0` and `-0.0` as one group, from ClickHouse | a ClickHouse float dimension groups in DuckDB, which calls them equal | none |
-| Each order once per tag of another source, where one database refuses | grouped by a tag of another source, the orders count once per tag. One database does the same through the orders' `primaryKey`, and refuses the query without one | declare the orders' `primaryKey` for one database to agree |
-| The last digits of a double | a measure of doubles computed from rows adds them in the order they arrive, as one source does: far from zero the result depends on it | use a decimal column for exact sums |
-| A variance of integers as a double | beside a measure that needs rows, a variance of integers is DuckDB's double variance, not the exact one from its moments | query the variance apart |
-| An overflow on a product of decimals | computed from rows, two decimals of 18 digits or fewer multiply to `DECIMAL(18, s1 + s2)`, so two of 2 places overflow past 10^14, where PostgreSQL and MySQL compute it exactly | none yet |
-| More rows read than the filter needs | the fact leg reads every key where [key injection](#key-injection) is skipped: a key of two columns, of a type other than integer or string, or past the limit. The answer is the same | for a key past the limit, raise `DB_<NAME>_KEY_INJECTION_MAX_KEYS` |
-| A larger leg than the filter needs | the fact leg groups by the key where a [key map](#key-maps) is skipped: a key of two columns, a key other than an integer, or past the limit. The answer is the same | for a key past the limit, raise `DB_<NAME>_KEY_INJECTION_MAX_KEYS` |
+| Rows with NULL sorted last, where your database sorts them first | OBSL sorts in DuckDB, which puts NULL last. PostgreSQL puts NULL first when sorting descending, MySQL when sorting ascending | Set `nulls: first` or `nulls: last` in `orderBy` |
+| Text sorted differently | DuckDB sorts text by its bytes, so `'C'` comes before `'b'`. Most databases put `'b'` first. The same goes for `having`, window metrics, a `min` or `max` computed from rows, and filters such as `gt` or `between` that mix both databases (on MySQL text, those filters run in MySQL) | Sort by a code or a number, or sort in your tool |
+| A row added while the query runs, counted in one database but not in the other | Each database is read at its own moment. There is no common snapshot | Query changing data at quiet times |
+| Times off by some hours | A database whose time zone OBSL does not know (Databricks, Dremio, MySQL set to `SYSTEM`) returns times as stored, while the others are converted. OBSL warns with `UNDECLARED_TIMESTAMP_ZONE` | Set `DB_<NAME>_TIMEZONE` |
+| Timestamps that do not match in a join | They are compared as stored: 10:00 in UTC and 05:00 in New York are the same moment, but not the same value | Store join timestamps in one time zone |
+| "Today" is another day around midnight | A `relative` filter counts from today's date where it runs: in the database's time zone, or in the OBSL server's time zone when the filter mixes both databases | Run the OBSL server in the databases' time zone, or filter on fixed dates |
+| A timestamp with a time zone compared with a date such as `'2023-12-01'` returns other rows | When the filter mixes both databases, the date is read in the OBSL server's time zone | Set the model's `queryTimezone` |
+| ClickHouse: the hour when the clocks go back is one group | Two moments with the same local time (02:30 twice in Berlin) fall into one group, as on the other databases. ClickHouse alone keeps them apart | Use a `queryTimezone` without daylight saving time, such as UTC |
+| Raw mode: `'a'` and `'A'` from MySQL as two rows | `distinct` runs in DuckDB, which tells them apart | Select them as dimensions: grouping matches MySQL |
+| A `like` or `contains` on MySQL text matches other rows | Inside an `or` with a condition on another database, the pattern runs in DuckDB, which compares bytes | Keep the pattern out of such an `or` |
+| Join keys that differ only in upper and lower case do not match | Keys are compared byte by byte. MySQL would match `'abc'` and `'ABC'` | Join on IDs or codes stored the same way in both databases |
+| ClickHouse: `0.0` and `-0.0` in one group | DuckDB treats them as equal | Nothing |
+| A query by tag is answered that one database refuses | Grouped by a tag in another database, each order counts once per tag. One database gives the same answer only when the orders have a `primaryKey`, and refuses the query without one | Declare the orders' `primaryKey` |
+| The last digits of a float sum | Floats are added in the sequence they arrive in. Far from zero, that sequence changes the last digits | Use decimal columns for exact sums |
+| An integer variance as a float | In a query with a median or another measure computed from rows, the variance is computed as a float | Ask for the variance in its own query |
+| An overflow error when multiplying decimals | In DuckDB, two decimals of up to 18 digits multiply into 18 digits: two values with 2 decimal places overflow above 10^14 | None yet |
+| The shop database reads all orders, though a filter on the CRM keeps only a few customers | OBSL passes the matching customer IDs to the shop ([key injection](#key-injection)) only when the join key is one integer or text column, and up to a limit | Raise `DB_<NAME>_KEY_INJECTION_MAX_KEYS` |
+| The shop database returns one row per customer, where fewer rows would do | [Key maps](#key-maps) work only when the join key is one integer column, and up to the same limit | Raise the same limit |
