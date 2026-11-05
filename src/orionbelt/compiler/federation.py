@@ -280,8 +280,10 @@ _REACHED_RELATION = "_reached"
 # count of its fact's rows a part grouping by no dimension returns (:class:`_Part`).
 _PART_RELATION = "__part"
 _PARTS_RELATION = "__parts"
-# The groups of the parts' union, under a rollup or cube (:func:`_grouped`).
+# The groups of the parts' union, under a rollup or cube (:func:`_grouped`),
+# and the grouping sets each part's rows join (:func:`_in_grouping_sets`).
 _GROUPED_RELATION = "__grouped"
+_GROUPING_SETS_RELATION = "__grouping_sets"
 _PRESENT = "__present"
 
 # The filter operators true where their field is NULL, and those false there.
@@ -2022,7 +2024,7 @@ def _plan_parts(
         sql = f"WITH {reading},\n{sql}" if sql != plan.combine_sql else f"WITH {reading}\n{sql}"
         ctes.append(f"{q(f'{_PART_RELATION}{k}')} AS (\n{sql}\n)")
         if query.grouping is not None:
-            union += _in_grouping_sets(query, part, f"{_PART_RELATION}{k}")
+            union.append(_in_grouping_sets(query, part, f"{_PART_RELATION}{k}"))
             continue
         if part.present is None:
             union.append(f"SELECT * FROM {q(f'{_PART_RELATION}{k}')}")
@@ -2132,7 +2134,7 @@ def _grouping_sets(query: QueryObject) -> list[frozenset[str]]:
     return [frozenset(kept) for n in range(len(names), -1, -1) for kept in combinations(names, n)]
 
 
-def _in_grouping_sets(query: QueryObject, part: _Part, relation: str) -> list[str]:
+def _in_grouping_sets(query: QueryObject, part: _Part, relation: str) -> str:
     """The rows of *part*, its result *relation*, in each grouping set of *query*'s rollup or cube.
 
     One database rolls up the union of the facts' rows, each NULL on the
@@ -2142,25 +2144,33 @@ def _in_grouping_sets(query: QueryObject, part: _Part, relation: str) -> list[st
     dimensions, which the set keeps, a group of their own, or rolls up. One
     of its grouping sets can be several of the query's: the tickets per
     region are a region's tickets of no order month, and of every month.
-    A part grouping by no dimension is in every set, where it counted rows.
+    So the part's rows join the query's grouping sets, each its flags, on
+    the flags of the dimensions it reaches; a part grouping by no dimension
+    joins every set, where it counted rows.
     """
     q = DialectRegistry.get(COMBINE_DIALECT).quote_identifier
     names = [DimensionRef.parse(d).name for d in _dimension_refs(query)]
     reached = [DimensionRef.parse(d).name for d in _dimension_refs(part.query)]
     measures = [m for m in part.query.select.measures if m != part.present]
-    rows = []
-    for kept in _grouping_sets(query):
-        columns = [
-            *(q(name) for name in reached if name in kept),
-            *map(q, measures),
-            *(f"{int(name not in kept)} AS {q(grouping_flag_alias(name))}" for name in names),
-        ]
-        tests = [f"{q(grouping_flag_alias(name))} = {int(name not in kept)}" for name in reached]
-        if part.present is not None:
-            tests.append(f"{q(part.present)} > 0")
-        where = f"\nWHERE {' AND '.join(tests)}" if tests else ""
-        rows.append(f"SELECT {', '.join(columns)}\nFROM {q(relation)}{where}")
-    return rows
+    flags = [grouping_flag_alias(name) for name in names]
+    rows = ", ".join(
+        "(" + ", ".join(str(int(name not in kept)) for name in names) + ")"
+        for kept in _grouping_sets(query)
+    )
+    sets = q(_GROUPING_SETS_RELATION)
+    columns = [
+        *(f"{q(relation)}.{q(name)} AS {q(name)}" for name in [*reached, *measures]),
+        *(f"{sets}.{q(flag)} AS {q(flag)}" for flag in flags),
+    ]
+    on = " AND ".join(
+        f"{q(relation)}.{q(grouping_flag_alias(name))} = {sets}.{q(grouping_flag_alias(name))}"
+        for name in reached
+    )
+    where = f"\nWHERE {q(relation)}.{q(part.present)} > 0" if part.present is not None else ""
+    return (
+        f"SELECT {', '.join(columns)}\nFROM {q(relation)}\n"
+        f"JOIN (VALUES {rows}) AS {sets}({', '.join(map(q, flags))}) ON {on or 'TRUE'}{where}"
+    )
 
 
 def _grouped(sql: str, query: QueryObject, flags: list[str]) -> str:
