@@ -505,13 +505,16 @@ GROUP BY ALL
   and the combine query puts each of its rows in every grouping set of the
   query it belongs to. The tickets per region are a region's tickets of no
   order month and its tickets of all months, as one database's rollup of the
-  union has them; the `_g_` flags come back as on one database.
+  union has them; the `_g_` flags come back as on one database. A fact
+  without rows adds no subtotal: each part counts its rows.
 - A measure with `total`, `grain` or `filterContext` is computed in the part
   of its fact. The combine query gives a total, or a value at a coarser
   grain, to every group that shares it, the other fact's groups too: the
   tickets' total on the rows of revenue alone.
-- `fill` fills the periods of the union in the combine query. One dimension
-  at two grains, and `asOf`, work as on one database.
+- `fill` fills the periods of the union in the combine query, from the first
+  to the last period the query's filters on the date admit, as on one
+  database. One dimension at two grains is read from each part's column of
+  each grain; it and `asOf` work as on one database.
 - A measure of an object both facts join (the number of customers) works
   where one database counts that object's rows alone: by region. By order
   month, one database counts the customers through the orders, and the query

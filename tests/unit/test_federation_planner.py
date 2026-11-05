@@ -5427,6 +5427,45 @@ INDEPENDENT_QUERIES = {
         }
     },
     "as_of_a_date": {"select": BY_REGION_AND_MONTH, "asOf": "2024-02-15"},
+    "at_a_coarser_grain_first": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month"],
+            "measures": REVENUE_AND_TICKETS,
+        }
+    },
+    "at_two_grains_with_a_week": {
+        "select": {
+            "dimensions": ["Order Date:year", "Region", "Order Date:week"],
+            "measures": REVENUE_AND_TICKETS,
+        }
+    },
+    "at_two_grains_sorted_by_the_second_and_limited": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month"],
+            "measures": REVENUE_AND_TICKETS,
+        },
+        "orderBy": [{"field": "Order Date:month", "direction": "desc"}],
+        "limit": 2,
+    },
+    "filled_between_bounds_beyond_the_data": {
+        "select": {"dimensions": ["Order Date:month"], "measures": REVENUE_AND_TICKETS},
+        "where": [
+            {"field": "Order Date", "op": ">", "value": "2023-11-15"},
+            {"field": "Order Date", "op": "<=", "value": "2024-05-20"},
+        ],
+        "fill": True,
+    },
+    "filled_and_sorted": {
+        "select": {"dimensions": ["Order Date:month"], "measures": REVENUE_AND_TICKETS},
+        "where": [{"field": "Order Date", "op": "between", "value": ["2023-12-01", "2024-05-31"]}],
+        "orderBy": [{"field": "Order Date", "direction": "desc"}],
+        "limit": 4,
+        "fill": True,
+    },
+    "a_rollup_from_the_other_end": {
+        "select": {"dimensions": ["Order Date:month", "Region"], "measures": REVENUE_AND_TICKETS},
+        "grouping": "rollup",
+    },
 }
 
 
@@ -5595,6 +5634,28 @@ class TestMeasuresOfIndependentFacts:
 
         assert rows == _run_on(paths, independent_model(False), query)
         assert (None, None, 10) in rows
+
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    @pytest.mark.parametrize(
+        "dimensions",
+        [["Region", "Order Date:month"], ["Order Date:month", "Region"]],
+        ids=["region_first", "month_first"],
+    )
+    def test_a_fact_without_rows_adds_no_subtotal(
+        self, independent_files: dict[str, dict[str, str]], grouping: str, dimensions: list[str]
+    ) -> None:
+        """Without tickets, their part's grand total stood for no rows, and
+        gave the cube a group of all regions in no month."""
+        paths = independent_files["no_tickets"]
+        query = {
+            "select": {"dimensions": dimensions, "measures": REVENUE_AND_TICKETS},
+            "grouping": grouping,
+        }
+
+        single = _run_on(paths, independent_model(False), query)
+
+        assert _run_on(paths, independent_model(True), query) == single
+        assert single
 
     @pytest.mark.parametrize(
         ("query", "message"),
