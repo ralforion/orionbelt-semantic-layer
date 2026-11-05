@@ -321,7 +321,7 @@ same; the fact leg returns a row per group of what the query reads there:
 
 | What | How |
 |---|---|
-| When | A dimension leg joined from the fact leg on one integer column on both sides, in a query whose fact leg returns partial results grouped by more than that key; on MySQL, 8.0.19 or later. Not where the query reads the key otherwise: a dimension or a count of distinct values on its column, a `nonexists` on that source, a measure [computed from rows](#computed-from-rows) |
+| When | A dimension leg joined from the fact leg on one integer column on both sides, in a query whose fact leg returns partial results grouped by more than that key; on MySQL, 8.0.19 or later. Not where the query reads the key otherwise: a dimension or a count of distinct values on its column, a `nonexists` on that source, a measure [computed from rows](#computed-from-rows) or a [measure of the joined table](#measures-of-a-joined-table) |
 | How many | The [key injection](#key-injection) limit, shared: the keys of lists and maps together, the legs with the fewest keys first. A map takes the place of its key's list, as an inner join where the dimension leg runs a filter. A leg with more keys than are left is not mapped, and the fact leg groups by its key |
 | Cost | The fact leg waits for the dimension leg rather than running beside it, and joining the map costs time in proportion to the fact rows: a fact leg that groups few rows can take longer |
 | Not mapped | A string key: in the fact source's collation one key can equal two of the map's (`'a'` and `'A'` under MySQL's `utf8mb4_0900_ai_ci`), which would count its fact rows in both groups. A map making the statement longer than the engine parses. A dimension leg that, with the copy of its rows the map takes, would hold more than `FEDERATION_MAX_LEG_MB` in memory (a spilled leg counts its bytes on disk as held). On ClickHouse, a key declared (`sqlType`) a 128- or 256-bit integer, which has no common type with the map's `Decimal(38, 0)` keys; ClickHouse refuses a join of keys of two types without one, so declare such a key's type |
@@ -679,6 +679,72 @@ another object of the fact's source (a customer's credit beside their orders)
 cannot read another source yet, nor can a measure read a column computed from
 columns of two sources.
 
+### Measures of a joined table
+
+Revenue per region and the number of customers per region: the revenue comes
+from the orders (MySQL), the number of customers from the customers
+(PostgreSQL), which the orders are joined to. One database counts each
+customer once per region ([grain deduplication](compilation.md#phase-22-grain-deduplication-wrap)),
+also the customers without orders
+([parents without children](compilation.md#parents-without-children)). Across sources the combine query does the same:
+
+- the PostgreSQL leg returns each customer once: its key, the dimensions read
+  there, and each column the customer measures read;
+- the fact leg returns the revenue per customer key, as for any query;
+- the combine query counts each customer once per group, over the orders
+  joined to it, and adds the customers no order reaches, in the group of
+  their region (and the NULL group of an order dimension, such as the order
+  month).
+
+The PostgreSQL leg:
+
+```sql
+SELECT "Customers"."region" AS "Region", "Customers"."customer_id" AS "__fk0_0",
+       "Customers"."customer_id" AS "__value0"
+FROM "customers" AS "Customers"
+GROUP BY ALL
+```
+
+and the customers the combine query counts:
+
+```sql
+SELECT DISTINCT "leg_1"."Region" AS "Region", "leg_1"."__value0" AS "__ob_k0"
+FROM "leg_0" AS "leg_0"
+LEFT JOIN "leg_1" AS "leg_1" ON "leg_0"."__fk0_0" = "leg_1"."__fk0_0"
+UNION ALL BY NAME
+SELECT DISTINCT "leg_1"."Region" AS "Region", "leg_1"."__value0" AS "__ob_k0"
+FROM "leg_1" AS "leg_1"
+WHERE NOT EXISTS (
+  SELECT 1 FROM "leg_0" AS "leg_0" WHERE "leg_1"."__fk0_0" = "leg_0"."__fk0_0"
+)
+```
+
+- Any aggregation of the customers works: a count, a sum, average, minimum
+  or distinct count of a customer column, with measure filters and `total`;
+  so do metrics over it, `having`, sorting, `rollup`, and filters on either
+  source, as on one database.
+- With a filter on the orders (orders before February), one database counts
+  only the customers those orders reach. So does the combine query: it reads
+  the customers whose keys the fact leg returns.
+- The fact leg returns each customer key: it is not joined as a
+  [key map](#key-maps).
+- An `exists` or `nonexists` on the customers' tickets tests the customers
+  without orders too, as one database does.
+- A customer measure with `allowFanOut: true` counts a customer once per
+  order, as one database does: the fact leg returns its rows
+  ([computed from rows](#computed-from-rows)).
+- Refused (`FEDERATION_UNSUPPORTED_AGGREGATION`): a customer measure that
+  compares values its database compares otherwise than DuckDB, such as a
+  distinct count, `min`, `max` or filter of MySQL text, where MySQL treats
+  `'a'` and `'A'` as equal.
+- Refused (`FEDERATION_MULTI_FACT`): a filter on the orders that a customer
+  without orders passes (`Order Date is_null`), which one database tests
+  against all orders, where the fact leg returns those it keeps; a customer
+  measure with a `filterContext`; a measure of a table the customers are
+  joined to (their tenants), since the leg returns a row per customer; and
+  sorting by a customer measure the query does not select when it reads no
+  customer dimension.
+
 ### Metrics across periods
 
 [Cumulative, period-over-period and window metrics](model-format.md#metrics)
@@ -967,7 +1033,7 @@ tickets in PostgreSQL. Revenue is the sum of the order amounts.
 
 | What your query does | When it is refused | See |
 |---|---|---|
-| Asks for measures from two databases | revenue together with the number of customers; or the query sorts by a measure from the other database that it does not select | [Measures from two databases](#measures-from-two-databases) |
+| Asks for measures from two databases | the query sorts by a measure from the other database that it does not select, or a filter on the orders is true for customers without orders | [Measures from two databases](#measures-from-two-databases) |
 | Uses dimensions from another database | the join matches one order to several rows of the other database | [Joins between databases](#joins-between-databases) |
 | Uses a list of values, such as a customer's tags | the list is in another database and the query does not group by it | [Lists in another database](#lists-in-another-database) |
 | Uses calculated columns | the calculation reads another database, or gives orders without a customer a value (`COALESCE`) | [Calculated columns](#calculated-columns) |
@@ -979,32 +1045,35 @@ tickets in PostgreSQL. Revenue is the sum of the order amounts.
 
 ### Measures from two databases
 
-Measures from two databases work in one query when each comes from its own
-table and the two tables are not joined to each other. This query runs: the
-revenue comes from the orders (MySQL), the number of tickets from the support
-tickets (PostgreSQL). The orders and the tickets are both joined to the
-customers, but not to each other. See
-[Measures of independent facts](#measures-of-independent-facts).
+Measures from two databases work in one query. Both of these queries run
+and give the same answer as one database:
+
+- Revenue per region and the number of support tickets per region. The
+  revenue comes from the orders (MySQL), the number of tickets from the
+  tickets (PostgreSQL). The orders and the tickets are both joined to the
+  customers, but not to each other. See
+  [Measures of independent facts](#measures-of-independent-facts).
+- Revenue per region and the number of customers per region. The orders are
+  joined to the customers (PostgreSQL): each order has one customer. The
+  number of customers counts every customer of the region, also those
+  without orders. See
+  [Measures of a joined table](#measures-of-a-joined-table).
 
 ```yaml
 select:
   dimensions: [Region]
-  measures: [Revenue, Tickets Count]
+  measures: [Revenue, Tickets Count, Customers Count]
 ```
 
-This query is refused, because the orders are joined to the customers:
-
-```yaml
-select:
-  dimensions: [Region]
-  measures: [Revenue, Customers Count]
-```
-
-All refused cases:
+These cases are refused:
 
 | You ask for | Do this instead | Error |
 |---|---|---|
-| Revenue per region and the number of customers per region. The revenue comes from the orders in MySQL, the number of customers from the customers table in PostgreSQL. Unlike the tickets, the customers are joined to the orders: each order has one customer. Also refused: revenue per region, sorted by the number of customers per region | Ask for the number of customers per region in its own query. It counts every customer of the region, also those without orders. To count only the customers who placed orders, define a measure on the orders that counts their distinct customer IDs: it runs together with revenue | `FEDERATION_MULTI_FACT` |
+| Revenue and the number of customers per region, with a filter on the orders that a customer without orders passes, such as `Order Date is_null` | Ask for the number of customers in its own query | `FEDERATION_MULTI_FACT` |
+| Revenue per order month, sorted by the number of customers, without selecting the number of customers | Add the number of customers to the query | `FEDERATION_MULTI_FACT` |
+| Revenue per region and a customer measure with a `filterContext` | Ask for the customer measure in its own query | `FEDERATION_MULTI_FACT` |
+| Revenue per region and a measure of a table the customers are joined to, such as the number of their tenants | Ask for that measure in its own query | `FEDERATION_MULTI_FACT` |
+| Revenue per region and a customer measure over MySQL text: its distinct count, `min`, `max`, or a filter on it. MySQL treats `'a'` and `'A'` as equal, DuckDB does not | Ask for the customer measure in its own query | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | Revenue per region, sorted by the number of tickets, without selecting the number of tickets | Add the number of tickets to the query | `FEDERATION_MULTI_FACT` |
 | Revenue and the number of tickets per region, sorted by the number of returns, without selecting the number of returns | Add the number of returns to the query | `FEDERATION_UNSUPPORTED_QUERY` |
 | Revenue and the number of tickets per region, with one of the options listed below the table | Ask for each table's measures in its own query, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |

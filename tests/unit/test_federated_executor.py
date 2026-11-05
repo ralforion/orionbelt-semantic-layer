@@ -645,6 +645,25 @@ class TestKeyInjection:
         assert joined_map(10, 13) in ran[1][1]
         assert len(rows) == 2
 
+    async def test_beside_the_customers_count_the_keys_are_read_as_a_list(
+        self, client: AsyncClient, ran: list[tuple[str, str]]
+    ) -> None:
+        """The combine step counts each customer once, by its key: the fact
+        leg reads the EU customers' keys, and returns them, not a map of them."""
+        query = {
+            **EU_REVENUE,
+            "select": {
+                "dimensions": ["Order Date:month"],
+                "measures": ["Revenue", "Customers Count"],
+            },
+        }
+
+        rows = await self._assert_same(client, query)
+
+        assert [source for source, _ in ran[:2]] == ["crm", "shop"]
+        assert '"Orders"."customer_id" IN (10, 13)' in ran[1][1]
+        assert [row[2] for row in rows] == [1, 1]
+
     async def test_a_leg_returning_rows_reads_the_keys_too(
         self, client: AsyncClient, ran: list[tuple[str, str]]
     ) -> None:
@@ -855,6 +874,27 @@ class TestKeyMaps:
         assert (
             'LEFT JOIN (SELECT * FROM (VALUES (10, 1), (11, 2), (12, 3), (13, 1)) AS "m"("k", "n"))'
         ) in ran[1][1]
+
+    async def test_no_map_beside_the_customers_count(
+        self, client: AsyncClient, ran: list[tuple[str, str]]
+    ) -> None:
+        """The combine step counts each customer once, by its key, which a
+        map to the region's ordinal would not return."""
+        query = {
+            "select": {
+                "dimensions": ["Order Date:month", "Region"],
+                "measures": ["Revenue", "Customers Count"],
+            },
+            "orderBy": [{"field": "Order Date"}, {"field": "Region"}],
+        }
+
+        federated = await execute(client, model_yaml(federated=True), query)
+        single = await execute(client, single_model(), query)
+
+        assert federated.status_code == 200, federated.text
+        assert federated.json()["rows"] == single.json()["rows"]
+        (shop,) = [sql for source, sql in ran if source == "shop"]
+        assert '"m"("k", "n")' not in shop
 
     @pytest.fixture
     def ran(self) -> Iterator[list[tuple[str, str]]]:
