@@ -966,7 +966,7 @@ database (MySQL), customers in the CRM database (PostgreSQL).
 
 | What your query does | When it is refused | See |
 |---|---|---|
-| Asks for measures from two databases | for example revenue from the shop and the number of customers from the CRM | [Measures from two databases](#measures-from-two-databases) |
+| Asks for measures from two databases | one measure is of the customers, which the orders are joined to; or the query sorts by a measure from the other database that it does not select | [Measures from two databases](#measures-from-two-databases) |
 | Uses dimensions from another database | the join matches one order to several rows of the other database | [Joins between databases](#joins-between-databases) |
 | Uses a list of values, such as a customer's tags | the list is in another database and the query does not group by it | [Lists in another database](#lists-in-another-database) |
 | Uses calculated columns | the calculation reads another database, or gives orders without a customer a value (`COALESCE`) | [Calculated columns](#calculated-columns) |
@@ -978,16 +978,21 @@ database (MySQL), customers in the CRM database (PostgreSQL).
 
 ### Measures from two databases
 
-Revenue per customer region works: the revenue comes from the shop, the
-region from the CRM. Asking for measures (such as revenue or a count) from
-both databases in one query is refused in these cases.
+Measures from two databases work in one query when each comes from its own
+table and the two tables are not joined to each other: revenue from the
+shop's orders and the number of support tickets from the CRM, per region.
+The orders and the tickets are both joined to the customers, but not to each
+other. See [Measures of independent facts](#measures-of-independent-facts).
+
+These cases are refused:
 
 | You ask for | Do this instead | Error |
 |---|---|---|
-| Revenue (shop) and the number of customers (CRM) in one query, or revenue sorted by the number of customers | Ask for each in its own query. Or define a measure on the orders that counts their distinct customer IDs: it counts the customers who placed orders, from the shop alone | `FEDERATION_MULTI_FACT` |
-| Measures of two tables that are not joined to each other, in different databases (orders in the shop, support tickets in the CRM), with one of the options listed below the table | Ask for each table's measures in its own query, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |
-| Measures of two such unjoined tables, sorted by a measure the query does not select (revenue per region, sorted by ticket count) | Add that measure to the query | `FEDERATION_UNSUPPORTED_QUERY` |
-| Columns of two such unjoined tables in [raw mode](#raw-mode) (`select.fields`) | One query per table, or ask for dimensions and measures instead | `FEDERATION_UNSUPPORTED_QUERY` |
+| Revenue (shop) and the number of customers (CRM) in one query, also when the query only sorts by the number of customers. The orders are joined to the customers: each order has one customer | Ask for each in its own query. Or define a measure on the orders that counts their distinct customer IDs: it counts the customers who placed orders, from the shop alone | `FEDERATION_MULTI_FACT` |
+| Revenue per region, sorted by the number of tickets, without selecting the number of tickets | Add the number of tickets to the query | `FEDERATION_MULTI_FACT` |
+| Revenue and the number of tickets, sorted by the number of returns, without selecting the number of returns | Add the number of returns to the query | `FEDERATION_UNSUPPORTED_QUERY` |
+| Revenue and the number of tickets, with one of the options listed below the table | Ask for each table's measures in its own query, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |
+| Columns of the orders and of the tickets in [raw mode](#raw-mode) (`select.fields`) | One query per table, or ask for dimensions and measures instead | `FEDERATION_UNSUPPORTED_QUERY` |
 
 The options: `rollup` or `cube`; a measure with `total`, `grain` or
 `filterContext`; a measure that reads both tables; a running total, period

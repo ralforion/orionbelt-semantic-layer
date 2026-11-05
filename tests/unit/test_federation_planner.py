@@ -5540,6 +5540,33 @@ class TestMeasuresOfIndependentFacts:
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_MULTI_FACT"
 
+    def test_ordered_by_a_measure_of_a_third_fact_is_refused(
+        self, independent_files: dict[str, dict[str, str]]
+    ) -> None:
+        """The returns join the orders, which reach none of them: their count,
+        selected, is a part of its own."""
+        query = {
+            "select": BY_REGION_BOTH,
+            "orderBy": [{"field": "Returns Count", "direction": "desc"}],
+        }
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(independent_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
+        assert error.hint == "Select the measure, or order by a measure of a selected fact."
+        paths = independent_files["crm"]
+        selected = {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": [*REVENUE_AND_TICKETS, "Returns Count"],
+            }
+        }
+        single = _run_on(paths, independent_model(False), selected)
+        assert _run_on(paths, independent_model(True), selected) == single
+        assert single
+
 
 # Charge c1's labels name owners prod and env, c2's ops, c3 has none: dev is
 # named by no label. Owners prod and dev are of team 1, ops and env of 2.
