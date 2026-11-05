@@ -55,6 +55,8 @@ class DatabricksDialect(Dialect):
     #: Measured over 5 million rows: every key in 1.5-2.1 s warm, 1,000 keys
     #: in 0.33-0.82 s, 10,000 in 0.73-1.78 s.
     key_injection_max_keys = 1_000
+    #: 5 million groups by key in 21 s, joining a map in 1.3-3.6 s.
+    pushes_key_maps = True
 
     @property
     def name(self) -> str:

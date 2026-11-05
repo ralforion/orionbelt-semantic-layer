@@ -79,6 +79,8 @@ class PostgresDialect(Dialect):
     # 10,000 keys over 5 million rows. Such a server takes
     # DB_<NAME>_KEY_INJECTION_MAX_KEYS=0.
     key_injection_max_keys = 10_000
+    #: 5 million groups by key in 4.5 s, joining a map in 0.72-1.58 s.
+    pushes_key_maps = True
 
     @property
     def name(self) -> str:

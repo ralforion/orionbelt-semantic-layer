@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
 
 from orionbelt.ast.nodes import Cast, Except, Expr, FunctionCall, Literal, OrderByItem, RawSQL
@@ -195,6 +196,9 @@ class BigQueryDialect(Dialect):
     #: Measured over 5 million rows: every key in 19-24 s, most of it fetching
     #: a million rows, 10,000 keys in 1.9-2.3 s, 100,000 in 11-19 s.
     key_injection_max_keys = 10_000
+    #: 5 million groups by key in 140 s, most of it fetching them, joining a
+    #: map to 10 or 100 groups in 1.5-3.1 s.
+    pushes_key_maps = True
     max_statement_bytes = 1024 * 1024
 
     @property
@@ -221,6 +225,20 @@ class BigQueryDialect(Dialect):
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace("`", "\\`")
         return f"`{escaped}`"
+
+    def key_map(self, key: str, ordinal: str, pairs: Sequence[tuple[int, int]]) -> str:
+        """The keys unnested, each with the ordinal at its offset: BigQuery has
+        no ``VALUES`` relation. Two arrays of integers rather than one of
+        structs: as fast to run over 5 million rows, a sixth shorter, and parsed
+        in less than half the time by the statement check (``validate_sql``),
+        0.19 s against 0.48 s for 10,000 keys."""
+        q = self.quote_identifier
+        keys = ", ".join(str(k) for k, _ in pairs)
+        ordinals = ", ".join(str(n) for _, n in pairs)
+        return (
+            f"(SELECT {q(key)}, [{ordinals}][OFFSET({q('o')})] AS {q(ordinal)} "
+            f"FROM UNNEST([{keys}]) AS {q(key)} WITH OFFSET AS {q('o')})"
+        )
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
         """BigQuery: three-part ``project.dataset.table``.

@@ -678,7 +678,8 @@ async def execute_federated_with_cache(
     a query that changes only the combine step - a filter after the join,
     HAVING, ORDER BY, LIMIT - still reuses the legs an earlier one fetched.
     A fact leg that may read only the keys its filtered dimension legs
-    return runs after them (``federated_executor.injected_fact_leg``).
+    return, or join maps of a dimension leg's keys, runs after those legs
+    (``federated_executor.injected_fact_leg``).
 
     Raises:
         ExecutionUnavailableError: No slot freed within the wait
@@ -799,17 +800,19 @@ async def execute_federated_with_cache(
 
             legs = list(zip(plan.legs, sources, strict=True))
             fact, fact_source = legs[0]
-            max_keys = (
-                federation.key_injection_max_keys(fact_source, fact.dialect)
-                if plan.injections
-                else 0
-            )
+            # The dimension legs the fact leg may read the keys of.
+            first = {i.leg for i in plan.injections} | {m.leg for m in plan.key_maps}
+            max_keys = federation.key_injection_max_keys(fact_source, fact.dialect) if first else 0
             if max_keys:
-                # The fact leg waits for the dimension legs filtered by the
-                # query, and reads only the keys they return.
-                tables = await run_at_once(legs[1:])
-                fact = federation.injected_fact_leg(plan, tables, max_keys)
-                tables.update(await run_at_once([(fact, fact_source)]))
+                # The fact leg waits for them, and reads only the keys they
+                # return or joins maps of them; the other legs run beside it.
+                # A leg it joins a map of is combined as the map's rows, which
+                # replace it before the fact leg runs: its own rows are let go.
+                tables = await run_at_once([leg for leg in legs[1:] if leg[0].name in first])
+                fact, maps = federation.injected_fact_leg(plan, tables, max_keys)
+                tables.update(maps)
+                rest = [leg for leg in legs[1:] if leg[0].name not in first]
+                tables.update(await run_at_once([(fact, fact_source), *rest]))
             else:
                 tables = await run_at_once(legs)
             return await asyncio.get_running_loop().run_in_executor(

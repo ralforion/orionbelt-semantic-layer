@@ -156,8 +156,11 @@ def _answers(target: VendorTarget, query: dict[str, Any]) -> tuple[list[dict], l
         return normalize_leg(leg, pa.Table.from_pylist(rows))
 
     tables = {leg.name: run(leg) for leg in plan.legs[1:]}
-    # The fact leg reading only the keys its filtered dimension legs returned.
-    tables["leg_0"] = run(injected_fact_leg(plan, tables, 100))
+    # The fact leg reading only the keys its filtered dimension legs returned,
+    # or joining maps of them, which the combine step reads in their place.
+    fact, maps = injected_fact_leg(plan, tables, 100)
+    tables.update(maps)
+    tables["leg_0"] = run(fact)
     combined = combine(plan, tables, None).arrow_table.to_pylist()
     return target.execute(_tables(target.dialect) + single.sql), combined
 

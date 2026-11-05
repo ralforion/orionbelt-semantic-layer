@@ -702,6 +702,33 @@ def static_filters_after_join(objects: Iterable[str]) -> Iterator[None]:
         _after_join.reset(token)
 
 
+#: A key map: its key column, its ordinal column, and its ``(key, ordinal)`` rows.
+KeyMapRows = tuple[str, str, tuple[tuple[int, int], ...]]
+
+_key_maps: ContextVar[dict[str, KeyMapRows] | None] = ContextVar("key_maps", default=None)
+
+
+@contextmanager
+def tables_as_key_maps(maps: dict[str, KeyMapRows]) -> Iterator[None]:
+    """Read each data object named in *maps* as its rows of literals while the block runs.
+
+    A federated fact leg joins a map of a dimension leg's keys, which has no
+    table: a data object of the leg's model stands for it, and its table is
+    the rows the dialect writes (:meth:`Dialect.key_map`).
+    """
+    token = _key_maps.set(maps)
+    try:
+        yield
+    finally:
+        _key_maps.reset(token)
+
+
+def key_map_rows(obj: str) -> KeyMapRows | None:
+    """The rows *obj* is read as (:func:`tables_as_key_maps`), or ``None`` for its table."""
+    maps = _key_maps.get()
+    return maps.get(obj) if maps else None
+
+
 def make_column_expr(
     model: SemanticModel,
     object_name: str,

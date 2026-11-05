@@ -28,6 +28,9 @@ than one source, no single database can run it. It is split instead:
 * **Key injection.** Where a dimension leg runs such a filter, the plan can
   compile the fact leg again reading only the keys that leg returned
   (``FederatedPlan.inject``); the executor decides from how many it got.
+* **Key maps.** Where the fact leg groups by more than a key, it can join a
+  small dimension leg's keys as a map to the ordinals of that leg's rows and
+  group by those instead (:class:`KeyMap`), within the same limit.
 
 Only what splits exactly is planned. Everything else is refused with a named
 ``FEDERATION_*`` error rather than answered with a different number; see
@@ -40,7 +43,7 @@ plan.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Collection, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -85,6 +88,7 @@ from orionbelt.compiler.resolution import (
     columns_in_own_zone,
     make_column_expr,
     static_filters_after_join,
+    tables_as_key_maps,
     timestamps_in_zone,
 )
 from orionbelt.compiler.type_resolver import (
@@ -148,6 +152,11 @@ COMBINE_DIALECT = "duckdb"
 # The alias a leg's own query is read under when the leg rewrites some of its
 # columns (:meth:`Dialect.equality_key`).
 _LEG_ALIAS = "__leg"
+
+# The columns of a key map a fact leg joins (:class:`KeyMap`): a key, and its
+# ordinal among the dimension leg's rows.
+_MAP_KEY = "k"
+_MAP_ORDINAL = "n"
 
 # Aggregations whose result over the union of groups is computed from the
 # per-group results, and how. ``avg`` combines from two of them, a sum and a
@@ -359,6 +368,46 @@ class KeyInjection:
 
 
 @dataclass(frozen=True)
+class KeyMap:
+    """A dimension leg the fact leg may join as a map of its keys.
+
+    Each key maps to the ordinal of its row among the leg's rows told apart by
+    everything but the key: the fact leg joins the map, as rows of literals,
+    and groups by the ordinal where it grouped by the key, returning it in the
+    key's column. The combine step reads one row per ordinal for the leg, the
+    ordinal in its key column, and joins the two as before. An integer key the
+    combine step reads for that join alone, of a fact leg grouped by more than
+    it (:func:`_maps_key`).
+
+    Attributes:
+        leg: The dimension leg (``leg_1``).
+        column: The key column, of the same name in that leg and the fact leg.
+    """
+
+    leg: str
+    column: str
+
+
+@dataclass(frozen=True)
+class MapJoin:
+    """How the fact leg joins a key map (:class:`KeyMap`).
+
+    Attributes:
+        name: The data object standing for the map in the leg's model.
+        data_object: The data object whose column holds the key.
+        column: That column.
+        inner: Whether the leg reads only the keys the map holds: its
+            dimension leg runs a filter of the query, and the combine step
+            keeps only the fact rows it matched.
+    """
+
+    name: str
+    data_object: str
+    column: str
+    inner: bool
+
+
+@dataclass(frozen=True)
 class KeyInjector:
     """Compiles the fact leg again, reading only the keys given for each column.
 
@@ -383,6 +432,7 @@ class KeyInjector:
         compile_leg: As :func:`plan_federated` takes it.
         zone: The zone it reads its timestamps without a zone in
             (:func:`timestamps_in_zone`).
+        map_joins: How it joins the map of each key column a map may stand for.
     """
 
     leg: FederatedLeg
@@ -399,9 +449,21 @@ class KeyInjector:
         compare=False, repr=False
     )
     zone: LegZone | None = dataclasses.field(default=None, compare=False, repr=False)
+    map_joins: dict[str, MapJoin] = dataclasses.field(default_factory=dict)
 
-    def __call__(self, keys: dict[str, list[Any]]) -> FederatedLeg:
-        """The fact leg reading only *keys*; an empty list for a column reads no rows."""
+    def __call__(
+        self,
+        keys: dict[str, list[Any]],
+        maps: Mapping[str, Sequence[tuple[int, int]]] | None = None,
+    ) -> FederatedLeg:
+        """The fact leg reading only *keys*; an empty list for a column reads no rows.
+
+        It joins each of *maps*, a key column's ``(key, ordinal)`` pairs, and
+        returns the ordinal in that column (:class:`KeyMap`). A column has keys
+        or a map, not both: its list would test the ordinal.
+        """
+        maps = maps or {}
+        assert not keys.keys() & maps.keys()
         if all(keys.values()):
             where = [
                 *self.query.where,
@@ -421,13 +483,62 @@ class KeyInjector:
             columns_in_own_zone(self.own_zone),
             static_filters_after_join(self.body),
             timestamps_in_zone(self.zone),
+            tables_as_key_maps(
+                {
+                    self.map_joins[column].name: (_MAP_KEY, _MAP_ORDINAL, tuple(pairs))
+                    for column, pairs in maps.items()
+                }
+            ),
         ):
-            sql = self.compile_leg(query, self.model, dialect.name)
+            sql = self.compile_leg(query, self._mapped(maps), dialect.name)
         if self.rekeyed or self.predicates:
             sql = _rewrite_leg(
                 dialect, sql, list(self.columns), self.rekeyed, self.kept, self.predicates
             )
         return dataclasses.replace(self.leg, sql=sql)
+
+    def _mapped(self, maps: Collection[str]) -> SemanticModel:
+        """The leg's model with a data object for each of *maps*, joined from its
+        key's object, and the key column's dimension reading the ordinal there."""
+        if not maps:
+            return self.model
+        objects = dict(self.model.data_objects)
+        dimensions = dict(self.model.dimensions)
+        integer = DataType.INT
+        for column in maps:
+            join = self.map_joins[column]
+            holder = objects[join.data_object]
+            # On the leg's data source, which the leg reads alone.
+            objects[join.name] = DataObject(
+                name=join.name,
+                code=join.name,
+                database="",
+                schema_name="",
+                data_source=holder.data_source,
+                columns={
+                    name: DataObjectColumn(name=name, code=name, abstract_type=integer)
+                    for name in (_MAP_KEY, _MAP_ORDINAL)
+                },
+                countable=False,
+            )
+            objects[join.data_object] = holder.model_copy(
+                update={
+                    "joins": [
+                        *holder.joins,
+                        DataObjectJoin(
+                            join_type=Cardinality.MANY_TO_ONE,
+                            join_to=join.name,
+                            columns_from=[join.column],
+                            columns_to=[_MAP_KEY],
+                            required=join.inner,
+                        ),
+                    ]
+                }
+            )
+            dimensions[column] = Dimension(
+                name=column, view=join.name, column=_MAP_ORDINAL, result_type=integer
+            )
+        return self.model.model_copy(update={"data_objects": objects, "dimensions": dimensions})
 
 
 @dataclass(frozen=True)
@@ -437,8 +548,11 @@ class FederatedPlan:
     Attributes:
         injections: The dimension legs whose keys may filter the fact leg
             (``legs[0]``), which then runs after them.
+        key_maps: The dimension legs the fact leg may join as maps of their
+            keys, which it then runs after too.
         inject: The fact leg reading only the keys given for each injection's
-            column; an empty list for any of them reads no rows.
+            column, and joining the maps given for key maps' columns; an
+            empty list for any of the keys reads no rows.
         timezone: The zone the legs return timestamps in, which the result is
             labeled with: the model's ``queryTimezone``, else the zone they
             convert those without a zone to; ``None`` where the model says
@@ -449,11 +563,10 @@ class FederatedPlan:
     combine_sql: str
     combine_dialect: str = COMBINE_DIALECT
     injections: tuple[KeyInjection, ...] = ()
+    key_maps: tuple[KeyMap, ...] = ()
     timezone: str | None = None
     # In the repr, which the compilation cache sizes an entry by.
-    inject: Callable[[dict[str, list[Any]]], FederatedLeg] | None = dataclasses.field(
-        default=None, compare=False
-    )
+    inject: KeyInjector | None = dataclasses.field(default=None, compare=False)
 
 
 def object_sources(model: SemanticModel) -> dict[str, str | None]:
@@ -1065,6 +1178,32 @@ def plan_federated(
             update={"column": column}
         )
 
+    # The fact leg may join a dimension leg as a map of its keys (KeyMap)
+    # where it returns partial results grouped by more than that key, on an
+    # engine measured for it, and the key is its leg's own: not read by a
+    # nonexists leg or another of its columns, nor returned as its engine
+    # matches it.
+    key_maps: list[KeyMap] = []
+    map_joins: dict[str, MapJoin] = {}
+    grain = (
+        len(fact_dims)
+        + len(fact_own_grain)
+        + len(fact_keys)
+        + len(fact_values)
+        + len(fact_static_columns)
+    )
+    maps_keys = not from_rows and grain > 1 and planner.leg_dialect(islands[fact]).pushes_key_maps
+    fact_reads = {
+        *(
+            (model.dimensions[name].view, model.dimensions[name].column)
+            for name in [*(DimensionRef.parse(d).name for d in fact_dims), *fact_own_grain.values()]
+        ),
+        *fact_values.values(),
+        *fact_static_columns.values(),
+    }
+    absent_islands = {missing.island for missing in absent}
+    map_names = {name.casefold() for name in fact_model.data_objects}
+
     # The joins of the dimension legs a chained edge starts from, by leg.
     leg_joins: dict[str, list[DataObjectJoin]] = {}
 
@@ -1240,6 +1379,20 @@ def plan_federated(
             )
             if key_type is not None:
                 injections.append(KeyInjection(leg_name, injected, key_type, key_values))
+        if (
+            maps_keys
+            and edge.parent == fact
+            and edge.island not in absent_islands
+            and injected not in matched.get(fact, {})
+            and _maps_key(model, edge, fact_reads, planner.leg_dialect(islands[fact]))
+        ):
+            key_maps.append(KeyMap(leg_name, injected))
+            map_joins[injected] = MapJoin(
+                name=_unused(f"__map{e - 1}", map_names),
+                data_object=edge.from_object,
+                column=edge.from_columns[0],
+                inner=edge.island in leg_filters,
+            )
         for d in dims:
             name = DimensionRef.parse(d).name
             combine_dimensions[name] = _combine_dimension(model, name, leg_name)
@@ -1470,7 +1623,7 @@ def plan_federated(
     if row_count:
         combine_sql = _with_rows(combine_sql, combiner, "leg_0", row_count, once_columns)
     inject = None
-    if injections:
+    if injections or key_maps:
         inject = KeyInjector(
             leg=legs[0],
             query=fact_query.model_copy(deep=True),
@@ -1484,11 +1637,13 @@ def plan_federated(
             predicates=fact_predicates,
             compile_leg=compile_leg,
             zone=planner.leg_zone(islands[fact] | fact_body),
+            map_joins=map_joins,
         )
     return FederatedPlan(
         legs=tuple(legs),
         combine_sql=combine_sql,
         injections=tuple(injections),
+        key_maps=tuple(key_maps),
         inject=inject,
         timezone=planner.result_zone,
     )
@@ -3837,6 +3992,26 @@ def _injectable_key_type(model: SemanticModel, edge: _Edge) -> str | None:
     key_type = model.data_objects[edge.from_object].columns[fact_column].abstract_type
     dim_type = model.data_objects[edge.to_object].columns[dim_column].abstract_type
     return key_type.value if key_type == dim_type and key_type in _INJECTABLE_KEYS else None
+
+
+def _maps_key(
+    model: SemanticModel, edge: _Edge, reads: set[tuple[str, str]], dialect: Dialect
+) -> bool:
+    """Whether *edge*'s key is one the fact leg may join a map of (:class:`KeyMap`).
+
+    One column, an integer on both sides: an integer groups and matches alike
+    on every engine, where a string compared in the fact engine's collation
+    would match a map row of each key that collation calls equal to it. Of a
+    type the fact leg's *dialect* joins a map's keys to (:meth:`Dialect.maps_key`).
+    And one no other column of the fact leg reads (*reads*, ``(data object,
+    column)`` pairs): that column would group the leg by the key anyway.
+    """
+    if _injectable_key_type(model, edge) != DataType.INT.value:
+        return False
+    key = model.data_objects[edge.from_object].columns[edge.from_columns[0]]
+    if not dialect.maps_key(key.sql_type):
+        return False
+    return (edge.from_object, edge.from_columns[0]) not in reads
 
 
 def _physical_tables(model: SemanticModel, objects: Iterable[str]) -> tuple[str, ...]:

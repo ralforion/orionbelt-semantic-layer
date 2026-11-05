@@ -38,6 +38,7 @@ from orionbelt.compiler.federation import (  # noqa: E402
     FederatedLeg,
     FederatedPlan,
     KeyInjection,
+    KeyMap,
 )
 from orionbelt.service import federated_executor as federation  # noqa: E402
 from orionbelt.service.db_executor import (  # noqa: E402
@@ -562,6 +563,16 @@ EU_REVENUE = {
 }
 
 
+def joined_map(*keys: int) -> str:
+    """The fact leg joining *keys* as a map, each to the one row of the
+    customers' leg, which returns no other column: it reads only those keys."""
+    rows = ", ".join(f"({key}, 1)" for key in keys)
+    return (
+        f'INNER JOIN (SELECT * FROM (VALUES {rows}) AS "m"("k", "n")) AS "__map0" '
+        'ON "Orders"."customer_id" = "__map0"."k"'
+    )
+
+
 class TestKeyInjection:
     """A filter on the other source narrows the fact leg to the keys it keeps."""
 
@@ -593,7 +604,7 @@ class TestKeyInjection:
         rows = await self._assert_same(client, EU_REVENUE)
 
         assert [source for source, _ in ran[:2]] == ["crm", "shop"]
-        assert '"Orders"."customer_id" IN (10, 13)' in ran[1][1]
+        assert joined_map(10, 13) in ran[1][1]
         assert sum(Decimal(r[1]) for r in rows) == Decimal("123.90")
 
     async def test_an_exists_on_the_other_source_narrows_the_fact_leg_too(
@@ -601,7 +612,7 @@ class TestKeyInjection:
     ) -> None:
         """The revenue of customers with a ticket, and of those without one."""
         tickets = {"dataObject": "Tickets"}
-        for op, keys in (("exists", "IN (10, 12)"), ("nonexists", None)):
+        for op, keys in (("exists", (10, 12)), ("nonexists", None)):
             ran.clear()
             query = {
                 "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue"]},
@@ -620,7 +631,7 @@ class TestKeyInjection:
             assert federated.json()["rows"]
             if keys is not None:
                 assert [source for source, _ in ran[:2]] == ["crm", "shop"]
-                assert f'"Orders"."customer_id" {keys}' in ran[1][1]
+                assert joined_map(*keys) in ran[1][1]
 
     async def test_a_query_without_measures_reads_the_keys_too(
         self, client: AsyncClient, ran: list[tuple[str, str]]
@@ -631,7 +642,7 @@ class TestKeyInjection:
         rows = await self._assert_same(client, query)
 
         assert [source for source, _ in ran[:2]] == ["crm", "shop"]
-        assert '"Orders"."customer_id" IN (10, 13)' in ran[1][1]
+        assert joined_map(10, 13) in ran[1][1]
         assert len(rows) == 2
 
     async def test_a_leg_returning_rows_reads_the_keys_too(
@@ -669,7 +680,7 @@ class TestKeyInjection:
         await self._assert_same(client, EU_REVENUE)
 
         (shop,) = [sql for source, sql in ran[:2] if source == "shop"]
-        assert " IN (10, 13)" in shop
+        assert joined_map(10, 13) in shop
 
     async def test_no_key_reads_no_fact_row(
         self, client: AsyncClient, ran: list[tuple[str, str]]
@@ -707,7 +718,7 @@ class TestKeyInjection:
                 KeyInjection("leg_1", "__fk0_0", "int"),
                 KeyInjection("leg_2", "__fk1_0", "string"),
             ),
-            inject=lambda keys: injected.append(keys) or fact,
+            inject=lambda keys, maps: injected.append(keys) or fact,
         )
 
     @pytest.mark.parametrize(
@@ -778,13 +789,13 @@ class TestKeyInjection:
             legs=(fact,),
             combine_sql="",
             injections=(KeyInjection("leg_1", "__fk0_0", "string"),),
-            inject=lambda keys: replace(fact, sql=f"IN ({', '.join(keys['__fk0_0'])})"),
+            inject=lambda keys, maps: replace(fact, sql=f"IN ({', '.join(keys['__fk0_0'])})"),
         )
         short = {"leg_1": pa.table({"__fk0_0": ["a" * 20]})}
         long = {"leg_1": pa.table({"__fk0_0": [f"{n:0{width}d}" for n in range(10_000)]})}
 
-        assert federation.injected_fact_leg(plan, short, 10_000).sql.startswith("IN (")
-        assert federation.injected_fact_leg(plan, long, 10_000) is fact
+        assert federation.injected_fact_leg(plan, short, 10_000)[0].sql.startswith("IN (")
+        assert federation.injected_fact_leg(plan, long, 10_000) == (fact, {})
 
     @pytest.mark.parametrize(
         ("dialect", "limit"),
@@ -820,6 +831,203 @@ class TestKeyInjection:
         federation.injected_fact_leg(self._plan(injected), tables, 10)
 
         assert injected == [{"__fk1_0": [], "__fk0_0": [2, 10]}]
+
+
+class TestKeyMaps:
+    """A small dimension leg the fact leg joins as a map of its keys."""
+
+    async def test_the_fact_leg_joins_the_map_after_the_dimension_leg(
+        self, client: AsyncClient, ran: list[tuple[str, str]]
+    ) -> None:
+        """Revenue by month and region: the fact leg groups by each key's
+        region's ordinal, EU 1 (customers 10 and 13), US 2, no region 3."""
+        query = {
+            "select": {"dimensions": ["Order Date:month", "Region"], "measures": ["Revenue"]},
+            "orderBy": [{"field": "Order Date"}, {"field": "Region"}],
+        }
+
+        federated = await execute(client, model_yaml(federated=True), query)
+        single = await execute(client, single_model(), query)
+
+        assert federated.status_code == 200, federated.text
+        assert federated.json()["rows"] == single.json()["rows"]
+        assert [source for source, _ in ran[:2]] == ["crm", "shop"]
+        assert (
+            'LEFT JOIN (SELECT * FROM (VALUES (10, 1), (11, 2), (12, 3), (13, 1)) AS "m"("k", "n"))'
+        ) in ran[1][1]
+
+    @pytest.fixture
+    def ran(self) -> Iterator[list[tuple[str, str]]]:
+        from orionbelt.api import query_cache
+
+        ran: list[tuple[str, str]] = []
+        real = query_cache.execute_sql
+
+        def recording(sql: str, **kwargs: Any) -> ExecutionResult:
+            ran.append((kwargs["source"].name, sql))
+            return real(sql, **kwargs)
+
+        with patch.object(query_cache, "execute_sql", recording):
+            yield ran
+
+    @staticmethod
+    def _plan(
+        read: list[tuple[dict[str, Any], dict[str, Any]]],
+        *injections: KeyInjection,
+        dialect: str = "duckdb",
+        sql: str = "",
+    ) -> FederatedPlan:
+        fact = FederatedLeg(
+            name="leg_0", data_source="shop", dialect=dialect, sql=sql, data_objects=()
+        )
+        return FederatedPlan(
+            legs=(fact,),
+            combine_sql="",
+            injections=injections,
+            key_maps=(KeyMap("leg_1", "__fk0_0"),),
+            inject=lambda keys, maps: read.append((keys, maps)) or fact,
+        )
+
+    def test_rows_equal_but_for_the_key_share_an_ordinal_numbered_by_their_values(
+        self,
+    ) -> None:
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        table = pa.table(
+            {
+                "Region": ["US", "EU", None, "EU", "US"],
+                "__fk0_0": pa.array([11, 10, 12, 13, None], pa.int32()),
+            }
+        )
+
+        _, rows = federation.injected_fact_leg(self._plan(read), {"leg_1": table}, 10)
+
+        assert read == [({}, {"__fk0_0": [(10, 1), (11, 2), (12, 3), (13, 1)]})]
+        assert rows["leg_1"].to_pylist() == [
+            {"Region": "EU", "__fk0_0": 1},
+            {"Region": "US", "__fk0_0": 2},
+            {"Region": None, "__fk0_0": 3},
+        ]
+        shuffled = table.take([4, 3, 2, 1, 0])
+        federation.injected_fact_leg(self._plan(read), {"leg_1": shuffled}, 10)
+        assert read[1] == read[0]
+
+    def test_a_key_of_two_rows_maps_to_each(self) -> None:
+        """A dimension leg the declared many-to-one join repeats: the fact
+        rows of the key count in both groups, as the combine step's join
+        counts them."""
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        table = pa.table({"Region": ["US", "EU"], "__fk0_0": [10, 10]})
+
+        federation.injected_fact_leg(self._plan(read), {"leg_1": table}, 10)
+
+        assert read == [({}, {"__fk0_0": [(10, 1), (10, 2)]})]
+
+    def test_a_leg_of_keys_alone_maps_each_to_its_one_row(self) -> None:
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        table = pa.table({"__fk0_0": [3, 1, 2]})
+
+        _, rows = federation.injected_fact_leg(self._plan(read), {"leg_1": table}, 10)
+
+        assert read == [({}, {"__fk0_0": [(1, 1), (2, 1), (3, 1)]})]
+        assert rows["leg_1"].to_pylist() == [{"__fk0_0": 1}]
+
+    @pytest.mark.parametrize(
+        ("values", "max_keys"),
+        [
+            (pa.array([1, 2, 3]), 2),
+            (pa.array([Decimal("1"), Decimal("2.5")]), 10),
+            (pa.array([1.0, 2.0]), 10),
+            (pa.array([], pa.int64()), 10),
+        ],
+        ids=["past_the_limit", "a_fraction", "floats", "no_key"],
+    )
+    def test_no_map_past_the_limit_or_of_keys_not_all_integers(
+        self, values: Any, max_keys: int
+    ) -> None:
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        plan = self._plan(read)
+
+        fact, rows = federation.injected_fact_leg(
+            plan, {"leg_1": pa.table({"__fk0_0": values})}, max_keys
+        )
+
+        assert (fact, rows, read) == (plan.legs[0], {}, [])
+
+    def test_a_map_takes_the_place_of_its_keys_list(self) -> None:
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        plan = self._plan(read, KeyInjection("leg_1", "__fk0_0", "int"))
+
+        federation.injected_fact_leg(plan, {"leg_1": pa.table({"__fk0_0": [1, 2]})}, 10)
+
+        assert read == [({}, {"__fk0_0": [(1, 1), (2, 1)]})]
+
+    @pytest.mark.parametrize(
+        ("max_keys", "expected"),
+        [
+            (5, ({"__fk1_0": ["a", "b"]}, {"__fk0_0": [(1, 1), (2, 1), (3, 1)]})),
+            (4, ({"__fk1_0": ["a", "b"]}, {})),
+        ],
+        ids=["both", "the_fewest_first"],
+    )
+    def test_maps_and_lists_share_the_limit_the_fewest_keys_first(
+        self, max_keys: int, expected: tuple[dict[str, Any], dict[str, Any]]
+    ) -> None:
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        plan = self._plan(read, KeyInjection("leg_2", "__fk1_0", "string"))
+        tables = {
+            "leg_1": pa.table({"__fk0_0": [3, 1, 2]}),
+            "leg_2": pa.table({"__fk1_0": ["b", "a"]}),
+        }
+
+        federation.injected_fact_leg(plan, tables, max_keys)
+
+        assert read == [expected]
+
+    def test_no_map_of_a_leg_larger_than_a_leg_may_hold_in_memory(self) -> None:
+        """A leg spilled to disk is read memory-mapped, but its map's rows are
+        copied: past ``FEDERATION_MAX_LEG_MB``, the leg is read as it is."""
+        federation.configure(FederationLimits(max_leg_bytes=1024 * 1024))
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        plan = self._plan(read)
+        table = pa.table({"Label": ["x" * 100_000] * 20, "__fk0_0": list(range(20))})
+        assert table.nbytes > 1024 * 1024
+
+        fact, rows = federation.injected_fact_leg(plan, {"leg_1": table}, 100)
+
+        assert (fact, rows, read) == (plan.legs[0], {}, [])
+        federation.configure(FederationLimits())
+        federation.injected_fact_leg(plan, {"leg_1": table}, 100)
+        assert [maps for _, maps in read] == [{"__fk0_0": [(k, 1) for k in range(20)]}]
+
+    @pytest.mark.parametrize(
+        ("labels", "mapped"),
+        [([f"{n:040000d}" for n in range(20)], False), (["x" * 40_000] * 20, True)],
+        ids=["a_row_each", "one_row"],
+    )
+    def test_a_maps_rows_and_the_leg_they_are_copied_from_fit_a_leg_together(
+        self, labels: list[str], mapped: bool
+    ) -> None:
+        """800 KB held under a 1 MiB limit: a copy of its 20 rows would take it
+        past, the one row they all map to would not."""
+        federation.configure(FederationLimits(max_leg_bytes=1024 * 1024))
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        plan = self._plan(read)
+        table = pa.table({"Label": labels, "__fk0_0": list(range(20))})
+        assert 800_000 < table.nbytes < 1024 * 1024
+
+        _, rows = federation.injected_fact_leg(plan, {"leg_1": table}, 100)
+
+        assert bool(read) is mapped
+        assert (rows["leg_1"].num_rows if rows else 0) == (1 if mapped else 0)
+
+    def test_a_map_longer_than_the_engine_parses_is_not_read(self) -> None:
+        read: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        plan = self._plan(read, dialect="clickhouse", sql="x" * (256 * 1024 + 1))
+
+        fact, rows = federation.injected_fact_leg(plan, {"leg_1": pa.table({"__fk0_0": [1]})}, 10)
+
+        assert len(read) == 1
+        assert (fact, rows) == (plan.legs[0], {})
 
 
 class TestCachedLegs:

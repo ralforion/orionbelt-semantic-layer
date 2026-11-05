@@ -60,7 +60,8 @@ flowchart LR
   ([measures of independent facts](#measures-of-independent-facts)).
 - **Legs.** Each island becomes a *leg*: an ordinary OBSL query against a model
   holding that island alone, written in its source's dialect. The **fact leg**
-  groups by the query's dimensions on its island and by the edge keys, and
+  groups by the query's dimensions on its island and by the edge keys (a small
+  dimension leg's by a [map](#key-maps) of them), and
   pre-aggregates the measures, or returns its rows where a measure needs them
   ([computed from rows](#computed-from-rows)). A **dimension leg** returns the
   distinct keys with the dimensions the query reads there, the keys of the
@@ -162,6 +163,13 @@ customer or an order:
 | Orders -> Customers on the customer, the customers in the CRM | a row per customer who ordered |
 | Customers -> Regions on the region code, orders and customers in the shop, the regions in the CRM | a row per region code |
 
+A key of a source small enough to list, a catalog of 10,000 products, does
+not decide the size where the fact leg also groups by something else: the
+fact leg joins a map of its keys ([key maps](#key-maps)), and revenue by
+category and day returns a row per category and day rather than per product
+and day. A source past the [key injection](#key-injection) limit, the
+20,000,000 customers, is not mapped.
+
 Where a join must stay on such a key, filter the query on the other source's
 dimensions, which narrows the keys the fact leg reads, or let legs grow: raise
 `FEDERATION_MAX_LEG_ROWS`, and larger legs spill to disk
@@ -262,7 +270,7 @@ index or sort key on the column reads only those. The answer is the same.
 |---|---|
 | When | A dimension leg joined from the fact leg runs a filter of the query, joined on one column of the same type on both sides, an integer or a string. A leg further along a [chain of sources](#chains-of-sources) narrows nothing: the fact leg does not hold its keys |
 | How many | At most the fact source's limit of keys, over every such leg together, the legs with the fewest keys first. A leg with more keys than are left is not listed, and the fact leg reads all of that key. No key at all reads no fact row |
-| Limit | Postgres, MySQL, ClickHouse and BigQuery 10,000; DuckDB, Snowflake, Databricks and Dremio 1,000. `DB_<NAME>_KEY_INJECTION_MAX_KEYS` sets it for the fact leg's source, `DB_KEY_INJECTION_MAX_KEYS` for every source; `0` turns it off |
+| Limit | Postgres, MySQL, ClickHouse and BigQuery 10,000; DuckDB, Snowflake, Databricks and Dremio 1,000. `DB_<NAME>_KEY_INJECTION_MAX_KEYS` sets it for the fact leg's source, `DB_KEY_INJECTION_MAX_KEYS` for every source; `0` turns it off, and [key maps](#key-maps) with it |
 | Cost | The fact leg waits for the dimension legs rather than running beside them. A list past the limit gains nothing over aggregating every key |
 | Not listed | A list making a statement longer than the engine parses, ClickHouse's default `max_query_size` (256 KiB) or BigQuery's 1,024K characters, and a string key holding a NUL, which ends a Postgres statement's text: the fact leg reads every key instead. Snowflake refused a list of 300,000 values, where 200,000 passed |
 
@@ -293,6 +301,56 @@ scan over the indexed copy and took 11 s; the row shows the unindexed time.
     Before Postgres 14 an `IN` list is tested one value at a time: 10,000
     keys over 5 million rows took 51 s, against 2 s without the list. Set
     `DB_<NAME>_KEY_INJECTION_MAX_KEYS=0` for such a server.
+
+### Key maps
+
+A fact leg that groups by more than a key, by a day or another join's key
+beside it, returns a row per combination of them. When the dimension leg on
+the other side of that key is small, the fact leg runs after it and joins its
+keys as a map instead: each key with the number of its row among the
+dimension leg's rows, written into the statement as rows of literals, and it
+groups by that number where it grouped by the key. Keys whose rows hold the
+same values (two products of one category) share a number. The combine step
+reads one row per number for that leg and joins as before. The answer is the
+same; the fact leg returns a row per group of what the query reads there:
+
+| Revenue by category and day, products in a catalog on another source | Fact leg rows |
+|---|---|
+| Grouped by product and day: 10,000 products, 500 days | up to 5,000,000 |
+| Joining a map of the products to 50 categories | up to 25,000 |
+
+| What | How |
+|---|---|
+| When | A dimension leg joined from the fact leg on one integer column on both sides, in a query whose fact leg returns partial results grouped by more than that key; on MySQL, 8.0.19 or later. Not where the query reads the key otherwise: a dimension or a count of distinct values on its column, a `nonexists` on that source, a measure [computed from rows](#computed-from-rows) |
+| How many | The [key injection](#key-injection) limit, shared: the keys of lists and maps together, the legs with the fewest keys first. A map takes the place of its key's list, as an inner join where the dimension leg runs a filter. A leg with more keys than are left is not mapped, and the fact leg groups by its key |
+| Cost | The fact leg waits for the dimension leg rather than running beside it, and joining the map costs time in proportion to the fact rows: a fact leg that groups few rows can take longer |
+| Not mapped | A string key: in the fact source's collation one key can equal two of the map's (`'a'` and `'A'` under MySQL's `utf8mb4_0900_ai_ci`), which would count its fact rows in both groups. A map making the statement longer than the engine parses. A dimension leg that, with the copy of its rows the map takes, would hold more than `FEDERATION_MAX_LEG_MB` in memory (a spilled leg counts its bytes on disk as held). On ClickHouse, a key declared (`sqlType`) a 128- or 256-bit integer, which has no common type with the map's `Decimal(38, 0)` keys; ClickHouse refuses a join of keys of two types without one, so declare such a key's type |
+
+Measured with 5 million fact rows grouped by 10,000 products and 500 days,
+5 million groups (the row limit), each product mapped to one of 10, 100 or
+1,000 groups:
+
+| Fact leg on | By key | Map to 10 groups | 100 | 1,000 |
+|---|---|---|---|---|
+| Postgres 16 | 4.48 s | 0.72 s | 1.24 s | 1.58 s |
+| MySQL 8.0 | 31.2 s | 3.53 s | 3.54 s | 9.60 s |
+| ClickHouse | 0.28 s | 0.24 s | 0.25 s | 0.32 s |
+| DuckDB | 0.05 s | 0.13 s | 0.12 s | 0.13 s |
+| BigQuery | 140 s | 1.50 s | 3.09 s | 15.3 s |
+| Snowflake | 3.64 s | 0.86 s | 1.48 s | 1.40 s |
+| Databricks | 20.6 s | 1.26 s | 1.73 s | 3.63 s |
+| Dremio | 2.36 s | 0.84 s | 0.78 s | 0.95 s |
+
+Median of three runs, the fact leg alone, fetched as Arrow through OBSL's
+executor: Postgres, MySQL, ClickHouse and DuckDB on a laptop, the others in
+their clouds and Dremio in a local container. Mapped, the leg returned 5,000,
+50,000 or 500,000 rows instead of 5,000,000 rows of 155 MiB, which spill to
+disk and reach `FEDERATION_MAX_LEG_ROWS`; fetching them is most of BigQuery's
+time. ClickHouse and DuckDB group 5 million rows so fast that only the leg's
+size changes. A smaller fact leg can take longer: MySQL grouped 73,000 product
+and day groups of the 5 million rows in 2.1 s by key and in 3.4 s joining a
+map. Every engine took a map of 50,000 rows but ClickHouse, which parses at
+most 256 KiB of a statement: a map past that is not joined.
 
 ## Queries without measures
 
@@ -871,7 +929,7 @@ a plan for it.
 | What | How |
 |---|---|
 | Caching | The result is cached like any query's. Its key covers the combine query and every leg's SQL with the data source it runs on, its TTL is the shortest of all the tables the legs read, and a change to any of them invalidates it; a hit runs nothing. A result computed from legs served from the cache expires no later than the first of them, so it is never older than its legs. Each leg is also cached on its own, keyed by its data source and SQL, so a query that changes only what the combine step does (a filter after the join, HAVING, ORDER BY, LIMIT) reuses the legs an earlier query fetched, and one that changes a filter running in a dimension leg reruns that leg, and the fact leg too when it reads that leg's keys |
-| Legs | Run at once, each on its own source; a fact leg reading [injected keys](#key-injection) runs after the dimension legs |
+| Legs | Run at once, each on its own source; a fact leg reading [injected keys](#key-injection) or joining a [key map](#key-maps) runs after the dimension legs it reads them from, and the other legs run beside it |
 | Types | Each leg's columns are made exact for DuckDB before combining: Postgres `numeric`, which arrives as text, becomes a decimal at the scale its values carry, and a decimal wider than 38 digits narrows when its values fit. A value no decimal holds (`NaN`, more than 38 digits) is refused with `FEDERATION_LEG_TYPE`, never rounded |
 | Errors | A leg that fails fails the query, and the error names the leg's data source and dialect (HTTP 502) |
 | Leg size | A leg may return at most `FEDERATION_MAX_LEG_ROWS` rows (default 5,000,000), and a leg returning rows may stand for at most as many. A leg held in memory may also take at most `FEDERATION_MAX_LEG_MB` (default 512), counted batch by batch as it arrives, so a leg too large is refused before it is whole: rows alone do not say what a leg takes. Measured, a key and two partial results take 32 bytes a row (154 MB for 5,000,000 rows), a key and a region 15; each text field takes its length plus 4. Past either limit, `FEDERATION_LEG_TOO_LARGE`, naming the joins whose keys the leg returns a row for each of ([where to join the sources](#where-to-join-the-sources)). A leg spilled to disk is bounded by the spill limits below instead, except for the columns the combine step needs converted (a PostgreSQL `numeric` arrives as text and becomes a decimal), which it holds in memory within `FEDERATION_MAX_LEG_MB`, counted before each column is converted. Held in memory, narrow legs take about 75 MB of the process per million rows: measured, revenue by region over 5,000,000 customers (a fact leg from PostgreSQL and a dimension leg of 5,000,000 rows each) took 730 MB and 6 s, and four such queries at once 2.7 GB. A server with less memory lowers `FEDERATION_MAX_LEG_MB` or `FEDERATION_MAX_CONCURRENT`, or spills |
@@ -977,3 +1035,4 @@ Not refused, and documented here so they are known:
 | Integer variance computed from rows | beside a measure that needs rows, a variance is DuckDB's double variance, not the exact one from moments |
 | Decimal products computed from rows | typed as DuckDB types them, as on one DuckDB: two decimals of 18 digits or fewer multiply to `DECIMAL(18, s1 + s2)`, so two of 2 places raise an overflow past 10^14, where PostgreSQL and MySQL compute the product exactly |
 | Key injection skipped | for a key of two columns, of a type other than integer or string, or past the limit, the fact leg reads every key: the same answer, more rows read |
+| Key map skipped | for a key of two columns, a key other than an integer, or past the limit, the fact leg groups by the key: the same answer, a larger leg |

@@ -107,7 +107,8 @@ def _assert_injected(target: VendorTarget) -> None:
             return normalize_leg(leg, pa.Table.from_pylist(rows))
 
         tables = {leg.name: run(leg) for leg in plan.legs[1:]}
-        fact = injected_fact_leg(plan, tables, 10_000)
+        fact, maps = injected_fact_leg(plan, tables, 10_000)
+        assert not maps, f"{target.name}: the fact leg groups by the key alone"
         assert " IN (" in fact.sql, f"{target.name}: the {key} keys were not listed"
         tables[fact.name] = run(fact)
         combined = combine(plan, tables, None).arrow_table.to_pylist()

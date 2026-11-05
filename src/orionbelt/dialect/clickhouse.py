@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from decimal import Decimal
 
 from orionbelt.ast.nodes import (
@@ -35,6 +36,10 @@ from orionbelt.models.types import DecimalType, OBMLType
 #: Ends a statement with an outer join: an unmatched row reads NULL, as on
 #: every engine.
 STATEMENT_SETTINGS = "SETTINGS join_use_nulls = 1"
+
+# A 128- or 256-bit integer type, also inside ``Nullable(...)`` or
+# ``LowCardinality(...)``: a key map's key has no common type with it.
+_WIDE_INTEGER = re.compile(r"\bU?Int(128|256)\b", re.IGNORECASE)
 
 # Every outer join the compiler writes, through the AST or as raw SQL. A
 # ``LEFT ARRAY JOIN`` (an outer unnest) is not one: the setting leaves it be.
@@ -322,6 +327,9 @@ class ClickHouseDialect(Dialect):
 
     unions_resolve_leg_types = False
     key_injection_max_keys = 10_000
+    #: 5 million groups by key in 0.28 s, joining a map in 0.24-0.32 s: the
+    #: leg shrinks to a row per group.
+    pushes_key_maps = True
     max_statement_bytes = 256 * 1024
 
     def render_unnest(self, node: Unnest) -> str:
@@ -449,6 +457,24 @@ class ClickHouseDialect(Dialect):
         inner = sql.removesuffix(settings)
         wrapped = super().wrap_leg(inner, projection, alias)
         return f"{wrapped}{settings}" if inner != sql else wrapped
+
+    def key_map(self, key: str, ordinal: str, pairs: Sequence[tuple[int, int]]) -> str:
+        """The ``values`` table function, its columns named and typed by its structure.
+
+        The key is a ``Decimal(38, 0)``, which a join compares with a key of
+        any integer type up to 64 bits, unsigned or not, ``Nullable`` or
+        ``LowCardinality``, and of any decimal type: ClickHouse refuses a join
+        of two types without a common one, and ``Int64`` has none with
+        ``UInt64``, ``Int128`` none with a decimal. Measured over 5 million
+        rows, as fast as ``Int64``. Only a 128- or 256-bit integer has none
+        with it (:meth:`maps_key`).
+        """
+        rows = ", ".join(f"({k}, {n})" for k, n in pairs)
+        return f"(SELECT * FROM values('{key} Decimal(38, 0), {ordinal} UInt32', {rows}))"
+
+    def maps_key(self, sql_type: str | None) -> bool:
+        """Not a key declared a 128- or 256-bit integer (``UInt128``, ``Int256``, ...)."""
+        return sql_type is None or _WIDE_INTEGER.search(sql_type) is None
 
     def exact_decimal_avg(
         self, arg: Expr, obml_type: OBMLType, source_type: DecimalType | None = None
