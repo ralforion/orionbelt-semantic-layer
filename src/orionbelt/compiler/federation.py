@@ -1502,7 +1502,16 @@ def plan_federated(
                 enforce=FilterEnforcement.ALWAYS,
             )
         )
-        joins_from(e).append(
+        # Where the combine step counts the rows of the island's object, it
+        # adds those no fact row reaches, which the test must reach too: the
+        # leg joins that island's leg, on the same keys.
+        counted = island_legs[missing.island]
+        joins = (
+            leg_joins.setdefault(counted, [])
+            if counted in leg_parent_of.values()
+            else joins_from(e)
+        )
+        joins.append(
             DataObjectJoin(
                 join_type=Cardinality.MANY_TO_ONE,
                 join_to=leg_name,
@@ -2621,6 +2630,20 @@ class _Planner:
                         f"which one row of '{parent}' can have several values of",
                         hint="Query the measure separately.",
                     )
+            # Its leg returns the values as stored, and DuckDB compares them:
+            # a MySQL string by its bytes, where its collation calls 'a' and
+            # 'A' one value.
+            for obj, column, counted in _compared_columns(effective[name]):
+                dialect = self.leg_dialect({obj})
+                kind = self.model.data_objects[obj].columns[column].abstract_type.value
+                if dialect.equality_key(ColumnRef(name=column), kind, counted=counted) is not None:
+                    raise self.refuse(
+                        "UNSUPPORTED_AGGREGATION",
+                        f"Measure '{name}' is of '{parent}', which the combine step "
+                        f"computes in DuckDB, which compares the values of '{obj}.{column}' "
+                        f"otherwise than {dialect.name}",
+                        hint="Query the measure separately.",
+                    )
 
     def check_leg_parent_rows(
         self, fact_filters: Sequence[QueryFilterItem], fact_island: set[str]
@@ -3220,12 +3243,19 @@ class _Planner:
             for m in self.resolved.measures
             if m.is_cumulative and m.cumulative_window_span is not None
         }
+        # A measure of another island's object is computed from its own leg's
+        # rows (:meth:`check_leg_parents`); one allowing fan-out, as one
+        # database does, once per fact row its row joins, from those rows.
         return [
             name
             for name in names
-            if name in across
-            or not self.combines(effective[name], fact_island)
-            or (name in spans and not _adds_up(effective[name]))
+            if (name in self.leg_parents and effective[name].allow_fan_out)
+            or name not in self.leg_parents
+            and (
+                name in across
+                or not self.combines(effective[name], fact_island)
+                or (name in spans and not _adds_up(effective[name]))
+            )
         ]
 
     def combines(self, measure: Measure, fact_island: set[str]) -> bool:

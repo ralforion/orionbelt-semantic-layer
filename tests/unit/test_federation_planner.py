@@ -5618,6 +5618,10 @@ CUSTOMER_MEASURES = (
     "aggregation: count, resultType: int, filters: [{column: {dataObject: Customers, "
     "column: Region}, operator: equals, values: [{dataType: string, valueString: EU}]}]}\n"
     f"  Median Order: {{columns: [{AMOUNT}], aggregation: median}}\n"
+    "  Fanned Customers: {columns: [{dataObject: Customers, column: Customer ID}], "
+    "aggregation: count, resultType: int, allowFanOut: true}\n"
+    "  Fanned Id Sum: {columns: [{dataObject: Customers, column: Customer ID}], "
+    "aggregation: sum, resultType: int, allowFanOut: true}\n"
 )
 REVENUE_AND_CUSTOMERS = {"dimensions": ["Region"], "measures": ["Revenue", "Customers Count"]}
 CUSTOMER_QUERIES = {
@@ -5702,6 +5706,12 @@ CUSTOMER_QUERIES = {
     "the_customers_alone": {
         "select": {"dimensions": ["Order Date"], "measures": ["Customers Count"]}
     },
+    "allowing_fan_out": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": ["Revenue", "Fanned Customers", "Fanned Id Sum"],
+        }
+    },
 }
 
 
@@ -5779,6 +5789,82 @@ class TestMeasuresOfJoinedObjects:
         assert _run_on(customer_files, customer_model(True), query) == [
             ("EU", Decimal("120.75"), 1)
         ]
+
+    def test_allowing_fan_out_the_fact_leg_returns_its_rows(
+        self, customer_files: dict[str, str]
+    ) -> None:
+        """One database counts a customer once per order, as the measure allows:
+        the aggregated fact leg counted it once per region."""
+        query = CUSTOMER_QUERIES["allowing_fan_out"]
+
+        fact = _compile(customer_model(True), query).federation.legs[0]
+
+        assert '"__rows"' in fact.sql
+        assert _run_on(customer_files, customer_model(True), query) == [
+            ("EU", Decimal("123.90"), 3, 33),
+            ("US", Decimal("19.00"), 2, 22),
+            (None, Decimal("95.10"), 1, 12),
+        ]
+
+    @pytest.mark.parametrize("op", ["nonexists", "exists"])
+    def test_customers_without_orders_keep_an_exists_on_their_tickets(
+        self, tmp_path: Any, op: str
+    ) -> None:
+        """The customers without tickets: those without orders too, 14 and 15,
+        tested against the tickets as one database tests them."""
+        paths = {name: str(tmp_path / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+        for name, statements in (
+            ("all", [ORDERS, CUSTOMERS_WITHOUT_ORDERS, TICKETS]),
+            ("shop", [ORDERS]),
+            ("crm", [CUSTOMERS_WITHOUT_ORDERS, TICKETS]),
+        ):
+            con = duckdb.connect(paths[name])
+            for statement in statements:
+                con.execute(statement)
+            con.close()
+        query = {
+            "select": REVENUE_AND_CUSTOMERS,
+            "where": [
+                {"field": "Customers.Customer ID", "op": op, "subquery": {"dataObject": "Tickets"}}
+            ],
+        }
+
+        single = _run_on(paths, subquery_model(False), query)
+
+        assert _run_on(paths, subquery_model(True), query) == single
+        assert single
+
+    @pytest.mark.parametrize(
+        ("measure", "column"),
+        [("Tenants", "Tenant"), ("Acme Customers", "Tenant")],
+        ids=["a_distinct_count", "a_filter"],
+    )
+    def test_a_value_the_crm_compares_otherwise_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, measure: str, column: str
+    ) -> None:
+        """On MySQL 'acme' and 'ACME' are one tenant: DuckDB, counting them
+        from the leg's values, would see two."""
+        pytest.importorskip("ob_flight")
+        monkeypatch.setenv("OBSL_DATABASES", "shop,crm")
+        monkeypatch.setenv("DB_SHOP_TYPE", "postgres")
+        monkeypatch.setenv("DB_CRM_TYPE", "mysql")
+        yaml = model_yaml(
+            federated=True,
+            extra=CUSTOMER_MEASURES
+            + "  Acme Customers: {columns: [{dataObject: Customers, column: Customer ID}], "
+            "aggregation: count, resultType: int, filters: [{column: {dataObject: Customers, "
+            "column: Tenant}, operator: equals, values: [{dataType: string, "
+            "valueString: acme}]}]}\n",
+        )
+        query = {"select": {"dimensions": ["Region"], "measures": ["Revenue", measure]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_AGGREGATION"
+        assert f"values of 'Customers.{column}' otherwise than mysql" in error.message
+        assert _compile(yaml, {"select": REVENUE_AND_CUSTOMERS}).federation is not None
 
     def test_customers_without_orders_a_filter_on_the_orders_picks_are_refused(self) -> None:
         """``Order Date is_null`` holds for a customer without orders, whom one

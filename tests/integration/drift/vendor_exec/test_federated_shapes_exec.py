@@ -304,6 +304,10 @@ QUERIES = {
     "a_measure_of_the_customers": {
         "select": {"dimensions": ["Region"], "measures": ["Revenue", "Customers Count"]}
     },
+    "a_measure_of_the_customers_without_tickets": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue", "Customers Count"]},
+        "where": [_tickets("nonexists")],
+    },
     "a_measure_of_the_customers_the_orders_reach": {
         "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Customers Count"]},
         "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],

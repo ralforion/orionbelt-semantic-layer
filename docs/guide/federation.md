@@ -728,6 +728,15 @@ WHERE NOT EXISTS (
   the customers whose keys the fact leg returns.
 - The fact leg returns each customer key: it is not joined as a
   [key map](#key-maps).
+- An `exists` or `nonexists` on the customers' tickets tests the customers
+  without orders too, as one database does.
+- A customer measure with `allowFanOut: true` counts a customer once per
+  order, as one database does: the fact leg returns its rows
+  ([computed from rows](#computed-from-rows)).
+- Refused (`FEDERATION_UNSUPPORTED_AGGREGATION`): a customer measure that
+  compares values its database compares otherwise than DuckDB, such as a
+  distinct count, `min`, `max` or filter of MySQL text, where MySQL treats
+  `'a'` and `'A'` as equal.
 - Refused (`FEDERATION_MULTI_FACT`): a filter on the orders that a customer
   without orders passes (`Order Date is_null`), which one database tests
   against all orders, where the fact leg returns those it keeps; a customer
@@ -1064,6 +1073,7 @@ These cases are refused:
 | Revenue per order month, sorted by the number of customers, without selecting the number of customers | Add the number of customers to the query | `FEDERATION_MULTI_FACT` |
 | Revenue per region and a customer measure with a `filterContext` | Ask for the customer measure in its own query | `FEDERATION_MULTI_FACT` |
 | Revenue per region and a measure of a table the customers are joined to, such as the number of their tenants | Ask for that measure in its own query | `FEDERATION_MULTI_FACT` |
+| Revenue per region and a customer measure over MySQL text: its distinct count, `min`, `max`, or a filter on it. MySQL treats `'a'` and `'A'` as equal, DuckDB does not | Ask for the customer measure in its own query | `FEDERATION_UNSUPPORTED_AGGREGATION` |
 | Revenue per region, sorted by the number of tickets, without selecting the number of tickets | Add the number of tickets to the query | `FEDERATION_MULTI_FACT` |
 | Revenue and the number of tickets per region, sorted by the number of returns, without selecting the number of returns | Add the number of returns to the query | `FEDERATION_UNSUPPORTED_QUERY` |
 | Revenue and the number of tickets per region, with one of the options listed below the table | Ask for each table's measures in its own query, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |
