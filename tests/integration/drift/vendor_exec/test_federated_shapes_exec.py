@@ -301,6 +301,13 @@ QUERIES = {
         "select": {"dimensions": ["Region"], "measures": ["Paid Revenue", "Revenue"]},
         "orderBy": [{"field": "Median Order", "direction": "desc"}],
     },
+    "a_measure_of_the_customers": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue", "Customers Count"]}
+    },
+    "a_measure_of_the_customers_the_orders_reach": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Customers Count"]},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+    },
     "independent_facts": {
         "select": {"dimensions": ["Region"], "measures": ["Revenue", "Tickets Count"]},
         "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],

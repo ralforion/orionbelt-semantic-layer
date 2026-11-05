@@ -265,6 +265,9 @@ _COMPARISON_OPERATORS = frozenset(
 # read it through the fact rows (:meth:`_Planner.parents`).
 _ROWS_RELATION = "leg_0_rows"
 _ONCE_RELATION = "leg_0_once"
+# The suffix of the relation of a dimension leg's rows the fact leg's reach,
+# whose object's measures the combine step computes (:func:`_reached_rows`).
+_REACHED_RELATION = "_reached"
 # The result of each part of a query split by fact, and their union; and the
 # count of its fact's rows a part grouping by no dimension returns (:class:`_Part`).
 _PART_RELATION = "__part"
@@ -796,6 +799,7 @@ def plan_federated(
     planner.check_per(islands)
     fact = planner.fact_island(islands)
     edges = planner.federation_edges(islands, fact)
+    planner.check_leg_parents(islands, fact, edges)
     unnested = planner.unnested_objects(islands, fact)
     planner.check_unnested_dimensions(unnested)
     if query.select.is_raw:
@@ -804,6 +808,7 @@ def plan_federated(
         )
     rows_for = planner.check_measures(islands[fact])
     leg_filters, combine_filters, absent = planner.place_filters(islands, fact)
+    planner.check_leg_parent_rows(leg_filters.get(fact, []), islands[fact])
     # The fields the combine step filters on: in ``where``, and in the
     # filters a measure's filter context includes.
     filtered = [
@@ -932,6 +937,9 @@ def plan_federated(
     }
     fact_keys = out_keys[fact]
     measures = planner.atomic_measures()
+    # A measure of another island's object is the combine step's alone, from
+    # that island's leg (:meth:`_Planner.check_leg_parents`).
+    fact_measures = measures - planner.leg_parents.keys()
     # The leg column counting the rows each of its rows stands for, and the
     # leg column of each column a measure reads, when the leg returns rows.
     row_count: str | None = None
@@ -946,15 +954,15 @@ def plan_federated(
             for parent, names in parents.items()
         }
         leg_measures, row_count, distinct, measure_columns = _row_measures(
-            model, measures, taken, resolved.base_object, identities
+            model, fact_measures, taken, resolved.base_object, identities
         )
         averages: dict[str, tuple[str, str, int | None]] = {}
         variances: dict[str, tuple[str, str, str, int]] = {}
     else:
-        leg_measures, averages, distinct, variances = _leg_measures(model, measures, taken)
+        leg_measures, averages, distinct, variances = _leg_measures(model, fact_measures, taken)
     # A minimum or maximum of strings combines as the value the fact leg ranks
     # least or greatest among its groups, in its own engine (:func:`_ranks`).
-    ranks = {} if from_rows else _ranks(model, measures, taken)
+    ranks = {} if from_rows else _ranks(model, fact_measures, taken)
     # The values a count of distinct values counts: the fact leg groups by them
     # too, so the combine step counts them across every group they reach.
     fact_values = {column: (obj, col) for column, obj, col in distinct.values()}
@@ -968,6 +976,21 @@ def plan_federated(
         if read[0] in island and i != fact
     }
     planner.check_missing_rows(islands, edges, [(obj, col) for obj, col, _ in elsewhere])
+    # A measure of another island's object reads what it reads, and the
+    # object's identity, from that island's leg: a row per row of the object,
+    # whose identity the combine step deduplicates it by.
+    leg_parent_of: dict[str, str] = {}
+    leg_identities: set[str] = set()
+    for parent in sorted(set(planner.leg_parents.values())):
+        owned = sorted(n for n, p in planner.leg_parents.items() if p == parent)
+        identity = [(parent, c, False) for c in dedup_identity(parent, owned, resolved, model)]
+        owned_reads = [r for n in owned for r in _read_columns(model.effective_measures[n])]
+        for ref in [*identity, *owned_reads]:
+            if ref not in measure_columns:
+                measure_columns[ref] = _unused(f"__value{len(measure_columns)}", taken)
+            elsewhere[ref] = island_legs[island_of[parent]]
+        leg_identities |= {measure_columns[ref] for ref in identity}
+        leg_parent_of |= dict.fromkeys(owned, island_legs[island_of[parent]])
     row_values = {
         column: (obj, col)
         for (obj, col, own), column in measure_columns.items()
@@ -985,7 +1008,11 @@ def plan_federated(
     # computed from rows, each measure's outcome a column of the leg.
     filtered_in_leg, predicates = _leg_predicates(
         model,
-        [m for m in sorted(measures) if from_rows and planner.filters_in_leg(m, islands[fact])],
+        [
+            m
+            for m in sorted(fact_measures)
+            if from_rows and planner.filters_in_leg(m, islands[fact])
+        ],
         row_values,
         taken,
     )
@@ -1312,7 +1339,12 @@ def plan_federated(
                 for name, (obj, col) in {**keys, **onward, **static_columns}.items()
                 if name not in dim_predicates
             ],
-            *[_value_column(model, name, obj, col) for name, (obj, col) in read_here.items()],
+            *[
+                _value_column(model, name, obj, col).model_copy(
+                    update={"primary_key": name in leg_identities}
+                )
+                for name, (obj, col) in read_here.items()
+            ],
             *[
                 DataObjectColumn(name=column, code=column, abstract_type=DataType.INT)
                 for column in dim_predicates
@@ -1383,6 +1415,7 @@ def plan_federated(
             maps_keys
             and edge.parent == fact
             and edge.island not in absent_islands
+            and leg_name not in leg_parent_of.values()
             and injected not in matched.get(fact, {})
             and _maps_key(model, edge, fact_reads, planner.leg_dialect(islands[fact]))
         ):
@@ -1480,6 +1513,21 @@ def plan_federated(
     for name, joins in leg_joins.items():
         combine_objects[name] = combine_objects[name].model_copy(update={"joins": joins})
 
+    # A dimension leg holds every row of its object. Where one database adds
+    # none no fact row reaches (a filter on the orders drops the customers
+    # without one), the combine step reads that object's rows the fact rows
+    # reach, so its own grain_dedup adds none either.
+    childless = {leg.parent for leg in resolved.childless_legs}
+    reached: dict[str, tuple[str, list[str]]] = {}
+    for e, edge in enumerate(edges):
+        leg_name = f"leg_{e + 1}"
+        if leg_name in leg_parent_of.values() and edge.to_object not in childless:
+            relation = f"{leg_name}{_REACHED_RELATION}"
+            combine_objects[leg_name] = combine_objects[leg_name].model_copy(
+                update={"code": relation}
+            )
+            reached[relation] = (leg_name, key_names[e])
+
     once_columns: dict[str, tuple[list[str], list[str]]] = {}
     effective = model.effective_measures
     for parent, names in sorted(parents.items()):
@@ -1560,7 +1608,9 @@ def plan_federated(
         dimensions=combine_dimensions,
         measures={
             m: _combine_context(
-                _row_measure(
+                _row_measure(model, m, measure_columns, leg_parent_of[m], elsewhere)
+                if m in leg_parent_of
+                else _row_measure(
                     model,
                     m,
                     measure_columns,
@@ -1622,6 +1672,8 @@ def plan_federated(
         combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
     if row_count:
         combine_sql = _with_rows(combine_sql, combiner, "leg_0", row_count, once_columns)
+    if reached:
+        combine_sql = _reached_rows(combine_sql, combiner, "leg_0", reached)
     inject = None
     if injections or key_maps:
         inject = KeyInjector(
@@ -2128,6 +2180,9 @@ class _Planner:
         # The query's joins, and those a reaggregate metric's first stage
         # makes to reach its ``per`` dimensions.
         self.join_steps = [*resolved.join_steps, *_per_steps(resolved, model)]
+        # The measures of an object of another island the fact rows join
+        # many-to-one, each with that object (:meth:`fact_island`).
+        self.leg_parents: dict[str, str] = {}
 
     # -- refusals -----------------------------------------------------------
 
@@ -2487,13 +2542,27 @@ class _Planner:
         another island too. That other island is read through the joins from
         the base's, as a dimension is (:meth:`federation_edges`), and so are
         the columns its filters or ordering read there; the combine step
-        computes such a measure from rows (:meth:`check_measures`).
+        computes such a measure from rows (:meth:`check_measures`). A measure
+        of one object of another island the query joins, which one database
+        reads through the fact rows' joins (``grain_dedup``), is the combine
+        step's, from that island's leg (:meth:`check_leg_parents`); but one
+        with a filter context, which one database computes in a query of its
+        own.
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
         base = island_of[self.resolved.base_object]
         effective = self.model.effective_measures
+        joined = {step.to_object for step in self.resolved.join_steps}
+        self.leg_parents = {
+            name: parent
+            for name in self.atomic_measures()
+            if len(sources := effective[name].source_objects) == 1
+            and (parent := next(iter(sources))) in joined
+            and island_of.get(parent, base) != base
+            and effective[name].filter_context is None
+        }
         owners: set[int] = set()
-        for name in self.atomic_measures():
+        for name in self.atomic_measures() - self.leg_parents.keys():
             homes = {island_of[o] for o in effective[name].source_objects if o in island_of}
             owners |= {base} if base in homes else homes
         if len(owners) > 1:
@@ -2518,6 +2587,67 @@ class _Planner:
                 "rows join many-to-one.",
             )
         return base
+
+    def check_leg_parents(self, islands: list[set[str]], fact: int, edges: list[_Edge]) -> None:
+        """Refuse a measure of another island's object the combine step cannot compute.
+
+        Such a measure (:attr:`leg_parents`), the customers' count beside the
+        orders' revenue, is computed in the combine step from the dimension
+        leg of its object, which returns a row per row of it, joined from the
+        fact rows many-to-one: the combine step's own ``grain_dedup`` counts
+        each row once per group, and adds the rows no fact row reaches where
+        one database adds them, customers without orders
+        (:meth:`check_leg_parent_rows`). So the object is the one the fact
+        island joins in that island, and what its measures read has a value
+        per row of it.
+        """
+        entries = {edge.to_object for edge in edges if edge.parent == fact}
+        source = self._island_source(islands[fact])
+        effective = self.model.effective_measures
+        for name, parent in sorted(self.leg_parents.items()):
+            if parent not in entries:
+                raise self.refuse(
+                    "MULTI_FACT",
+                    f"Measure '{name}' is of '{parent}', which no data object of the "
+                    f"facts' data source ({source}) joins",
+                    hint="Query the measure separately.",
+                )
+            side = self._one_row_each(parent)
+            for obj, column, _ in _read_columns(effective[name]):
+                if not self._column_objects(obj, column) <= side:
+                    raise self.refuse(
+                        "MULTI_FACT",
+                        f"Measure '{name}' is of '{parent}', but reads '{obj}.{column}', "
+                        f"which one row of '{parent}' can have several values of",
+                        hint="Query the measure separately.",
+                    )
+
+    def check_leg_parent_rows(
+        self, fact_filters: Sequence[QueryFilterItem], fact_island: set[str]
+    ) -> None:
+        """Refuse a measure of another island's object whose rows the fact leg's filters pick.
+
+        One database adds the rows of such an object (:attr:`leg_parents`)
+        that no fact row reaches, customers without orders, where the WHERE
+        can hold for them; it finds them among all the fact rows, and tests
+        them with the fact's columns NULL. The combine step finds them among
+        the fact rows the fact leg returns, which its filters, a query's or a
+        static model filter's, may have dropped: a customer whose orders
+        ``Order Date is_null`` rejects would count as one without orders. A
+        filter the combine step runs is one it tests them with, as one
+        database does.
+        """
+        childless = {leg.parent for leg in self.resolved.childless_legs}
+        static = [f for f in self.model.filters if f.data_object in fact_island]
+        for name, parent in sorted(self.leg_parents.items()):
+            if parent in childless and (fact_filters or static):
+                raise self.refuse(
+                    "MULTI_FACT",
+                    f"Measure '{name}' counts the rows of '{parent}' without a row of "
+                    f"{self._island_source(fact_island)} too, and a filter on "
+                    f"{', '.join(sorted(fact_island & self.objects))} decides which those are",
+                    hint=f"Query the measure separately, or filter on a dimension of '{parent}'.",
+                )
 
     def federation_edges(self, islands: list[set[str]], fact: int) -> list[_Edge]:
         """The joins between islands, each from an island nearer the measures.
@@ -3070,7 +3200,8 @@ class _Planner:
         across = {
             name
             for name in names
-            if any(obj not in fact_island for obj, _, _ in _read_columns(effective[name]))
+            if name not in self.leg_parents
+            and any(obj not in fact_island for obj, _, _ in _read_columns(effective[name]))
         }
         for parent, owned in self.parents().items():
             if reading := sorted(across.intersection(owned)):
@@ -3318,6 +3449,8 @@ class _Planner:
         targets = {**plan.measures, **plan.components, **self.resolved.dedup_targets}
         repeated = []
         for name, target in sorted(targets.items()):
+            if name in self.leg_parents:
+                continue
             measure = effective[name]
             if measure.distinct or measure.aggregation in MULTIPLICITY_SAFE_AGGREGATIONS:
                 continue
@@ -3337,12 +3470,13 @@ class _Planner:
         it: a measure whose values come from one object, not the base. One
         database counts each row of such an object once where the joins repeat
         it (``grain_dedup``), and adds its rows no base row reaches, customers
-        without sales.
+        without sales. Not an object of another island, whose measures the
+        combine step computes from its leg (:attr:`leg_parents`).
         """
         base = self.resolved.base_object
         effective = self.model.effective_measures
         parents: dict[str, list[str]] = {}
-        for name in sorted(self.atomic_measures()):
+        for name in sorted(self.atomic_measures() - self.leg_parents.keys()):
             sources = effective[name].source_objects
             if len(sources) == 1 and (source := next(iter(sources))) != base:
                 parents.setdefault(source, []).append(name)
@@ -3451,7 +3585,7 @@ class _Planner:
         from Orders makes the counted values per order.
         """
         effective = self.model.effective_measures
-        atomic = sorted(self.atomic_measures())
+        atomic = sorted(self.atomic_measures() - self.leg_parents.keys())
         distinct = [name for name in atomic if _counts_distinct_column(effective[name])]
         counted = {effective[name].columns[0].view for name in distinct}
         for name in atomic:
@@ -4761,6 +4895,32 @@ def _with_rows(
             for name, (columns, identity) in once.items()
         ),
     ]
+    return _ahead(sql, relations)
+
+
+def _reached_rows(
+    sql: str, dialect: Dialect, fact: str, reached: dict[str, tuple[str, list[str]]]
+) -> str:
+    """*sql* reading each relation of *reached*: its leg's rows the *fact* leg's keys reach.
+
+    By relation, the dimension leg and the key columns both legs return.
+    Common table expressions ahead of any the combine query has, as in
+    :func:`_with_rows`.
+    """
+    q = dialect.quote_identifier
+    alias = q(_LEG_ALIAS)
+    relations = [
+        f"{q(name)} AS (\nSELECT {alias}.*\nFROM {q(leg)} AS {alias}\nWHERE EXISTS (\n"
+        f"SELECT 1\nFROM {q(fact)}\nWHERE "
+        + " AND ".join(f"{q(fact)}.{q(key)} = {alias}.{q(key)}" for key in keys)
+        + "\n)\n)"
+        for name, (leg, keys) in reached.items()
+    ]
+    return _ahead(sql, relations)
+
+
+def _ahead(sql: str, relations: list[str]) -> str:
+    """*sql* with the common table expressions *relations* ahead of any it has."""
     with_ = ",\n".join(relations)
     if sql.startswith("WITH "):
         return f"WITH {with_},\n{sql.removeprefix('WITH ')}"

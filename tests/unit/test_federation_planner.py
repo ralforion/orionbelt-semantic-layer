@@ -1459,10 +1459,25 @@ ON_CUSTOMERS = (
     "aggregation: count, resultType: int}\n"
 )
 
+# One database counts the customers in a query of their own, without the
+# query's filters.
+UNFILTERED_CUSTOMERS = (
+    "  All Customer Rows: {columns: [{dataObject: Customers, column: Customer ID}], "
+    "aggregation: count, resultType: int, filterContext: {mode: FIXED}}\n"
+)
+
 REFUSALS = {
-    "measures_on_two_sources": (
+    "customers_without_orders_a_filter_on_the_orders_picks": (
         ON_CUSTOMERS,
-        {"select": {"dimensions": ["Region"], "measures": ["Revenue", "Customer Rows"]}},
+        {
+            "select": {"dimensions": ["Region"], "measures": ["Revenue", "Customer Rows"]},
+            "where": [{"field": "Order Date", "op": "is_null"}],
+        },
+        "FEDERATION_MULTI_FACT",
+    ),
+    "a_customer_measure_with_a_filter_context": (
+        UNFILTERED_CUSTOMERS,
+        {"select": {"dimensions": ["Region"], "measures": ["Revenue", "All Customer Rows"]}},
         "FEDERATION_MULTI_FACT",
     ),
 }
@@ -3069,11 +3084,21 @@ class TestRollup:
 
 
 class TestJoinShape:
-    def test_measures_on_the_one_side_grouped_by_the_many_side_are_refused(self) -> None:
+    def test_measures_on_the_one_side_grouped_by_the_many_side(self, files: dict[str, str]) -> None:
+        """The customers' rows by order date: counted once per date in the
+        combine step, from the CRM's leg."""
+        query = {"select": {"dimensions": ["Order Date"], "measures": ["Customer Rows"]}}
+
+        single = _run_on(files, model_yaml(federated=False, extra=ON_CUSTOMERS), query)
+
+        assert _run_on(files, model_yaml(federated=True, extra=ON_CUSTOMERS), query) == single
+        assert single
+
+    def test_measures_of_a_query_of_their_own_on_the_one_side_are_refused(self) -> None:
         with pytest.raises(ResolutionError) as caught:
             _compile(
-                model_yaml(federated=True, extra=ON_CUSTOMERS),
-                {"select": {"dimensions": ["Order Date"], "measures": ["Customer Rows"]}},
+                model_yaml(federated=True, extra=UNFILTERED_CUSTOMERS),
+                {"select": {"dimensions": ["Order Date"], "measures": ["All Customer Rows"]}},
             )
 
         (error,) = caught.value.errors
@@ -5566,6 +5591,225 @@ class TestMeasuresOfIndependentFacts:
         single = _run_on(paths, independent_model(False), selected)
         assert _run_on(paths, independent_model(True), selected) == single
         assert single
+
+
+# Customers 14 and 15 have no orders: one database counts them in the
+# groups they belong to, by their region, and in the NULL group of an order
+# column.
+CUSTOMERS_WITHOUT_ORDERS = CUSTOMERS.replace(
+    "    (13, 'EU', 'other')\n",
+    "    (13, 'EU', 'other'),\n    (14, 'US', 'other'),\n    (15, NULL, 'acme')\n",
+)
+CUSTOMER_MEASURES = (
+    ON_CUSTOMERS + "  Customer Id Sum: {columns: [{dataObject: Customers, column: Customer ID}], "
+    "aggregation: sum, resultType: int}\n"
+    "  Tenants: {columns: [{dataObject: Customers, column: Tenant}], "
+    "aggregation: count_distinct, resultType: int}\n"
+    "  Top Customer: {columns: [{dataObject: Customers, column: Customer ID}], "
+    "aggregation: max, resultType: int}\n"
+    "  Average Customer Id: {columns: [{dataObject: Customers, column: Customer ID}], "
+    "aggregation: avg}\n"
+    "  All Customers: {columns: [{dataObject: Customers, column: Customer ID}], "
+    "aggregation: count, total: true, resultType: int}\n"
+    "  EU Customers: {columns: [{dataObject: Customers, column: Customer ID}], "
+    "aggregation: count, resultType: int, filters: [{column: {dataObject: Customers, "
+    "column: Region}, operator: equals, values: [{dataType: string, valueString: EU}]}]}\n"
+    f"  Median Order: {{columns: [{AMOUNT}], aggregation: median}}\n"
+)
+REVENUE_AND_CUSTOMERS = {"dimensions": ["Region"], "measures": ["Revenue", "Customers Count"]}
+CUSTOMER_QUERIES = {
+    "by_region": {"select": REVENUE_AND_CUSTOMERS},
+    "other_aggregations": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": [
+                "Revenue",
+                "Customer Rows",
+                "Customer Id Sum",
+                "Tenants",
+                "Top Customer",
+                "Average Customer Id",
+            ],
+        }
+    },
+    "by_order_month": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Customers Count"]}
+    },
+    "by_region_and_order_month": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue", "Customers Count"],
+        }
+    },
+    "filtered_on_the_orders": {
+        "select": REVENUE_AND_CUSTOMERS,
+        "where": [{"field": "Order Date", "op": "<", "value": "2024-02-01"}],
+    },
+    "filtered_on_the_region": {
+        "select": REVENUE_AND_CUSTOMERS,
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+    "an_or_across_sources": {
+        "select": REVENUE_AND_CUSTOMERS,
+        "where": [
+            {
+                "logic": "or",
+                "filters": [
+                    {"field": "Region", "op": "=", "value": "EU"},
+                    {"field": "Order Date", "op": ">", "value": "2024-03-05"},
+                ],
+            }
+        ],
+    },
+    "a_metric": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": ["Revenue per Customer", "Customers Count"],
+        }
+    },
+    "having": {
+        "select": REVENUE_AND_CUSTOMERS,
+        "having": [{"field": "Customers Count", "op": ">", "value": 1}],
+    },
+    "sorted_by_the_customers": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+        "orderBy": [
+            {"field": "Customers Count", "direction": "desc"},
+            {"field": "Region", "direction": "asc"},
+        ],
+    },
+    "no_dimensions": {"select": {"dimensions": [], "measures": ["Revenue", "Customers Count"]}},
+    "a_rollup": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue", "Customers Count"],
+        },
+        "grouping": "rollup",
+    },
+    "a_total": {"select": {"dimensions": ["Region"], "measures": ["Revenue", "All Customers"]}},
+    "a_measure_filter": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "EU Customers"]}
+    },
+    "beside_a_median": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Median Order", "Customer Id Sum"],
+        }
+    },
+    "the_customers_alone": {
+        "select": {"dimensions": ["Order Date"], "measures": ["Customers Count"]}
+    },
+}
+
+
+def customer_model(federated: bool) -> str:
+    return model_yaml(
+        federated=federated,
+        extra=CUSTOMER_MEASURES,
+        metric='  Revenue per Customer: {expression: "{[Revenue]} / {[Customers Count]}"}\n',
+    )
+
+
+@pytest.fixture(scope="module")
+def customer_files(tmp_path_factory: Any) -> dict[str, str]:
+    root = tmp_path_factory.mktemp("customers")
+    paths = {name: str(root / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+    for name, statements in (
+        ("all", [ORDERS, CUSTOMERS_WITHOUT_ORDERS]),
+        ("shop", [ORDERS]),
+        ("crm", [CUSTOMERS_WITHOUT_ORDERS]),
+    ):
+        con = duckdb.connect(paths[name])
+        for statement in statements:
+            con.execute(statement)
+        con.close()
+    return paths
+
+
+class TestMeasuresOfJoinedObjects:
+    """The customers' count beside the orders' revenue: one database counts
+    each customer once per group (``grain_dedup``), those without orders too;
+    across sources the CRM's leg returns each customer once, and the combine
+    step counts them as one database does."""
+
+    @pytest.mark.parametrize("query", CUSTOMER_QUERIES.values(), ids=CUSTOMER_QUERIES.keys())
+    def test_federated_returns_what_one_source_returns(
+        self, customer_files: dict[str, str], query: dict[str, Any]
+    ) -> None:
+        sort = not query.get("orderBy")
+
+        single = _run_on(customer_files, customer_model(False), query, sort=sort)
+
+        assert _run_on(customer_files, customer_model(True), query, sort=sort) == single
+        assert single
+
+    def test_the_customers_without_orders_are_counted(self, customer_files: dict[str, str]) -> None:
+        """US has customer 11, and 14 without orders; no region 12, and 15."""
+        rows = _run_on(customer_files, customer_model(True), {"select": REVENUE_AND_CUSTOMERS})
+
+        assert rows == [
+            ("EU", Decimal("123.90"), 2),
+            ("US", Decimal("19.00"), 2),
+            (None, Decimal("95.10"), 2),
+        ]
+
+    def test_the_crm_leg_returns_each_customer(self) -> None:
+        plan = _compile(customer_model(True), {"select": REVENUE_AND_CUSTOMERS}).federation
+
+        fact, customers = plan.legs
+        assert '"Orders"."customer_id" AS "__fk0_0"' in fact.sql
+        assert '"Customers"."customer_id" AS "__value0"' in customers.sql
+        assert "NOT EXISTS" in plan.combine_sql
+        assert "_reached" not in plan.combine_sql
+
+    def test_filtered_on_the_orders_the_combine_step_reads_the_customers_they_reach(
+        self, customer_files: dict[str, str]
+    ) -> None:
+        """One database adds no customer without an order a filter on the
+        orders keeps: the combine step reads the customers the fact leg's
+        keys reach, so it adds none either."""
+        query = CUSTOMER_QUERIES["filtered_on_the_orders"]
+
+        sql = _compile(customer_model(True), query).sql
+
+        assert '"leg_1_reached" AS (' in sql
+        assert _run_on(customer_files, customer_model(True), query) == [
+            ("EU", Decimal("120.75"), 1)
+        ]
+
+    def test_customers_without_orders_a_filter_on_the_orders_picks_are_refused(self) -> None:
+        """``Order Date is_null`` holds for a customer without orders, whom one
+        database finds among all orders; the fact leg returns those it keeps."""
+        query = {
+            "select": REVENUE_AND_CUSTOMERS,
+            "where": [{"field": "Order Date", "op": "is_null"}],
+        }
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(customer_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_MULTI_FACT"
+        assert "a filter on Orders decides which those are" in error.message
+        assert error.hint == (
+            "Query the measure separately, or filter on a dimension of 'Customers'."
+        )
+
+    def test_a_measure_of_an_object_the_customers_join_is_refused(self) -> None:
+        """The tenants' rows: the CRM's leg returns a row per customer."""
+        yaml = subquery_model(
+            True,
+            extra="  Tenant Rows: {columns: [{dataObject: Tenants, column: Tenant Code}], "
+            "aggregation: count, resultType: int}\n",
+        )
+        query = {"select": {"dimensions": ["Region"], "measures": ["Revenue", "Tenant Rows"]}}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(yaml, query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_MULTI_FACT"
+        assert "Measure 'Tenant Rows' is of 'Tenants', which no data object of" in error.message
 
 
 # Charge c1's labels name owners prod and env, c2's ops, c3 has none: dev is
