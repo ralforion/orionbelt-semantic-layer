@@ -5619,8 +5619,31 @@ class TestMeasuresOfIndependentFacts:
                 },
                 "selects one dimension at two grains beside a rollup or cube",
             ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Order Date:month"],
+                        "measures": [*REVENUE_AND_TICKETS, "Customers Count"],
+                    }
+                },
+                "is of 'Customers', which one database counts through 'Orders'",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Severity"],
+                        "measures": [*REVENUE_AND_TICKETS, "Customers Count"],
+                    }
+                },
+                "is of 'Customers', which one database counts through 'Tickets'",
+            ),
         ],
-        ids=["a_total_beside_a_rollup", "two_grains_beside_a_rollup"],
+        ids=[
+            "a_total_beside_a_rollup",
+            "two_grains_beside_a_rollup",
+            "the_customers_by_order_month",
+            "the_customers_by_severity",
+        ],
     )
     def test_what_is_not_combined_yet_is_refused(self, query: dict[str, Any], message: str) -> None:
         with pytest.raises(ResolutionError) as caught:

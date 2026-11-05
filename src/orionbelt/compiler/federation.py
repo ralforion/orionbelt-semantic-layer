@@ -59,7 +59,11 @@ from orionbelt.ast.nodes import (
     WindowFunction,
 )
 from orionbelt.compiler.cfl import CFLPlanner
-from orionbelt.compiler.cfl_projection import group_measures_by_object
+from orionbelt.compiler.cfl_projection import (
+    collect_correlated_tables,
+    collect_table_refs,
+    group_measures_by_object,
+)
 from orionbelt.compiler.composability import metric_leaf_measures, metric_measure_names
 from orionbelt.compiler.expr_rewrite import rewrite_column_refs
 from orionbelt.compiler.filter_resolution import (
@@ -2560,6 +2564,24 @@ class _Planner:
         if len({island_of.get(root) for root in groups}) < 2:
             return None
         roots = {root: [m.name for m in measures] for root, measures in groups.items()}
+        # One database's union leg of an object's measures starts at the object
+        # that reaches it, the query's dimensions and filters, where there is
+        # one: the customers' count, by order month, from the orders. A part
+        # started at the customers would count them all in no month.
+        wanted = {d.object_name for d in self.resolved.dimensions}
+        for resolved_filter in self.resolved.where_filters:
+            collect_table_refs(resolved_filter.expression, wanted)
+            collect_correlated_tables(resolved_filter.expression, wanted)
+        for start, names in sorted(roots.items()):
+            lead = graph.find_common_root(wanted | {start})
+            if names and lead and lead != start and start in reach(lead):
+                raise self.refuse(
+                    "UNSUPPORTED_QUERY",
+                    f"Measures of independent facts on several data sources are combined, "
+                    f"but measure '{names[0]}' is of '{start}', which one database counts "
+                    f"through '{lead}', the fact reaching the query's dimensions",
+                    hint="Query the measure beside the measures of one fact.",
+                )
 
         def home(name: str) -> str | None:
             sources = effective[name].source_objects
