@@ -335,11 +335,6 @@ class DialectCapabilities:
     # join there gets an always-true equality to key on. Elsewhere that key
     # would turn a range join (DuckDB's IEJoin) into a filtered product.
     supports_range_only_outer_join: bool = True
-    # The most grouping sets one ``GROUP BY`` takes: Snowflake's 128, BigQuery's
-    # and PostgreSQL's 4096 (probed). ``None`` for no limit met. A cube of more
-    # is a union of queries over chunks of its grouping sets
-    # (:meth:`Dialect.compile_select`).
-    max_grouping_sets: int | None = None
     unsupported_aggregations: list[str] = field(default_factory=list)
     # Canonical names from the portable function catalog
     # (``models/functions.py``) this engine has no equivalent for. Empty for
@@ -378,6 +373,10 @@ class Dialect(ABC):
 
     _MAX_DECIMAL_PRECISION: int = 38
 
+    # The most grouping sets one ``GROUP BY`` takes: Snowflake's 128, BigQuery's
+    # and PostgreSQL's 4096 (probed). ``None`` for no limit met.
+    _MAX_GROUPING_SETS: int | None = None
+
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "BIGINT",
         "integer": "INTEGER",
@@ -388,6 +387,15 @@ class Dialect(ABC):
         "string": "VARCHAR",
         "boolean": "BOOLEAN",
     }
+
+    @property
+    def max_grouping_sets(self) -> int | None:
+        """The most grouping sets one ``GROUP BY`` takes, or ``None`` for no limit met.
+
+        A cube of more is a union of queries over chunks of its grouping sets
+        (:meth:`compile_select`).
+        """
+        return self._MAX_GROUPING_SETS
 
     @property
     def max_decimal_precision(self) -> int:
@@ -2509,10 +2517,10 @@ class Dialect(ABC):
         """Compile a SELECT statement.
 
         A ``CUBE`` of more grouping sets than the engine takes in one query
-        (``max_grouping_sets``: Snowflake's 128, so 7 dimensions) is the union
+        (:attr:`max_grouping_sets`: Snowflake's 128, so 7 dimensions) is the union
         of one query per chunk of its grouping sets (:meth:`_compile_in_chunks`).
         """
-        limit = self.capabilities.max_grouping_sets
+        limit = self.max_grouping_sets
         if node.grouping == "cube" and limit is not None and 2 ** len(node.group_by) > limit:
             return self._compile_in_chunks(node, limit)
         group_by = self.compile_group_by(node.group_by, node.grouping) if node.group_by else ""
@@ -2523,16 +2531,19 @@ class Dialect(ABC):
 
         Each query groups by its chunk's ``GROUPING SETS``, where ``GROUPING()``
         flags each row as the cube does; the union is sorted, limited and
-        offset as *node* is. A sort key that is no column of it, an aggregate
-        or a source column, is a column of each query the union returns
-        without. A window over the cube's rows would read one chunk's rows
-        alone, and so would ``DISTINCT`` beside such a key: refused.
+        offset as *node* is, and made distinct where it is. A sort key that is
+        no column of it, an aggregate or a source column, is a column of each
+        query the union returns without, under a name no column has. A window
+        over the cube's rows, in a column or a sort key, would read one
+        chunk's rows alone, and ``DISTINCT`` could not sort by such a key:
+        refused.
         """
-        if any(_holds(c, WindowFunction) for c in node.columns) or not all(
-            isinstance(c, AliasedExpr) for c in node.columns
+        if not all(isinstance(c, AliasedExpr) for c in node.columns) or any(
+            _holds(e, WindowFunction) for e in [*node.columns, *(o.expr for o in node.order_by)]
         ):
             raise UnsupportedGroupingError(dialect=self.name, grouping="cube")
         aliases = [c.alias for c in node.columns if isinstance(c, AliasedExpr)]
+        taken = {alias.casefold() for alias in aliases}
         keys: list[AliasedExpr] = []
         order: list[OrderByItem] = []
         for n, item in enumerate(node.order_by):
@@ -2540,8 +2551,12 @@ class Dialect(ABC):
             if isinstance(key, ColumnRef) and key.table is None and key.name in aliases:
                 order.append(item)
                 continue
-            keys.append(AliasedExpr(expr=item.expr, alias=f"__cube_sort{n}"))
-            order.append(replace(item, expr=ColumnRef(name=keys[-1].alias)))
+            name = f"__cube_sort{n}"
+            while name.casefold() in taken:
+                name = f"_{name}"
+            taken.add(name.casefold())
+            keys.append(AliasedExpr(expr=item.expr, alias=name))
+            order.append(replace(item, expr=ColumnRef(name=name)))
         if keys and node.distinct:
             raise UnsupportedGroupingError(dialect=self.name, grouping="cube")
         sets = [
@@ -2550,7 +2565,13 @@ class Dialect(ABC):
             for kept in combinations(node.group_by, n)
         ]
         body = replace(
-            node, columns=[*node.columns, *keys], ctes=[], order_by=[], limit=None, offset=None
+            node,
+            columns=[*node.columns, *keys],
+            ctes=[],
+            distinct=False,
+            order_by=[],
+            limit=None,
+            offset=None,
         )
         queries = [
             self._select_sql(body, self.compile_grouping_sets(sets[start : start + limit]))
@@ -2558,8 +2579,9 @@ class Dialect(ABC):
         ]
         q = self.quote_identifier
         parts = [self._compile_with(node)] if node.ctes else []
+        keyword = "SELECT DISTINCT" if node.distinct else "SELECT"
         parts.append(
-            f"SELECT {', '.join(map(q, aliases))}\nFROM (\n"
+            f"{keyword} {', '.join(map(q, aliases))}\nFROM (\n"
             + "\nUNION ALL\n".join(queries)
             + f"\n) AS {q('__cube')}"
         )

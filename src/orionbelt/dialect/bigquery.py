@@ -30,6 +30,9 @@ class BigQueryDialect(Dialect):
     #: measured on the same cases.
     _TRY_CAST_FN = "SAFE_CAST"
 
+    #: "At most 4096 grouping sets are allowed": a cube of 12 dimensions, probed.
+    _MAX_GROUPING_SETS = 4096
+
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "INT64",
         "integer": "INT64",
@@ -208,7 +211,6 @@ class BigQueryDialect(Dialect):
     @property
     def capabilities(self) -> DialectCapabilities:
         return DialectCapabilities(
-            max_grouping_sets=4096,
             supports_cte=True,
             supports_qualify=True,
             supports_arrays=True,

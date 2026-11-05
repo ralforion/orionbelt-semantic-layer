@@ -20,6 +20,10 @@ class PostgresDialect(Dialect):
 
     _MAX_DECIMAL_PRECISION: int = 131072
 
+    #: "too many grouping sets present (maximum 4096)"; a ``CUBE`` takes 12
+    #: elements, the same 4096 sets. Probed.
+    _MAX_GROUPING_SETS = 4096
+
     #: ``NUMERIC`` multiplies exactly at any size and scale.
     _EXACT_SQUARE = ("NUMERIC", 16383)
 
@@ -89,7 +93,6 @@ class PostgresDialect(Dialect):
     @property
     def capabilities(self) -> DialectCapabilities:
         return DialectCapabilities(
-            max_grouping_sets=4096,
             supports_cte=True,
             supports_qualify=False,
             supports_arrays=True,

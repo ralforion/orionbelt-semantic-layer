@@ -1,7 +1,7 @@
 """A cube of more grouping sets than its engine takes, as a union of chunks of them.
 
 Snowflake takes 128 grouping sets in one ``GROUP BY`` (a cube of 7
-dimensions), BigQuery and PostgreSQL 4096 (``max_grouping_sets``). Past that,
+dimensions), BigQuery and PostgreSQL 4096 (``Dialect.max_grouping_sets``). Past that,
 the dialect renders the cube as one query per chunk of its grouping sets,
 each grouped by ``GROUPING SETS``, and sorts the union. Here DuckDB takes 4
 for the test, so a cube of 3 dimensions (8 sets) is two chunks, compared with
@@ -10,13 +10,20 @@ DuckDB's own cube.
 
 from __future__ import annotations
 
-import dataclasses
 from typing import Any
 
 import duckdb
 import pytest
 
-from orionbelt.ast.nodes import AliasedExpr, ColumnRef, From, OrderByItem, Select, WindowFunction
+from orionbelt.ast.nodes import (
+    AliasedExpr,
+    ColumnRef,
+    From,
+    FunctionCall,
+    OrderByItem,
+    Select,
+    WindowFunction,
+)
 from orionbelt.dialect.base import UnsupportedGroupingError
 from orionbelt.dialect.duckdb import DuckDBDialect
 from orionbelt.dialect.registry import DialectRegistry
@@ -64,13 +71,7 @@ QUERIES: dict[str, dict[str, Any]] = {
 
 def _taking(monkeypatch: pytest.MonkeyPatch, sets: int) -> None:
     """DuckDB taking *sets* grouping sets in one ``GROUP BY``."""
-    declared = DuckDBDialect.capabilities
-
-    def capabilities(self: DuckDBDialect) -> Any:
-        assert declared.fget is not None
-        return dataclasses.replace(declared.fget(self), max_grouping_sets=sets)
-
-    monkeypatch.setattr(DuckDBDialect, "capabilities", property(capabilities))
+    monkeypatch.setattr(DuckDBDialect, "_MAX_GROUPING_SETS", sets)
 
 
 @pytest.fixture
@@ -149,6 +150,79 @@ def test_a_window_over_the_cube_is_refused() -> None:
         from_=From(source="t", alias="t"),
         group_by=[a, b, c],
         grouping="cube",
+    )
+
+    with pytest.raises(UnsupportedGroupingError):
+        DialectRegistry.get("duckdb").compile_select(node)
+
+
+A, B, C = (ColumnRef(name=name, table="t") for name in "abc")
+TOTAL = FunctionCall(name="SUM", args=[ColumnRef(name="v", table="t")])
+ROWS_T = (
+    "CREATE TABLE t AS SELECT * FROM (VALUES ('x', 'p', 1, 1.0), ('x', 'q', 2, 2.0),"
+    " ('y', 'p', 2, 40.0), ('y', 'q', 1, 195.0)) AS r(a, b, c, v)"
+)
+
+
+def _cube(columns: list[Any], **select: Any) -> Select:
+    return Select(
+        columns=columns,
+        from_=From(source="t", alias="t"),
+        group_by=[A, B, C],
+        grouping="cube",
+        **select,
+    )
+
+
+def _on_t(node: Select) -> list[tuple[Any, ...]]:
+    con = duckdb.connect()
+    try:
+        con.execute(ROWS_T)
+        return [
+            tuple(r)
+            for r in con.execute(DialectRegistry.get("duckdb").compile_select(node)).fetchall()
+        ]
+    finally:
+        con.close()
+
+
+def test_a_sort_key_takes_a_name_no_column_has(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A column named as the sort key's helper would have been sorted by instead."""
+    node = _cube(
+        [
+            AliasedExpr(expr=A, alias="__cube_sort0"),
+            AliasedExpr(expr=B, alias="b"),
+            AliasedExpr(expr=C, alias="c"),
+            AliasedExpr(expr=TOTAL, alias="total"),
+        ],
+        order_by=[OrderByItem(expr=TOTAL, desc=True)],
+        limit=3,
+    )
+    native = _on_t(node)
+
+    _taking(monkeypatch, 4)
+
+    assert _on_t(node) == native
+    assert native[0][3] == 238
+
+
+def test_distinct_rows_are_distinct_across_the_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each chunk's rows were distinct, the union's were not."""
+    node = _cube([AliasedExpr(expr=A, alias="a")], distinct=True)
+    native = sorted(_on_t(node), key=repr)
+
+    _taking(monkeypatch, 4)
+
+    assert sorted(_on_t(node), key=repr) == native == [("x",), ("y",), (None,)]
+
+
+@pytest.mark.usefixtures("chunked")
+def test_a_window_in_a_sort_key_is_refused() -> None:
+    node = _cube(
+        [AliasedExpr(expr=A, alias="a"), AliasedExpr(expr=TOTAL, alias="total")],
+        order_by=[
+            OrderByItem(expr=WindowFunction(func_name="RANK", order_by=[OrderByItem(expr=TOTAL)]))
+        ],
     )
 
     with pytest.raises(UnsupportedGroupingError):
