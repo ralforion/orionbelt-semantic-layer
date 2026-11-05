@@ -45,6 +45,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Any
 
 from orionbelt.ast.nodes import (
@@ -91,6 +92,7 @@ from orionbelt.compiler.resolution import (
     tables_as_key_maps,
     timestamps_in_zone,
 )
+from orionbelt.compiler.star import grouping_flag_alias
 from orionbelt.compiler.type_resolver import (
     combined_averages,
     combined_variances,
@@ -107,6 +109,8 @@ from orionbelt.models.query import (
     CoalesceDimension,
     DimensionRef,
     FilterOperator,
+    Grouping,
+    NullsPosition,
     QueryFilter,
     QueryFilterGroup,
     QueryFilterItem,
@@ -272,6 +276,8 @@ _REACHED_RELATION = "_reached"
 # count of its fact's rows a part grouping by no dimension returns (:class:`_Part`).
 _PART_RELATION = "__part"
 _PARTS_RELATION = "__parts"
+# The groups of the parts' union, under a rollup or cube (:func:`_grouped`).
+_GROUPED_RELATION = "__grouped"
 _PRESENT = "__present"
 
 # The filter operators true where their field is NULL, and those false there.
@@ -2011,6 +2017,9 @@ def _plan_parts(
         sql = plan.combine_sql.removeprefix("WITH ")
         sql = f"WITH {reading},\n{sql}" if sql != plan.combine_sql else f"WITH {reading}\n{sql}"
         ctes.append(f"{q(f'{_PART_RELATION}{k}')} AS (\n{sql}\n)")
+        if query.grouping is not None:
+            union += _in_grouping_sets(query, part, f"{_PART_RELATION}{k}")
+            continue
         if part.present is None:
             union.append(f"SELECT * FROM {q(f'{_PART_RELATION}{k}')}")
             continue
@@ -2023,12 +2032,15 @@ def _plan_parts(
     dimensions = [DimensionRef.parse(d).name for d in _dimension_refs(query)]
     measures = planner.atomic_measures()
     effective = model.effective_measures
+    # Under a rollup or cube, each row's grouping set is its flags (:func:`_in_grouping_sets`).
+    flags = [grouping_flag_alias(name) for name in dimensions] if query.grouping else []
     columns = [
         *(_dimension_column(model, name) for name in dimensions),
         *(
             DataObjectColumn(name=m, code=m, abstract_type=effective[m].result_type)
             for m in sorted(measures)
         ),
+        *(DataObjectColumn(name=f, code=f, abstract_type=DataType.INT) for f in flags),
     ]
     parts_model = SemanticModel(
         name=model.name,
@@ -2043,14 +2055,32 @@ def _plan_parts(
                 countable=False,
             )
         },
-        dimensions={name: _combine_dimension(model, name, _PARTS_RELATION) for name in dimensions},
+        dimensions={
+            **{name: _combine_dimension(model, name, _PARTS_RELATION) for name in dimensions},
+            **{
+                f: Dimension(name=f, view=_PARTS_RELATION, column=f, result_type=DataType.INT)
+                for f in flags
+            },
+        },
         measures={m: _part_measure(model, m) for m in measures},
         metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
         expose_counts=False,
     )
+    # One database returns the measures with a filter context last, from the
+    # scans of their own it joins to the query's rows (``filter_wrap``).
+    returned = sorted(
+        query.select.measures,
+        key=lambda m: m in effective and effective[m].filter_context is not None,
+    )
+    # Filled, or at two grains, a date is read at each grain the query asks
+    # for: each part returned it at its own, which a truncation keeps.
+    refs = _dimension_refs(query)
+    regrained = query.fill or len(set(refs)) != len({DimensionRef.parse(d).name for d in refs})
     parts_query = query.model_copy(
         update={
-            "select": QuerySelect(dimensions=dimensions, measures=list(query.select.measures)),
+            "select": QuerySelect(
+                dimensions=list(refs) if regrained else dimensions, measures=returned
+            ),
             "where": [],
             "order_by": [
                 QueryOrderBy(
@@ -2061,7 +2091,27 @@ def _plan_parts(
             "use_path_names": [],
         }
     )
-    sql = compile_leg(parts_query, parts_model, COMBINE_DIALECT)
+    if query.grouping is None:
+        sql = compile_leg(parts_query, parts_model, COMBINE_DIALECT)
+    else:
+        # Each grouping set's rows are groups of the union by the dimensions
+        # and the flags, which the query returns after its measures, sorted
+        # as one database sorts its rollup (:func:`_grouped`).
+        selected = {*dimensions, *query.select.measures}
+        sorted_by = [o.field for o in parts_query.order_by if o.field not in selected]
+        grouped = parts_query.model_copy(
+            update={
+                "select": QuerySelect(
+                    dimensions=[*dimensions, *flags],
+                    measures=[*query.select.measures, *sorted_by],
+                ),
+                "grouping": None,
+                "order_by": [],
+                "limit": None,
+                "offset": None,
+            }
+        )
+        sql = _grouped(compile_leg(grouped, parts_model, COMBINE_DIALECT), parts_query, flags)
     with_ = ",\n".join(ctes)
     if sql.startswith("WITH "):
         sql = f"WITH {with_},\n{sql.removeprefix('WITH ')}"
@@ -2070,13 +2120,82 @@ def _plan_parts(
     return FederatedPlan(legs=tuple(legs), combine_sql=sql, timezone=planner.result_zone)
 
 
+def _grouping_sets(query: QueryObject) -> list[frozenset[str]]:
+    """The dimensions each grouping set of *query*'s rollup or cube keeps."""
+    names = [DimensionRef.parse(d).name for d in _dimension_refs(query)]
+    if query.grouping == Grouping.ROLLUP:
+        return [frozenset(names[:n]) for n in range(len(names), -1, -1)]
+    return [frozenset(kept) for n in range(len(names), -1, -1) for kept in combinations(names, n)]
+
+
+def _in_grouping_sets(query: QueryObject, part: _Part, relation: str) -> list[str]:
+    """The rows of *part*, its result *relation*, in each grouping set of *query*'s rollup or cube.
+
+    One database rolls up the union of the facts' rows, each NULL on the
+    dimensions its fact does not reach. A part rolls up its own fact's rows
+    over the dimensions it reaches, so its rows keeping those of a set's
+    dimensions it reaches are that set's rows of its fact: NULL on the other
+    dimensions, which the set keeps, a group of their own, or rolls up. One
+    of its grouping sets can be several of the query's: the tickets per
+    region are a region's tickets of no order month, and of every month.
+    A part grouping by no dimension is in every set, where it counted rows.
+    """
+    q = DialectRegistry.get(COMBINE_DIALECT).quote_identifier
+    names = [DimensionRef.parse(d).name for d in _dimension_refs(query)]
+    reached = [DimensionRef.parse(d).name for d in _dimension_refs(part.query)]
+    measures = [m for m in part.query.select.measures if m != part.present]
+    rows = []
+    for kept in _grouping_sets(query):
+        columns = [
+            *(q(name) for name in reached if name in kept),
+            *map(q, measures),
+            *(f"{int(name not in kept)} AS {q(grouping_flag_alias(name))}" for name in names),
+        ]
+        tests = [f"{q(grouping_flag_alias(name))} = {int(name not in kept)}" for name in reached]
+        if part.present is not None:
+            tests.append(f"{q(part.present)} > 0")
+        where = f"\nWHERE {' AND '.join(tests)}" if tests else ""
+        rows.append(f"SELECT {', '.join(columns)}\nFROM {q(relation)}{where}")
+    return rows
+
+
+def _grouped(sql: str, query: QueryObject, flags: list[str]) -> str:
+    """The rows of *sql*, grouped by the dimensions and *flags*, as *query* returns them.
+
+    Its dimensions, its measures, then the flags, as one database returns a
+    rollup or cube; sorted, limited and offset as it sorts them, a NULL first
+    where the query does not say: its sort fields, else its dimensions.
+    """
+    q = DialectRegistry.get(COMBINE_DIALECT).quote_identifier
+    dimensions = [DimensionRef.parse(d).name for d in _dimension_refs(query)]
+    columns = [*dimensions, *query.select.measures, *flags]
+    sorted_by = query.order_by or [QueryOrderBy(field=name) for name in dimensions]
+    order = ", ".join(
+        f"{q(o.field)} {o.direction.value.upper()} "
+        f"NULLS {'LAST' if o.nulls == NullsPosition.LAST else 'FIRST'}"
+        for o in sorted_by
+    )
+    rows = f"SELECT {', '.join(map(q, columns))}\nFROM (\n{sql}\n) AS {q(_GROUPED_RELATION)}"
+    if order:
+        rows += f"\nORDER BY {order}"
+    if query.limit is not None:
+        rows += f"\nLIMIT {query.limit}"
+    if query.offset:
+        rows += f"\nOFFSET {query.offset}"
+    return rows
+
+
 def _part_measure(model: SemanticModel, name: str) -> Measure:
     """Measure *name* as the combine step takes it from the union of the parts.
 
     The part computing it gave each of its groups the finished value, typed
     and cast; a group of the union holds it once at most, so its ``MAX`` is
     that value. A group no row of its fact reaches holds none: a count reads
-    0, as one database's count over no rows does, any other its default.
+    0, as one database's count over no rows does, any other its default. A
+    total, or a value at a coarser grain, is the same in each group of its
+    fact that shares it, and one database gives it to every group that does,
+    the other facts' too: the ``MAX`` over those groups, as a total or grain
+    the measure keeps.
     """
     measure = model.effective_measures[name]
     counts = measure.aggregation in (AggregationType.COUNT, AggregationType.COUNT_DISTINCT)
@@ -2088,6 +2207,8 @@ def _part_measure(model: SemanticModel, name: str) -> Measure:
         data_type=measure.data_type,
         default_value=0 if counts else measure.default_value,
         format=measure.format,
+        total=measure.total,
+        grain=measure.grain,
     )
 
 
@@ -2439,17 +2560,37 @@ class _Planner:
         if len({island_of.get(root) for root in groups}) < 2:
             return None
         roots = {root: [m.name for m in measures] for root, measures in groups.items()}
-        for name in sorted(self.resolved.order_only_measures & effective.keys()):
+
+        def home(name: str) -> str | None:
             sources = effective[name].source_objects
-            home = next((root for root in sorted(roots) if sources <= reach(root)), None)
-            if home is None:
+            return next((root for root in sorted(roots) if sources <= reach(root)), None)
+
+        for name in sorted(self.resolved.order_only_measures & effective.keys()):
+            if (root := home(name)) is None:
                 raise self.refuse(
                     "UNSUPPORTED_QUERY",
                     f"The query is ordered by measure '{name}', of a fact none of its "
                     "selected measures is of",
                     hint="Select the measure, or order by a measure of a selected fact.",
                 )
-            roots[home].append(name)
+            roots[root].append(name)
+        # A measure with a filter context is a scan of its own on one database,
+        # in no union leg: it is computed in the part of the fact it reads.
+        grouped = {name for names in roots.values() for name in names}
+        contexts = {
+            m.name
+            for m in [*self.resolved.measures, *self.resolved.metric_components.values()]
+            if m.filter_context is not None and m.name in effective
+        }
+        for name in sorted(contexts - grouped):
+            if (root := home(name)) is None:
+                raise self.refuse(
+                    "UNSUPPORTED_QUERY",
+                    f"Measure '{name}' has a filterContext, and reads data objects none of "
+                    "the facts reaches",
+                    hint="Query the measure separately.",
+                )
+            roots[root].append(name)
         self.check_parts(across)
         parts = []
         for root, measures in sorted(roots.items()):
@@ -2487,7 +2628,18 @@ class _Planner:
                         ", ".join(sorted(missing)),
                         ", ".join(f"'{m}'" for m in measures),
                     )
-            update = {"where": where, "having": [], "order_by": [], "limit": None, "offset": None}
+            # The combine step fills the periods of the union, as one database
+            # fills its query's (``fill_wrap``).
+            update = {
+                "where": where,
+                "having": [],
+                "order_by": [],
+                "limit": None,
+                "offset": None,
+                "fill": False,
+            }
+            if not select.dimensions:
+                update["grouping"] = None
             part = _Part(self.query.model_copy(update={"select": select, **update}), self.model)
             if not select.dimensions:
                 part = part.counting(root)
@@ -2495,8 +2647,16 @@ class _Planner:
         return parts
 
     def check_parts(self, across: list[ResolvedMeasure]) -> None:
-        """Refuse what a query split by fact (:meth:`parts`) does not compute yet."""
+        """Refuse what a query split by fact (:meth:`parts`) does not compute yet.
+
+        A rollup or cube, a total, a grain, a filter context, ``fill``,
+        ``asOf`` and one dimension at two grains are the combine step's
+        (:func:`_plan_parts`), but for a rollup or cube beside the others,
+        whose subtotals the parts would compute apart.
+        """
         effective = self.model.effective_measures
+        refs = _dimension_refs(self.query)
+        two_grains = len(set(refs)) != len({DimensionRef.parse(d).name for d in refs})
         apart = [
             name
             for name in sorted(self.atomic_measures())
@@ -2507,18 +2667,19 @@ class _Planner:
         refused = [
             (bool(across), f"measure '{across[0].name}' reads several of them" if across else ""),
             (
-                bool(apart),
-                f"measure '{apart[0]}' has a total, grain or filterContext" if apart else "",
+                bool(apart) and self.query.grouping is not None,
+                f"measure '{apart[0]}' has a total, grain or filterContext beside a rollup or cube"
+                if apart
+                else "",
+            ),
+            (
+                two_grains and self.query.grouping is not None,
+                "the query selects one dimension at two grains beside a rollup or cube",
             ),
             (bool(self.resolved.anchored_measures), "a measure is anchored to another fact"),
-            (self.query.grouping is not None, "the query has a rollup or cube"),
             (
                 self.reads_periods() or any(m.is_reaggregate for m in self.resolved.measures),
                 "a metric reads values across periods or reaggregates",
-            ),
-            (
-                self.stores_dates() or self.query.as_of is not None,
-                "the query fills periods, sets asOf or selects one dimension at two grains",
             ),
             (
                 self.query.dimensions_exclude

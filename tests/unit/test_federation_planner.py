@@ -5292,6 +5292,16 @@ INDEPENDENT_MEASURES = (
     " aggregation: count_distinct, resultType: int}\n"
     f"  Revenue Total: {{columns: [{AMOUNT}], aggregation: sum, total: true}}\n"
     f"  Median Order: {{columns: [{AMOUNT}], aggregation: median}}\n"
+    "  Ticket Total: {columns: [{dataObject: Tickets, column: Ticket ID}], aggregation: count,"
+    " total: true, resultType: int}\n"
+    f"  Average Total: {{columns: [{AMOUNT}], aggregation: avg, total: true}}\n"
+    f"  Region Revenue: {{columns: [{AMOUNT}], aggregation: sum,"
+    " grain: {mode: FIXED, include: [Region]}}\n"
+    f"  Revenue Any Region: {{columns: [{AMOUNT}], aggregation: sum,"
+    " filterContext: {exclude: [Region]}}\n"
+    "  Tickets Any Region: {columns: [{dataObject: Tickets, column: Ticket ID}],"
+    " aggregation: count, resultType: int, filterContext: {exclude: [Region]}}\n"
+    f"  Revenue All: {{columns: [{AMOUNT}], aggregation: sum, filterContext: {{mode: FIXED}}}}\n"
 )
 INDEPENDENT_MODEL = {
     "extra": INDEPENDENT_MEASURES,
@@ -5300,6 +5310,10 @@ INDEPENDENT_MODEL = {
 }
 REVENUE_AND_TICKETS = ["Revenue", "Tickets Count"]
 BY_REGION_BOTH = {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS}
+BY_REGION_AND_MONTH = {
+    "dimensions": ["Region", "Order Date:month"],
+    "measures": REVENUE_AND_TICKETS,
+}
 INDEPENDENT_QUERIES = {
     "by_region": {"select": BY_REGION_BOTH},
     "beside_a_measure_of_the_customers": {
@@ -5354,6 +5368,65 @@ INDEPENDENT_QUERIES = {
             "measures": ["Average Order", "Average Ticket", "Severities", "Ticket Ids"],
         }
     },
+    "a_rollup": {"select": BY_REGION_AND_MONTH, "grouping": "rollup"},
+    "a_cube": {"select": BY_REGION_AND_MONTH, "grouping": "cube"},
+    "a_rollup_from_rows": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Median Order", "Severities"],
+        },
+        "grouping": "rollup",
+    },
+    "a_rollup_sorted_and_limited": {
+        "select": BY_REGION_AND_MONTH,
+        "grouping": "rollup",
+        "orderBy": [{"field": "Region"}, {"field": "Revenue", "direction": "desc"}],
+        "limit": 5,
+    },
+    "a_cube_with_a_metric_and_having": {
+        "select": {"dimensions": ["Region"], "measures": ["Tickets Count", "Revenue per Ticket"]},
+        "grouping": "cube",
+        "having": [{"field": "Tickets Count", "op": ">", "value": 0}],
+    },
+    "a_total_of_each": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue Total", "Ticket Total"]},
+        "where": [LATE],
+    },
+    "a_total_of_an_average": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Average Total", "Tickets Count"],
+        }
+    },
+    "a_grain": {
+        "select": {
+            "dimensions": ["Order Date:month", "Region"],
+            "measures": ["Region Revenue", "Ticket Total"],
+        }
+    },
+    "a_filter_context_of_each": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": ["Revenue Any Region", "Tickets Any Region", "Revenue"],
+        },
+        "where": [EU],
+    },
+    "a_fixed_filter_context": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+        "where": [LATE],
+    },
+    "filled": {
+        "select": {"dimensions": ["Order Date:month"], "measures": REVENUE_AND_TICKETS},
+        "where": [EU],
+        "fill": True,
+    },
+    "at_two_grains": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month", "Order Date:quarter"],
+            "measures": REVENUE_AND_TICKETS,
+        }
+    },
+    "as_of_a_date": {"select": BY_REGION_AND_MONTH, "asOf": "2024-02-15"},
 }
 
 
@@ -5531,13 +5604,23 @@ class TestMeasuresOfIndependentFacts:
                     "select": {
                         "dimensions": ["Region"],
                         "measures": ["Revenue Total", "Tickets Count"],
-                    }
+                    },
+                    "grouping": "rollup",
                 },
-                "has a total, grain or filterContext",
+                "has a total, grain or filterContext beside a rollup or cube",
             ),
-            ({"select": BY_REGION_BOTH, "grouping": "rollup"}, "has a rollup or cube"),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Order Date:year", "Order Date:month"],
+                        "measures": REVENUE_AND_TICKETS,
+                    },
+                    "grouping": "rollup",
+                },
+                "selects one dimension at two grains beside a rollup or cube",
+            ),
         ],
-        ids=["a_total", "a_rollup"],
+        ids=["a_total_beside_a_rollup", "two_grains_beside_a_rollup"],
     )
     def test_what_is_not_combined_yet_is_refused(self, query: dict[str, Any], message: str) -> None:
         with pytest.raises(ResolutionError) as caught:
