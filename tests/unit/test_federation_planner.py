@@ -5302,6 +5302,10 @@ INDEPENDENT_MEASURES = (
     "  Tickets Any Region: {columns: [{dataObject: Tickets, column: Ticket ID}],"
     " aggregation: count, resultType: int, filterContext: {exclude: [Region]}}\n"
     f"  Revenue All: {{columns: [{AMOUNT}], aggregation: sum, filterContext: {{mode: FIXED}}}}\n"
+    f"  Date Revenue: {{columns: [{AMOUNT}], aggregation: sum,"
+    " grain: {mode: FIXED, include: [Order Date]}}\n"
+    f"  Revenue Not By Date: {{columns: [{AMOUNT}], aggregation: sum,"
+    " grain: {exclude: [Order Date]}}\n"
 )
 INDEPENDENT_MODEL = {
     "extra": INDEPENDENT_MEASURES,
@@ -5516,6 +5520,39 @@ INDEPENDENT_QUERIES = {
             {"field": "Order Day", "op": ">=", "value": "2023-12-01"},
             {"field": "Order Day", "op": "<", "value": "2024-06-01"},
         ],
+        "fill": True,
+    },
+    "a_grain_on_a_dimension_at_two_grains": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month"],
+            "measures": ["Date Revenue", "Tickets Count"],
+        }
+    },
+    "a_grain_without_a_dimension_at_two_grains": {
+        "select": {
+            "dimensions": ["Region", "Order Date:quarter", "Order Date:month"],
+            "measures": ["Revenue Not By Date", "Tickets Count"],
+        }
+    },
+    "filled_beside_the_date_itself": {
+        "select": {
+            "dimensions": ["Order Date:month", "Order Date"],
+            "measures": REVENUE_AND_TICKETS,
+        },
+        "where": [
+            {"field": "Order Date", "op": ">=", "value": "2023-12-01"},
+            {"field": "Order Date", "op": "<", "value": "2024-06-01"},
+        ],
+        "fill": True,
+    },
+    "the_date_itself_beside_a_filled_month": {
+        "select": {
+            "dimensions": ["Order Date", "Order Date:month"],
+            "measures": REVENUE_AND_TICKETS,
+        },
+        "where": [{"field": "Order Date", "op": ">=", "value": "2023-12-01"}],
+        "orderBy": [{"field": "Revenue", "direction": "desc"}],
+        "limit": 3,
         "fill": True,
     },
     "a_rollup_of_no_rows": {

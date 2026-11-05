@@ -89,6 +89,7 @@ from orionbelt.compiler.raw_resolution import raw_field_aliases
 from orionbelt.compiler.resolution import (
     LegZone,
     ResolutionError,
+    ResolvedDimension,
     ResolvedMeasure,
     ResolvedQuery,
     columns_in_own_zone,
@@ -2097,7 +2098,7 @@ def _plan_parts(
                 for f in flags
             },
         },
-        measures={m: _part_measure(model, m) for m in measures},
+        measures={m: _every_grain(_part_measure(model, m), inner, shown) for m in measures},
         metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
         expose_counts=False,
     )
@@ -2107,19 +2108,18 @@ def _plan_parts(
         query.select.measures,
         key=lambda m: m in effective and effective[m].filter_context is not None,
     )
+    # Filled, the date is read at its grain, which each part truncated it to
+    # already, and its periods span the bounds the query's filters on it set,
+    # as one database's (``fill_wrap``), filtering no row again.
+    read = [
+        f"{inner[d.name]}:{d.grain.value}" if query.fill and d.grain else inner[d.name]
+        for d in shown
+    ]
+    bounds = _fill_bounds(planner, parts_model, inner) if query.fill else []
     if query.grouping is None and not two_grains:
-        # Filled, the date is read at its grain, which each part truncated it
-        # to already, and its periods span the bounds the query's filters on
-        # it set, as one database's (``fill_wrap``), filtering no row again.
         parts_query = query.model_copy(
             update={
-                "select": QuerySelect(
-                    dimensions=[
-                        dimension_reference(d) if query.fill and d.grain else d.dimension
-                        for d in shown
-                    ],
-                    measures=returned,
-                ),
+                "select": QuerySelect(dimensions=read, measures=returned),
                 "where": [],
                 "order_by": [
                     QueryOrderBy(
@@ -2132,7 +2132,7 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
-        with fill_bounds(_fill_bounds(planner, parts_model) if query.fill else []):
+        with fill_bounds(bounds):
             sql = compile_leg(parts_query, parts_model, COMBINE_DIALECT)
     else:
         # Each row is a group of the union by the dimensions, each read from
@@ -2148,9 +2148,7 @@ def _plan_parts(
         sorted_by = [o.field for o in query.order_by if o.field not in selected]
         grouped = query.model_copy(
             update={
-                "select": QuerySelect(
-                    dimensions=[*inner.values(), *flags], measures=[*returned, *sorted_by]
-                ),
+                "select": QuerySelect(dimensions=[*read, *flags], measures=[*returned, *sorted_by]),
                 "where": [],
                 "grouping": None,
                 "order_by": [],
@@ -2159,8 +2157,10 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
+        with fill_bounds(bounds):
+            sql = compile_leg(grouped, parts_model, COMBINE_DIALECT)
         sql = _returned(
-            compile_leg(grouped, parts_model, COMBINE_DIALECT),
+            sql,
             query,
             [(inner[d.name], d.name) for d in shown],
             sorted_as,
@@ -2175,12 +2175,15 @@ def _plan_parts(
     return FederatedPlan(legs=tuple(legs), combine_sql=sql, timezone=planner.result_zone)
 
 
-def _fill_bounds(planner: _Planner, parts_model: SemanticModel) -> list[Expr]:
+def _fill_bounds(
+    planner: _Planner, parts_model: SemanticModel, inner: dict[str, str]
+) -> list[Expr]:
     """The query's filters on its filled date's column, on the union's column of it.
 
     The parts ran them; the combine step's fill reads their bounds alone
-    (:func:`~orionbelt.compiler.fill_wrap.fill_bounds`), as one database's
-    fill reads its ``where``: a filter on a dimension over the column without
+    (:func:`~orionbelt.compiler.fill_wrap.fill_bounds`), on the dimension
+    *inner* names the filled column, as one database's fill reads its
+    ``where``: a filter on a dimension over the column without
     a grain bounds the periods by its dates; one declaring the grain the
     filled dimension declares, by its periods, which the fill compares its
     periods with too; any other bounds nothing.
@@ -2188,7 +2191,7 @@ def _fill_bounds(planner: _Planner, parts_model: SemanticModel) -> list[Expr]:
     model = planner.model
     (filled,) = [d for d in planner.resolved.dimensions if d.grain is not None]
     assert filled.grain is not None
-    dimension = parts_model.dimensions[filled.dimension]
+    dimension = parts_model.dimensions[inner[filled.name]]
     column = make_column_expr(parts_model, _PARTS_RELATION, filled.name)
     period = (
         make_period_expr(parts_model, dimension, filled.grain)
@@ -2212,6 +2215,36 @@ def _fill_bounds(planner: _Planner, parts_model: SemanticModel) -> list[Expr]:
             if subject is not None and (predicate := build_filter_expr(subject, condition, [])):
                 bounds.append(predicate)
     return bounds
+
+
+def _every_grain(
+    measure: Measure, inner: dict[str, str], shown: list[ResolvedDimension]
+) -> Measure:
+    """*measure* with its grain naming each column of a dimension it names.
+
+    A later grain of a dimension is a dimension of its own in the combine
+    step (*inner*, by the column of each of the *shown* dimensions); one
+    database's grain names the dimension at each grain the query selects.
+    """
+    grain = measure.grain
+    later: dict[str, list[str]] = {}
+    for d in shown:
+        if inner[d.name] != d.dimension:
+            later.setdefault(d.dimension, []).append(inner[d.name])
+    if grain is None or not later:
+        return measure
+
+    def every(names: list[str]) -> list[str]:
+        return [each for name in names for each in (name, *later.get(name, []))]
+
+    regrained = grain.model_copy(
+        update={
+            "include": every(grain.include),
+            "exclude": every(grain.exclude),
+            "keep_only": every(grain.keep_only),
+        }
+    )
+    return measure.model_copy(update={"grain": regrained})
 
 
 def _grouping_sets(query: QueryObject) -> list[frozenset[str]]:
