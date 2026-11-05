@@ -5306,7 +5306,9 @@ INDEPENDENT_MEASURES = (
 INDEPENDENT_MODEL = {
     "extra": INDEPENDENT_MEASURES,
     "metric": '  Revenue per Ticket: {expression: "{[Revenue]} / {[Tickets Count]}"}\n',
-    "dimension": "  Severity: {dataObject: Tickets, column: Severity, resultType: string}\n",
+    "dimension": "  Severity: {dataObject: Tickets, column: Severity, resultType: string}\n"
+    "  Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}\n"
+    "  Order Day: {dataObject: Orders, column: Order Date, resultType: date}\n",
 }
 REVENUE_AND_TICKETS = ["Revenue", "Tickets Count"]
 BY_REGION_BOTH = {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS}
@@ -5465,6 +5467,66 @@ INDEPENDENT_QUERIES = {
     "a_rollup_from_the_other_end": {
         "select": {"dimensions": ["Order Date:month", "Region"], "measures": REVENUE_AND_TICKETS},
         "grouping": "rollup",
+    },
+    "a_month_and_the_date_itself": {
+        "select": {
+            "dimensions": ["Order Date:month", "Order Date"],
+            "measures": REVENUE_AND_TICKETS,
+        }
+    },
+    "at_three_grains_with_the_date_itself": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month", "Order Date"],
+            "measures": REVENUE_AND_TICKETS,
+        }
+    },
+    "sorted_by_the_first_of_two_grains": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month"],
+            "measures": REVENUE_AND_TICKETS,
+        },
+        "orderBy": [
+            {"field": "Order Date", "direction": "desc"},
+            {"field": "Order Date:month", "direction": "desc"},
+        ],
+        "limit": 2,
+    },
+    "a_grain_at_two_grains": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month", "Order Date:quarter"],
+            "measures": ["Region Revenue", "Tickets Count"],
+        }
+    },
+    "filled_at_a_declared_grain": {
+        "select": {"dimensions": ["Order Month"], "measures": REVENUE_AND_TICKETS},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2023-12-01"}],
+        "fill": True,
+    },
+    "filled_between_periods_of_a_declared_grain": {
+        "select": {"dimensions": ["Order Month"], "measures": REVENUE_AND_TICKETS},
+        "where": [
+            {"field": "Order Month", "op": ">=", "value": "2023-11-15"},
+            {"field": "Order Month", "op": "<", "value": "2024-05-10"},
+        ],
+        "fill": True,
+    },
+    "filled_between_bounds_on_another_dimension": {
+        "select": {"dimensions": ["Order Date:month"], "measures": REVENUE_AND_TICKETS},
+        "where": [
+            {"field": "Order Day", "op": ">=", "value": "2023-12-01"},
+            {"field": "Order Day", "op": "<", "value": "2024-06-01"},
+        ],
+        "fill": True,
+    },
+    "a_rollup_of_no_rows": {
+        "select": BY_REGION_AND_MONTH,
+        "where": [{"field": "Region", "op": "=", "value": "nowhere"}],
+        "grouping": "rollup",
+    },
+    "a_cube_of_no_rows": {
+        "select": BY_REGION_AND_MONTH,
+        "where": [{"field": "Region", "op": "=", "value": "nowhere"}],
+        "grouping": "cube",
     },
 }
 

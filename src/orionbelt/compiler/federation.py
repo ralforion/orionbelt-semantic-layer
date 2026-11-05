@@ -92,7 +92,9 @@ from orionbelt.compiler.resolution import (
     ResolvedMeasure,
     ResolvedQuery,
     columns_in_own_zone,
+    dimension_reference,
     make_column_expr,
+    make_period_expr,
     static_filters_after_join,
     tables_as_key_maps,
     timestamps_in_zone,
@@ -2036,30 +2038,25 @@ def _plan_parts(
         )
     ctes.append(f"{q(_PARTS_RELATION)} AS (\n" + "\nUNION ALL BY NAME\n".join(union) + "\n)")
 
-    refs = list(_dimension_refs(query))
-    dimensions = [DimensionRef.parse(d).name for d in refs]
-    # Each part returns a dimension as one database does: under its name, and
-    # its other grains under their reference, ``Order Date:month`` beside
-    # ``Order Date``. At two grains, each is read from its own column.
-    returned_as: dict[str, str] = {}
-    for ref, name in zip(refs, dimensions, strict=True):
-        returned_as[ref] = ref if name in returned_as.values() else name
-        returned_as.setdefault(name, returned_as[ref])
-    two_grains = len(set(dimensions)) != len(dimensions)
+    shown = planner.resolved.dimensions
+    dimensions = [d.dimension for d in shown]
+    # Each part returns a dimension under the column one database names it
+    # (``column_name``): the dimension's name, and a later grain of it under
+    # its own, ``Order Date:month`` or ``Order Date:value``. Each is read from
+    # its column: the first as the dimension, a later grain as a dimension of
+    # its own, which the query returns under its column's name (:func:`_returned`).
     taken = _reserved_names(model)
-    hidden = {
-        returned_as[ref]: _unused(f"__dim{n}", taken) if two_grains else returned_as[ref]
-        for n, ref in enumerate(refs)
-    }
+    inner: dict[str, str] = {}
+    for n, d in enumerate(shown):
+        later = d.dimension in inner.values()
+        inner[d.name] = _unused(f"__dim{n}", taken) if later else d.dimension
+    two_grains = len(set(dimensions)) != len(dimensions)
     measures = planner.atomic_measures()
     effective = model.effective_measures
     # Under a rollup or cube, each row's grouping set is its flags (:func:`_in_grouping_sets`).
-    flags = [grouping_flag_alias(name) for name in dimensions] if query.grouping else []
+    flags = [grouping_flag_alias(d.name) for d in shown] if query.grouping else []
     columns = [
-        *(
-            _dimension_column(model, name, returned_as[ref])
-            for ref, name in zip(refs, dimensions, strict=True)
-        ),
+        *(_dimension_column(model, d.dimension, d.name) for d in shown),
         *(
             DataObjectColumn(name=m, code=m, abstract_type=effective[m].result_type)
             for m in sorted(measures)
@@ -2081,10 +2078,19 @@ def _plan_parts(
         },
         dimensions={
             **{
-                hidden[returned_as[ref]]: _combine_dimension(
-                    model, name, _PARTS_RELATION, returned_as[ref]
-                ).model_copy(update={"name": hidden[returned_as[ref]]})
-                for ref, name in zip(refs, dimensions, strict=True)
+                inner[d.name]: _combine_dimension(
+                    model, d.dimension, _PARTS_RELATION, d.name
+                ).model_copy(
+                    update={
+                        "name": inner[d.name],
+                        # Filled, the date keeps its declared grain, whose
+                        # periods a filter on it compares (``fill_wrap``).
+                        "time_grain": model.dimensions[d.dimension].time_grain
+                        if query.fill
+                        else None,
+                    }
+                )
+                for d in shown
             },
             **{
                 f: Dimension(name=f, view=_PARTS_RELATION, column=f, result_type=DataType.INT)
@@ -2108,7 +2114,11 @@ def _plan_parts(
         parts_query = query.model_copy(
             update={
                 "select": QuerySelect(
-                    dimensions=refs if query.fill else dimensions, measures=returned
+                    dimensions=[
+                        dimension_reference(d) if query.fill and d.grain else d.dimension
+                        for d in shown
+                    ],
+                    measures=returned,
                 ),
                 "where": [],
                 "order_by": [
@@ -2122,18 +2132,24 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
-        with fill_bounds(_fill_bounds(query, parts_model) if query.fill else []):
+        with fill_bounds(_fill_bounds(planner, parts_model) if query.fill else []):
             sql = compile_leg(parts_query, parts_model, COMBINE_DIALECT)
     else:
         # Each row is a group of the union by the dimensions, each read from
         # its own column, and the flags, which the query returns after its
         # measures, sorted as one database sorts them (:func:`_returned`).
-        selected = {*refs, *dimensions, *query.select.measures}
+        # A sort field names the column one database sorts by: a reference
+        # its grain's, a name the dimension's first.
+        sorted_as: dict[str, str] = {}
+        for d in shown:
+            sorted_as.setdefault(dimension_reference(d), d.name)
+            sorted_as.setdefault(d.dimension, d.name)
+        selected = {*sorted_as, *query.select.measures}
         sorted_by = [o.field for o in query.order_by if o.field not in selected]
         grouped = query.model_copy(
             update={
                 "select": QuerySelect(
-                    dimensions=[*hidden.values(), *flags], measures=[*returned, *sorted_by]
+                    dimensions=[*inner.values(), *flags], measures=[*returned, *sorted_by]
                 ),
                 "where": [],
                 "grouping": None,
@@ -2146,7 +2162,8 @@ def _plan_parts(
         sql = _returned(
             compile_leg(grouped, parts_model, COMBINE_DIALECT),
             query,
-            {ref: (hidden[alias], alias) for ref, alias in returned_as.items()},
+            [(inner[d.name], d.name) for d in shown],
+            sorted_as,
             returned,
             flags,
         )
@@ -2158,24 +2175,43 @@ def _plan_parts(
     return FederatedPlan(legs=tuple(legs), combine_sql=sql, timezone=planner.result_zone)
 
 
-def _fill_bounds(query: QueryObject, parts_model: SemanticModel) -> list[Expr]:
-    """The query's filters on its filled date, on the union's column of it.
+def _fill_bounds(planner: _Planner, parts_model: SemanticModel) -> list[Expr]:
+    """The query's filters on its filled date's column, on the union's column of it.
 
     The parts ran them; the combine step's fill reads their bounds alone
-    (:func:`~orionbelt.compiler.fill_wrap.fill_bounds`).
+    (:func:`~orionbelt.compiler.fill_wrap.fill_bounds`), as one database's
+    fill reads its ``where``: a filter on a dimension over the column without
+    a grain bounds the periods by its dates; one declaring the grain the
+    filled dimension declares, by its periods, which the fill compares its
+    periods with too; any other bounds nothing.
     """
-    (filled,) = [d for d in _dimension_refs(query) if DimensionRef.parse(d).grain]
-    name = DimensionRef.parse(filled).name
-    column = make_column_expr(parts_model, _PARTS_RELATION, name)
-    return [
-        predicate
-        for item in query.where
-        for condition in _item_conjuncts(item)
-        if isinstance(condition, QueryFilter)
-        and condition.subquery is None
-        and condition.field == name
-        and (predicate := build_filter_expr(column, condition, [])) is not None
-    ]
+    model = planner.model
+    (filled,) = [d for d in planner.resolved.dimensions if d.grain is not None]
+    assert filled.grain is not None
+    dimension = parts_model.dimensions[filled.dimension]
+    column = make_column_expr(parts_model, _PARTS_RELATION, filled.name)
+    period = (
+        make_period_expr(parts_model, dimension, filled.grain)
+        if dimension.time_grain == filled.grain
+        else None
+    )
+    subjects: dict[TimeGrain | None, Expr | None] = {None: column, filled.grain: period}
+    bounds: list[Expr] = []
+    for item in planner.query.where:
+        for condition in _item_conjuncts(item):
+            if not isinstance(condition, QueryFilter) or condition.subquery is not None:
+                continue
+            on = model.dimensions.get(condition.field)
+            if on is None or (on.view, on.column, on.via) != (
+                filled.object_name,
+                filled.column_name,
+                filled.via,
+            ):
+                continue
+            subject = subjects.get(on.time_grain)
+            if subject is not None and (predicate := build_filter_expr(subject, condition, [])):
+                bounds.append(predicate)
+    return bounds
 
 
 def _grouping_sets(query: QueryObject) -> list[frozenset[str]]:
@@ -2218,7 +2254,14 @@ def _in_grouping_sets(query: QueryObject, part: _Part, relation: str) -> str:
         f"{q(relation)}.{q(grouping_flag_alias(name))} = {sets}.{q(grouping_flag_alias(name))}"
         for name in reached
     )
-    where = f"\nWHERE {q(relation)}.{q(part.present)} > 0" if part.present is not None else ""
+    # A part's rows standing for none of its fact's are left out, but in the
+    # grand total, which one database returns over no rows too.
+    grand_total = " AND ".join(f"{sets}.{q(flag)} = 1" for flag in flags)
+    where = (
+        f"\nWHERE {q(relation)}.{q(part.present)} > 0 OR {grand_total}"
+        if part.present is not None
+        else ""
+    )
     return (
         f"SELECT {', '.join(columns)}\nFROM {q(relation)}\n"
         f"JOIN (VALUES {rows}) AS {sets}({', '.join(map(q, flags))}) ON {on or 'TRUE'}{where}"
@@ -2228,35 +2271,35 @@ def _in_grouping_sets(query: QueryObject, part: _Part, relation: str) -> str:
 def _returned(
     sql: str,
     query: QueryObject,
-    dimensions: dict[str, tuple[str, str]],
+    dimensions: list[tuple[str, str]],
+    sorted_as: dict[str, str],
     measures: list[str],
     flags: list[str],
 ) -> str:
     """The rows of *sql* as *query* returns them, as one database returns them.
 
-    Its dimensions, by each reference or name the query selects or sorts by
-    (*dimensions*): the column of *sql* holding it, and the name one database
-    returns it under; then *measures*, then the grouping *flags*. Sorted as
-    one database sorts: by the query's sort fields, else by its dimensions
-    where it has a rollup or cube, or a limit; under a rollup or cube a NULL
-    first where the query does not say. Then limited and offset.
+    Its *dimensions*, each the column of *sql* holding it and the name one
+    database returns it under; then *measures*, then the grouping *flags*.
+    Sorted as one database sorts: by the query's sort fields, a dimension's
+    the column *sorted_as* names, else by its dimensions where it has a
+    rollup or cube, or a limit; under a rollup or cube a NULL first where the
+    query does not say. Then limited and offset.
     """
     q = DialectRegistry.get(COMBINE_DIALECT).quote_identifier
-    shown = list(dict.fromkeys(dimensions.values()))
     columns = [
-        *(f"{q(inner)} AS {q(alias)}" for inner, alias in shown),
+        *(f"{q(inner)} AS {q(alias)}" for inner, alias in dimensions),
         *map(q, [*measures, *flags]),
     ]
     sorted_by = query.order_by
     if not sorted_by and (query.grouping is not None or query.limit is not None):
-        sorted_by = [QueryOrderBy(field=alias) for _, alias in shown]
+        sorted_by = [QueryOrderBy(field=alias) for _, alias in dimensions]
 
     def nulls(o: QueryOrderBy) -> str:
         position = o.nulls or (NullsPosition.FIRST if query.grouping is not None else None)
         return f" NULLS {position.value.upper()}" if position is not None else ""
 
     order = ", ".join(
-        f"{q(dimensions.get(o.field, (o.field, o.field))[1])} {o.direction.value.upper()}{nulls(o)}"
+        f"{q(sorted_as.get(o.field, o.field))} {o.direction.value.upper()}{nulls(o)}"
         for o in sorted_by
     )
     rows = f"SELECT {', '.join(columns)}\nFROM (\n{sql}\n) AS {q(_GROUPED_RELATION)}"
