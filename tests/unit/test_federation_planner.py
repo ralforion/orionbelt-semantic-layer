@@ -6244,6 +6244,9 @@ class TestDimensionSourceJoins:
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
         assert "'Customers' -> 'Links' would repeat the rows of 'Customers'" in error.message
+        assert error.hint == (
+            "Select dimensions 'Customers' joins many-to-one, or query them on one data source."
+        )
 
     @pytest.mark.parametrize(
         "query",
@@ -6564,6 +6567,95 @@ class TestDimensionSourceJoins:
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
         assert reader in error.message
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"select": {"dimensions": ["Topic"], "measures": ["Revenue"]}},
+            {"select": {"dimensions": ["Topic", "Region"]}},
+        ],
+        ids=["with_a_measure", "dimensions_alone"],
+    )
+    def test_a_many_to_many_join_between_sources_is_refused(self, query: dict[str, Any]) -> None:
+        """The links on a source of their own: one database repeats an order
+        once per link of its customer, across sources each order joins one."""
+        with pytest.raises(ResolutionError) as caught:
+            _compile(_links_apart(island_model(True)), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert "'Customers' -> 'Links' between data sources is not many-to-one" in error.message
+        assert error.hint == (
+            "Select dimensions the measures' data source joins many-to-one, or query them "
+            "on one data source."
+        )
+
+    def test_an_exists_over_a_nested_object_there_is_refused(self) -> None:
+        with pytest.raises(ResolutionError) as caught:
+            _compile(_keyed(island_model(True)), TAGGED_VIP)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_JOIN"
+        assert "Nested data object 'Customer Tags'" in error.message
+        assert error.hint is not None and "Filter on a dimension" in error.hint
+
+    def test_a_filter_on_the_nested_dimension_keeps_the_orders_exists_keeps(
+        self, island_files: dict[str, dict[str, str]]
+    ) -> None:
+        """The hint's query: orders of customers tagged vip, each once."""
+        paths = island_files["crm"]
+        by_tag = {**TAGGED_VIP, "where": [{"field": "Tag", "op": "=", "value": "vip"}]}
+
+        single = _run_on(paths, _keyed(island_model(False)), TAGGED_VIP)
+
+        assert _run_on(paths, _keyed(island_model(True)), by_tag) == single
+        assert single == [("EU", Decimal("120.75")), ("US", Decimal("7.00"))]
+
+    def test_a_filter_on_a_column_is_refused(self) -> None:
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+            "where": [{"field": "Orders.Amount", "op": ">", "value": 50}],
+        }
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(island_model(True), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+        assert "The filter on 'Orders.Amount' is not on a dimension" in error.message
+        assert error.hint == "Filter on a dimension over the column."
+
+
+# The orders of customers some tag of whom is vip, by region.
+TAGGED_VIP = {
+    "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+    "where": [
+        {
+            "field": "Customers.Customer ID",
+            "op": "exists",
+            "subquery": {
+                "dataObject": "Customer Tags",
+                "filter": [{"field": "Customer Tags.Tag", "op": "=", "value": "vip"}],
+            },
+        }
+    ],
+}
+
+
+def _keyed(yaml: str) -> str:
+    """*yaml* with the customers keyed, which an exists over their tags matches on."""
+    return yaml.replace(
+        "Customer ID: {code: customer_id, abstractType: int}",
+        "Customer ID: {code: customer_id, abstractType: int, primaryKey: true}",
+    )
+
+
+def _links_apart(yaml: str) -> str:
+    """*yaml* with the customers' links on a source of their own."""
+    return yaml.replace(
+        "  Links:\n    code: links\n    dataSource: crm\n",
+        "  Links:\n    code: links\n    dataSource: geo\n",
+    )
 
 
 # Orders on the shop, employees and customers in the CRM. Order 3 has no

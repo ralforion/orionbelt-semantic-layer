@@ -1771,6 +1771,8 @@ def _plan_raw(
                 "UNSUPPORTED_FILTER",
                 "An exists filter in a raw-mode query runs in the leg of the facts' data "
                 "source: on its subject there, and beside no condition on another source",
+                hint="Select dimensions and measures, or keep the exists filter on the facts' "
+                "data source, outside an OR with conditions of another.",
             )
         for field in _filter_fields(item):
             dimension = model.dimensions.get(field)
@@ -2466,6 +2468,7 @@ class _Planner:
                     "UNSUPPORTED_QUERY",
                     f"Measures of independent facts on several data sources are combined, "
                     f"but {why}, which is not supported yet",
+                    hint="Query the measures of each fact apart, or without it.",
                 )
 
     def _item_objects(self, item: QueryFilterItem) -> set[str]:
@@ -2501,7 +2504,7 @@ class _Planner:
             raise self.refuse(
                 "MULTI_FACT",
                 f"The query's measures are read from more than one data source ({listed})",
-                hint="Measures of one query must come from one data source for now.",
+                hint="Query the measures of each data source apart.",
             )
         if owners and owners != {base}:
             (fact,) = owners
@@ -2554,12 +2557,15 @@ class _Planner:
                     "UNSUPPORTED_JOIN",
                     f"The join {label} between data sources is not many-to-one from the "
                     "measures' side",
+                    hint="Select dimensions the measures' data source joins many-to-one, or "
+                    "query them on one data source.",
                 )
             target = island_of[b]
             if target in reached:
                 raise self.refuse(
                     "UNSUPPORTED_JOIN",
                     f"The data source of '{b}' is joined more than once",
+                    hint="Query these data objects on one data source.",
                 )
             reached.add(target)
             declared = self._declared_join(a, b, step.from_columns, step.to_columns)
@@ -2581,6 +2587,7 @@ class _Planner:
                     "UNSUPPORTED_JOIN",
                     f"Data objects {', '.join(sorted(island))} are not joined to the "
                     "measures' data source",
+                    hint="Query these data objects on one data source.",
                 )
         for edge in edges:
             self._check_dimension_island(islands[edge.island], edge.to_object)
@@ -2612,6 +2619,8 @@ class _Planner:
                             "UNSUPPORTED_JOIN",
                             f"'{step.from_object}' -> '{step.to_object}' would repeat the "
                             f"rows of '{entry}' in its data source",
+                            hint=f"Select dimensions '{entry}' joins many-to-one, or query "
+                            "them on one data source.",
                         )
                     reached.add(step.to_object)
                     changed = True
@@ -2622,6 +2631,8 @@ class _Planner:
                     "UNSUPPORTED_JOIN",
                     f"Nested data object '{name}' is not supported on the dimension side "
                     "of a federated query",
+                    hint="Filter on a dimension of the nested data object instead, or query "
+                    "it on one data source.",
                 )
 
     def unnested_objects(self, islands: list[set[str]], fact: int) -> dict[str, str]:
@@ -3560,6 +3571,7 @@ class _Planner:
             raise self.refuse(
                 "UNSUPPORTED_FILTER",
                 f"The filter on '{item.field}' is not on a dimension",
+                hint="Filter on a dimension over the column.",
             )
         return {dimension.view or ""}
 

@@ -901,7 +901,7 @@ after the join alike, and `Placed At >= 2024-02-01` keeps it. The result is
 labeled with the query's zone (the response's `timezone`): its values are the
 instants each source holds, as wall-clock times there. A join key between
 sources is compared as stored, as one database holding both tables compares
-it, and a converted value read through an [unnest](#limitations) is refused
+it, and a converted value read through an [unnest](#arrays-of-another-source) is refused
 where one read in `queryTimezone` is.
 
 A model that says which zone its timestamps were written in, its
@@ -952,87 +952,146 @@ Kubernetes.
 
 ## Limitations
 
-What does not split exactly is refused by name. Each refusal below is a
-`FEDERATION_*` error raised when the query is compiled, unless marked as
-raised at run time. A last group lists results that can differ from what one
-database would return, without a refusal.
+A federated query returns the answer one database holding every table would
+return, or it is refused with an error that says why. Most refusals come when
+the query is compiled, before any source is read; a few come
+[while it runs](#when-the-query-runs). The error names the dimension, measure
+or join it is about, and its hint says what to ask instead.
 
-### Query shape
+The examples below use the shop's orders and the CRM's customers of
+[the example](#an-example). Find your query by what it does:
 
-| Limitation | Error |
-|---|---|
-| Raw mode (`select.fields`) over independent facts, which one database unions | `FEDERATION_UNSUPPORTED_QUERY` |
-| [Measures of independent facts](#measures-of-independent-facts) on several islands beside a measure with a total, `grain` or `filterContext`, a measure reading several of the facts or anchored to another, a `rollup` / `cube`, a cumulative, period-over-period, window or reaggregate metric, `fill`, `asOf`, one dimension at two grains, `dimensionsExclude` or a coalesce dimension | `FEDERATION_UNSUPPORTED_QUERY` |
-| Measures of independent facts ordered by a measure of a fact none of the selected measures is of | `FEDERATION_UNSUPPORTED_QUERY` |
+| Your query | Refused when | Section |
+|---|---|---|
+| Reads measures of two sources | a measure of the customers is beside the orders' revenue; facts that stand apart are combined with a subtotal, a total, a metric across periods, `fill` or a few other options | [Measures from several sources](#measures-from-several-sources) |
+| Joins the sources | measures are grouped by the many side of their join; a join repeats rows, many-to-many between the sources or inside the other one | [Joins between sources](#joins-between-sources) |
+| Reads an array of another source | an unnested value (a customer's tags) is read without grouping by it, or beside a subtotal | [Arrays of another source](#arrays-of-another-source) |
+| Reads computed columns | a column is computed from another source, or has a value where the join finds no row (`COALESCE`) | [Computed columns](#computed-columns) |
+| Computes a measure from rows | it compares MySQL strings or ClickHouse floats, which DuckDB compares otherwise | [Measures computed from rows](#measures-computed-from-rows) |
+| Uses a metric across periods or a reaggregate metric | its dates are on an object the query does not join; a date with a time zone is grouped by a period | [Metrics](#metrics) |
+| Filters | on a column rather than a dimension; with `exists` across sources | [Filters](#filters) |
+| Runs | a source returns too many rows, or too many queries run at once | [When the query runs](#when-the-query-runs) |
+| Is compared with one database's answer | nothing is refused: string and NULL order, time zones, no snapshot across sources | [Results that can differ](#results-that-can-differ-from-one-database) |
+
+### Measures from several sources
+
+Measures of the orders may read the customers: revenue of the EU customers'
+orders is [computed from rows](#measures-reading-another-source). Measures of
+facts that stand apart, orders and tickets that both join the customers, are
+[combined side by side](#measures-of-independent-facts).
+
+| You asked for | Ask instead | Error |
+|---|---|---|
+| A measure of the customers beside the orders' revenue, a count of the CRM's customers per region. Also when the query only orders by such a measure | Query each source's measures apart. A distinct count of the orders' customer key, on the shop, counts the customers that have orders | `FEDERATION_MULTI_FACT` |
+| Facts that stand apart, on different sources, beside any of: a measure with `total`, `grain` or `filterContext`; a measure reading several of the facts, or anchored to another; `rollup` or `cube`; a cumulative, period-over-period, window or reaggregate metric; `fill`, `asOf`, or one dimension at two grains; `dimensionsExclude` or a coalesce dimension | Query each fact's measures apart, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |
+| Facts that stand apart, ordered by a measure of a fact none of the selected measures is of (revenue per region, ordered by the tickets' count) | Select that measure too | `FEDERATION_UNSUPPORTED_QUERY` |
+| Facts that stand apart, in raw mode (`select.fields`) | Select the fields of one fact and the objects it joins, one query per fact; or select dimensions and measures, which combine them | `FEDERATION_UNSUPPORTED_QUERY` |
 
 ### Joins between sources
 
-| Limitation | Error |
-|---|---|
-| Measures whose values come from different sources where one database does not union them as [independent facts](#measures-of-independent-facts): a measure of an object the facts' rows join (revenue beside a count of the CRM's customers), also when the query only orders by it, or orders by a measure of another source's fact; one measure reading a column of another source is [computed from rows](#measures-reading-another-source) | `FEDERATION_MULTI_FACT` |
-| Measures grouped by dimensions of another source on the many side of their join | `FEDERATION_UNSUPPORTED_JOIN` |
-| A join between sources that is not many-to-one (or one-to-one) from the measures' side | `FEDERATION_UNSUPPORTED_JOIN` |
-| One dimension source's objects reached by two joins from the measures' source | `FEDERATION_UNSUPPORTED_JOIN` |
-| Data objects of another source that no join from the measures' source reaches | `FEDERATION_UNSUPPORTED_JOIN` |
-| Inside a dimension source, a many-to-many join, or a many-to-one join walked from its one side, from where the edge enters: one database repeats a fact row once per match (an order once per topic its customer links to), where the leg returns each value once per key | `FEDERATION_UNSUPPORTED_JOIN` |
-| A value unnested (`nestedIn`) on another source than the measures', or read through such an unnest (a tier joined one-to-one to a customer's tags, a customer column computed from them): as a dimension beside a `rollup` / `cube` subtotal, a measure's `total`, or a measure's `grain`, which add the groups up; or read after the join where the query does not group by it at its grain (a tag's date, grouped by its month, is a value per date; a timestamp shown in the `queryTimezone`, or a value computed from one such as its hour, is another value than the stored one it joins on, two of which show as one where the clocks go back), by a filter beside a condition on another source (true for NULL, or left out by a measure's `filterContext`), a measure's filter, a static filter, a join on to another source, a reaggregate metric's `per` (which groups its own first stage, not the query's other measures), or beside a metric across periods, for which the leg returns its dates as stored. Its leg returns a row per element, and these count a fact row once per element (an order once per tag of its customer). Grouped by it, or filtered on it alone, each fact row counts once per group, as one database counts it | `FEDERATION_UNSUPPORTED_QUERY` |
-| A column of a source joined by a left join whose expression has a value where the source's row is missing (`COALESCE({[Customers].[Region]}, 'unknown')` for an order whose customer is not in the CRM), as a dimension, a raw-mode field, a filter (one a `filterContext` includes too), a measure's input, a static filter or a join key (`COALESCE({[Customers].[Customer Region]}, -1)`, which joins the order to an unknown region): one database computes it over NULLs, the combine step reads NULL. One certainly NULL over NULL inputs (`UPPER`, arithmetic), or of a source whose own join is `required`, is computed | `FEDERATION_UNSUPPORTED_JOIN` |
-| A dimension, a raw-mode field, or a static filter, whose column is computed from a column of a data object the query does not join to the column's own within its source: on another source, or reached through another join (the regions joined to the orders directly, read by a column of the customers) | `FEDERATION_UNSUPPORTED_JOIN` |
+Across sources, each fact row joins one row of the other source, as a
+many-to-one (or one-to-one) join does on one database.
 
-### Measures and metrics
+| You asked for | Ask instead | Error |
+|---|---|---|
+| Measures grouped by a dimension on the many side of their join: a count of the CRM's customers by the orders' amount, where a customer has many orders | Group by dimensions of the measures' own source, or of objects they join many-to-one. A distinct count of the orders' customer key, on the shop, counts the customers per amount | `FEDERATION_UNSUPPORTED_JOIN` |
+| A many-to-many join between sources, or a many-to-one join walked from its one side: the topics the CRM's customers link to, kept on another source. One database counts an order once per topic, where across sources each order joins one row | Group by dimensions joined many-to-one from the measures' side, or query it on one data source | `FEDERATION_UNSUPPORTED_JOIN` |
+| Inside the other source, a join that repeats rows: a many-to-many join, or a many-to-one join walked from its one side. An order's customer, and the topics the customer links to: one database counts the order once per topic, where the CRM's leg returns each customer once | Group by dimensions the other source reaches many-to-one from the object the join enters, or query it on one data source | `FEDERATION_UNSUPPORTED_JOIN` |
+| Objects of another source that the measures' source reaches by two joins at once, or by none | Query it on one data source | `FEDERATION_UNSUPPORTED_JOIN` |
 
-| Limitation | Error |
-|---|---|
-| A reaggregate metric whose `per` dimension no many-to-one join reaches from the rows of its measure (the customers' count per order date), is reached by a required join the query does not make in a leg the query or another reaggregate metric reads too, or, with `population: dimension`, shares its source's leg with any other data object | `FEDERATION_UNSUPPORTED_METRIC` |
-| A dimension over a timestamp with a time zone, at a grain or as a date, beside a cumulative, period-over-period or window metric, or a reaggregate metric per a date | `FEDERATION_UNSUPPORTED_METRIC` |
-| A cumulative, period-over-period or window metric whose time dimension is on a data object the query does not join (a calendar it neither selects nor filters on) | `FEDERATION_UNSUPPORTED_METRIC` |
-| A measure reading a column that is computed from columns of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
-| A measure counted once per row of an object read through the fact rows that reads a column of another source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
-| Computed from rows: a measure that compares values its engine compares otherwise than DuckDB, a MySQL string (in a filter that also reads another source, a computed column or a date, as its ordering or expression, or as the argument of `min`, `max`, a percentile, `mode`, `first`, `last`, `listagg` or a `distinct` aggregation), or a ClickHouse float it counts (`mode`, a `distinct` aggregation). A filter comparing only plain columns of the fact's source, a string with strings and without a pattern, runs in the fact leg | `FEDERATION_UNSUPPORTED_AGGREGATION` |
-| Computed from rows: a measure of an object read through the fact rows that reads a value of which one row of that object has several (a sales column in a customer measure) other than in a filter on the fact's source, which reads the fact rows | `FEDERATION_UNSUPPORTED_AGGREGATION` |
-| Computed from rows: a dimension or key read through two such objects at once | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+### Arrays of another source
+
+A [nested object](model-format.md#nested-data-objects-nestedin) (`nestedIn`)
+unnests an array, a customer's tags. On another source than the measures',
+its leg returns a row per tag, and the orders join each. Grouped by the tag,
+or filtered on it alone, an order counts once per group, as on one database.
+Anything that would count an order once per tag of its customer is refused,
+also for what is read through the tags (a tier joined to a tag, a customer
+column computed from them).
+
+| You asked for | Ask instead | Error |
+|---|---|---|
+| A tag dimension beside a `rollup` or `cube` subtotal, a measure's `total`, or a measure's `grain`, which add the tags' groups up | Select it without the subtotal, total or grain, or query it on one data source | `FEDERATION_UNSUPPORTED_QUERY` |
+| A tag the query reads without grouping by it: in a measure's filter, a static filter, a filter beside a condition on another source (in an `or`, or one a measure's `filterContext` leaves out), a join on to a third source, a reaggregate metric's `per`, or beside a metric across periods. Grouping by a coarser value does not count: by month, for a measure reading the tag's date; by a value shown in the `queryTimezone`, or computed from one (its hour), for the stored timestamp | Select what it reads as a dimension too, as stored (the tag's date, not its month), or query it on one data source | `FEDERATION_UNSUPPORTED_QUERY` |
+| An `exists` on a customer whose subquery reads the tags: the orders of customers tagged `'vip'` | Filter on the tag dimension instead, `Tag = 'vip'`: the same orders | `FEDERATION_UNSUPPORTED_JOIN` |
+
+### Computed columns
+
+A column computed from other columns is computed in its own source's leg,
+from the objects that leg reads.
+
+| You asked for | Ask instead | Error |
+|---|---|---|
+| A column of a left-joined source with a value where the row is missing: `COALESCE({[Customers].[Region]}, 'unknown')` for an order whose customer is not in the CRM. One database computes `'unknown'`, the combine step would read NULL. As a dimension, a field, a filter, a measure's input, a static filter or a join key | Compute it so it stays NULL where its inputs are (`UPPER`, arithmetic), and label the missing rows in your tool; or make the join `required`, which keeps only the orders whose customer is found | `FEDERATION_UNSUPPORTED_JOIN` |
+| A dimension, a field or a static filter computed from an object the query does not join to the column's own within its source: the customers' home region, computed from the regions, with the regions on another source, or joined to the orders directly | Compute it from objects of its own source that its object joins, or query it on one data source | `FEDERATION_UNSUPPORTED_JOIN` |
+| A measure reading a column computed from columns of another source | Compute the column from columns of the measure's own source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
+| A measure of an object the facts' rows reach ([counted once per row](#objects-the-joins-repeat), the customers' ages in a query of their sales) that reads a column of another source | Query that measure on one data source | `FEDERATION_MEASURE_ACROSS_SOURCES` |
+
+### Measures computed from rows
+
+A measure that does not add up from partial results (a median, a
+percentile, `mode`), or that reads a column of another source, is
+[computed from rows](#computed-from-rows) in the combine step's DuckDB.
+
+| You asked for | Ask instead | Error |
+|---|---|---|
+| Such a measure over values its engine compares otherwise than DuckDB. A MySQL string, whose collation makes `'a'` and `'A'` equal: in a filter that also reads another source, a computed column or a date; as the ordering or expression; or as the argument of `min`, `max`, a percentile, `mode`, `first`, `last`, `listagg` or a `distinct` aggregation. A ClickHouse float it counts (`mode`, a `distinct` aggregation), where `0.0` and `-0.0` are two | Query it on one data source. A `min` or `max` of strings is refused only beside a measure computed from rows: query it apart. A filter comparing only plain columns of the measures' source (strings with strings, without a pattern) runs in its leg and is not refused | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+| A measure of an object the facts' rows reach, the customers' ages in a query of sales, reading a sales column other than in a filter (as its argument, expression or ordering): one customer has several | Query it on one data source | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+| A dimension or key read through two such objects at once, one joined from the other: the accounts' credits beside their owners' ages, by the owners' region | Query the measures of each object apart | `FEDERATION_UNSUPPORTED_AGGREGATION` |
+
+### Metrics
+
+| You asked for | Ask instead | Error |
+|---|---|---|
+| A cumulative, period-over-period or window metric whose time dimension is on an object the query does not join: a running total by region alone, over a calendar it neither selects nor filters on | Select its time dimension, or query the metric on one data source | `FEDERATION_UNSUPPORTED_METRIC` |
+| A reaggregate metric whose `per` dimension the measure's rows do not reach many-to-one (the customers' count per order date); or whose `per` dimension a required join reaches that the query does not make, in a leg the query or another reaggregate metric reads too; or, with `population: dimension`, whose source's leg reads another object too | Query it on one data source | `FEDERATION_UNSUPPORTED_METRIC` |
+| A dimension over a timestamp with a time zone, at a grain or as a date, beside a cumulative, period-over-period or window metric, or a reaggregate metric per a date. Without the metric, with `fill` or at two grains in one query: the combine step would group it in its own time zone, not its source's | Select it as a timestamp with a time zone, without a grain | `FEDERATION_UNSUPPORTED_METRIC`, `FEDERATION_UNSUPPORTED_QUERY` |
 
 ### Filters
 
-| Limitation | Error |
-|---|---|
-| A filter on something other than a dimension (in raw mode, a `DataObject.Column` is taken) | `FEDERATION_UNSUPPORTED_FILTER` |
-| An `exists` / `nonexists` whose subquery reads another source than its subject (its target, the join path to it, or an object its filters read) | `FEDERATION_UNSUPPORTED_FILTER` |
-| An `exists` / `nonexists` that would run after the join: in an OR with a condition on another source, or in a group that holds where its subject is missing | `FEDERATION_UNSUPPORTED_FILTER` |
-| In raw mode, an `exists` / `nonexists` on a subject of another source than the facts' | `FEDERATION_UNSUPPORTED_FILTER` |
-| An `exists` / `nonexists` that a measure's `filterContext` leaves out | `FEDERATION_UNSUPPORTED_FILTER` |
-| A `filterContext` `include` filter on a `DataObject.Column` rather than a dimension | `FEDERATION_UNSUPPORTED_FILTER` |
-| In raw mode without the model's `queryTimezone`, a filter after the join on a dimension that truncates or casts a timestamp with a time zone | `FEDERATION_UNSUPPORTED_FILTER` |
+| You asked for | Ask instead | Error |
+|---|---|---|
+| A filter on a data object's column, `Customers.Region`, rather than a dimension; also as a `filterContext` `include`. Raw mode takes such a filter | Declare a dimension over the column and filter on that | `FEDERATION_UNSUPPORTED_FILTER` |
+| An `exists` or `nonexists` whose subquery reads another source than its subject: its target, the join path to it, or an object its filters read | Keep the subquery on its subject's source | `FEDERATION_UNSUPPORTED_FILTER` |
+| An `exists` or `nonexists` in an `or` with a condition on another source, or in a group that is true for an order without a customer | Filter with it on its own, or beside conditions of its subject's source only | `FEDERATION_UNSUPPORTED_FILTER` |
+| An `exists` or `nonexists` that a measure's `filterContext` leaves out | Keep it in every measure's `filterContext` | `FEDERATION_UNSUPPORTED_FILTER` |
+| In raw mode, an `exists` or `nonexists` on a subject of another source than the facts' | Select dimensions and measures, or keep it on the facts' source | `FEDERATION_UNSUPPORTED_FILTER` |
+| In raw mode, without the model's `queryTimezone`, a filter after the join on a dimension that truncates or casts a timestamp with a time zone (its month, its date) | Set the model's `queryTimezone`, or query it on one data source | `FEDERATION_UNSUPPORTED_FILTER` |
 
-### At run time
+An `exists` over an array of another source is listed under
+[Arrays of another source](#arrays-of-another-source).
 
-| Limitation | Error |
-|---|---|
-| A leg returning, or standing for, more than `FEDERATION_MAX_LEG_ROWS` rows, or holding more than `FEDERATION_MAX_LEG_MB` in memory: a join between sources on a key with many values makes a leg return a row per key ([where to join the sources](#where-to-join-the-sources)) | `FEDERATION_LEG_TOO_LARGE` (HTTP 502) |
-| A leg value no decimal holds (`NaN`, more than 38 digits), or an `avg` partial sum with more than 9 places | `FEDERATION_LEG_TYPE` (HTTP 502) |
-| More federated queries than `FEDERATION_MAX_CONCURRENT` waiting past `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `FEDERATION_BUSY` (HTTP 503) |
-| A query spilling past `FEDERATION_SPILL_MAX_MB`, or all queries past `FEDERATION_SPILL_BUDGET_MB` | `FEDERATION_SPILL_TOO_LARGE` (502), `FEDERATION_SPILL_FULL` (503) |
+### When the query runs
+
+| What happened | What to do | Error |
+|---|---|---|
+| A leg returned more than `FEDERATION_MAX_LEG_ROWS` rows (5,000,000), or held more than `FEDERATION_MAX_LEG_MB` (512) in memory. Mostly a join on a key with many values: revenue by region, with the customers on another source, returns a row per customer from the shop ([where to join the sources](#where-to-join-the-sources)). The error names those joins | Filter on the other source's dimensions, which narrows both legs to the keys it returns ([key injection](#key-injection)); join on a column with fewer values (a region rather than a customer); or raise the limit | `FEDERATION_LEG_TOO_LARGE` (HTTP 502) |
+| A leg returned a value no decimal holds (PostgreSQL's `NaN`, more than 38 digits), or the partial sums of an `avg` as floats or with more places than the combine step adds exactly | Filter the value out; for an average, declare the measure's `resultType` float, or average a fixed-point column | `FEDERATION_LEG_TYPE` (HTTP 502) |
+| More federated queries than `FEDERATION_MAX_CONCURRENT` (4) ran at once, and this one waited past `FEDERATION_QUEUE_TIMEOUT_SECONDS` | Retry, or raise the limit where the process has memory to spare | `FEDERATION_BUSY` (HTTP 503) |
+| A query spilled more than `FEDERATION_SPILL_MAX_MB` to disk, or all queries together more than `FEDERATION_SPILL_BUDGET_MB` | Filter the query; retry later; or raise the limits and the disk | `FEDERATION_SPILL_TOO_LARGE` (502), `FEDERATION_SPILL_FULL` (503) |
 
 ### Results that can differ from one database
 
-Not refused, and documented here so they are known:
+Not refused, and listed so they are known. Most have a setting that makes
+them agree.
 
-| What | Detail |
-|---|---|
-| No snapshot across sources | the legs read their sources at slightly different moments |
-| A dimension unnested on another source | one database counts each fact row once per element only through the fact's `primaryKey`, and refuses the query without one; across sources the leg's rows count each once, with or without it |
-| Timestamps without a time zone from a source whose zone is not known | returned as the source holds them, where the other legs [read theirs](#timestamps-without-a-time-zone) in the query's zone: Databricks, Dremio, and a MySQL session in its server's zone (`SYSTEM`) where that is not UTC, unless `DB_<NAME>_TIMEZONE` declares it (`UNDECLARED_TIMESTAMP_ZONE`) |
-| Timestamp join keys between sources in different zones | compared as stored, as one database holding both tables compares them: without a zone, each source's wall-clock time, so a key stored in UTC on one source and in New York on another does not match its instant; against a key with a zone, read in the combine step's zone, the OBSL server process's |
-| The hour the clocks go back, on ClickHouse | a leg [reads timestamps](#timestamps-without-a-time-zone) as wall-clock times in the query's zone, where two instants an hour apart are one time (02:30 in Berlin): the combine step groups them as one, as the other engines do. ClickHouse alone keeps them apart |
-| Today's date | a `relative` filter counts from the date of the engine that runs it: a leg's source in its session's time zone, or, after the join, the combine step's DuckDB in the time zone of the OBSL server's process. Around midnight, where the zones differ, one query can count from two dates |
-| Patterns after the join on the measures' MySQL strings compare as DuckDB | a pattern (`like`, `contains`, ...), or a comparison with a number, on a MySQL string of the measures' own source, in a filter after the join, compares the value the fact leg returned for its group, bytewise. [Other conditions](#values-compared-across-engines) run in their leg |
-| ClickHouse float dimensions | DuckDB makes one group of `0.0` and `-0.0`, where ClickHouse makes two |
-| Join keys across engines | between legs on two engines, keys compare bytewise, whatever a source's collation. Between two MySQL legs, [by their weight strings](#values-compared-across-engines): key columns of two collations, which one MySQL database compares by the binary one or refuses, match where their weight strings agree |
-| A timestamp with a time zone compared to a literal after the join | the combine step reads the literal (`'2023-12-01'`) in its DuckDB's time zone, the OBSL server process's, where a source reads it in its session's; a model's `queryTimezone` makes the legs return wall-clock times, which compare alike |
-| Raw-mode `distinct` across sources | deduplicates as DuckDB: two MySQL strings of one collation class (`'a'`, `'A'`) are two rows |
-| Strings ordered after the join | a source may order strings by its collation (PostgreSQL's `en_US.utf8` puts `'b'` before `'C'`), the combine step orders them bytewise. A `min` or `max` of strings combines [in its source's order](#values-compared-across-engines), except [computed from rows](#computed-from-rows): there it orders bytewise, as does every aggregation ordering strings. So do an `orderBy`, a `having`, a window metric, a reaggregate metric's own `min` or `max`, and a filter after the join that compares strings by order (`gt`, `between`, ...), but on MySQL, where it [runs in its leg](#values-compared-across-engines) |
-| Doubles computed from rows | far from zero the result depends on the order values are added in, as on one source |
-| Integer variance computed from rows | beside a measure that needs rows, a variance is DuckDB's double variance, not the exact one from moments |
-| Decimal products computed from rows | typed as DuckDB types them, as on one DuckDB: two decimals of 18 digits or fewer multiply to `DECIMAL(18, s1 + s2)`, so two of 2 places raise an overflow past 10^14, where PostgreSQL and MySQL compute the product exactly |
-| Key injection skipped | for a key of two columns, of a type other than integer or string, or past the limit, the fact leg reads every key: the same answer, more rows read |
-| Key map skipped | for a key of two columns, a key other than an integer, or past the limit, the fact leg groups by the key: the same answer, a larger leg |
+| What you may see | Why | What to do |
+|---|---|---|
+| A NULL group sorted last where one database sorts it first | ordered after the join, NULLs sort as DuckDB sorts them: last, ascending and descending. PostgreSQL puts them first in a descending order, MySQL first in an ascending one | set `nulls: first` or `nulls: last` on the `orderBy` |
+| Strings in another order | ordered after the join, strings sort bytewise: `'C'` before `'b'`, where PostgreSQL's `en_US.utf8` or MySQL's collation puts `'b'` first. So do a `having`, a window metric, a reaggregate metric's own `min` or `max`, a filter after the join comparing strings by order (`gt`, `between`, ...; on MySQL it [runs in its leg](#values-compared-across-engines)), and a measure [computed from rows](#computed-from-rows). A `min` or `max` of strings otherwise combines in its source's order | order by a value with one order everywhere (a code, a number), or sort in your tool |
+| Rows read at slightly different moments | there is no snapshot across sources: each leg reads its source when it runs | read sources that change during the query at a quiet time |
+| Timestamps without a time zone off by the source's offset | from a source whose session zone is not known (Databricks, Dremio, a MySQL session in its server's zone, `SYSTEM`, where that is not UTC), they are returned as stored, where the other legs [convert theirs](#timestamps-without-a-time-zone) to the query's zone. The query warns with `UNDECLARED_TIMESTAMP_ZONE` | set `DB_<NAME>_TIMEZONE` for the source |
+| Timestamp join keys that do not match | keys are compared as stored, as one database holding both tables compares them: a key stored in UTC on one source and in New York time on another does not match its instant. A key with a time zone is read in the zone of the OBSL server process | store the keys in one zone, or join on another key |
+| Today's date off by one around midnight | a `relative` filter counts from the date of the engine that runs it: a leg's source in its session's zone; after the join, the OBSL server process's zone | run the OBSL server in the sources' zone, or filter on fixed dates |
+| A timestamp with a time zone compared with a date literal (`'2023-12-01'`) after the join | the combine step reads the literal in the OBSL server process's zone, a source reads it in its session's | set the model's `queryTimezone`: the legs return wall-clock times, which compare alike |
+| One group for the hour the clocks go back, on ClickHouse | legs [read timestamps](#timestamps-without-a-time-zone) as wall-clock times in the query's zone, where 02:30 in Berlin is two instants an hour apart: the combine step groups them as one, as the other engines do. ClickHouse alone keeps them apart | use a `queryTimezone` without daylight saving time, UTC |
+| `'a'` and `'A'` as two rows in raw mode | raw-mode `distinct` deduplicates as DuckDB: two MySQL strings its collation calls equal are two rows | select them as dimensions, which group as MySQL does |
+| A pattern after the join that MySQL would match | a pattern (`like`, `contains`, ...) or a comparison with a number, on a MySQL string of the measures' source, in a filter after the join (in an `or` with another source's condition), compares bytewise. [Other conditions](#values-compared-across-engines) run in their leg | keep the pattern out of an `or` with conditions of other sources |
+| Join keys that do not match by collation | between legs on two engines, keys compare bytewise, whatever a source's collation. Between two MySQL legs they compare [by their weight strings](#values-compared-across-engines), which match where one MySQL database would compare by the binary collation or refuse | join on keys with the same bytes on both sides (IDs, normalised codes) |
+| `0.0` and `-0.0` as one group, from ClickHouse | a ClickHouse float dimension groups in DuckDB, which calls them equal | none |
+| Each order once per tag of another source, where one database refuses | grouped by a tag of another source, the orders count once per tag. One database does the same through the orders' `primaryKey`, and refuses the query without one | declare the orders' `primaryKey` for one database to agree |
+| The last digits of a double | a measure of doubles computed from rows adds them in the order they arrive, as one source does: far from zero the result depends on it | use a decimal column for exact sums |
+| A variance of integers as a double | beside a measure that needs rows, a variance of integers is DuckDB's double variance, not the exact one from its moments | query the variance apart |
+| An overflow on a product of decimals | computed from rows, two decimals of 18 digits or fewer multiply to `DECIMAL(18, s1 + s2)`, so two of 2 places overflow past 10^14, where PostgreSQL and MySQL compute it exactly | none yet |
+| More rows read than the filter needs | the fact leg reads every key where [key injection](#key-injection) is skipped: a key of two columns, of a type other than integer or string, or past the limit. The answer is the same | for a key past the limit, raise `DB_<NAME>_KEY_INJECTION_MAX_KEYS` |
+| A larger leg than the filter needs | the fact leg groups by the key where a [key map](#key-maps) is skipped: a key of two columns, a key other than an integer, or past the limit. The answer is the same | for a key past the limit, raise `DB_<NAME>_KEY_INJECTION_MAX_KEYS` |
