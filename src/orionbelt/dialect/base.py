@@ -1243,6 +1243,15 @@ class Dialect(ABC):
     #: instead.
     max_statement_bytes: int | None = None
 
+    #: Whether the engine sorts NULL last in an ``ORDER BY`` that does not say,
+    #: ascending and descending. Probed on each: PostgreSQL, Snowflake and
+    #: Dremio sort it as the largest value, last ascending and first
+    #: descending; MySQL, BigQuery and Databricks as the smallest; DuckDB and
+    #: ClickHouse last either way. One database leaves the place to its
+    #: engine; a federated query sorts in DuckDB, and says where.
+    nulls_last_ascending: bool = True
+    nulls_last_descending: bool = False
+
     def quote_string_literal(self, value: str) -> str:
         """*value* as a quoted string literal for this engine.
 

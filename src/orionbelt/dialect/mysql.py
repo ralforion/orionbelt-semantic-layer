@@ -162,6 +162,8 @@ class MySQLDialect(Dialect):
     key_injection_max_keys = 10_000
     #: 5 million groups by key in 31 s, joining a map in 3.5-9.6 s.
     pushes_key_maps = True
+    nulls_last_ascending = False
+    nulls_last_descending = True
 
     def equality_key(
         self, column: Expr, abstract_type: str, *, counted: bool

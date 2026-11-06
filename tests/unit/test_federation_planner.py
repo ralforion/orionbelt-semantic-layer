@@ -2209,6 +2209,33 @@ OPTION_QUERIES = {
         {"select": {"dimensions": TWO_GRAINS, "measures": ["Running Revenue", "Revenue"]}},
         PERIOD_METRICS,
     ),
+    # One database sorts a limited query by its columns: the month, then the
+    # year, then the region.
+    "two_grains_limited_without_a_sort": (
+        {
+            "select": {
+                "dimensions": ["Order Date:month", "Order Date:year", "Region"],
+                "measures": ["Revenue"],
+            },
+            "limit": 3,
+        },
+        "",
+    ),
+    "two_grains_sorted_by_each_and_limited": (
+        {
+            "select": {
+                "dimensions": ["Order Date:month", "Order Date:year", "Region"],
+                "measures": ["Revenue"],
+            },
+            "orderBy": [
+                {"field": "Order Date:year"},
+                {"field": "Order Date", "direction": "desc"},
+                {"field": "Region"},
+            ],
+            "limit": 3,
+        },
+        "",
+    ),
     "as_of": (
         {
             "select": {"dimensions": ["Region"], "measures": ["Running Revenue"]},
@@ -9248,3 +9275,151 @@ class TestZonedDatesAfterTheJoin:
         federated = _run_on(zoned_files, zoned_yaml(True, query_zone=True), self.QUERY, **zones)
 
         assert federated == single == [(1, "EU"), (2, "US"), (3, None)]
+
+
+class TestNullOrder:
+    """One database sorts NULL where its engine does, the query not saying:
+    PostgreSQL as the largest value, MySQL as the smallest, DuckDB last either
+    way. The combine step sorts in DuckDB, and is told the facts' engine's
+    place; ``test_federated_shapes_exec`` compares the sorted rows on each."""
+
+    @pytest.fixture
+    def sources(self, monkeypatch: pytest.MonkeyPatch) -> Callable[..., str]:
+        pytest.importorskip("ob_flight")
+        monkeypatch.setenv("OBSL_DATABASES", "shop,crm")
+
+        def sort(shop: str, crm: str, query: dict[str, Any], yaml: str = "") -> str:
+            """The combine step's last ``ORDER BY``, the query's."""
+            monkeypatch.setenv("DB_SHOP_TYPE", shop)
+            monkeypatch.setenv("DB_CRM_TYPE", crm)
+            plan = _compile(yaml or model_yaml(federated=True), query).federation
+            assert plan is not None
+            return str(plan.combine_sql).rsplit("ORDER BY ", 1)[-1].split("\n")[0]
+
+        return sort
+
+    @pytest.mark.parametrize(
+        ("shop", "direction", "placed"),
+        [
+            ("mysql", "asc", "ASC NULLS FIRST"),
+            ("mysql", "desc", "DESC NULLS LAST"),
+            ("postgres", "asc", "ASC NULLS LAST"),
+            ("postgres", "desc", "DESC NULLS FIRST"),
+            ("clickhouse", "desc", "DESC NULLS LAST"),
+        ],
+    )
+    def test_the_facts_engine_places_it(
+        self, sources: Callable[..., str], shop: str, direction: str, placed: str
+    ) -> None:
+        sort = sources(
+            shop,
+            "postgres",
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "orderBy": [{"field": "Region", "direction": direction}],
+            },
+        )
+
+        assert sort == f'"leg_1"."Region" {placed}'
+
+    def test_a_place_the_query_says_is_kept(self, sources: Callable[..., str]) -> None:
+        sort = sources(
+            "mysql",
+            "postgres",
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "orderBy": [{"field": "Region", "nulls": "last"}],
+            },
+        )
+
+        assert sort == '"leg_1"."Region" ASC NULLS LAST'
+
+    def test_a_limited_query_naming_no_sort_is_sorted_by_its_dimensions(
+        self, sources: Callable[..., str]
+    ) -> None:
+        sort = sources(
+            "mysql",
+            "postgres",
+            {
+                "select": {"dimensions": ["Region", "Order Date:month"], "measures": ["Revenue"]},
+                "limit": 2,
+            },
+        )
+
+        assert sort == '"leg_1"."Region" ASC NULLS FIRST, "leg_0"."Order Date" ASC NULLS FIRST'
+
+    def test_a_limited_query_at_two_grains_is_sorted_by_each(
+        self, sources: Callable[..., str]
+    ) -> None:
+        sort = sources(
+            "mysql",
+            "postgres",
+            {
+                "select": {
+                    "dimensions": ["Order Date:month", "Order Date:year", "Region"],
+                    "measures": ["Revenue"],
+                },
+                "limit": 1,
+            },
+        )
+
+        assert sort == (
+            '"Order Date" ASC NULLS FIRST, "Order Date:year" ASC NULLS FIRST, '
+            '"leg_1"."Region" ASC NULLS FIRST'
+        )
+
+    def test_limited_raw_rows_are_sorted_by_their_fields(self, sources: Callable[..., str]) -> None:
+        sort = sources(
+            "mysql",
+            "postgres",
+            {"select": {"fields": ["Orders.Order ID", "Customers.Region"]}, "limit": 2},
+        )
+
+        assert sort == (
+            '"leg_0"."Orders.Order ID" ASC NULLS FIRST, "leg_1"."Customers.Region" ASC NULLS FIRST'
+        )
+
+    def test_independent_facts_on_one_engine_place_it_as_it_does(
+        self, sources: Callable[..., str]
+    ) -> None:
+        sort = sources(
+            "mysql",
+            "mysql",
+            {
+                "select": {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS},
+                "orderBy": [{"field": "Region"}],
+            },
+            independent_model(True),
+        )
+
+        assert sort == '"__parts"."Region" ASC NULLS FIRST'
+
+    def test_independent_facts_on_engines_placing_it_apart_leave_it_to_duckdb(
+        self, sources: Callable[..., str]
+    ) -> None:
+        sort = sources(
+            "mysql",
+            "postgres",
+            {
+                "select": {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS},
+                "orderBy": [{"field": "Region"}],
+            },
+            independent_model(True),
+        )
+
+        assert sort == '"__parts"."Region" ASC'
+
+    def test_under_a_rollup_it_is_first_as_on_one_database(
+        self, sources: Callable[..., str]
+    ) -> None:
+        sort = sources(
+            "postgres",
+            "postgres",
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "orderBy": [{"field": "Region"}],
+                "grouping": "rollup",
+            },
+        )
+
+        assert sort.endswith("ASC NULLS FIRST")

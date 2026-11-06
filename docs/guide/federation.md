@@ -563,6 +563,7 @@ stay one fact leg, which unions them itself.
 | `usePathNames` | a path between two sources is the edge the combine step joins; one within a source is the leg's own join, so an order's support employee beside the orders reads the shop's employees by the support key |
 | Coalesce dimensions | the legs return each member, and the combine step coalesces them |
 | `dimensionsExclude` | over one group of dimensions, the pairs the joined rows hold minus themselves, none, as on one database; dimensions of two roots are refused (they are joined from two facts) |
+| `orderBy` without `nulls` | NULL is sorted where the facts' database sorts it: PostgreSQL, Snowflake and Dremio put it last when sorting ascending and first when sorting descending, MySQL, BigQuery and Databricks the other way round, DuckDB and ClickHouse last either way. A query with `limit` and no `orderBy` is sorted by its dimensions (in raw mode, its fields), as on one database, so the same rows are kept |
 
 ## Role-playing dimensions
 
@@ -1223,7 +1224,7 @@ one database's. Most have a setting that makes them agree.
 
 | What you may see | Why | What to do |
 |---|---|---|
-| Rows with NULL sorted last, where your database sorts them first | OBSL sorts in DuckDB, which puts NULL last. PostgreSQL puts NULL first when sorting descending, MySQL when sorting ascending | Set `nulls: first` or `nulls: last` in `orderBy` |
+| Rows with NULL sorted last, where one of your databases sorts them first | The query has [measures of independent facts](#measures-of-independent-facts) on two databases that sort NULL differently: orders on MySQL, which puts NULL first when sorting ascending, beside tickets on PostgreSQL, which puts it last. OBSL then sorts as DuckDB does, NULL last either way | Set `nulls: first` or `nulls: last` in `orderBy` |
 | A window metric ranks a NULL value last, where your database ranks it first | DuckDB computes the rank, and puts NULL last when sorting descending, as BigQuery, ClickHouse, Databricks and MySQL do; PostgreSQL, Snowflake and Dremio put it first. Beside independent facts, a month of tickets alone has no revenue to rank | Rank a measure that is never NULL, such as a count |
 | Text sorted differently | DuckDB sorts text by its bytes, so `'C'` comes before `'b'`. Most databases put `'b'` first. The same goes for `having`, window metrics, a `min` or `max` computed from rows, and filters such as `gt` or `between` that mix both databases (on MySQL text, those filters run in MySQL) | Sort by a code or a number, or sort in your tool |
 | A row added while the query runs, counted in one database but not in the other | Each database is read at its own moment. There is no common snapshot | Query changing data at quiet times |

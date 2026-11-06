@@ -534,9 +534,10 @@ def resolve_order_by_field(
         return ColumnRef(name=field_name)
 
     for dim in ctx.result.dimensions:
-        if dim.name == field_name and dim.name != dim.dimension:
-            # A second grain of a dimension the query selects twice: its own
-            # column, which the date column would name the first grain of.
+        if dim.name == field_name and (dim.name != dim.dimension or dim.grain is not None):
+            # A dimension at a time grain sorts by its own column, the date
+            # truncated, not by the date column, which a second grain of it
+            # reads too (``Order Date:year`` beside ``Order Date``).
             return ColumnRef(name=dim.name)
         if dim.name == field_name:
             # Use make_column_expr so computed columns (which have empty

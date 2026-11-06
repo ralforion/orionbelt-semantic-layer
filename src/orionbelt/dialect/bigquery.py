@@ -203,6 +203,8 @@ class BigQueryDialect(Dialect):
     #: map to 10 or 100 groups in 1.5-3.1 s.
     pushes_key_maps = True
     max_statement_bytes = 1024 * 1024
+    nulls_last_ascending = False
+    nulls_last_descending = True
 
     @property
     def name(self) -> str:
