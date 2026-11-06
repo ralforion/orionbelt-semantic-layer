@@ -3053,21 +3053,55 @@ class TestGrainAndFilterContext:
         assert _run_on(files, model_yaml(federated=True), query) == single
         assert single
 
-    def test_a_column_a_measure_is_named_after_stays_refused(self) -> None:
-        """A measure ``Orders.Amount``: the column's filter gets no dimension of
-        that name, which the measure has, and is refused as before."""
-        extra = _over_amount("Orders.Amount", "resultType: decimal")
-        query = {
-            "select": {"dimensions": ["Region"], "measures": ["Orders.Amount"]},
-            "where": [{"field": "Orders.Amount", "op": ">", "value": 50}],
-        }
+    @pytest.mark.parametrize(
+        ("model", "where", "measures"),
+        [
+            (
+                {"extra": _over_amount("Orders.Amount", "resultType: decimal")},
+                [{"field": "Orders.Amount", "op": ">", "value": 50}],
+                ["Revenue"],
+            ),
+            (
+                {
+                    "extra": _over_amount("Orders.Amount", "resultType: decimal")
+                    + _over_amount("Any Amount", "filterContext: {exclude: [Orders.Amount]}")
+                },
+                [
+                    {"field": "Orders.Amount", "op": ">", "value": 50},
+                    {"field": "Customers.Region", "op": "=", "value": "EU"},
+                ],
+                ["Any Amount", "Revenue"],
+            ),
+            (
+                {"order_columns": "      AMOUNT: {code: amount, abstractType: decimal}\n"},
+                [
+                    {
+                        "logic": "or",
+                        "filters": [
+                            {"field": "Orders.Amount", "op": ">", "value": 50},
+                            {"field": "Orders.AMOUNT", "op": "<", "value": 10},
+                            {"field": "Customers.Region", "op": "=", "value": "US"},
+                        ],
+                    }
+                ],
+                ["Revenue"],
+            ),
+        ],
+        ids=["named_as_a_measure", "beside_another_column", "another_without_its_case"],
+    )
+    def test_a_column_whose_name_is_taken_stays_refused(
+        self, model: dict[str, str], where: list[Any], measures: list[str]
+    ) -> None:
+        """A measure ``Orders.Amount``, or a column ``AMOUNT`` beside ``Amount``,
+        which DuckDB names alike: no column becomes a dimension, and the query
+        is refused as without them, also beside a filter on another column."""
+        query = {"select": {"dimensions": ["Region"], "measures": measures}, "where": where}
 
         with pytest.raises(ResolutionError) as caught:
-            _compile(model_yaml(federated=True, extra=extra), query)
+            _compile(model_yaml(federated=True, **model), query)
 
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
-        assert "The filter on 'Orders.Amount' is not on a dimension" in error.message
 
     def test_an_included_filter_on_a_column_filters_as_on_one_database(
         self, files: dict[str, str]

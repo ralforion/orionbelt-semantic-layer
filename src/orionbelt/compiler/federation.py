@@ -752,8 +752,9 @@ def columns_as_dimensions(query: QueryObject, model: SemanticModel) -> SemanticM
     one, named as the filter names it: the filter, a filter context keeping
     or leaving it out by that name, an ``exists`` on the column and the
     errors read it unchanged. Not where a dimension, measure, metric or
-    column has that name (a measure may be named ``Orders.Amount``): such a
-    filter stays refused.
+    column has that name (a measure may be named ``Orders.Amount``), nor
+    another such column without its case: then no column becomes one, and
+    the query is refused as it was.
     """
 
     def fields(item: QueryFilterItem) -> list[str]:
@@ -773,8 +774,16 @@ def columns_as_dimensions(query: QueryObject, model: SemanticModel) -> SemanticM
     for field in named:
         obj, _, column = (part.strip() for part in field.partition("."))
         declared = model.data_objects.get(obj)
-        if field.casefold() in taken or declared is None or column not in declared.columns:
+        if field in model.dimensions or field in added:
             continue
+        if declared is None or column not in declared.columns:
+            continue
+        if field.casefold() in taken:
+            # Its name is taken, by the model or by another such column
+            # without its case (``Orders.AMOUNT``): the query is planned as
+            # without any, and refused as it was.
+            return None
+        taken.add(field.casefold())
         added[field] = Dimension(
             name=field,
             view=obj,
