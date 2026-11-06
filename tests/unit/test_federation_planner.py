@@ -3053,121 +3053,21 @@ class TestGrainAndFilterContext:
         assert _run_on(files, model_yaml(federated=True), query) == single
         assert single
 
-    def test_a_measure_named_as_the_column_keeps_its_sum(self, tmp_path: Any) -> None:
-        """A measure ``Orders.Amount`` beside a filter on that column, in an ``or``
-        across sources: the fact leg returned the column and the sum under one
-        name, and the combine step read one order's 120.75 of the two."""
-        orders = (
-            "CREATE TABLE orders AS SELECT * FROM (VALUES"
-            " (1, 10, DATE '2024-01-05', 120.75), (2, 10, DATE '2024-01-20', 120.75),"
-            " (3, 11, DATE '2024-02-03', 7.00)) t(order_id, customer_id, order_date, amount)"
-        )
-        paths = {name: str(tmp_path / f"{name}.duckdb") for name in ("all", "shop", "crm")}
-        for name, statements in (
-            ("all", [orders, CUSTOMERS]),
-            ("shop", [orders]),
-            ("crm", [CUSTOMERS]),
-        ):
-            con = duckdb.connect(paths[name])
-            for statement in statements:
-                con.execute(statement)
-            con.close()
+    def test_a_column_a_measure_is_named_after_stays_refused(self) -> None:
+        """A measure ``Orders.Amount``: the column's filter gets no dimension of
+        that name, which the measure has, and is refused as before."""
         extra = _over_amount("Orders.Amount", "resultType: decimal")
         query = {
             "select": {"dimensions": ["Region"], "measures": ["Orders.Amount"]},
-            "where": [
-                {
-                    "logic": "or",
-                    "filters": [
-                        {"field": "Customers.Region", "op": "=", "value": "US"},
-                        {"field": "Orders.Amount", "op": ">", "value": 50},
-                    ],
-                }
-            ],
+            "where": [{"field": "Orders.Amount", "op": ">", "value": 50}],
         }
 
-        single = _run_on(paths, model_yaml(federated=False, extra=extra), query)
+        with pytest.raises(ResolutionError) as caught:
+            _compile(model_yaml(federated=True, extra=extra), query)
 
-        assert _run_on(paths, model_yaml(federated=True, extra=extra), query) == single
-        assert single == [("EU", Decimal("241.50")), ("US", Decimal("7.00"))]
-
-    @pytest.mark.parametrize("reversed_order", [False, True], ids=["as_written", "reversed"])
-    def test_a_moved_name_is_no_column_a_filter_names(self, reversed_order: bool) -> None:
-        """A measure ``Orders.Amount`` moves that column's dimension aside, past
-        ``_Orders.Amount``, a column of ``_Orders`` the query filters too: the
-        two filters keep a dimension each, in either order."""
-        from orionbelt.compiler.federation import columns_as_dimensions
-        from orionbelt.parser.loader import TrackedLoader
-        from orionbelt.parser.resolver import ReferenceResolver
-
-        yaml = model_yaml(
-            federated=True, extra=_over_amount("Orders.Amount", "resultType: decimal")
-        )
-        yaml = yaml.replace(
-            "  Customers:\n",
-            "  _Orders:\n    code: orders\n    dataSource: shop\n    columns:\n"
-            "      Amount: {code: amount, abstractType: decimal}\n  Customers:\n",
-            1,
-        )
-        raw, source_map = TrackedLoader().load_string(yaml)
-        model, validation = ReferenceResolver().resolve(raw, source_map)
-        assert validation.valid
-        where = [
-            {"field": "Orders.Amount", "op": ">", "value": 50},
-            {"field": "_Orders.Amount", "op": "<", "value": 100},
-        ]
-        query = QueryObject.model_validate(
-            {"select": {"measures": ["Revenue"]}, "where": where[::-1] if reversed_order else where}
-        )
-
-        result = columns_as_dimensions(query, model)
-
-        assert result is not None
-        rewritten, extended = result
-        fields = sorted(getattr(f, "field", "") for f in rewritten.where)
-        assert fields == ["_Orders.Amount", "__Orders.Amount"]
-        assert extended.dimensions["__Orders.Amount"].view == "Orders"
-        assert extended.dimensions["_Orders.Amount"].view == "_Orders"
-
-    @pytest.mark.parametrize("mode", ["exclude", "keepOnly"])
-    def test_an_exists_on_a_renamed_column_keeps_its_context(
-        self, subquery_files: dict[str, str], mode: str
-    ) -> None:
-        """A measure named ``Customers.Customer ID`` renames the column's
-        dimension; the ``exists`` filter on the column keeps its name, which
-        the context names too: left out, it is refused as any such ``exists``
-        is; kept, the query runs."""
-        extra = (
-            "  Customers.Customer ID: {columns: [{dataObject: Customers, column: Customer ID}],"
-            " aggregation: count, resultType: int}\n"
-            + _over_amount(
-                "Contextual Revenue", f"filterContext: {{{mode}: [Customers.Customer ID]}}"
-            )
-        )
-        query = {
-            "select": {"dimensions": ["Region"], "measures": ["Contextual Revenue", "Revenue"]},
-            "where": [
-                {"field": "Customers.Customer ID", "op": ">", "value": 0},
-                {
-                    "field": "Customers.Customer ID",
-                    "op": "exists",
-                    "subquery": {"dataObject": "Tickets"},
-                },
-                {"field": "Order Date", "op": ">=", "value": "2024-02-01"},
-            ],
-        }
-        if mode == "exclude":
-            with pytest.raises(ResolutionError) as caught:
-                _compile(subquery_model(True, extra=extra), query)
-            (error,) = caught.value.errors
-            assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
-            assert "filterContext leaves out" in error.message
-            return
-
-        single = _run_on(subquery_files, subquery_model(False, extra=extra), query)
-
-        assert _run_on(subquery_files, subquery_model(True, extra=extra), query) == single
-        assert single
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+        assert "The filter on 'Orders.Amount' is not on a dimension" in error.message
 
     def test_an_included_filter_on_a_column_filters_as_on_one_database(
         self, files: dict[str, str]

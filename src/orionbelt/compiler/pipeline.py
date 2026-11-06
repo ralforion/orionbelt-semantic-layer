@@ -395,7 +395,7 @@ class CompilationPipeline:
         if is_federated(resolved, query, model):
             with_columns = columns_as_dimensions(query, declared)
             if with_columns is not None:
-                return self._compile(*with_columns, dialect_name)
+                return self._compile(query, with_columns, dialect_name)
             return self._compile_federated(query, model, dialect_name, resolved)
         # A query on one source of a model reading several is that source's to
         # run, so it is written in that source's dialect.
