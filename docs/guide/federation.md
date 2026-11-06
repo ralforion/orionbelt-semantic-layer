@@ -530,8 +530,19 @@ GROUP BY ALL
   whose date the query filters, which one database reads before the
   filter's first period where each part kept only the periods it admits;
   one whose time dimension the query does not select; one over a
-  `windowSpan` of rows; any of them beside `rollup`, `cube` or one dimension
-  at two grains; and reaggregate metrics.
+  `windowSpan` of rows; and any of them beside `rollup`, `cube` or one
+  dimension at two grains.
+- A [reaggregate metric](#reaggregate-metrics) is computed in the part of the
+  fact whose measure it reads: the average revenue per customer, by region,
+  beside the tickets. A group with tickets but no orders shows no value for
+  it, or 0 for a count, as on one database. A metric across the facts can read it (the average revenue per
+  customer divided by the tickets). As on one database, a query grouping by a
+  dimension the fact does not reach, or filtering on one, is refused: the
+  tickets' severity, beside the revenue per customer
+  (`UNREACHABLE_REQUIRED_OBJECT`, `UNREACHABLE_FILTER_OBJECT`). Refused
+  across databases (`FEDERATION_UNSUPPORTED_QUERY`): a reaggregate whose
+  `having` keeps customers by the other fact's measure, the revenue per
+  customer of customers with tickets.
 - A measure of an object both facts join (the number of customers) works
   where one database counts that object's rows alone: by region. By order
   month, one database counts the customers through the orders, and the query
@@ -1120,7 +1131,7 @@ The options: `rollup` or `cube` together with a measure with `total`,
 measure that reads both tables; a running total or rolling window when the
 query filters its date or does not select it, or over a `windowSpan`; a
 running total or window metric together with `rollup`, `cube` or two grains
-of one dimension; a reaggregate metric; a coalesce dimension. A period
+of one dimension; a coalesce dimension. A period
 comparison next to measures of both tables, and `dimensionsExclude` with
 measures, are refused on one database too.
 

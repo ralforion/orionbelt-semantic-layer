@@ -89,6 +89,7 @@ from orionbelt.compiler.null_rejection import is_null_without
 from orionbelt.compiler.raw_resolution import raw_field_aliases
 from orionbelt.compiler.resolution import (
     LegZone,
+    QueryResolver,
     ResolutionError,
     ResolvedDimension,
     ResolvedMeasure,
@@ -109,6 +110,7 @@ from orionbelt.compiler.type_resolver import (
     partial_squares,
     partial_sums,
     resolve_measure_cast_type,
+    resolve_metric_data_type,
 )
 from orionbelt.dialect.base import Dialect
 from orionbelt.dialect.registry import DialectRegistry
@@ -151,13 +153,14 @@ from orionbelt.models.semantic import (
     MetricType,
     ModelFilter,
     ModelSettings,
+    ReaggregateAggType,
     ReaggregatePopulation,
     SemanticModel,
     TimeGrain,
     WithinGroup,
 )
 from orionbelt.models.synthesis import synthesize_count_measure
-from orionbelt.models.types import DecimalType
+from orionbelt.models.types import DecimalType, SimpleType
 from orionbelt.models.warnings import WarningCode, warning
 
 COMBINE_DIALECT = "duckdb"
@@ -2130,6 +2133,14 @@ def _plan_parts(
     two_grains = len(set(dimensions)) != len(dimensions)
     measures = planner.atomic_measures()
     effective = model.effective_measures
+    # A part computed each reaggregate metric (:meth:`_Planner.parts`): the
+    # union holds it as a measure's value.
+    reaggregates = {
+        name: _part_reaggregate(model, name) for name in _reaggregates(planner.resolved, model)
+    }
+    counts = _counts(model, measures) | {
+        name for name in reaggregates if model.metrics[name].aggregation is ReaggregateAggType.COUNT
+    }
     # Under a rollup or cube, each row's grouping set is its flags (:func:`_in_grouping_sets`).
     flags = [grouping_flag_alias(d.name) for d in shown] if query.grouping else []
     columns = [
@@ -2137,6 +2148,10 @@ def _plan_parts(
         *(
             DataObjectColumn(name=m, code=m, abstract_type=effective[m].result_type)
             for m in sorted(measures)
+        ),
+        *(
+            DataObjectColumn(name=m, code=m, abstract_type=reaggregates[m].result_type)
+            for m in sorted(reaggregates)
         ),
         *(DataObjectColumn(name=f, code=f, abstract_type=DataType.INT) for f in flags),
     ]
@@ -2174,7 +2189,10 @@ def _plan_parts(
                 for f in flags
             },
         },
-        measures={m: _every_grain(_part_measure(model, m), inner, shown) for m in measures},
+        measures={
+            **{m: _every_grain(_part_measure(model, m), inner, shown) for m in measures},
+            **reaggregates,
+        },
         metrics={
             n: m
             for n, m in model.metrics.items()
@@ -2213,7 +2231,7 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
-        with fill_bounds(bounds), read_as_counts(_counts(model, measures)):
+        with fill_bounds(bounds), read_as_counts(counts):
             sql = compile_leg(parts_query, parts_model, COMBINE_DIALECT)
     else:
         # Each row is a group of the union by the dimensions, each read from
@@ -2238,7 +2256,7 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
-        with fill_bounds(bounds), read_as_counts(_counts(model, measures)):
+        with fill_bounds(bounds), read_as_counts(counts):
             sql = compile_leg(grouped, parts_model, COMBINE_DIALECT)
         sql = _returned(
             sql,
@@ -2471,6 +2489,38 @@ def _part_measure(model: SemanticModel, name: str) -> Measure:
         format=measure.format,
         total=measure.total,
         grain=measure.grain,
+    )
+
+
+def _part_reaggregate(model: SemanticModel, name: str) -> Measure:
+    """Reaggregate metric *name* as the combine step takes it from the union of the parts.
+
+    The part of its fact computed it, typed and cast, in each group of that
+    fact: its ``MAX`` is that value, as a measure's (:func:`_part_measure`).
+    A group of another fact holds none, and reads NULL, as one database's
+    join of the metric's groups to the union's gives it; a count reads 0,
+    as there (:func:`~orionbelt.compiler.count_zero.read_as_counts`), in the
+    type the metric declares. The 0 meets the value inside that type's cast,
+    where the part gave the value the type already: a count declared
+    ``string`` reads ``'0'``, as one database's cast 0 does.
+    """
+    metric = model.metrics[name]
+    measure = model.effective_measures.get(metric.measure or "")
+    zero: int | str | None = None
+    if metric.aggregation is ReaggregateAggType.COUNT:
+        result_type = DataType.INT
+        text = resolve_metric_data_type(metric, model.settings) == SimpleType(name="string")
+        zero = "0" if text else 0
+    else:
+        result_type = measure.result_type if measure is not None else DataType.DECIMAL
+    return Measure(
+        name=name,
+        columns=[DataColumnRef(view=_PARTS_RELATION, column=name)],
+        aggregation=AggregationType.MAX,
+        result_type=result_type,
+        data_type=metric.data_type,
+        default_value=zero,
+        format=metric.format,
     )
 
 
@@ -2875,6 +2925,40 @@ class _Planner:
                     hint="Query the measure separately.",
                 )
             roots[root].append(name)
+        # A reaggregate metric is a query of its own on one database, whose
+        # groups it joins to the union's (``reaggregate_wrap``): it is computed
+        # in the part of the fact whose measures it reads, which joins it to
+        # that fact's groups. One another metric reads is in none yet. Its
+        # first stage reads its measure, its ``per`` dimensions and the
+        # measures of its ``having``, which that fact must all reach: a stage
+        # over several facts is refused.
+        placed = {name: root for root, names in roots.items() for name in names}
+        for name in _reaggregates(self.resolved, self.model):
+            metric = self.model.metrics[name]
+            leaves = set(metric_leaf_measures(self.model, name))
+            for h in metric.having:
+                leaves |= (
+                    metric_leaf_measures(self.model, h.field)
+                    if (h.field in self.model.metrics)
+                    else {h.field}
+                )
+            objects = {
+                o for leaf in leaves if leaf in effective for o in effective[leaf].source_objects
+            }
+            for entry in metric.per:
+                objects |= self._dimension_objects(reaggregate_per_ref(self.model, entry).name)
+            root = placed.get(name) or next((r for r in sorted(roots) if objects <= reach(r)), None)
+            if root is None or not objects <= reach(root):
+                raise self.refuse(
+                    "UNSUPPORTED_QUERY",
+                    f"Measures of independent facts on several data sources are combined, "
+                    f"but metric '{name}' reaggregates, or keeps by its having, measures of "
+                    "several of the facts, which is not supported yet",
+                    hint="Reaggregate, and keep by, the measures of one fact.",
+                )
+            if name not in placed:
+                roots[root].append(name)
+            self.check_stage_one(name, reach(root))
         self.check_parts(across)
         parts = []
         for root, measures in sorted(roots.items()):
@@ -2932,6 +3016,53 @@ class _Planner:
             parts.append(part)
         return parts
 
+    def check_stage_one(self, name: str, fact: set[str]) -> None:
+        """Raise one database's error where reaggregate metric *name*'s first stage has one.
+
+        One database groups the first stage by every dimension of the query
+        and filters it by every filter (``reaggregate_wrap``), which its fact,
+        reaching *fact*, may not reach: its own resolution refuses that, as a
+        query of the fact's measures would. The part of the fact leaves those
+        out, and computed the metric anyway.
+        """
+        outside = any(
+            not self._dimension_objects(DimensionRef.parse(d).name) <= fact
+            for d in _dimension_refs(self.query)
+        ) or any(not self._item_objects(item) <= fact for item in self.query.where)
+        if not outside:
+            return
+        metric = self.model.metrics[name]
+        stage_one = QueryObject(
+            select=QuerySelect(
+                dimensions=[*_dimension_refs(self.query), *metric.per],
+                measures=[metric.measure or ""],
+            ),
+            where=list(self.query.where),
+            use_path_names=list(self.query.use_path_names),
+            allow_fan_out=self.query.allow_fan_out,
+        )
+        try:
+            QueryResolver().resolve(stage_one, self.model)
+        except ResolutionError as exc:
+            raise ResolutionError(
+                [
+                    e.model_copy(
+                        update={
+                            "message": f"In the first stage of reaggregating '{metric.measure}' "
+                            f"per {metric.per}: {e.message}"
+                        }
+                    )
+                    for e in exc.errors
+                ]
+            ) from exc
+        raise self.refuse(
+            "UNSUPPORTED_QUERY",
+            f"Measures of independent facts on several data sources are combined, but "
+            f"metric '{name}' reaggregates measures of a fact that does not reach every "
+            "dimension and filter of the query, which is not supported yet",
+            hint="Query the metric beside the dimensions and filters its fact reaches.",
+        )
+
     def check_parts(self, across: list[ResolvedMeasure]) -> None:
         """Refuse what a query split by fact (:meth:`parts`) does not compute yet.
 
@@ -2983,10 +3114,6 @@ class _Planner:
                 "the query selects one dimension at two grains beside a rollup or cube",
             ),
             (bool(self.resolved.anchored_measures), "a measure is anchored to another fact"),
-            (
-                any(m.is_reaggregate for m in self.resolved.measures),
-                "a metric reaggregates",
-            ),
             (
                 periods and (self.query.grouping is not None or two_grains),
                 "a metric reads values across periods beside a rollup, a cube or one "
