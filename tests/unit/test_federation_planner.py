@@ -3022,6 +3022,24 @@ class TestGrainAndFilterContext:
         assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
         assert "filterContext leaves out" in error.message
 
+    def test_a_filter_on_a_column_the_context_leaves_out_stays_out(
+        self, files: dict[str, str]
+    ) -> None:
+        """The dimension takes the filter's name, which the context names too."""
+        extra = _over_amount("Revenue Any Region", "filterContext: {exclude: [Customers.Region]}")
+        query = {
+            "select": {
+                "dimensions": ["Order Date:month"],
+                "measures": ["Revenue Any Region", "Revenue"],
+            },
+            "where": [{"field": "Customers.Region", "op": "=", "value": "EU"}],
+        }
+
+        single = _run_on(files, model_yaml(federated=False, extra=extra), query)
+
+        assert _run_on(files, model_yaml(federated=True, extra=extra), query) == single
+        assert any(any_region != revenue for _, any_region, revenue in single)
+
     def test_an_included_filter_on_a_column_filters_as_on_one_database(
         self, files: dict[str, str]
     ) -> None:
@@ -7421,8 +7439,9 @@ class TestDimensionSourceJoins:
                 }
             ],
             [{"field": "Customers.Region", "op": "is_null"}],
+            [{"field": "Orders.Order Date", "op": ">=", "value": "2024-02-01"}],
         ],
-        ids=["of_the_facts", "of_the_customers", "in_an_or_across_sources", "is_null"],
+        ids=["of_the_facts", "of_the_customers", "in_an_or_across_sources", "is_null", "a_date"],
     )
     def test_a_filter_on_a_column_filters_as_on_one_database(
         self, island_files: dict[str, dict[str, str]], where: list[Any]
