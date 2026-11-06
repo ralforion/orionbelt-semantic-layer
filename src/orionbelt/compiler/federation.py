@@ -754,9 +754,10 @@ def columns_as_dimensions(
     one, named as the filter names it, which its errors name too, where no
     dimension, measure, metric or column has the name (a measure may be named
     ``Orders.Amount``: the dimension is ``_Orders.Amount``); the filters
-    naming the column, and the filter contexts that keep or leave them out,
-    name the dimension. An ``exists`` subquery's own filters run in its leg
-    as written.
+    naming the column name the dimension, and the filter contexts that keep
+    or leave them out name both, since an ``exists`` filter on the column
+    keeps its name. An ``exists`` subquery's own filters run in its leg as
+    written.
     """
 
     def fields(item: QueryFilterItem) -> list[str]:
@@ -801,13 +802,18 @@ def columns_as_dimensions(
             return item
         return item.model_copy(update={"field": hidden[item.field]})
 
+    def both(names: list[str]) -> list[str]:
+        # An ``exists`` filter on the column keeps its name, the others take
+        # the dimension's: a context keeping or leaving it out names both.
+        return list(dict.fromkeys(n for name in names for n in (name, hidden.get(name, name))))
+
     def in_context(measure: Measure) -> Measure:
         context = measure.filter_context
         if context is None:
             return measure
         update = {
-            "exclude": [hidden.get(f, f) for f in context.exclude],
-            "keep_only": [hidden.get(f, f) for f in context.keep_only],
+            "exclude": both(context.exclude),
+            "keep_only": both(context.keep_only),
             "include": [
                 i.model_copy(update={"field": hidden.get(i.field, i.field)})
                 for i in context.include

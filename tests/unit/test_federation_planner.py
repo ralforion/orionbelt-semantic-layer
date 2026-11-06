@@ -3091,6 +3091,46 @@ class TestGrainAndFilterContext:
         assert _run_on(paths, model_yaml(federated=True, extra=extra), query) == single
         assert single == [("EU", Decimal("241.50")), ("US", Decimal("7.00"))]
 
+    @pytest.mark.parametrize("mode", ["exclude", "keepOnly"])
+    def test_an_exists_on_a_renamed_column_keeps_its_context(
+        self, subquery_files: dict[str, str], mode: str
+    ) -> None:
+        """A measure named ``Customers.Customer ID`` renames the column's
+        dimension; the ``exists`` filter on the column keeps its name, which
+        the context names too: left out, it is refused as any such ``exists``
+        is; kept, the query runs."""
+        extra = (
+            "  Customers.Customer ID: {columns: [{dataObject: Customers, column: Customer ID}],"
+            " aggregation: count, resultType: int}\n"
+            + _over_amount(
+                "Contextual Revenue", f"filterContext: {{{mode}: [Customers.Customer ID]}}"
+            )
+        )
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Contextual Revenue", "Revenue"]},
+            "where": [
+                {"field": "Customers.Customer ID", "op": ">", "value": 0},
+                {
+                    "field": "Customers.Customer ID",
+                    "op": "exists",
+                    "subquery": {"dataObject": "Tickets"},
+                },
+                {"field": "Order Date", "op": ">=", "value": "2024-02-01"},
+            ],
+        }
+        if mode == "exclude":
+            with pytest.raises(ResolutionError) as caught:
+                _compile(subquery_model(True, extra=extra), query)
+            (error,) = caught.value.errors
+            assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+            assert "filterContext leaves out" in error.message
+            return
+
+        single = _run_on(subquery_files, subquery_model(False, extra=extra), query)
+
+        assert _run_on(subquery_files, subquery_model(True, extra=extra), query) == single
+        assert single
+
     def test_an_included_filter_on_a_column_filters_as_on_one_database(
         self, files: dict[str, str]
     ) -> None:
