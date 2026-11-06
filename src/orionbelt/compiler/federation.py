@@ -741,17 +741,22 @@ def is_federated(resolved: ResolvedQuery, query: QueryObject, model: SemanticMod
     return len({sources.get(o) for o in read if o in sources}) > 1
 
 
-def columns_as_dimensions(query: QueryObject, model: SemanticModel) -> SemanticModel | None:
-    """*model* with a dimension for each column a filter names, or ``None`` for none.
+def columns_as_dimensions(
+    query: QueryObject, model: SemanticModel
+) -> tuple[QueryObject, SemanticModel] | None:
+    """*query* and *model* with a dimension for each column a filter names, or ``None``.
 
     A ``where`` filter, or a measure's ``filterContext`` include, may name a
     column of a data object (``Customers.Region``) where it names no
     dimension. One database compares the column as it compares a dimension
     over it, the same expression in the same time zone. The federation
     planner places a filter by its dimension, so each such column becomes
-    one, named as the filter names it: the filter, and a filter context that
-    keeps or leaves it out by that name, read it unchanged. An ``exists``
-    subquery's own filters run in its leg as written.
+    one, named as the filter names it, which its errors name too, where no
+    dimension, measure, metric or column has the name (a measure may be named
+    ``Orders.Amount``: the dimension is ``_Orders.Amount``); the filters
+    naming the column, and the filter contexts that keep or leave them out,
+    name the dimension. An ``exists`` subquery's own filters run in its leg
+    as written.
     """
 
     def fields(item: QueryFilterItem) -> list[str]:
@@ -766,21 +771,57 @@ def columns_as_dimensions(query: QueryObject, model: SemanticModel) -> SemanticM
         if measure.filter_context is not None
         for item in measure.filter_context.include
     ]
+    taken = _reserved_names(model)
+    hidden: dict[str, str] = {}
     added: dict[str, Dimension] = {}
     for field in named:
         obj, _, column = (part.strip() for part in field.partition("."))
         declared = model.data_objects.get(obj)
-        if field in model.dimensions or declared is None or column not in declared.columns:
+        if (
+            field in hidden
+            or field in model.dimensions
+            or declared is None
+            or column not in declared.columns
+        ):
             continue
-        added[field] = Dimension(
-            name=field,
+        hidden[field] = _unused(field, taken)
+        added[hidden[field]] = Dimension(
+            name=hidden[field],
             view=obj,
             column=column,
             result_type=declared.columns[column].abstract_type,
         )
-    if not added:
+    if not hidden:
         return None
-    return model.model_copy(update={"dimensions": {**model.dimensions, **added}})
+
+    def renamed(item: QueryFilterItem) -> QueryFilterItem:
+        if isinstance(item, QueryFilterGroup):
+            return item.model_copy(update={"filters": [renamed(f) for f in item.filters]})
+        if item.subquery is not None or item.field not in hidden:
+            return item
+        return item.model_copy(update={"field": hidden[item.field]})
+
+    def in_context(measure: Measure) -> Measure:
+        context = measure.filter_context
+        if context is None:
+            return measure
+        update = {
+            "exclude": [hidden.get(f, f) for f in context.exclude],
+            "keep_only": [hidden.get(f, f) for f in context.keep_only],
+            "include": [
+                i.model_copy(update={"field": hidden.get(i.field, i.field)})
+                for i in context.include
+            ],
+        }
+        return measure.model_copy(update={"filter_context": context.model_copy(update=update)})
+
+    model = model.model_copy(
+        update={
+            "dimensions": {**model.dimensions, **added},
+            "measures": {name: in_context(m) for name, m in model.measures.items()},
+        }
+    )
+    return query.model_copy(update={"where": [renamed(item) for item in query.where]}), model
 
 
 def query_source(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> str | None:

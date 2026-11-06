@@ -3053,6 +3053,44 @@ class TestGrainAndFilterContext:
         assert _run_on(files, model_yaml(federated=True), query) == single
         assert single
 
+    def test_a_measure_named_as_the_column_keeps_its_sum(self, tmp_path: Any) -> None:
+        """A measure ``Orders.Amount`` beside a filter on that column, in an ``or``
+        across sources: the fact leg returned the column and the sum under one
+        name, and the combine step read one order's 120.75 of the two."""
+        orders = (
+            "CREATE TABLE orders AS SELECT * FROM (VALUES"
+            " (1, 10, DATE '2024-01-05', 120.75), (2, 10, DATE '2024-01-20', 120.75),"
+            " (3, 11, DATE '2024-02-03', 7.00)) t(order_id, customer_id, order_date, amount)"
+        )
+        paths = {name: str(tmp_path / f"{name}.duckdb") for name in ("all", "shop", "crm")}
+        for name, statements in (
+            ("all", [orders, CUSTOMERS]),
+            ("shop", [orders]),
+            ("crm", [CUSTOMERS]),
+        ):
+            con = duckdb.connect(paths[name])
+            for statement in statements:
+                con.execute(statement)
+            con.close()
+        extra = _over_amount("Orders.Amount", "resultType: decimal")
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Orders.Amount"]},
+            "where": [
+                {
+                    "logic": "or",
+                    "filters": [
+                        {"field": "Customers.Region", "op": "=", "value": "US"},
+                        {"field": "Orders.Amount", "op": ">", "value": 50},
+                    ],
+                }
+            ],
+        }
+
+        single = _run_on(paths, model_yaml(federated=False, extra=extra), query)
+
+        assert _run_on(paths, model_yaml(federated=True, extra=extra), query) == single
+        assert single == [("EU", Decimal("241.50")), ("US", Decimal("7.00"))]
+
     def test_an_included_filter_on_a_column_filters_as_on_one_database(
         self, files: dict[str, str]
     ) -> None:
