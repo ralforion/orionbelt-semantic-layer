@@ -880,10 +880,22 @@ def plan_federated(
     rows_for = planner.check_measures(islands[fact])
     leg_filters, combine_filters, absent = planner.place_filters(islands, fact)
     planner.check_leg_parent_rows(leg_filters.get(fact, []), islands[fact])
+    # Every column a leg gets that the model does not declare takes a name no
+    # dimension, measure or metric has, nor another such column: a leg or the
+    # combine model reading two columns of one name returned one for both.
+    # Compared without case, as DuckDB compares identifiers, quoted or not.
+    taken = _reserved_names(model)
+    combine_filters, by_keys = planner.tested_by_keys(combine_filters, islands, fact, taken)
+    absent += by_keys
     # The fields the combine step filters on: in ``where``, and in the
     # filters a measure's filter context includes.
     filtered = [
-        *(field for item in combine_filters for field in _filter_fields(item)),
+        *(
+            field
+            for item in combine_filters
+            for field in _filter_fields(item)
+            if field not in {k.tested for k in by_keys}
+        ),
         *(item.field for context in planner.contexts() for item in context.include),
         *planner.per(),
     ]
@@ -911,11 +923,6 @@ def plan_federated(
     # each one filters: a measure's filter context names that one.
     static_names: dict[str, list[str]] = {}
 
-    # Every column a leg gets that the model does not declare takes a name no
-    # dimension, measure or metric has, nor another such column: a leg or the
-    # combine model reading two columns of one name returned one for both.
-    # Compared without case, as DuckDB compares identifiers, quoted or not.
-    taken = _reserved_names(model)
     # A combine filter on a dimension the query selects at a time grain reads
     # it at its own grain, from a column of its own: by island, each column's
     # name with the dimension's. Beside a metric across periods, each date
@@ -963,6 +970,11 @@ def plan_federated(
     in_leg: dict[int, dict[str, Expr]] = {}
     outcome_of: dict[tuple[str, str, str], str] = {}
     outcomes: dict[str, list[str]] = {}
+    # An exists the combine step tests by a leg's keys is that test's column,
+    # which a filter context keeping or leaving out its field names too.
+    for by_key in by_keys:
+        assert by_key.tested is not None
+        outcomes.setdefault(by_key.item.field, []).append(by_key.tested)
 
     def outcome(leaf: QueryFilter) -> str | None:
         dimension = model.dimensions.get(leaf.field)
@@ -1565,14 +1577,22 @@ def plan_federated(
             columns={c.name: c for c in key_columns},
             countable=False,
         )
-        combine_filters_static.append(
-            ModelFilter(
-                data_object=leg_name,
+        if missing.tested is not None:
+            combine_dimensions[missing.tested] = Dimension(
+                name=missing.tested,
+                view=leg_name,
                 column=next(iter(keys)),
-                operator=FilterOperator.IS_NULL,
-                enforce=FilterEnforcement.ALWAYS,
+                result_type=key_columns[0].abstract_type,
             )
-        )
+        else:
+            combine_filters_static.append(
+                ModelFilter(
+                    data_object=leg_name,
+                    column=next(iter(keys)),
+                    operator=FilterOperator.IS_NULL,
+                    enforce=FilterEnforcement.ALWAYS,
+                )
+            )
         # Where the combine step counts the rows of the island's object, it
         # adds those no fact row reaches, which the test must reach too: the
         # leg joins that island's leg, on the same keys.
@@ -2506,11 +2526,15 @@ class _Absent:
     The combine step keeps the fact rows whose key is not among those of
     the island's rows the subquery holds for: a leg of its own returns those
     keys (``exists``), and a fact row whose key has no row in the island at
-    all is kept, as one database keeps it.
+    all is kept, as one database keeps it. An ``exists`` or ``nonexists``
+    the combine step runs, in an ``or`` with a condition on another data
+    source, *tested* that leg's key as a dimension of that name instead:
+    set where the subquery holds for the fact row's row there.
     """
 
     island: int
     item: QueryFilter
+    tested: str | None = None
 
 
 class _Planner:
@@ -4151,17 +4175,54 @@ class _Planner:
             ):
                 absent.append(_Absent(owner, item))
                 continue
-            if any(True for _ in _exists_filters([item])):
+            combine.append(item)
+        return legs, combine, absent
+
+    def tested_by_keys(
+        self,
+        items: list[QueryFilterItem],
+        islands: list[set[str]],
+        fact: int,
+        taken: set[str],
+    ) -> tuple[list[QueryFilterItem], list[_Absent]]:
+        """*items* the combine step runs, each ``exists`` in them a test of a leg's keys.
+
+        The combine step runs no subquery. An ``exists`` or ``nonexists`` on a
+        dimension island, in an ``or`` with a condition on another data source
+        or in a group true where its subject is missing, tests the keys a leg of
+        that island returns where its subquery holds (:class:`_Absent`): set for
+        ``exists``, not for ``nonexists``, as a fact row with no row there reads
+        them. One on the fact island is refused: the fact leg's groups are not
+        its rows.
+        """
+        island_of = {o: i for i, island in enumerate(islands) for o in island}
+        held: list[_Absent] = []
+
+        def tested(item: QueryFilterItem) -> QueryFilterItem:
+            if isinstance(item, QueryFilterGroup):
+                return item.model_copy(update={"filters": [tested(f) for f in item.filters]})
+            if item.subquery is None:
+                return item
+            home = island_of.get(_exists_subject(item, self.model) or "")
+            if home is None or home == fact:
                 raise self.refuse(
                     "UNSUPPORTED_FILTER",
-                    "An exists filter that runs after the join (beside a condition on "
-                    "another data source, or in a group true where its subject is "
-                    "missing) is not supported yet",
+                    "An exists filter on the facts' data source that runs after the join "
+                    "(beside a condition on another data source, or in a group true where "
+                    "its subject is missing) is not supported yet",
                     hint="Filter with exists apart, or beside conditions of its subject's "
                     "data source.",
                 )
-            combine.append(item)
-        return legs, combine, absent
+            name = _unused(f"__ex{len(held)}", taken)
+            held.append(_Absent(home, item, name))
+            op = (
+                FilterOperator.IS_NOT_NULL
+                if item.op == FilterOperator.EXISTS
+                else FilterOperator.IS_NULL
+            )
+            return QueryFilter(field=name, op=op)
+
+        return [tested(item) for item in items], held
 
     def _on_axes(self, item: QueryFilterItem, axes: set[tuple[str, str]]) -> bool:
         """Whether *item* reads a time dimension's own column a metric looks back along."""

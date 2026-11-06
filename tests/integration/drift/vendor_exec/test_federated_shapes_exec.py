@@ -243,6 +243,30 @@ BY_REGION = {"dimensions": ["Region"], "measures": ["Revenue"]}
 BY_MONTH_REGION = ["Order Date:month", "Region"]
 QUERIES = {
     "exists": {"select": BY_REGION, "where": [_tickets("exists")]},
+    "an_exists_or_a_condition_on_the_orders": {
+        "select": BY_REGION,
+        "where": [
+            {
+                "logic": "or",
+                "filters": [
+                    _tickets("exists"),
+                    {"field": "Order Date", "op": ">=", "value": "2024-03-01"},
+                ],
+            }
+        ],
+    },
+    "a_nonexists_or_a_condition_on_the_orders": {
+        "select": BY_REGION,
+        "where": [
+            {
+                "logic": "or",
+                "filters": [
+                    _tickets("nonexists"),
+                    {"field": "Order Date", "op": ">=", "value": "2024-03-01"},
+                ],
+            }
+        ],
+    },
     "filters_on_table_columns": {
         "select": BY_REGION,
         "where": [
