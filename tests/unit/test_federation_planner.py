@@ -5505,6 +5505,8 @@ INDEPENDENT_MODEL = {
     '  Average per Ticket: {expression: "{[Revenue per Customer]} / {[Tickets Count]}"}\n'
     "  Customers with Revenue: {type: reaggregate, measure: Revenue, per: [Customer],"
     " aggregation: count}\n"
+    "  Customers with Revenue as Text: {type: reaggregate, measure: Revenue,"
+    " per: [Customer], aggregation: count, dataType: string}\n"
     "  Revenue of Ticketed: {type: reaggregate, measure: Revenue, per: [Customer],"
     " aggregation: avg, having: [{field: Tickets Count, op: '>', value: 0}]}\n",
     "dimension": "  Severity: {dataObject: Tickets, column: Severity, resultType: string}\n"
@@ -5906,6 +5908,30 @@ INDEPENDENT_QUERIES = {
             {"field": "Order Date", "op": "<", "value": "2024-05-01"},
         ],
         "fill": True,
+    },
+    "a_count_reaggregate_declared_as_text": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Customers with Revenue as Text", "Tickets Count"],
+        }
+    },
+    "a_count_reaggregate_declared_as_text_filled": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Customers with Revenue as Text", "Tickets Count"],
+        },
+        "where": [
+            {"field": "Order Date", "op": ">=", "value": "2023-11-01"},
+            {"field": "Order Date", "op": "<", "value": "2024-05-01"},
+        ],
+        "fill": True,
+    },
+    "a_count_reaggregate_declared_as_text_of_no_rows_by_no_dimension": {
+        "select": {
+            "dimensions": [],
+            "measures": ["Customers with Revenue as Text", "Tickets Count"],
+        },
+        "where": [{"field": "Order Date", "op": ">=", "value": "2030-01-01"}],
     },
     "a_reaggregate_in_having_and_order_alone": {
         "select": {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS},

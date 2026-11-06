@@ -110,6 +110,7 @@ from orionbelt.compiler.type_resolver import (
     partial_squares,
     partial_sums,
     resolve_measure_cast_type,
+    resolve_metric_data_type,
 )
 from orionbelt.dialect.base import Dialect
 from orionbelt.dialect.registry import DialectRegistry
@@ -159,7 +160,7 @@ from orionbelt.models.semantic import (
     WithinGroup,
 )
 from orionbelt.models.synthesis import synthesize_count_measure
-from orionbelt.models.types import DecimalType
+from orionbelt.models.types import DecimalType, SimpleType
 from orionbelt.models.warnings import WarningCode, warning
 
 COMBINE_DIALECT = "duckdb"
@@ -2498,13 +2499,18 @@ def _part_reaggregate(model: SemanticModel, name: str) -> Measure:
     fact: its ``MAX`` is that value, as a measure's (:func:`_part_measure`).
     A group of another fact holds none, and reads NULL, as one database's
     join of the metric's groups to the union's gives it; a count reads 0,
-    as there (:func:`~orionbelt.compiler.count_zero.read_as_counts`).
+    as there (:func:`~orionbelt.compiler.count_zero.read_as_counts`), in the
+    type the metric declares. The 0 meets the value inside that type's cast,
+    where the part gave the value the type already: a count declared
+    ``string`` reads ``'0'``, as one database's cast 0 does.
     """
     metric = model.metrics[name]
     measure = model.effective_measures.get(metric.measure or "")
-    counts = metric.aggregation is ReaggregateAggType.COUNT
-    if counts:
+    zero: int | str | None = None
+    if metric.aggregation is ReaggregateAggType.COUNT:
         result_type = DataType.INT
+        text = resolve_metric_data_type(metric, model.settings) == SimpleType(name="string")
+        zero = "0" if text else 0
     else:
         result_type = measure.result_type if measure is not None else DataType.DECIMAL
     return Measure(
@@ -2512,7 +2518,8 @@ def _part_reaggregate(model: SemanticModel, name: str) -> Measure:
         columns=[DataColumnRef(view=_PARTS_RELATION, column=name)],
         aggregation=AggregationType.MAX,
         result_type=result_type,
-        default_value=0 if counts else metric.default_value,
+        data_type=metric.data_type,
+        default_value=zero,
         format=metric.format,
     )
 
