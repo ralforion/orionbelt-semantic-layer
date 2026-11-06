@@ -535,11 +535,14 @@ GROUP BY ALL
 - A [reaggregate metric](#reaggregate-metrics) is computed in the part of the
   fact whose measure it reads: the average revenue per customer, by region,
   beside the tickets. A group with tickets but no orders shows no value for
-  it, as on one database. A metric across the facts can read it (the average revenue per
+  it, or 0 for a count, as on one database. A metric across the facts can read it (the average revenue per
   customer divided by the tickets). As on one database, a query grouping by a
   dimension the fact does not reach, or filtering on one, is refused: the
   tickets' severity, beside the revenue per customer
-  (`UNREACHABLE_REQUIRED_OBJECT`, `UNREACHABLE_FILTER_OBJECT`).
+  (`UNREACHABLE_REQUIRED_OBJECT`, `UNREACHABLE_FILTER_OBJECT`). Refused
+  across databases (`FEDERATION_UNSUPPORTED_QUERY`): a reaggregate whose
+  `having` keeps customers by the other fact's measure, the revenue per
+  customer of customers with tickets.
 - A measure of an object both facts join (the number of customers) works
   where one database counts that object's rows alone: by region. By order
   month, one database counts the customers through the orders, and the query

@@ -133,6 +133,8 @@ metrics:
     {{type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}}
   Revenue per Day:
     {{type: reaggregate, measure: Revenue, per: [Order Date], aggregation: max}}
+  Customers with Revenue:
+    {{type: reaggregate, measure: Revenue, per: [Customer], aggregation: count}}
   Carried Revenue:
     type: reaggregate
     measure: Revenue
@@ -269,6 +271,12 @@ QUERIES = {
     },
     "a_reaggregate_beside_the_tickets": {
         "select": {"dimensions": ["Region"], "measures": ["Revenue per Customer", "Tickets Count"]},
+    },
+    "a_count_reaggregate_beside_the_tickets": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Customers with Revenue", "Tickets Count"],
+        },
     },
     "filters_on_table_columns": {
         "select": BY_REGION,

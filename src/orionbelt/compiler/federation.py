@@ -2137,6 +2137,9 @@ def _plan_parts(
     reaggregates = {
         name: _part_reaggregate(model, name) for name in _reaggregates(planner.resolved, model)
     }
+    counts = _counts(model, measures) | {
+        name for name in reaggregates if model.metrics[name].aggregation is ReaggregateAggType.COUNT
+    }
     # Under a rollup or cube, each row's grouping set is its flags (:func:`_in_grouping_sets`).
     flags = [grouping_flag_alias(d.name) for d in shown] if query.grouping else []
     columns = [
@@ -2227,7 +2230,7 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
-        with fill_bounds(bounds), read_as_counts(_counts(model, measures)):
+        with fill_bounds(bounds), read_as_counts(counts):
             sql = compile_leg(parts_query, parts_model, COMBINE_DIALECT)
     else:
         # Each row is a group of the union by the dimensions, each read from
@@ -2252,7 +2255,7 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
-        with fill_bounds(bounds), read_as_counts(_counts(model, measures)):
+        with fill_bounds(bounds), read_as_counts(counts):
             sql = compile_leg(grouped, parts_model, COMBINE_DIALECT)
         sql = _returned(
             sql,
@@ -2494,11 +2497,13 @@ def _part_reaggregate(model: SemanticModel, name: str) -> Measure:
     The part of its fact computed it, typed and cast, in each group of that
     fact: its ``MAX`` is that value, as a measure's (:func:`_part_measure`).
     A group of another fact holds none, and reads NULL, as one database's
-    join of the metric's groups to the union's gives it.
+    join of the metric's groups to the union's gives it; a count reads 0,
+    as there (:func:`~orionbelt.compiler.count_zero.read_as_counts`).
     """
     metric = model.metrics[name]
     measure = model.effective_measures.get(metric.measure or "")
-    if metric.aggregation is ReaggregateAggType.COUNT:
+    counts = metric.aggregation is ReaggregateAggType.COUNT
+    if counts:
         result_type = DataType.INT
     else:
         result_type = measure.result_type if measure is not None else DataType.DECIMAL
@@ -2507,6 +2512,7 @@ def _part_reaggregate(model: SemanticModel, name: str) -> Measure:
         columns=[DataColumnRef(view=_PARTS_RELATION, column=name)],
         aggregation=AggregationType.MAX,
         result_type=result_type,
+        default_value=0 if counts else metric.default_value,
         format=metric.format,
     )
 
@@ -2915,33 +2921,37 @@ class _Planner:
         # A reaggregate metric is a query of its own on one database, whose
         # groups it joins to the union's (``reaggregate_wrap``): it is computed
         # in the part of the fact whose measures it reads, which joins it to
-        # that fact's groups. One another metric reads is in none yet.
-        placed = {name for names in roots.values() for name in names}
+        # that fact's groups. One another metric reads is in none yet. Its
+        # first stage reads its measure, its ``per`` dimensions and the
+        # measures of its ``having``, which that fact must all reach: a stage
+        # over several facts is refused.
+        placed = {name: root for root, names in roots.items() for name in names}
         for name in _reaggregates(self.resolved, self.model):
-            if name in placed:
-                continue
+            metric = self.model.metrics[name]
+            leaves = set(metric_leaf_measures(self.model, name))
+            for h in metric.having:
+                leaves |= (
+                    metric_leaf_measures(self.model, h.field)
+                    if (h.field in self.model.metrics)
+                    else {h.field}
+                )
             objects = {
-                o
-                for leaf in metric_leaf_measures(self.model, name)
-                if leaf in effective
-                for o in effective[leaf].source_objects
+                o for leaf in leaves if leaf in effective for o in effective[leaf].source_objects
             }
-            for entry in self.model.metrics[name].per:
+            for entry in metric.per:
                 objects |= self._dimension_objects(reaggregate_per_ref(self.model, entry).name)
-            root = next((r for r in sorted(roots) if objects <= reach(r)), None)
-            if root is None:
+            root = placed.get(name) or next((r for r in sorted(roots) if objects <= reach(r)), None)
+            if root is None or not objects <= reach(root):
                 raise self.refuse(
                     "UNSUPPORTED_QUERY",
-                    f"Metric '{name}' reaggregates measures of several of the facts",
-                    hint="Reaggregate the measures of one fact.",
+                    f"Measures of independent facts on several data sources are combined, "
+                    f"but metric '{name}' reaggregates, or keeps by its having, measures of "
+                    "several of the facts, which is not supported yet",
+                    hint="Reaggregate, and keep by, the measures of one fact.",
                 )
-            roots[root].append(name)
-        for root, names in roots.items():
-            for name in names:
-                if name in self.model.metrics and self.model.metrics[name].type == (
-                    MetricType.REAGGREGATE
-                ):
-                    self.check_stage_one(name, reach(root))
+            if name not in placed:
+                roots[root].append(name)
+            self.check_stage_one(name, reach(root))
         self.check_parts(across)
         parts = []
         for root, measures in sorted(roots.items()):

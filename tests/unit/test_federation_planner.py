@@ -5502,7 +5502,11 @@ INDEPENDENT_MODEL = {
     " aggregation: avg}\n"
     "  Best Region Average: {type: reaggregate, measure: Revenue per Customer, per: [Region],"
     " aggregation: max}\n"
-    '  Average per Ticket: {expression: "{[Revenue per Customer]} / {[Tickets Count]}"}\n',
+    '  Average per Ticket: {expression: "{[Revenue per Customer]} / {[Tickets Count]}"}\n'
+    "  Customers with Revenue: {type: reaggregate, measure: Revenue, per: [Customer],"
+    " aggregation: count}\n"
+    "  Revenue of Ticketed: {type: reaggregate, measure: Revenue, per: [Customer],"
+    " aggregation: avg, having: [{field: Tickets Count, op: '>', value: 0}]}\n",
     "dimension": "  Severity: {dataObject: Tickets, column: Severity, resultType: string}\n"
     "  Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}\n"
     "  Order Day: {dataObject: Orders, column: Order Date, resultType: date}\n"
@@ -5875,6 +5879,34 @@ INDEPENDENT_QUERIES = {
     "a_metric_over_a_reaggregate_and_the_tickets": {
         "select": {"dimensions": ["Region"], "measures": ["Average per Ticket"]}
     },
+    "a_count_reaggregate_by_a_dimension_one_fact_reaches": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Customers with Revenue", "Tickets Count"],
+        }
+    },
+    "a_count_reaggregate_where_its_fact_has_no_rows": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": ["Customers with Revenue", "Tickets Count"],
+        },
+        "where": [{"field": "Order Date", "op": ">=", "value": "2030-01-01"}],
+    },
+    "a_count_reaggregate_of_no_rows_by_no_dimension": {
+        "select": {"dimensions": [], "measures": ["Customers with Revenue", "Tickets Count"]},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2030-01-01"}],
+    },
+    "a_count_reaggregate_filled": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Customers with Revenue", "Tickets Count"],
+        },
+        "where": [
+            {"field": "Order Date", "op": ">=", "value": "2023-11-01"},
+            {"field": "Order Date", "op": "<", "value": "2024-05-01"},
+        ],
+        "fill": True,
+    },
     "a_reaggregate_in_having_and_order_alone": {
         "select": {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS},
         "having": [{"field": "Revenue per Customer", "op": ">", "value": 20}],
@@ -6150,6 +6182,15 @@ class TestMeasuresOfIndependentFacts:
                 },
                 "a cumulative metric reads a span of rows",
             ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Region"],
+                        "measures": ["Revenue of Ticketed", "Tickets Count"],
+                    }
+                },
+                "reaggregates, or keeps by its having, measures of several of the facts",
+            ),
         ],
         ids=[
             "a_total_beside_a_rollup",
@@ -6160,6 +6201,7 @@ class TestMeasuresOfIndependentFacts:
             "a_running_total_without_its_date",
             "a_running_total_beside_a_rollup",
             "a_running_span",
+            "a_reaggregate_kept_by_the_other_facts_measure",
         ],
     )
     def test_what_is_not_combined_yet_is_refused(self, query: dict[str, Any], message: str) -> None:
