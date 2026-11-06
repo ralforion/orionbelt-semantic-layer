@@ -563,6 +563,7 @@ stay one fact leg, which unions them itself.
 | `usePathNames` | a path between two sources is the edge the combine step joins; one within a source is the leg's own join, so an order's support employee beside the orders reads the shop's employees by the support key |
 | Coalesce dimensions | the legs return each member, and the combine step coalesces them |
 | `dimensionsExclude` | over one group of dimensions, the pairs the joined rows hold minus themselves, none, as on one database; dimensions of two roots are refused (they are joined from two facts) |
+| `orderBy` on text | sorted in the order of the database the text comes from, by the rank its leg gives it ([strings in order](#values-compared-across-engines)) |
 | `orderBy` without `nulls` | NULL is sorted where the facts' database sorts it: PostgreSQL, Snowflake and Dremio put it last when sorting ascending and first when sorting descending, MySQL, BigQuery and Databricks the other way round, DuckDB and ClickHouse last either way. A query with `limit` and no `orderBy` is sorted by its dimensions (in raw mode, its fields), as on one database, so the same rows are kept |
 
 ## Role-playing dimensions
@@ -954,7 +955,16 @@ engine (`DENSE_RANK() OVER (ORDER BY __leg."Least Status")`), and the
 combine step takes the value at the least or greatest rank, with totals,
 grain overrides and `rollup` / `cube` subtotals too. Of values the engine
 calls equal, which share a rank, it takes the bytewise least or greatest,
-one of those one database may answer. What else orders strings in the
+one of those one database may answer.
+
+A sort by a string, a dimension or a raw-mode field, is ranked the same way:
+the leg returning it adds its rank among the leg's values
+(`DENSE_RANK() OVER (ORDER BY __leg."Region")`, on PostgreSQL in
+`en_US.utf8`), and the combine step sorts by that rank, so revenue by
+sales rep lists `Ann`, `bob`, `Cid` on PostgreSQL and MySQL, as one database
+does, where bytes would put `bob` last. This holds for a limited query sorted
+by its dimensions too, and under `rollup` or `cube`. A leg on DuckDB sorts
+as the combine step does and adds no rank. What else orders strings in the
 combine step orders them bytewise, as [listed](#results-that-can-differ-from-one-database).
 
 A measure [computed from rows](#objects-the-joins-repeat) whose filter compares
@@ -1226,7 +1236,7 @@ one database's. Most have a setting that makes them agree.
 |---|---|---|
 | Rows with NULL sorted last, where one of your databases sorts them first | The query has [measures of independent facts](#measures-of-independent-facts) on two databases that sort NULL differently: orders on MySQL, which puts NULL first when sorting ascending, beside tickets on PostgreSQL, which puts it last. OBSL then sorts as DuckDB does, NULL last either way | Set `nulls: first` or `nulls: last` in `orderBy` |
 | A window metric ranks a NULL value last, where your database ranks it first | DuckDB computes the rank, and puts NULL last when sorting descending, as BigQuery, ClickHouse, Databricks and MySQL do; PostgreSQL, Snowflake and Dremio put it first. Beside independent facts, a month of tickets alone has no revenue to rank | Rank a measure that is never NULL, such as a count |
-| Text sorted differently | DuckDB sorts text by its bytes, so `'C'` comes before `'b'`. Most databases put `'b'` first. The same goes for `having`, window metrics, a `min` or `max` computed from rows, and filters such as `gt` or `between` that mix both databases (on MySQL text, those filters run in MySQL) | Sort by a code or a number, or sort in your tool |
+| Text sorted differently | DuckDB sorts text by its bytes, so `'C'` comes before `'b'`, where PostgreSQL and MySQL put `'b'` first. A sort by text follows its database, but not with [measures of independent facts](#measures-of-independent-facts) on several databases, for a coalesce dimension, a sort by column position (`field: "1"`), or a sort that also names a measure the query does not select. The same goes for `having`, window metrics, a `min` or `max` computed from rows, and filters such as `gt` or `between` that mix both databases (on MySQL text, those filters run in MySQL) | Select the measure you sort by, sort by name rather than position, or sort in your tool |
 | A row added while the query runs, counted in one database but not in the other | Each database is read at its own moment. There is no common snapshot | Query changing data at quiet times |
 | Times off by some hours | A database whose time zone OBSL does not know (Databricks, Dremio, MySQL set to `SYSTEM`) returns times as stored, while the others are converted. OBSL warns with `UNDECLARED_TIMESTAMP_ZONE` | Set `DB_<NAME>_TIMEZONE` |
 | Timestamps that do not match in a join | They are compared as stored: 10:00 in UTC and 05:00 in New York are the same moment, but not the same value | Store join timestamps in one time zone |

@@ -9,7 +9,8 @@ combine step agrees, and both legs of a join rewrite its keys
 where the engine compares as it does over one source. A minimum or maximum
 of strings is taken at the least or greatest rank its leg gave it, in the
 engine's own order: MySQL's collation and PostgreSQL's ``en_US.utf8`` put
-``'b'`` before ``'C'``, which DuckDB puts after it. Each engine's answer
+``'b'`` before ``'C'``, which DuckDB puts after it, and so is a sort by
+strings. Each engine's answer
 over one source is the reference: both of a query's sources are the engine
 itself here, and the same rows are read either way.
 """
@@ -237,6 +238,24 @@ def _assert_equality(target: VendorTarget) -> None:
         },
     )
     assert _fold(federated) == _fold(single), f"{target.name}: the least and greatest differ"
+
+    # Sorted by the names 'b' and 'C' of the facts, in the engine's order:
+    # ranked by the fact leg, where the combine step would sort the bytes.
+    # The labels' filter reads the other source.
+    for sort in ({"field": "Name"}, {"field": "Name", "direction": "desc"}, None):
+        query: dict[str, Any] = {
+            "select": {"dimensions": ["Name"], "measures": ["Rows"]},
+            "where": [
+                {"field": "Name", "op": "in", "value": ["b", "C"]},
+                {"field": "Label", "op": "in", "value": ["x", "y", "z"]},
+            ],
+        }
+        if sort is None:
+            query["limit"] = 1
+        else:
+            query["orderBy"] = [sort]
+        single, federated = _answers(target, query)
+        assert _fold(federated) == _fold(single), f"{target.name}: sorted by {sort} differs"
 
 
 def test_duckdb_federated_equality(vendor_duckdb: VendorTarget) -> None:
