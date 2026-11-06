@@ -253,13 +253,9 @@ class StarSchemaPlanner:
                 continue
             builder.having(inline_measure_aliases(hf.expression, measure_exprs))
 
-        # ORDER BY (use alias for time-grained dimensions)
-        grained_cols: dict[tuple[str, str | None], str] = {
-            (d.source_column, d.object_name): d.name for d in resolved.dimensions if d.grain
-        }
+        # ORDER BY: a time-grained dimension is already its alias
+        # (:func:`~orionbelt.compiler.filter_resolution.resolve_order_by_field`).
         for expr, desc, nulls in resolved.order_by_exprs:
-            if isinstance(expr, ColumnRef) and (expr.name, expr.table) in grained_cols:
-                expr = ColumnRef(name=grained_cols[(expr.name, expr.table)])
             builder.order_by(expr, desc=desc, nulls_last=_nulls_last(nulls))
 
         # LIMIT / OFFSET

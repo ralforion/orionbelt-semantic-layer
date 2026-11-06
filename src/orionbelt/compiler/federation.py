@@ -1760,12 +1760,6 @@ def plan_federated(
                 measures=list(query.select.measures),
             ),
             "where": [_renamed(item, renamed) for item in combine_filters],
-            "order_by": [
-                QueryOrderBy(
-                    field=DimensionRef.parse(o.field).name, direction=o.direction, nulls=o.nulls
-                )
-                for o in query.order_by
-            ],
             "use_path_names": [],
         }
     )

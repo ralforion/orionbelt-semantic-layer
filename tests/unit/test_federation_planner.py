@@ -2209,6 +2209,33 @@ OPTION_QUERIES = {
         {"select": {"dimensions": TWO_GRAINS, "measures": ["Running Revenue", "Revenue"]}},
         PERIOD_METRICS,
     ),
+    # One database sorts a limited query by its columns: the month, then the
+    # year, then the region.
+    "two_grains_limited_without_a_sort": (
+        {
+            "select": {
+                "dimensions": ["Order Date:month", "Order Date:year", "Region"],
+                "measures": ["Revenue"],
+            },
+            "limit": 3,
+        },
+        "",
+    ),
+    "two_grains_sorted_by_each_and_limited": (
+        {
+            "select": {
+                "dimensions": ["Order Date:month", "Order Date:year", "Region"],
+                "measures": ["Revenue"],
+            },
+            "orderBy": [
+                {"field": "Order Date:year"},
+                {"field": "Order Date", "direction": "desc"},
+                {"field": "Region"},
+            ],
+            "limit": 3,
+        },
+        "",
+    ),
     "as_of": (
         {
             "select": {"dimensions": ["Region"], "measures": ["Running Revenue"]},
@@ -9320,6 +9347,26 @@ class TestNullOrder:
         )
 
         assert sort == '"leg_1"."Region" ASC NULLS FIRST, "leg_0"."Order Date" ASC NULLS FIRST'
+
+    def test_a_limited_query_at_two_grains_is_sorted_by_each(
+        self, sources: Callable[..., str]
+    ) -> None:
+        sort = sources(
+            "mysql",
+            "postgres",
+            {
+                "select": {
+                    "dimensions": ["Order Date:month", "Order Date:year", "Region"],
+                    "measures": ["Revenue"],
+                },
+                "limit": 1,
+            },
+        )
+
+        assert sort == (
+            '"Order Date" ASC NULLS FIRST, "Order Date:year" ASC NULLS FIRST, '
+            '"leg_1"."Region" ASC NULLS FIRST'
+        )
 
     def test_limited_raw_rows_are_sorted_by_their_fields(self, sources: Callable[..., str]) -> None:
         sort = sources(

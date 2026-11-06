@@ -62,6 +62,25 @@ def test_a_dimension_at_two_grains_is_two_columns(sales_model: SemanticModel) ->
 
 
 @pytest.mark.parametrize(
+    ("field", "sorted_by"),
+    [("Order Date", '"Order Date" DESC'), ("Order Date:year", '"Order Date:year" DESC')],
+    ids=["the_first_grain", "the_second_grain"],
+)
+def test_a_dimension_at_two_grains_sorts_by_the_grain_named(
+    sales_model: SemanticModel, field: str, sorted_by: str
+) -> None:
+    """Both grains read one date column: sorting by the month sorted by the year."""
+    query = QueryObject.model_validate(
+        {
+            "select": {"dimensions": ["Order Date", "Order Date:year"], "measures": ["Revenue"]},
+            "orderBy": [{"field": field, "direction": "desc"}],
+        }
+    )
+    sql = CompilationPipeline().compile(query, sales_model, "duckdb").sql
+    assert sql.rsplit("ORDER BY ", 1)[-1].startswith(sorted_by)
+
+
+@pytest.mark.parametrize(
     ("sql", "code"),
     [
         (

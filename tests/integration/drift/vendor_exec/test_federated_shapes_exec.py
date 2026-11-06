@@ -514,6 +514,14 @@ ORDERED_QUERIES: dict[str, Any] = {
         "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
         "limit": 2,
     },
+    # Sorted by each grain: the month, then the year, then the region.
+    "limited_at_two_grains_without_a_sort": {
+        "select": {
+            "dimensions": ["Order Date:month", "Order Date:year", "Region"],
+            "measures": ["Revenue"],
+        },
+        "limit": 3,
+    },
     "raw_rows_sorted_down_by_a_null_field": {
         "select": {"fields": ["Orders.Order ID", "Regions.Region Name"]},
         "orderBy": [
