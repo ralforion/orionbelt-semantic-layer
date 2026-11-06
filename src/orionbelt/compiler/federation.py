@@ -741,6 +741,60 @@ def is_federated(resolved: ResolvedQuery, query: QueryObject, model: SemanticMod
     return len({sources.get(o) for o in read if o in sources}) > 1
 
 
+def columns_as_dimensions(query: QueryObject, model: SemanticModel) -> SemanticModel | None:
+    """*model* with a dimension for each column a filter names, or ``None`` for none.
+
+    A ``where`` filter, or a measure's ``filterContext`` include, may name a
+    column of a data object (``Customers.Region``) where it names no
+    dimension. One database compares the column as it compares a dimension
+    over it, the same expression in the same time zone. The federation
+    planner places a filter by its dimension, so each such column becomes
+    one, named as the filter names it: the filter, a filter context keeping
+    or leaving it out by that name, an ``exists`` on the column and the
+    errors read it unchanged. Not where a dimension, measure, metric or
+    column has that name (a measure may be named ``Orders.Amount``), nor
+    another such column without its case: then no column becomes one, and
+    the query is refused as it was.
+    """
+
+    def fields(item: QueryFilterItem) -> list[str]:
+        if isinstance(item, QueryFilterGroup):
+            return [field for sub in item.filters for field in fields(sub)]
+        return [] if item.subquery is not None else [item.field]
+
+    named = [field for item in query.where for field in fields(item)]
+    named += [
+        item.field
+        for measure in model.measures.values()
+        if measure.filter_context is not None
+        for item in measure.filter_context.include
+    ]
+    taken = _reserved_names(model)
+    added: dict[str, Dimension] = {}
+    for field in named:
+        obj, _, column = (part.strip() for part in field.partition("."))
+        declared = model.data_objects.get(obj)
+        if field in model.dimensions or field in added:
+            continue
+        if declared is None or column not in declared.columns:
+            continue
+        if field.casefold() in taken:
+            # Its name is taken, by the model or by another such column
+            # without its case (``Orders.AMOUNT``): the query is planned as
+            # without any, and refused as it was.
+            return None
+        taken.add(field.casefold())
+        added[field] = Dimension(
+            name=field,
+            view=obj,
+            column=column,
+            result_type=declared.columns[column].abstract_type,
+        )
+    if not added:
+        return None
+    return model.model_copy(update={"dimensions": {**model.dimensions, **added}})
+
+
 def query_source(resolved: ResolvedQuery, query: QueryObject, model: SemanticModel) -> str | None:
     """The data source a query on one source reads, for a model read from several.
 

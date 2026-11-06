@@ -12,6 +12,7 @@ from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.fanout import detect_fanout
 from orionbelt.compiler.federation import (
     FederatedPlan,
+    columns_as_dimensions,
     is_federated,
     plan_federated,
     query_source,
@@ -389,8 +390,12 @@ class CompilationPipeline:
         self.detect_replication(resolved, model)
 
         # A query reading data objects of several data sources is split into
-        # one query per source and a DuckDB query combining them.
+        # one query per source and a DuckDB query combining them. A filter
+        # naming a column rather than a dimension filters a dimension over it.
         if is_federated(resolved, query, model):
+            with_columns = columns_as_dimensions(query, declared)
+            if with_columns is not None:
+                return self._compile(query, with_columns, dialect_name)
             return self._compile_federated(query, model, dialect_name, resolved)
         # A query on one source of a model reading several is that source's to
         # run, so it is written in that source's dialect.

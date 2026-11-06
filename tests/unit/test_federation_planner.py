@@ -3022,19 +3022,101 @@ class TestGrainAndFilterContext:
         assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
         assert "filterContext leaves out" in error.message
 
-    def test_an_included_filter_on_a_column_is_refused(self) -> None:
+    def test_a_filter_on_a_column_the_context_leaves_out_stays_out(
+        self, files: dict[str, str]
+    ) -> None:
+        """The dimension takes the filter's name, which the context names too."""
+        extra = _over_amount("Revenue Any Region", "filterContext: {exclude: [Customers.Region]}")
+        query = {
+            "select": {
+                "dimensions": ["Order Date:month"],
+                "measures": ["Revenue Any Region", "Revenue"],
+            },
+            "where": [{"field": "Customers.Region", "op": "=", "value": "EU"}],
+        }
+
+        single = _run_on(files, model_yaml(federated=False, extra=extra), query)
+
+        assert _run_on(files, model_yaml(federated=True, extra=extra), query) == single
+        assert any(any_region != revenue for _, any_region, revenue in single)
+
+    def test_a_filter_on_a_date_column_filters_as_on_one_database(
+        self, files: dict[str, str]
+    ) -> None:
+        query = {
+            "select": {"dimensions": ["Order Date:month", "Region"], "measures": ["Revenue"]},
+            "where": [{"field": "Orders.Order Date", "op": ">=", "value": "2024-02-01"}],
+        }
+
+        single = _run_on(files, model_yaml(federated=False), query)
+
+        assert _run_on(files, model_yaml(federated=True), query) == single
+        assert single
+
+    @pytest.mark.parametrize(
+        ("model", "where", "measures"),
+        [
+            (
+                {"extra": _over_amount("Orders.Amount", "resultType: decimal")},
+                [{"field": "Orders.Amount", "op": ">", "value": 50}],
+                ["Revenue"],
+            ),
+            (
+                {
+                    "extra": _over_amount("Orders.Amount", "resultType: decimal")
+                    + _over_amount("Any Amount", "filterContext: {exclude: [Orders.Amount]}")
+                },
+                [
+                    {"field": "Orders.Amount", "op": ">", "value": 50},
+                    {"field": "Customers.Region", "op": "=", "value": "EU"},
+                ],
+                ["Any Amount", "Revenue"],
+            ),
+            (
+                {"order_columns": "      AMOUNT: {code: amount, abstractType: decimal}\n"},
+                [
+                    {
+                        "logic": "or",
+                        "filters": [
+                            {"field": "Orders.Amount", "op": ">", "value": 50},
+                            {"field": "Orders.AMOUNT", "op": "<", "value": 10},
+                            {"field": "Customers.Region", "op": "=", "value": "US"},
+                        ],
+                    }
+                ],
+                ["Revenue"],
+            ),
+        ],
+        ids=["named_as_a_measure", "beside_another_column", "another_without_its_case"],
+    )
+    def test_a_column_whose_name_is_taken_stays_refused(
+        self, model: dict[str, str], where: list[Any], measures: list[str]
+    ) -> None:
+        """A measure ``Orders.Amount``, or a column ``AMOUNT`` beside ``Amount``,
+        which DuckDB names alike: no column becomes a dimension, and the query
+        is refused as without them, also beside a filter on another column."""
+        query = {"select": {"dimensions": ["Region"], "measures": measures}, "where": where}
+
+        with pytest.raises(ResolutionError) as caught:
+            _compile(model_yaml(federated=True, **model), query)
+
+        (error,) = caught.value.errors
+        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
+
+    def test_an_included_filter_on_a_column_filters_as_on_one_database(
+        self, files: dict[str, str]
+    ) -> None:
+        """The column is a dimension over it, which the filter context includes."""
         extra = _over_amount(
             "Large Revenue",
             "filterContext: {include: [{field: Orders.Amount, op: '>', value: 50}]}",
         )
-        query = {"select": {"dimensions": ["Region"], "measures": ["Large Revenue"]}}
+        query = {"select": {"dimensions": ["Region"], "measures": ["Large Revenue", "Revenue"]}}
 
-        with pytest.raises(ResolutionError) as caught:
-            _compile(model_yaml(federated=True, extra=extra), query)
+        single = _run_on(files, model_yaml(federated=False, extra=extra), query)
 
-        (error,) = caught.value.errors
-        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
-        assert "'Orders.Amount'" in error.message
+        assert _run_on(files, model_yaml(federated=True, extra=extra), query) == single
+        assert single
 
 
 class TestRefusals:
@@ -5648,6 +5730,13 @@ INDEPENDENT_QUERIES = {
         },
         "fill": True,
     },
+    "filtered_on_a_column_of_each": {
+        "select": BY_REGION_BOTH,
+        "where": [
+            {"field": "Customers.Region", "op": "=", "value": "EU"},
+            {"field": "Tickets.Severity", "op": "=", "value": "high"},
+        ],
+    },
     "a_lead": {
         "select": {
             "dimensions": ["Order Date:month"],
@@ -7398,19 +7487,35 @@ class TestDimensionSourceJoins:
         assert _run_on(paths, _keyed(island_model(True)), by_tag) == single
         assert single == [("EU", Decimal("120.75")), ("US", Decimal("7.00"))]
 
-    def test_a_filter_on_a_column_is_refused(self) -> None:
-        query = {
-            "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
-            "where": [{"field": "Orders.Amount", "op": ">", "value": 50}],
-        }
+    @pytest.mark.parametrize(
+        "where",
+        [
+            [{"field": "Orders.Amount", "op": ">", "value": 50}],
+            [{"field": "Customers.Region", "op": "=", "value": "EU"}],
+            [
+                {
+                    "logic": "or",
+                    "filters": [
+                        {"field": "Customers.Region", "op": "=", "value": "US"},
+                        {"field": "Orders.Amount", "op": ">", "value": 50},
+                    ],
+                }
+            ],
+            [{"field": "Customers.Region", "op": "is_null"}],
+        ],
+        ids=["of_the_facts", "of_the_customers", "in_an_or_across_sources", "is_null"],
+    )
+    def test_a_filter_on_a_column_filters_as_on_one_database(
+        self, island_files: dict[str, dict[str, str]], where: list[Any]
+    ) -> None:
+        """One database compares the column as it compares a dimension over it."""
+        paths = island_files["crm"]
+        query = {"select": {"dimensions": ["Region"], "measures": ["Revenue"]}, "where": where}
 
-        with pytest.raises(ResolutionError) as caught:
-            _compile(island_model(True), query)
+        single = _run_on(paths, island_model(False), query)
 
-        (error,) = caught.value.errors
-        assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
-        assert "The filter on 'Orders.Amount' is not on a dimension" in error.message
-        assert error.hint == "Filter on a dimension over the column."
+        assert _run_on(paths, island_model(True), query) == single
+        assert single
 
 
 # The orders of customers some tag of whom is vip, by region.

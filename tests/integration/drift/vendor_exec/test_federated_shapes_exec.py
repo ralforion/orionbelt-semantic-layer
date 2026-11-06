@@ -243,6 +243,13 @@ BY_REGION = {"dimensions": ["Region"], "measures": ["Revenue"]}
 BY_MONTH_REGION = ["Order Date:month", "Region"]
 QUERIES = {
     "exists": {"select": BY_REGION, "where": [_tickets("exists")]},
+    "filters_on_table_columns": {
+        "select": BY_REGION,
+        "where": [
+            {"field": "Regions.Region Name", "op": "in", "value": ["EU", "US"]},
+            {"field": "Orders.Amount", "op": ">", "value": 10},
+        ],
+    },
     "nonexists": {"select": BY_REGION, "where": [_tickets("nonexists")]},
     "a_chain_of_three_sources": {"select": BY_REGION},
     "a_role": {"select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]}},
