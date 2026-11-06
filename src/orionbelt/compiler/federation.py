@@ -65,6 +65,7 @@ from orionbelt.compiler.cfl_projection import (
     group_measures_by_object,
 )
 from orionbelt.compiler.composability import metric_leaf_measures, metric_measure_names
+from orionbelt.compiler.count_zero import read_as_counts
 from orionbelt.compiler.expr_rewrite import rewrite_column_refs
 from orionbelt.compiler.fill_wrap import fill_bounds
 from orionbelt.compiler.filter_resolution import (
@@ -1521,10 +1522,10 @@ def plan_federated(
         # Where the combine step counts the rows of the island's object, it
         # adds those no fact row reaches, which the test must reach too: the
         # leg joins that island's leg, on the same keys.
-        counted = island_legs[missing.island]
+        counting_leg = island_legs[missing.island]
         joins = (
-            leg_joins.setdefault(counted, [])
-            if counted in leg_parent_of.values()
+            leg_joins.setdefault(counting_leg, [])
+            if counting_leg in leg_parent_of.values()
             else joins_from(e)
         )
         joins.append(
@@ -1693,6 +1694,7 @@ def plan_federated(
         combined_variances(
             combiner, {m: (c, sq, scale) for m, (c, _, sq, scale) in variances.items()}
         ),
+        read_as_counts(_counts(model, measures)),
     ):
         combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
     if row_count:
@@ -2099,7 +2101,11 @@ def _plan_parts(
             },
         },
         measures={m: _every_grain(_part_measure(model, m), inner, shown) for m in measures},
-        metrics={n: m for n, m in model.metrics.items() if m.type == MetricType.DERIVED},
+        metrics={
+            n: m
+            for n, m in model.metrics.items()
+            if m.type in (MetricType.DERIVED, MetricType.CUMULATIVE, MetricType.WINDOW)
+        },
         expose_counts=False,
     )
     # One database returns the measures with a filter context last, from the
@@ -2111,9 +2117,10 @@ def _plan_parts(
     # Filled, the date is read at its grain, which each part truncated it to
     # already, and its periods span the bounds the query's filters on it set,
     # as one database's (``fill_wrap``), filtering no row again.
+    # So is it beside a metric across its periods, which they count at it.
+    at_grain = query.fill or planner.reads_periods()
     read = [
-        f"{inner[d.name]}:{d.grain.value}" if query.fill and d.grain else inner[d.name]
-        for d in shown
+        f"{inner[d.name]}:{d.grain.value}" if at_grain and d.grain else inner[d.name] for d in shown
     ]
     bounds = _fill_bounds(planner, parts_model, inner) if query.fill else []
     if query.grouping is None and not two_grains:
@@ -2132,7 +2139,7 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
-        with fill_bounds(bounds):
+        with fill_bounds(bounds), read_as_counts(_counts(model, measures)):
             sql = compile_leg(parts_query, parts_model, COMBINE_DIALECT)
     else:
         # Each row is a group of the union by the dimensions, each read from
@@ -2157,7 +2164,7 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
-        with fill_bounds(bounds):
+        with fill_bounds(bounds), read_as_counts(_counts(model, measures)):
             sql = compile_leg(grouped, parts_model, COMBINE_DIALECT)
         sql = _returned(
             sql,
@@ -2215,6 +2222,13 @@ def _fill_bounds(
             if subject is not None and (predicate := build_filter_expr(subject, condition, [])):
                 bounds.append(predicate)
     return bounds
+
+
+def _filter_leaves_of(item: QueryFilterItem) -> list[QueryFilter]:
+    """Every condition of *item*, in any group of it."""
+    if isinstance(item, QueryFilterGroup):
+        return [leaf for sub in item.filters for leaf in _filter_leaves_of(sub)]
+    return [item]
 
 
 def _every_grain(
@@ -2343,6 +2357,20 @@ def _returned(
     if query.offset:
         rows += f"\nOFFSET {query.offset}"
     return rows
+
+
+def _counts(model: SemanticModel, names: Iterable[str]) -> set[str]:
+    """The measures of *names* that are counts.
+
+    The combine step recombines them with another aggregation, and reads them
+    as counts all the same (:func:`~orionbelt.compiler.count_zero.read_as_counts`).
+    """
+    effective = model.effective_measures
+    return {
+        name
+        for name in names
+        if effective[name].aggregation in (AggregationType.COUNT, AggregationType.COUNT_DISTINCT)
+    }
 
 
 def _part_measure(model: SemanticModel, name: str) -> Measure:
@@ -2832,11 +2860,31 @@ class _Planner:
         A rollup or cube, a total, a grain, a filter context, ``fill``,
         ``asOf`` and one dimension at two grains are the combine step's
         (:func:`_plan_parts`), but for a rollup or cube beside the others,
-        whose subtotals the parts would compute apart.
+        whose subtotals the parts would compute apart. So are cumulative and
+        window metrics, over the union's periods at the grain the query
+        selects them: not over a time dimension it does not select, nor one
+        it filters, whose earlier periods one database reads (``time_lookback``)
+        where each part kept only those the filter admits, nor over a span of
+        rows, which the parts have grouped.
         """
         effective = self.model.effective_measures
         refs = _dimension_refs(self.query)
-        two_grains = len(set(refs)) != len({DimensionRef.parse(d).name for d in refs})
+        names = {DimensionRef.parse(d).name for d in refs}
+        two_grains = len(set(refs)) != len(names)
+        periods = self.reads_periods()
+        time_dimensions = self._metric_time_dimensions()
+        looked_back = {
+            (dimension.view, dimension.column)
+            for m in self.resolved.measures
+            if m.is_cumulative
+            and (dimension := self.model.dimensions.get(m.cumulative_time_dimension or ""))
+        }
+        filtered = {
+            (dimension.view, dimension.column)
+            for item in self.query.where
+            for leaf in _filter_leaves_of(item)
+            if (dimension := self.model.dimensions.get(leaf.field)) is not None
+        }
         apart = [
             name
             for name in sorted(self.atomic_measures())
@@ -2858,8 +2906,27 @@ class _Planner:
             ),
             (bool(self.resolved.anchored_measures), "a measure is anchored to another fact"),
             (
-                self.reads_periods() or any(m.is_reaggregate for m in self.resolved.measures),
-                "a metric reads values across periods or reaggregates",
+                any(m.is_reaggregate for m in self.resolved.measures),
+                "a metric reaggregates",
+            ),
+            (
+                periods and (self.query.grouping is not None or two_grains),
+                "a metric reads values across periods beside a rollup, a cube or one "
+                "dimension at two grains",
+            ),
+            (
+                not set(time_dimensions) <= names,
+                "a metric reads values across the periods of a time dimension the query "
+                "does not select",
+            ),
+            (
+                bool(looked_back & filtered),
+                "a metric reads values across the periods of a date the query filters, "
+                "which it reads before the filter's first period",
+            ),
+            (
+                any(m.is_cumulative and m.cumulative_window_span for m in self.resolved.measures),
+                "a cumulative metric reads a span of rows",
             ),
             (
                 self.query.dimensions_exclude

@@ -127,6 +127,8 @@ metrics:
       comparison: difference
   Revenue Rank:
     {{type: window, windowFunction: dense_rank, measure: Revenue, partitionBy: [Region]}}
+  Ticket Rank:
+    {{type: window, windowFunction: dense_rank, measure: Tickets Count, partitionBy: [Region]}}
   Revenue per Customer:
     {{type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}}
   Revenue per Day:
@@ -344,6 +346,27 @@ QUERIES = {
     "independent_facts_with_a_filter_context": {
         "select": {"dimensions": ["Region"], "measures": ["Revenue Any Region", "Tickets Count"]},
         "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+    "independent_facts_running_total": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Running Revenue", "Tickets Count"],
+        }
+    },
+    "independent_facts_rolling_window": {
+        "select": {
+            "dimensions": ["Order Date:month", "Region"],
+            "measures": ["Rolling Revenue", "Tickets Count"],
+        }
+    },
+    # Ranked by the tickets' count, 0 for a month of orders alone: the rank of
+    # a NULL revenue, a month of tickets alone, is DuckDB's (NULL last when
+    # descending) where Postgres, Snowflake and Dremio put it first.
+    "independent_facts_ranked": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Ticket Rank", "Revenue"],
+        }
     },
     "independent_facts_filled": {
         "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Tickets Count"]},

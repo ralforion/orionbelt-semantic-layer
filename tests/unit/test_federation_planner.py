@@ -1812,6 +1812,7 @@ PERIOD_METRICS = (
     "    timeDimension: Order Date\n"
     "  Revenue per Day:\n"
     "    {type: reaggregate, measure: Revenue, per: [Order Date], aggregation: avg}\n"
+    "  Running Orders: {type: cumulative, measure: Orders Count, timeDimension: Order Date}\n"
 )
 FEB_ON = {"field": "Order Date", "op": ">=", "value": "2024-02-01"}
 KNOWN_REGION = {"field": "Region", "op": "in", "value": ["EU", "US"]}
@@ -1857,6 +1858,10 @@ PERIOD_QUERIES = {
             "measures": ["Rolling Revenue", "Running Revenue"],
         },
         "where": [FEB_ON],
+    },
+    "a_running_count_filled": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Running Orders", "Revenue"]},
+        "fill": True,
     },
 }
 
@@ -5309,10 +5314,35 @@ INDEPENDENT_MEASURES = (
 )
 INDEPENDENT_MODEL = {
     "extra": INDEPENDENT_MEASURES,
-    "metric": '  Revenue per Ticket: {expression: "{[Revenue]} / {[Tickets Count]}"}\n',
+    "metric": '  Revenue per Ticket: {expression: "{[Revenue]} / {[Tickets Count]}"}\n'
+    "  Running Revenue: {type: cumulative, measure: Revenue, timeDimension: Order Date}\n"
+    "  Rolling Revenue: {type: cumulative, measure: Revenue, timeDimension: Order Date,"
+    " window: 2}\n"
+    "  Revenue to Date: {type: cumulative, measure: Revenue, timeDimension: Order Date,"
+    " grainToDate: year}\n"
+    "  Revenue in 60 Days: {type: cumulative, measure: Revenue, timeDimension: Order Date,"
+    " windowSpan: {count: 60, unit: day}}\n"
+    "  Running Tickets: {type: cumulative, measure: Tickets Count, timeDimension: Order Date}\n"
+    "  Revenue Rank: {type: window, windowFunction: dense_rank, measure: Revenue,"
+    " partitionBy: [Region]}\n"
+    "  Prior Revenue: {type: window, windowFunction: lag, measure: Revenue, offset: 1,"
+    " timeDimension: Order Date}\n"
+    "  Prior Tickets: {type: window, windowFunction: lag, measure: Tickets Count, offset: 1,"
+    " timeDimension: Order Date, partitionBy: [Region]}\n"
+    "  Next Revenue: {type: window, windowFunction: lead, measure: Revenue, offset: 1,"
+    " timeDimension: Order Date}\n"
+    "  Ticket Half: {type: window, windowFunction: ntile, measure: Tickets Count, buckets: 2}\n"
+    "  Running Orders: {type: cumulative, measure: Orders Count, timeDimension: Order Date}\n"
+    "  Rolling Orders: {type: cumulative, measure: Orders Count, timeDimension: Order Date,"
+    " window: 2}\n"
+    "  Orders to Date: {type: cumulative, measure: Orders Count, timeDimension: Order Date,"
+    " grainToDate: year}\n"
+    "  Revenue per Customer: {type: reaggregate, measure: Revenue, per: [Customer],"
+    " aggregation: avg}\n",
     "dimension": "  Severity: {dataObject: Tickets, column: Severity, resultType: string}\n"
     "  Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}\n"
-    "  Order Day: {dataObject: Orders, column: Order Date, resultType: date}\n",
+    "  Order Day: {dataObject: Orders, column: Order Date, resultType: date}\n"
+    "  Customer: {dataObject: Customers, column: Customer ID, resultType: int}\n",
 }
 REVENUE_AND_TICKETS = ["Revenue", "Tickets Count"]
 BY_REGION_BOTH = {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS}
@@ -5554,6 +5584,84 @@ INDEPENDENT_QUERIES = {
         "orderBy": [{"field": "Revenue", "direction": "desc"}],
         "limit": 3,
         "fill": True,
+    },
+    "a_running_total": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Running Revenue", "Tickets Count"],
+        }
+    },
+    "a_running_total_by_region": {
+        "select": {
+            "dimensions": ["Order Date:month", "Region"],
+            "measures": ["Running Revenue", "Tickets Count"],
+        }
+    },
+    "a_running_total_of_the_tickets": {
+        "select": {
+            "dimensions": ["Order Date:month", "Region"],
+            "measures": ["Running Tickets", "Revenue"],
+        }
+    },
+    "a_running_total_filtered_elsewhere_sorted_and_limited": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Running Revenue", "Tickets Count"],
+        },
+        "where": [EU],
+        "having": [{"field": "Running Revenue", "op": ">", "value": 100}],
+        "orderBy": [{"field": "Order Date", "direction": "desc"}],
+        "limit": 2,
+    },
+    "a_rolling_window": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Rolling Revenue", "Tickets Count"],
+        }
+    },
+    "a_grain_to_date": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Revenue to Date", "Tickets Count"],
+        }
+    },
+    "a_rank": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Rank", "Tickets Count"],
+        }
+    },
+    "a_lag": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Prior Revenue", "Tickets Count"],
+        }
+    },
+    "a_lag_after_a_date_filter": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Prior Revenue", "Revenue"]},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+    },
+    "running_counts_filled": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Running Orders", "Rolling Orders", "Orders to Date", "Tickets Count"],
+        },
+        "fill": True,
+    },
+    "a_lead": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Next Revenue", "Tickets Count"],
+        }
+    },
+    "an_ntile_of_the_tickets": {
+        "select": {"dimensions": ["Region"], "measures": ["Ticket Half", "Revenue"]}
+    },
+    "a_lag_of_the_tickets_by_region": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Prior Tickets", "Revenue"],
+        }
     },
     "a_rollup_of_no_rows": {
         "select": BY_REGION_AND_MONTH,
@@ -5797,12 +5905,64 @@ class TestMeasuresOfIndependentFacts:
                 },
                 "is of 'Customers', which one database counts through 'Tickets'",
             ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Order Date:month"],
+                        "measures": ["Running Revenue", "Tickets Count"],
+                    },
+                    "where": [{"field": "Order Day", "op": ">=", "value": "2024-02-01"}],
+                },
+                "which it reads before the filter's first period",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Region"],
+                        "measures": ["Running Revenue", "Tickets Count"],
+                    }
+                },
+                "periods of a time dimension the query does not select",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Order Date:month"],
+                        "measures": ["Running Revenue", "Tickets Count"],
+                    },
+                    "grouping": "rollup",
+                },
+                "reads values across periods beside a rollup",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Order Date:month"],
+                        "measures": ["Revenue in 60 Days", "Tickets Count"],
+                    }
+                },
+                "a cumulative metric reads a span of rows",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Region"],
+                        "measures": ["Revenue per Customer", "Tickets Count"],
+                    }
+                },
+                "a metric reaggregates",
+            ),
         ],
         ids=[
             "a_total_beside_a_rollup",
             "two_grains_beside_a_rollup",
             "the_customers_by_order_month",
             "the_customers_by_severity",
+            "a_running_total_after_a_date_filter",
+            "a_running_total_without_its_date",
+            "a_running_total_beside_a_rollup",
+            "a_running_span",
+            "a_reaggregate",
         ],
     )
     def test_what_is_not_combined_yet_is_refused(self, query: dict[str, Any], message: str) -> None:
