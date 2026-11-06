@@ -5497,7 +5497,12 @@ INDEPENDENT_MODEL = {
     "  Orders to Date: {type: cumulative, measure: Orders Count, timeDimension: Order Date,"
     " grainToDate: year}\n"
     "  Revenue per Customer: {type: reaggregate, measure: Revenue, per: [Customer],"
-    " aggregation: avg}\n",
+    " aggregation: avg}\n"
+    "  Tickets per Customer: {type: reaggregate, measure: Tickets Count, per: [Customer],"
+    " aggregation: avg}\n"
+    "  Best Region Average: {type: reaggregate, measure: Revenue per Customer, per: [Region],"
+    " aggregation: max}\n"
+    '  Average per Ticket: {expression: "{[Revenue per Customer]} / {[Tickets Count]}"}\n',
     "dimension": "  Severity: {dataObject: Tickets, column: Severity, resultType: string}\n"
     "  Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}\n"
     "  Order Day: {dataObject: Orders, column: Order Date, resultType: date}\n"
@@ -5839,6 +5844,42 @@ INDEPENDENT_QUERIES = {
         "where": [{"field": "Region", "op": "=", "value": "nowhere"}],
         "grouping": "cube",
     },
+    "a_reaggregate": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue per Customer", "Tickets Count"]}
+    },
+    "a_reaggregate_by_a_dimension_one_fact_reaches": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Revenue per Customer", "Tickets Count"],
+        }
+    },
+    "a_reaggregate_by_no_dimension": {
+        "select": {"dimensions": [], "measures": ["Revenue per Customer", "Tickets Count"]}
+    },
+    "a_reaggregate_filtered": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue per Customer", "Tickets Count"]},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+    },
+    "a_reaggregate_of_each": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": ["Revenue per Customer", "Tickets per Customer"],
+        }
+    },
+    "a_reaggregate_of_a_reaggregate": {
+        "select": {
+            "dimensions": ["Order Date:month"],
+            "measures": ["Best Region Average", "Tickets Count"],
+        }
+    },
+    "a_metric_over_a_reaggregate_and_the_tickets": {
+        "select": {"dimensions": ["Region"], "measures": ["Average per Ticket"]}
+    },
+    "a_reaggregate_in_having_and_order_alone": {
+        "select": {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS},
+        "having": [{"field": "Revenue per Customer", "op": ">", "value": 20}],
+        "orderBy": [{"field": "Revenue per Customer", "direction": "desc"}],
+    },
 }
 
 
@@ -6109,15 +6150,6 @@ class TestMeasuresOfIndependentFacts:
                 },
                 "a cumulative metric reads a span of rows",
             ),
-            (
-                {
-                    "select": {
-                        "dimensions": ["Region"],
-                        "measures": ["Revenue per Customer", "Tickets Count"],
-                    }
-                },
-                "a metric reaggregates",
-            ),
         ],
         ids=[
             "a_total_beside_a_rollup",
@@ -6128,7 +6160,6 @@ class TestMeasuresOfIndependentFacts:
             "a_running_total_without_its_date",
             "a_running_total_beside_a_rollup",
             "a_running_span",
-            "a_reaggregate",
         ],
     )
     def test_what_is_not_combined_yet_is_refused(self, query: dict[str, Any], message: str) -> None:
@@ -6138,6 +6169,47 @@ class TestMeasuresOfIndependentFacts:
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_QUERY"
         assert message in error.message
+
+    @pytest.mark.parametrize(
+        ("query", "code"),
+        [
+            (
+                {
+                    "select": {
+                        "dimensions": ["Severity"],
+                        "measures": ["Revenue per Customer", "Tickets Count"],
+                    }
+                },
+                "UNREACHABLE_REQUIRED_OBJECT",
+            ),
+            (
+                {
+                    "select": {
+                        "dimensions": ["Region"],
+                        "measures": ["Revenue per Customer", "Tickets Count"],
+                    },
+                    "where": [{"field": "Severity", "op": "=", "value": "high"}],
+                },
+                "UNREACHABLE_FILTER_OBJECT",
+            ),
+        ],
+        ids=["by_a_dimension_of_the_tickets", "filtered_on_the_tickets"],
+    )
+    def test_a_reaggregate_one_database_refuses_stays_refused(
+        self, query: dict[str, Any], code: str
+    ) -> None:
+        """One database groups a reaggregate's first stage by every dimension of
+        the query and filters it by every filter, which the orders do not reach:
+        the part of the orders left them out, and returned a value."""
+        with pytest.raises(ResolutionError) as single:
+            _compile(independent_model(False), query)
+        with pytest.raises(ResolutionError) as federated:
+            _compile(independent_model(True), query)
+
+        assert [e.code for e in federated.value.errors] == [code]
+        assert [e.message for e in federated.value.errors] == [
+            e.message for e in single.value.errors
+        ]
 
     @pytest.mark.parametrize(
         ("dimension", "measure"),

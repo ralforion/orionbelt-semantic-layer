@@ -267,6 +267,9 @@ QUERIES = {
             }
         ],
     },
+    "a_reaggregate_beside_the_tickets": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue per Customer", "Tickets Count"]},
+    },
     "filters_on_table_columns": {
         "select": BY_REGION,
         "where": [
