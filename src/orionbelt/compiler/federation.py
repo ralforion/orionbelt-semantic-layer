@@ -65,6 +65,7 @@ from orionbelt.compiler.cfl_projection import (
     group_measures_by_object,
 )
 from orionbelt.compiler.composability import metric_leaf_measures, metric_measure_names
+from orionbelt.compiler.count_zero import read_as_counts
 from orionbelt.compiler.expr_rewrite import rewrite_column_refs
 from orionbelt.compiler.fill_wrap import fill_bounds
 from orionbelt.compiler.filter_resolution import (
@@ -1521,10 +1522,10 @@ def plan_federated(
         # Where the combine step counts the rows of the island's object, it
         # adds those no fact row reaches, which the test must reach too: the
         # leg joins that island's leg, on the same keys.
-        counted = island_legs[missing.island]
+        counting_leg = island_legs[missing.island]
         joins = (
-            leg_joins.setdefault(counted, [])
-            if counted in leg_parent_of.values()
+            leg_joins.setdefault(counting_leg, [])
+            if counting_leg in leg_parent_of.values()
             else joins_from(e)
         )
         joins.append(
@@ -1693,6 +1694,7 @@ def plan_federated(
         combined_variances(
             combiner, {m: (c, sq, scale) for m, (c, _, sq, scale) in variances.items()}
         ),
+        read_as_counts(_counts(model, measures)),
     ):
         combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
     if row_count:
@@ -2137,7 +2139,7 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
-        with fill_bounds(bounds):
+        with fill_bounds(bounds), read_as_counts(_counts(model, measures)):
             sql = compile_leg(parts_query, parts_model, COMBINE_DIALECT)
     else:
         # Each row is a group of the union by the dimensions, each read from
@@ -2162,7 +2164,7 @@ def _plan_parts(
                 "use_path_names": [],
             }
         )
-        with fill_bounds(bounds):
+        with fill_bounds(bounds), read_as_counts(_counts(model, measures)):
             sql = compile_leg(grouped, parts_model, COMBINE_DIALECT)
         sql = _returned(
             sql,
@@ -2355,6 +2357,20 @@ def _returned(
     if query.offset:
         rows += f"\nOFFSET {query.offset}"
     return rows
+
+
+def _counts(model: SemanticModel, names: Iterable[str]) -> set[str]:
+    """The measures of *names* that are counts.
+
+    The combine step recombines them with another aggregation, and reads them
+    as counts all the same (:func:`~orionbelt.compiler.count_zero.read_as_counts`).
+    """
+    effective = model.effective_measures
+    return {
+        name
+        for name in names
+        if effective[name].aggregation in (AggregationType.COUNT, AggregationType.COUNT_DISTINCT)
+    }
 
 
 def _part_measure(model: SemanticModel, name: str) -> Measure:

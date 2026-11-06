@@ -15,6 +15,9 @@ of them, reads the periods that have rows and no others.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import Expr, FunctionCall, Literal
@@ -28,11 +31,33 @@ if TYPE_CHECKING:
 
 COUNT_AGGREGATIONS = frozenset({"count", "count_distinct"})
 
+# The measures compiled meanwhile that are counts, whatever aggregation
+# recombines them (:func:`read_as_counts`).
+_COUNTED: ContextVar[frozenset[str]] = ContextVar("counted", default=frozenset())
+
+
+@contextmanager
+def read_as_counts(names: Iterable[str]) -> Iterator[None]:
+    """Read the measures *names* as counts while the block runs.
+
+    A federated query's combine step recombines a count from what its legs
+    returned: it adds up partial counts (``SUM``), or takes the one value a
+    fact's part computed (``MAX``). It is a count all the same, 0 over no
+    rows, as one database's is.
+    """
+    token = _COUNTED.set(frozenset(names))
+    try:
+        yield
+    finally:
+        _COUNTED.reset(token)
+
 
 def _counts_rows(name: str | None, model: SemanticModel) -> bool:
     """Whether the measure named *name* is a ``count`` or ``count_distinct``."""
     measure = model.effective_measures.get(name) if name else None
-    return measure is not None and measure.aggregation.lower() in COUNT_AGGREGATIONS
+    return measure is not None and (
+        measure.aggregation.lower() in COUNT_AGGREGATIONS or measure.name in _COUNTED.get()
+    )
 
 
 def counts(measure: ResolvedMeasure, model: SemanticModel) -> bool:
@@ -48,7 +73,7 @@ def counts(measure: ResolvedMeasure, model: SemanticModel) -> bool:
         )
     if measure.component_measures or measure.is_pop or measure.is_window:
         return False
-    return measure.aggregation.lower() in COUNT_AGGREGATIONS
+    return measure.aggregation.lower() in COUNT_AGGREGATIONS or measure.name in _COUNTED.get()
 
 
 def zero_if_missing(

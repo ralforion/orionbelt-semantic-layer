@@ -1812,6 +1812,7 @@ PERIOD_METRICS = (
     "    timeDimension: Order Date\n"
     "  Revenue per Day:\n"
     "    {type: reaggregate, measure: Revenue, per: [Order Date], aggregation: avg}\n"
+    "  Running Orders: {type: cumulative, measure: Orders Count, timeDimension: Order Date}\n"
 )
 FEB_ON = {"field": "Order Date", "op": ">=", "value": "2024-02-01"}
 KNOWN_REGION = {"field": "Region", "op": "in", "value": ["EU", "US"]}
@@ -1857,6 +1858,10 @@ PERIOD_QUERIES = {
             "measures": ["Rolling Revenue", "Running Revenue"],
         },
         "where": [FEB_ON],
+    },
+    "a_running_count_filled": {
+        "select": {"dimensions": BY_MONTH_REGION, "measures": ["Running Orders", "Revenue"]},
+        "fill": True,
     },
 }
 
@@ -5327,6 +5332,11 @@ INDEPENDENT_MODEL = {
     "  Next Revenue: {type: window, windowFunction: lead, measure: Revenue, offset: 1,"
     " timeDimension: Order Date}\n"
     "  Ticket Half: {type: window, windowFunction: ntile, measure: Tickets Count, buckets: 2}\n"
+    "  Running Orders: {type: cumulative, measure: Orders Count, timeDimension: Order Date}\n"
+    "  Rolling Orders: {type: cumulative, measure: Orders Count, timeDimension: Order Date,"
+    " window: 2}\n"
+    "  Orders to Date: {type: cumulative, measure: Orders Count, timeDimension: Order Date,"
+    " grainToDate: year}\n"
     "  Revenue per Customer: {type: reaggregate, measure: Revenue, per: [Customer],"
     " aggregation: avg}\n",
     "dimension": "  Severity: {dataObject: Tickets, column: Severity, resultType: string}\n"
@@ -5630,6 +5640,13 @@ INDEPENDENT_QUERIES = {
     "a_lag_after_a_date_filter": {
         "select": {"dimensions": ["Order Date:month"], "measures": ["Prior Revenue", "Revenue"]},
         "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+    },
+    "running_counts_filled": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Running Orders", "Rolling Orders", "Orders to Date", "Tickets Count"],
+        },
+        "fill": True,
     },
     "a_lead": {
         "select": {
