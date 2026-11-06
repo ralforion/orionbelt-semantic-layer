@@ -5362,6 +5362,26 @@ class TestExists:
         assert _run_on(subquery_files, subquery_model(True), query) == single
         assert single
 
+    @pytest.mark.parametrize("op", ["exists", "nonexists"])
+    def test_a_context_keeping_its_field_keeps_the_test(
+        self, subquery_files: dict[str, str], op: str
+    ) -> None:
+        """A measure keeping only the filters on ``Customers.Customer ID`` keeps
+        the ``or`` its exists is in, which the combine step tests by another
+        name: it dropped the group, and counted every order."""
+        extra = _over_amount(
+            "Customer Revenue", "filterContext: {keepOnly: [Customers.Customer ID]}"
+        )
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Customer Revenue", "Revenue"]},
+            "where": [{"logic": "or", "filters": [_tickets(op), LATE]}],
+        }
+
+        single = _run_on(subquery_files, subquery_model(False, extra=extra), query)
+
+        assert _run_on(subquery_files, subquery_model(True, extra=extra), query) == single
+        assert single
+
     def test_the_leg_of_keys_is_joined_and_tested(self) -> None:
         query = {
             "select": BY_REGION,

@@ -970,6 +970,11 @@ def plan_federated(
     in_leg: dict[int, dict[str, Expr]] = {}
     outcome_of: dict[tuple[str, str, str], str] = {}
     outcomes: dict[str, list[str]] = {}
+    # An exists the combine step tests by a leg's keys is that test's column,
+    # which a filter context keeping or leaving out its field names too.
+    for by_key in by_keys:
+        assert by_key.tested is not None
+        outcomes.setdefault(by_key.item.field, []).append(by_key.tested)
 
     def outcome(leaf: QueryFilter) -> str | None:
         dimension = model.dimensions.get(leaf.field)
