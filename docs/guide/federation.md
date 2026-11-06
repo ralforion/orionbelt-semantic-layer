@@ -196,6 +196,12 @@ does, and its refusal says so.
 | `exists` on its subject's island, `nonexists` on the fact island | the leg of the subject's island, with its subquery | as on one database |
 | `nonexists` on a dimension island | a leg of its own returning that island's keys the subquery holds for (`exists`); the combine query keeps the fact rows whose key is not among them | it holds for a fact row with no row there (an order whose customer is missing), which a filter in the dimension leg would drop |
 
+A filter on a table column rather than a dimension (`Customers.Region`, in
+`where` or in a measure's `filterContext`) runs as a filter on a dimension
+over that column would, where the table above places it: one database
+compares the column as it compares such a dimension, the same expression in
+the same time zone.
+
 ### Exists subqueries
 
 An [`exists` / `nonexists`](query-language.md#existence-operators) filter runs
@@ -1067,7 +1073,7 @@ tickets in PostgreSQL. Revenue is the sum of the order amounts.
 | Uses calculated columns | the calculation reads another database, or gives orders without a customer a value (`COALESCE`) | [Calculated columns](#calculated-columns) |
 | Uses a median, a distinct count or a similar measure | it reads MySQL text or ClickHouse floats | [Medians, distinct counts and similar measures](#medians-distinct-counts-and-similar-measures) |
 | Uses running totals, period comparisons or reaggregate metrics | the date is in a table the query does not use | [Metrics](#metrics) |
-| Filters | on a table column instead of a dimension, or with `exists` across databases | [Filters](#filters) |
+| Filters | with `exists` across databases | [Filters](#filters) |
 | Fails while it runs | a database returns too many rows, or too many queries run at once | [When the query runs](#when-the-query-runs) |
 | Gives a slightly different answer than one database | never refused: sorting, time zones | [Results that can differ](#results-that-can-differ-from-one-database) |
 
@@ -1180,7 +1186,6 @@ DuckDB compares values differently than the source database.
 
 | You ask for | Do this instead | Error |
 |---|---|---|
-| A filter on a table column (`Customers.Region`) instead of a dimension, in `where` or in a measure's `filterContext` | Add a dimension for the column and filter on it | `FEDERATION_UNSUPPORTED_FILTER` |
 | `exists` or `nonexists` with a subquery that reads another database than the table it tests | Keep the subquery in the database of the table it tests | `FEDERATION_UNSUPPORTED_FILTER` |
 | `exists` or `nonexists` in an `or` with a condition on another database, or in a filter group that can be true for orders without a customer (one with `is_null`, for example) | Use it as a filter of its own, or combine it only with conditions on the same database | `FEDERATION_UNSUPPORTED_FILTER` |
 | `exists` or `nonexists` that a measure's `filterContext` leaves out | Keep it in every measure's `filterContext` | `FEDERATION_UNSUPPORTED_FILTER` |
