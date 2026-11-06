@@ -773,6 +773,9 @@ def columns_as_dimensions(
         for item in measure.filter_context.include
     ]
     taken = _reserved_names(model)
+    # A name the model takes is moved aside, past every column a filter
+    # names too: ``_Orders.Amount`` may be one.
+    filtered = {field.casefold() for field in named}
     hidden: dict[str, str] = {}
     added: dict[str, Dimension] = {}
     for field in named:
@@ -785,7 +788,11 @@ def columns_as_dimensions(
             or column not in declared.columns
         ):
             continue
-        hidden[field] = _unused(field, taken)
+        name = field
+        while name.casefold() in taken or (name != field and name.casefold() in filtered):
+            name = f"_{name}"
+        taken.add(name.casefold())
+        hidden[field] = name
         added[hidden[field]] = Dimension(
             name=hidden[field],
             view=obj,

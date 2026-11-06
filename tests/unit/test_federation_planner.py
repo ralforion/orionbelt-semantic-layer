@@ -3091,6 +3091,44 @@ class TestGrainAndFilterContext:
         assert _run_on(paths, model_yaml(federated=True, extra=extra), query) == single
         assert single == [("EU", Decimal("241.50")), ("US", Decimal("7.00"))]
 
+    @pytest.mark.parametrize("reversed_order", [False, True], ids=["as_written", "reversed"])
+    def test_a_moved_name_is_no_column_a_filter_names(self, reversed_order: bool) -> None:
+        """A measure ``Orders.Amount`` moves that column's dimension aside, past
+        ``_Orders.Amount``, a column of ``_Orders`` the query filters too: the
+        two filters keep a dimension each, in either order."""
+        from orionbelt.compiler.federation import columns_as_dimensions
+        from orionbelt.parser.loader import TrackedLoader
+        from orionbelt.parser.resolver import ReferenceResolver
+
+        yaml = model_yaml(
+            federated=True, extra=_over_amount("Orders.Amount", "resultType: decimal")
+        )
+        yaml = yaml.replace(
+            "  Customers:\n",
+            "  _Orders:\n    code: orders\n    dataSource: shop\n    columns:\n"
+            "      Amount: {code: amount, abstractType: decimal}\n  Customers:\n",
+            1,
+        )
+        raw, source_map = TrackedLoader().load_string(yaml)
+        model, validation = ReferenceResolver().resolve(raw, source_map)
+        assert validation.valid
+        where = [
+            {"field": "Orders.Amount", "op": ">", "value": 50},
+            {"field": "_Orders.Amount", "op": "<", "value": 100},
+        ]
+        query = QueryObject.model_validate(
+            {"select": {"measures": ["Revenue"]}, "where": where[::-1] if reversed_order else where}
+        )
+
+        result = columns_as_dimensions(query, model)
+
+        assert result is not None
+        rewritten, extended = result
+        fields = sorted(getattr(f, "field", "") for f in rewritten.where)
+        assert fields == ["_Orders.Amount", "__Orders.Amount"]
+        assert extended.dimensions["__Orders.Amount"].view == "Orders"
+        assert extended.dimensions["_Orders.Amount"].view == "_Orders"
+
     @pytest.mark.parametrize("mode", ["exclude", "keepOnly"])
     def test_an_exists_on_a_renamed_column_keeps_its_context(
         self, subquery_files: dict[str, str], mode: str
