@@ -5320,11 +5320,66 @@ class TestExists:
         assert "WHERE NOT EXISTS (" in orders.sql
         assert "returns" in orders.physical_tables
 
-    def test_beside_a_condition_on_another_source_it_is_refused(self) -> None:
-        after = {"field": "Order Date", "op": ">=", "value": "2024-03-01"}
+    @pytest.mark.parametrize(
+        "where",
+        [
+            [{"logic": "or", "filters": [_tickets("exists", HIGH), LATE]}],
+            [{"logic": "or", "filters": [_tickets("nonexists"), LATE]}],
+            [
+                {
+                    "logic": "or",
+                    "filters": [_tickets("exists"), {"field": "Region", "op": "is_null"}],
+                }
+            ],
+            [{"logic": "or", "negated": True, "filters": [_tickets("exists"), LATE]}],
+            [{"logic": "or", "filters": [_tickets("exists", HIGH), _tickets("nonexists"), LATE]}],
+            [
+                {
+                    "logic": "or",
+                    "filters": [{"logic": "and", "filters": [_tickets("exists"), EU]}, LATE],
+                }
+            ],
+        ],
+        ids=[
+            "an_exists_or_an_order_date",
+            "a_nonexists_or_an_order_date",
+            "in_a_group_true_where_the_customer_is_missing",
+            "negated",
+            "two_of_them",
+            "in_an_and_inside_an_or",
+        ],
+    )
+    def test_beside_a_condition_on_another_source_it_tests_a_leg_of_keys(
+        self, subquery_files: dict[str, str], where: list[Any]
+    ) -> None:
+        """The combine step runs no subquery: a leg on the CRM returns the
+        customers the subquery holds for, and the combine step tests a fact
+        row's customer among them, set for exists, not for nonexists."""
+        query = {"select": BY_REGION, "where": where}
+
+        single = _run_on(subquery_files, subquery_model(False), query)
+
+        assert _run_on(subquery_files, subquery_model(True), query) == single
+        assert single
+
+    def test_the_leg_of_keys_is_joined_and_tested(self) -> None:
         query = {
             "select": BY_REGION,
-            "where": [{"logic": "or", "filters": [_tickets("exists"), after]}],
+            "where": [{"logic": "or", "filters": [_tickets("exists", HIGH), LATE]}],
+        }
+
+        plan = _compile(subquery_model(True), query).federation
+
+        keys = plan.legs[-1]
+        assert "WHERE EXISTS (" in keys.sql
+        assert keys.data_source == "crm"
+        assert '"leg_2"."__fk0_0" IS NOT NULL' in plan.combine_sql
+
+    def test_on_the_facts_source_beside_a_condition_on_another_it_is_refused(self) -> None:
+        """The fact leg returns groups, not the orders an exists tests."""
+        query = {
+            "select": BY_REGION,
+            "where": [{"logic": "or", "filters": [_returns("exists"), EU]}],
         }
 
         with pytest.raises(ResolutionError) as caught:
@@ -5332,7 +5387,9 @@ class TestExists:
 
         (error,) = caught.value.errors
         assert error.code == "FEDERATION_UNSUPPORTED_FILTER"
-        assert "An exists filter that runs after the join" in error.message
+        assert "An exists filter on the facts' data source that runs after the join" in (
+            error.message
+        )
 
     def test_a_subquery_reading_another_source_than_its_subject_is_refused(self) -> None:
         tickets_of_orders = {

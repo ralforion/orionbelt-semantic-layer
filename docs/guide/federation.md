@@ -195,6 +195,7 @@ does, and its refusal says so.
 | A static model filter on another island | the combine query, on a column that island's leg returns | it drops the rows it excludes and keeps an unmatched row when it holds for NULL; `enforce: always` applies even when the query reads nothing else of that island, and in the body of an `exists` subquery on that island too, as on one database |
 | `exists` on its subject's island, `nonexists` on the fact island | the leg of the subject's island, with its subquery | as on one database |
 | `nonexists` on a dimension island | a leg of its own returning that island's keys the subquery holds for (`exists`); the combine query keeps the fact rows whose key is not among them | it holds for a fact row with no row there (an order whose customer is missing), which a filter in the dimension leg would drop |
+| `exists` or `nonexists` on a dimension island in an `or` with a condition on another island, or in a group true where its subject is missing | a leg of its own returning that island's keys the subquery holds for; the combine query tests each fact row's key among them, found for `exists`, not for `nonexists` | the combine query runs no subquery; an order whose customer is missing has no key there, as one database's `exists` finds no row for it |
 
 A filter on a table column rather than a dimension (`Customers.Region`, in
 `where` or in a measure's `filterContext`) runs as a filter on a dimension
@@ -1187,7 +1188,7 @@ DuckDB compares values differently than the source database.
 | You ask for | Do this instead | Error |
 |---|---|---|
 | `exists` or `nonexists` with a subquery that reads another database than the table it tests | Keep the subquery in the database of the table it tests | `FEDERATION_UNSUPPORTED_FILTER` |
-| `exists` or `nonexists` in an `or` with a condition on another database, or in a filter group that can be true for orders without a customer (one with `is_null`, for example) | Use it as a filter of its own, or combine it only with conditions on the same database | `FEDERATION_UNSUPPORTED_FILTER` |
+| `exists` or `nonexists` on the orders' database (the orders with a return) in an `or` with a condition on another database, or in a filter group that can be true for orders without a customer (one with `is_null`, for example) | Use it as a filter of its own, or combine it only with conditions on the orders' database | `FEDERATION_UNSUPPORTED_FILTER` |
 | `exists` or `nonexists` that a measure's `filterContext` leaves out | Keep it in every measure's `filterContext` | `FEDERATION_UNSUPPORTED_FILTER` |
 | Raw mode: `exists` or `nonexists` on a table of another database than the orders | Ask for dimensions and measures, or test a table of the orders' database | `FEDERATION_UNSUPPORTED_FILTER` |
 | Raw mode without a `queryTimezone`: a filter that mixes both databases, on a timestamp with a time zone grouped by period | Set the model's `queryTimezone` | `FEDERATION_UNSUPPORTED_FILTER` |
