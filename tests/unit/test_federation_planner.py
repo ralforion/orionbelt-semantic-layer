@@ -9560,6 +9560,29 @@ class TestTextOrder:
         assert "__ranks" not in plan.combine_sql
         assert all("DENSE_RANK" not in leg.sql for leg in plan.legs)
 
+    @pytest.mark.parametrize("name", ["2024", "1"], ids=["out_of_range", "a_position"])
+    def test_a_measure_named_by_a_number_is_sorted_by_its_name(
+        self, sources: Any, name: str
+    ) -> None:
+        """A selected measure's name comes before a position, as one database
+        resolves it: ``2024`` is no position, and ``1`` not the first column."""
+        plan = sources(
+            "postgres",
+            "postgres",
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue", name]},
+                "orderBy": [{"field": name, "direction": "desc"}, {"field": "Region"}],
+            },
+            model_yaml(
+                federated=True,
+                extra=f'  "{name}": {{columns: [{AMOUNT}], aggregation: max}}\n',
+            ),
+        )
+
+        assert plan.combine_sql.endswith(
+            f'ORDER BY "__sorted"."{name}" DESC NULLS FIRST, "__ranks0"."__or0" ASC NULLS LAST'
+        )
+
     def test_a_leg_on_duckdb_sorts_as_the_combine_step(self, sources: Any) -> None:
         plan = sources(
             "postgres",

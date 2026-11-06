@@ -1792,6 +1792,7 @@ def plan_federated(
             combine_sql,
             planner.sort(),
             {column: (leg_of[home], column, rank) for column, (home, rank) in ranked.items()},
+            planner.shown(),
             query.limit,
             query.offset,
         )
@@ -2064,7 +2065,7 @@ def _plan_raw(
         combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
     if ranks:
         combine_sql = _sorted_by_ranks(
-            combine_sql, planner.sort(), ranks, query.limit, query.offset
+            combine_sql, planner.sort(), ranks, planner.shown(), query.limit, query.offset
         )
     return FederatedPlan(legs=tuple(legs), combine_sql=combine_sql, timezone=planner.result_zone)
 
@@ -2451,6 +2452,7 @@ def _sorted_by_ranks(
     sql: str,
     order: list[QueryOrderBy],
     ranks: dict[str, tuple[str, str, str]],
+    columns: set[str],
     limit: int | None,
     offset: int | None,
 ) -> str:
@@ -2459,8 +2461,9 @@ def _sorted_by_ranks(
     By the column of *sql* each string is in, *ranks* names the leg returning
     it, its column there and the column of its rank (:meth:`_Planner.ranked_sorts`):
     each row reads the rank of its value, the same in every row of the leg
-    holding it, a NULL none, and sorts by it. Any other sort field is a column
-    of *sql*, or its position. *sql* is neither sorted nor limited.
+    holding it, a NULL none, and sorts by it. Any other sort field is one of
+    the *columns* of *sql*, a measure ``2024`` too, else a position, as one
+    database resolves it. *sql* is neither sorted nor limited.
     """
     q = DialectRegistry.get(COMBINE_DIALECT).quote_identifier
     rows = q(_SORTED_RELATION)
@@ -2478,7 +2481,7 @@ def _sorted_by_ranks(
     def key(o: QueryOrderBy) -> str:
         if o.field in keys:
             return keys[o.field]
-        return o.field if o.field.isdigit() else f"{rows}.{q(o.field)}"
+        return f"{rows}.{q(o.field)}" if o.field in columns else o.field
 
     def nulls(o: QueryOrderBy) -> str:
         return f" NULLS {o.nulls.value.upper()}" if o.nulls is not None else ""
@@ -4860,6 +4863,19 @@ class _Planner:
         first = {"nulls": NullsPosition.FIRST}
         return [o if o.nulls else o.model_copy(update=first) for o in order]
 
+    def shown(self) -> set[str]:
+        """The names of the columns the query returns, which a sort field names
+        before a position (``resolve_order_by_field``): its dimensions' columns
+        and measures, or in raw mode its fields."""
+        select = self.query.select
+        if select.is_raw:
+            return {f.alias for f in self.resolved.fields}
+        return {
+            *(d.name for d in self.resolved.dimensions),
+            *(d.alias for d in select.dimensions if isinstance(d, CoalesceDimension)),
+            *select.measures,
+        }
+
     def ranked_sorts(self, islands: list[set[str]], taken: set[str]) -> dict[str, tuple[int, str]]:
         """The strings sorted by the rank a leg gives them: by column, its island and rank.
 
@@ -4879,24 +4895,18 @@ class _Planner:
         added to it.
         """
         island_of = {o: i for i, island in enumerate(islands) for o in island}
-        select = self.query.select
         strings: dict[str, str] = {}
-        if select.is_raw:
+        if self.query.select.is_raw:
             for f in self.resolved.fields:
                 column = self.model.data_objects[f.object_name].columns.get(f.column_name)
                 if column is not None and column.abstract_type is DataType.STRING:
                     strings[f.alias] = f.object_name
-            shown = {f.alias for f in self.resolved.fields}
         else:
             for d in self.resolved.dimensions:
                 if self.model.dimensions[d.dimension].result_type is DataType.STRING:
                     strings[d.name] = d.object_name
-            shown = {
-                *(d.name for d in self.resolved.dimensions),
-                *(d.alias for d in select.dimensions if isinstance(d, CoalesceDimension)),
-                *select.measures,
-            }
         order = self.sort()
+        shown = self.shown()
         if any(o.field not in shown and not o.field.isdigit() for o in order):
             return {}
         ranked: dict[str, tuple[int, str]] = {}

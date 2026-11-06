@@ -92,6 +92,9 @@ dimensions:
 measures:
   Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
   Median Order: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: median}}
+  # Named by numbers, which a sort reads as the names before positions.
+  "2024": {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: max}}
+  "1": {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: min}}
   Paid Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -535,6 +538,14 @@ ORDERED_QUERIES: dict[str, Any] = {
     "limited_by_a_string_without_a_sort": {
         "select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]},
         "limit": 2,
+    },
+    "sorted_by_a_measure_named_2024_and_a_string": {
+        "select": {"dimensions": ["Sales Rep"], "measures": ["Revenue", "2024"]},
+        "orderBy": [{"field": "2024", "direction": "desc"}, {"field": "Sales Rep"}],
+    },
+    "sorted_by_a_measure_named_1_and_a_string": {
+        "select": {"dimensions": ["Sales Rep"], "measures": ["Revenue", "1"]},
+        "orderBy": [{"field": "1", "direction": "desc"}, {"field": "Sales Rep"}],
     },
     "rolled_up_by_a_string": {
         "select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]},
