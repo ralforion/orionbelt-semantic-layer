@@ -57,6 +57,8 @@ class DatabricksDialect(Dialect):
     key_injection_max_keys = 1_000
     #: 5 million groups by key in 21 s, joining a map in 1.3-3.6 s.
     pushes_key_maps = True
+    nulls_last_ascending = False
+    nulls_last_descending = True
 
     @property
     def name(self) -> str:

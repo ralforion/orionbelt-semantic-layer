@@ -128,6 +128,7 @@ from orionbelt.models.query import (
     QueryObject,
     QueryOrderBy,
     QuerySelect,
+    SortDirection,
     Subquery,
     UsePathName,
 )
@@ -868,10 +869,13 @@ def plan_federated(
     parts = planner.parts(islands) if plan_part is not None else None
     if parts is not None:
         assert plan_part is not None
+        planner.place_nulls([{part.root} for part in parts])
         plans = [plan_part(part.query, part.model) for part in parts]
         return _plan_parts(planner, parts, plans, compile_leg=compile_leg)
     planner.check_per(islands)
     fact = planner.fact_island(islands)
+    planner.place_nulls([islands[fact]])
+    query = planner.query
     edges = planner.federation_edges(islands, fact)
     planner.check_leg_parents(islands, fact, edges)
     unnested = planner.unnested_objects(islands, fact)
@@ -2043,7 +2047,8 @@ def _plan_raw(
 class _Part:
     """One fact's part of a query split by fact (:meth:`_Planner.parts`).
 
-    *query* is planned against *model* as a query of its own. Grouping by no
+    *query* is planned against *model* as a query of its own, of the rows of
+    *root*, the fact's object, and what it reaches. Grouping by no
     dimension, it returns a row however many rows its fact has, none too,
     where one database's union leg returns none: such a part also counts
     them, as the measure *present* of *model* (:meth:`counting`).
@@ -2051,24 +2056,25 @@ class _Part:
 
     query: QueryObject
     model: SemanticModel
+    root: str
     present: str | None = None
 
-    def counting(self, fact: str) -> _Part:
-        """The part, also counting the rows of *fact*, its root, under a name of its own.
+    def counting(self) -> _Part:
+        """The part, also counting the rows of its root, under a name of its own.
 
         A ``bigint``: cast to the ``integer`` of a declared count, more rows
         than one holds failed a query that asks for no count at all.
         """
         present = _unused(_PRESENT, _reserved_names(self.model))
-        measure = synthesize_count_measure(fact, self.model.data_objects[fact], present).model_copy(
-            update={"data_type": "bigint"}
-        )
+        measure = synthesize_count_measure(
+            self.root, self.model.data_objects[self.root], present
+        ).model_copy(update={"data_type": "bigint"})
         model = self.model.model_copy(
             update={"measures": {**self.model.measures, present: measure}}
         )
         measures = [*self.query.select.measures, present]
         select = self.query.select.model_copy(update={"measures": measures})
-        return _Part(self.query.model_copy(update={"select": select}), model, present)
+        return _Part(self.query.model_copy(update={"select": select}), model, self.root, present)
 
 
 def _plan_parts(
@@ -3008,11 +3014,13 @@ class _Planner:
             }
             if not select.dimensions:
                 update["grouping"] = None
-            part = _Part(self.query.model_copy(update={"select": select, **update}), self.model)
+            part = _Part(
+                self.query.model_copy(update={"select": select, **update}), self.model, root
+            )
             # Under a rollup or cube, a part's grand total stands for no rows
             # of an empty fact: each part counts them (:func:`_in_grouping_sets`).
             if not select.dimensions or self.query.grouping is not None:
-                part = part.counting(root)
+                part = part.counting()
             parts.append(part)
         return parts
 
@@ -4722,6 +4730,40 @@ class _Planner:
         """The dialect the leg of *island* is written in."""
         source = source_name(self.model, next(iter(sorted(island))))
         return DialectRegistry.get(self.source_dialect(source) or self.dialect_name)
+
+    def place_nulls(self, facts: list[set[str]]) -> None:
+        """Sort NULL where the engine of the facts, of the islands *facts*, sorts it.
+
+        One database leaves NULL's place in a sort that does not say to its
+        engine (:attr:`~orionbelt.dialect.base.Dialect.nulls_last_ascending`),
+        also in the sort it gives a limited query naming none: by its
+        dimensions, or its fields. The combine step sorts in DuckDB, which
+        puts NULL last either way, and is told the facts' engine's place.
+        Facts on engines placing it apart leave it to DuckDB. Under a rollup
+        or cube one database sorts NULL first, as the combine step does.
+        """
+        if self.query.grouping is not None:
+            return
+        places = {
+            (d.nulls_last_ascending, d.nulls_last_descending) for d in map(self.leg_dialect, facts)
+        }
+        if len(places) != 1:
+            return
+        ascending, descending = places.pop()
+        order = self.query.order_by
+        if not order and self.query.limit is not None:
+            fields = self.query.select.fields or [d.name for d in self.resolved.dimensions]
+            order = [QueryOrderBy(field=f) for f in fields]
+
+        def placed(o: QueryOrderBy) -> QueryOrderBy:
+            if o.nulls is not None:
+                return o
+            last = descending if o.direction is SortDirection.DESC else ascending
+            return o.model_copy(
+                update={"nulls": NullsPosition.LAST if last else NullsPosition.FIRST}
+            )
+
+        self.query = self.query.model_copy(update={"order_by": [placed(o) for o in order]})
 
     def leg_zone(self, island: set[str]) -> LegZone | None:
         """The zone the leg of *island* reads its timestamps without a zone in.

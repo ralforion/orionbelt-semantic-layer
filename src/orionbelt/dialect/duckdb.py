@@ -32,6 +32,7 @@ class DuckDBDialect(Dialect):
     #: 5 million groups by key in 0.05 s, joining a map in 0.13 s: the leg
     #: shrinks to a row per group.
     pushes_key_maps = True
+    nulls_last_descending = True
 
     @property
     def name(self) -> str:

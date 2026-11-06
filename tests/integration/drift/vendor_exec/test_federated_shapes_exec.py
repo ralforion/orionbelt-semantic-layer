@@ -498,6 +498,38 @@ STATIC_QUERIES: dict[str, Any] = {
         "select": {"fields": ["Orders.Order ID", "Employees.Name"]}
     },
 }
+# Sorted where a group, a row or the period of the tickets is NULL, compared in
+# their order: the engine places NULL first or last, and so does the combined
+# answer. Limited without a sort, a query is sorted by its dimensions or fields.
+ORDERED_QUERIES: dict[str, Any] = {
+    "sorted_by_a_dimension_with_a_null_group": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+        "orderBy": [{"field": "Region"}],
+    },
+    "sorted_down_by_a_dimension_with_a_null_group": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+        "orderBy": [{"field": "Region", "direction": "desc"}],
+    },
+    "limited_without_a_sort": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+        "limit": 2,
+    },
+    "raw_rows_sorted_down_by_a_null_field": {
+        "select": {"fields": ["Orders.Order ID", "Regions.Region Name"]},
+        "orderBy": [
+            {"field": "Regions.Region Name", "direction": "desc"},
+            {"field": "Orders.Order ID"},
+        ],
+    },
+    "independent_facts_sorted_down_by_month": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Tickets Count"]},
+        "orderBy": [{"field": "Order Date", "direction": "desc"}],
+    },
+    "independent_facts_limited_without_a_sort": {
+        "select": {"dimensions": ["Order Date:month"], "measures": ["Revenue", "Tickets Count"]},
+        "limit": 2,
+    },
+}
 
 
 def _canonical(row: dict[str, Any]) -> tuple[tuple[str, Any], ...]:
@@ -524,13 +556,20 @@ def _assert_shapes(target: VendorTarget) -> None:
     wrong = []
     for static, queries in (("", QUERIES), (STATIC, STATIC_QUERIES), (BLANK, STATIC_QUERIES)):
         wrong += _wrong_shapes(target, store, static, queries)
+    wrong += _wrong_shapes(target, store, "", ORDERED_QUERIES, ordered=True)
     assert not wrong, f"{target.name}:\n" + "\n".join(wrong)
 
 
 def _wrong_shapes(
-    target: VendorTarget, store: ModelStore, static: str, queries: dict[str, Any]
+    target: VendorTarget,
+    store: ModelStore,
+    static: str,
+    queries: dict[str, Any],
+    *,
+    ordered: bool = False,
 ) -> list[str]:
-    """The shapes of *queries* whose combined answer is not the engine's own."""
+    """The shapes of *queries* whose combined answer is not the engine's own,
+    *ordered* in the same order too."""
     single_id = store.load_model(_model(False, static)).model_id
     federated_id = store.load_model(_model(True, static)).model_id
     wrong = []
@@ -551,7 +590,8 @@ def _wrong_shapes(
         }
         combined = combine(plan, tables, None).arrow_table.to_pylist()
         expected = target.execute(_on_tables(target.dialect, single.sql))
-        if _rows(combined) != _rows(expected) or not expected:
+        compared = (lambda rows: [_canonical(r) for r in rows]) if ordered else _rows
+        if compared(combined) != compared(expected) or not expected:
             wrong.append(f"{name}: {combined} != {expected}")
     return wrong
 

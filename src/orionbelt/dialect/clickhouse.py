@@ -331,6 +331,7 @@ class ClickHouseDialect(Dialect):
     #: leg shrinks to a row per group.
     pushes_key_maps = True
     max_statement_bytes = 256 * 1024
+    nulls_last_descending = True
 
     def render_unnest(self, node: Unnest) -> str:
         """``ARRAY JOIN``, which is its own clause rather than a join.
