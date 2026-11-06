@@ -293,6 +293,10 @@ _PARTS_RELATION = "__parts"
 # and the grouping sets each part's rows join (:func:`_in_grouping_sets`).
 _GROUPED_RELATION = "__grouped"
 _GROUPING_SETS_RELATION = "__grouping_sets"
+# The combine query's rows, sorted by the ranks its legs give its strings, and
+# each column's ranks (:func:`_sorted_by_ranks`).
+_SORTED_RELATION = "__sorted"
+_RANKS_RELATION = "__ranks"
 _PRESENT = "__present"
 
 # The filter operators true where their field is NULL, and those false there.
@@ -1013,6 +1017,11 @@ def plan_federated(
         for included in context.include
         if _condition_key(included.field, included.op, included.value) not in outcome_of
     }
+    # A string the query sorts by is ranked by its leg, in its own engine, and
+    # sorted by that rank after the combine query (:meth:`_Planner.ranked_sorts`).
+    ranked = planner.ranked_sorts(islands, taken)
+    for column, (home, rank) in ranked.items():
+        in_leg.setdefault(home, {})[rank] = _rank_of(column)
 
     # The fact leg: the island's dimensions, the keys of the edges from it and
     # the measures. A dimension leg returns the keys of the edges from its own.
@@ -1761,6 +1770,7 @@ def plan_federated(
             ),
             "where": [_renamed(item, renamed) for item in combine_filters],
             "use_path_names": [],
+            **({"order_by": [], "limit": None, "offset": None} if ranked else {}),
         }
     )
     combiner = DialectRegistry.get(COMBINE_DIALECT)
@@ -1776,6 +1786,15 @@ def plan_federated(
         combine_sql = _with_rows(combine_sql, combiner, "leg_0", row_count, once_columns)
     if reached:
         combine_sql = _reached_rows(combine_sql, combiner, "leg_0", reached)
+    if ranked:
+        leg_of = {fact: "leg_0"} | island_legs
+        combine_sql = _sorted_by_ranks(
+            combine_sql,
+            planner.sort(),
+            {column: (leg_of[home], column, rank) for column, (home, rank) in ranked.items()},
+            query.limit,
+            query.offset,
+        )
     inject = None
     if injections or key_maps:
         inject = KeyInjector(
@@ -1941,6 +1960,14 @@ def _plan_raw(
                 obj, column = (part.strip() for part in field.split(".", 1))
                 renamed[field] = read(obj, column)
         combine_where.append(_tested(item, outcome))
+    # A string field the query sorts by is ranked by its leg, as in the
+    # aggregated plan: by field, the leg, its column there and its rank's.
+    ranks: dict[str, tuple[str, str, str]] = {}
+    for alias, (home, rank) in planner.ranked_sorts(islands, taken).items():
+        sorted_field = next(f for f in resolved.fields if f.alias == alias)
+        value = read(sorted_field.object_name, sorted_field.column_name).split(".", 1)[1]
+        in_leg[home][rank] = _rank_of(value)
+        ranks[alias] = (leg_of[home], value, rank)
 
     combine_filters_static: list[ModelFilter] = []
     legs: list[FederatedLeg] = []
@@ -2029,11 +2056,16 @@ def _plan_raw(
             "select": QuerySelect(fields=fields, distinct=query.select.distinct),
             "where": [_renamed(item, renamed) for item in combine_where],
             "use_path_names": [],
+            **({"order_by": [], "limit": None, "offset": None} if ranks else {}),
         }
     )
     aliases = {field: f.alias for field, f in zip(fields, resolved.fields, strict=True)}
     with raw_field_aliases(aliases):
         combine_sql = compile_leg(combine_query, combine_model, COMBINE_DIALECT)
+    if ranks:
+        combine_sql = _sorted_by_ranks(
+            combine_sql, planner.sort(), ranks, query.limit, query.offset
+        )
     return FederatedPlan(legs=tuple(legs), combine_sql=combine_sql, timezone=planner.result_zone)
 
 
@@ -2405,6 +2437,61 @@ def _in_grouping_sets(query: QueryObject, part: _Part, relation: str) -> str:
         f"SELECT {', '.join(columns)}\nFROM {q(relation)}\n"
         f"JOIN (VALUES {rows}) AS {sets}({', '.join(map(q, flags))}) ON {on or 'TRUE'}{where}"
     )
+
+
+def _rank_of(column: str) -> Expr:
+    """The rank of a leg's value of *column* among its values, in the leg's engine."""
+    return WindowFunction(
+        func_name="DENSE_RANK",
+        order_by=[OrderByItem(expr=ColumnRef(name=column, table=_LEG_ALIAS))],
+    )
+
+
+def _sorted_by_ranks(
+    sql: str,
+    order: list[QueryOrderBy],
+    ranks: dict[str, tuple[str, str, str]],
+    limit: int | None,
+    offset: int | None,
+) -> str:
+    """The rows of *sql* sorted by *order*, a string by its rank in its leg, then limited.
+
+    By the column of *sql* each string is in, *ranks* names the leg returning
+    it, its column there and the column of its rank (:meth:`_Planner.ranked_sorts`):
+    each row reads the rank of its value, the same in every row of the leg
+    holding it, a NULL none, and sorts by it. Any other sort field is a column
+    of *sql*, or its position. *sql* is neither sorted nor limited.
+    """
+    q = DialectRegistry.get(COMBINE_DIALECT).quote_identifier
+    rows = q(_SORTED_RELATION)
+    joins: list[str] = []
+    keys: dict[str, str] = {}
+    for n, (column, (leg, value, rank)) in enumerate(ranks.items()):
+        alias = q(f"{_RANKS_RELATION}{n}")
+        joins.append(
+            f"LEFT JOIN (\nSELECT DISTINCT {q(value)}, {q(rank)}\nFROM {q(leg)}\n"
+            f"WHERE {q(value)} IS NOT NULL\n) AS {alias} "
+            f"ON {rows}.{q(column)} = {alias}.{q(value)}"
+        )
+        keys[column] = f"{alias}.{q(rank)}"
+
+    def key(o: QueryOrderBy) -> str:
+        if o.field in keys:
+            return keys[o.field]
+        return o.field if o.field.isdigit() else f"{rows}.{q(o.field)}"
+
+    def nulls(o: QueryOrderBy) -> str:
+        return f" NULLS {o.nulls.value.upper()}" if o.nulls is not None else ""
+
+    sorted_by = ", ".join(f"{key(o)} {o.direction.value.upper()}{nulls(o)}" for o in order)
+    result = "\n".join(
+        [f"SELECT {rows}.*\nFROM (\n{sql}\n) AS {rows}", *joins, f"ORDER BY {sorted_by}"]
+    )
+    if limit is not None:
+        result += f"\nLIMIT {limit}"
+    if offset:
+        result += f"\nOFFSET {offset}"
+    return result
 
 
 def _returned(
@@ -4758,6 +4845,69 @@ class _Planner:
             )
 
         self.query = self.query.model_copy(update={"order_by": [placed(o) for o in order]})
+
+    def sort(self) -> list[QueryOrderBy]:
+        """The sort the combine step applies, as one database's resolution has it.
+
+        The query's; under a rollup or cube NULL first where it does not say,
+        and by the dimensions where it names no sort, so the totals lead.
+        """
+        order = self.query.order_by
+        if self.query.grouping is None:
+            return order
+        if not order:
+            order = [QueryOrderBy(field=d.name) for d in self.resolved.dimensions]
+        first = {"nulls": NullsPosition.FIRST}
+        return [o if o.nulls else o.model_copy(update=first) for o in order]
+
+    def ranked_sorts(self, islands: list[set[str]], taken: set[str]) -> dict[str, tuple[int, str]]:
+        """The strings sorted by the rank a leg gives them: by column, its island and rank.
+
+        DuckDB sorts strings by their bytes, ``'C'`` before ``'b'``, where an
+        engine sorts them by their collation: PostgreSQL's ``en_US.utf8`` puts
+        ``'b'`` first, and ignores punctuation, MySQL's ``utf8mb4_0900_ai_ci``
+        puts ``'é'`` before ``'f'``. A string column the query sorts by, a
+        dimension or a raw-mode field, is ranked by the leg returning it,
+        ``DENSE_RANK() OVER (ORDER BY ...)`` in its own engine, and the
+        combine step sorts by that rank (:func:`_sorted_by_ranks`). A leg on
+        DuckDB sorts as the combine step does, and a column of two legs (a
+        coalesce dimension) or named by its position is sorted by its bytes.
+        ``{}`` where the query is sorted by a measure it does not select, which
+        the combine query sorts by itself.
+
+        Each rank column takes a name none of *taken* (casefolded) is, and is
+        added to it.
+        """
+        island_of = {o: i for i, island in enumerate(islands) for o in island}
+        select = self.query.select
+        strings: dict[str, str] = {}
+        if select.is_raw:
+            for f in self.resolved.fields:
+                column = self.model.data_objects[f.object_name].columns.get(f.column_name)
+                if column is not None and column.abstract_type is DataType.STRING:
+                    strings[f.alias] = f.object_name
+            shown = {f.alias for f in self.resolved.fields}
+        else:
+            for d in self.resolved.dimensions:
+                if self.model.dimensions[d.dimension].result_type is DataType.STRING:
+                    strings[d.name] = d.object_name
+            shown = {
+                *(d.name for d in self.resolved.dimensions),
+                *(d.alias for d in select.dimensions if isinstance(d, CoalesceDimension)),
+                *select.measures,
+            }
+        order = self.sort()
+        if any(o.field not in shown and not o.field.isdigit() for o in order):
+            return {}
+        ranked: dict[str, tuple[int, str]] = {}
+        for o in order:
+            home = island_of.get(strings.get(o.field, ""))
+            if home is None or o.field in ranked:
+                continue
+            if self.leg_dialect(islands[home]).name == COMBINE_DIALECT:
+                continue
+            ranked[o.field] = (home, _unused(f"__or{len(ranked)}", taken))
+        return ranked
 
     def leg_zone(self, island: set[str]) -> LegZone | None:
         """The zone the leg of *island* reads its timestamps without a zone in.

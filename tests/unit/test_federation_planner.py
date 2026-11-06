@@ -9281,7 +9281,9 @@ class TestNullOrder:
     """One database sorts NULL where its engine does, the query not saying:
     PostgreSQL as the largest value, MySQL as the smallest, DuckDB last either
     way. The combine step sorts in DuckDB, and is told the facts' engine's
-    place; ``test_federated_shapes_exec`` compares the sorted rows on each."""
+    place; ``test_federated_shapes_exec`` compares the sorted rows on each.
+    The customers are on DuckDB, whose regions the combine step sorts as it
+    does (:class:`TestTextOrder`)."""
 
     @pytest.fixture
     def sources(self, monkeypatch: pytest.MonkeyPatch) -> Callable[..., str]:
@@ -9313,7 +9315,7 @@ class TestNullOrder:
     ) -> None:
         sort = sources(
             shop,
-            "postgres",
+            "duckdb",
             {
                 "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
                 "orderBy": [{"field": "Region", "direction": direction}],
@@ -9325,7 +9327,7 @@ class TestNullOrder:
     def test_a_place_the_query_says_is_kept(self, sources: Callable[..., str]) -> None:
         sort = sources(
             "mysql",
-            "postgres",
+            "duckdb",
             {
                 "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
                 "orderBy": [{"field": "Region", "nulls": "last"}],
@@ -9339,7 +9341,7 @@ class TestNullOrder:
     ) -> None:
         sort = sources(
             "mysql",
-            "postgres",
+            "duckdb",
             {
                 "select": {"dimensions": ["Region", "Order Date:month"], "measures": ["Revenue"]},
                 "limit": 2,
@@ -9353,7 +9355,7 @@ class TestNullOrder:
     ) -> None:
         sort = sources(
             "mysql",
-            "postgres",
+            "duckdb",
             {
                 "select": {
                     "dimensions": ["Order Date:month", "Order Date:year", "Region"],
@@ -9371,7 +9373,7 @@ class TestNullOrder:
     def test_limited_raw_rows_are_sorted_by_their_fields(self, sources: Callable[..., str]) -> None:
         sort = sources(
             "mysql",
-            "postgres",
+            "duckdb",
             {"select": {"fields": ["Orders.Order ID", "Customers.Region"]}, "limit": 2},
         )
 
@@ -9423,3 +9425,163 @@ class TestNullOrder:
         )
 
         assert sort.endswith("ASC NULLS FIRST")
+
+
+CHANNEL = {
+    "order_columns": "      Channel: {code: channel, abstractType: string}\n",
+    "dimension": "  Channel: {dataObject: Orders, column: Channel, resultType: string}\n",
+}
+
+
+class TestTextOrder:
+    """One database sorts strings by its collation, where DuckDB sorts their
+    bytes: PostgreSQL's ``en_US.utf8`` puts 'b' before 'C', MySQL's
+    ``utf8mb4_0900_ai_ci`` 'é' before 'f'. The leg returning a sorted string
+    ranks it in its engine, and the combine step sorts by the rank;
+    ``test_federated_shapes_exec`` compares the sorted rows on each engine."""
+
+    @pytest.fixture
+    def sources(self, monkeypatch: pytest.MonkeyPatch) -> Callable[..., Any]:
+        pytest.importorskip("ob_flight")
+        monkeypatch.setenv("OBSL_DATABASES", "shop,crm")
+
+        def plan(shop: str, crm: str, query: dict[str, Any], yaml: str = "") -> Any:
+            monkeypatch.setenv("DB_SHOP_TYPE", shop)
+            monkeypatch.setenv("DB_CRM_TYPE", crm)
+            planned = _compile(yaml or model_yaml(federated=True), query).federation
+            assert planned is not None
+            return planned
+
+        return plan
+
+    def test_a_string_of_another_source_is_sorted_by_its_rank_there(self, sources: Any) -> None:
+        plan = sources(
+            "mysql",
+            "postgres",
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "orderBy": [{"field": "Region", "direction": "desc"}],
+                "limit": 2,
+            },
+        )
+
+        orders, customers = plan.legs
+        assert 'DENSE_RANK() OVER (ORDER BY "__leg"."Region" ASC) AS "__or0"' in customers.sql
+        assert "__or0" not in orders.sql
+        assert 'SELECT DISTINCT "Region", "__or0"\nFROM "leg_1"' in plan.combine_sql
+        # Sorted and limited after the ranks are read, not before.
+        assert plan.combine_sql.endswith('ORDER BY "__ranks0"."__or0" DESC NULLS LAST\nLIMIT 2')
+        assert plan.combine_sql.count("LIMIT") == 1
+
+    def test_a_string_of_the_facts_is_ranked_by_the_fact_leg(self, sources: Any) -> None:
+        plan = sources(
+            "mysql",
+            "postgres",
+            {
+                "select": {"dimensions": ["Channel", "Region"], "measures": ["Revenue"]},
+                "orderBy": [{"field": "Channel"}, {"field": "Region"}],
+            },
+            model_yaml(federated=True, **CHANNEL),
+        )
+
+        orders, customers = plan.legs
+        assert "DENSE_RANK() OVER (ORDER BY `__leg`.`Channel` ASC) AS `__or0`" in orders.sql
+        assert 'DENSE_RANK() OVER (ORDER BY "__leg"."Region" ASC) AS "__or1"' in customers.sql
+        assert plan.combine_sql.endswith(
+            'ORDER BY "__ranks0"."__or0" ASC NULLS FIRST, "__ranks1"."__or1" ASC NULLS FIRST'
+        )
+
+    def test_a_limited_query_naming_no_sort_ranks_its_strings(self, sources: Any) -> None:
+        plan = sources(
+            "postgres",
+            "postgres",
+            {
+                "select": {"dimensions": ["Order Date:month", "Region"], "measures": ["Revenue"]},
+                "limit": 3,
+            },
+        )
+
+        assert plan.combine_sql.endswith(
+            'ORDER BY "__sorted"."Order Date" ASC NULLS LAST, '
+            '"__ranks0"."__or0" ASC NULLS LAST\nLIMIT 3'
+        )
+
+    def test_raw_rows_sorted_by_a_string_field(self, sources: Any) -> None:
+        plan = sources(
+            "postgres",
+            "mysql",
+            {
+                "select": {"fields": ["Orders.Order ID", "Customers.Region"]},
+                "orderBy": [{"field": "Customers.Region"}, {"field": "Orders.Order ID"}],
+            },
+        )
+
+        _, customers = plan.legs
+        assert (
+            "DENSE_RANK() OVER (ORDER BY `__leg`.`Customers.Region` ASC) AS `__or0`"
+            in customers.sql
+        )
+        assert plan.combine_sql.endswith(
+            'ORDER BY "__ranks0"."__or0" ASC NULLS LAST, '
+            '"__sorted"."Orders.Order ID" ASC NULLS LAST'
+        )
+
+    def test_under_a_rollup_the_totals_lead(self, sources: Any) -> None:
+        plan = sources(
+            "postgres",
+            "postgres",
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "grouping": "rollup",
+            },
+        )
+
+        assert plan.combine_sql.endswith('ORDER BY "__ranks0"."__or0" ASC NULLS FIRST')
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "orderBy": [{"field": "Region"}, {"field": "Top Order"}],
+            },
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "orderBy": [{"field": "1"}],
+            },
+        ],
+        ids=["beside_a_measure_it_does_not_select", "by_its_position"],
+    )
+    def test_sorted_by_its_bytes(self, sources: Any, query: dict[str, Any]) -> None:
+        """The combine query sorts by a measure it does not select itself, and
+        a position names no column the legs return."""
+        plan = sources("postgres", "postgres", query)
+
+        assert "__ranks" not in plan.combine_sql
+        assert all("DENSE_RANK" not in leg.sql for leg in plan.legs)
+
+    def test_a_leg_on_duckdb_sorts_as_the_combine_step(self, sources: Any) -> None:
+        plan = sources(
+            "postgres",
+            "duckdb",
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+                "orderBy": [{"field": "Region"}],
+            },
+        )
+
+        assert "__ranks" not in plan.combine_sql
+
+    def test_independent_facts_sort_by_the_bytes(self, sources: Any) -> None:
+        """Each fact's part would rank only the regions it reaches."""
+        plan = sources(
+            "postgres",
+            "postgres",
+            {
+                "select": {"dimensions": ["Region"], "measures": REVENUE_AND_TICKETS},
+                "orderBy": [{"field": "Region"}],
+            },
+            independent_model(True),
+        )
+
+        assert "__ranks" not in plan.combine_sql

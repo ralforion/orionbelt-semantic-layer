@@ -158,7 +158,8 @@ ORDERS = [
 CUSTOMERS = [(10, 1), (11, 2), (12, None), (13, 3)]
 REGIONS = [(1, "EU"), (2, "US")]
 TICKETS = [(10, "high"), (10, "low"), (12, "low"), (98, "high")]
-EMPLOYEES = [(1, "Ann"), (2, "Bob"), (3, "Cid")]
+# "bob" sorts between "Ann" and "Cid" by a collation, after both by bytes.
+EMPLOYEES = [(1, "Ann"), (2, "bob"), (3, "Cid")]
 
 # int, decimal(18, 2), string, date
 TYPES = {
@@ -521,6 +522,27 @@ ORDERED_QUERIES: dict[str, Any] = {
             "measures": ["Revenue"],
         },
         "limit": 3,
+    },
+    # Strings of another source, sorted as their engine sorts them.
+    "sorted_by_a_string_of_another_source": {
+        "select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]},
+        "orderBy": [{"field": "Sales Rep"}],
+    },
+    "sorted_down_by_a_string_of_another_source": {
+        "select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]},
+        "orderBy": [{"field": "Sales Rep", "direction": "desc"}],
+    },
+    "limited_by_a_string_without_a_sort": {
+        "select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]},
+        "limit": 2,
+    },
+    "rolled_up_by_a_string": {
+        "select": {"dimensions": ["Sales Rep"], "measures": ["Revenue"]},
+        "grouping": "rollup",
+    },
+    "raw_rows_sorted_by_a_string_field": {
+        "select": {"fields": ["Orders.Order ID", "Employees.Name"]},
+        "orderBy": [{"field": "Employees.Name"}, {"field": "Orders.Order ID"}],
     },
     "raw_rows_sorted_down_by_a_null_field": {
         "select": {"fields": ["Orders.Order ID", "Regions.Region Name"]},
