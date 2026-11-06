@@ -3040,6 +3040,19 @@ class TestGrainAndFilterContext:
         assert _run_on(files, model_yaml(federated=True, extra=extra), query) == single
         assert any(any_region != revenue for _, any_region, revenue in single)
 
+    def test_a_filter_on_a_date_column_filters_as_on_one_database(
+        self, files: dict[str, str]
+    ) -> None:
+        query = {
+            "select": {"dimensions": ["Order Date:month", "Region"], "measures": ["Revenue"]},
+            "where": [{"field": "Orders.Order Date", "op": ">=", "value": "2024-02-01"}],
+        }
+
+        single = _run_on(files, model_yaml(federated=False), query)
+
+        assert _run_on(files, model_yaml(federated=True), query) == single
+        assert single
+
     def test_an_included_filter_on_a_column_filters_as_on_one_database(
         self, files: dict[str, str]
     ) -> None:
@@ -7439,9 +7452,8 @@ class TestDimensionSourceJoins:
                 }
             ],
             [{"field": "Customers.Region", "op": "is_null"}],
-            [{"field": "Orders.Order Date", "op": ">=", "value": "2024-02-01"}],
         ],
-        ids=["of_the_facts", "of_the_customers", "in_an_or_across_sources", "is_null", "a_date"],
+        ids=["of_the_facts", "of_the_customers", "in_an_or_across_sources", "is_null"],
     )
     def test_a_filter_on_a_column_filters_as_on_one_database(
         self, island_files: dict[str, dict[str, str]], where: list[Any]
