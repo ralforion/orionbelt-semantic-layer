@@ -202,11 +202,11 @@ class TestFilterContextInAMultiFactPlan:
         assert '"Unfiltered Sales"' not in sql.split('"fc_0" AS')[0]
 
     def test_it_answers_what_it_does_on_its_own(self) -> None:
-        """The isolated measure is projected last either way, after whatever
-        the rest of the query brought."""
+        """The isolated measure is in its place in the select, after the month,
+        whatever the rest of the query brought."""
         together = _run(_sql(["Unfiltered Sales", "Refund Amount"]))
         alone = _run(_sql(["Unfiltered Sales"]))
-        assert [float(r[-1]) for r in together] == [float(r[-1]) for r in alone]
+        assert [float(r[1]) for r in together] == [float(r[1]) for r in alone]
 
     def test_a_single_fact_query_still_works(self) -> None:
         sql = _sql(["Unfiltered Sales", "Sales Amount"])
@@ -257,11 +257,11 @@ class TestFilterContextReadThroughAMetric:
         WHERE left out of it."""
         sql = self._sql_filtered(["Grand Unfiltered Sales", "Sales Amount"])
         assert "fc_0" in sql
-        # The wrapper projects the inline measure first, then the isolated one.
+        # In the select's order: the isolated measure, then the inline one.
         rows = [(float(r[1]), float(r[2])) for r in _run(sql)]
         # Month 1 holds 10 of the 30, and the unfiltered measure reports all 30
         # even though the query asked only for month 1.
-        assert rows == [(10.0, 30.0)]
+        assert rows == [(30.0, 10.0)]
 
     def test_a_metric_over_plain_components_is_untouched(self) -> None:
         assert "Sales Share" in self._sql_filtered(["Sales Share"])

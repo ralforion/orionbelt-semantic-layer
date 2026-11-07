@@ -63,6 +63,9 @@ query = QueryObject(
 ## Select
 
 The `select` section specifies which dimensions and measures to include.
+The result has the dimensions first, then the measures, each in the order
+`select` lists them, so a column position in `orderBy` (`field: "3"`) names
+the third of them.
 
 ### Dimensions
 

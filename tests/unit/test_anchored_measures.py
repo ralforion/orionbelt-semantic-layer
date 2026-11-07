@@ -721,7 +721,7 @@ def test_a_metric_over_an_anchored_measure_survives_a_multi_fact_plan() -> None:
 
     cross = float(run(["Cross"])[0][1])
     combined = run(["Cross Plus One", "Visit Total"])
-    assert float(combined[0][2]) == pytest.approx(cross + 1)
+    assert float(combined[0][1]) == pytest.approx(cross + 1)
 
 
 KEY_IN_EXPRESSION_YAML = TWO_FACT_YAML.replace(

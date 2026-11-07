@@ -6006,6 +6006,34 @@ class TestMeasuresOfIndependentFacts:
     the facts, each grouped by the dimensions it reaches; across sources each
     fact is a query of its own, and the combine step unions their results."""
 
+    @pytest.mark.parametrize(
+        "measures",
+        [
+            ["Revenue Any Region", "Tickets Count", "Revenue"],
+            ["Average per Ticket", "Tickets Count", "Revenue"],
+            ["Revenue", "Tickets Count", "Orders Count"],
+        ],
+        ids=["a_filter_context_first", "a_derived_metric_first", "a_fact_between_another_facts"],
+    )
+    def test_the_columns_come_in_the_select_order(
+        self, independent_files: dict[str, dict[str, str]], measures: list[str]
+    ) -> None:
+        """As on one database, which projected the filter context's measure and
+        the derived metric last, and each fact's measures together."""
+        paths = independent_files["crm"]
+        query = {"select": {"dimensions": ["Region"], "measures": measures}}
+        names = []
+        for federated in (False, True):
+            compiled = _compile(independent_model(federated), query)
+            con = (
+                legs_registered(paths, compiled.federation)
+                if federated
+                else duckdb.connect(paths["all"], read_only=True)
+            )
+            names.append([d[0] for d in con.execute(compiled.sql).description])
+
+        assert names == [["Region", *measures]] * 2
+
     @pytest.mark.parametrize("query", INDEPENDENT_QUERIES.values(), ids=INDEPENDENT_QUERIES.keys())
     def test_federated_returns_what_one_source_returns(
         self, independent_files: dict[str, dict[str, str]], query: dict[str, Any]

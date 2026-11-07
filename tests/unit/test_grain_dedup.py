@@ -2310,8 +2310,8 @@ def test_filter_context_composes_with_a_deduplicated_measure() -> None:
     )
     # January counts p1's stock once despite two sales, and the quantities are
     # the same either way here - what matters is that both are computed at all.
-    # The wrapper projects the inline measure first, then the isolated one.
-    assert [(month, stock) for month, stock, _ in rows] == [("2024-01", 100), ("2024-02", 110)]
+    # In the select's order: the isolated measure, then the inline one.
+    assert [(month, stock) for month, _, stock in rows] == [("2024-01", 100), ("2024-02", 110)]
 
 
 def test_a_deduplicated_filter_context_measure_deduplicates_in_its_own_scan() -> None:
