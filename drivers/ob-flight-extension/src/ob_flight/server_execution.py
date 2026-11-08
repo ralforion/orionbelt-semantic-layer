@@ -9,6 +9,7 @@ functions take the ``OBFlightServer`` instance as their first argument
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
@@ -114,6 +115,56 @@ def rewrite_table_names(server: OBFlightServer, sql: str, model: Any) -> str:
         if schema_name:
             sql = sql.replace(f"{schema_name}.{code}", code)
     return sql
+
+
+# ``DESCRIBE <target>`` / ``SHOW COLUMNS FROM <target>``: the statement names
+# its model in a target the classifier does not parse.
+_RE_DESCRIBE_TARGET = re.compile(r"^\s*DESC(?:RIBE)?\s+(?:TABLE\s+)?(?P<target>[^\s;]+)", re.I)
+_RE_SHOW_TARGET = re.compile(
+    r"^\s*SHOW\s+(?:FULL\s+)?(?:COLUMNS|FIELDS|TABLES)\s+(?:FROM|IN)\s+(?P<target>[^\s;]+)", re.I
+)
+
+
+def _named_table(sql: str) -> Any:
+    """The table a statement names: its own FROM, or a SHOW / DESCRIBE target.
+
+    Only the outer FROM counts. A table in a subquery names a data object,
+    whose name a model may share.
+    """
+    import sqlglot
+    import sqlglot.expressions as exp
+    from orionbelt.compiler.sql_translator import _strip_trailing_grouping
+
+    cleaned, _ = _strip_trailing_grouping(sql)
+    target = _RE_DESCRIBE_TARGET.match(cleaned) or _RE_SHOW_TARGET.match(cleaned)
+    try:
+        if target is not None:
+            return exp.to_table(target["target"])
+        ast = sqlglot.parse_one(cleaned)
+    except Exception:
+        return None
+    if not isinstance(ast, exp.Select):
+        return None
+    from_node = ast.args.get("from") or ast.args.get("from_")
+    table = getattr(from_node, "this", None)
+    return table if isinstance(table, exp.Table) else None
+
+
+def other_model_named(server: OBFlightServer, sql: str, model: Any) -> str | None:
+    """The loaded model a statement names, when it is not the connection's own.
+
+    A schema qualifier names a model (``shop.measures``, ``"orionbelt"."shop"."model"``),
+    and so does a bare name that is not one of the model's own views (``FROM shop``).
+    """
+    available = {name.lower() for name in server._list_available_model_names()}
+    table = _named_table(sql) if available else None
+    if table is None:
+        return None
+    name = table.db.lower() or table.name.lower()
+    if not table.db and name in (*_LABEL_VIEW_NAMES, *_METADATA_VIEW_NAMES, MODEL_TABLE):
+        return None
+    own = (getattr(model, "_ob_model_id", "") or "").lower()
+    return name if name in available and name != own else None
 
 
 def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
@@ -392,6 +443,17 @@ def prepare_sql(
         # whatever zone the engine attached rather than as the wall clock.
         schema_hint = server._semantic_result_schema(query, model)
         return sql, dialect, model, schema_hint, _MODE_SEMANTIC, cache_meta
+
+    # A connection reads only the model its header selects: a statement naming
+    # another loaded model is refused, data and catalog alike, so the header
+    # stays the one place a model is chosen.
+    other = other_model_named(server, sql, model)
+    if other is not None:
+        raise flight.FlightServerError(
+            f"[MODEL_MISMATCH] The statement names model '{other}', but this connection "
+            f"reads model '{getattr(model, '_ob_model_id', '')}'. Set the connection's "
+            f"`database` field (or `x-obsl-model` header) to '{other}' to query it."
+        )
 
     mode = server._classify_sql(sql, model)
 

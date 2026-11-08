@@ -263,6 +263,29 @@ Discover available models via GET /v1/models.
 
 The error itself is the documentation — no need to remember anything.
 
+### A statement naming another model
+
+A connection reads only the model its **Database** field selects. A
+statement that names another loaded model is refused, a query and a
+catalog statement alike:
+
+```sql
+-- on a connection to sales
+SELECT "Region", "Total Returns" FROM returns;
+SELECT * FROM returns._measures_metadata;
+DESCRIBE returns;
+```
+
+```
+[MODEL_MISMATCH] The statement names model 'returns', but this connection
+reads model 'sales'. Set the connection's `database` field (or
+`x-obsl-model` header) to 'returns' to query it.
+```
+
+To query `returns`, open a connection with **Database** `returns`. Over
+the Postgres wire, one connection can reach every model: see
+[Several models in one connection](postgres-wire-bi-tools.md#several-models-in-one-connection).
+
 ## No-FROM mode — implicit model
 
 On a connection with a resolved model (single-model, or multi-model with

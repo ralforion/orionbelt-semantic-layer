@@ -557,3 +557,81 @@ class TestSemanticResultSchemaDecimals:
         model = self._model(measures={"Huge": _sum_measure(data_type="decimal(100, 2)")})
         schema = semantic_result_schema(None, self._query(["Huge"]), model)
         assert schema.field("Huge").type == pa.float64()
+
+
+class _Context:
+    """A call context whose routing middleware selects ``model``, as the header does."""
+
+    def __init__(self, model: str) -> None:
+        self._middleware = SimpleNamespace(selected_model=model)
+
+    def get_middleware(self, key: str) -> Any:
+        return self._middleware
+
+
+def _make_multi_model_server(*names: str) -> OBFlightServer:
+    """A server over a real SessionManager holding one model per name."""
+    from orionbelt.service.session_manager import SessionManager
+
+    mgr = SessionManager()
+    for name in names:
+        mgr.get_or_create_named(name).load_model(_MODEL_YAML)
+    server = _make_server(None)
+    server._session_manager = mgr
+    return server
+
+
+def _values(table: pa.Table) -> set[Any]:
+    return {value for column in table.columns for value in column.to_pylist()}
+
+
+class TestAnotherModelNamed:
+    """A connection reads only the model its header selects (#752)."""
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            'SELECT "Customer Country" FROM shop',
+            'SELECT "Customer Country" FROM shop.model',
+            'SELECT "Customer Country" FROM shop."model"',
+            'SELECT "Customer Country" FROM "orionbelt"."shop"."model"',
+            'SELECT "Customer Country" FROM shop.measures',
+            "SELECT * FROM shop._measures_metadata",
+            'SELECT * FROM "orionbelt"."shop"."_measures_metadata"',
+            "DESCRIBE shop",
+            "SHOW COLUMNS FROM shop",
+        ],
+    )
+    def test_a_statement_naming_another_model_is_refused(self, sql: str) -> None:
+        server = _make_multi_model_server("commerce", "shop")
+        with pytest.raises(flight.FlightServerError, match=r"MODEL_MISMATCH.*'shop'"):
+            server._prepare_sql(sql, context=_Context("commerce"))
+
+    def test_the_connected_model_is_read_as_before(self) -> None:
+        server = _make_multi_model_server("commerce", "shop")
+        context = _Context("commerce")
+        _sql, _d, _m, schema, mode, _c = server._prepare_sql(
+            'SELECT "Customer Country", "Total Revenue" FROM commerce', context=context
+        )
+        assert mode == "semantic"
+        assert "Total Revenue" in schema.names
+        prepared, _d, model, _s, mode, _c = server._prepare_sql(
+            "SELECT * FROM commerce._measures_metadata", context=context
+        )
+        assert mode == "catalog"
+        assert "Total Revenue" in _values(server._handle_catalog_sql(prepared, model))
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            'SELECT "Customer Country" FROM commerce WHERE EXISTS (SELECT 1 FROM "Customers")',
+            'SELECT "Customer Country" FROM measures',
+        ],
+    )
+    def test_a_subquery_or_view_name_is_not_a_model(self, sql: str) -> None:
+        """A data object in a subquery, or a label view, may share a model's name."""
+        from ob_flight.server_execution import other_model_named
+
+        server = _make_multi_model_server("commerce", "customers", "measures")
+        own = server._get_model(_Context("commerce"))[0]
+        assert other_model_named(server, sql, own) is None
