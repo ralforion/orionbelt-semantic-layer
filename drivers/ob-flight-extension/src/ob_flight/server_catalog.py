@@ -390,8 +390,15 @@ def resolve_model_for_catalog(
     tests keep working.
 
     Unknown selector → ``None`` (empty metadata, no fallback) so
-    BI clients don't accidentally browse the wrong model.
+    BI clients don't accidentally browse the wrong model. So is a
+    model the connection does not reach: a connection whose header
+    selects ``commerce`` describes ``commerce`` only.
     """
+    # The filter read below: the schema, else the legacy catalog. JDBC
+    # clients send the brand catalog (``orionbelt``) beside the schema.
+    selected = db_schema_filter or catalog_filter
+    if selected and selected.lower() not in server._reachable_model_names(context):
+        return None
     # db_schema_filter is the v2.5.0 selector — preferred.
     if db_schema_filter and server._session_manager is not None:
         try:
@@ -515,9 +522,9 @@ def build_catalog_table(
         # one entry; the per-model selector is the schema dropdown.
         table = build_catalogs_table(server._list_available_model_names())
     elif type_url == CMD_GET_DB_SCHEMAS:
-        # One row per loaded model — DBeaver renders these under
-        # ``orionbelt`` in the schema tree.
-        table = build_db_schemas_table(server._list_available_model_names())
+        # One row per model the connection reaches — DBeaver renders
+        # these under ``orionbelt`` in the schema tree.
+        table = build_db_schemas_table(server._reachable_model_names(context))
     elif type_url == CMD_GET_TABLES:
         table = server._build_tables_from_model(
             context,

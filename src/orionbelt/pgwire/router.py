@@ -22,6 +22,7 @@ import contextlib
 import logging
 import re
 import struct
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -163,6 +164,10 @@ class SemanticRouter:
         self._sessions = session_manager
         self._default_dialect = default_dialect
         self._catalog = catalog if catalog is not None else CatalogEmulator()
+        # A connection selecting one model sees a catalog holding that model
+        # only, created on first use and dropped when the model goes away.
+        self._model_catalogs: dict[str, CatalogEmulator] = {}
+        self._model_catalogs_lock = threading.Lock()
         # When a result cache is supplied, semantic queries route through the
         # shared cached-execution service (the same one REST uses). Catalog /
         # metadata probes never reach that path, so they are never cached.
@@ -213,8 +218,18 @@ class SemanticRouter:
             or is_tableless_select(sql)
             or self._references_model_schema(sql)
         ):
+            catalog = self._catalog_for(database)
+            if catalog is not self._catalog:
+                try:
+                    _refuse_other_model(database, database, self._extract_model_name_from_sql(sql))
+                except _ModelMismatchError as exc:
+                    return protocol.build_error_response(
+                        severity="ERROR",
+                        code=SQLSTATE_UNDEFINED_TABLE,
+                        message=str(exc),
+                    )
             try:
-                self._catalog.refresh(self._sessions)
+                catalog.refresh(self._sessions)
                 # Resolve the ``model.<view>`` alias to the connected
                 # model's actual schema before executing. The alias is
                 # the Arrow Flight surface's user-friendly shape; we
@@ -222,14 +237,14 @@ class SemanticRouter:
                 # client without retyping the schema name the user
                 # just ``SET search_path``'d to.
                 catalog_sql = self._resolve_model_alias(sql, database)
-                rejection = catalog_rejection(catalog_sql, self._catalog.model_schemas)
+                rejection = catalog_rejection(catalog_sql, catalog.model_schemas)
                 if rejection is not None:
                     return protocol.build_error_response(
                         severity="ERROR",
                         code=SQLSTATE_INSUFFICIENT_PRIVILEGE,
                         message=f"[CATALOG_QUERY_REJECTED] {rejection}",
                     )
-                result = self._catalog.execute(catalog_sql, database)
+                result = catalog.execute(catalog_sql, database)
             except Exception as exc:  # noqa: BLE001 — protocol boundary
                 logger.info("pgwire catalog probe failed: %s", exc)
                 return protocol.build_error_response(
@@ -498,6 +513,26 @@ class SemanticRouter:
         if db_lower == CATALOG_SCHEMA.lower():
             return sorted(names)[0]
         return ""
+
+    def _catalog_for(self, database: str) -> CatalogEmulator:
+        """The catalog a connection sees: its own model's, or every model's.
+
+        A connection on ``database=<model>`` lists and describes that model
+        only, so the database parameter stays the one place a connection
+        chooses its model; a per-model scope check filters here. The brand
+        database (``orionbelt``), or a name that is no model, sees every
+        loaded model.
+        """
+        names = self._loaded_model_names()
+        with self._model_catalogs_lock:
+            for gone in set(self._model_catalogs) - names:
+                self._model_catalogs.pop(gone).close()
+            if database == CATALOG_SCHEMA or database not in names:
+                return self._catalog
+            catalog = self._model_catalogs.get(database)
+            if catalog is None:
+                catalog = self._model_catalogs[database] = CatalogEmulator(scope=database)
+            return catalog
 
     def _loaded_model_names(self) -> set[str]:
         """Return the set of currently-loaded model names (lowercased).

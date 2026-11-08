@@ -157,6 +157,63 @@ def test_brand_database_reads_the_model_from_names() -> None:
     assert target.store is mgr.get_store("shop")
 
 
+def _text_rows(reply: bytes) -> list[list[str | None]]:
+    """The text-format DataRow values of a router reply."""
+
+    rows: list[list[str | None]] = []
+    for tag, body in _parse_frames(reply):
+        if tag != b"D":
+            continue
+        (count,) = struct.unpack("!h", body[:2])
+        offset, row = 2, []
+        for _ in range(count):
+            (size,) = struct.unpack("!i", body[offset : offset + 4])
+            offset += 4
+            row.append(None if size < 0 else body[offset : offset + size].decode())
+            offset += max(size, 0)
+        rows.append(row)
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("database", "schemas"),
+    [("commerce", {"commerce"}), ("shop", {"shop"}), ("orionbelt", {"commerce", "shop"})],
+)
+def test_catalog_lists_the_models_a_connection_reaches(database: str, schemas: set[str]) -> None:
+    mgr = _make_manager_with_two_models()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    for sql in (
+        "SELECT nspname FROM pg_catalog.pg_namespace",
+        "SELECT table_schema FROM information_schema.tables WHERE table_name = 'model'",
+    ):
+        listed = {row[0] for row in _text_rows(asyncio.run(router.handle(sql, database=database)))}
+        assert listed & {"commerce", "shop"} == schemas, sql
+
+
+@pytest.mark.parametrize(
+    "sql", ["SELECT * FROM shop._measures_metadata", 'SELECT * FROM "shop"."dimensions"']
+)
+def test_catalog_refuses_another_models_objects(sql: str) -> None:
+    mgr = _make_manager_with_two_models()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    frames = _parse_frames(asyncio.run(router.handle(sql, database="commerce")))
+    assert [t for t, _ in frames] == [b"E"]
+    assert b"C42P01\x00" in frames[0][1]
+    assert b"MODEL_MISMATCH" in frames[0][1]
+
+
+def test_a_model_catalog_goes_with_its_model() -> None:
+    mgr = SessionManager()
+    session_id = mgr.create_session().session_id
+    mgr.get_store(session_id).load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    asyncio.run(router.handle("SELECT nspname FROM pg_catalog.pg_namespace", database=session_id))
+    assert session_id in router._model_catalogs  # noqa: SLF001
+    mgr.close_session(session_id)
+    router._catalog_for(session_id)  # noqa: SLF001
+    assert session_id not in router._model_catalogs  # noqa: SLF001
+
+
 # A model may share its name with a data object a predicate subquery reads:
 # ``customers`` beside the sample model's ``Customers``.
 _SUBQUERY_PREDICATES = [
