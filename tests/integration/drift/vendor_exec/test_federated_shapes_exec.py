@@ -405,13 +405,19 @@ QUERIES = {
             "measures": ["Rolling Revenue", "Tickets Count"],
         }
     },
-    # Ranked by the tickets' count, 0 for a month of orders alone: the rank of
-    # a NULL revenue, a month of tickets alone, is DuckDB's (NULL last when
-    # descending) where Postgres, Snowflake and Dremio put it first.
+    # Ranked by the tickets' count, 0 for a month of orders alone.
     "independent_facts_ranked": {
         "select": {
             "dimensions": ["Region", "Order Date:month"],
             "measures": ["Ticket Rank", "Revenue"],
+        }
+    },
+    # Ranked by the revenue, NULL for the month of the tickets alone: last, on
+    # one database and federated, where PostgreSQL ranked it first.
+    "independent_facts_ranked_by_a_null": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Rank", "Tickets Count"],
         }
     },
     "independent_facts_filled": {

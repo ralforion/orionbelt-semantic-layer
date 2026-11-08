@@ -145,7 +145,11 @@ def _build_window_call(
 
     Ordered by the time dimension, the window also orders by the query's other
     dimensions on its date column (see :func:`axis_dimensions`): by year and
-    month, the months of a year are not ties."""
+    month, the months of a year are not ties. A NULL is ordered last, up or
+    down, as a cumulative or framed window orders it: engines put it first or
+    last on their own (PostgreSQL first descending, MySQL first ascending), so
+    a month without revenue ranked first on some and a row without a date was
+    the prior period of January on others."""
     assert measure.window_function is not None
     kind = measure.window_function
     if kind in FRAME_WINDOW_FUNCTIONS:
@@ -166,25 +170,27 @@ def _build_window_call(
             measure.window_time_dimension,
             *axis_dimensions(resolved, measure.window_time_dimension),
         ]
-        return [OrderByItem(expr=ColumnRef(name=n), desc=descending) for n in names]
+        return [
+            OrderByItem(expr=ColumnRef(name=n), desc=descending, nulls_last=True) for n in names
+        ]
 
     if kind in {WindowFunctionKind.RANK, WindowFunctionKind.DENSE_RANK}:
         # RANK() ordered by the base measure (or the time dimension if no measure)
         if base_ref is not None:
-            order_by = [OrderByItem(expr=base_ref, desc=desc)]
+            order_by = [OrderByItem(expr=base_ref, desc=desc, nulls_last=True)]
         elif measure.window_time_dimension:
             order_by = by_time(desc)
     elif kind == WindowFunctionKind.ROW_NUMBER:
         # ROW_NUMBER() — order by the measure if given, otherwise by time dim
         if base_ref is not None:
-            order_by = [OrderByItem(expr=base_ref, desc=desc)]
+            order_by = [OrderByItem(expr=base_ref, desc=desc, nulls_last=True)]
         elif measure.window_time_dimension:
             order_by = by_time(desc)
     elif kind == WindowFunctionKind.NTILE:
         assert measure.window_buckets is not None
         args = [Literal.number(measure.window_buckets)]
         if base_ref is not None:
-            order_by = [OrderByItem(expr=base_ref, desc=desc)]
+            order_by = [OrderByItem(expr=base_ref, desc=desc, nulls_last=True)]
         elif measure.window_time_dimension:
             order_by = by_time(desc)
     elif kind in {WindowFunctionKind.LAG, WindowFunctionKind.LEAD}:
