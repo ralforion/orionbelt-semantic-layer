@@ -112,7 +112,7 @@ tool's schema browser lists every model under the one connection.
 |---|---|---|
 | A query names two models (`JOIN`, `UNION`, a subquery) | Refused: a query reads one model | Attach the server in DuckDB and join the models there, see [DuckDB](#7-duckdb) |
 | `FROM model`, no model name, several models loaded | Refused: the server cannot tell which model you mean | Write the model name: `FROM support."model"` |
-| A `database=commerce` connection | Every query reads `commerce` | Query other models over a `database=orionbelt` connection |
+| A `database=commerce` connection, a query naming another model (`FROM support`) | Refused (`MODEL_MISMATCH`): this connection reads only `commerce` | Connect with `database=support`, or with `database=orionbelt` and name the model in `FROM` |
 
 ## 2. DBeaver
 
