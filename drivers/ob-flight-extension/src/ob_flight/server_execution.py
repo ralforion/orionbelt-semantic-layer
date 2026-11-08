@@ -117,38 +117,78 @@ def rewrite_table_names(server: OBFlightServer, sql: str, model: Any) -> str:
     return sql
 
 
-# The words opening a ``DESCRIBE`` / ``SHOW COLUMNS|FIELDS|TABLES`` statement.
-# The dispatcher answers these from the connection's model whatever follows,
-# so every name after them counts: ``SHOW COLUMNS FROM model IN shop`` and
-# ``DESCRIBE orionbelt . shop . model`` both name ``shop``.
-_RE_SHOW_DESCRIBE = re.compile(
-    r"^\s*(?:DESC(?:RIBE)?(?:\s+TABLE)?|SHOW\s+(?:FULL\s+)?(?:COLUMNS|FIELDS|TABLES))\b", re.I
-)
+# The words opening the SHOW / DESCRIBE statements the dispatcher answers from
+# the connection's model, whatever follows them.
+_RE_DESCRIBE = re.compile(r"^\s*DESC(?:RIBE)?(?:\s+TABLE)?\b", re.I)
+_RE_SHOW_COLUMNS = re.compile(r"^\s*SHOW\s+(?:FULL\s+)?(?:COLUMNS|FIELDS)\b", re.I)
+_RE_SHOW_TABLES = re.compile(r"^\s*SHOW\s+(?:FULL\s+)?TABLES\b", re.I)
 _VIEW_NAMES = (*_LABEL_VIEW_NAMES, *_METADATA_VIEW_NAMES, MODEL_TABLE)
 
 
-def _named_models(sql: str) -> set[str]:
-    """The names by which a statement may address a model, lowercased.
+def _dotted_names(text: str) -> list[list[str]]:
+    """The dotted names in ``text``, one per FROM / IN, up to LIKE / WHERE.
 
-    For ``SHOW`` / ``DESCRIBE``, every identifier after the opening words. For
-    a ``SELECT``, the schema of each table in its own FROM and JOINs, or a bare
-    name that is not one of the model's views (``FROM shop``). A table in a
-    subquery names a data object, whose name a model may share: it does not
-    count.
+    A name part is any word token, so a model may be named after a keyword
+    (``date``); ``"orionbelt" . "shop" . "model"`` is one name of three parts.
+    """
+    from sqlglot import TokenType
+    from sqlglot.tokens import Tokenizer
+
+    stop = (TokenType.LIKE, TokenType.ILIKE, TokenType.WHERE, TokenType.SEMICOLON)
+    names: list[list[str]] = [[]]
+    for token in Tokenizer().tokenize(text):
+        if token.token_type in stop:
+            break
+        if token.token_type in (TokenType.FROM, TokenType.IN):
+            names.append([])
+        elif token.token_type != TokenType.DOT:
+            names[-1].append(token.text.lower())
+    return [name for name in names if name]
+
+
+def _show_describe_models(sql: str) -> set[str] | None:
+    """The models a SHOW / DESCRIBE names, or ``None`` for another statement.
+
+    A table reference (``DESCRIBE shop.model``, ``SHOW COLUMNS FROM shop.model``)
+    names the model of its schema, or a bare name that is not one of the model's
+    views (``DESCRIBE shop``); a schema reference (``SHOW COLUMNS FROM model IN
+    shop``, ``SHOW TABLES FROM orionbelt.shop``) names the model it is.
+    """
+    if (opening := _RE_DESCRIBE.match(sql)) is not None:
+        tables, schemas = _dotted_names(sql[opening.end() :])[:1], []
+    elif (opening := _RE_SHOW_COLUMNS.match(sql)) is not None:
+        names = _dotted_names(sql[opening.end() :])
+        tables, schemas = names[:1], names[1:2]
+    elif (opening := _RE_SHOW_TABLES.match(sql)) is not None:
+        tables, schemas = [], _dotted_names(sql[opening.end() :])[:1]
+    else:
+        return None
+    models = {schema[-1] for schema in schemas}
+    for table in tables:
+        if len(table) > 1:
+            models.add(table[-2])
+        elif table[0] not in _VIEW_NAMES:
+            models.add(table[0])
+    return models
+
+
+def _named_models(sql: str) -> set[str]:
+    """The names by which a statement addresses a model, lowercased.
+
+    For SHOW / DESCRIBE, see :func:`_show_describe_models`. For a ``SELECT``,
+    the schema of each table in its own FROM and JOINs, or a bare name that is
+    not one of the model's views (``FROM shop``). A table in a subquery names a
+    data object, whose name a model may share: it does not count.
     """
     import sqlglot
     import sqlglot.expressions as exp
     from orionbelt.compiler.sql_translator import _strip_trailing_grouping
-    from sqlglot import TokenType
-    from sqlglot.tokens import Tokenizer
 
     cleaned, _ = _strip_trailing_grouping(sql)
-    opening = _RE_SHOW_DESCRIBE.match(cleaned)
     try:
-        if opening is not None:
-            tokens = Tokenizer().tokenize(cleaned[opening.end() :])
-            identifiers = (TokenType.VAR, TokenType.IDENTIFIER)
-            return {t.text.lower() for t in tokens if t.token_type in identifiers}
+        shown = _show_describe_models(cleaned)
+        if shown is not None:
+            return shown
         ast = sqlglot.parse_one(cleaned)
     except Exception:
         return set()

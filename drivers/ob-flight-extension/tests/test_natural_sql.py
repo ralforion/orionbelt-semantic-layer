@@ -630,6 +630,37 @@ class TestAnotherModelNamed:
         assert mode == "catalog"
         assert model._ob_model_id == "commerce"
 
+    @pytest.mark.parametrize(
+        ("sql", "named"),
+        [
+            ("DESCRIBE date", "date"),
+            ("DESCRIBE text", "text"),
+            ("SHOW COLUMNS FROM model IN date", "date"),
+            ("SHOW TABLES FROM orionbelt.date", "date"),
+            ('DESCRIBE "orionbelt" . "text" . "model"', "text"),
+        ],
+    )
+    def test_a_model_named_after_a_keyword_is_refused(self, sql: str, named: str) -> None:
+        server = _make_multi_model_server("commerce", "date", "text")
+        with pytest.raises(flight.FlightServerError, match=rf"MODEL_MISMATCH.*'{named}'"):
+            server._prepare_sql(sql, context=_Context("commerce"))
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "DESCRIBE commerce.measures",
+            "SHOW COLUMNS FROM commerce.measures",
+            "SHOW COLUMNS FROM measures IN commerce",
+            'DESCRIBE "orionbelt"."commerce"."dimensions"',
+        ],
+    )
+    def test_a_view_qualified_by_the_connected_model_answers(self, sql: str) -> None:
+        """A view sharing another model's name is the view: its schema says whose."""
+        server = _make_multi_model_server("commerce", "measures", "dimensions")
+        _sql, _d, model, _s, mode, _c = server._prepare_sql(sql, context=_Context("commerce"))
+        assert mode == "catalog"
+        assert model._ob_model_id == "commerce"
+
     def test_the_connected_model_is_read_as_before(self) -> None:
         server = _make_multi_model_server("commerce", "shop")
         context = _Context("commerce")
