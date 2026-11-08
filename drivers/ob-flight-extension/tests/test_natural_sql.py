@@ -600,12 +600,35 @@ class TestAnotherModelNamed:
             'SELECT * FROM "orionbelt"."shop"."_measures_metadata"',
             "DESCRIBE shop",
             "SHOW COLUMNS FROM shop",
+            "SHOW COLUMNS FROM model IN shop",
+            "SHOW COLUMNS FROM model FROM shop",
+            'DESCRIBE "orionbelt" . "shop" . "model"',
+            "DESCRIBE orionbelt . shop . model",
+            "SHOW TABLES FROM orionbelt.shop",
+            "SELECT * FROM commerce.measures JOIN shop.measures ON 1 = 1",
         ],
     )
     def test_a_statement_naming_another_model_is_refused(self, sql: str) -> None:
         server = _make_multi_model_server("commerce", "shop")
         with pytest.raises(flight.FlightServerError, match=r"MODEL_MISMATCH.*'shop'"):
             server._prepare_sql(sql, context=_Context("commerce"))
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SHOW TABLES",
+            "SHOW COLUMNS FROM model",
+            "SHOW COLUMNS FROM model IN commerce",
+            "SHOW COLUMNS FROM model LIKE 'shop%'",
+            'DESCRIBE "orionbelt" . "commerce" . "model"',
+            "DESCRIBE commerce",
+        ],
+    )
+    def test_a_catalog_statement_on_the_connected_model_answers(self, sql: str) -> None:
+        server = _make_multi_model_server("commerce", "shop")
+        _sql, _d, model, _s, mode, _c = server._prepare_sql(sql, context=_Context("commerce"))
+        assert mode == "catalog"
+        assert model._ob_model_id == "commerce"
 
     def test_the_connected_model_is_read_as_before(self) -> None:
         server = _make_multi_model_server("commerce", "shop")

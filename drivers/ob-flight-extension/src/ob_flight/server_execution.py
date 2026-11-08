@@ -117,54 +117,64 @@ def rewrite_table_names(server: OBFlightServer, sql: str, model: Any) -> str:
     return sql
 
 
-# ``DESCRIBE <target>`` / ``SHOW COLUMNS FROM <target>``: the statement names
-# its model in a target the classifier does not parse.
-_RE_DESCRIBE_TARGET = re.compile(r"^\s*DESC(?:RIBE)?\s+(?:TABLE\s+)?(?P<target>[^\s;]+)", re.I)
-_RE_SHOW_TARGET = re.compile(
-    r"^\s*SHOW\s+(?:FULL\s+)?(?:COLUMNS|FIELDS|TABLES)\s+(?:FROM|IN)\s+(?P<target>[^\s;]+)", re.I
+# The words opening a ``DESCRIBE`` / ``SHOW COLUMNS|FIELDS|TABLES`` statement.
+# The dispatcher answers these from the connection's model whatever follows,
+# so every name after them counts: ``SHOW COLUMNS FROM model IN shop`` and
+# ``DESCRIBE orionbelt . shop . model`` both name ``shop``.
+_RE_SHOW_DESCRIBE = re.compile(
+    r"^\s*(?:DESC(?:RIBE)?(?:\s+TABLE)?|SHOW\s+(?:FULL\s+)?(?:COLUMNS|FIELDS|TABLES))\b", re.I
 )
+_VIEW_NAMES = (*_LABEL_VIEW_NAMES, *_METADATA_VIEW_NAMES, MODEL_TABLE)
 
 
-def _named_table(sql: str) -> Any:
-    """The table a statement names: its own FROM, or a SHOW / DESCRIBE target.
+def _named_models(sql: str) -> set[str]:
+    """The names by which a statement may address a model, lowercased.
 
-    Only the outer FROM counts. A table in a subquery names a data object,
-    whose name a model may share.
+    For ``SHOW`` / ``DESCRIBE``, every identifier after the opening words. For
+    a ``SELECT``, the schema of each table in its own FROM and JOINs, or a bare
+    name that is not one of the model's views (``FROM shop``). A table in a
+    subquery names a data object, whose name a model may share: it does not
+    count.
     """
     import sqlglot
     import sqlglot.expressions as exp
     from orionbelt.compiler.sql_translator import _strip_trailing_grouping
+    from sqlglot import TokenType
+    from sqlglot.tokens import Tokenizer
 
     cleaned, _ = _strip_trailing_grouping(sql)
-    target = _RE_DESCRIBE_TARGET.match(cleaned) or _RE_SHOW_TARGET.match(cleaned)
+    opening = _RE_SHOW_DESCRIBE.match(cleaned)
     try:
-        if target is not None:
-            return exp.to_table(target["target"])
+        if opening is not None:
+            tokens = Tokenizer().tokenize(cleaned[opening.end() :])
+            identifiers = (TokenType.VAR, TokenType.IDENTIFIER)
+            return {t.text.lower() for t in tokens if t.token_type in identifiers}
         ast = sqlglot.parse_one(cleaned)
     except Exception:
-        return None
+        return set()
     if not isinstance(ast, exp.Select):
-        return None
+        return set()
     from_node = ast.args.get("from") or ast.args.get("from_")
-    table = getattr(from_node, "this", None)
-    return table if isinstance(table, exp.Table) else None
+    sources = [getattr(from_node, "this", None), *(j.this for j in ast.args.get("joins") or [])]
+    names: set[str] = set()
+    for table in sources:
+        if not isinstance(table, exp.Table):
+            continue
+        if table.db:
+            names.add(table.db.lower())
+        elif table.name.lower() not in _VIEW_NAMES:
+            names.add(table.name.lower())
+    return names
 
 
 def other_model_named(server: OBFlightServer, sql: str, model: Any) -> str | None:
-    """The loaded model a statement names, when it is not the connection's own.
-
-    A schema qualifier names a model (``shop.measures``, ``"orionbelt"."shop"."model"``),
-    and so does a bare name that is not one of the model's own views (``FROM shop``).
-    """
+    """A loaded model the statement names, when it is not the connection's own."""
     available = {name.lower() for name in server._list_available_model_names()}
-    table = _named_table(sql) if available else None
-    if table is None:
-        return None
-    name = table.db.lower() or table.name.lower()
-    if not table.db and name in (*_LABEL_VIEW_NAMES, *_METADATA_VIEW_NAMES, MODEL_TABLE):
+    if not available:
         return None
     own = (getattr(model, "_ob_model_id", "") or "").lower()
-    return name if name in available and name != own else None
+    others = sorted((_named_models(sql) & available) - {own})
+    return others[0] if others else None
 
 
 def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
