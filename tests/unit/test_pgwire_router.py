@@ -14,6 +14,7 @@ from orionbelt.pgwire.router import (
     _canned_in_requested_formats,
     _encode_result,
     _flatten_federation_subquery,
+    _ModelMismatchError,
     _normalize_for_obsql,
     _rewrite_fetch_to_limit,
     _strip_collate_annotations,
@@ -107,6 +108,61 @@ def test_resolve_target_raises_when_no_model_loaded() -> None:
     assert [t for t, _ in frames] == [b"E"]
     # ErrorResponse body carries fields; SQLSTATE = undefined_database.
     assert b"C3D000\x00" in frames[0][1]
+
+
+def _make_manager_with_two_models() -> SessionManager:
+    """Two named sessions, ``commerce`` and ``shop``, as MODEL_FILES loads them."""
+
+    mgr = SessionManager()
+    for name in ("commerce", "shop"):
+        mgr.get_or_create_named(name).load_model(SAMPLE_MODEL_YAML)
+    return mgr
+
+
+@pytest.mark.parametrize(
+    "from_clause",
+    ["commerce", 'commerce."model"', '"orionbelt"."commerce"."model"', "model"],
+)
+def test_resolve_target_reads_the_connected_model(from_clause: str) -> None:
+    mgr = _make_manager_with_two_models()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    sql = f'SELECT "Customer Country" FROM {from_clause}'
+    target = router._resolve_target("commerce", sql)  # noqa: SLF001
+    assert target.store is mgr.get_store("commerce")
+
+
+@pytest.mark.parametrize("from_clause", ["shop", 'shop."model"', '"orionbelt"."shop"."model"'])
+def test_query_naming_another_model_is_refused(from_clause: str) -> None:
+    """A ``database=commerce`` connection read commerce for ``FROM shop``."""
+
+    mgr = _make_manager_with_two_models()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    reply = asyncio.run(
+        router.handle(f'SELECT "Customer Country" FROM {from_clause}', database="commerce")
+    )
+    frames = _parse_frames(reply)
+    assert [t for t, _ in frames] == [b"E"]
+    assert b"C42P01\x00" in frames[0][1]
+    assert b"MODEL_MISMATCH" in frames[0][1]
+    assert b"database=shop" in frames[0][1]
+
+
+def test_brand_database_reads_the_model_from_names() -> None:
+    """``database=orionbelt`` reads the FROM's model, not the default session's."""
+
+    mgr = _make_manager_with_two_models()
+    mgr.get_or_create_default().load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    target = router._resolve_target("orionbelt", 'SELECT "Customer Country" FROM shop')  # noqa: SLF001
+    assert target.store is mgr.get_store("shop")
+
+
+def test_default_session_refuses_a_query_naming_another_model() -> None:
+    mgr = _make_manager_with_two_models()
+    mgr.get_or_create_default().load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    with pytest.raises(_ModelMismatchError, match="names model 'shop'"):
+        router._resolve_target("unknown-name", 'SELECT "Customer Country" FROM shop')  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------

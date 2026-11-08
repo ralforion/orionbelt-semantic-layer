@@ -86,6 +86,7 @@ logger = logging.getLogger(__name__)
 SQLSTATE_FEATURE_NOT_SUPPORTED = "0A000"
 SQLSTATE_SYNTAX_ERROR = "42601"
 SQLSTATE_UNDEFINED_COLUMN = "42703"
+SQLSTATE_UNDEFINED_TABLE = "42P01"
 SQLSTATE_DATA_EXCEPTION = "22000"
 SQLSTATE_INVALID_AUTHORIZATION = "28000"
 SQLSTATE_UNDEFINED_DATABASE = "3D000"
@@ -129,6 +130,10 @@ _RE_MODEL_ALIAS_QUALIFIER = re.compile(
 
 class _ModelNotFoundError(Exception):
     """Raised when the Postgres ``database`` parameter resolves to nothing."""
+
+
+class _ModelMismatchError(Exception):
+    """Raised when the query's FROM names a model other than the one it would read."""
 
 
 @dataclass(frozen=True)
@@ -243,6 +248,12 @@ class SemanticRouter:
             return protocol.build_error_response(
                 severity="ERROR",
                 code=SQLSTATE_UNDEFINED_DATABASE,
+                message=str(exc),
+            )
+        except _ModelMismatchError as exc:
+            return protocol.build_error_response(
+                severity="ERROR",
+                code=SQLSTATE_UNDEFINED_TABLE,
                 message=str(exc),
             )
 
@@ -575,53 +586,58 @@ class SemanticRouter:
 
         1. ``database`` matches a SessionManager session id directly
            (multi-model preload uses the model name as the session id).
-        2. ``__default__`` session (single-model preload, MCP stdio,
-           tests).
-        3. The connection is on the brand database (``orionbelt``) and
+        2. The connection is on the brand database (``orionbelt``) and
            the SQL has a FROM target naming a loaded model — extract
            the model from the SQL. This is the BI-tool path: the user
            writes ``SELECT … FROM <model>`` against a connection on
            ``database=orionbelt``.
+        3. ``__default__`` session (single-model preload, MCP stdio,
+           tests).
         4. ``database`` matches a model in some other session's store
            by name (single unambiguous match).
         5. ``database='orionbelt'`` with exactly one model loaded —
            fall back to that single model (the demo case).
 
         Raises ``_ModelNotFoundError`` with a message that surfaces in the
-        Postgres ErrorResponse on miss.
+        Postgres ErrorResponse on miss, and ``_ModelMismatchError`` when
+        the FROM names a loaded model other than the one steps 1, 3 or 4
+        found: reading that one would answer for the wrong model.
         """
 
-        candidate_ids: list[str] = []
-        if database and database != CATALOG_SCHEMA:
-            candidate_ids.append(database)
-        if "__default__" not in candidate_ids:
-            candidate_ids.append("__default__")
+        named = self._extract_model_name_from_sql(sql) if sql else None
 
-        for session_id in candidate_ids:
-            target = self._first_model_in(session_id)
+        if database and database != CATALOG_SCHEMA:
+            target = self._first_model_in(database)
             if target is not None:
+                _refuse_other_model(database, database, named)
                 return target
 
         # On a brand-database connection (``database=orionbelt``), the
         # model comes from the SQL itself — the user's FROM clause
-        # names the model directly. Peek at the first known FROM target.
-        if database == CATALOG_SCHEMA and sql:
-            model_from_sql = self._extract_model_name_from_sql(sql)
-            if model_from_sql:
-                target = self._first_model_in(model_from_sql)
-                if target is not None:
-                    return target
+        # names the model directly.
+        if database == CATALOG_SCHEMA and named:
+            target = self._first_model_in(named)
+            if target is not None:
+                return target
+
+        target = self._first_model_in("__default__")
+        if target is not None:
+            _refuse_other_model(database, "__default__", named)
+            return target
 
         # Last-resort scan across all sessions for the case where the
         # client passed a database name that doesn't match a session id
         # but does identify a model in some other session.
-        matches: list[_ResolvedTarget] = []
+        matches: list[tuple[str, _ResolvedTarget]] = []
         for session_summary in self._sessions.list_sessions():
-            target = self._first_model_in(session_summary.session_id, model_id=database or None)
+            session_id = session_summary.session_id
+            target = self._first_model_in(session_id, model_id=database or None)
             if target is not None:
-                matches.append(target)
+                matches.append((session_id, target))
         if len(matches) == 1:
-            return matches[0]
+            session_id, target = matches[0]
+            _refuse_other_model(database, session_id, named)
+            return target
         if len(matches) > 1:
             raise _ModelNotFoundError(
                 f"database='{database}' is ambiguous — multiple sessions hold a model "
@@ -691,6 +707,16 @@ class SemanticRouter:
         except KeyError:
             return None
         return _ResolvedTarget(store=store, model_id=chosen_id, model=model)
+
+
+def _refuse_other_model(database: str, session_id: str, named: str | None) -> None:
+    """Raise when the FROM names a loaded model other than session ``session_id``'s."""
+    if named is not None and named != session_id.lower():
+        raise _ModelMismatchError(
+            f"[MODEL_MISMATCH] The query names model '{named}', but a connection on "
+            f"database '{database}' reads another model. Connect with database={named}, "
+            f"or with database={CATALOG_SCHEMA} to name the model in each query's FROM."
+        )
 
 
 _CATALOG_SCHEMAS: frozenset[str] = frozenset({"pg_catalog", "information_schema"})
