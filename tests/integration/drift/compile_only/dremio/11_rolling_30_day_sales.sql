@@ -1,5 +1,5 @@
 WITH "cumulative_base" AS (
-SELECT CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE) AS "Sales Date", CASE WHEN CAST(CASE WHEN ABS(CAST(SUM("Sales"."salesamount") AS DECIMAL(38, 2))) >= 10000000000000000 OR ABS(CAST(SUM("Sales"."salesamount") AS DOUBLE)) >= CAST('20000000000000000' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
+SELECT CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE) AS "Sales Date", CASE WHEN CAST(CASE WHEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("Sales"."salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 GROUP BY CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE)
 ),
@@ -14,5 +14,5 @@ SELECT "cumulative_base"."Sales Date" AS "Sales Date", "cumulative_rolling"."Rol
 FROM "cumulative_base" AS "cumulative_base"
 LEFT JOIN "cumulative_rolling" AS "cumulative_rolling" ON "cumulative_base"."Sales Date" = "cumulative_rolling"."Sales Date" OR "cumulative_base"."Sales Date" IS NULL AND "cumulative_rolling"."Sales Date" IS NULL
 )
-SELECT "Sales Date" AS "Sales Date", CASE WHEN CAST(CASE WHEN ABS(CAST("Rolling 30 Day Sales" AS DECIMAL(38, 0))) >= 1000000000000000000 OR ABS(CAST("Rolling 30 Day Sales" AS DOUBLE)) >= CAST('2000000000000000000' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 0)' ELSE '0' END AS INT) = 0 THEN CAST("Rolling 30 Day Sales" AS DECIMAL(18, 0)) END AS "Rolling 30 Day Sales"
+SELECT "Sales Date" AS "Sales Date", CASE WHEN CAST(CASE WHEN CAST("Rolling 30 Day Sales" AS DECIMAL(18, 0)) = 0 AND ABS(CAST("Rolling 30 Day Sales" AS DOUBLE)) >= CAST('1E+0' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 0)' ELSE '0' END AS INT) = 0 THEN CAST("Rolling 30 Day Sales" AS DECIMAL(18, 0)) END AS "Rolling 30 Day Sales"
 FROM "cumulative_joined" AS "cumulative_joined"

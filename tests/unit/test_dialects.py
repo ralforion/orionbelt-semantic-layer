@@ -536,44 +536,31 @@ class TestDremioDialect:
         assert dialect.capabilities.supports_ilike is False
 
     def test_a_decimal_cast_fails_past_its_type(self, dialect: DremioDialect) -> None:
-        """Dremio casts a value past a decimal's width to 0: the value is tested
-        against the bound first, rounded at 38 digits and as a double, which
-        no value overflows, a string of the row's own cast to an integer, and
-        the type is kept (``test_decimal_overflow_exec`` runs it)."""
+        """Dremio casts a value past a decimal's width to 0: a cast that comes
+        back 0 of a value of at least one unit of the last place, compared as
+        a double, which no value overflows, fails the query, a string of the
+        row's own cast to an integer, and the type is kept
+        (``test_decimal_overflow_exec`` runs it)."""
         expr = dialect.cast_to_obml_type(ColumnRef(name="x", table="t"), DecimalType(18, 2))
 
         assert dialect.compile_expr(expr) == (
-            'CASE WHEN CAST(CASE WHEN ABS(CAST("t"."x" AS DECIMAL(38, 2))) >= 10000000000000000 '
-            'OR ABS(CAST("t"."x" AS DOUBLE)) >= CAST(\'20000000000000000\' AS DOUBLE) '
+            'CASE WHEN CAST(CASE WHEN CAST("t"."x" AS DECIMAL(18, 2)) = 0 '
+            'AND ABS(CAST("t"."x" AS DOUBLE)) >= CAST(\'1E-2\' AS DOUBLE) '
             "THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 "
             'THEN CAST("t"."x" AS DECIMAL(18, 2)) END'
         )
 
-    @pytest.mark.parametrize(
-        ("declared", "test"),
-        [
-            (
-                DecimalType(38, 38),
-                'ABS(CAST("x" AS DECIMAL(38, 37))) >= 1 '
-                "OR ABS(CAST(\"x\" AS DOUBLE)) >= CAST('2' AS DOUBLE)",
-            ),
-            (
-                DecimalType(38, 0),
-                'ABS(CAST("x" AS DOUBLE)) >= '
-                "CAST('100000000000000000000000000000000000000' AS DOUBLE)",
-            ),
-        ],
-        ids=["no_integer_digit", "38_integer_digits"],
-    )
-    def test_a_type_of_38_digits_is_tested_at_a_place_fewer(
-        self, dialect: DremioDialect, declared: DecimalType, test: str
-    ) -> None:
-        """``decimal(38, 38)`` holds no 1, and the test's own cast at 38 digits
-        cannot hold the bound: it rounds a place fewer, and a type with no
-        place to spare is tested as a double alone."""
-        sql = dialect.compile_expr(dialect.cast_to_obml_type(ColumnRef(name="x"), declared))
+    def test_a_type_of_38_digits_is_tested_by_its_own_cast(self, dialect: DremioDialect) -> None:
+        """``decimal(38, 38)`` holds no 1; its own cast says so, and holds its
+        largest value, which a test rounding a place fewer took past it."""
+        sql = dialect.compile_expr(
+            dialect.cast_to_obml_type(ColumnRef(name="x"), DecimalType(38, 38))
+        )
 
-        assert f"CASE WHEN {test} THEN" in sql, sql
+        assert sql.startswith(
+            'CASE WHEN CAST(CASE WHEN CAST("x" AS DECIMAL(38, 38)) = 0 '
+            "AND ABS(CAST(\"x\" AS DOUBLE)) >= CAST('1E-38' AS DOUBLE) THEN"
+        ), sql
 
     def test_a_planner_taking_the_cast_off_puts_the_test_back(self, dialect: DremioDialect) -> None:
         """A total takes a measure's cast off and puts it back after the window."""
@@ -589,19 +576,21 @@ class TestDremioDialect:
 
         assert dialect.cast_to_obml_type(tested, DecimalType(18, 2)) is tested
 
-    def test_a_bound_past_a_64_bit_integer_is_a_cast_string(self, dialect: DremioDialect) -> None:
-        """Dremio refuses a numeric literal past a 64-bit integer."""
-        expr = dialect.cast_to_obml_type(ColumnRef(name="x"), DecimalType(30, 2))
-
-        assert ">= CAST('10000000000000000000000000000' AS DECIMAL(38, 0)) OR" in (
-            dialect.compile_expr(expr)
-        )
-
     def test_a_literal_past_its_type_once_rounded_is_tested(self, dialect: DremioDialect) -> None:
-        """99.995 is short of 100 but rounds to 100.00, past ``decimal(4, 2)``."""
+        """99.995 is short of 100 but rounds to 100.00, past ``decimal(4, 2)``.
+        It fails as it is: Dremio's planner casts a literal itself, to 100.00,
+        which no test reads as 0."""
         expr = dialect.cast_to_obml_type(Literal(value=Decimal("99.995")), DecimalType(4, 2))
 
-        assert "OBSL: a value past DECIMAL(4, 2)" in dialect.compile_expr(expr)
+        assert dialect.compile_expr(expr) == (
+            "CAST(CAST('OBSL: a value past DECIMAL(4, 2)' AS INT) AS DECIMAL(4, 2))"
+        )
+
+    def test_a_literal_of_38_places_fits(self, dialect: DremioDialect) -> None:
+        """Python's default context of 28 digits cannot round 0.5 to 38 places."""
+        expr = dialect.cast_to_obml_type(Literal(value=Decimal("0.5")), DecimalType(38, 38))
+
+        assert dialect.compile_expr(expr) == "CAST(0.5 AS DECIMAL(38, 38))"
 
     @pytest.mark.parametrize(
         ("value", "declared", "source_exact", "cast"),

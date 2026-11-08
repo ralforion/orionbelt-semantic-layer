@@ -44,6 +44,7 @@ dataObjects:
       Fraction: {{code: fraction, abstractType: decimal}}
       Quantity: {{code: qty, abstractType: int}}
       Huge: {{code: huge, abstractType: float}}
+      Edge: {{code: edge, abstractType: decimal}}
 measures:
   Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
   Cost Total: {{columns: [{{dataObject: Orders, column: Cost}}], aggregation: sum}}
@@ -59,6 +60,10 @@ measures:
     columns: [{{dataObject: Orders, column: Huge}}]
     aggregation: sum
     dataType: "decimal(18, 2)"
+  Edge Total:
+    columns: [{{dataObject: Orders, column: Edge}}]
+    aggregation: sum
+    dataType: "decimal(38, 2)"
   Fraction Unfiltered:
     columns: [{{dataObject: Orders, column: Fraction}}]
     aggregation: sum
@@ -76,6 +81,9 @@ metrics:
 
 DECIMAL = {"bigquery": "NUMERIC", "clickhouse": "Nullable(Decimal(38, 2))"}
 FRACTION = {"bigquery": "BIGNUMERIC", "clickhouse": "Nullable(Decimal(38, 14))"}
+EDGE = {"bigquery": "BIGNUMERIC", "clickhouse": "Nullable(Decimal(38, 2))"}
+# The largest value of DECIMAL(38, 2).
+LARGEST = "999999999999999999999999999999999999.99"
 # The engines whose cast carries 38 digits, or whose NUMERIC does: they return it.
 WIDENED = {"mysql", "bigquery"}
 
@@ -83,6 +91,7 @@ WIDENED = {"mysql", "bigquery"}
 def _prepare(target: VendorTarget) -> SemanticModel:
     kind = DECIMAL.get(target.dialect, "DECIMAL(38, 2)")
     fraction = FRACTION.get(target.dialect, "DECIMAL(38, 14)")
+    edge = EDGE.get(target.dialect, "DECIMAL(38, 2)")
     _create(
         target,
         ORDERS,
@@ -93,8 +102,9 @@ def _prepare(target: VendorTarget) -> SemanticModel:
             ("fraction", fraction),
             ("qty", 2),
             ("huge", 1),
+            ("edge", edge),
         ],
-        [("o1", "50000000000.00", "35000000000.00", "0.00000000001", 1, 1e40)],
+        [("o1", "50000000000.00", "35000000000.00", "0.00000000001", 1, 1e40, LARGEST)],
     )
     yaml_text = MODEL_YAML.format(orders=ORDERS, schema=SCHEMAS.get(target.dialect, ""))
     raw, source_map = TrackedLoader().load_string(yaml_text)
@@ -131,11 +141,15 @@ def _assert_all(target: VendorTarget) -> None:
 def _assert_dremio_fails(target: VendorTarget) -> None:
     """Past its type in three ways a narrower test let through on Dremio: a
     literal past it once rounded (99.995 is 100.00), a type of 38 digits with
-    no integer digit, and a double past what the test's own decimal holds."""
+    no integer digit, and a double past what the test's own decimal held. And
+    the largest value of a type of 38 digits, which a test rounding a place
+    fewer refused."""
     model = _prepare(target)
     for measure in ("Rounded Up", "All Places", "Huge Total"):
         with pytest.raises(Exception, match="OBSL: a value past DECIMAL"):
             _answer(target, model, measure)
+    # The largest value of its type fits, as its own cast holds it.
+    assert _answer(target, model, "Edge Total") == Decimal(LARGEST)
 
 
 def test_duckdb_decimal_overflow(vendor_duckdb: VendorTarget) -> None:
