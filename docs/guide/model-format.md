@@ -1788,16 +1788,20 @@ Dremio casts a value past a decimal's integer digits to 0, from a decimal, a
 double, an integer or a string alike, and raises no warning. Widening its cast
 as MySQL's would cost places instead: past 38 digits Dremio cuts the scale of a
 product or quotient, so `cast(x, 'decimal(18, 12)') * 1.0` of `1e-11` read `0`.
-So on Dremio the cast keeps its declared type and the value is tested first,
-rounded to the type's places, against the type's range; past it the query fails
+So on Dremio the cast keeps its declared type and the value is tested first
+against the type's range, rounded to the type's places, and as a double, which
+holds what that rounding cannot (a double of 1e40); past it the query fails
 with `OBSL: a value past DECIMAL(18, 2)`, a string Dremio cannot cast to an
 integer:
 
 ```sql
 CASE WHEN CAST(CASE WHEN ABS(CAST(SUM("s"."amt") AS DECIMAL(38, 2))) >= 10000000000000000
+                     OR ABS(CAST(SUM("s"."amt") AS DOUBLE)) >= CAST('20000000000000000' AS DOUBLE)
                THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0
 THEN CAST(SUM("s"."amt") AS DECIMAL(18, 2)) END
 ```
+
+A type of 38 digits is tested too: `decimal(38, 38)` holds no 1.
 
 !!! warning "One case is still saturated: a 64-bit integer cast"
 

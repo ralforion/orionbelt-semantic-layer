@@ -42,10 +42,23 @@ dataObjects:
       Amount: {{code: amount, abstractType: decimal}}
       Cost: {{code: cost, abstractType: decimal}}
       Fraction: {{code: fraction, abstractType: decimal}}
+      Quantity: {{code: qty, abstractType: int}}
+      Huge: {{code: huge, abstractType: float}}
 measures:
   Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
   Cost Total: {{columns: [{{dataObject: Orders, column: Cost}}], aggregation: sum}}
   Fraction Total: {{columns: [{{dataObject: Orders, column: Fraction}}], aggregation: sum}}
+  Rounded Up:
+    expression: "cast(99.995, 'decimal(4,2)') + 0 * {{[Orders].[Amount]}}"
+    aggregation: sum
+  All Places:
+    columns: [{{dataObject: Orders, column: Quantity}}]
+    aggregation: sum
+    dataType: "decimal(38, 38)"
+  Huge Total:
+    columns: [{{dataObject: Orders, column: Huge}}]
+    aggregation: sum
+    dataType: "decimal(18, 2)"
   Fraction Unfiltered:
     columns: [{{dataObject: Orders, column: Fraction}}]
     aggregation: sum
@@ -73,8 +86,15 @@ def _prepare(target: VendorTarget) -> SemanticModel:
     _create(
         target,
         ORDERS,
-        [("id", 0), ("amount", kind), ("cost", kind), ("fraction", fraction)],
-        [("o1", "50000000000.00", "35000000000.00", "0.00000000001")],
+        [
+            ("id", 0),
+            ("amount", kind),
+            ("cost", kind),
+            ("fraction", fraction),
+            ("qty", 2),
+            ("huge", 1),
+        ],
+        [("o1", "50000000000.00", "35000000000.00", "0.00000000001", 1, 1e40)],
     )
     yaml_text = MODEL_YAML.format(orders=ORDERS, schema=SCHEMAS.get(target.dialect, ""))
     raw, source_map = TrackedLoader().load_string(yaml_text)
@@ -108,6 +128,16 @@ def _assert_all(target: VendorTarget) -> None:
     assert product == Decimal("1750000000000000000000"), (target.name, product)
 
 
+def _assert_dremio_fails(target: VendorTarget) -> None:
+    """Past its type in three ways a narrower test let through on Dremio: a
+    literal past it once rounded (99.995 is 100.00), a type of 38 digits with
+    no integer digit, and a double past what the test's own decimal holds."""
+    model = _prepare(target)
+    for measure in ("Rounded Up", "All Places", "Huge Total"):
+        with pytest.raises(Exception, match="OBSL: a value past DECIMAL"):
+            _answer(target, model, measure)
+
+
 def test_duckdb_decimal_overflow(vendor_duckdb: VendorTarget) -> None:
     _assert_all(vendor_duckdb)
 
@@ -138,3 +168,4 @@ def test_databricks_decimal_overflow(vendor_databricks: VendorTarget) -> None:
 
 def test_dremio_decimal_overflow(vendor_dremio: VendorTarget) -> None:
     _assert_all(vendor_dremio)
+    _assert_dremio_fails(vendor_dremio)

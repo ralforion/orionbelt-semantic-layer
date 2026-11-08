@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from orionbelt.ast.nodes import (
     BinaryOp,
@@ -63,12 +63,16 @@ class UnsupportedSeparatorError(UnsupportedAggregationError):
         )
 
 
-def _fits(literal: Literal, bound: int) -> bool:
-    """Whether a numeric *literal* is short of *bound*, as no cast needs testing."""
+def _fits(literal: Literal, obml_type: DecimalType) -> bool:
+    """Whether a numeric *literal*, rounded to *obml_type*'s places as a cast
+    rounds it, is short of its bound, as no cast needs testing: 99.995 rounds
+    to 100.00, past ``decimal(4, 2)``."""
     value = literal.value
     if isinstance(value, bool) or not isinstance(value, int | float | Decimal):
         return False
-    return -bound < value < bound
+    rounded = Decimal(str(value)).quantize(Decimal(1).scaleb(-obml_type.scale), ROUND_HALF_UP)
+    bound: int = 10 ** (obml_type.precision - obml_type.scale)
+    return abs(rounded) < bound
 
 
 @DialectRegistry.register
@@ -241,8 +245,11 @@ class DremioDialect(Dialect):
         12345678901234567.89 as ``DECIMAL(18, 2)`` came back 0.00, and a metric
         of 1.75e21 read 0.00, where PostgreSQL, Snowflake, Databricks,
         ClickHouse and DuckDB raise. So the cast of a measure, a metric or a
-        formula is marked to be tested first (:meth:`_compile_checked_cast`).
-        A literal that fits needs no test.
+        formula is marked to be tested first (:meth:`_compile_checked_cast`),
+        at 38 digits too, which hold no integer digit in ``decimal(38, 38)``.
+        A literal that fits once rounded needs no test, nor a cast to
+        ``DECIMAL(38, 0)`` of a value that cannot be a float, which no decimal
+        can pass.
 
         Not widened, as MySQL's cast is: past 38 digits Dremio cuts a product's
         or quotient's scale, so ``cast(x, 'decimal(18, 12)') * 1.0`` of 1e-11
@@ -250,47 +257,60 @@ class DremioDialect(Dialect):
         a common table expression. The cast keeps its declared type.
         """
         cast = super().cast_to_obml_type(expr, obml_type, source_exact=source_exact)
-        if (
-            not isinstance(obml_type, DecimalType)
-            or obml_type.precision >= self._MAX_DECIMAL_PRECISION
-            or not isinstance(cast, Cast)
-            or cast.range_checked
-        ):
+        if not isinstance(obml_type, DecimalType) or not isinstance(cast, Cast):
             return cast
-        bound = 10 ** (obml_type.precision - obml_type.scale)
-        if isinstance(cast.expr, Literal) and _fits(cast.expr, bound):
+        if cast.range_checked or (isinstance(cast.expr, Literal) and _fits(cast.expr, obml_type)):
+            return cast
+        whole = obml_type.precision - obml_type.scale == self._MAX_DECIMAL_PRECISION
+        if whole and source_exact:
             return cast
         return dataclasses.replace(cast, range_checked=True)
 
     def _compile_checked_cast(self, inner: Expr, type_name: str) -> str:
         """The cast, after a test of the value against the type's range.
 
-        The value, rounded to the type's places at 38 digits as the cast
-        rounds it (9999999999999999.995 is 10^16), past the type's bound fails
-        the query: a string cast to an integer, which Dremio raises at run
-        time. The string is the row's own, ``'0'`` within the bound: Dremio's
-        native projector evaluates both branches of a ``CASE`` for every row,
-        so a branch failing on its own failed every query. A NULL is past no
-        bound, and the cast keeps its type.
+        Past the bound the query fails: a string cast to an integer, which
+        Dremio raises at run time. The string is the row's own, ``'0'``
+        within the bound: Dremio's native projector evaluates both branches
+        of a ``CASE`` for every row, so a branch failing on its own failed
+        every query. A NULL is past no bound, and the cast keeps its type.
+
+        The value is tested twice, as the test's own cast would read 0 past
+        what it holds. Rounded to the type's places at 38 digits, as the cast
+        rounds it (9999999999999999.995 is 10^16), it is compared exactly;
+        for a type of 38 digits, which that cast cannot hold past, at a place
+        fewer. As a double, which holds anything, against twice the bound: a
+        value the first cast reads 0, a double of 1e40 or a decimal of fewer
+        places, is past that, and one within the bound never reaches it.
         """
         match = _DECIMAL_TYPE.match(self._resolve_type_name(type_name))
         if match is None:
             return self._compile_cast(inner, type_name)
         precision, scale = int(match.group(1)), int(match.group(2))
         bound = 10 ** (precision - scale)
-        limit: Expr = (
-            Literal.number(bound)
-            if bound <= _LITERAL_BOUND
-            else Cast(expr=Literal.string(str(bound)), type_name="DECIMAL(38, 0)")
+        places = scale if precision < self._MAX_DECIMAL_PRECISION else scale - 1
+        tests: list[Expr] = []
+        if places >= 0:
+            limit: Expr = (
+                Literal.number(bound)
+                if bound <= _LITERAL_BOUND
+                else Cast(expr=Literal.string(str(bound)), type_name="DECIMAL(38, 0)")
+            )
+            rounded = Cast(expr=inner, type_name=f"DECIMAL(38, {places})")
+            tests.append(
+                BinaryOp(left=FunctionCall(name="ABS", args=[rounded]), op=">=", right=limit)
+            )
+        far = 2 * bound if places >= 0 else bound
+        tests.append(
+            BinaryOp(
+                left=FunctionCall(name="ABS", args=[Cast(expr=inner, type_name="DOUBLE")]),
+                op=">=",
+                right=Cast(expr=Literal.string(str(far)), type_name="DOUBLE"),
+            )
         )
-        rounded = Cast(expr=inner, type_name=f"DECIMAL(38, {scale})")
+        past = tests[0] if len(tests) == 1 else BinaryOp(left=tests[0], op="OR", right=tests[1])
         verdict = CaseExpr(
-            when_clauses=[
-                (
-                    BinaryOp(left=FunctionCall(name="ABS", args=[rounded]), op=">=", right=limit),
-                    Literal.string(_PAST_DECIMAL.format(type=type_name)),
-                )
-            ],
+            when_clauses=[(past, Literal.string(_PAST_DECIMAL.format(type=type_name)))],
             else_clause=Literal.string("0"),
         )
         holds = BinaryOp(left=Cast(expr=verdict, type_name="INT"), op="=", right=Literal.number(0))
