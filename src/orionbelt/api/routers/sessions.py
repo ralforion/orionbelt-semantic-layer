@@ -93,6 +93,7 @@ from orionbelt.service.db_executor import (
 )
 from orionbelt.service.diagram import generate_mermaid_er
 from orionbelt.service.session_manager import (
+    ProtectedSessionError,
     SessionCapacityError,
     SessionExpiredError,
     SessionManager,
@@ -219,6 +220,9 @@ async def close_session(
 ) -> None:
     """Close a session and release its resources.
 
+    A session holding an admin-managed model (``MODEL_FILES``) is refused
+    with 403: it stays loaded until the server stops.
+
     The result cache is intentionally NOT purged here: as of the per-datasource
     cache scope (see ``orionbelt.cache.key``) entries are shared across sessions
     that resolve to the same data source, so they outlive any single session.
@@ -229,6 +233,8 @@ async def close_session(
         mgr.close_session(session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found") from None
+    except ProtectedSessionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
 
 
 # -- model management -------------------------------------------------------

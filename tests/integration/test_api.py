@@ -1119,6 +1119,13 @@ class TestSingleModelMode:
         response = await single_model_client.delete(f"/v1/sessions/{sid}")
         assert response.status_code == 204
 
+    async def test_delete_protected_session_blocked(self, single_model_client: AsyncClient) -> None:
+        response = await single_model_client.delete(f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}")
+        assert response.status_code == 403
+        assert "admin-managed" in response.json()["detail"]
+        models = await single_model_client.get("/v1/models")
+        assert [m["name"] for m in models.json()["models"]] == [SINGLE_MODEL_PROTECTED_NAME]
+
     async def test_shortcut_schema_sees_protected_session(
         self, single_model_client: AsyncClient
     ) -> None:

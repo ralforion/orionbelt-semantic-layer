@@ -74,7 +74,7 @@ When the `MODEL_FILES` environment variable is set, the server runs in **admin-c
 3. **Compile** — `POST /v1/sessions/<model_name>/query/sql` to compile OBML to SQL
 4. **Execute** — `POST /v1/sessions/<model_name>/query/execute` to compile and execute (requires `FLIGHT_ENABLED=true`)
 
-BI tools through Flight SQL or pgwire select the same model via the `database` header / URL parameter. Model upload (`POST /v1/sessions/{id}/models`) and removal (`DELETE /v1/sessions/{id}/models/{mid}`) return **403 Forbidden** while admin-curated mode is on. All other endpoints work normally.
+BI tools through Flight SQL or pgwire select the same model via the `database` header / URL parameter. Model upload (`POST /v1/sessions/{id}/models`) and removal (`DELETE /v1/sessions/{id}/models/{mid}`) return **403 Forbidden** while admin-curated mode is on, and so does closing a model's own session (`DELETE /v1/sessions/<model_name>`). All other endpoints work normally.
 
 ## Error Responses
 

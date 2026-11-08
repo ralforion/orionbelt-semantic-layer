@@ -30,6 +30,10 @@ class SessionCapacityError(Exception):
     """Raised when the global session cap is reached."""
 
 
+class ProtectedSessionError(Exception):
+    """Raised when a client tries to close an admin-managed (protected) session."""
+
+
 @dataclass
 class SessionInfo:
     """Public session metadata (returned by list/get)."""
@@ -262,6 +266,10 @@ class SessionManager:
             session = self._sessions.get(session_id)
             if session is None:
                 raise SessionNotFoundError(f"Session '{session_id}' not found")
+            if session.protected:
+                raise ProtectedSessionError(
+                    f"Session '{session_id}' holds an admin-managed model and cannot be closed"
+                )
             session.store.close()
             del self._sessions[session_id]
         logger.info("Session closed: %s", session_id)
