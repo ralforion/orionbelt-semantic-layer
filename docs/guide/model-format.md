@@ -1205,7 +1205,7 @@ For a detailed guide on PoP metrics, including CTE architecture, filter push-dow
 
 ### Window Metrics
 
-A **window metric** wraps a single-row SQL window function — `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE` — or a moving aggregate — `SUM`, `AVG`, `MIN`, `MAX`, `COUNT` over a `frame` of rows. Use `partitionBy:` to scope to subgroups and `orderDirection:` to flip ranking direction.
+A **window metric** wraps a single-row SQL window function — `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE` — or a moving aggregate — `SUM`, `AVG`, `MIN`, `MAX`, `COUNT` over a `frame` of rows. Use `partitionBy:` to scope to subgroups and `orderDirection:` to flip ranking direction. A NULL is ordered last either way, on every database: a month without revenue ranks last, and a row without a date is no period before the first one.
 
 ```yaml
 metrics:

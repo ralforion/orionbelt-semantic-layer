@@ -936,7 +936,7 @@ class TestPoPDeclaredDataType:
         assert 'SUM("__ob_pop_src"."Sales__amount") AS "Region Rank"' in pop_base
         assert "CAST" not in pop_base.split('AS "Region Rank"')[0].rsplit(",", 1)[-1]
         # The window result itself still carries the metric's declared type.
-        assert 'CAST(RANK() OVER (ORDER BY "Amount Sum" DESC) AS INTEGER)' in sql
+        assert 'CAST(RANK() OVER (ORDER BY "Amount Sum" DESC NULLS LAST) AS INTEGER)' in sql
 
     def test_a_measure_keeps_its_declared_type_inside_a_pop_query(self) -> None:
         """``pop_base`` rebuilds the aggregation, so it must re-apply the cast.
