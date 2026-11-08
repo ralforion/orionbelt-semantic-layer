@@ -157,6 +157,64 @@ def test_brand_database_reads_the_model_from_names() -> None:
     assert target.store is mgr.get_store("shop")
 
 
+# A model may share its name with a data object a predicate subquery reads:
+# ``customers`` beside the sample model's ``Customers``.
+_SUBQUERY_PREDICATES = [
+    'EXISTS (SELECT 1 FROM "Customers")',
+    'NOT EXISTS (SELECT 1 FROM "Customers")',
+    '"Customer Country" IN (SELECT "Country" FROM "Customers")',
+]
+
+
+def _make_manager_with_a_model_named_like_a_data_object() -> SessionManager:
+    mgr = _make_manager_with_two_models()
+    mgr.get_or_create_named("customers").load_model(SAMPLE_MODEL_YAML)
+    return mgr
+
+
+@pytest.mark.parametrize("predicate", _SUBQUERY_PREDICATES)
+@pytest.mark.parametrize("from_clause", ["model", "commerce"])
+def test_a_subquery_data_object_does_not_pick_the_model(from_clause: str, predicate: str) -> None:
+    mgr = _make_manager_with_a_model_named_like_a_data_object()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    sql = f'SELECT "Customer Country" FROM {from_clause} WHERE {predicate}'
+    target = router._resolve_target("commerce", sql)  # noqa: SLF001
+    assert target.store is mgr.get_store("commerce")
+
+
+@pytest.mark.parametrize("predicate", _SUBQUERY_PREDICATES)
+def test_brand_database_ignores_a_subquery_data_object(predicate: str) -> None:
+    mgr = _make_manager_with_a_model_named_like_a_data_object()
+    default_store = mgr.get_or_create_default()
+    default_store.load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    by_default = router._resolve_target(  # noqa: SLF001
+        "orionbelt", f'SELECT "Customer Country" FROM model WHERE {predicate}'
+    )
+    assert by_default.store is default_store
+    by_from = router._resolve_target(  # noqa: SLF001
+        "orionbelt", f'SELECT "Customer Country" FROM commerce WHERE {predicate}'
+    )
+    assert by_from.store is mgr.get_store("commerce")
+
+
+_SHOP_PUSHDOWN = (
+    'SELECT "Customer Country" FROM (SELECT "model"."Customer Country" '
+    'FROM "shop"."model") AS "model"'
+)
+
+
+def test_a_derived_table_names_its_model() -> None:
+    """Dremio wraps the model table in derived tables; the innermost FROM names it."""
+
+    mgr = _make_manager_with_two_models()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    target = router._resolve_target("orionbelt", _SHOP_PUSHDOWN)  # noqa: SLF001
+    assert target.store is mgr.get_store("shop")
+    with pytest.raises(_ModelMismatchError, match="names model 'shop'"):
+        router._resolve_target("commerce", _SHOP_PUSHDOWN)  # noqa: SLF001
+
+
 def test_default_session_refuses_a_query_naming_another_model() -> None:
     mgr = _make_manager_with_two_models()
     mgr.get_or_create_default().load_model(SAMPLE_MODEL_YAML)

@@ -668,27 +668,32 @@ class SemanticRouter:
         )
 
     def _extract_model_name_from_sql(self, sql: str) -> str | None:
-        """Find a FROM target whose name matches a loaded model.
+        """Find the loaded model the query's own FROM names.
 
         Handles both bare ``FROM <model>`` (semantic-mode shape) and
         schema-qualified ``FROM <schema>.<table>`` (catalog probe
-        shape, where the schema IS the model name).
+        shape, where the schema IS the model name). Only the outer
+        query's source counts, through derived tables in its FROM: a
+        table in a predicate subquery (``EXISTS (SELECT 1 FROM
+        "Customers")``) names a data object, whose name a model may share.
         """
 
+        model_names = self._loaded_model_names()
+        if not model_names:
+            return None
         try:
             parsed = sqlglot.parse_one(sql, read="postgres")
         except Exception:
             return None
-        model_names = self._loaded_model_names()
-        if not model_names:
+        table = _outer_source_table(parsed)
+        if table is None:
             return None
-        for table in parsed.find_all(exp.Table):
-            schema = (table.db or "").lower() or (table.text("db") or "").lower()
-            if schema and schema in model_names:
-                return schema
-            name = (table.name or "").lower()
-            if name and name in model_names:
-                return name
+        schema = (table.db or "").lower()
+        if schema and schema in model_names:
+            return schema
+        name = (table.name or "").lower()
+        if name and name in model_names:
+            return name
         return None
 
     def _first_model_in(
@@ -707,6 +712,24 @@ class SemanticRouter:
         except KeyError:
             return None
         return _ResolvedTarget(store=store, model_id=chosen_id, model=model)
+
+
+def _outer_source_table(ast: exp.Expr) -> exp.Table | None:
+    """The table the outermost SELECT reads, through derived tables in its FROM."""
+    node = ast
+    for _ in range(_FLATTEN_MAX_DEPTH + 1):
+        if not isinstance(node, exp.Select):
+            return None
+        from_ = node.args.get("from_")
+        if from_ is None:
+            return None
+        source = from_.this
+        if isinstance(source, exp.Table):
+            return source
+        if not isinstance(source, exp.Subquery):
+            return None
+        node = source.this
+    return None
 
 
 def _refuse_other_model(database: str, session_id: str, named: str | None) -> None:
