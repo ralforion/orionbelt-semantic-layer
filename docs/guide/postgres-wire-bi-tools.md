@@ -81,13 +81,38 @@ Every client uses the same connection details:
 |---|---|
 | Host | the machine running `orionbelt-api` (`localhost` for local dev) |
 | Port | `PGWIRE_PORT` (default `5432`) |
-| Database | the model addressing name — the OBML `name:` field or, lacking that, the file stem (e.g. `orionbelt_1_commerce`) |
+| Database | the model addressing name — the OBML `name:` field or, lacking that, the file stem (e.g. `orionbelt_1_commerce`); or `orionbelt` to reach every loaded model, see [Several models in one connection](#several-models-in-one-connection) |
 | Username | any non-empty string (`obsl`, the tool's default — ignored in `trust` mode) |
 | Password | leave empty in `trust` mode; with `AUTH_MODE=api_key` the API key is the password (SCRAM-SHA-256 by default) |
 | TLS / SSL | `disable` unless the server was started with `PGWIRE_TLS_CERT` / `PGWIRE_TLS_KEY` - see [TLS](#tls) above |
 
 To list available model names, query the REST `GET /v1/models`
 endpoint or check the server startup log.
+
+### Several models in one connection
+
+Load several models with `MODEL_FILES=commerce.yaml,support.yaml`. You can
+connect once per model, with the model's name as the database. Or connect
+once with the database `orionbelt` and name the model in each query's
+`FROM`:
+
+```sql
+SELECT "Country Name", "Total Sales" FROM commerce;
+SELECT "Country Name", "Ticket Count" FROM support;
+
+-- the support query again, in the forms BI tools write
+SELECT "Country Name", "Ticket Count" FROM support."model";
+SELECT "Country Name", "Ticket Count" FROM "orionbelt"."support"."model";
+```
+
+On this connection each model is a schema with one table, `model`. A BI
+tool's schema browser lists every model under the one connection.
+
+| Case | What happens | What to do |
+|---|---|---|
+| A query names two models (`JOIN`, `UNION`, a subquery) | Refused: a query reads one model | Attach the server in DuckDB and join the models there, see [DuckDB](#7-duckdb) |
+| `FROM model`, no model name, several models loaded | Refused: the server cannot tell which model you mean | Write the model name: `FROM support."model"` |
+| A `database=commerce` connection | Every query reads `commerce` | Query other models over a `database=orionbelt` connection |
 
 ## 2. DBeaver
 
@@ -312,6 +337,18 @@ SELECT "Country Name", "Total Sales" FROM obsl.commerce.model;
 
 From there it is ordinary DuckDB: the model joins to local Parquet and CSV,
 aggregates further, and lands in `CREATE TABLE AS`.
+
+Attach `dbname=orionbelt` instead to reach every loaded model, each as
+`obsl.<model>.model`, and join them in DuckDB:
+
+```sql
+ATTACH 'host=127.0.0.1 port=5432 dbname=orionbelt user=obsl'
+    AS obsl (TYPE postgres, READ_ONLY);
+
+SELECT c."Country Name", c."Total Sales", s."Ticket Count"
+FROM obsl.commerce.model AS c
+JOIN obsl.support.model AS s USING ("Country Name");
+```
 
 `sslmode`, `sslrootcert` and `password` work exactly as they do for `psql`,
 because the extension is libpq underneath.
