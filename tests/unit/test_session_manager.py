@@ -9,6 +9,7 @@ import pytest
 
 from orionbelt.service.model_store import ModelCapacityError, ModelValidationError
 from orionbelt.service.session_manager import (
+    ProtectedSessionError,
     SessionCapacityError,
     SessionExpiredError,
     SessionManager,
@@ -51,6 +52,12 @@ class TestSessionLifecycle:
     def test_close_missing_raises(self, session_manager: SessionManager) -> None:
         with pytest.raises(SessionNotFoundError, match="not found"):
             session_manager.close_session("nonexist123")
+
+    def test_close_protected_session_raises(self, session_manager: SessionManager) -> None:
+        session_manager.get_or_create_named("admin_model")
+        with pytest.raises(ProtectedSessionError, match="admin-managed"):
+            session_manager.close_session("admin_model")
+        assert session_manager.get_store("admin_model") is not None
 
     def test_list_sessions(self, session_manager: SessionManager) -> None:
         session_manager.create_session()

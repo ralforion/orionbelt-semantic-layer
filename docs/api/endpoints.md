@@ -91,6 +91,8 @@ Close a session and release its resources.
 
 **Error (404):** Session not found.
 
+**Error (403):** The session holds an admin-managed model (`MODEL_FILES`). Those sessions stay loaded until the server stops.
+
 ---
 
 ## Session Models
