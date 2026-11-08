@@ -1744,9 +1744,9 @@ Rate:
 
 ### Numeric Overflow
 
-**A value that outgrows its type is an error on every engine but MySQL and
-Dremio, which return a wrong number instead.** Measured on the same measure over
-the same data, a true total of `100000000000000000` under
+**A value that outgrows its type is an error on every engine but MySQL, which
+returns a wrong number instead, and Dremio, where OBSL tests it.** Measured on
+the same measure over the same data, a true total of `100000000000000000` under
 `dataType: "decimal(18, 2)"`:
 
 | dialect | result |
@@ -1758,7 +1758,7 @@ the same data, a true total of `100000000000000000` under
 | Databricks | raises |
 | BigQuery | `100000000000000000` - its `NUMERIC` is (38, 9), so the value fits |
 | MySQL | `9999999999999999.99` - saturated |
-| Dremio | `0.00` - from a decimal, a double, an integer or a string alike |
+| Dremio | `0.00` from the engine's own cast; now raises `OBSL: a value past DECIMAL(18, 2)` |
 
 MySQL attaches warning 1264 to that row, but a warning is not an error and no
 driver on this stack surfaces one, so what reaches a dashboard is a plausible
@@ -1766,13 +1766,11 @@ wrong number. No session setting changes it: `STRICT_ALL_TABLES`,
 `STRICT_TRANS_TABLES` and `TRADITIONAL` all saturate exactly as the default
 does, because those modes govern writes rather than a `SELECT`-time `CAST`.
 
-Dremio raises no warning at all, and no cast there raises on overflow.
-
-So on MySQL and Dremio a measure's decimal cast is widened to at least 38
-digits, and the overflow stops being reachable rather than being caught:
+So on MySQL a measure's decimal cast is widened to at least 38 digits, and the
+overflow stops being reachable rather than being caught:
 
 ```sql
-CAST(SUM(`s`.`amt`) AS DECIMAL(38, 2))   -- MySQL and Dremio; DECIMAL(18, 2) elsewhere
+CAST(SUM(`s`.`amt`) AS DECIMAL(38, 2))   -- MySQL; DECIMAL(18, 2) elsewhere
 ```
 
 Only the **precision** moves. The scale is what shapes the value and is carried
@@ -1785,6 +1783,21 @@ supported engine accepts, so a value MySQL now returns is one a portable model
 could have carried anyway. Widening to 65 would let this one engine answer
 where the other seven cannot, which reverses the divergence rather than
 removing it.
+
+Dremio casts a value past a decimal's integer digits to 0, from a decimal, a
+double, an integer or a string alike, and raises no warning. Widening its cast
+as MySQL's would cost places instead: past 38 digits Dremio cuts the scale of a
+product or quotient, so `cast(x, 'decimal(18, 12)') * 1.0` of `1e-11` read `0`.
+So on Dremio the cast keeps its declared type and the value is tested first,
+rounded to the type's places, against the type's range; past it the query fails
+with `OBSL: a value past DECIMAL(18, 2)`, a string Dremio cannot cast to an
+integer:
+
+```sql
+CASE WHEN CAST(CASE WHEN ABS(CAST(SUM("s"."amt") AS DECIMAL(38, 2))) >= 10000000000000000
+               THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0
+THEN CAST(SUM("s"."amt") AS DECIMAL(18, 2)) END
+```
 
 !!! warning "One case is still saturated: a 64-bit integer cast"
 

@@ -227,23 +227,14 @@ class TestTheResultTypeMovesWithTheExpression:
 
         The default is ``decimal(18, 2)``, which carries 16 integer digits
         where a 64-bit value needs 19. Computing the average exactly and then
-        failing to cast it would be a strange kind of progress. Databricks
-        rewrites it as Dremio does, whose casts all carry 38 digits.
+        failing to cast it would be a strange kind of progress.
         """
-        assert "DECIMAL(21, 2)" in _sql("Qty Avg", "databricks")
+        assert "DECIMAL(21, 2)" in _sql("Qty Avg", "dremio")
 
     def test_a_declared_type_is_left_as_declared(self) -> None:
         """An explicit ``dataType`` wins, as the resolution order promises."""
-        sql = _sql("Qty Avg Declared", "databricks")
-        assert "DECIMAL(30, 4)" in sql, sql
-        assert "MOD(" in sql, sql
-
-    def test_dremio_casts_it_at_38_digits_in_the_declared_scale(self) -> None:
-        """Dremio casts a value past a decimal's width to 0, so every decimal
-        cast there carries 38 digits; the declared scale still rounds."""
         sql = _sql("Qty Avg Declared", "dremio")
-        assert "DECIMAL(38, 4)" in sql, sql
-        assert "DECIMAL(30, 4)" not in sql, sql
+        assert "DECIMAL(30, 4)" in sql, sql
         assert "MOD(" in sql, sql
 
 

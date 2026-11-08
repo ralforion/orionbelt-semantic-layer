@@ -351,25 +351,6 @@ class DialectCapabilities:
 PORTABLE_DECIMAL_PRECISION = 38
 
 
-def widened_decimal(obml_type: OBMLType) -> OBMLType:
-    """*obml_type* with room for a total the source holds legally.
-
-    A decimal narrower than :data:`PORTABLE_DECIMAL_PRECISION` is widened to
-    it, for an engine whose cast past a type's width returns a wrong number
-    rather than raising (MySQL, Dremio). The scale is carried through
-    untouched, so a large declared scale still limits the integer digits
-    available inside the precision - a ``decimal(38, 20)`` leaves 18 either
-    way. That is the same trade ``_widen_to_integer_range`` makes in the type
-    resolver, and widening the precision cannot fix it without changing the
-    rounding the model asked for.
-    """
-    if not isinstance(obml_type, DecimalType):
-        return obml_type
-    if obml_type.precision >= PORTABLE_DECIMAL_PRECISION:
-        return obml_type
-    return DecimalType(precision=PORTABLE_DECIMAL_PRECISION, scale=obml_type.scale)
-
-
 class Dialect(ABC):
     """Abstract base for all SQL dialects.
 
@@ -2341,6 +2322,15 @@ class Dialect(ABC):
         resolved_type = self._resolve_type_name(type_name)
         return f"CAST({self.compile_expr(inner)} AS {resolved_type})"
 
+    def _compile_checked_cast(self, inner: Expr, type_name: str) -> str:
+        """Render a cast whose value is tested against the type's range first.
+
+        Only a dialect that marks a cast so (``Cast.range_checked``) overrides
+        this: Dremio, whose cast past a decimal's width returns 0. Elsewhere
+        it is the plain cast.
+        """
+        return self._compile_cast(inner, type_name)
+
     # SQL operator precedence (higher = binds tighter). Used by the
     # precedence-aware emitter in ``compile_expr`` to skip wrapping a
     # child whose precedence is higher than its parent's required level.
@@ -2921,9 +2911,17 @@ class Dialect(ABC):
                     parts.append(f"ELSE {self.compile_expr(else_)}")
                 parts.append("END")
                 return " ".join(parts)
-            case Cast(expr=inner, type_name=type_name, source_exact=source_exact, obml_type=obml):
+            case Cast(
+                expr=inner,
+                type_name=type_name,
+                source_exact=source_exact,
+                obml_type=obml,
+                range_checked=checked,
+            ):
                 if obml:
                     type_name = self.render_obml_type(parse_data_type(type_name))
+                if checked:
+                    return self._compile_checked_cast(inner, type_name)
                 return self._compile_cast(inner, type_name, source_exact=source_exact)
             case SubqueryExpr(query=query):
                 return f"(\n{self.compile_select(query)}\n)"

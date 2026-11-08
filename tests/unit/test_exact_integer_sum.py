@@ -138,9 +138,7 @@ class TestTheRewrite:
         AVG rewrite makes. The accumulator wraps whatever the output type is.
         """
         sql = _sql("Qty Sum Pinned", dialect)
-        # Dremio casts every decimal at 38 digits, in the declared scale: a
-        # value past a narrower one is 0 there, silently.
-        assert ("38, 0" if dialect == "dremio" else "30, 0") in sql, sql
+        assert "30, 0" in sql, sql
         assert "SUM(toDecimal128(" in sql or "SUM(CAST(" in sql, sql
 
 

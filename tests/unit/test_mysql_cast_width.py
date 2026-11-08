@@ -75,9 +75,7 @@ metrics:
 """
 
 DIALECTS = sorted(DialectRegistry.available())
-# Dremio widens too, casting a value past the type's width to 0.
-WIDENING_DIALECTS = ["mysql", "dremio"]
-OTHER_DIALECTS = [d for d in DIALECTS if d not in WIDENING_DIALECTS]
+OTHER_DIALECTS = [d for d in DIALECTS if d != "mysql"]
 
 
 def _sql(measure: str, dialect: str) -> str:
@@ -105,10 +103,6 @@ class TestWhatMoves:
         """``decimal(18, 2)`` carries 16 integer digits, which a total reaches."""
         assert "CAST(SUM(`S`.`amt`) AS DECIMAL(38, 2))" in _sql("Amount", "mysql")
 
-    def test_dremio_widens_too(self) -> None:
-        """Dremio casts a total past 16 integer digits to 0, silently."""
-        assert 'CAST(SUM("S"."amt") AS DECIMAL(38, 2))' in _sql("Amount", "dremio")
-
     def test_a_wrapper_is_widened_too(self) -> None:
         """The cumulative wrapper types its result through the same call, so it
         cannot be widened on the direct path and left narrow inside a CTE.
@@ -122,6 +116,10 @@ class TestWhatDoesNotMove:
     def test_no_other_dialect_is_touched(self) -> None:
         for dialect in OTHER_DIALECTS:
             sql = _sql("Amount", dialect)
+            if dialect == "dremio":
+                # Tested at 38 digits, cast in the declared type (``test_dialects``).
+                assert 'THEN CAST(SUM("S"."amt") AS DECIMAL(18, 2)) END' in sql, sql
+                continue
             assert "DECIMAL(38, 2)" not in sql, f"{dialect}: {sql}"
 
     def test_the_scale_is_carried_through_untouched(self) -> None:
