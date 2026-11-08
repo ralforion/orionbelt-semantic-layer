@@ -351,6 +351,25 @@ class DialectCapabilities:
 PORTABLE_DECIMAL_PRECISION = 38
 
 
+def widened_decimal(obml_type: OBMLType) -> OBMLType:
+    """*obml_type* with room for a total the source holds legally.
+
+    A decimal narrower than :data:`PORTABLE_DECIMAL_PRECISION` is widened to
+    it, for an engine whose cast past a type's width returns a wrong number
+    rather than raising (MySQL, Dremio). The scale is carried through
+    untouched, so a large declared scale still limits the integer digits
+    available inside the precision - a ``decimal(38, 20)`` leaves 18 either
+    way. That is the same trade ``_widen_to_integer_range`` makes in the type
+    resolver, and widening the precision cannot fix it without changing the
+    rounding the model asked for.
+    """
+    if not isinstance(obml_type, DecimalType):
+        return obml_type
+    if obml_type.precision >= PORTABLE_DECIMAL_PRECISION:
+        return obml_type
+    return DecimalType(precision=PORTABLE_DECIMAL_PRECISION, scale=obml_type.scale)
+
+
 class Dialect(ABC):
     """Abstract base for all SQL dialects.
 

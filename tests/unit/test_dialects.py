@@ -36,7 +36,7 @@ from orionbelt.dialect.postgres import PostgresDialect
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.dialect.snowflake import SnowflakeDialect
 from orionbelt.models.semantic import TimeGrain, WeekStart
-from orionbelt.models.types import parse_data_type
+from orionbelt.models.types import DecimalType, SimpleType, parse_data_type
 
 ALL_DIALECTS = [
     "bigquery",
@@ -531,6 +531,26 @@ class TestDremioDialect:
     def test_capabilities(self, dialect: DremioDialect) -> None:
         assert dialect.capabilities.supports_arrays is False
         assert dialect.capabilities.supports_ilike is False
+
+    @pytest.mark.parametrize(
+        ("declared", "cast"),
+        [
+            (DecimalType(precision=18, scale=2), "DECIMAL(38, 2)"),
+            (DecimalType(precision=10, scale=6), "DECIMAL(38, 6)"),
+            (DecimalType(precision=38, scale=4), "DECIMAL(38, 4)"),
+            (SimpleType(name="double"), "DOUBLE"),
+        ],
+        ids=["the_default", "a_narrow_one", "already_38_digits", "not_a_decimal"],
+    )
+    def test_a_decimal_cast_is_widened_to_38_digits(
+        self, dialect: DremioDialect, declared: DecimalType | SimpleType, cast: str
+    ) -> None:
+        """Dremio casts a value past a decimal's width to 0, silently: the
+        precision moves to 38, the declared scale still rounds
+        (``test_decimal_overflow_exec`` runs it)."""
+        expr = dialect.cast_to_obml_type(ColumnRef(name="x", table="t"), declared)
+
+        assert dialect.compile_expr(expr) == f'CAST("t"."x" AS {cast})'
 
 
 class TestBigQueryDialect:

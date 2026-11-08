@@ -1744,9 +1744,10 @@ Rate:
 
 ### Numeric Overflow
 
-**A value that outgrows its type is an error on every engine but MySQL, which
-returns a wrong number instead.** Measured on the same measure over the same
-data, a true total of `100000000000000000` under `dataType: "decimal(18, 2)"`:
+**A value that outgrows its type is an error on every engine but MySQL and
+Dremio, which return a wrong number instead.** Measured on the same measure over
+the same data, a true total of `100000000000000000` under
+`dataType: "decimal(18, 2)"`:
 
 | dialect | result |
 | --- | --- |
@@ -1757,6 +1758,7 @@ data, a true total of `100000000000000000` under `dataType: "decimal(18, 2)"`:
 | Databricks | raises |
 | BigQuery | `100000000000000000` - its `NUMERIC` is (38, 9), so the value fits |
 | MySQL | `9999999999999999.99` - saturated |
+| Dremio | `0.00` - from a decimal, a double, an integer or a string alike |
 
 MySQL attaches warning 1264 to that row, but a warning is not an error and no
 driver on this stack surfaces one, so what reaches a dashboard is a plausible
@@ -1764,11 +1766,13 @@ wrong number. No session setting changes it: `STRICT_ALL_TABLES`,
 `STRICT_TRANS_TABLES` and `TRADITIONAL` all saturate exactly as the default
 does, because those modes govern writes rather than a `SELECT`-time `CAST`.
 
-So on MySQL a measure's decimal cast is widened to at least 38 digits, and the
-overflow stops being reachable rather than being caught:
+Dremio raises no warning at all, and no cast there raises on overflow.
+
+So on MySQL and Dremio a measure's decimal cast is widened to at least 38
+digits, and the overflow stops being reachable rather than being caught:
 
 ```sql
-CAST(SUM(`s`.`amt`) AS DECIMAL(38, 2))   -- MySQL; DECIMAL(18, 2) elsewhere
+CAST(SUM(`s`.`amt`) AS DECIMAL(38, 2))   -- MySQL and Dremio; DECIMAL(18, 2) elsewhere
 ```
 
 Only the **precision** moves. The scale is what shapes the value and is carried

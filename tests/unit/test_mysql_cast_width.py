@@ -75,7 +75,9 @@ metrics:
 """
 
 DIALECTS = sorted(DialectRegistry.available())
-OTHER_DIALECTS = [d for d in DIALECTS if d != "mysql"]
+# Dremio widens too, casting a value past the type's width to 0.
+WIDENING_DIALECTS = ["mysql", "dremio"]
+OTHER_DIALECTS = [d for d in DIALECTS if d not in WIDENING_DIALECTS]
 
 
 def _sql(measure: str, dialect: str) -> str:
@@ -102,6 +104,10 @@ class TestWhatMoves:
     def test_the_default_decimal_is_widened(self) -> None:
         """``decimal(18, 2)`` carries 16 integer digits, which a total reaches."""
         assert "CAST(SUM(`S`.`amt`) AS DECIMAL(38, 2))" in _sql("Amount", "mysql")
+
+    def test_dremio_widens_too(self) -> None:
+        """Dremio casts a total past 16 integer digits to 0, silently."""
+        assert 'CAST(SUM("S"."amt") AS DECIMAL(38, 2))' in _sql("Amount", "dremio")
 
     def test_a_wrapper_is_widened_too(self) -> None:
         """The cumulative wrapper types its result through the same call, so it

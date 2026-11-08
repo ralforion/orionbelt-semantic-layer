@@ -42,7 +42,7 @@ CASE WHEN REGEXP_LIKE(TRIM(CAST('abc' AS VARCHAR)), '^[+-]?([0-9]+([.][0-9]*)?|[
 --   cast('4.60', 'double') = 4.6
 CAST('4.60' AS DOUBLE);
 --   cast(2.555, 'decimal(18, 2)') = 2.56
-CAST(2.555 AS DECIMAL(18, 2));
+CAST(2.555 AS DECIMAL(38, 2));
 
 -- round(x, n?)
 --   round(2.5) = 3

@@ -1,11 +1,11 @@
 WITH "cumulative_base" AS (
-SELECT CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE) AS "Sales Date", CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
+SELECT CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE) AS "Sales Date", CAST(SUM("Sales"."salesamount") AS DECIMAL(38, 2)) AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 WHERE CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE) >= '2021-02-01' AND CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE) < '2021-03-01'
 GROUP BY CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE)
 ),
 "cumulative_lookback" AS (
-SELECT CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE) AS "Sales Date", CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
+SELECT CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE) AS "Sales Date", CAST(SUM("Sales"."salesamount") AS DECIMAL(38, 2)) AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 GROUP BY CAST(DATE_TRUNC('day', "Sales"."salesdate") AS DATE)
 ),
@@ -20,5 +20,5 @@ SELECT "cumulative_base"."Sales Date" AS "Sales Date", "cumulative_base"."Total 
 FROM "cumulative_base" AS "cumulative_base"
 LEFT JOIN "cumulative_rolling" AS "cumulative_rolling" ON "cumulative_base"."Sales Date" = "cumulative_rolling"."Sales Date" OR "cumulative_base"."Sales Date" IS NULL AND "cumulative_rolling"."Sales Date" IS NULL
 )
-SELECT "Sales Date" AS "Sales Date", "Total Sales" AS "Total Sales", CAST("Rolling 30 Day Sales" AS DECIMAL(18, 0)) AS "Rolling 30 Day Sales", CAST("Peak Daily Sales 30D" AS DECIMAL(18, 2)) AS "Peak Daily Sales 30D"
+SELECT "Sales Date" AS "Sales Date", "Total Sales" AS "Total Sales", CAST("Rolling 30 Day Sales" AS DECIMAL(38, 0)) AS "Rolling 30 Day Sales", CAST("Peak Daily Sales 30D" AS DECIMAL(38, 2)) AS "Peak Daily Sales 30D"
 FROM "cumulative_joined" AS "cumulative_joined"

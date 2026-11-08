@@ -19,6 +19,7 @@ from orionbelt.dialect.base import (
     _dremio_access,
     _dremio_row_type,
     _json_path_of,
+    widened_decimal,
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
@@ -208,6 +209,25 @@ class DremioDialect(Dialect):
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
+
+    def cast_to_obml_type(
+        self, expr: Expr, obml_type: OBMLType, *, source_exact: bool = False
+    ) -> Expr:
+        """Dremio: a measure's decimal cast carries at least 38 digits, as MySQL's.
+
+        Dremio casts a value past a decimal's integer digits to 0, silently,
+        from a decimal, a double, an integer or a string alike: measured,
+        12345678901234567.89 as ``DECIMAL(18, 2)`` came back 0.00, and a metric
+        of 1.75e21 read 0.00 where PostgreSQL, Snowflake, Databricks,
+        ClickHouse and DuckDB raise and MySQL and BigQuery return the value.
+        Nothing makes the cast raise, and a guard around it repeats the value
+        it tests. So the cast is widened rather than guarded, as on MySQL
+        (``MySQLDialect.cast_to_obml_type``): only the precision moves, to 38,
+        and the declared scale still rounds the value.
+        """
+        return super().cast_to_obml_type(
+            expr, widened_decimal(obml_type), source_exact=source_exact
+        )
 
     def render_string_contains(self, column: Expr, pattern: Expr) -> Expr:
 
