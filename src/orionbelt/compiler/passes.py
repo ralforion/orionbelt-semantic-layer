@@ -83,6 +83,7 @@ PASS_FILL = "fill"
 PASS_HAVING_WINDOW = "having_over_window"
 PASS_HAVING_CLEANUP = "having_projection_cleanup"
 PASS_ORDER_ONLY = "order_only"
+PASS_COLUMN_ORDER = "column_order"
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,35 @@ def _drop_having_only_projection(ast: Select, ctx: CompileContext) -> Select:
     if len(kept_columns) == len(ast.columns):
         return ast
     return replace(ast, columns=kept_columns)
+
+
+def _in_select_order(ast: Select, ctx: CompileContext) -> Select:
+    """The outermost SELECT with its measures in the order the query lists them.
+
+    A planner or wrapper projects a measure where it computes it: CFL each
+    fact's measures together and the derived metrics over them after, the
+    filter context pass the measures it scans apart last. Revenue per order
+    asked for before revenue and the tickets came back after both, so a client
+    reading the result by position read the wrong column, and so did a sort by
+    position, which names the query's order. The columns holding selected
+    measures take them in that order; the dimensions and any other column
+    keep their places.
+    """
+    selected = ctx.query.select.measures
+    held = [
+        (i, col)
+        for i, col in enumerate(ast.columns)
+        if isinstance(col, AliasedExpr) and col.alias in selected
+    ]
+    by_name = {col.alias: col for _, col in held}
+    if len(by_name) != len(selected):
+        return ast
+    columns = list(ast.columns)
+    for (i, _), name in zip(held, selected, strict=True):
+        columns[i] = by_name[name]
+    if columns == ast.columns:
+        return ast
+    return replace(ast, columns=columns)
 
 
 def build_default_passes() -> tuple[CompilerPass, ...]:
@@ -295,6 +325,12 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
             name=PASS_HAVING_CLEANUP,
             applies=lambda r: bool(r.having_only_measures),
             run=_drop_having_only_projection,
+        ),
+        # Last, over the projection the query returns.
+        CompilerPass(
+            name=PASS_COLUMN_ORDER,
+            applies=lambda r: len(r.measures) > 1,
+            run=_in_select_order,
         ),
     )
 

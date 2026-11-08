@@ -2233,12 +2233,7 @@ def _plan_parts(
         },
         expose_counts=False,
     )
-    # One database returns the measures with a filter context last, from the
-    # scans of their own it joins to the query's rows (``filter_wrap``).
-    returned = sorted(
-        query.select.measures,
-        key=lambda m: m in effective and effective[m].filter_context is not None,
-    )
+    returned = list(query.select.measures)
     # Filled, the date is read at its grain, which each part truncated it to
     # already, and its periods span the bounds the query's filters on it set,
     # as one database's (``fill_wrap``), filtering no row again.

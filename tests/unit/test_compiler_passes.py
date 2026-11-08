@@ -16,6 +16,7 @@ from typing import cast
 import pytest
 
 from orionbelt.compiler.passes import (
+    PASS_COLUMN_ORDER,
     PASS_CUMULATIVE,
     PASS_FILL,
     PASS_FILTER_CONTEXT,
@@ -112,6 +113,8 @@ def test_pass_order_is_declared_once() -> None:
         # while a HAVING-only measure is still a column to sort by.
         PASS_ORDER_ONLY,
         PASS_HAVING_CLEANUP,
+        # Puts the measures of the projection the query returns in its order.
+        PASS_COLUMN_ORDER,
     ]
 
 
