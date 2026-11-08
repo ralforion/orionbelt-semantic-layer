@@ -606,6 +606,11 @@ class TestAnotherModelNamed:
             "DESCRIBE orionbelt . shop . model",
             "SHOW TABLES FROM orionbelt.shop",
             "SELECT * FROM commerce.measures JOIN shop.measures ON 1 = 1",
+            "DESCRIBE TABLE shop.model TYPE = COLUMNS",
+            "DESCRIBE shop.model 'Customer%'",
+            "DESCRIBE EXTENDED shop",
+            "DESCRIBE FORMATTED shop.model",
+            "SHOW COLUMNS FROM model IN orionbelt.shop",
         ],
     )
     def test_a_statement_naming_another_model_is_refused(self, sql: str) -> None:
@@ -622,6 +627,9 @@ class TestAnotherModelNamed:
             "SHOW COLUMNS FROM model LIKE 'shop%'",
             'DESCRIBE "orionbelt" . "commerce" . "model"',
             "DESCRIBE commerce",
+            "DESCRIBE TABLE commerce.model TYPE = COLUMNS",
+            "DESCRIBE commerce.model 'Customer%'",
+            "DESCRIBE EXTENDED commerce",
         ],
     )
     def test_a_catalog_statement_on_the_connected_model_answers(self, sql: str) -> None:

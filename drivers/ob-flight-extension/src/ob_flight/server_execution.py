@@ -117,58 +117,64 @@ def rewrite_table_names(server: OBFlightServer, sql: str, model: Any) -> str:
     return sql
 
 
-# The words opening the SHOW / DESCRIBE statements the dispatcher answers from
-# the connection's model, whatever follows them.
-_RE_DESCRIBE = re.compile(r"^\s*DESC(?:RIBE)?(?:\s+TABLE)?\b", re.I)
-_RE_SHOW_COLUMNS = re.compile(r"^\s*SHOW\s+(?:FULL\s+)?(?:COLUMNS|FIELDS)\b", re.I)
-_RE_SHOW_TABLES = re.compile(r"^\s*SHOW\s+(?:FULL\s+)?TABLES\b", re.I)
+# SHOW / DESCRIBE: the dispatcher answers every such statement from the
+# connection's model, whatever follows its opening words.
+_RE_SHOW_DESCRIBE = re.compile(
+    r"^\s*(?:DESC(?:RIBE)?(?:\s+TABLE)?|SHOW(?:\s+(?:FULL\s+)?(?:COLUMNS|FIELDS|TABLES))?)\b",
+    re.I,
+)
+_RE_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
 _VIEW_NAMES = (*_LABEL_VIEW_NAMES, *_METADATA_VIEW_NAMES, MODEL_TABLE)
 
 
 def _dotted_names(text: str) -> list[list[str]]:
-    """The dotted names in ``text``, one per FROM / IN, up to LIKE / WHERE.
+    """The names in ``text``, each a run of words joined by dots, up to LIKE / WHERE.
 
-    A name part is any word token, so a model may be named after a keyword
-    (``date``); ``"orionbelt" . "shop" . "model"`` is one name of three parts.
+    A word is an identifier, quoted or not, keywords included, so a model may be
+    named after one (``date``). Anything else ends a name: ``shop.model TYPE =
+    COLUMNS`` holds ``shop.model``, ``TYPE`` and ``COLUMNS``; a string or number
+    is no name, and neither are ``FROM`` / ``IN``.
     """
     from sqlglot import TokenType
     from sqlglot.tokens import Tokenizer
 
     stop = (TokenType.LIKE, TokenType.ILIKE, TokenType.WHERE, TokenType.SEMICOLON)
-    names: list[list[str]] = [[]]
+    not_words = (TokenType.STRING, TokenType.NUMBER, TokenType.FROM, TokenType.IN)
+    names: list[list[str]] = []
+    joined = False
     for token in Tokenizer().tokenize(text):
         if token.token_type in stop:
             break
-        if token.token_type in (TokenType.FROM, TokenType.IN):
-            names.append([])
-        elif token.token_type != TokenType.DOT:
+        if token.token_type == TokenType.DOT:
+            joined = bool(names)
+            continue
+        word = token.token_type == TokenType.IDENTIFIER or (
+            token.token_type not in not_words and _RE_WORD.fullmatch(token.text) is not None
+        )
+        if word and joined:
             names[-1].append(token.text.lower())
-    return [name for name in names if name]
+        elif word:
+            names.append([token.text.lower()])
+        joined = False
+    return names
 
 
 def _show_describe_models(sql: str) -> set[str] | None:
     """The models a SHOW / DESCRIBE names, or ``None`` for another statement.
 
-    A table reference (``DESCRIBE shop.model``, ``SHOW COLUMNS FROM shop.model``)
-    names the model of its schema, or a bare name that is not one of the model's
-    views (``DESCRIBE shop``); a schema reference (``SHOW COLUMNS FROM model IN
-    shop``, ``SHOW TABLES FROM orionbelt.shop``) names the model it is.
+    Each name counts with all its parts but a trailing view: ``shop.model`` and
+    ``orionbelt.shop`` name ``shop``, ``commerce.measures`` names ``commerce``
+    even beside a model named ``measures``. Options, patterns and modifiers
+    around the name (``TYPE = COLUMNS``, ``'Customer%'``, ``EXTENDED``) are names
+    of their own, which no model has.
     """
-    if (opening := _RE_DESCRIBE.match(sql)) is not None:
-        tables, schemas = _dotted_names(sql[opening.end() :])[:1], []
-    elif (opening := _RE_SHOW_COLUMNS.match(sql)) is not None:
-        names = _dotted_names(sql[opening.end() :])
-        tables, schemas = names[:1], names[1:2]
-    elif (opening := _RE_SHOW_TABLES.match(sql)) is not None:
-        tables, schemas = [], _dotted_names(sql[opening.end() :])[:1]
-    else:
+    opening = _RE_SHOW_DESCRIBE.match(sql)
+    if opening is None:
         return None
-    models = {schema[-1] for schema in schemas}
-    for table in tables:
-        if len(table) > 1:
-            models.add(table[-2])
-        elif table[0] not in _VIEW_NAMES:
-            models.add(table[0])
+    models: set[str] = set()
+    for name in _dotted_names(sql[opening.end() :]):
+        parts = name[:-1] if len(name) > 1 and name[-1] in _VIEW_NAMES else name
+        models.update(part for part in parts if part not in _VIEW_NAMES)
     return models
 
 
