@@ -214,6 +214,43 @@ def test_a_model_catalog_goes_with_its_model() -> None:
     assert session_id not in router._model_catalogs  # noqa: SLF001
 
 
+@pytest.mark.parametrize("list_sessions", [True, False])
+def test_every_model_catalog_lists_sessions_only_while_listing_is_on(list_sessions: bool) -> None:
+    """``DISABLE_SESSION_LIST`` hides REST session ids from ``database=orionbelt`` too (#756)."""
+
+    mgr = SessionManager()
+    session_id = mgr.create_session().session_id
+    mgr.get_store(session_id).load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(
+        session_manager=mgr, default_dialect="duckdb", list_sessions=list_sessions
+    )
+    sql = "SELECT nspname FROM pg_catalog.pg_namespace"
+    every = {row[0] for row in _text_rows(asyncio.run(router.handle(sql, database="orionbelt")))}
+    assert (session_id in every) is list_sessions
+    own = {row[0] for row in _text_rows(asyncio.run(router.handle(sql, database=session_id)))}
+    assert session_id in own
+
+
+def test_startup_passes_the_session_listing_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    from orionbelt.pgwire import startup
+    from orionbelt.settings import Settings
+
+    seen: dict[str, Any] = {}
+
+    class _RouterBuiltError(Exception):
+        pass
+
+    def _record(**kwargs: Any) -> None:
+        seen.update(kwargs)
+        raise _RouterBuiltError
+
+    monkeypatch.setattr(startup, "SemanticRouter", _record)
+    settings = Settings(pgwire_enabled=True, disable_session_list=True)
+    with pytest.raises(_RouterBuiltError):
+        asyncio.run(startup.start_pgwire(settings, session_manager=SessionManager()))
+    assert seen["list_sessions"] is False
+
+
 # A model may share its name with a data object a predicate subquery reads:
 # ``customers`` beside the sample model's ``Customers``.
 _SUBQUERY_PREDICATES = [

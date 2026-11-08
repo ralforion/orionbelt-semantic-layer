@@ -160,10 +160,13 @@ class SemanticRouter:
         catalog: CatalogEmulator | None = None,
         cache: Any = None,
         cache_config: Any = None,
+        list_sessions: bool = True,
     ) -> None:
         self._sessions = session_manager
         self._default_dialect = default_dialect
-        self._catalog = catalog if catalog is not None else CatalogEmulator()
+        self._catalog = (
+            catalog if catalog is not None else CatalogEmulator(list_sessions=list_sessions)
+        )
         # A connection selecting one model sees a catalog holding that model
         # only, created on first use and dropped when the model goes away.
         self._model_catalogs: dict[str, CatalogEmulator] = {}

@@ -15,7 +15,7 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `API_SERVER_HOST`          | `localhost` | REST API bind host                        |
 | `API_SERVER_PORT`          | `8000`      | REST API bind port                        |
 | `PORT`                     | —           | Override port (Cloud Run sets this)       |
-| `DISABLE_SESSION_LIST`     | `false`     | Disable `GET /sessions` endpoint          |
+| `DISABLE_SESSION_LIST`     | `false`     | Disable `GET /sessions` endpoint; the Postgres wire catalog on `database=orionbelt` then lists no REST sessions either |
 | `SESSION_TTL_SECONDS`      | `1800`      | Session inactivity timeout (30 min)       |
 | `SESSION_MAX_AGE_SECONDS`  | `86400`     | Absolute max session lifetime (24 h)      |
 | `SESSION_CLEANUP_INTERVAL` | `60`        | Cleanup sweep interval (seconds)          |
