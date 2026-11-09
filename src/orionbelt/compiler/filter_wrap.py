@@ -50,6 +50,7 @@ from orionbelt.compiler.resolution import (
     make_column_expr,
     make_dimension_expr,
 )
+from orionbelt.compiler.star import grouping_flag_alias
 from orionbelt.compiler.time_lookback import null_safe_eq
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
@@ -323,6 +324,9 @@ def _plan_isolated_scan(
     references = {d.name: dimension_reference(d) for d in resolved.dimensions}
     context = measure_group[0].filter_context
     assert context is not None
+    # Under a rollup or cube the scan rolls up the same dimensions, so each of
+    # the query's subtotals has a subtotal of its own to read: grouped by the
+    # dimensions alone, a subtotal row met no group, or a NULL member's.
     sub_query = QueryObject(
         select=QuerySelect(
             dimensions=[references.get(g, g) for g in grain],
@@ -331,6 +335,7 @@ def _plan_isolated_scan(
         where=kept_by_context(context, list(query.where), query_item_fields),
         use_path_names=list(query.use_path_names),
         allow_fan_out=query.allow_fan_out,
+        grouping=query.grouping if grain else None,
     )
     # Imported here: the pipeline owns the phase order, and importing it at
     # module scope would be a cycle back through ``compiler.passes``.
@@ -437,9 +442,16 @@ def wrap_with_filter_context(
     # --- Build main CTE from planner AST ---
     main_columns: list[Expr] = []
     dim_names = {d.name for d in resolved.dimensions}
+    # Under a rollup or cube, each dimension's GROUPING() flag: what tells a
+    # subtotal from a NULL member, to the joins below and to the caller.
+    flags = (
+        [grouping_flag_alias(d.name) for d in resolved.dimensions]
+        if resolved.grouping is not None
+        else []
+    )
     for col_node in ast.columns:
         alias = _get_alias(col_node)
-        if alias and alias not in inline_names | dim_names | carried:
+        if alias and alias not in inline_names | dim_names | carried | set(flags):
             continue
         main_columns.append(col_node)
 
@@ -608,6 +620,10 @@ def wrap_with_filter_context(
             if m.name not in selected_names:
                 continue
             outer_columns.append(AliasedExpr(expr=isolated_value(m.name, cte_name), alias=m.name))
+    # After the measures, as the planner projects them.
+    outer_columns += [
+        AliasedExpr(expr=ColumnRef(name=flag, table=anchor), alias=flag) for flag in flags
+    ]
 
     # --- JOINs from main to isolated CTEs ---
     outer_joins: list[Join | Unnest] = []
@@ -625,12 +641,21 @@ def wrap_with_filter_context(
             )
         else:
             # NULL-safe: the row of a NULL member is a group like any other.
+            # A subtotal is NULL there too, so it is matched by its flags.
             on_parts: list[Expr] = [
                 null_safe_eq(
                     ColumnRef(name=dim_name, table=anchor),
                     ColumnRef(name=dim_name, table=cte_name),
                 )
                 for dim_name in grain
+            ]
+            on_parts += [
+                BinaryOp(
+                    left=ColumnRef(name=flag, table=anchor),
+                    op="=",
+                    right=ColumnRef(name=flag, table=cte_name),
+                )
+                for flag in flags
             ]
             on_expr: Expr = on_parts[0]
             for part in on_parts[1:]:

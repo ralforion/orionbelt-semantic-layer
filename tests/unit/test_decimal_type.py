@@ -161,7 +161,11 @@ def test_float_compiles_to_the_engines_double(dialect: str) -> None:
     double = dia.render_obml_type(parse_data_type("double"))
     sql = _sql("float", QUERIES["star"], dialect)
     assert f"{double})" in sql, sql
-    assert f"{double})" not in _sql("decimal", QUERIES["star"], dialect)
+    decimal = _sql("decimal", QUERIES["star"], dialect)
+    # Dremio tests a decimal cast's value as a double too, twice in each test
+    # (``DremioDialect._compile_checked_cast``); the value itself is no double.
+    tested = 2 * decimal.count("OBSL: a value past")
+    assert decimal.count(f"{double})") == tested, decimal
 
 
 @pytest.mark.parametrize(

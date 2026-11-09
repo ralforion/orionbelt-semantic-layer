@@ -557,3 +557,143 @@ class TestSemanticResultSchemaDecimals:
         model = self._model(measures={"Huge": _sum_measure(data_type="decimal(100, 2)")})
         schema = semantic_result_schema(None, self._query(["Huge"]), model)
         assert schema.field("Huge").type == pa.float64()
+
+
+class _Context:
+    """A call context whose routing middleware selects ``model``, as the header does."""
+
+    def __init__(self, model: str) -> None:
+        self._middleware = SimpleNamespace(selected_model=model)
+
+    def get_middleware(self, key: str) -> Any:
+        return self._middleware
+
+
+def _make_multi_model_server(*names: str) -> OBFlightServer:
+    """A server over a real SessionManager holding one model per name."""
+    from orionbelt.service.session_manager import SessionManager
+
+    mgr = SessionManager()
+    for name in names:
+        mgr.get_or_create_named(name).load_model(_MODEL_YAML)
+    server = _make_server(None)
+    server._session_manager = mgr
+    return server
+
+
+def _values(table: pa.Table) -> set[Any]:
+    return {value for column in table.columns for value in column.to_pylist()}
+
+
+class TestAnotherModelNamed:
+    """A connection reads only the model its header selects (#752)."""
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            'SELECT "Customer Country" FROM shop',
+            'SELECT "Customer Country" FROM shop.model',
+            'SELECT "Customer Country" FROM shop."model"',
+            'SELECT "Customer Country" FROM "orionbelt"."shop"."model"',
+            'SELECT "Customer Country" FROM shop.measures',
+            "SELECT * FROM shop._measures_metadata",
+            'SELECT * FROM "orionbelt"."shop"."_measures_metadata"',
+            "DESCRIBE shop",
+            "SHOW COLUMNS FROM shop",
+            "SHOW COLUMNS FROM model IN shop",
+            "SHOW COLUMNS FROM model FROM shop",
+            'DESCRIBE "orionbelt" . "shop" . "model"',
+            "DESCRIBE orionbelt . shop . model",
+            "SHOW TABLES FROM orionbelt.shop",
+            "SELECT * FROM commerce.measures JOIN shop.measures ON 1 = 1",
+            "DESCRIBE TABLE shop.model TYPE = COLUMNS",
+            "DESCRIBE shop.model 'Customer%'",
+            "DESCRIBE EXTENDED shop",
+            "DESCRIBE FORMATTED shop.model",
+            "SHOW COLUMNS FROM model IN orionbelt.shop",
+        ],
+    )
+    def test_a_statement_naming_another_model_is_refused(self, sql: str) -> None:
+        server = _make_multi_model_server("commerce", "shop")
+        with pytest.raises(flight.FlightServerError, match=r"MODEL_MISMATCH.*'shop'"):
+            server._prepare_sql(sql, context=_Context("commerce"))
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SHOW TABLES",
+            "SHOW COLUMNS FROM model",
+            "SHOW COLUMNS FROM model IN commerce",
+            "SHOW COLUMNS FROM model LIKE 'shop%'",
+            'DESCRIBE "orionbelt" . "commerce" . "model"',
+            "DESCRIBE commerce",
+            "DESCRIBE TABLE commerce.model TYPE = COLUMNS",
+            "DESCRIBE commerce.model 'Customer%'",
+            "DESCRIBE EXTENDED commerce",
+        ],
+    )
+    def test_a_catalog_statement_on_the_connected_model_answers(self, sql: str) -> None:
+        server = _make_multi_model_server("commerce", "shop")
+        _sql, _d, model, _s, mode, _c = server._prepare_sql(sql, context=_Context("commerce"))
+        assert mode == "catalog"
+        assert model._ob_model_id == "commerce"
+
+    @pytest.mark.parametrize(
+        ("sql", "named"),
+        [
+            ("DESCRIBE date", "date"),
+            ("DESCRIBE text", "text"),
+            ("SHOW COLUMNS FROM model IN date", "date"),
+            ("SHOW TABLES FROM orionbelt.date", "date"),
+            ('DESCRIBE "orionbelt" . "text" . "model"', "text"),
+        ],
+    )
+    def test_a_model_named_after_a_keyword_is_refused(self, sql: str, named: str) -> None:
+        server = _make_multi_model_server("commerce", "date", "text")
+        with pytest.raises(flight.FlightServerError, match=rf"MODEL_MISMATCH.*'{named}'"):
+            server._prepare_sql(sql, context=_Context("commerce"))
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "DESCRIBE commerce.measures",
+            "SHOW COLUMNS FROM commerce.measures",
+            "SHOW COLUMNS FROM measures IN commerce",
+            'DESCRIBE "orionbelt"."commerce"."dimensions"',
+        ],
+    )
+    def test_a_view_qualified_by_the_connected_model_answers(self, sql: str) -> None:
+        """A view qualified by the connected model is its view, not another model."""
+        server = _make_multi_model_server("commerce", "shop")
+        _sql, _d, model, _s, mode, _c = server._prepare_sql(sql, context=_Context("commerce"))
+        assert mode == "catalog"
+        assert model._ob_model_id == "commerce"
+
+    def test_the_connected_model_is_read_as_before(self) -> None:
+        server = _make_multi_model_server("commerce", "shop")
+        context = _Context("commerce")
+        _sql, _d, _m, schema, mode, _c = server._prepare_sql(
+            'SELECT "Customer Country", "Total Revenue" FROM commerce', context=context
+        )
+        assert mode == "semantic"
+        assert "Total Revenue" in schema.names
+        prepared, _d, model, _s, mode, _c = server._prepare_sql(
+            "SELECT * FROM commerce._measures_metadata", context=context
+        )
+        assert mode == "catalog"
+        assert "Total Revenue" in _values(server._handle_catalog_sql(prepared, model))
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            'SELECT "Customer Country" FROM commerce WHERE EXISTS (SELECT 1 FROM "Customers")',
+            'SELECT "Customer Country" FROM measures',
+        ],
+    )
+    def test_a_subquery_or_view_name_is_not_a_model(self, sql: str) -> None:
+        """A data object in a subquery, or a label view, may share a model's name."""
+        from ob_flight.server_execution import other_model_named
+
+        server = _make_multi_model_server("commerce", "customers", "measures")
+        own = server._get_model(_Context("commerce"))[0]
+        assert other_model_named(server, sql, own) is None
