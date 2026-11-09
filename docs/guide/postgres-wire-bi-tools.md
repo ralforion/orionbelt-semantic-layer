@@ -106,7 +106,8 @@ SELECT "Country Name", "Ticket Count" FROM "orionbelt"."support"."model";
 ```
 
 On this connection each model is a schema with one table, `model`. A BI
-tool's schema browser lists every model under the one connection.
+tool's schema browser lists every model under the one connection. A
+connection to one model (`database=commerce`) lists that model only.
 
 | Case | What happens | What to do |
 |---|---|---|

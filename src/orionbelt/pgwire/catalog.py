@@ -1012,15 +1012,22 @@ def _rewrite_for_duckdb(sql: str) -> str:
 class CatalogEmulator:
     """Wraps an in-memory DuckDB connection used only for catalog probes.
 
-    The emulator is intended to be created once and shared across all
-    pgwire connections.  ``refresh()`` rebuilds the schema from the
-    current :class:`SessionManager` state; ``execute()`` runs an
-    arbitrary SQL string against the connection and returns an
-    :class:`ExecutionResult` so the router can encode rows uniformly
-    with the semantic path.
+    One emulator serves the connections that see every loaded model
+    (``database=orionbelt``); one with a ``scope`` holds that model
+    only, for the connections that select it.  ``refresh()`` rebuilds
+    the schema from the current :class:`SessionManager` state;
+    ``execute()`` runs an arbitrary SQL string against the connection
+    and returns an :class:`ExecutionResult` so the router can encode
+    rows uniformly with the semantic path.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, scope: str | None = None, *, list_sessions: bool = True) -> None:
+        self._scope = scope
+        # REST user sessions join the every-model catalog only while session
+        # listing is on (``DISABLE_SESSION_LIST``): a session id is all a
+        # REST client needs to use that session. A session's own catalog
+        # always holds it.
+        self._list_sessions = list_sessions or scope is not None
         self._lock = threading.Lock()
         self._con: duckdb.DuckDBPyConnection = duckdb.connect(database=":memory:")
         # Single ATTACHed in-memory database named after the brand.
@@ -1094,7 +1101,7 @@ class CatalogEmulator:
         with self._lock:
             # Build the set of schemas that should exist now.
             desired_schemas: set[str] = set()
-            for store_target, _ in _iter_loaded_models(session_manager):
+            for store_target, _ in self._loaded_models(session_manager):
                 desired_schemas.add(_safe_model_table_name(store_target))
 
             # Drop schemas whose backing model is gone. CASCADE removes
@@ -1109,7 +1116,7 @@ class CatalogEmulator:
                 self._schema_ddl_fingerprints.pop(schema, None)
             self._registered_schemas = [s for s in self._registered_schemas if s in desired_schemas]
 
-            for store_target, model in _iter_loaded_models(session_manager):
+            for store_target, model in self._loaded_models(session_manager):
                 schema = _safe_model_table_name(store_target)
                 # CREATE SCHEMA IF NOT EXISTS is the cheap path on first
                 # refresh; subsequent refreshes recreate the table /
@@ -1152,6 +1159,15 @@ class CatalogEmulator:
                     )
                     continue
                 self._schema_ddl_fingerprints[schema] = fingerprint
+
+    def _loaded_models(
+        self, session_manager: SessionManager
+    ) -> Iterator[tuple[str, SemanticModel]]:
+        """The loaded models this catalog holds: every one, or its scope's."""
+        loaded = _iter_loaded_models(session_manager, include_sessions=self._list_sessions)
+        for store_target, model in loaded:
+            if self._scope is None or store_target == self._scope:
+                yield store_target, model
 
     # ------------------------------------------------------------------
     # Execute — run a catalog/info-schema query through DuckDB.
@@ -1207,7 +1223,9 @@ class CatalogEmulator:
 # ---------------------------------------------------------------------------
 
 
-def _iter_loaded_models(session_manager: SessionManager) -> Iterator[tuple[str, SemanticModel]]:
+def _iter_loaded_models(
+    session_manager: SessionManager, *, include_sessions: bool = True
+) -> Iterator[tuple[str, SemanticModel]]:
     """Yield ``(target_name, SemanticModel)`` for every loaded model.
 
     ``target_name`` is the addressing name BI tools use as the Postgres
@@ -1224,6 +1242,7 @@ def _iter_loaded_models(session_manager: SessionManager) -> Iterator[tuple[str, 
 
     ``list_sessions()`` filters out the default + protected sets, so we
     union all three sources manually to cover production layouts.
+    ``include_sessions=False`` leaves the user-created sessions out.
     """
 
     candidate_ids: list[str] = []
@@ -1235,7 +1254,8 @@ def _iter_loaded_models(session_manager: SessionManager) -> Iterator[tuple[str, 
     # clean. In dynamic mode they ARE the catalog.
     if not session_manager.is_single_model_mode:
         candidate_ids.append("__default__")
-        candidate_ids.extend(s.session_id for s in session_manager.list_sessions())
+        if include_sessions:
+            candidate_ids.extend(s.session_id for s in session_manager.list_sessions())
 
     seen_names: set[str] = set()
     for session_id in candidate_ids:

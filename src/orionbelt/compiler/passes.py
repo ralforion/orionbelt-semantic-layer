@@ -55,7 +55,7 @@ from orionbelt.compiler.reaggregate_wrap import (
     capture_reaggregate_components,
     wrap_with_reaggregate,
 )
-from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
+from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.total_wrap import computed_apart, is_avg_total, wrap_with_totals
 from orionbelt.compiler.window_wrap import (
     _ddm_window_components,
@@ -616,15 +616,57 @@ def evaluate_compatibility(
     return CompatibilityResult(warnings=warnings, suppressed=frozenset(suppressed))
 
 
-def _refuse_totals_over_rewritten_rows(resolved: ResolvedQuery) -> None:
-    """Rules 2d and 2e (raising): totals and grain overrides the totals pass
-    cannot compute from the rows they cover.
+def _total_candidates(resolved: ResolvedQuery) -> dict[str, ResolvedMeasure]:
+    """The measures the totals pass computes, selected or read by a metric:
+    those neither grain dedup nor a filter context computes instead."""
+    return {
+        m.name: m
+        for measure in resolved.measures
+        for m in [measure, *metric_leaf_components(measure, resolved.metric_components)]
+        if m.name not in resolved.dedup_computed and m.filter_context is None
+    }
 
-    2d: a grain override under ``rollup`` or ``cube``. A subtotal row's NULL in
-    a grain dimension may be the rolled-up dimension or a NULL member, and a
-    window over the grouped rows adds the subtotal rows to the details (a
-    region's 90 came out 180). Grain dedup refuses its own measures the same way
-    (rule 3).
+
+def refuse_grain_under_grouping(resolved: ResolvedQuery) -> None:
+    """Rule 2d (raising): a grain override under ``rollup`` or ``cube``.
+
+    A subtotal row's NULL in a grain dimension may be the rolled-up dimension
+    or a NULL member, and a window over the grouped rows adds the subtotal rows
+    to the details (a region's 90 came out 180). Grain dedup refuses its own
+    measures the same way (rule 3). Public for the federated planner, which
+    splits a query into parts that need not group at all.
+    """
+    if resolved.grouping is None or not resolved.has_totals:
+        return
+    if resolved.has_pop or resolved.has_cumulative:
+        return  # the totals pass does not run (rule 2)
+    overridden = sorted(
+        n for n, m in _total_candidates(resolved).items() if m.grain_override is not None
+    )
+    if not overridden:
+        return
+    listed = ", ".join(f"'{name}'" for name in overridden)
+    raise ResolutionError(
+        [
+            SemanticError(
+                code="INCOMPATIBLE_COMBINATION",
+                message=(
+                    f"Measure(s) {listed} override the grain, which a query with "
+                    f"grouping: {resolved.grouping.value} cannot compute: a subtotal "
+                    f"row's empty dimension may be rolled up or a NULL member, and "
+                    f"its grain group is not one of the query's."
+                ),
+                path="select.measures",
+                hint="Query the grain override without rollup or cube.",
+                context={"measures": overridden, "grouping": resolved.grouping.value},
+            )
+        ]
+    )
+
+
+def _refuse_totals_over_rewritten_rows(resolved: ResolvedQuery) -> None:
+    """Rules 2d (:func:`refuse_grain_under_grouping`) and 2e (raising): totals
+    and grain overrides the totals pass cannot compute from the rows they cover.
 
     2e: a measure the totals pass computes apart (:func:`computed_apart`), in a
     query whose FROM a filterContext or grain dedup rewrote first. It is
@@ -633,32 +675,8 @@ def _refuse_totals_over_rewritten_rows(resolved: ResolvedQuery) -> None:
     """
     if not resolved.has_totals or resolved.has_pop or resolved.has_cumulative:
         return  # the totals pass does not run (rule 2)
-    candidates = {
-        m.name: m
-        for measure in resolved.measures
-        for m in [measure, *metric_leaf_components(measure, resolved.metric_components)]
-        if m.name not in resolved.dedup_computed and m.filter_context is None
-    }
-    if resolved.grouping is not None:
-        overridden = sorted(n for n, m in candidates.items() if m.grain_override is not None)
-        if overridden:
-            listed = ", ".join(f"'{name}'" for name in overridden)
-            raise ResolutionError(
-                [
-                    SemanticError(
-                        code="INCOMPATIBLE_COMBINATION",
-                        message=(
-                            f"Measure(s) {listed} override the grain, which a query with "
-                            f"grouping: {resolved.grouping.value} cannot compute: a subtotal "
-                            f"row's empty dimension may be rolled up or a NULL member, and "
-                            f"its grain group is not one of the query's."
-                        ),
-                        path="select.measures",
-                        hint="Query the grain override without rollup or cube.",
-                        context={"measures": overridden, "grouping": resolved.grouping.value},
-                    )
-                ]
-            )
+    refuse_grain_under_grouping(resolved)
+    candidates = _total_candidates(resolved)
     apart = sorted(n for n, m in candidates.items() if computed_apart(m, resolved))
     if not apart:
         return

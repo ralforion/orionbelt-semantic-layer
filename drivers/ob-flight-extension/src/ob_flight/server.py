@@ -259,6 +259,9 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
     def _list_available_model_names(self) -> list[str]:
         return server_routing.list_available_model_names(self)
 
+    def _reachable_model_names(self, context: flight.ServerCallContext | None) -> list[str]:
+        return server_routing.reachable_model_names(self, context)
+
     def _resolve_model_by_name(
         self,
         stashed_name: str,

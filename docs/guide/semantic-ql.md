@@ -242,6 +242,9 @@ curl http://localhost:8000/v1/models
 }
 ```
 
+A connection that selects a model lists only that model in its schema
+tree. A connection without a selector lists every loaded model.
+
 ### Auto-resolve
 
 If exactly one model is loaded (single-model mode or `MODEL_FILES`

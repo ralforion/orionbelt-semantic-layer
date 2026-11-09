@@ -105,6 +105,30 @@ def list_available_model_names(server: OBFlightServer) -> list[str]:
         return []
 
 
+def reachable_model_names(
+    server: OBFlightServer, context: flight.ServerCallContext | None
+) -> list[str]:
+    """The models a connection may read: the one its header selects, else every loaded one.
+
+    ``GetDbSchemas`` lists these, and on a connection with a header the other
+    catalog calls describe only these, so the header is the one place a
+    connection chooses its model; a per-model scope check filters here. A
+    header naming no loaded model reaches none. Without a header, a schema
+    filter still describes a REST session it names by id.
+    """
+    available = list_available_model_names(server)
+    selector = selector_from_context(context)
+    if selector is None:
+        return available
+    if selector in available:
+        return [selector]
+    try:
+        server._session_manager.get_store(selector)
+    except Exception:
+        return []
+    return [selector]
+
+
 def resolve_model_by_name(
     server: OBFlightServer,
     stashed_name: str,
