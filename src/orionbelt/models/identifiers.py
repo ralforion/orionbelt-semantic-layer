@@ -42,6 +42,11 @@ RESERVED_NAMES: frozenset[str] = frozenset(
         "obml",
         "obsql",
         "model",
+        # The tables in every model's catalog schema (beside ``model``): a model
+        # of that name would read as the table, ``measures.model`` as a view.
+        "dimensions",
+        "measures",
+        "metrics",
         # PostgreSQL default databases
         "default",
         "public",

@@ -663,8 +663,8 @@ class TestAnotherModelNamed:
         ],
     )
     def test_a_view_qualified_by_the_connected_model_answers(self, sql: str) -> None:
-        """A view sharing another model's name is the view: its schema says whose."""
-        server = _make_multi_model_server("commerce", "measures", "dimensions")
+        """A view qualified by the connected model is its view, not another model."""
+        server = _make_multi_model_server("commerce", "shop")
         _sql, _d, model, _s, mode, _c = server._prepare_sql(sql, context=_Context("commerce"))
         assert mode == "catalog"
         assert model._ob_model_id == "commerce"

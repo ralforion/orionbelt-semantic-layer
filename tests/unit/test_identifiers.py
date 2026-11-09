@@ -108,6 +108,12 @@ class TestReservedNames:
         with pytest.raises(ModelNameError, match="reserved"):
             normalize_model_name(name, source="test")
 
+    @pytest.mark.parametrize("name", ["dimensions", "measures", "metrics"])
+    def test_catalog_table_names_are_reserved(self, name: str) -> None:
+        """Every model's catalog schema holds tables of these names (#752)."""
+        with pytest.raises(ModelNameError, match="reserved"):
+            normalize_model_name(name, source="test")
+
     def test_reserved_via_uppercase(self) -> None:
         with pytest.raises(ModelNameError, match="reserved"):
             normalize_model_name("MODEL", source="test")
