@@ -126,7 +126,6 @@ def test_totals_incompatibility_metadata() -> None:
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"has_totals": True},
         {"has_pop": True},
         {"has_cumulative": True},
         {"has_window": True},
@@ -136,6 +135,13 @@ def test_grouping_with_any_aggregate_feature_warns(kwargs: dict[str, bool]) -> N
     passes = build_default_passes()
     result = evaluate_compatibility(_resolved(grouping="rollup", **kwargs), passes)
     assert any(_GROUPING_MARKER in w.message for w in result.warnings)
+
+
+def test_grouping_with_totals_keeps_the_flags() -> None:
+    """The totals wrapper carries the GROUPING() flags through."""
+    passes = build_default_passes()
+    result = evaluate_compatibility(_resolved(grouping="rollup", has_totals=True), passes)
+    assert not any(_GROUPING_MARKER in w.message for w in result.warnings)
 
 
 def test_grouping_alone_does_not_warn() -> None:
