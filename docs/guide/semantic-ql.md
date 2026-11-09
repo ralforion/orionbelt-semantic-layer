@@ -440,10 +440,13 @@ database recomputes each grouping level from base rows:
 
 - `WITH ROLLUP` / `WITH CUBE` require at least one dimension in `SELECT`.
 - The two are mutually exclusive.
-- Combining rollup/cube with `total: true` measures, period-over-period
-  metrics, or cumulative metrics emits an `INCOMPATIBLE_COMBINATION`
-  warning. The query still runs but the `_g_*` flag columns may not
-  appear in the final projection.
+- Combining rollup/cube with period-over-period, cumulative or window
+  metrics emits an `INCOMPATIBLE_COMBINATION` warning. The query still
+  runs but the `_g_*` flag columns may not appear in the final
+  projection. Beside `total: true` measures and measures with a
+  `filterContext` they do, and each subtotal of a `filterContext`
+  measure is the measure at that level: a region's subtotal is the
+  measure by region.
 
 ## REST examples
 

@@ -416,36 +416,33 @@ def evaluate_compatibility(
     suppressed: set[str] = set()
 
     # Rule 1 (advisory only): ROLLUP/CUBE wraps the base CTE inside the
-    # total/PoP/cumulative/window wrappers, but the outer wrapper SELECTs by
+    # PoP/cumulative/window wrappers, but the outer wrapper SELECTs by
     # dim/measure name, so GROUPING() flag columns won't survive. Warn but
-    # still run the wrappers. The window check uses the pass predicate, not
+    # still run the wrappers. The totals and filter-context wrappers carry
+    # the flags through. The window check uses the pass predicate, not
     # ``has_window``, so a derived metric that transitively references a
     # window metric (which still runs the window pass) also triggers the
     # advisory.
     if resolved.grouping is not None and (
-        resolved.has_totals
-        or resolved.has_pop
-        or resolved.has_cumulative
-        or window_pass_applies(resolved)
+        resolved.has_pop or resolved.has_cumulative or window_pass_applies(resolved)
     ):
         warnings.append(
             warning(
                 code=WarningCode.INCOMPATIBLE_COMBINATION,
                 message=(
-                    "ROLLUP/CUBE combined with total / period-over-period / "
-                    "cumulative measures — GROUPING() flag columns may not "
+                    "ROLLUP/CUBE combined with period-over-period, cumulative "
+                    "or window metrics — GROUPING() flag columns may not "
                     "appear in the final projection. Subtotal rows are still "
                     "produced, but callers cannot distinguish them from "
                     "detail rows whose rolled-up dim is legitimately NULL."
                 ),
                 hint=(
                     "Avoid combining `grouping: rollup|cube` with "
-                    "`total: true`, period-over-period metrics, or cumulative "
-                    "metrics in the same query."
+                    "period-over-period, cumulative or window metrics in the "
+                    "same query."
                 ),
                 context={
                     "grouping": resolved.grouping.value,
-                    "has_totals": resolved.has_totals,
                     "has_pop": resolved.has_pop,
                     "has_cumulative": resolved.has_cumulative,
                 },

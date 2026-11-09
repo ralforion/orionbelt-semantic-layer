@@ -55,6 +55,7 @@ from orionbelt.compiler.having_hoist import apply_having_hoist, grouped_predicat
 from orionbelt.compiler.metric_expansion import expand_metric_expression, metric_leaf_components
 from orionbelt.compiler.outer_order_by import remap_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.star import grouping_flag_alias
 from orionbelt.models.semantic import SemanticModel
 
 # The aggregations a window over the grouped rows re-aggregates exactly, and
@@ -525,6 +526,14 @@ def wrap_with_totals(
         else:
             # Regular measure: pass-through
             outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
+
+    # Under a rollup or cube, each dimension's GROUPING() flag, which tells a
+    # subtotal from a NULL member, after the measures as the planner has them.
+    if resolved.grouping is not None:
+        outer_columns += [
+            AliasedExpr(expr=ColumnRef(name=flag), alias=flag)
+            for flag in (grouping_flag_alias(d.name) for d in resolved.dimensions)
+        ]
 
     # --- ORDER BY remapping: use CTE aliases instead of raw expressions ---
     outer_order_by = remap_order_by(ast.order_by, resolved, model)
