@@ -965,8 +965,13 @@ class CatalogEmulator:
     rows uniformly with the semantic path.
     """
 
-    def __init__(self, scope: str | None = None) -> None:
+    def __init__(self, scope: str | None = None, *, list_sessions: bool = True) -> None:
         self._scope = scope
+        # REST user sessions join the every-model catalog only while session
+        # listing is on (``DISABLE_SESSION_LIST``): a session id is all a
+        # REST client needs to use that session. A session's own catalog
+        # always holds it.
+        self._list_sessions = list_sessions or scope is not None
         self._lock = threading.Lock()
         self._con: duckdb.DuckDBPyConnection = duckdb.connect(database=":memory:")
         # Single ATTACHed in-memory database named after the brand.
@@ -1103,7 +1108,8 @@ class CatalogEmulator:
         self, session_manager: SessionManager
     ) -> Iterator[tuple[str, SemanticModel]]:
         """The loaded models this catalog holds: every one, or its scope's."""
-        for store_target, model in _iter_loaded_models(session_manager):
+        loaded = _iter_loaded_models(session_manager, include_sessions=self._list_sessions)
+        for store_target, model in loaded:
             if self._scope is None or store_target == self._scope:
                 yield store_target, model
 
@@ -1161,7 +1167,9 @@ class CatalogEmulator:
 # ---------------------------------------------------------------------------
 
 
-def _iter_loaded_models(session_manager: SessionManager) -> Iterator[tuple[str, SemanticModel]]:
+def _iter_loaded_models(
+    session_manager: SessionManager, *, include_sessions: bool = True
+) -> Iterator[tuple[str, SemanticModel]]:
     """Yield ``(target_name, SemanticModel)`` for every loaded model.
 
     ``target_name`` is the addressing name BI tools use as the Postgres
@@ -1178,6 +1186,7 @@ def _iter_loaded_models(session_manager: SessionManager) -> Iterator[tuple[str, 
 
     ``list_sessions()`` filters out the default + protected sets, so we
     union all three sources manually to cover production layouts.
+    ``include_sessions=False`` leaves the user-created sessions out.
     """
 
     candidate_ids: list[str] = []
@@ -1189,7 +1198,8 @@ def _iter_loaded_models(session_manager: SessionManager) -> Iterator[tuple[str, 
     # clean. In dynamic mode they ARE the catalog.
     if not session_manager.is_single_model_mode:
         candidate_ids.append("__default__")
-        candidate_ids.extend(s.session_id for s in session_manager.list_sessions())
+        if include_sessions:
+            candidate_ids.extend(s.session_id for s in session_manager.list_sessions())
 
     seen_names: set[str] = set()
     for session_id in candidate_ids:
