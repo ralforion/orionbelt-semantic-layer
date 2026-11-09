@@ -110,9 +110,11 @@ def reachable_model_names(
 ) -> list[str]:
     """The models a connection may read: the one its header selects, else every loaded one.
 
-    The catalog calls list and describe only these, so the header is the one
-    place a connection chooses its model; a per-model scope check filters here.
-    A header naming no loaded model reaches none.
+    ``GetDbSchemas`` lists these, and on a connection with a header the other
+    catalog calls describe only these, so the header is the one place a
+    connection chooses its model; a per-model scope check filters here. A
+    header naming no loaded model reaches none. Without a header, a schema
+    filter still describes a REST session it names by id.
     """
     available = list_available_model_names(server)
     selector = selector_from_context(context)

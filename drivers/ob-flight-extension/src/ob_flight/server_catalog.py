@@ -390,14 +390,19 @@ def resolve_model_for_catalog(
     tests keep working.
 
     Unknown selector → ``None`` (empty metadata, no fallback) so
-    BI clients don't accidentally browse the wrong model. So is a
-    model the connection does not reach: a connection whose header
-    selects ``commerce`` describes ``commerce`` only.
+    BI clients don't accidentally browse the wrong model. So is
+    another model on a connection whose header selects one: a header
+    selecting ``commerce`` describes ``commerce`` only. Without a
+    header, a filter describes any loaded model or session it names.
     """
     # The filter read below: the schema, else the legacy catalog. JDBC
     # clients send the brand catalog (``orionbelt``) beside the schema.
     selected = db_schema_filter or catalog_filter
-    if selected and selected.lower() not in server._reachable_model_names(context):
+    if (
+        selected
+        and server._selector_from_context(context) is not None
+        and selected.lower() not in server._reachable_model_names(context)
+    ):
         return None
     # db_schema_filter is the v2.5.0 selector — preferred.
     if db_schema_filter and server._session_manager is not None:

@@ -202,6 +202,31 @@ def test_catalog_refuses_another_models_objects(sql: str) -> None:
     assert b"MODEL_MISMATCH" in frames[0][1]
 
 
+@pytest.mark.parametrize(
+    ("other", "sql"),
+    [
+        (
+            "tables",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'commerce'",
+        ),
+        ("pg_class", "SELECT relname FROM pg_catalog.pg_class"),
+        (
+            "columns",
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'commerce'",
+        ),
+    ],
+)
+def test_a_system_relation_names_no_model(other: str, sql: str) -> None:
+    """A model sharing a system relation's name leaves that relation readable."""
+
+    mgr = _make_manager_with_two_models()
+    mgr.get_or_create_named(other).load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    reply = asyncio.run(router.handle(sql, database="commerce"))
+    assert b"E" not in [t for t, _ in _parse_frames(reply)], reply
+    assert _text_rows(reply)
+
+
 def test_a_model_catalog_goes_with_its_model() -> None:
     mgr = SessionManager()
     session_id = mgr.create_session().session_id

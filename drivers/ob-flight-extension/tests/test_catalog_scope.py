@@ -94,3 +94,16 @@ def test_without_a_header_every_model_is_described(server: OBFlightServer) -> No
     shop = resolve_model_for_catalog(server, None, None, db_schema_filter="shop")
     assert shop is not None
     assert shop._ob_model_id == "shop"
+
+
+def test_without_a_header_a_session_filter_describes_that_session(
+    server: OBFlightServer,
+) -> None:
+    """A REST session is not listed, but a schema filter naming its id describes it."""
+
+    session_id = server._session_manager.create_session().session_id
+    server._session_manager.get_store(session_id).load_model(_MODEL_YAML)
+    described = resolve_model_for_catalog(server, None, None, db_schema_filter=session_id)
+    assert described is not None
+    commerce = _Context("commerce")
+    assert resolve_model_for_catalog(server, None, commerce, db_schema_filter=session_id) is None
