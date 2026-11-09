@@ -15,6 +15,7 @@ from orionbelt.pgwire.router import (
     _encode_result,
     _flatten_federation_subquery,
     _ModelMismatchError,
+    _ModelNotFoundError,
     _normalize_for_obsql,
     _rewrite_fetch_to_limit,
     _strip_collate_annotations,
@@ -290,6 +291,58 @@ def test_every_model_catalog_lists_sessions_only_while_listing_is_on(list_sessio
     assert (session_id in every) is list_sessions
     own = {row[0] for row in _text_rows(asyncio.run(router.handle(sql, database=session_id)))}
     assert session_id in own
+
+
+def _router_with_a_rest_session(list_sessions: bool) -> tuple[SemanticRouter, str]:
+    """A dynamic-mode router whose one model sits in a REST session."""
+
+    mgr = SessionManager()
+    session_id = mgr.create_session().session_id
+    mgr.get_store(session_id).load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(
+        session_manager=mgr, default_dialect="duckdb", list_sessions=list_sessions
+    )
+    return router, session_id
+
+
+@pytest.mark.parametrize("sql", ["SELECT current_schema()", "SHOW search_path"])
+@pytest.mark.parametrize("list_sessions", [True, False])
+def test_the_brand_schema_names_a_session_only_while_listing_is_on(
+    sql: str, list_sessions: bool
+) -> None:
+    router, session_id = _router_with_a_rest_session(list_sessions)
+    reply = asyncio.run(router.handle(sql, database="orionbelt"))
+    assert (session_id.encode() in reply) is list_sessions
+    # Selected by its id, the session is the connection's schema either way.
+    assert session_id.encode() in asyncio.run(router.handle(sql, database=session_id))
+
+
+@pytest.mark.parametrize("list_sessions", [True, False])
+def test_the_model_alias_reads_a_session_only_while_listing_is_on(list_sessions: bool) -> None:
+    router, session_id = _router_with_a_rest_session(list_sessions)
+    reply = asyncio.run(router.handle("SELECT name FROM model.measures", database="orionbelt"))
+    tags = [tag for tag, _ in _parse_frames(reply)]
+    if list_sessions:
+        assert b"E" not in tags and b"D" in tags
+    else:
+        assert b"E" in tags and session_id.encode() not in reply
+    own = asyncio.run(router.handle("SELECT name FROM model.measures", database=session_id))
+    assert b"D" in [tag for tag, _ in _parse_frames(own)]
+
+
+@pytest.mark.parametrize("list_sessions", [True, False])
+def test_the_brand_fallback_reads_a_session_only_while_listing_is_on(list_sessions: bool) -> None:
+    """With one model loaded, ``database=orionbelt`` reads it: a hidden session it does not."""
+
+    router, session_id = _router_with_a_rest_session(list_sessions)
+    sql = 'SELECT "Customer Country" FROM model'
+    if list_sessions:
+        target = router._resolve_target("orionbelt", sql)  # noqa: SLF001
+        assert target.store is router._sessions.get_store(session_id)  # noqa: SLF001
+    else:
+        with pytest.raises(_ModelNotFoundError):
+            router._resolve_target("orionbelt", sql)  # noqa: SLF001
+    assert router._resolve_target(session_id, sql).model_id  # noqa: SLF001
 
 
 def test_startup_passes_the_session_listing_setting(monkeypatch: pytest.MonkeyPatch) -> None:

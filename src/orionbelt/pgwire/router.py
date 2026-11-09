@@ -164,6 +164,9 @@ class SemanticRouter:
     ) -> None:
         self._sessions = session_manager
         self._default_dialect = default_dialect
+        # ``DISABLE_SESSION_LIST``: a connection learns a REST session's id
+        # only by naming it, from the catalog or from any schema it is handed.
+        self._list_sessions = list_sessions
         self._catalog = (
             catalog if catalog is not None else CatalogEmulator(list_sessions=list_sessions)
         )
@@ -496,7 +499,8 @@ class SemanticRouter:
         * ``database`` names a loaded model        → return ``database``
           (the schema-per-model name in ``pg_namespace``).
         * ``database`` is the brand ``"orionbelt"`` → return the
-          first loaded model name (sorted, so deterministic).
+          first listed model name (sorted, so deterministic); a REST
+          session is listed only while session listing is on.
         * Otherwise                                → return ``""``;
           canned falls back to the legacy literal.
 
@@ -507,14 +511,12 @@ class SemanticRouter:
         ``pg_class`` filter resolves to a real row.
         """
 
-        names = self._loaded_model_names()
-        if not names:
-            return ""
         db_lower = (database or "").lower()
-        if db_lower and db_lower in names:
+        if db_lower and db_lower in self._loaded_model_names():
             return database
         if db_lower == CATALOG_SCHEMA.lower():
-            return sorted(names)[0]
+            listed = self._loaded_model_names(listed_only=True)
+            return sorted(listed)[0] if listed else ""
         return ""
 
     def _catalog_for(self, database: str) -> CatalogEmulator:
@@ -537,11 +539,15 @@ class SemanticRouter:
                 catalog = self._model_catalogs[database] = CatalogEmulator(scope=database)
             return catalog
 
-    def _loaded_model_names(self) -> set[str]:
+    def _loaded_model_names(self, *, listed_only: bool = False) -> set[str]:
         """Return the set of currently-loaded model names (lowercased).
 
         Includes both preloaded protected sessions (``MODEL_FILES``) and
-        sessions created over REST.
+        sessions created over REST. ``listed_only`` keeps the names a
+        connection may be handed without naming them (the brand database's
+        schema and single-model fallback): REST sessions count only while
+        session listing is on, since a session id is all a REST client needs
+        to use that session.
         """
 
         names: set[str] = set()
@@ -553,7 +559,8 @@ class SemanticRouter:
         # otherwise a ``FROM <scratch_session>.measures`` reference would route
         # to the catalog, which never built that schema. Keep them in dynamic
         # mode, where user sessions ARE the catalog.
-        if not getattr(self._sessions, "is_single_model_mode", False):
+        hidden = listed_only and not self._list_sessions
+        if not hidden and not getattr(self._sessions, "is_single_model_mode", False):
             with contextlib.suppress(Exception):
                 for s in self._sessions.list_sessions():
                     names.add(s.session_id.lower())
@@ -633,7 +640,7 @@ class SemanticRouter:
            tests).
         4. ``database`` matches a model in some other session's store
            by name (single unambiguous match).
-        5. ``database='orionbelt'`` with exactly one model loaded —
+        5. ``database='orionbelt'`` with exactly one listed model loaded —
            fall back to that single model (the demo case).
 
         Raises ``_ModelNotFoundError`` with a message that surfaces in the
@@ -682,10 +689,10 @@ class SemanticRouter:
                 "with that name; supply a unique database parameter."
             )
 
-        # Brand-database with exactly one model loaded — auto-resolve.
+        # Brand-database with exactly one listed model loaded — auto-resolve.
         if database == CATALOG_SCHEMA:
             all_models: list[_ResolvedTarget] = []
-            for name in self._loaded_model_names():
+            for name in self._loaded_model_names(listed_only=True):
                 target = self._first_model_in(name)
                 if target is not None:
                     all_models.append(target)
