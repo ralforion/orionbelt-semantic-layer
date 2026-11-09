@@ -524,8 +524,8 @@ GROUP BY ALL
   of its fact. The combine query gives a total, or a value at a coarser
   grain, to every group that shares it, the other fact's groups too: the
   tickets' total on the rows of revenue alone. A total next to the other
-  fact's `filterContext` measure is computed, under `rollup` too, where one
-  database refuses it: each fact is a query of its own here.
+  fact's `filterContext` measure is computed, under `rollup` too, as on one
+  database.
 - A `filterContext` that drops one of the filters on its fact, of the query
   or a static model filter, is computed under the filters it keeps, for
   every group of the other facts too, as on one database. Revenue of all

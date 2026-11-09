@@ -6201,10 +6201,9 @@ class TestMeasuresOfIndependentFacts:
     def test_a_total_beside_the_other_facts_filter_context(
         self, independent_files: dict[str, dict[str, str]], grouping: str
     ) -> None:
-        """One database refuses it: under a rollup its total is computed again
-        over the plan's rows, which the filter context rewrote. Here each fact
-        is a query of its own: the rows of the filter context's, the total on
-        every one."""
+        """Each fact is a query of its own: the rows of the filter context's,
+        the total on every one, as one database computes it from the rows its
+        filter context keeps (``total_wrap``)."""
         paths = independent_files["crm"]
 
         def rows(federated: bool, measures: list[str]) -> list[Any]:
@@ -6219,6 +6218,7 @@ class TestMeasuresOfIndependentFacts:
         beside = rows(False, ["Revenue", "Tickets Any Region"])
 
         expected = sorted([(row[0], total, *row[2:]) for row in beside], key=repr)
+        assert rows(False, ["Revenue Total", "Tickets Any Region"]) == expected
         assert rows(True, ["Revenue Total", "Tickets Any Region"]) == expected
         # EU's and US's revenue, beside every region's tickets.
         assert total == Decimal("142.90")
