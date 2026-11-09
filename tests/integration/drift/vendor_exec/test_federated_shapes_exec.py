@@ -6,7 +6,8 @@ the day of a month the query selects, and cumulative, period-over-period and
 window metrics, whose legs return each date as stored for the combine step to
 truncate, raw-mode rows joined in the combine step, measures with a grain or a
 filter context of their own, measures of independent facts, a query of
-their own each, unioned in the combine step, and conditions after the join on
+their own each, unioned in the combine step (rolled up beside a total and
+filter contexts, and at two grains), and conditions after the join on
 strings, static filters and blank tests too, each run in its leg. Every source
 is the engine itself, as in ``test_federated_equality_exec``: the combined
 answer must be the engine's own over one source.
@@ -102,6 +103,7 @@ measures:
       - column: {{dataObject: Orders, column: Status}}
         operator: equals
         values: [{{dataType: string, valueString: paid}}]
+  Revenue Total: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum, total: true}}
   Region Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -392,6 +394,28 @@ QUERIES = {
     "independent_facts_with_a_filter_context": {
         "select": {"dimensions": ["Region"], "measures": ["Revenue Any Region", "Tickets Count"]},
         "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+    "independent_facts_rolled_up_beside_a_total": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Total", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+    "independent_facts_rolled_up_beside_filter_contexts": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Any Region", "Revenue Since February", "Tickets Count"],
+        },
+        "where": [{"field": "Region", "op": "in", "value": ["EU", "US"]}],
+        "grouping": "rollup",
+    },
+    "independent_facts_rolled_up_at_two_grains": {
+        "select": {
+            "dimensions": ["Region", "Order Date:quarter", "Order Date:month"],
+            "measures": ["Revenue", "Tickets Count"],
+        },
+        "grouping": "rollup",
     },
     "independent_facts_running_total": {
         "select": {

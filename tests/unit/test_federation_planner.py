@@ -5602,6 +5602,62 @@ INDEPENDENT_QUERIES = {
         }
     },
     "a_rollup": {"select": BY_REGION_AND_MONTH, "grouping": "rollup"},
+    "a_rollup_beside_a_total": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Total", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+    "a_cube_beside_a_total_of_the_tickets": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue", "Ticket Total"],
+        },
+        "grouping": "cube",
+    },
+    "a_rollup_beside_an_average_total": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Average Total", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+    "a_rollup_beside_a_filter_context": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Any Region", "Tickets Count"],
+        },
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+        "grouping": "rollup",
+    },
+    "a_cube_beside_a_fixed_filter_context": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue All", "Tickets Count"],
+        },
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+        "grouping": "cube",
+    },
+    "a_rollup_beside_a_filter_context_of_the_tickets": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue", "Tickets Any Region"]},
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+        "grouping": "rollup",
+    },
+    "a_rollup_at_two_grains": {
+        "select": {
+            "dimensions": ["Region", "Order Date:quarter", "Order Date:month"],
+            "measures": ["Revenue", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+    "a_cube_at_two_grains": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month"],
+            "measures": ["Revenue", "Tickets Count"],
+        },
+        "grouping": "cube",
+    },
     "a_cube": {"select": BY_REGION_AND_MONTH, "grouping": "cube"},
     "a_rollup_from_rows": {
         "select": {
@@ -6046,6 +6102,51 @@ class TestMeasuresOfIndependentFacts:
         assert _run_on(paths, independent_model(True), query, sort=sort) == single
         assert single
 
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    def test_a_total_beside_the_other_facts_filter_context(
+        self, independent_files: dict[str, dict[str, str]], grouping: str
+    ) -> None:
+        """One database refuses it: under a rollup its total is computed again
+        over the plan's rows, which the filter context rewrote. Here each fact
+        is a query of its own: the rows of the filter context's, the total on
+        every one."""
+        paths = independent_files["crm"]
+
+        def rows(federated: bool, measures: list[str]) -> list[Any]:
+            query = {
+                "select": {"dimensions": ["Region"], "measures": measures},
+                "where": [{"field": "Region", "op": "in", "value": ["EU", "US"]}],
+                "grouping": grouping,
+            }
+            return _run_on(paths, independent_model(federated), query)
+
+        (total,) = {row[1] for row in rows(False, ["Revenue Total", "Tickets Count"])}
+        beside = rows(False, ["Revenue", "Tickets Any Region"])
+
+        expected = sorted([(row[0], total, *row[2:]) for row in beside], key=repr)
+        assert rows(True, ["Revenue Total", "Tickets Any Region"]) == expected
+        # EU's and US's revenue, beside every region's tickets.
+        assert total == Decimal("142.90")
+        assert [row[2] for row in expected] == [2, 0, 4]
+
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    def test_a_grain_beside_a_rollup_is_refused_as_on_one_database(self, grouping: str) -> None:
+        query = {
+            "select": {
+                "dimensions": ["Region", "Order Date:month"],
+                "measures": ["Region Revenue", "Tickets Count"],
+            },
+            "grouping": grouping,
+        }
+        errors = []
+        for federated in (False, True):
+            with pytest.raises(ResolutionError) as caught:
+                _compile(independent_model(federated), query)
+            errors.append([(e.code, e.message) for e in caught.value.errors])
+
+        assert errors[1] == errors[0]
+        assert [code for code, _ in errors[0]] == ["INCOMPATIBLE_COMBINATION"]
+
     @pytest.mark.parametrize(
         "tickets", ["shop", "support"], ids=["beside_the_orders", "on_a_source_of_their_own"]
     )
@@ -6190,26 +6291,6 @@ class TestMeasuresOfIndependentFacts:
             (
                 {
                     "select": {
-                        "dimensions": ["Region"],
-                        "measures": ["Revenue Total", "Tickets Count"],
-                    },
-                    "grouping": "rollup",
-                },
-                "has a total, grain or filterContext beside a rollup or cube",
-            ),
-            (
-                {
-                    "select": {
-                        "dimensions": ["Order Date:year", "Order Date:month"],
-                        "measures": REVENUE_AND_TICKETS,
-                    },
-                    "grouping": "rollup",
-                },
-                "selects one dimension at two grains beside a rollup or cube",
-            ),
-            (
-                {
-                    "select": {
                         "dimensions": ["Order Date:month"],
                         "measures": [*REVENUE_AND_TICKETS, "Customers Count"],
                     }
@@ -6274,8 +6355,6 @@ class TestMeasuresOfIndependentFacts:
             ),
         ],
         ids=[
-            "a_total_beside_a_rollup",
-            "two_grains_beside_a_rollup",
             "the_customers_by_order_month",
             "the_customers_by_severity",
             "a_running_total_after_a_date_filter",
