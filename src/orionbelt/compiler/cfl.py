@@ -979,37 +979,33 @@ class CFLPlanner:
 
         # GROUP BY dimensions.  Coalesce groups group by the COALESCE expression
         # itself (most dialects accept either the alias or the expression; the
-        # expression is portable across all eight supported dialects).
-        grouped_coalesce_aliases: set[str] = set()
+        # expression is portable across all eight supported dialects). Each
+        # group's key, by the alias the query returns it under.
+        group_keys: dict[str, Expr] = {}
         for dim in resolved.dimensions:
-            if dim.coalesce_alias:
-                if dim.coalesce_alias in grouped_coalesce_aliases:
-                    continue
-                grouped_coalesce_aliases.add(dim.coalesce_alias)
-                outer_builder.group_by(
-                    FunctionCall(
-                        name="COALESCE",
-                        args=[
-                            ColumnRef(name=member) for member in coalesce_groups[dim.coalesce_alias]
-                        ],
-                    )
+            alias = dim.coalesce_alias or dim.name
+            if alias in group_keys:
+                continue
+            group_keys[alias] = (
+                FunctionCall(
+                    name="COALESCE",
+                    args=[ColumnRef(name=member) for member in coalesce_groups[alias]],
                 )
-            else:
-                outer_builder.group_by(ColumnRef(name=dim.name))
+                if dim.coalesce_alias
+                else ColumnRef(name=dim.name)
+            )
+            outer_builder.group_by(group_keys[alias])
 
         # GROUPING() flag columns + grouping modifier (rollup/cube) — outer query only
         # so subtotal rows compose correctly over the unioned facts (the
-        # individual UNION ALL legs stay at detail grain).
+        # individual UNION ALL legs stay at detail grain). A flag reads its
+        # group's key, as ``star.py``'s do: PostgreSQL, DuckDB and MySQL refuse
+        # a coalesced dimension's alias there, and Dremio reads the alias as
+        # the column it names, which returns the key through its flag.
         if resolved.grouping is not None and resolved.dimensions:
             outer_builder.grouping(resolved.grouping.value)
-            flag_aliases: list[str] = []
-            for dim in resolved.dimensions:
-                alias_name = dim.coalesce_alias or dim.name
-                if alias_name in flag_aliases:
-                    continue
-                flag_aliases.append(alias_name)
-            for alias in flag_aliases:
-                flag_col = FunctionCall(name="GROUPING", args=[ColumnRef(name=alias)])
+            for alias, key in group_keys.items():
+                flag_col = FunctionCall(name="GROUPING", args=[key])
                 outer_builder.select(AliasedExpr(expr=flag_col, alias=grouping_flag_alias(alias)))
 
         # HAVING — expand alias references to actual CAST'd aggregate expressions.
