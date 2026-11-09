@@ -115,6 +115,10 @@ measures:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
     filterContext: {{exclude: [Region]}}
+  Revenue All:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filterContext: {{mode: FIXED}}
   Revenue Since February:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -411,6 +415,18 @@ QUERIES = {
             "measures": ["Revenue Any Region", "Revenue Since February", "Tickets Count"],
         },
         "where": [{"field": "Region", "op": "in", "value": ["EU", "US"]}],
+        "grouping": "rollup",
+    },
+    "independent_facts_beside_a_fixed_context_after_a_date_filter": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-03-05"}],
+    },
+    "independent_facts_rolled_up_beside_a_fixed_context_after_a_date_filter": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue All", "Revenue Since February", "Tickets Count"],
+        },
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-03-05"}],
         "grouping": "rollup",
     },
     "independent_facts_rolled_up_at_two_grains": {

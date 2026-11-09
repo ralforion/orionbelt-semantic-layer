@@ -5497,6 +5497,8 @@ INDEPENDENT_MEASURES = (
     " grain: {mode: FIXED, include: [Order Date]}}\n"
     f"  Revenue Not By Date: {{columns: [{AMOUNT}], aggregation: sum,"
     " grain: {exclude: [Order Date]}}\n"
+    "  All Tickets: {columns: [{dataObject: Tickets, column: Ticket ID}], aggregation: count,"
+    " resultType: int, grain: {mode: FIXED}}\n"
 )
 INDEPENDENT_MODEL = {
     "extra": INDEPENDENT_MEASURES,
@@ -5547,6 +5549,10 @@ BY_REGION_AND_MONTH = {
     "dimensions": ["Region", "Order Date:month"],
     "measures": REVENUE_AND_TICKETS,
 }
+# A filter on the orders that the tickets do not reach: the tickets keep the
+# region whose orders it leaves out.
+LATE_ORDERS = {"field": "Order Date", "op": ">=", "value": "2024-03-05"}
+
 INDEPENDENT_QUERIES = {
     "by_region": {"select": BY_REGION_BOTH},
     "beside_a_measure_of_the_customers": {
@@ -5649,6 +5655,38 @@ INDEPENDENT_QUERIES = {
             "dimensions": ["Region", "Order Date:quarter", "Order Date:month"],
             "measures": ["Revenue", "Tickets Count"],
         },
+        "grouping": "rollup",
+    },
+    "a_fixed_context_after_a_filter_on_its_fact": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+        "where": [LATE_ORDERS],
+    },
+    "a_rollup_of_a_fixed_context_after_a_filter_on_its_fact": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue All", "Tickets Count"],
+        },
+        "where": [LATE_ORDERS],
+        "grouping": "rollup",
+    },
+    "a_cube_of_a_fixed_context_after_a_filter_on_its_fact": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue All", "Tickets Count"],
+        },
+        "where": [LATE_ORDERS],
+        "grouping": "cube",
+    },
+    "a_fixed_context_in_one_region": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+    "a_rollup_of_a_context_keeping_one_of_two_filters": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Any Region", "Revenue All", "Tickets Count"],
+        },
+        "where": [{"field": "Region", "op": "=", "value": "EU"}, LATE_ORDERS],
         "grouping": "rollup",
     },
     "a_cube_at_two_grains": {
@@ -6130,14 +6168,23 @@ class TestMeasuresOfIndependentFacts:
         assert [row[2] for row in expected] == [2, 0, 4]
 
     @pytest.mark.parametrize("grouping", ["rollup", "cube"])
-    def test_a_grain_beside_a_rollup_is_refused_as_on_one_database(self, grouping: str) -> None:
-        query = {
-            "select": {
+    @pytest.mark.parametrize(
+        "select",
+        [
+            {
                 "dimensions": ["Region", "Order Date:month"],
                 "measures": ["Region Revenue", "Tickets Count"],
             },
-            "grouping": grouping,
-        }
+            {"dimensions": ["Order Date:month"], "measures": ["Revenue", "All Tickets"]},
+        ],
+        ids=["in_a_part_that_groups", "in_a_part_of_no_dimension"],
+    )
+    def test_a_grain_beside_a_rollup_is_refused_as_on_one_database(
+        self, select: dict[str, Any], grouping: str
+    ) -> None:
+        """The tickets reach no order month: their part groups by nothing,
+        and did not refuse the grain as one database does."""
+        query = {"select": select, "grouping": grouping}
         errors = []
         for federated in (False, True):
             with pytest.raises(ResolutionError) as caught:
