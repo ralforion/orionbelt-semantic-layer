@@ -314,11 +314,55 @@ class TestGeneratedNames:
 
 
 class TestRewrittenRows:
-    def test_a_total_beside_a_filter_context_is_refused(self) -> None:
+    @pytest.mark.parametrize("measure", list(WHOLE))
+    def test_a_total_beside_a_filter_context_reads_the_plans_rows(
+        self, con: Any, measure: str
+    ) -> None:
         """The filterContext runs first and leaves a CTE of finished values,
-        which the total cannot be computed again from."""
+        but keeps the plan's tables and filters in it: the total is computed
+        from those, where it was refused."""
+        where = [{"field": "City", "op": "!=", "value": "d"}]
         query = {
-            "select": {"dimensions": ["Region"], "measures": ["SD Total", "Revenue Any Region"]}
+            "select": {"dimensions": ["Region"], "measures": [measure, "Revenue Any Region"]},
+            "where": where,
+        }
+        alone = {"select": {"dimensions": ["Region"], "measures": ["Revenue Any Region"]}}
+
+        rows = _run(con, query)
+
+        narrowed = WHOLE[measure].replace(" WHERE ", " WHERE city <> 'd' AND ")
+        if narrowed == WHOLE[measure]:
+            narrowed += " WHERE city <> 'd'"
+        assert {r[1] for r in rows} == {_one(con, narrowed)}
+        assert sorted((r[0], r[2]) for r in rows) == sorted(_run(con, {**alone, "where": where}))
+
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    def test_a_total_beside_a_filter_context_under_a_rollup(self, con: Any, grouping: str) -> None:
+        """Under a rollup every total is computed apart: each subtotal reads
+        the whole, and the filter context's each its own level."""
+        query = {
+            "select": {
+                "dimensions": ["Region", "City"],
+                "measures": ["Revenue Total", "SD Total", "Revenue Any Region"],
+            },
+            "grouping": grouping,
+        }
+
+        rows = _run(con, query)
+
+        assert {(r[2], r[3]) for r in rows} == {
+            (_one(con, WHOLE["Revenue Total"]), _one(con, WHOLE["SD Total"]))
+        }
+        assert next(r[4] for r in rows if r[5:] == (1, 1)) == _one(con, WHOLE["Revenue Total"])
+
+    def test_a_metric_over_a_total_beside_a_filter_context_is_refused(self) -> None:
+        """The totals pass computes the metric's other components from rows
+        the filter context's wrapper replaced."""
+        query = {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["SD per Revenue", "Revenue Any Region"],
+            }
         }
 
         with pytest.raises(ResolutionError) as caught:

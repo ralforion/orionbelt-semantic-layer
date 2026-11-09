@@ -72,6 +72,11 @@ if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
 
 
+#: The CTE holding the plan's own groups, the query's filters and its
+#: measures without a filter context; ``total_wrap`` reads its rows.
+MAIN_CTE = "main"
+
+
 def kept_by_context[T](
     fc: FilterContext, filters: list[T], fields_of: Callable[[T], frozenset[str]]
 ) -> list[T]:
@@ -523,7 +528,7 @@ def wrap_with_filter_context(
     # each one row at this grain and stand on their own, so drop it.
     keep_main = bool(main_columns)
 
-    main_cte = CTE(name="main", query=main_cte_query)
+    main_cte = CTE(name=MAIN_CTE, query=main_cte_query)
 
     # --- Build isolated CTEs ---
     all_ctes = list(ast.ctes) + ([main_cte] if keep_main else [])
