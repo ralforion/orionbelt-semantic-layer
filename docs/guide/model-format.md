@@ -1793,11 +1793,14 @@ a value of at least one unit of the type's last place fails the query with
 `OBSL: a value past DECIMAL(18, 2)`, a string Dremio cannot cast to an integer.
 The cast is Dremio's own, so it fits exactly where Dremio holds the value, 38
 digits included (`decimal(38, 38)` holds no 1), and the value is compared as a
-double, which holds anything:
+double, which holds anything. Dremio's planner casts a constant itself, to the
+true value rather than 0, so the value is also compared with the type's bound
+at 38 digits, which the planner computes exactly:
 
 ```sql
 CASE WHEN CAST(CASE WHEN CAST(SUM("s"."amt") AS DECIMAL(18, 2)) = 0
                      AND ABS(CAST(SUM("s"."amt") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE)
+                      OR ABS(CAST(SUM("s"."amt") AS DECIMAL(38, 2))) >= 10000000000000000
                THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0
 THEN CAST(SUM("s"."amt") AS DECIMAL(18, 2)) END
 ```

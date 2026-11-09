@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from decimal import Context, Decimal, localcontext
+from decimal import Context, Decimal, InvalidOperation, localcontext
 
 from orionbelt.ast.nodes import (
     BinaryOp,
@@ -38,6 +38,10 @@ _PAST_DECIMAL = "OBSL: a value past {type}"
 #: its places, and any literal's of a model.
 _WIDE_CONTEXT = 200
 
+#: The largest bound written as a plain literal: Dremio refuses a numeric
+#: literal past a 64-bit integer ("Numeric literal ... out of range").
+_LITERAL_BOUND = 2**63 - 1
+
 
 def _is_latin1(value: str) -> bool:
     """Whether Dremio can type *value* as a plain literal: ISO-8859-1 only."""
@@ -64,15 +68,25 @@ class UnsupportedSeparatorError(UnsupportedAggregationError):
 
 
 def _fits(literal: Literal, obml_type: DecimalType) -> bool:
-    """Whether a numeric *literal*, rounded half up to *obml_type*'s places as a
-    cast rounds it, is short of its bound, as no cast needs testing: 99.995
-    rounds to 100.00, past ``decimal(4, 2)``. In a context wide enough for any
-    such type: Python's default 28 digits cannot hold 0.5 at 38 places."""
+    """Whether *literal* needs no test before a cast to *obml_type*.
+
+    A NULL, or text that is no number, cannot overflow the type (text that is
+    no number fails the cast on its own). A number, or text of one, needs none
+    when, rounded half up to the type's places as a cast rounds it, it is
+    short of the type's bound: 99.995 rounds to 100.00, past ``decimal(4, 2)``.
+    In a context wide enough for any such type: Python's default 28 digits
+    cannot hold 0.5 at 38 places.
+    """
     value = literal.value
-    if isinstance(value, bool) or not isinstance(value, int | float | Decimal):
+    if isinstance(value, bool):
         return False
     with localcontext(Context(prec=_WIDE_CONTEXT)):
-        number = Decimal(str(value))
+        try:
+            number = Decimal(value.strip() if isinstance(value, str) else str(value))
+        except InvalidOperation:
+            return True
+        if value is None or not number.is_finite():
+            return value is None
         bound = Decimal(10) ** (obml_type.precision - obml_type.scale)
         return abs(number) < bound - Decimal(5).scaleb(-obml_type.scale - 1)
 
@@ -271,44 +285,53 @@ class DremioDialect(Dialect):
     def _compile_checked_cast(self, inner: Expr, type_name: str) -> str:
         """The cast, failing the query where Dremio reads the value as 0.
 
-        The value is cast as Dremio casts it, so it fits exactly where the
-        cast holds it, 38 digits included, and a cast that comes back 0 of a
-        value of at least one unit of the type's last place is past the type:
-        a value rounding to 0 is short of half a unit, one past the type is
-        past 0.5, and no double rounds across that gap. The value is compared
-        as a double, which holds anything, a double of 1e40 too.
+        Dremio's executor reads a value past the type as exactly 0, so a cast
+        that comes back 0 for a value of at least one unit of the type's last
+        place is past the type: a value rounding to 0 is short of half a unit,
+        one past the type is past 0.5, and no double rounds across that gap.
+        The cast is Dremio's own, so it fits exactly where Dremio holds the
+        value, 38 digits included, and the value is compared as a double,
+        which holds anything, a double of 1e40 too.
+
+        Dremio's planner casts a constant itself, not as its executor does:
+        ``cast(50 * 2, 'decimal(2, 0)')`` folded to 100, which no test reads
+        as 0, and the executor returned 0. So the value is also compared with
+        the type's bound, rounded to its places at 38 digits, which the
+        planner folds exactly. At run time that comparison only ever holds
+        past the type: it rounds as the cast does, and past what 38 digits
+        hold it reads 0. A type of 38 integer digits has no bound a decimal
+        can write, and needs none.
 
         Past the type the query fails: a string cast to an integer, which
-        Dremio raises at run time. The string is the row's own, ``'0'``
-        within the type: Dremio's native projector evaluates both branches of
-        a ``CASE`` for every row, so a branch failing on its own failed every
-        query. A NULL is past no type, and the cast keeps its type.
+        Dremio raises. The string is the row's own, ``'0'`` within the type:
+        Dremio's native projector evaluates both branches of a ``CASE`` for
+        every row, so a branch failing on its own failed every query. A NULL
+        is past no type, and the cast keeps its type.
         """
         match = _DECIMAL_TYPE.match(self._resolve_type_name(type_name))
         if match is None:
             return self._compile_cast(inner, type_name)
-        failed = Cast(expr=Literal.string(_PAST_DECIMAL.format(type=type_name)), type_name="INT")
-        if isinstance(inner, Literal):
-            # Past the type, or it would not be tested (:meth:`cast_to_obml_type`).
-            # Dremio's planner casts a literal itself, not as its executor does:
-            # 99.995 as DECIMAL(4, 2) folded to 100.00, which no test reads as 0,
-            # and the executor returned 0.00.
-            return self.compile_expr(Cast(expr=failed, type_name=type_name))
-        unit = Decimal(1).scaleb(-int(match.group(2)))
+        precision, scale = int(match.group(1)), int(match.group(2))
         cast = Cast(expr=inner, type_name=type_name)
         zeroed = BinaryOp(left=cast, op="=", right=Literal.number(0))
         counted = BinaryOp(
             left=FunctionCall(name="ABS", args=[Cast(expr=inner, type_name="DOUBLE")]),
             op=">=",
-            right=Cast(expr=Literal.string(f"{unit:E}"), type_name="DOUBLE"),
+            right=Cast(expr=Literal.string(f"{Decimal(1).scaleb(-scale):E}"), type_name="DOUBLE"),
         )
+        past: Expr = BinaryOp(left=zeroed, op="AND", right=counted)
+        if precision - scale < self._MAX_DECIMAL_PRECISION:
+            bound = 10 ** (precision - scale)
+            limit: Expr = (
+                Literal.number(bound)
+                if bound <= _LITERAL_BOUND
+                else Cast(expr=Literal.string(str(bound)), type_name="DECIMAL(38, 0)")
+            )
+            rounded = Cast(expr=inner, type_name=f"DECIMAL(38, {scale})")
+            folded = BinaryOp(left=FunctionCall(name="ABS", args=[rounded]), op=">=", right=limit)
+            past = BinaryOp(left=past, op="OR", right=folded)
         verdict = CaseExpr(
-            when_clauses=[
-                (
-                    BinaryOp(left=zeroed, op="AND", right=counted),
-                    Literal.string(_PAST_DECIMAL.format(type=type_name)),
-                )
-            ],
+            when_clauses=[(past, Literal.string(_PAST_DECIMAL.format(type=type_name)))],
             else_clause=Literal.string("0"),
         )
         holds = BinaryOp(left=Cast(expr=verdict, type_name="INT"), op="=", right=Literal.number(0))

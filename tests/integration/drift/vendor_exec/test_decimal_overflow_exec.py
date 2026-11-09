@@ -77,6 +77,9 @@ metrics:
     expression: "cast({{[Fraction Total]}}, 'decimal(18,12)') * 1.0"
     dataType: "decimal(18, 12)"
   Fraction Twice: {{expression: "{{[Fraction Unfiltered]}} * 2", dataType: "decimal(18, 12)"}}
+  Constant Past: {{expression: "{{[Revenue]}} * 0 + cast(50 * 2, 'decimal(2,0)')"}}
+  Text Cast: {{expression: "{{[Revenue]}} * 0 + cast('12.34', 'decimal(18,2)')"}}
+  Null Cast: {{expression: "{{[Revenue]}} * 0 + cast(null, 'decimal(18,2)')"}}
 """
 
 DECIMAL = {"bigquery": "NUMERIC", "clickhouse": "Nullable(Decimal(38, 2))"}
@@ -139,17 +142,24 @@ def _assert_all(target: VendorTarget) -> None:
 
 
 def _assert_dremio_fails(target: VendorTarget) -> None:
-    """Past its type in three ways a narrower test let through on Dremio: a
+    """Past its type in four ways a narrower test let through on Dremio: a
     literal past it once rounded (99.995 is 100.00), a type of 38 digits with
-    no integer digit, and a double past what the test's own decimal held. And
-    the largest value of a type of 38 digits, which a test rounding a place
-    fewer refused."""
+    no integer digit, a double past what the test's own decimal held, and a
+    constant product, which Dremio's planner casts itself, to 100 where the
+    executor reads 0. And within it: the largest value of a type of 38
+    digits, which a test rounding a place fewer refused, text of a number and
+    a NULL, which a test taking every literal it could not read as past the
+    type refused."""
     model = _prepare(target)
-    for measure in ("Rounded Up", "All Places", "Huge Total"):
+    for measure in ("Rounded Up", "All Places", "Huge Total", "Constant Past"):
         with pytest.raises(Exception, match="OBSL: a value past DECIMAL"):
             _answer(target, model, measure)
-    # The largest value of its type fits, as its own cast holds it.
+    # The largest value of its type fits, as its own cast holds it, and so do
+    # text of a number and a NULL, which cannot pass it.
     assert _answer(target, model, "Edge Total") == Decimal(LARGEST)
+    assert _answer(target, model, "Text Cast") == Decimal("12.34")
+    (row,) = _run(target, model, QueryObject(select={"measures": ["Null Cast"]}))
+    assert row["null cast"] is None
 
 
 def test_duckdb_decimal_overflow(vendor_duckdb: VendorTarget) -> None:

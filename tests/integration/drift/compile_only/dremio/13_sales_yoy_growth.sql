@@ -23,7 +23,7 @@ FROM (
 ),
 "pop_base" AS (
 SELECT "date_spine".spine_date AS "Sales Month",
-       CASE WHEN CAST(CASE WHEN CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
+       CASE WHEN CAST(CASE WHEN CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) OR ABS(CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(38, 2))) >= 10000000000000000 THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
   FROM (
     SELECT DATE_TRUNC('month', "Sales"."salesdate") AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
@@ -34,7 +34,7 @@ SELECT "date_spine".spine_date AS "Sales Month",
   GROUP BY 1
 UNION ALL
 SELECT (SELECT spine_date FROM "date_spine" WHERE 1 = 0) AS "Sales Month",
-       CASE WHEN CAST(CASE WHEN CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
+       CASE WHEN CAST(CASE WHEN CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) OR ABS(CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(38, 2))) >= 10000000000000000 THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("__ob_pop_src"."Sales__salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
   FROM (
     SELECT DATE_TRUNC('month', "Sales"."salesdate") AS "__ob_bucket",
            "Sales"."salesamount" AS "Sales__salesamount"
@@ -57,5 +57,5 @@ SELECT "pop_base"."Sales Month" AS "Sales Month",
   LEFT JOIN (SELECT * FROM "date_spine" WHERE 1 = 0) AS "date_spine" ON 1 = 0
   LEFT JOIN (SELECT * FROM "pop_base" WHERE 1 = 0) AS pop_prev ON 1 = 0
 )
-SELECT "Sales Month" AS "Sales Month", CASE WHEN CAST(CASE WHEN CAST("Sales YoY Growth" AS DECIMAL(18, 4)) = 0 AND ABS(CAST("Sales YoY Growth" AS DOUBLE)) >= CAST('1E-4' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 4)' ELSE '0' END AS INT) = 0 THEN CAST("Sales YoY Growth" AS DECIMAL(18, 4)) END AS "Sales YoY Growth"
+SELECT "Sales Month" AS "Sales Month", CASE WHEN CAST(CASE WHEN CAST("Sales YoY Growth" AS DECIMAL(18, 4)) = 0 AND ABS(CAST("Sales YoY Growth" AS DOUBLE)) >= CAST('1E-4' AS DOUBLE) OR ABS(CAST("Sales YoY Growth" AS DECIMAL(38, 4))) >= 100000000000000 THEN 'OBSL: a value past DECIMAL(18, 4)' ELSE '0' END AS INT) = 0 THEN CAST("Sales YoY Growth" AS DECIMAL(18, 4)) END AS "Sales YoY Growth"
 FROM "pop_compare" AS "pop_compare"

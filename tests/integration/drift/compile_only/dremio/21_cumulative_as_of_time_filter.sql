@@ -1,5 +1,5 @@
 WITH "cumulative_base" AS (
-SELECT "Regions"."regionname" AS "Sales Region Name", CASE WHEN CAST(CASE WHEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("Sales"."salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
+SELECT "Regions"."regionname" AS "Sales Region Name", CASE WHEN CAST(CASE WHEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("Sales"."salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) OR ABS(CAST(SUM("Sales"."salesamount") AS DECIMAL(38, 2))) >= 10000000000000000 THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid" = "Countries"."countryid"
@@ -8,7 +8,7 @@ WHERE CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) >= '2022-03-01' AND
 GROUP BY "Regions"."regionname"
 ),
 "cumulative_as_of_shown" AS (
-SELECT "Regions"."regionname" AS "Sales Region Name", CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) AS "Sales Month", CASE WHEN CAST(CASE WHEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("Sales"."salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
+SELECT "Regions"."regionname" AS "Sales Region Name", CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) AS "Sales Month", CASE WHEN CAST(CASE WHEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("Sales"."salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) OR ABS(CAST(SUM("Sales"."salesamount") AS DECIMAL(38, 2))) >= 10000000000000000 THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid" = "Countries"."countryid"
@@ -17,7 +17,7 @@ WHERE CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) >= '2022-03-01' AND
 GROUP BY "Regions"."regionname", CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE)
 ),
 "cumulative_as_of_periods" AS (
-SELECT "Regions"."regionname" AS "Sales Region Name", CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) AS "Sales Month", CASE WHEN CAST(CASE WHEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("Sales"."salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
+SELECT "Regions"."regionname" AS "Sales Region Name", CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) AS "Sales Month", CASE WHEN CAST(CASE WHEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) = 0 AND ABS(CAST(SUM("Sales"."salesamount") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) OR ABS(CAST(SUM("Sales"."salesamount") AS DECIMAL(38, 2))) >= 10000000000000000 THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) END AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid" = "Countries"."countryid"
@@ -40,5 +40,5 @@ SELECT "cumulative_base"."Sales Region Name" AS "Sales Region Name", "cumulative
 FROM "cumulative_base" AS "cumulative_base"
 LEFT JOIN "cumulative_as_of" AS "cumulative_as_of" ON "cumulative_base"."Sales Region Name" = "cumulative_as_of"."Sales Region Name" OR "cumulative_base"."Sales Region Name" IS NULL AND "cumulative_as_of"."Sales Region Name" IS NULL
 )
-SELECT "Sales Region Name" AS "Sales Region Name", "Total Sales" AS "Total Sales", CASE WHEN CAST(CASE WHEN CAST("YTD Sales" AS DECIMAL(18, 2)) = 0 AND ABS(CAST("YTD Sales" AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST("YTD Sales" AS DECIMAL(18, 2)) END AS "YTD Sales", CASE WHEN CAST(CASE WHEN CAST("Cumulative Sales" AS DECIMAL(18, 2)) = 0 AND ABS(CAST("Cumulative Sales" AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST("Cumulative Sales" AS DECIMAL(18, 2)) END AS "Cumulative Sales"
+SELECT "Sales Region Name" AS "Sales Region Name", "Total Sales" AS "Total Sales", CASE WHEN CAST(CASE WHEN CAST("YTD Sales" AS DECIMAL(18, 2)) = 0 AND ABS(CAST("YTD Sales" AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) OR ABS(CAST("YTD Sales" AS DECIMAL(38, 2))) >= 10000000000000000 THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST("YTD Sales" AS DECIMAL(18, 2)) END AS "YTD Sales", CASE WHEN CAST(CASE WHEN CAST("Cumulative Sales" AS DECIMAL(18, 2)) = 0 AND ABS(CAST("Cumulative Sales" AS DOUBLE)) >= CAST('1E-2' AS DOUBLE) OR ABS(CAST("Cumulative Sales" AS DECIMAL(38, 2))) >= 10000000000000000 THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0 THEN CAST("Cumulative Sales" AS DECIMAL(18, 2)) END AS "Cumulative Sales"
 FROM "cumulative_joined" AS "cumulative_joined"

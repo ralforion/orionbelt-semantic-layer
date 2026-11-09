@@ -156,13 +156,13 @@ def test_a_default_holds_the_exact_statistic() -> None:
 
 
 def test_a_metric_reads_the_exact_statistics() -> None:
-    """Each once in the metric's formula, which Dremio writes three times:
-    tested against its type's range exactly and as a double, and cast
-    (``DremioDialect.cast_to_obml_type``)."""
+    """Each once in the metric's formula, which Dremio writes four times: cast
+    and tested, as a double and against its bound, and cast to return it
+    (``DremioDialect._compile_checked_cast``)."""
     sql = _sql("Spread Ratio")
 
-    assert sql.count('ELSE STDDEV("Charges"."qty")') == 3
-    assert sql.count('ELSE VARIANCE("Charges"."price")') == 3
+    assert sql.count('ELSE STDDEV("Charges"."qty")') == 4
+    assert sql.count('ELSE VARIANCE("Charges"."price")') == 4
 
 
 @pytest.mark.parametrize("dialect", sorted(set(DialectRegistry.available()) - {"dremio", "mysql"}))
