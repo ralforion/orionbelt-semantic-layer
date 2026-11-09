@@ -108,6 +108,21 @@ class TestReservedNames:
         with pytest.raises(ModelNameError, match="reserved"):
             normalize_model_name(name, source="test")
 
+    @pytest.mark.parametrize("name", ["dimensions", "measures", "metrics"])
+    def test_catalog_table_names_are_reserved(self, name: str) -> None:
+        """Every model's catalog schema holds tables of these names (#752)."""
+        with pytest.raises(ModelNameError, match="reserved"):
+            normalize_model_name(name, source="test")
+
+    def test_obsql_reference_lists_every_reserved_name(self) -> None:
+        """``/v1/reference/obsql`` repeats the list; keep the two in step."""
+        from orionbelt.obsql_reference import OBSQL_REFERENCE
+
+        start = OBSQL_REFERENCE.index("Reserved names")
+        listed = OBSQL_REFERENCE[start : OBSQL_REFERENCE.index("``.", start)]
+        missing = {n for n in RESERVED_NAMES if n != "__default__" and n not in listed}
+        assert not missing
+
     def test_reserved_via_uppercase(self) -> None:
         with pytest.raises(ModelNameError, match="reserved"):
             normalize_model_name("MODEL", source="test")

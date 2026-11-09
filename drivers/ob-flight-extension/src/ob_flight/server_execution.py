@@ -9,6 +9,7 @@ functions take the ``OBFlightServer`` instance as their first argument
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
@@ -114,6 +115,112 @@ def rewrite_table_names(server: OBFlightServer, sql: str, model: Any) -> str:
         if schema_name:
             sql = sql.replace(f"{schema_name}.{code}", code)
     return sql
+
+
+# SHOW / DESCRIBE: the dispatcher answers every such statement from the
+# connection's model, whatever follows its opening words.
+_RE_SHOW_DESCRIBE = re.compile(
+    r"^\s*(?:DESC(?:RIBE)?(?:\s+TABLE)?|SHOW(?:\s+(?:FULL\s+)?(?:COLUMNS|FIELDS|TABLES))?)\b",
+    re.I,
+)
+_RE_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+_VIEW_NAMES = (*_LABEL_VIEW_NAMES, *_METADATA_VIEW_NAMES, MODEL_TABLE)
+
+
+def _dotted_names(text: str) -> list[list[str]]:
+    """The names in ``text``, each a run of words joined by dots, up to LIKE / WHERE.
+
+    A word is an identifier, quoted or not, keywords included, so a model may be
+    named after one (``date``). Anything else ends a name: ``shop.model TYPE =
+    COLUMNS`` holds ``shop.model``, ``TYPE`` and ``COLUMNS``; a string or number
+    is no name, and neither are ``FROM`` / ``IN``.
+    """
+    from sqlglot import TokenType
+    from sqlglot.tokens import Tokenizer
+
+    stop = (TokenType.LIKE, TokenType.ILIKE, TokenType.WHERE, TokenType.SEMICOLON)
+    not_words = (TokenType.STRING, TokenType.NUMBER, TokenType.FROM, TokenType.IN)
+    names: list[list[str]] = []
+    joined = False
+    for token in Tokenizer().tokenize(text):
+        if token.token_type in stop:
+            break
+        if token.token_type == TokenType.DOT:
+            joined = bool(names)
+            continue
+        word = token.token_type == TokenType.IDENTIFIER or (
+            token.token_type not in not_words and _RE_WORD.fullmatch(token.text) is not None
+        )
+        if word and joined:
+            names[-1].append(token.text.lower())
+        elif word:
+            names.append([token.text.lower()])
+        joined = False
+    return names
+
+
+def _show_describe_models(sql: str) -> set[str] | None:
+    """The models a SHOW / DESCRIBE names, or ``None`` for another statement.
+
+    Each name counts with all its parts but a trailing view: ``shop.model`` and
+    ``orionbelt.shop`` name ``shop``, ``commerce.measures`` names ``commerce``
+    even beside a model named ``measures``. Options, patterns and modifiers
+    around the name (``TYPE = COLUMNS``, ``'Customer%'``, ``EXTENDED``) are names
+    of their own, which no model has.
+    """
+    opening = _RE_SHOW_DESCRIBE.match(sql)
+    if opening is None:
+        return None
+    models: set[str] = set()
+    for name in _dotted_names(sql[opening.end() :]):
+        parts = name[:-1] if len(name) > 1 and name[-1] in _VIEW_NAMES else name
+        models.update(part for part in parts if part not in _VIEW_NAMES)
+    return models
+
+
+def _named_models(sql: str) -> set[str]:
+    """The names by which a statement addresses a model, lowercased.
+
+    For SHOW / DESCRIBE, see :func:`_show_describe_models`. For a ``SELECT``,
+    the schema of each table in its own FROM and JOINs, or a bare name that is
+    not one of the model's views (``FROM shop``). A table in a subquery names a
+    data object, whose name a model may share: it does not count.
+    """
+    import sqlglot
+    import sqlglot.expressions as exp
+    from orionbelt.compiler.sql_translator import _strip_trailing_grouping
+
+    cleaned, _ = _strip_trailing_grouping(sql)
+    try:
+        shown = _show_describe_models(cleaned)
+        if shown is not None:
+            return shown
+        ast = sqlglot.parse_one(cleaned)
+    except Exception:
+        return set()
+    if not isinstance(ast, exp.Select):
+        return set()
+    from_node = ast.args.get("from") or ast.args.get("from_")
+    sources = [getattr(from_node, "this", None), *(j.this for j in ast.args.get("joins") or [])]
+    names: set[str] = set()
+    for table in sources:
+        if not isinstance(table, exp.Table):
+            continue
+        if table.db:
+            names.add(table.db.lower())
+        elif table.name.lower() not in _VIEW_NAMES:
+            names.add(table.name.lower())
+    return names
+
+
+def other_model_named(server: OBFlightServer, sql: str, model: Any) -> str | None:
+    """A loaded model the statement names, when it is not the connection's own."""
+    available = {name.lower() for name in server._list_available_model_names()}
+    if not available:
+        return None
+    own = (getattr(model, "_ob_model_id", "") or "").lower()
+    others = sorted((_named_models(sql) & available) - {own})
+    return others[0] if others else None
 
 
 def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
@@ -392,6 +499,17 @@ def prepare_sql(
         # whatever zone the engine attached rather than as the wall clock.
         schema_hint = server._semantic_result_schema(query, model)
         return sql, dialect, model, schema_hint, _MODE_SEMANTIC, cache_meta
+
+    # A connection reads only the model its header selects: a statement naming
+    # another loaded model is refused, data and catalog alike, so the header
+    # stays the one place a model is chosen.
+    other = other_model_named(server, sql, model)
+    if other is not None:
+        raise flight.FlightServerError(
+            f"[MODEL_MISMATCH] The statement names model '{other}', but this connection "
+            f"reads model '{getattr(model, '_ob_model_id', '')}'. Set the connection's "
+            f"`database` field (or `x-obsl-model` header) to '{other}' to query it."
+        )
 
     mode = server._classify_sql(sql, model)
 

@@ -247,8 +247,10 @@ Resolution order on the server:
   trailing ``_obml`` suffix.
 * Validated against ``^[a-z][a-z0-9_]{0,62}$``.
 * Reserved names (rejected at startup): ``obsl, obml, obsql, model,
-  default, public, information_schema, pg_catalog, sqlite_master,
-  mysql, sys, performance_schema, admin, root``.
+  dimensions, measures, metrics, default, public, information_schema,
+  pg_catalog, sqlite_master, mysql, sys, performance_schema, admin,
+  root``. Every model's schema holds tables named ``model``,
+  ``dimensions``, ``measures`` and ``metrics``.
 
 ### Discovery
 

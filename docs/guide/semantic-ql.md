@@ -218,8 +218,11 @@ Examples: `My Sales Model` → `my_sales_model`, `commerce.v2` →
 `commerce_v2`, `sales.obml.yaml` (filename) → `sales`.
 
 Reserved names (rejected at startup): `obsl`, `obml`, `obsql`, `model`,
-`default`, `public`, `information_schema`, `pg_catalog`,
-`sqlite_master`, `mysql`, `sys`, `admin`, `root`.
+`dimensions`, `measures`, `metrics`, `default`, `public`,
+`information_schema`, `pg_catalog`, `sqlite_master`, `mysql`, `sys`,
+`performance_schema`, `admin`, `root`. Every model's schema holds tables
+named `model`, `dimensions`, `measures` and `metrics`, so a model of one
+of those names would be ambiguous.
 
 Name collisions across `MODEL_FILES` entries error at startup with a
 clear message — no silent shadowing.
@@ -262,6 +265,35 @@ Discover available models via GET /v1/models.
 ```
 
 The error itself is the documentation — no need to remember anything.
+
+### A statement naming another model
+
+A connection reads only the model its **Database** field selects. A
+statement that names another loaded model is refused, a query and a
+catalog statement alike:
+
+```sql
+-- on a connection to sales
+SELECT "Region", "Total Returns" FROM returns;
+SELECT * FROM returns._measures_metadata;
+DESCRIBE returns;
+```
+
+```
+[MODEL_MISMATCH] The statement names model 'returns', but this connection
+reads model 'sales'. Set the connection's `database` field (or
+`x-obsl-model` header) to 'returns' to query it.
+```
+
+To query `returns`, open a connection with **Database** `returns`. Over
+the Postgres wire, one connection can reach every model: see
+[Several models in one connection](postgres-wire-bi-tools.md#several-models-in-one-connection).
+
+`SHOW` and `DESCRIBE` statements are read word by word. A model named
+like one of their option words, such as `columns` or `type`, makes a
+statement using that word fail with `MODEL_MISMATCH`:
+`DESCRIBE TABLE sales.model TYPE = COLUMNS` fails while a model named
+`columns` is loaded. Give the model another name.
 
 ## No-FROM mode — implicit model
 
