@@ -714,6 +714,8 @@ class SemanticRouter:
         query's source counts, through derived tables in its FROM: a
         table in a predicate subquery (``EXISTS (SELECT 1 FROM
         "Customers")``) names a data object, whose name a model may share.
+        So does a system relation: ``information_schema.tables`` and
+        ``pg_catalog.pg_class`` name no model ``tables`` or ``pg_class``.
         """
 
         model_names = self._loaded_model_names()
@@ -727,6 +729,8 @@ class SemanticRouter:
         if table is None:
             return None
         schema = (table.db or "").lower()
+        if schema in _CATALOG_SCHEMAS:
+            return None
         if schema and schema in model_names:
             return schema
         name = (table.name or "").lower()
