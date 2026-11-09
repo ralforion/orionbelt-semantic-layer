@@ -42,6 +42,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
 )
 from orionbelt.models.types import decimal_width
+from orionbelt.pgwire.statements import scan
 from orionbelt.service.db_executor import ColumnMeta, ExecutionResult, parse_decimal_type
 from orionbelt.service.session_manager import SessionManager
 
@@ -956,8 +957,9 @@ _RE_QUOTED_SYSTEM_RELATION = re.compile(
     r'(?P<schema>(?<![\w"])(?i:pg_catalog|information_schema)\s*\.\s*)"(?P<name>[a-z_][a-z0-9_]*)"'
 )
 
-# A string literal, kept as one piece by ``re.split``: ``'pg_catalog.pg_class'``.
-_RE_STRING_LITERAL = re.compile(r"('(?:[^']|'')*')")
+# A quoted name the rules may unquote or drop: lower case, nothing escaped.
+# Any other quoted name holds no system name and keeps its text.
+_RE_PLAIN_QUOTED_NAME = re.compile(r'"[a-z_][a-z0-9_]*"')
 
 
 def _normalize_system_names(sql: str) -> str:
@@ -968,8 +970,9 @@ def _normalize_system_names(sql: str) -> str:
     unquoted spelling only. The brand database in front
     (``orionbelt.pg_catalog.pg_class``, which the catalog guard admits) adds
     nothing either, and DuckDB, which runs every probe inside that database,
-    would read it as a schema. String literals are values and keep their text
-    (``'"pg_catalog"."pg_class"'::regclass``).
+    would read it as a schema. Literals in any form are values and keep their
+    text (``'"pg_catalog"."pg_class"'::regclass``, ``$$...$$``, ``E'...'``), and
+    so do comments and other quoted names (``"it's"``).
     """
 
     def normalize(code: str) -> str:
@@ -977,9 +980,17 @@ def _normalize_system_names(sql: str) -> str:
         code = _RE_QUOTED_SYSTEM_SCHEMA.sub(r"\1", code)
         return _RE_QUOTED_SYSTEM_RELATION.sub(r"\g<schema>\g<name>", code)
 
-    # ``re.split`` with a group alternates code and literals: code at even indexes.
-    parts = _RE_STRING_LITERAL.split(sql)
-    return "".join(part if i % 2 else normalize(part) for i, part in enumerate(parts))
+    out: list[str] = []
+    code: list[str] = []
+    for kind, start, end in scan(sql):
+        text = sql[start:end]
+        if kind == "code" or (kind == "identifier" and _RE_PLAIN_QUOTED_NAME.fullmatch(text)):
+            code.append(text)
+        else:
+            out += [normalize("".join(code)), text]
+            code = []
+    out.append(normalize("".join(code)))
+    return "".join(out)
 
 
 def _rewrite_for_duckdb(sql: str) -> str:

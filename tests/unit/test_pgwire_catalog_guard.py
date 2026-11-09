@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 
 import pytest
 
@@ -121,3 +122,24 @@ def test_router_answers_quoted_and_qualified_system_relations(sql: str) -> None:
     router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
     tags = [tag for tag, _ in _parse_frames(asyncio.run(router.handle(sql, database="commerce")))]
     assert b"E" not in tags and b"D" in tags
+
+
+@pytest.mark.parametrize(
+    ("sql", "value"),
+    [
+        ("SELECT $$orionbelt.information_schema.tables$$", "orionbelt.information_schema.tables"),
+        ("SELECT E'it\\'s orionbelt.pg_catalog.x'", "it's orionbelt.pg_catalog.x"),
+        (
+            "-- don't\nSELECT 'orionbelt.information_schema.tables' FROM pg_namespace LIMIT 1",
+            "orionbelt.information_schema.tables",
+        ),
+    ],
+)
+def test_router_returns_a_literal_as_written(sql: str, value: str) -> None:
+    """Names are spelled for the rewrites in code only, never in a value (#759)."""
+    mgr, _ = _make_manager_with_model()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    frames = _parse_frames(asyncio.run(router.handle(sql, database="commerce")))
+    (row,) = [body for tag, body in frames if tag == b"D"]
+    (length,) = struct.unpack("!i", row[2:6])
+    assert row[6 : 6 + length].decode() == value

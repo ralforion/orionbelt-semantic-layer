@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.pgwire.statements import split_statements
+from orionbelt.pgwire.statements import scan, split_statements
 
 
 class TestTheOrdinaryCases:
@@ -157,3 +157,28 @@ class TestCommentOnlyFragments:
     def test_a_comment_marker_inside_a_literal_is_not_a_comment(self) -> None:
         sql = "SELECT '-- not a comment'"
         assert split_statements(sql) == [sql]
+
+
+class TestScan:
+    """The runs the splitter reads, which the catalog's name rewrites read too."""
+
+    def test_each_run_has_its_kind(self) -> None:
+        sql = "SELECT E'\\'' AS \"q\", $t$a$t$ -- c\n/* d /* e */ */ 'f'$1"
+        runs = [(kind, sql[start:end]) for kind, start, end in scan(sql)]
+        assert runs == [
+            ("code", "SELECT "),
+            ("literal", "E'\\''"),
+            ("code", " AS "),
+            ("identifier", '"q"'),
+            ("code", ", "),
+            ("literal", "$t$a$t$"),
+            ("code", " "),
+            ("comment", "-- c\n"),
+            ("comment", "/* d /* e */ */"),
+            ("code", " "),
+            ("literal", "'f'"),
+            ("code", "$1"),
+        ]
+
+    def test_an_unterminated_run_takes_the_rest(self) -> None:
+        assert [kind for kind, _, _ in scan("SELECT 'a")] == ["code", "literal"]

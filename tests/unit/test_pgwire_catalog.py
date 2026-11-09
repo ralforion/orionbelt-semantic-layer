@@ -175,9 +175,44 @@ def test_a_system_relation_postgres_would_not_find_fails(
         emu.execute(sql)
 
 
-def test_names_in_string_literals_are_left_alone() -> None:
-    sql = "SELECT 'orionbelt.pg_catalog.x' AS a, '\"pg_catalog\".\"pg_proc\"' AS b"
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 'orionbelt.pg_catalog.x' AS a, '\"pg_catalog\".\"pg_proc\"' AS b",
+        "SELECT $$orionbelt.information_schema.tables$$",
+        'SELECT $t$"pg_catalog"."pg_proc"$t$',
+        "SELECT E'it\\'s orionbelt.pg_catalog.x'",
+        "-- don't\nSELECT 'orionbelt.pg_catalog.x'",
+        "/* it's */ SELECT 'orionbelt.pg_catalog.x' -- orionbelt.pg_catalog.x",
+        "SELECT 1 AS \"it's\", 'orionbelt.pg_catalog.x'",
+        'SELECT 1 AS "x orionbelt.pg_catalog.x"',
+    ],
+)
+def test_names_in_literals_comments_and_other_quoted_names_are_left_alone(sql: str) -> None:
     assert _rewrite_for_duckdb(sql) == sql
+
+
+# A quote Postgres reads as part of a comment, an escape string, a dollar quote
+# or a quoted name: the name after it is still spelled for the rewrites, and
+# not taken for the inside of a string ending at ``'x'``.
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "-- don't\nSELECT nspname FROM {} WHERE nspname <> 'x'",
+        "/* it's */ SELECT nspname FROM {} WHERE nspname <> 'x'",
+        "SELECT E'\\'' AS q, nspname FROM {} WHERE nspname <> 'x'",
+        "SELECT $$'$$ AS q, nspname FROM {} WHERE nspname <> 'x'",
+        "SELECT nspname AS \"it's\" FROM {} WHERE nspname <> 'x'",
+    ],
+)
+def test_a_quote_in_a_comment_or_another_quote_ends_nothing(
+    manager_with_model: SessionManager, sql: str
+) -> None:
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+    expected = emu.execute(sql.format("pg_catalog.pg_namespace")).rows
+    assert expected
+    assert emu.execute(sql.format('"pg_catalog"."pg_namespace"')).rows == expected
 
 
 def test_pg_tables_pg_views_hide_main(manager_with_model: SessionManager) -> None:

@@ -28,11 +28,23 @@ returned. ``SELECT 1; -- done`` is one statement with a trailing remark, not
 two, and dispatching the remark as a second statement made the client read a
 successful result followed by an error. Comments *attached* to a statement stay
 attached: stripping them is the parser's business, not the splitter's.
+
+:func:`scan` is the scanner on its own: it tells code from literals, quoted
+identifiers and comments, for anything else that must only touch code.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from typing import Literal
+
+#: What :func:`scan` tells apart.
+RunKind = Literal["code", "literal", "identifier", "comment"]
+
+#: Where something other than code may start: a quote, an ``E'`` escape
+#: string, a ``$`` (a dollar quote or a ``$1`` placeholder) or a comment.
+_OPENER = re.compile(r"""['"$]|[Ee]'|--|/\*""")
 
 #: A dollar-quote opener: ``$$`` or ``$tag$``. The tag rules follow an
 #: identifier, and the closing delimiter must repeat it exactly.
@@ -47,44 +59,61 @@ def split_statements(sql: str) -> list[str]:
     """
     statements: list[str] = []
     start = 0
-    i = 0
-    n = len(sql)
-
-    while i < n:
-        ch = sql[i]
-
-        if ch == "'":
-            i = _skip_quoted(sql, i, "'")
+    for kind, begin, end in scan(sql):
+        if kind != "code":
             continue
-        if ch == '"':
-            i = _skip_quoted(sql, i, '"')
-            continue
-        if ch in "Ee" and i + 1 < n and sql[i + 1] == "'":
-            # E'...' - a backslash escapes the next character, unlike a
-            # plain literal where only '' does.
-            i = _skip_escape_string(sql, i + 1)
-            continue
-        if ch == "$":
-            end = _skip_dollar_quoted(sql, i)
-            if end != i:
-                i = end
-                continue
-        if ch == "-" and sql.startswith("--", i):
-            newline = sql.find("\n", i)
-            i = n if newline == -1 else newline + 1
-            continue
-        if ch == "/" and sql.startswith("/*", i):
-            i = _skip_block_comment(sql, i)
-            continue
-
-        if ch == ";":
-            _append(statements, sql[start:i])
-            start = i + 1
-
-        i += 1
+        semicolon = sql.find(";", begin, end)
+        while semicolon != -1:
+            _append(statements, sql[start:semicolon])
+            start = semicolon + 1
+            semicolon = sql.find(";", start, end)
 
     _append(statements, sql[start:])
     return statements
+
+
+def scan(sql: str) -> Iterator[tuple[RunKind, int, int]]:
+    """The runs of *sql* in order, as ``(kind, start, end)`` offsets.
+
+    A ``"literal"`` is any string form (``'...'``, ``E'...'``, ``$$...$$``),
+    an ``"identifier"`` a quoted one, a ``"comment"`` either form; ``"code"``
+    is everything between them. An unterminated run takes the rest of *sql*.
+    """
+    n = len(sql)
+    start = i = 0
+    while (opener := _OPENER.search(sql, i)) is not None:
+        i = opener.start()
+        kind, end = _run_at(sql, i)
+        if kind is None:
+            i += 1
+            continue
+        if start < i:
+            yield "code", start, i
+        yield kind, i, end
+        start = i = end
+    if start < n:
+        yield "code", start, n
+
+
+def _run_at(sql: str, i: int) -> tuple[RunKind | None, int]:
+    """The run an ``_OPENER`` match at *i* starts, and the index just past
+    it; ``None`` when it starts none (a ``$1`` placeholder is code)."""
+    ch = sql[i]
+    if ch == "'":
+        return "literal", _skip_quoted(sql, i, "'")
+    if ch == '"':
+        return "identifier", _skip_quoted(sql, i, '"')
+    if ch in "Ee":
+        # E'...' - a backslash escapes the next character, unlike a
+        # plain literal where only '' does.
+        return "literal", _skip_escape_string(sql, i + 1)
+    if ch == "$":
+        end = _skip_dollar_quoted(sql, i)
+        return ("literal", end) if end != i else (None, i)
+    if ch == "-":
+        newline = sql.find("\n", i)
+        return "comment", len(sql) if newline == -1 else newline + 1
+    return "comment", _skip_block_comment(sql, i)
 
 
 def _append(statements: list[str], fragment: str) -> None:
