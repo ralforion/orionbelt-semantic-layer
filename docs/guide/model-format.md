@@ -1745,8 +1745,9 @@ Rate:
 ### Numeric Overflow
 
 **A value that outgrows its type is an error on every engine but MySQL, which
-returns a wrong number instead.** Measured on the same measure over the same
-data, a true total of `100000000000000000` under `dataType: "decimal(18, 2)"`:
+returns a wrong number instead, and Dremio, where OBSL tests it.** Measured on
+the same measure over the same data, a true total of `100000000000000000` under
+`dataType: "decimal(18, 2)"`:
 
 | dialect | result |
 | --- | --- |
@@ -1757,6 +1758,7 @@ data, a true total of `100000000000000000` under `dataType: "decimal(18, 2)"`:
 | Databricks | raises |
 | BigQuery | `100000000000000000` - its `NUMERIC` is (38, 9), so the value fits |
 | MySQL | `9999999999999999.99` - saturated |
+| Dremio | `0.00` from the engine's own cast; now raises `OBSL: a value past DECIMAL(18, 2)` |
 
 MySQL attaches warning 1264 to that row, but a warning is not an error and no
 driver on this stack surfaces one, so what reaches a dashboard is a plausible
@@ -1781,6 +1783,27 @@ supported engine accepts, so a value MySQL now returns is one a portable model
 could have carried anyway. Widening to 65 would let this one engine answer
 where the other seven cannot, which reverses the divergence rather than
 removing it.
+
+Dremio casts a value past a decimal's integer digits to 0, from a decimal, a
+double, an integer or a string alike, and raises no warning. Widening its cast
+as MySQL's would cost places instead: past 38 digits Dremio cuts the scale of a
+product or quotient, so `cast(x, 'decimal(18, 12)') * 1.0` of `1e-11` read `0`.
+So on Dremio the cast keeps its declared type, and a cast that comes back 0 for
+a value of at least one unit of the type's last place fails the query with
+`OBSL: a value past DECIMAL(18, 2)`, a string Dremio cannot cast to an integer.
+The cast is Dremio's own, so it fits exactly where Dremio holds the value, 38
+digits included (`decimal(38, 38)` holds no 1), and the value is compared as a
+double, which holds anything. Dremio's planner casts a constant itself, to the
+true value rather than 0, so the value is also compared with the type's bound
+at 38 digits, which the planner computes exactly:
+
+```sql
+CASE WHEN CAST(CASE WHEN CAST(SUM("s"."amt") AS DECIMAL(18, 2)) = 0
+                     AND ABS(CAST(SUM("s"."amt") AS DOUBLE)) >= CAST('1E-2' AS DOUBLE)
+                      OR ABS(CAST(SUM("s"."amt") AS DECIMAL(38, 2))) >= 10000000000000000
+               THEN 'OBSL: a value past DECIMAL(18, 2)' ELSE '0' END AS INT) = 0
+THEN CAST(SUM("s"."amt") AS DECIMAL(18, 2)) END
+```
 
 !!! warning "One case is still saturated: a 64-bit integer cast"
 

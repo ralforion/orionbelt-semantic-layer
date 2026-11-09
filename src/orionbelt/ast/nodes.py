@@ -170,6 +170,13 @@ class Cast:
     #: render it. The planners match expressions to remap an ORDER BY onto a
     #: projection, and a hint that split those matches would drop the ordering.
     source_exact: bool = field(default=False, compare=False)
+    #: Whether the value is tested against the type's range before it is cast,
+    #: on an engine whose cast past it returns a wrong number. Only Dremio reads
+    #: it (``DremioDialect.cast_to_obml_type``), and only on the casts typing a
+    #: measure, metric or formula, not on a cast the compiler builds for its own
+    #: arithmetic. Excluded from equality as *source_exact* is, for the same
+    #: reason, and carried by a planner that takes a cast off and puts it back.
+    range_checked: bool = field(default=False, compare=False)
 
 
 @dataclass(frozen=True)

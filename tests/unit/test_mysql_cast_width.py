@@ -116,6 +116,10 @@ class TestWhatDoesNotMove:
     def test_no_other_dialect_is_touched(self) -> None:
         for dialect in OTHER_DIALECTS:
             sql = _sql("Amount", dialect)
+            if dialect == "dremio":
+                # Tested at 38 digits, cast in the declared type (``test_dialects``).
+                assert 'THEN CAST(SUM("S"."amt") AS DECIMAL(18, 2)) END' in sql, sql
+                continue
             assert "DECIMAL(38, 2)" not in sql, f"{dialect}: {sql}"
 
     def test_the_scale_is_carried_through_untouched(self) -> None:
