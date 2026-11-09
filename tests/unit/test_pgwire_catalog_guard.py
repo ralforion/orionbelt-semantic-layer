@@ -128,6 +128,7 @@ def test_router_answers_quoted_and_qualified_system_relations(sql: str) -> None:
     ("sql", "value"),
     [
         ("SELECT $$orionbelt.information_schema.tables$$", "orionbelt.information_schema.tables"),
+        ("SELECT $é$orionbelt.information_schema.tables$é$", "orionbelt.information_schema.tables"),
         ("SELECT E'it\\'s orionbelt.pg_catalog.x'", "it's orionbelt.pg_catalog.x"),
         (
             "-- don't\nSELECT 'orionbelt.information_schema.tables' FROM pg_namespace LIMIT 1",

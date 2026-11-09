@@ -186,6 +186,8 @@ def test_a_system_relation_postgres_would_not_find_fails(
         "/* it's */ SELECT 'orionbelt.pg_catalog.x' -- orionbelt.pg_catalog.x",
         "SELECT 1 AS \"it's\", 'orionbelt.pg_catalog.x'",
         'SELECT 1 AS "x orionbelt.pg_catalog.x"',
+        "SELECT $é$orionbelt.information_schema.tables$é$",
+        "SELECT name'a\\', 'orionbelt.pg_catalog.x'",
     ],
 )
 def test_names_in_literals_comments_and_other_quoted_names_are_left_alone(sql: str) -> None:
@@ -193,8 +195,8 @@ def test_names_in_literals_comments_and_other_quoted_names_are_left_alone(sql: s
 
 
 # A quote Postgres reads as part of a comment, an escape string, a dollar quote
-# or a quoted name: the name after it is still spelled for the rewrites, and
-# not taken for the inside of a string ending at ``'x'``.
+# or a quoted name, and a ``$`` it reads as part of a name: the name after it is
+# still spelled for the rewrites, and not taken for the inside of a string.
 @pytest.mark.parametrize(
     "sql",
     [
@@ -203,6 +205,8 @@ def test_names_in_literals_comments_and_other_quoted_names_are_left_alone(sql: s
         "SELECT E'\\'' AS q, nspname FROM {} WHERE nspname <> 'x'",
         "SELECT $$'$$ AS q, nspname FROM {} WHERE nspname <> 'x'",
         "SELECT nspname AS \"it's\" FROM {} WHERE nspname <> 'x'",
+        "SELECT $é$'$é$ AS q, nspname FROM {} WHERE nspname <> 'x'",
+        "SELECT nspname AS a$b$c FROM {} WHERE nspname <> 'x'",
     ],
 )
 def test_a_quote_in_a_comment_or_another_quote_ends_nothing(

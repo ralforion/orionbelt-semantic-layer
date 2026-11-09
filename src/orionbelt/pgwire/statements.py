@@ -46,9 +46,15 @@ RunKind = Literal["code", "literal", "identifier", "comment"]
 #: string, a ``$`` (a dollar quote or a ``$1`` placeholder) or a comment.
 _OPENER = re.compile(r"""['"$]|[Ee]'|--|/\*""")
 
-#: A dollar-quote opener: ``$$`` or ``$tag$``. The tag rules follow an
-#: identifier, and the closing delimiter must repeat it exactly.
-_DOLLAR_OPEN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+#: A dollar-quote opener: ``$$`` or ``$tag$``. The tag follows the rules of
+#: an identifier without its ``$``, which in PostgreSQL's lexer take any
+#: non-ASCII character as a letter (``$é$``), and the closing delimiter must
+#: repeat it exactly.
+_DOLLAR_OPEN = re.compile(r"\$([A-Za-z_\x80-\U0010ffff][A-Za-z0-9_\x80-\U0010ffff]*)?\$")
+
+#: A character that continues a word, an identifier's or a number's: a ``$``
+#: or an ``E`` after one is part of the word.
+_IN_WORD = re.compile(r"[A-Za-z0-9_$\x80-\U0010ffff]")
 
 
 def split_statements(sql: str) -> list[str]:
@@ -78,12 +84,16 @@ def scan(sql: str) -> Iterator[tuple[RunKind, int, int]]:
     A ``"literal"`` is any string form (``'...'``, ``E'...'``, ``$$...$$``),
     an ``"identifier"`` a quoted one, a ``"comment"`` either form; ``"code"``
     is everything between them. An unterminated run takes the rest of *sql*.
+
+    A ``$`` or an ``E`` inside a word opens nothing, as in PostgreSQL:
+    ``a$b$c`` is one identifier, and ``name'a\\'`` a name before a plain literal.
     """
     n = len(sql)
     start = i = 0
     while (opener := _OPENER.search(sql, i)) is not None:
         i = opener.start()
-        kind, end = _run_at(sql, i)
+        in_word = sql[i] in "$Ee" and i > start and _IN_WORD.match(sql, i - 1)
+        kind, end = (None, i) if in_word else _run_at(sql, i)
         if kind is None:
             i += 1
             continue

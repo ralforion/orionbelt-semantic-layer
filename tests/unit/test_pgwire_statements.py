@@ -95,11 +95,30 @@ class TestSemicolonsThatAreNotBoundaries:
         sql = "SELECT $tag$a;b$tag$ AS x"
         assert split_statements(sql) == [sql]
 
+    def test_inside_a_dollar_quoted_body_with_a_non_ascii_tag(self) -> None:
+        """Postgres takes any non-ASCII character of a tag for a letter."""
+        assert split_statements("SELECT $é$a;b$é$; SELECT 2") == ["SELECT $é$a;b$é$", "SELECT 2"]
+
     def test_a_dollar_placeholder_is_not_a_quote(self) -> None:
         """``$1`` is a parameter, and treating it as a quote opener would
         swallow the rest of the batch."""
         parts = split_statements("SELECT $1; SELECT $2")
         assert parts == ["SELECT $1", "SELECT $2"]
+
+
+class TestOpenersInsideAWord:
+    """A ``$`` or an ``E`` inside a word is part of it, as Postgres reads it."""
+
+    def test_a_dollar_inside_an_identifier_opens_no_quote(self) -> None:
+        assert split_statements("SELECT 1 AS a$b$c; SELECT 2") == ["SELECT 1 AS a$b$c", "SELECT 2"]
+
+    def test_an_e_ending_a_word_opens_no_escape_string(self) -> None:
+        """The type ``name`` and the plain literal ``a\\``."""
+        assert split_statements("SELECT name'a\\'; SELECT 2") == ["SELECT name'a\\'", "SELECT 2"]
+
+    def test_a_dollar_quote_right_after_another_opens(self) -> None:
+        sql = "SELECT $a$x;$a$$b$y;$b$"
+        assert split_statements(sql) == [sql]
 
 
 class TestUnterminatedInput:
