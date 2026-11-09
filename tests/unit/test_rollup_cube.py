@@ -7,12 +7,20 @@ from __future__ import annotations
 
 import pytest
 
+from orionbelt.ast.nodes import AliasedExpr, ColumnRef, From, FunctionCall, Select
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import Grouping, QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 from tests.conftest import SAMPLE_MODEL_YAML
+from tests.integration.drift.vendor_exec.test_rollup_coalesced_exec import (
+    MODEL as COALESCED_MODEL,
+)
+from tests.integration.drift.vendor_exec.test_rollup_coalesced_exec import (
+    REGION,
+)
 
 
 @pytest.fixture
@@ -119,6 +127,72 @@ def test_clickhouse_emits_trailing_modifier(sample_model: SemanticModel) -> None
     )
     assert "WITH CUBE" in sql_cube
     assert "GROUP BY CUBE(" not in sql_cube
+
+
+@pytest.mark.parametrize("grouping", ["rollup", "cube"])
+def test_dremio_returns_each_key_through_its_flag(
+    sample_model: SemanticModel, grouping: str
+) -> None:
+    """Dremio's planner carries a filter's constant through a rollup: a query
+    reading the rolled-up rows read the filtered value on a subtotal. The
+    flag-guarded key is not read as the constant; the other engines need none."""
+    query = {
+        "select": {"dimensions": ["Customer Country"], "measures": ["Total Revenue"]},
+        "where": [{"field": "Customer Country", "op": "=", "value": "DE"}],
+        "grouping": grouping,
+    }
+
+    sql = _compile(query, sample_model, dialect="dremio")
+
+    assert 'CASE WHEN GROUPING("Customers"."COUNTRY") = 0 THEN "Customers"."COUNTRY" END' in sql
+    assert 'GROUPING("Customers"."COUNTRY") AS "_g_Customer Country"' in sql
+    assert "CASE WHEN GROUPING(" not in _compile(query, sample_model, dialect="postgres")
+
+
+def test_dremio_qualifies_a_key_named_like_its_column() -> None:
+    """Dremio reads an unqualified key's name in the GROUP BY as the alias of
+    the guarded column, and refuses the GROUPING() it then holds."""
+    region = ColumnRef(name="Region")
+    node = Select(
+        columns=[
+            AliasedExpr(expr=region, alias="Region"),
+            AliasedExpr(expr=FunctionCall(name="SUM", args=[ColumnRef(name="a")]), alias="s"),
+            AliasedExpr(expr=FunctionCall(name="GROUPING", args=[region]), alias="_g_Region"),
+        ],
+        from_=From(source="composite", alias="composite"),
+        group_by=[region],
+        grouping="rollup",
+    )
+
+    sql = DialectRegistry.get("dremio").compile_select(node)
+
+    key = '"composite"."Region"'
+    assert sql.startswith(f'SELECT CASE WHEN GROUPING({key}) = 0 THEN {key} END AS "Region"')
+    assert f'GROUPING({key}) AS "_g_Region"' in sql
+    assert f"GROUP BY ROLLUP({key})" in sql
+    assert 'SUM("a")' in sql
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "mysql", "dremio"])
+def test_a_coalesced_dimensions_flag_reads_its_key(dialect: str) -> None:
+    """Beside two facts, a coalesced dimension groups by the COALESCE of its
+    members: its flag read the alias, which PostgreSQL, DuckDB and MySQL
+    refuse, and Dremio too once the key is returned through its flag.
+    ``test_rollup_coalesced_exec`` runs it on every engine."""
+    raw, source_map = TrackedLoader().load_string(COALESCED_MODEL)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = {
+        "select": {"dimensions": [REGION], "measures": ["Revenue", "Spend"]},
+        "grouping": "rollup",
+    }
+
+    sql = _compile(query, model, dialect=dialect)
+
+    q = DialectRegistry.get(dialect).quote_identifier
+    key = f"COALESCE({q('Sales Region')}, {q('Purchase Region')})"
+    assert f"GROUPING({key}) AS {q('_g_Region')}" in sql
+    assert f"GROUPING({q('Region')})" not in sql
 
 
 def test_grouping_requires_dimensions() -> None:

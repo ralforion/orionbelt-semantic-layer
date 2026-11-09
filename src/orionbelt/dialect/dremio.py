@@ -7,13 +7,16 @@ import re
 from decimal import Context, Decimal, InvalidOperation, localcontext
 
 from orionbelt.ast.nodes import (
+    AliasedExpr,
     BinaryOp,
     CaseExpr,
     Cast,
+    ColumnRef,
     Expr,
     FunctionCall,
     Literal,
     OrderByItem,
+    Select,
     Unnest,
 )
 from orionbelt.dialect.base import (
@@ -91,6 +94,49 @@ def _fits(literal: Literal, obml_type: DecimalType) -> bool:
         return abs(number) < bound - Decimal(5).scaleb(-obml_type.scale - 1)
 
 
+def _guarded_by_flags(node: Select) -> Select:
+    """*node*, a rollup or cube, each column of a grouping key NULL where its
+    ``GROUPING()`` flag rolls the key up, as the rollup returns it.
+
+    A key that is an unqualified column is qualified with the one relation
+    *node* reads: Dremio reads such a key's name in the ``GROUP BY`` as the
+    column's alias, and refuses the ``GROUPING()`` it then holds.
+    """
+    relation = None
+    if node.from_ is not None and not node.joins:
+        source = node.from_.source
+        relation = node.from_.alias or (source if isinstance(source, str) else None)
+
+    def qualified(key: Expr) -> Expr:
+        if relation is not None and isinstance(key, ColumnRef) and key.table is None:
+            return dataclasses.replace(key, table=relation)
+        return key
+
+    keys = [(key, qualified(key)) for key in node.group_by]
+
+    def key_of(expr: Expr) -> Expr | None:
+        return next((own for key, own in keys if key == expr), None)
+
+    columns: list[Expr] = []
+    for column in node.columns:
+        if isinstance(column, AliasedExpr) and (key := key_of(column.expr)) is not None:
+            kept = BinaryOp(
+                left=FunctionCall(name="GROUPING", args=[key]), op="=", right=Literal.number(0)
+            )
+            column = AliasedExpr(expr=CaseExpr(when_clauses=[(kept, key)]), alias=column.alias)
+        elif (
+            isinstance(column, AliasedExpr)
+            and isinstance(column.expr, FunctionCall)
+            and column.expr.name == "GROUPING"
+        ):
+            args = [key_of(arg) or arg for arg in column.expr.args]
+            column = AliasedExpr(
+                expr=dataclasses.replace(column.expr, args=args), alias=column.alias
+            )
+        columns.append(column)
+    return dataclasses.replace(node, columns=columns, group_by=[own for _, own in keys])
+
+
 @DialectRegistry.register
 class DremioDialect(Dialect):
     """Dremio dialect — reduced function surface, quoting differences."""
@@ -106,6 +152,22 @@ class DremioDialect(Dialect):
     @property
     def name(self) -> str:
         return "dremio"
+
+    def compile_select(self, node: Select) -> str:
+        """The base SELECT, a rollup's or cube's keys NULL by their ``GROUPING()``.
+
+        Dremio's planner carries a filter's constant through a rollup: under
+        ``WHERE region = 'EU'``, a query reading the rolled-up rows, even
+        ``SELECT *`` from them, read 'EU' on the grand total, where the rollup
+        alone returns NULL; so did a rollup of a CTE the filter is in, the
+        union of two facts. A total, a filter context or the facts' rollup
+        read the subtotals as the region's rows. Each key's column is returned
+        as ``CASE WHEN GROUPING(key) = 0 THEN key END``, which the planner
+        does not read as the constant (:func:`_guarded_by_flags`).
+        """
+        if node.grouping is not None and node.group_by:
+            node = _guarded_by_flags(node)
+        return super().compile_select(node)
 
     @property
     def capabilities(self) -> DialectCapabilities:

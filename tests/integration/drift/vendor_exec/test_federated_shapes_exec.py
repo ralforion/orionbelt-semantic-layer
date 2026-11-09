@@ -392,6 +392,14 @@ QUERIES = {
         },
         "grouping": "rollup",
     },
+    "independent_facts_rolled_up_in_one_region": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue", "Tickets Count"],
+        },
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+        "grouping": "rollup",
+    },
     "independent_facts_with_a_grain": {
         "select": {
             "dimensions": ["Region", "Order Date:month"],
