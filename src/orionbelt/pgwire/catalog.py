@@ -938,16 +938,61 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+# A system schema, bare (any case: Postgres folds it) or double-quoted
+# (exactly as Postgres stores it).
+_SYSTEM_SCHEMA = r'(?:(?i:pg_catalog|information_schema)|"(?:pg_catalog|information_schema)")'
+
+# The brand database in front of a system schema: ``orionbelt.pg_catalog.pg_class``.
+_RE_BRAND_QUALIFIER = re.compile(
+    rf'(?<![.\w"])(?:"{CATALOG_SCHEMA}"|(?i:{CATALOG_SCHEMA}))\s*\.\s*(?={_SYSTEM_SCHEMA}\s*\.)'
+)
+
+# ``"pg_catalog".`` and ``"information_schema".``: the quotes change nothing.
+_RE_QUOTED_SYSTEM_SCHEMA = re.compile(r'"(pg_catalog|information_schema)"(?=\s*\.)')
+
+# A quoted relation in a system schema whose name needs no quotes:
+# ``pg_catalog."pg_class"``.
+_RE_QUOTED_SYSTEM_RELATION = re.compile(
+    r'(?P<schema>(?<![\w"])(?i:pg_catalog|information_schema)\s*\.\s*)"(?P<name>[a-z_][a-z0-9_]*)"'
+)
+
+# A string literal, kept as one piece by ``re.split``: ``'pg_catalog.pg_class'``.
+_RE_STRING_LITERAL = re.compile(r"('(?:[^']|'')*')")
+
+
+def _normalize_system_names(sql: str) -> str:
+    """Spell system relations the way ``_REWRITES`` matches them.
+
+    Postgres folds an unquoted name to lower case, so ``"pg_catalog"."pg_class"``
+    and ``pg_catalog.pg_class`` name one relation; the rewrites match the
+    unquoted spelling only. The brand database in front
+    (``orionbelt.pg_catalog.pg_class``, which the catalog guard admits) adds
+    nothing either, and DuckDB, which runs every probe inside that database,
+    would read it as a schema. String literals are values and keep their text
+    (``'"pg_catalog"."pg_class"'::regclass``).
+    """
+
+    def normalize(code: str) -> str:
+        code = _RE_BRAND_QUALIFIER.sub("", code)
+        code = _RE_QUOTED_SYSTEM_SCHEMA.sub(r"\1", code)
+        return _RE_QUOTED_SYSTEM_RELATION.sub(r"\g<schema>\g<name>", code)
+
+    # ``re.split`` with a group alternates code and literals: code at even indexes.
+    parts = _RE_STRING_LITERAL.split(sql)
+    return "".join(part if i % 2 else normalize(part) for i, part in enumerate(parts))
+
+
 def _rewrite_for_duckdb(sql: str) -> str:
     """Best-effort SQL rewrite so psql introspection runs on DuckDB.
 
-    Touches only the patterns documented in ``_REWRITES``.  Unrecognised
-    constructs are left alone — the catalog branch is best-effort by
-    design, and the caller's error response will surface anything we
-    miss so we can extend the rule list incrementally.
+    Touches only the patterns documented in ``_REWRITES``, after spelling
+    system relation names the way they match (``_normalize_system_names``).
+    Unrecognised constructs are left alone — the catalog branch is
+    best-effort by design, and the caller's error response will surface
+    anything we miss so we can extend the rule list incrementally.
     """
 
-    out = sql
+    out = _normalize_system_names(sql)
     for pattern, replacement in _REWRITES:
         out = pattern.sub(replacement, out)
     return out

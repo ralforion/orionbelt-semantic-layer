@@ -104,3 +104,20 @@ def test_router_still_answers_obsl_metadata() -> None:
     )
     tags = [tag for tag, _ in frames]
     assert b"E" not in tags and b"D" in tags
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        'SELECT nspname FROM "pg_catalog"."pg_namespace"',
+        'SELECT relname FROM "orionbelt"."pg_catalog"."pg_class"',
+        'SELECT schema_name FROM "information_schema"."schemata"',
+        "SELECT table_name FROM orionbelt.information_schema.tables",
+    ],
+)
+def test_router_answers_quoted_and_qualified_system_relations(sql: str) -> None:
+    """Admitted by the guard and spelled for the rewrites before DuckDB runs them (#759)."""
+    mgr, _ = _make_manager_with_model()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    tags = [tag for tag, _ in _parse_frames(asyncio.run(router.handle(sql, database="commerce")))]
+    assert b"E" not in tags and b"D" in tags

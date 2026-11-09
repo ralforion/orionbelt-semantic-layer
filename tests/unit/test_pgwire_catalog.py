@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import duckdb
 import pytest
 
 from orionbelt.pgwire.catalog import CatalogEmulator, _rewrite_for_duckdb
@@ -111,6 +112,72 @@ def test_information_schema_schemata_hides_main(manager_with_model: SessionManag
     # must be rewritten too — Tableau / Dremio emit the three-part name.
     qualified = emu.execute("SELECT schema_name FROM orionbelt.information_schema.schemata")
     assert "main" not in {row[0] for row in qualified.rows}
+
+
+# Spellings of a system relation Postgres reads as the plain one the rewrites
+# match: quoted names, and the brand database in front. The first four reach a shadow view
+# (``pg_namespace`` and ``schemata`` hide ``main``); ``pg_proc`` has none.
+_SYSTEM_RELATION_SPELLINGS = [
+    (plain, spelling)
+    for plain, spellings in (
+        (
+            "pg_catalog.pg_namespace",
+            [
+                '"pg_catalog"."pg_namespace"',
+                'pg_catalog."pg_namespace"',
+                "orionbelt.pg_catalog.pg_namespace",
+                '"orionbelt"."pg_catalog"."pg_namespace"',
+                'orionbelt."pg_catalog".pg_namespace',
+                "ORIONBELT.PG_CATALOG.pg_namespace",
+            ],
+        ),
+        ("pg_catalog.pg_class", ['"pg_catalog"."pg_class"', "orionbelt.pg_catalog.pg_class"]),
+        ("information_schema.schemata", ['"information_schema"."schemata"']),
+        (
+            "information_schema.tables",
+            ['"orionbelt"."information_schema"."tables"', "orionbelt.information_schema.tables"],
+        ),
+        ("pg_catalog.pg_proc", ['"orionbelt"."pg_catalog"."pg_proc"']),
+    )
+    for spelling in spellings
+]
+
+
+@pytest.mark.parametrize(("plain", "spelling"), _SYSTEM_RELATION_SPELLINGS)
+def test_a_system_relation_reads_alike_in_every_spelling(
+    manager_with_model: SessionManager, plain: str, spelling: str
+) -> None:
+    """Quotes and the brand database qualifier change nothing (#759)."""
+
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+    sql = "SELECT * FROM {} ORDER BY ALL"
+    expected = emu.execute(sql.format(plain)).rows
+    assert expected
+    assert emu.execute(sql.format(spelling)).rows == expected
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Another database: Postgres refuses a cross-database reference.
+        "SELECT * FROM shop.pg_catalog.pg_class",
+        # A quoted name keeps its case: Postgres has no ``PG_CATALOG`` schema.
+        'SELECT * FROM "PG_CATALOG"."pg_class"',
+    ],
+)
+def test_a_system_relation_postgres_would_not_find_fails(
+    manager_with_model: SessionManager, sql: str
+) -> None:
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+    with pytest.raises(duckdb.Error):
+        emu.execute(sql)
+
+
+def test_names_in_string_literals_are_left_alone() -> None:
+    sql = "SELECT 'orionbelt.pg_catalog.x' AS a, '\"pg_catalog\".\"pg_proc\"' AS b"
+    assert _rewrite_for_duckdb(sql) == sql
 
 
 def test_pg_tables_pg_views_hide_main(manager_with_model: SessionManager) -> None:
