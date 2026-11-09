@@ -513,11 +513,26 @@ GROUP BY ALL
   query it belongs to. The tickets per region are a region's tickets of no
   order month and its tickets of all months, as one database's rollup of the
   union has them; the `_g_` flags come back as on one database. A fact
-  without rows adds no subtotal: each part counts its rows.
+  without rows adds no subtotal: each part counts its rows. This works next
+  to a measure with `total` or `filterContext` too: each subtotal of revenue
+  of any region is that measure for the subtotal's region, or for all
+  regions. With one dimension at two grains (`Order Date:quarter`,
+  `Order Date:month`), each grain is rolled up as a column of its own. A
+  measure with a `grain` is refused next to `rollup` or `cube`, as on one
+  database.
 - A measure with `total`, `grain` or `filterContext` is computed in the part
   of its fact. The combine query gives a total, or a value at a coarser
   grain, to every group that shares it, the other fact's groups too: the
-  tickets' total on the rows of revenue alone.
+  tickets' total on the rows of revenue alone. A total next to the other
+  fact's `filterContext` measure is computed, under `rollup` too, where one
+  database refuses it: each fact is a query of its own here.
+- A `filterContext` that drops one of the filters on its fact, of the query
+  or a static model filter, is computed under the filters it keeps, for
+  every group of the other facts too, as on one database. Revenue of all
+  orders (`mode: FIXED`) by region, filtered on orders from March 5: a
+  region with tickets but no such order gets its revenue of all orders, in
+  its subtotal too. That part adds no group of its own. A static filter
+  declared `enforce: always` is never dropped.
 - `fill` fills the periods of the union in the combine query, from the first
   to the last period the query's filters on the date admit, as on one
   database. One dimension at two grains is read from each part's column of
@@ -1137,12 +1152,10 @@ These cases are refused:
 | Revenue and the number of tickets per region, with one of the options listed below the table | Ask for each table's measures in its own query, or leave out the option | `FEDERATION_UNSUPPORTED_QUERY` |
 | Columns of the orders and of the tickets in [raw mode](#raw-mode) (`select.fields`) | One query per table, or ask for dimensions and measures instead | `FEDERATION_UNSUPPORTED_QUERY` |
 
-The options: `rollup` or `cube` together with a measure with `total`,
-`grain` or `filterContext`, or together with one dimension at two grains; a
-measure that reads both tables; a running total or rolling window when the
-query filters its date or does not select it, or over a `windowSpan`; a
-running total or window metric together with `rollup`, `cube` or two grains
-of one dimension; a coalesce dimension. A period
+The options: a measure that reads both tables; a running total or rolling
+window when the query filters its date or does not select it, or over a
+`windowSpan`; a running total or window metric together with `rollup`,
+`cube` or two grains of one dimension; a coalesce dimension. A period
 comparison next to measures of both tables, and `dimensionsExclude` with
 measures, are refused on one database too.
 
