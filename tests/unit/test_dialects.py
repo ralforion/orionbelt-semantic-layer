@@ -599,6 +599,24 @@ class TestDremioDialect:
 
         assert "OR ABS(CAST(99.995 AS DECIMAL(38, 2))) >= 100 THEN" in (dialect.compile_expr(expr))
 
+    @pytest.mark.parametrize(
+        ("value", "declared", "source_exact"),
+        [
+            (ColumnRef(name="x"), DecimalType(40, 2), True),
+            (Literal.string("1000000000"), DecimalType(40, 30), False),
+        ],
+        ids=["an_exact_value_past_36_integer_digits", "a_literal_past_8"],
+    )
+    def test_a_type_past_38_digits_is_tested_as_dremio_casts_it(
+        self, dialect: DremioDialect, value: Expr, declared: DecimalType, source_exact: bool
+    ) -> None:
+        """Dremio casts ``decimal(40, 2)`` as ``DECIMAL(38, 2)``, 36 integer
+        digits rather than 38, and ``decimal(40, 30)`` as ``DECIMAL(38, 30)``,
+        which holds no 10^9."""
+        expr = dialect.cast_to_obml_type(value, declared, source_exact=source_exact)
+
+        assert "OBSL: a value past DECIMAL(38, " in dialect.compile_expr(expr)
+
     def test_a_literal_of_38_places_fits(self, dialect: DremioDialect) -> None:
         """Python's default context of 28 digits cannot round 0.5 to 38 places."""
         expr = dialect.cast_to_obml_type(Literal(value=Decimal("0.5")), DecimalType(38, 38))

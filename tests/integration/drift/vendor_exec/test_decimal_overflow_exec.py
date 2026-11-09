@@ -45,6 +45,7 @@ dataObjects:
       Quantity: {{code: qty, abstractType: int}}
       Huge: {{code: huge, abstractType: float}}
       Edge: {{code: edge, abstractType: decimal}}
+      Whole: {{code: whole, abstractType: decimal, sqlPrecision: 38, sqlScale: 0}}
 measures:
   Revenue: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum}}
   Cost Total: {{columns: [{{dataObject: Orders, column: Cost}}], aggregation: sum}}
@@ -64,6 +65,10 @@ measures:
     columns: [{{dataObject: Orders, column: Edge}}]
     aggregation: sum
     dataType: "decimal(38, 2)"
+  Widest:
+    columns: [{{dataObject: Orders, column: Whole}}]
+    aggregation: max
+    dataType: "decimal(40, 2)"
   Fraction Unfiltered:
     columns: [{{dataObject: Orders, column: Fraction}}]
     aggregation: sum
@@ -80,11 +85,13 @@ metrics:
   Constant Past: {{expression: "{{[Revenue]}} * 0 + cast(50 * 2, 'decimal(2,0)')"}}
   Text Cast: {{expression: "{{[Revenue]}} * 0 + cast('12.34', 'decimal(18,2)')"}}
   Null Cast: {{expression: "{{[Revenue]}} * 0 + cast(null, 'decimal(18,2)')"}}
+  Wide Text Cast: {{expression: "{{[Revenue]}} * 0 + cast('1000000000', 'decimal(40,30)')"}}
 """
 
 DECIMAL = {"bigquery": "NUMERIC", "clickhouse": "Nullable(Decimal(38, 2))"}
 FRACTION = {"bigquery": "BIGNUMERIC", "clickhouse": "Nullable(Decimal(38, 14))"}
 EDGE = {"bigquery": "BIGNUMERIC", "clickhouse": "Nullable(Decimal(38, 2))"}
+WHOLE = {"bigquery": "BIGNUMERIC", "clickhouse": "Nullable(Decimal(38, 0))"}
 # The largest value of DECIMAL(38, 2).
 LARGEST = "999999999999999999999999999999999999.99"
 # The engines whose cast carries 38 digits, or whose NUMERIC does: they return it.
@@ -95,6 +102,7 @@ def _prepare(target: VendorTarget) -> SemanticModel:
     kind = DECIMAL.get(target.dialect, "DECIMAL(38, 2)")
     fraction = FRACTION.get(target.dialect, "DECIMAL(38, 14)")
     edge = EDGE.get(target.dialect, "DECIMAL(38, 2)")
+    whole = WHOLE.get(target.dialect, "DECIMAL(38, 0)")
     _create(
         target,
         ORDERS,
@@ -106,8 +114,20 @@ def _prepare(target: VendorTarget) -> SemanticModel:
             ("qty", 2),
             ("huge", 1),
             ("edge", edge),
+            ("whole", whole),
         ],
-        [("o1", "50000000000.00", "35000000000.00", "0.00000000001", 1, 1e40, LARGEST)],
+        [
+            (
+                "o1",
+                "50000000000.00",
+                "35000000000.00",
+                "0.00000000001",
+                1,
+                1e40,
+                LARGEST,
+                "1" + "0" * 37,
+            )
+        ],
     )
     yaml_text = MODEL_YAML.format(orders=ORDERS, schema=SCHEMAS.get(target.dialect, ""))
     raw, source_map = TrackedLoader().load_string(yaml_text)
@@ -146,12 +166,20 @@ def _assert_dremio_fails(target: VendorTarget) -> None:
     literal past it once rounded (99.995 is 100.00), a type of 38 digits with
     no integer digit, a double past what the test's own decimal held, and a
     constant product, which Dremio's planner casts itself, to 100 where the
-    executor reads 0. And within it: the largest value of a type of 38
+    executor reads 0, and a type past 38 digits, which Dremio casts at 38:
+    ``decimal(40, 2)`` holds no 10^37 there. And within it: the largest value of a type of 38
     digits, which a test rounding a place fewer refused, text of a number and
     a NULL, which a test taking every literal it could not read as past the
     type refused."""
     model = _prepare(target)
-    for measure in ("Rounded Up", "All Places", "Huge Total", "Constant Past"):
+    for measure in (
+        "Rounded Up",
+        "All Places",
+        "Huge Total",
+        "Constant Past",
+        "Widest",
+        "Wide Text Cast",
+    ):
         with pytest.raises(Exception, match="OBSL: a value past DECIMAL"):
             _answer(target, model, measure)
     # The largest value of its type fits, as its own cast holds it, and so do

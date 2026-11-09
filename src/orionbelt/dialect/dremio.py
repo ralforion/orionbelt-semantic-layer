@@ -275,9 +275,17 @@ class DremioDialect(Dialect):
         cast = super().cast_to_obml_type(expr, obml_type, source_exact=source_exact)
         if not isinstance(obml_type, DecimalType) or not isinstance(cast, Cast):
             return cast
-        if cast.range_checked or (isinstance(cast.expr, Literal) and _fits(cast.expr, obml_type)):
+        if cast.range_checked:
             return cast
-        whole = obml_type.precision - obml_type.scale == self._MAX_DECIMAL_PRECISION
+        # The type as Dremio casts to it: ``decimal(40, 2)`` is ``DECIMAL(38, 2)``,
+        # 36 integer digits rather than the 38 declared.
+        rendered = _DECIMAL_TYPE.match(cast.type_name)
+        if rendered is None:
+            return cast
+        cast_type = DecimalType(precision=int(rendered.group(1)), scale=int(rendered.group(2)))
+        if isinstance(cast.expr, Literal) and _fits(cast.expr, cast_type):
+            return cast
+        whole = cast_type.precision - cast_type.scale == self._MAX_DECIMAL_PRECISION
         if whole and source_exact:
             return cast
         return dataclasses.replace(cast, range_checked=True)
