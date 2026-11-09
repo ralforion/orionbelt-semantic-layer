@@ -714,8 +714,11 @@ class SemanticRouter:
         query's source counts, through derived tables in its FROM: a
         table in a predicate subquery (``EXISTS (SELECT 1 FROM
         "Customers")``) names a data object, whose name a model may share.
-        So does a system relation: ``information_schema.tables`` and
-        ``pg_catalog.pg_class`` name no model ``tables`` or ``pg_class``.
+        So does a system relation: ``information_schema.tables``,
+        ``pg_catalog.pg_class`` and a bare ``pg_class``, which Postgres
+        reads from ``pg_catalog`` first and ``references_catalog`` always
+        sends to the catalog, name no model ``tables`` or ``pg_class``. A
+        CTE is followed to the table its body reads.
         """
 
         model_names = self._loaded_model_names()
@@ -729,11 +732,11 @@ class SemanticRouter:
         if table is None:
             return None
         schema = (table.db or "").lower()
-        if schema in _CATALOG_SCHEMAS:
+        name = (table.name or "").lower()
+        if schema in _CATALOG_SCHEMAS or (not schema and name.startswith("pg_")):
             return None
         if schema and schema in model_names:
             return schema
-        name = (table.name or "").lower()
         if name and name in model_names:
             return name
         return None
@@ -757,17 +760,36 @@ class SemanticRouter:
 
 
 def _outer_source_table(ast: exp.Expr) -> exp.Table | None:
-    """The table the outermost SELECT reads, through derived tables in its FROM."""
+    """The table the outermost SELECT reads, through derived tables and CTEs in its FROM.
+
+    A CTE's body sees the CTEs defined before it, not itself: in
+    ``WITH shop AS (SELECT ... FROM shop) SELECT * FROM shop`` the inner
+    ``shop`` is a relation.
+    """
     node = ast
+    # The CTEs in scope, in definition order; a later one shadows an earlier.
+    ctes: tuple[tuple[str, exp.Expr], ...] = ()
     for _ in range(_FLATTEN_MAX_DEPTH + 1):
         if not isinstance(node, exp.Select):
             return None
+        with_ = node.args.get("with_")
+        if with_ is not None:
+            ctes += tuple((cte.alias_or_name.lower(), cte.this) for cte in with_.expressions)
         from_ = node.args.get("from_")
         if from_ is None:
             return None
         source = from_.this
         if isinstance(source, exp.Table):
-            return source
+            name = source.name.lower()
+            bound = (
+                None
+                if source.db
+                else next((i for i in reversed(range(len(ctes))) if ctes[i][0] == name), None)
+            )
+            if bound is None:
+                return source
+            node, ctes = ctes[bound][1], ctes[:bound]
+            continue
         if not isinstance(source, exp.Subquery):
             return None
         node = source.this
