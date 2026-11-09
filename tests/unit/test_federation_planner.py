@@ -5497,6 +5497,8 @@ INDEPENDENT_MEASURES = (
     " grain: {mode: FIXED, include: [Order Date]}}\n"
     f"  Revenue Not By Date: {{columns: [{AMOUNT}], aggregation: sum,"
     " grain: {exclude: [Order Date]}}\n"
+    "  All Tickets: {columns: [{dataObject: Tickets, column: Ticket ID}], aggregation: count,"
+    " resultType: int, grain: {mode: FIXED}}\n"
 )
 INDEPENDENT_MODEL = {
     "extra": INDEPENDENT_MEASURES,
@@ -5547,6 +5549,14 @@ BY_REGION_AND_MONTH = {
     "dimensions": ["Region", "Order Date:month"],
     "measures": REVENUE_AND_TICKETS,
 }
+# A filter on the orders that the tickets do not reach: the tickets keep the
+# region whose orders it leaves out.
+LATE_ORDERS = {"field": "Order Date", "op": ">=", "value": "2024-03-05"}
+# The same as a static filter: the orders of 9 March, of no customer's region.
+MARCH_NINTH = (
+    "  - {dataObject: Orders, column: Order Date, operator: equals, value: '2024-03-09'}\n"
+)
+
 INDEPENDENT_QUERIES = {
     "by_region": {"select": BY_REGION_BOTH},
     "beside_a_measure_of_the_customers": {
@@ -5602,6 +5612,94 @@ INDEPENDENT_QUERIES = {
         }
     },
     "a_rollup": {"select": BY_REGION_AND_MONTH, "grouping": "rollup"},
+    "a_rollup_beside_a_total": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Total", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+    "a_cube_beside_a_total_of_the_tickets": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue", "Ticket Total"],
+        },
+        "grouping": "cube",
+    },
+    "a_rollup_beside_an_average_total": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Average Total", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+    "a_rollup_beside_a_filter_context": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Any Region", "Tickets Count"],
+        },
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+        "grouping": "rollup",
+    },
+    "a_cube_beside_a_fixed_filter_context": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue All", "Tickets Count"],
+        },
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-02-01"}],
+        "grouping": "cube",
+    },
+    "a_rollup_beside_a_filter_context_of_the_tickets": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue", "Tickets Any Region"]},
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+        "grouping": "rollup",
+    },
+    "a_rollup_at_two_grains": {
+        "select": {
+            "dimensions": ["Region", "Order Date:quarter", "Order Date:month"],
+            "measures": ["Revenue", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+    "a_fixed_context_after_a_filter_on_its_fact": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+        "where": [LATE_ORDERS],
+    },
+    "a_rollup_of_a_fixed_context_after_a_filter_on_its_fact": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue All", "Tickets Count"],
+        },
+        "where": [LATE_ORDERS],
+        "grouping": "rollup",
+    },
+    "a_cube_of_a_fixed_context_after_a_filter_on_its_fact": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue All", "Tickets Count"],
+        },
+        "where": [LATE_ORDERS],
+        "grouping": "cube",
+    },
+    "a_fixed_context_in_one_region": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+    "a_rollup_of_a_context_keeping_one_of_two_filters": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Any Region", "Revenue All", "Tickets Count"],
+        },
+        "where": [{"field": "Region", "op": "=", "value": "EU"}, LATE_ORDERS],
+        "grouping": "rollup",
+    },
+    "a_cube_at_two_grains": {
+        "select": {
+            "dimensions": ["Order Date:quarter", "Order Date:month"],
+            "measures": ["Revenue", "Tickets Count"],
+        },
+        "grouping": "cube",
+    },
     "a_cube": {"select": BY_REGION_AND_MONTH, "grouping": "cube"},
     "a_rollup_from_rows": {
         "select": {
@@ -6047,6 +6145,113 @@ class TestMeasuresOfIndependentFacts:
         assert single
 
     @pytest.mark.parametrize(
+        ("grouping", "dimensions"),
+        [
+            (None, ["Region"]),
+            ("rollup", ["Region"]),
+            ("cube", ["Region"]),
+            ("rollup", ["Region", "Order Date:month"]),
+            ("cube", ["Region", "Order Date:month"]),
+        ],
+        ids=["by_region", "a_rollup", "a_cube", "a_rollup_by_month", "a_cube_by_month"],
+    )
+    def test_a_fixed_context_after_a_static_filter_on_its_fact(
+        self,
+        independent_files: dict[str, dict[str, str]],
+        grouping: str | None,
+        dimensions: list[str],
+    ) -> None:
+        """A static filter a context drops narrows its fact's groups as a query
+        filter does: EU has no order of 9 March but has tickets, and its revenue
+        of all orders, beside them or as its subtotal, read NULL."""
+        paths = independent_files["crm"]
+        query: dict[str, Any] = {
+            "select": {"dimensions": dimensions, "measures": ["Revenue All", "Tickets Count"]},
+            **({"grouping": grouping} if grouping else {}),
+        }
+
+        single = _run_on(paths, independent_model(False, static=MARCH_NINTH), query)
+
+        assert _run_on(paths, independent_model(True, static=MARCH_NINTH), query) == single
+        assert Decimal("123.90") in {row[len(dimensions)] for row in single if row[0] == "EU"}
+
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    def test_a_fixed_context_keeps_an_enforced_static_filter(
+        self, independent_files: dict[str, dict[str, str]], grouping: str
+    ) -> None:
+        """The context drops the filter on the order date, never one declared
+        ``enforce: always``: the grand total is the US revenue of all orders."""
+        paths = independent_files["crm"]
+        static = (
+            "  - {dataObject: Customers, column: Region, operator: equals, value: US,"
+            " enforce: always}\n"
+        )
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+            "where": [LATE_ORDERS],
+            "grouping": grouping,
+        }
+
+        single = _run_on(paths, independent_model(False, static=static), query)
+
+        assert _run_on(paths, independent_model(True, static=static), query) == single
+        assert {row[1] for row in single} == {Decimal("19.00")}
+
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    def test_a_total_beside_the_other_facts_filter_context(
+        self, independent_files: dict[str, dict[str, str]], grouping: str
+    ) -> None:
+        """One database refuses it: under a rollup its total is computed again
+        over the plan's rows, which the filter context rewrote. Here each fact
+        is a query of its own: the rows of the filter context's, the total on
+        every one."""
+        paths = independent_files["crm"]
+
+        def rows(federated: bool, measures: list[str]) -> list[Any]:
+            query = {
+                "select": {"dimensions": ["Region"], "measures": measures},
+                "where": [{"field": "Region", "op": "in", "value": ["EU", "US"]}],
+                "grouping": grouping,
+            }
+            return _run_on(paths, independent_model(federated), query)
+
+        (total,) = {row[1] for row in rows(False, ["Revenue Total", "Tickets Count"])}
+        beside = rows(False, ["Revenue", "Tickets Any Region"])
+
+        expected = sorted([(row[0], total, *row[2:]) for row in beside], key=repr)
+        assert rows(True, ["Revenue Total", "Tickets Any Region"]) == expected
+        # EU's and US's revenue, beside every region's tickets.
+        assert total == Decimal("142.90")
+        assert [row[2] for row in expected] == [2, 0, 4]
+
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    @pytest.mark.parametrize(
+        "select",
+        [
+            {
+                "dimensions": ["Region", "Order Date:month"],
+                "measures": ["Region Revenue", "Tickets Count"],
+            },
+            {"dimensions": ["Order Date:month"], "measures": ["Revenue", "All Tickets"]},
+        ],
+        ids=["in_a_part_that_groups", "in_a_part_of_no_dimension"],
+    )
+    def test_a_grain_beside_a_rollup_is_refused_as_on_one_database(
+        self, select: dict[str, Any], grouping: str
+    ) -> None:
+        """The tickets reach no order month: their part groups by nothing,
+        and did not refuse the grain as one database does."""
+        query = {"select": select, "grouping": grouping}
+        errors = []
+        for federated in (False, True):
+            with pytest.raises(ResolutionError) as caught:
+                _compile(independent_model(federated), query)
+            errors.append([(e.code, e.message) for e in caught.value.errors])
+
+        assert errors[1] == errors[0]
+        assert [code for code, _ in errors[0]] == ["INCOMPATIBLE_COMBINATION"]
+
+    @pytest.mark.parametrize(
         "tickets", ["shop", "support"], ids=["beside_the_orders", "on_a_source_of_their_own"]
     )
     def test_where_the_tickets_are(
@@ -6190,26 +6395,6 @@ class TestMeasuresOfIndependentFacts:
             (
                 {
                     "select": {
-                        "dimensions": ["Region"],
-                        "measures": ["Revenue Total", "Tickets Count"],
-                    },
-                    "grouping": "rollup",
-                },
-                "has a total, grain or filterContext beside a rollup or cube",
-            ),
-            (
-                {
-                    "select": {
-                        "dimensions": ["Order Date:year", "Order Date:month"],
-                        "measures": REVENUE_AND_TICKETS,
-                    },
-                    "grouping": "rollup",
-                },
-                "selects one dimension at two grains beside a rollup or cube",
-            ),
-            (
-                {
-                    "select": {
                         "dimensions": ["Order Date:month"],
                         "measures": [*REVENUE_AND_TICKETS, "Customers Count"],
                     }
@@ -6274,8 +6459,6 @@ class TestMeasuresOfIndependentFacts:
             ),
         ],
         ids=[
-            "a_total_beside_a_rollup",
-            "two_grains_beside_a_rollup",
             "the_customers_by_order_month",
             "the_customers_by_severity",
             "a_running_total_after_a_date_filter",

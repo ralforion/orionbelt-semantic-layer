@@ -62,6 +62,7 @@ async def start_pgwire(
             default_dialect=settings.db_vendor,
             cache=cache,
             cache_config=cache_config,
+            list_sessions=not settings.disable_session_list,
         )
         handler = router.handle
 

@@ -6,7 +6,8 @@ the day of a month the query selects, and cumulative, period-over-period and
 window metrics, whose legs return each date as stored for the combine step to
 truncate, raw-mode rows joined in the combine step, measures with a grain or a
 filter context of their own, measures of independent facts, a query of
-their own each, unioned in the combine step, and conditions after the join on
+their own each, unioned in the combine step (rolled up beside a total and
+filter contexts, and at two grains), and conditions after the join on
 strings, static filters and blank tests too, each run in its leg. Every source
 is the engine itself, as in ``test_federated_equality_exec``: the combined
 answer must be the engine's own over one source.
@@ -102,6 +103,10 @@ measures:
       - column: {{dataObject: Orders, column: Status}}
         operator: equals
         values: [{{dataType: string, valueString: paid}}]
+  Revenue Total:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    total: true
   Region Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -110,6 +115,10 @@ measures:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
     filterContext: {{exclude: [Region]}}
+  Revenue All:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    filterContext: {{mode: FIXED}}
   Revenue Since February:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
@@ -401,6 +410,40 @@ QUERIES = {
         "select": {"dimensions": ["Region"], "measures": ["Revenue Any Region", "Tickets Count"]},
         "where": [{"field": "Region", "op": "=", "value": "EU"}],
     },
+    "independent_facts_rolled_up_beside_a_total": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Total", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+    "independent_facts_rolled_up_beside_filter_contexts": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Any Region", "Revenue Since February", "Tickets Count"],
+        },
+        "where": [{"field": "Region", "op": "in", "value": ["EU", "US"]}],
+        "grouping": "rollup",
+    },
+    "independent_facts_beside_a_fixed_context_after_a_date_filter": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-03-05"}],
+    },
+    "independent_facts_rolled_up_beside_a_fixed_context_after_a_date_filter": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue All", "Revenue Since February", "Tickets Count"],
+        },
+        "where": [{"field": "Order Date", "op": ">=", "value": "2024-03-05"}],
+        "grouping": "rollup",
+    },
+    "independent_facts_rolled_up_at_two_grains": {
+        "select": {
+            "dimensions": ["Region", "Order Date:quarter", "Order Date:month"],
+            "measures": ["Revenue", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
     "independent_facts_running_total": {
         "select": {
             "dimensions": ["Order Date:month"],
@@ -516,6 +559,23 @@ STATIC_QUERIES: dict[str, Any] = {
         "select": {"fields": ["Orders.Order ID", "Employees.Name"]}
     },
 }
+# A static filter on the order date, which a fixed filter context drops: the
+# tickets keep the region whose orders it leaves out.
+LATE = (
+    "filters:\n  - {dataObject: Orders, column: Order Date, operator: gte, value: '2024-03-05'}\n"
+)
+LATE_QUERIES: dict[str, Any] = {
+    "independent_facts_beside_a_fixed_context_after_a_static_date_filter": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+    },
+    "independent_facts_rolled_up_beside_a_fixed_context_after_a_static_date_filter": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue All", "Revenue Since February", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+}
 # Sorted where a group, a row or the period of the tickets is NULL, compared in
 # their order: the engine places NULL first or last, and so does the combined
 # answer. Limited without a sort, a query is sorted by its dimensions or fields.
@@ -609,7 +669,12 @@ def _rows(rows: list[dict[str, Any]]) -> list[tuple[tuple[str, Any], ...]]:
 def _assert_shapes(target: VendorTarget) -> None:
     store = ModelStore()
     wrong = []
-    for static, queries in (("", QUERIES), (STATIC, STATIC_QUERIES), (BLANK, STATIC_QUERIES)):
+    for static, queries in (
+        ("", QUERIES),
+        (STATIC, STATIC_QUERIES),
+        (BLANK, STATIC_QUERIES),
+        (LATE, LATE_QUERIES),
+    ):
         wrong += _wrong_shapes(target, store, static, queries)
     wrong += _wrong_shapes(target, store, "", ORDERED_QUERIES, ordered=True)
     assert not wrong, f"{target.name}:\n" + "\n".join(wrong)
