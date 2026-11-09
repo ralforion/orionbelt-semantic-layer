@@ -103,7 +103,10 @@ measures:
       - column: {{dataObject: Orders, column: Status}}
         operator: equals
         values: [{{dataType: string, valueString: paid}}]
-  Revenue Total: {{columns: [{{dataObject: Orders, column: Amount}}], aggregation: sum, total: true}}
+  Revenue Total:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    aggregation: sum
+    total: true
   Region Revenue:
     columns: [{{dataObject: Orders, column: Amount}}]
     aggregation: sum
