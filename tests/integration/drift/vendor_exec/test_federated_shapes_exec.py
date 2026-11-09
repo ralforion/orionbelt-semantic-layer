@@ -551,6 +551,23 @@ STATIC_QUERIES: dict[str, Any] = {
         "select": {"fields": ["Orders.Order ID", "Employees.Name"]}
     },
 }
+# A static filter on the order date, which a fixed filter context drops: the
+# tickets keep the region whose orders it leaves out.
+LATE = (
+    "filters:\n  - {dataObject: Orders, column: Order Date, operator: gte, value: '2024-03-05'}\n"
+)
+LATE_QUERIES: dict[str, Any] = {
+    "independent_facts_beside_a_fixed_context_after_a_static_date_filter": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+    },
+    "independent_facts_rolled_up_beside_a_fixed_context_after_a_static_date_filter": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue All", "Revenue Since February", "Tickets Count"],
+        },
+        "grouping": "rollup",
+    },
+}
 # Sorted where a group, a row or the period of the tickets is NULL, compared in
 # their order: the engine places NULL first or last, and so does the combined
 # answer. Limited without a sort, a query is sorted by its dimensions or fields.
@@ -644,7 +661,12 @@ def _rows(rows: list[dict[str, Any]]) -> list[tuple[tuple[str, Any], ...]]:
 def _assert_shapes(target: VendorTarget) -> None:
     store = ModelStore()
     wrong = []
-    for static, queries in (("", QUERIES), (STATIC, STATIC_QUERIES), (BLANK, STATIC_QUERIES)):
+    for static, queries in (
+        ("", QUERIES),
+        (STATIC, STATIC_QUERIES),
+        (BLANK, STATIC_QUERIES),
+        (LATE, LATE_QUERIES),
+    ):
         wrong += _wrong_shapes(target, store, static, queries)
     wrong += _wrong_shapes(target, store, "", ORDERED_QUERIES, ordered=True)
     assert not wrong, f"{target.name}:\n" + "\n".join(wrong)

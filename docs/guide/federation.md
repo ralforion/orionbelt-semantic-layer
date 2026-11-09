@@ -526,12 +526,13 @@ GROUP BY ALL
   tickets' total on the rows of revenue alone. A total next to the other
   fact's `filterContext` measure is computed, under `rollup` too, where one
   database refuses it: each fact is a query of its own here.
-- A `filterContext` that drops one of the query's filters on its fact is
-  computed under the filters it keeps, for every group of the other facts
-  too, as on one database. Revenue of all orders (`mode: FIXED`) by region,
-  filtered on orders from March 5: a region with tickets but no such order
-  gets its revenue of all orders, in its subtotal too. That part adds no
-  group of its own.
+- A `filterContext` that drops one of the filters on its fact, of the query
+  or a static model filter, is computed under the filters it keeps, for
+  every group of the other facts too, as on one database. Revenue of all
+  orders (`mode: FIXED`) by region, filtered on orders from March 5: a
+  region with tickets but no such order gets its revenue of all orders, in
+  its subtotal too. That part adds no group of its own. A static filter
+  declared `enforce: always` is never dropped.
 - `fill` fills the periods of the union in the combine query, from the first
   to the last period the query's filters on the date admit, as on one
   database. One dimension at two grains is read from each part's column of

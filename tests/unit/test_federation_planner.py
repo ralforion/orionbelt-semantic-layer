@@ -5552,6 +5552,10 @@ BY_REGION_AND_MONTH = {
 # A filter on the orders that the tickets do not reach: the tickets keep the
 # region whose orders it leaves out.
 LATE_ORDERS = {"field": "Order Date", "op": ">=", "value": "2024-03-05"}
+# The same as a static filter: the orders of 9 March, of no customer's region.
+MARCH_NINTH = (
+    "  - {dataObject: Orders, column: Order Date, operator: equals, value: '2024-03-09'}\n"
+)
 
 INDEPENDENT_QUERIES = {
     "by_region": {"select": BY_REGION_BOTH},
@@ -6139,6 +6143,59 @@ class TestMeasuresOfIndependentFacts:
 
         assert _run_on(paths, independent_model(True), query, sort=sort) == single
         assert single
+
+    @pytest.mark.parametrize(
+        ("grouping", "dimensions"),
+        [
+            (None, ["Region"]),
+            ("rollup", ["Region"]),
+            ("cube", ["Region"]),
+            ("rollup", ["Region", "Order Date:month"]),
+            ("cube", ["Region", "Order Date:month"]),
+        ],
+        ids=["by_region", "a_rollup", "a_cube", "a_rollup_by_month", "a_cube_by_month"],
+    )
+    def test_a_fixed_context_after_a_static_filter_on_its_fact(
+        self,
+        independent_files: dict[str, dict[str, str]],
+        grouping: str | None,
+        dimensions: list[str],
+    ) -> None:
+        """A static filter a context drops narrows its fact's groups as a query
+        filter does: EU has no order of 9 March but has tickets, and its revenue
+        of all orders, beside them or as its subtotal, read NULL."""
+        paths = independent_files["crm"]
+        query: dict[str, Any] = {
+            "select": {"dimensions": dimensions, "measures": ["Revenue All", "Tickets Count"]},
+            **({"grouping": grouping} if grouping else {}),
+        }
+
+        single = _run_on(paths, independent_model(False, static=MARCH_NINTH), query)
+
+        assert _run_on(paths, independent_model(True, static=MARCH_NINTH), query) == single
+        assert Decimal("123.90") in {row[len(dimensions)] for row in single if row[0] == "EU"}
+
+    @pytest.mark.parametrize("grouping", ["rollup", "cube"])
+    def test_a_fixed_context_keeps_an_enforced_static_filter(
+        self, independent_files: dict[str, dict[str, str]], grouping: str
+    ) -> None:
+        """The context drops the filter on the order date, never one declared
+        ``enforce: always``: the grand total is the US revenue of all orders."""
+        paths = independent_files["crm"]
+        static = (
+            "  - {dataObject: Customers, column: Region, operator: equals, value: US,"
+            " enforce: always}\n"
+        )
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
+            "where": [LATE_ORDERS],
+            "grouping": grouping,
+        }
+
+        single = _run_on(paths, independent_model(False, static=static), query)
+
+        assert _run_on(paths, independent_model(True, static=static), query) == single
+        assert {row[1] for row in single} == {Decimal("19.00")}
 
     @pytest.mark.parametrize("grouping", ["rollup", "cube"])
     def test_a_total_beside_the_other_facts_filter_context(

@@ -3134,9 +3134,13 @@ class _Planner:
                     ", ".join(sorted(missing)),
                     ", ".join(f"'{m}'" for m in measures),
                 )
+            # The static filters the fact reaches, which its part applies.
+            static: list[ModelFilter] = []
             for f in self.model.filters:
                 missing = self._column_objects(f.data_object, f.column) - fact
-                if missing and f.enforce == FilterEnforcement.RELEVANT:
+                if not missing:
+                    static.append(f)
+                elif f.enforce == FilterEnforcement.RELEVANT:
                     report_unapplied_static_filter(
                         [],
                         self.resolved.warnings,
@@ -3158,7 +3162,7 @@ class _Planner:
                 update["grouping"] = None
             fact_parts = [
                 _Part(self.query.model_copy(update={"select": select, **update}), self.model, root),
-                *self.context_parts(root, select, where, update),
+                *self.context_parts(root, select, where, static, update),
             ]
             # Under a rollup or cube, a part's grand total stands for no rows
             # of an empty fact: each part counts them (:func:`_in_grouping_sets`).
@@ -3172,6 +3176,7 @@ class _Planner:
         root: str,
         select: QuerySelect,
         where: list[QueryFilterItem],
+        static: list[ModelFilter],
         update: dict[str, Any],
     ) -> list[_Part]:
         """The parts computing a filter context's measures on the other facts' groups too.
@@ -3182,37 +3187,46 @@ class _Planner:
         filter on the order date, which a ``mode: FIXED`` context drops, the
         orders of no late order left out the region the tickets have, and its
         revenue of all orders read NULL. Where a context drops a filter of the
-        part, its measures are also computed under the filters it keeps, in a
-        part whose rows give a group of the others its values but add none
-        (:func:`_plan_parts`). One per set of filters kept.
+        part, of the query or a static one of its fact (*static*; never an
+        ``enforce: always`` one, as on one database), its measures are also
+        computed under the filters it keeps, in a part whose rows give a group
+        of the others its values but add none (:func:`_plan_parts`). One per
+        set of filters kept.
         """
         if not select.dimensions:
             return []
         effective = self.model.effective_measures
-        kept_by: dict[tuple[int, ...], list[str]] = {}
+        # By the query filters kept and the static filters dropped, by position.
+        kept_by: dict[tuple[tuple[int, ...], tuple[int, ...]], list[str]] = {}
         for name in select.measures:
             context = effective[name].filter_context if name in effective else None
             if context is None:
                 continue
             kept = kept_by_context(context, where, query_item_fields)
-            if len(kept) < len(where):
-                key = tuple(n for n, item in enumerate(where) if item in kept)
-                kept_by.setdefault(key, []).append(name)
-        return [
-            _Part(
-                self.query.model_copy(
-                    update={
-                        **update,
-                        "select": select.model_copy(update={"measures": names}),
-                        "where": [where[n] for n in key],
-                    }
-                ),
-                self.model,
-                root,
-                values=True,
+            dropped = tuple(
+                n
+                for n, f in enumerate(static)
+                if f.enforce == FilterEnforcement.RELEVANT
+                and not kept_by_context(context, [frozenset({f.column})], lambda fields: fields)
             )
-            for key, names in kept_by.items()
-        ]
+            if len(kept) < len(where) or dropped:
+                key = (tuple(n for n, item in enumerate(where) if item in kept), dropped)
+                kept_by.setdefault(key, []).append(name)
+        parts = []
+        for (where_kept, static_dropped), names in kept_by.items():
+            left_out = {id(static[n]) for n in static_dropped}
+            query = self.query.model_copy(
+                update={
+                    **update,
+                    "select": select.model_copy(update={"measures": names}),
+                    "where": [where[n] for n in where_kept],
+                }
+            )
+            model = self.model.model_copy(
+                update={"filters": [f for f in self.model.filters if id(f) not in left_out]}
+            )
+            parts.append(_Part(query, model, root, values=True))
+        return parts
 
     def check_stage_one(self, name: str, fact: set[str]) -> None:
         """Raise one database's error where reaggregate metric *name*'s first stage has one.
