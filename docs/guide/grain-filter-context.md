@@ -337,8 +337,16 @@ include the subtotal rows. Like a windowed total, it covers the groups a
 
 A `grain` override is refused under `rollup` or `cube`: a subtotal row's empty
 dimension may be the rolled-up one or a NULL member. A total computed apart is
-refused in a query whose rows a filterContext or a deduplication on a repeated
-object computes first, in CTEs of finished values.
+refused in a query whose rows a deduplication on a repeated object computes
+first, in CTEs of finished values.
+
+Beside a measure with a `filterContext`, a total computed apart is computed
+from the query's own tables and `WHERE`, which the filter context's wrapper
+keeps in its `main` CTE: a median of all sales beside revenue of any region,
+or a revenue total under `rollup` beside it. A metric that reads such a total
+is still refused there (`INCOMPATIBLE_COMBINATION`): its other components
+would be read from rows that wrapper replaced. Query the metric separately
+from the `filterContext` measure.
 
 ### CTE Structure for Filter Context
 

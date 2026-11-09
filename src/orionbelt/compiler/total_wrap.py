@@ -51,6 +51,7 @@ from orionbelt.ast.nodes import (
     Unnest,
     WindowFunction,
 )
+from orionbelt.compiler.filter_wrap import MAIN_CTE
 from orionbelt.compiler.having_hoist import apply_having_hoist, grouped_predicates
 from orionbelt.compiler.metric_expansion import expand_metric_expression, metric_leaf_components
 from orionbelt.compiler.outer_order_by import remap_order_by
@@ -562,14 +563,25 @@ def wrap_with_totals(
     return apply_having_hoist(outer, grouped_predicates(resolved, model), cte_name="totals_having")
 
 
+def _rows_of(ast: Select, resolved: ResolvedQuery) -> Select:
+    """The query the plan's groups were built from: *ast*, or, under a filter
+    context, the CTE its wrapper moved them into (``filter_wrap.MAIN_CTE``),
+    whose FROM is the plan's tables where *ast*'s is that CTE."""
+    if resolved.has_filter_context and isinstance(ast.from_, From):
+        main = next((c.query for c in ast.ctes if c.name == ast.from_.source == MAIN_CTE), None)
+        if isinstance(main, Select):
+            return main
+    return ast
+
+
 def _total_ctes(
     ast: Select, resolved: ResolvedQuery, taken: set[str], relations: set[str]
 ) -> tuple[list[CTE], dict[str, Expr], dict[str, Expr], list[Join | Unnest]]:
     """The CTEs computing the measures :func:`computed_apart` asks for.
 
     One per grain they are totalled at: the measures computed again over the
-    plan's own FROM, joins and WHERE - the rows its groups were built from,
-    before any HAVING, as a window over every group reads them - grouped by
+    plan's own FROM, joins and WHERE (:func:`_rows_of`) - the rows its groups
+    were built from, before any HAVING, as a window over every group reads them - grouped by
     the grain's dimensions, or not at all for a grand total. A grand total is
     cross joined to every row; a grain override is joined on its dimensions,
     a NULL member to its own group.
@@ -585,7 +597,8 @@ def _total_ctes(
     Both sets are added to. Returns the CTEs, the column each selected measure and each
     metric component is read from, and the joins.
     """
-    projected = {c.alias: c.expr for c in ast.columns if isinstance(c, AliasedExpr)}
+    rows = _rows_of(ast, resolved)
+    projected = {c.alias: c.expr for c in rows.columns if isinstance(c, AliasedExpr)}
     # (selected or component, name) -> (grain, value)
     wanted: dict[tuple[bool, str], tuple[tuple[str, ...], Expr]] = {}
     for m in resolved.measures:
@@ -623,9 +636,9 @@ def _total_ctes(
                 name=name,
                 query=Select(
                     columns=columns,
-                    from_=ast.from_,
-                    joins=ast.joins,
-                    where=ast.where,
+                    from_=rows.from_,
+                    joins=rows.joins,
+                    where=rows.where,
                     group_by=keys,
                 ),
             )

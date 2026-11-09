@@ -669,9 +669,12 @@ def _refuse_totals_over_rewritten_rows(resolved: ResolvedQuery) -> None:
     and grain overrides the totals pass cannot compute from the rows they cover.
 
     2e: a measure the totals pass computes apart (:func:`computed_apart`), in a
-    query whose FROM a filterContext or grain dedup rewrote first. It is
+    query whose FROM grain dedup or rows without children rewrote first. It is
     computed again over the plan's own rows, which by then are those passes'
-    CTEs of finished values.
+    CTEs of finished values. A filterContext keeps the plan's rows in a CTE,
+    which a selected measure's total is computed from; a metric reading one
+    is refused, since the totals pass computes its other components from
+    rows that wrapper replaced.
     """
     if not resolved.has_totals or resolved.has_pop or resolved.has_cumulative:
         return  # the totals pass does not run (rule 2)
@@ -680,17 +683,27 @@ def _refuse_totals_over_rewritten_rows(resolved: ResolvedQuery) -> None:
     apart = sorted(n for n, m in candidates.items() if computed_apart(m, resolved))
     if not apart:
         return
+    read_by_metrics = {
+        c.name
+        for measure in resolved.measures
+        for c in metric_leaf_components(measure, resolved.metric_components)
+    }
     rewritten = [
-        label
-        for label, applies in (
-            ("a filterContext", resolved.has_filter_context),
-            ("measures deduplicated on a repeated object", bool(resolved.dedup_targets)),
-            ("rows without children", bool(resolved.childless_legs)),
+        (label, names)
+        for label, applies, names in (
+            (
+                "a filterContext",
+                resolved.has_filter_context,
+                [n for n in apart if n in read_by_metrics],
+            ),
+            ("measures deduplicated on a repeated object", bool(resolved.dedup_targets), apart),
+            ("rows without children", bool(resolved.childless_legs), apart),
         )
-        if applies
+        if applies and names
     ]
     if rewritten:
-        listed = ", ".join(f"'{name}'" for name in apart)
+        refused = sorted({name for _, names in rewritten for name in names})
+        listed = ", ".join(f"'{name}'" for name in refused)
         raise ResolutionError(
             [
                 SemanticError(
@@ -698,11 +711,11 @@ def _refuse_totals_over_rewritten_rows(resolved: ResolvedQuery) -> None:
                     message=(
                         f"Measure(s) {listed} need a total or grain computed again over "
                         f"the query's rows, which this query computes first in CTEs of "
-                        f"their own for {' and '.join(rewritten)}."
+                        f"their own for {' and '.join(label for label, _ in rewritten)}."
                     ),
                     path="select.measures",
                     hint="Query the total separately from those measures.",
-                    context={"measures": apart},
+                    context={"measures": refused},
                 )
             ]
         )
