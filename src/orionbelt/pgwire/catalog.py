@@ -956,15 +956,17 @@ def _rewrite_for_duckdb(sql: str) -> str:
 class CatalogEmulator:
     """Wraps an in-memory DuckDB connection used only for catalog probes.
 
-    The emulator is intended to be created once and shared across all
-    pgwire connections.  ``refresh()`` rebuilds the schema from the
-    current :class:`SessionManager` state; ``execute()`` runs an
-    arbitrary SQL string against the connection and returns an
-    :class:`ExecutionResult` so the router can encode rows uniformly
-    with the semantic path.
+    One emulator serves the connections that see every loaded model
+    (``database=orionbelt``); one with a ``scope`` holds that model
+    only, for the connections that select it.  ``refresh()`` rebuilds
+    the schema from the current :class:`SessionManager` state;
+    ``execute()`` runs an arbitrary SQL string against the connection
+    and returns an :class:`ExecutionResult` so the router can encode
+    rows uniformly with the semantic path.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, scope: str | None = None) -> None:
+        self._scope = scope
         self._lock = threading.Lock()
         self._con: duckdb.DuckDBPyConnection = duckdb.connect(database=":memory:")
         # Single ATTACHed in-memory database named after the brand.
@@ -1038,7 +1040,7 @@ class CatalogEmulator:
         with self._lock:
             # Build the set of schemas that should exist now.
             desired_schemas: set[str] = set()
-            for store_target, _ in _iter_loaded_models(session_manager):
+            for store_target, _ in self._loaded_models(session_manager):
                 desired_schemas.add(_safe_model_table_name(store_target))
 
             # Drop schemas whose backing model is gone. CASCADE removes
@@ -1053,7 +1055,7 @@ class CatalogEmulator:
                 self._schema_ddl_fingerprints.pop(schema, None)
             self._registered_schemas = [s for s in self._registered_schemas if s in desired_schemas]
 
-            for store_target, model in _iter_loaded_models(session_manager):
+            for store_target, model in self._loaded_models(session_manager):
                 schema = _safe_model_table_name(store_target)
                 # CREATE SCHEMA IF NOT EXISTS is the cheap path on first
                 # refresh; subsequent refreshes recreate the table /
@@ -1096,6 +1098,14 @@ class CatalogEmulator:
                     )
                     continue
                 self._schema_ddl_fingerprints[schema] = fingerprint
+
+    def _loaded_models(
+        self, session_manager: SessionManager
+    ) -> Iterator[tuple[str, SemanticModel]]:
+        """The loaded models this catalog holds: every one, or its scope's."""
+        for store_target, model in _iter_loaded_models(session_manager):
+            if self._scope is None or store_target == self._scope:
+                yield store_target, model
 
     # ------------------------------------------------------------------
     # Execute — run a catalog/info-schema query through DuckDB.

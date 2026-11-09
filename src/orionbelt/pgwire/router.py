@@ -22,6 +22,7 @@ import contextlib
 import logging
 import re
 import struct
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -163,6 +164,10 @@ class SemanticRouter:
         self._sessions = session_manager
         self._default_dialect = default_dialect
         self._catalog = catalog if catalog is not None else CatalogEmulator()
+        # A connection selecting one model sees a catalog holding that model
+        # only, created on first use and dropped when the model goes away.
+        self._model_catalogs: dict[str, CatalogEmulator] = {}
+        self._model_catalogs_lock = threading.Lock()
         # When a result cache is supplied, semantic queries route through the
         # shared cached-execution service (the same one REST uses). Catalog /
         # metadata probes never reach that path, so they are never cached.
@@ -213,8 +218,18 @@ class SemanticRouter:
             or is_tableless_select(sql)
             or self._references_model_schema(sql)
         ):
+            catalog = self._catalog_for(database)
+            if catalog is not self._catalog:
+                try:
+                    _refuse_other_model(database, database, self._extract_model_name_from_sql(sql))
+                except _ModelMismatchError as exc:
+                    return protocol.build_error_response(
+                        severity="ERROR",
+                        code=SQLSTATE_UNDEFINED_TABLE,
+                        message=str(exc),
+                    )
             try:
-                self._catalog.refresh(self._sessions)
+                catalog.refresh(self._sessions)
                 # Resolve the ``model.<view>`` alias to the connected
                 # model's actual schema before executing. The alias is
                 # the Arrow Flight surface's user-friendly shape; we
@@ -222,14 +237,14 @@ class SemanticRouter:
                 # client without retyping the schema name the user
                 # just ``SET search_path``'d to.
                 catalog_sql = self._resolve_model_alias(sql, database)
-                rejection = catalog_rejection(catalog_sql, self._catalog.model_schemas)
+                rejection = catalog_rejection(catalog_sql, catalog.model_schemas)
                 if rejection is not None:
                     return protocol.build_error_response(
                         severity="ERROR",
                         code=SQLSTATE_INSUFFICIENT_PRIVILEGE,
                         message=f"[CATALOG_QUERY_REJECTED] {rejection}",
                     )
-                result = self._catalog.execute(catalog_sql, database)
+                result = catalog.execute(catalog_sql, database)
             except Exception as exc:  # noqa: BLE001 — protocol boundary
                 logger.info("pgwire catalog probe failed: %s", exc)
                 return protocol.build_error_response(
@@ -499,6 +514,26 @@ class SemanticRouter:
             return sorted(names)[0]
         return ""
 
+    def _catalog_for(self, database: str) -> CatalogEmulator:
+        """The catalog a connection sees: its own model's, or every model's.
+
+        A connection on ``database=<model>`` lists and describes that model
+        only, so the database parameter stays the one place a connection
+        chooses its model; a per-model scope check filters here. The brand
+        database (``orionbelt``), or a name that is no model, sees every
+        loaded model.
+        """
+        names = self._loaded_model_names()
+        with self._model_catalogs_lock:
+            for gone in set(self._model_catalogs) - names:
+                self._model_catalogs.pop(gone).close()
+            if database == CATALOG_SCHEMA or database not in names:
+                return self._catalog
+            catalog = self._model_catalogs.get(database)
+            if catalog is None:
+                catalog = self._model_catalogs[database] = CatalogEmulator(scope=database)
+            return catalog
+
     def _loaded_model_names(self) -> set[str]:
         """Return the set of currently-loaded model names (lowercased).
 
@@ -676,6 +711,11 @@ class SemanticRouter:
         query's source counts, through derived tables in its FROM: a
         table in a predicate subquery (``EXISTS (SELECT 1 FROM
         "Customers")``) names a data object, whose name a model may share.
+        So does a system relation: ``information_schema.tables``,
+        ``pg_catalog.pg_class`` and a bare ``pg_class``, which Postgres
+        reads from ``pg_catalog`` first and ``references_catalog`` always
+        sends to the catalog, name no model ``tables`` or ``pg_class``. A
+        CTE is followed to the table its body reads.
         """
 
         model_names = self._loaded_model_names()
@@ -689,9 +729,11 @@ class SemanticRouter:
         if table is None:
             return None
         schema = (table.db or "").lower()
+        name = (table.name or "").lower()
+        if schema in _CATALOG_SCHEMAS or (not schema and name.startswith("pg_")):
+            return None
         if schema and schema in model_names:
             return schema
-        name = (table.name or "").lower()
         if name and name in model_names:
             return name
         return None
@@ -715,17 +757,36 @@ class SemanticRouter:
 
 
 def _outer_source_table(ast: exp.Expr) -> exp.Table | None:
-    """The table the outermost SELECT reads, through derived tables in its FROM."""
+    """The table the outermost SELECT reads, through derived tables and CTEs in its FROM.
+
+    A CTE's body sees the CTEs defined before it, not itself: in
+    ``WITH shop AS (SELECT ... FROM shop) SELECT * FROM shop`` the inner
+    ``shop`` is a relation.
+    """
     node = ast
+    # The CTEs in scope, in definition order; a later one shadows an earlier.
+    ctes: tuple[tuple[str, exp.Expr], ...] = ()
     for _ in range(_FLATTEN_MAX_DEPTH + 1):
         if not isinstance(node, exp.Select):
             return None
+        with_ = node.args.get("with_")
+        if with_ is not None:
+            ctes += tuple((cte.alias_or_name.lower(), cte.this) for cte in with_.expressions)
         from_ = node.args.get("from_")
         if from_ is None:
             return None
         source = from_.this
         if isinstance(source, exp.Table):
-            return source
+            name = source.name.lower()
+            bound = (
+                None
+                if source.db
+                else next((i for i in reversed(range(len(ctes))) if ctes[i][0] == name), None)
+            )
+            if bound is None:
+                return source
+            node, ctes = ctes[bound][1], ctes[:bound]
+            continue
         if not isinstance(source, exp.Subquery):
             return None
         node = source.this

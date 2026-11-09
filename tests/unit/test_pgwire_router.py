@@ -157,6 +157,124 @@ def test_brand_database_reads_the_model_from_names() -> None:
     assert target.store is mgr.get_store("shop")
 
 
+def _text_rows(reply: bytes) -> list[list[str | None]]:
+    """The text-format DataRow values of a router reply."""
+
+    rows: list[list[str | None]] = []
+    for tag, body in _parse_frames(reply):
+        if tag != b"D":
+            continue
+        (count,) = struct.unpack("!h", body[:2])
+        offset, row = 2, []
+        for _ in range(count):
+            (size,) = struct.unpack("!i", body[offset : offset + 4])
+            offset += 4
+            row.append(None if size < 0 else body[offset : offset + size].decode())
+            offset += max(size, 0)
+        rows.append(row)
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("database", "schemas"),
+    [("commerce", {"commerce"}), ("shop", {"shop"}), ("orionbelt", {"commerce", "shop"})],
+)
+def test_catalog_lists_the_models_a_connection_reaches(database: str, schemas: set[str]) -> None:
+    mgr = _make_manager_with_two_models()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    for sql in (
+        "SELECT nspname FROM pg_catalog.pg_namespace",
+        "SELECT table_schema FROM information_schema.tables WHERE table_name = 'model'",
+    ):
+        listed = {row[0] for row in _text_rows(asyncio.run(router.handle(sql, database=database)))}
+        assert listed & {"commerce", "shop"} == schemas, sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM shop._measures_metadata",
+        'SELECT * FROM "shop"."dimensions"',
+        # A CTE reads what its body reads.
+        "WITH m AS (SELECT * FROM shop._measures_metadata) SELECT * FROM m",
+        "SELECT * FROM (WITH m AS (SELECT * FROM shop.measures) SELECT * FROM m) AS t",
+    ],
+)
+def test_catalog_refuses_another_models_objects(sql: str) -> None:
+    mgr = _make_manager_with_two_models()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    frames = _parse_frames(asyncio.run(router.handle(sql, database="commerce")))
+    assert [t for t, _ in frames] == [b"E"]
+    assert b"C42P01\x00" in frames[0][1]
+    assert b"MODEL_MISMATCH" in frames[0][1]
+
+
+@pytest.mark.parametrize(
+    ("other", "sql"),
+    [
+        (
+            "tables",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'commerce'",
+        ),
+        ("pg_class", "SELECT relname FROM pg_catalog.pg_class"),
+        # Bare: Postgres reads pg_catalog first, and the router sends it to the catalog.
+        ("pg_class", "SELECT relname FROM pg_class"),
+        ("pg_namespace", "SELECT nspname FROM pg_namespace"),
+        ("pg_tables", "SELECT tablename FROM pg_tables"),
+        # A CTE sharing a model's name is the CTE.
+        ("shop", "WITH shop AS (SELECT relname FROM pg_catalog.pg_class) SELECT * FROM shop"),
+        (
+            "shop",
+            "WITH a AS (SELECT relname FROM pg_class), shop AS (SELECT * FROM a) "
+            "SELECT * FROM shop",
+        ),
+        (
+            "columns",
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'commerce'",
+        ),
+    ],
+)
+def test_a_system_relation_names_no_model(other: str, sql: str) -> None:
+    """A model sharing a system relation's or a CTE's name leaves that relation readable."""
+
+    mgr = _make_manager_with_two_models()
+    if other not in mgr.list_protected_session_ids():
+        mgr.get_or_create_named(other).load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    reply = asyncio.run(router.handle(sql, database="commerce"))
+    assert b"E" not in [t for t, _ in _parse_frames(reply)], reply
+    assert _text_rows(reply)
+
+
+@pytest.mark.parametrize(
+    ("sql", "named"),
+    [
+        ('WITH shop AS (SELECT "Customer Country" FROM shop) SELECT * FROM shop', "shop"),
+        ("WITH a AS (SELECT * FROM shop.measures), b AS (SELECT * FROM a) SELECT * FROM b", "shop"),
+        ("WITH m AS (SELECT * FROM commerce.measures) SELECT * FROM m", "commerce"),
+    ],
+)
+def test_a_cte_names_what_its_body_reads(sql: str, named: str) -> None:
+    """A CTE's body sees the CTEs before it, not itself: the inner ``shop`` is the model."""
+
+    router = SemanticRouter(
+        session_manager=_make_manager_with_two_models(), default_dialect="duckdb"
+    )
+    assert router._extract_model_name_from_sql(sql) == named  # noqa: SLF001
+
+
+def test_a_model_catalog_goes_with_its_model() -> None:
+    mgr = SessionManager()
+    session_id = mgr.create_session().session_id
+    mgr.get_store(session_id).load_model(SAMPLE_MODEL_YAML)
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    asyncio.run(router.handle("SELECT nspname FROM pg_catalog.pg_namespace", database=session_id))
+    assert session_id in router._model_catalogs  # noqa: SLF001
+    mgr.close_session(session_id)
+    router._catalog_for(session_id)  # noqa: SLF001
+    assert session_id not in router._model_catalogs  # noqa: SLF001
+
+
 # A model may share its name with a data object a predicate subquery reads:
 # ``customers`` beside the sample model's ``Customers``.
 _SUBQUERY_PREDICATES = [
