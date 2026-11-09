@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.pgwire.statements import split_statements
+from orionbelt.pgwire.statements import scan, split_statements
 
 
 class TestTheOrdinaryCases:
@@ -95,11 +95,30 @@ class TestSemicolonsThatAreNotBoundaries:
         sql = "SELECT $tag$a;b$tag$ AS x"
         assert split_statements(sql) == [sql]
 
+    def test_inside_a_dollar_quoted_body_with_a_non_ascii_tag(self) -> None:
+        """Postgres takes any non-ASCII character of a tag for a letter."""
+        assert split_statements("SELECT $é$a;b$é$; SELECT 2") == ["SELECT $é$a;b$é$", "SELECT 2"]
+
     def test_a_dollar_placeholder_is_not_a_quote(self) -> None:
         """``$1`` is a parameter, and treating it as a quote opener would
         swallow the rest of the batch."""
         parts = split_statements("SELECT $1; SELECT $2")
         assert parts == ["SELECT $1", "SELECT $2"]
+
+
+class TestOpenersInsideAWord:
+    """A ``$`` or an ``E`` inside a word is part of it, as Postgres reads it."""
+
+    def test_a_dollar_inside_an_identifier_opens_no_quote(self) -> None:
+        assert split_statements("SELECT 1 AS a$b$c; SELECT 2") == ["SELECT 1 AS a$b$c", "SELECT 2"]
+
+    def test_an_e_ending_a_word_opens_no_escape_string(self) -> None:
+        """The type ``name`` and the plain literal ``a\\``."""
+        assert split_statements("SELECT name'a\\'; SELECT 2") == ["SELECT name'a\\'", "SELECT 2"]
+
+    def test_a_dollar_quote_right_after_another_opens(self) -> None:
+        sql = "SELECT $a$x;$a$$b$y;$b$"
+        assert split_statements(sql) == [sql]
 
 
 class TestUnterminatedInput:
@@ -157,3 +176,28 @@ class TestCommentOnlyFragments:
     def test_a_comment_marker_inside_a_literal_is_not_a_comment(self) -> None:
         sql = "SELECT '-- not a comment'"
         assert split_statements(sql) == [sql]
+
+
+class TestScan:
+    """The runs the splitter reads, which the catalog's name rewrites read too."""
+
+    def test_each_run_has_its_kind(self) -> None:
+        sql = "SELECT E'\\'' AS \"q\", $t$a$t$ -- c\n/* d /* e */ */ 'f'$1"
+        runs = [(kind, sql[start:end]) for kind, start, end in scan(sql)]
+        assert runs == [
+            ("code", "SELECT "),
+            ("literal", "E'\\''"),
+            ("code", " AS "),
+            ("identifier", '"q"'),
+            ("code", ", "),
+            ("literal", "$t$a$t$"),
+            ("code", " "),
+            ("comment", "-- c\n"),
+            ("comment", "/* d /* e */ */"),
+            ("code", " "),
+            ("literal", "'f'"),
+            ("code", "$1"),
+        ]
+
+    def test_an_unterminated_run_takes_the_rest(self) -> None:
+        assert [kind for kind, _, _ in scan("SELECT 'a")] == ["code", "literal"]

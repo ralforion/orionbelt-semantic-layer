@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import duckdb
 import pytest
 
 from orionbelt.pgwire.catalog import CatalogEmulator, _rewrite_for_duckdb
@@ -111,6 +112,111 @@ def test_information_schema_schemata_hides_main(manager_with_model: SessionManag
     # must be rewritten too — Tableau / Dremio emit the three-part name.
     qualified = emu.execute("SELECT schema_name FROM orionbelt.information_schema.schemata")
     assert "main" not in {row[0] for row in qualified.rows}
+
+
+# Spellings of a system relation Postgres reads as the plain one the rewrites
+# match: quoted names, and the brand database in front. The first four reach a shadow view
+# (``pg_namespace`` and ``schemata`` hide ``main``); ``pg_proc`` has none.
+_SYSTEM_RELATION_SPELLINGS = [
+    (plain, spelling)
+    for plain, spellings in (
+        (
+            "pg_catalog.pg_namespace",
+            [
+                '"pg_catalog"."pg_namespace"',
+                'pg_catalog."pg_namespace"',
+                "orionbelt.pg_catalog.pg_namespace",
+                '"orionbelt"."pg_catalog"."pg_namespace"',
+                'orionbelt."pg_catalog".pg_namespace',
+                "ORIONBELT.PG_CATALOG.pg_namespace",
+            ],
+        ),
+        ("pg_catalog.pg_class", ['"pg_catalog"."pg_class"', "orionbelt.pg_catalog.pg_class"]),
+        ("information_schema.schemata", ['"information_schema"."schemata"']),
+        (
+            "information_schema.tables",
+            ['"orionbelt"."information_schema"."tables"', "orionbelt.information_schema.tables"],
+        ),
+        ("pg_catalog.pg_proc", ['"orionbelt"."pg_catalog"."pg_proc"']),
+    )
+    for spelling in spellings
+]
+
+
+@pytest.mark.parametrize(("plain", "spelling"), _SYSTEM_RELATION_SPELLINGS)
+def test_a_system_relation_reads_alike_in_every_spelling(
+    manager_with_model: SessionManager, plain: str, spelling: str
+) -> None:
+    """Quotes and the brand database qualifier change nothing (#759)."""
+
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+    sql = "SELECT * FROM {} ORDER BY ALL"
+    expected = emu.execute(sql.format(plain)).rows
+    assert expected
+    assert emu.execute(sql.format(spelling)).rows == expected
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Another database: Postgres refuses a cross-database reference.
+        "SELECT * FROM shop.pg_catalog.pg_class",
+        # A quoted name keeps its case: Postgres has no ``PG_CATALOG`` schema.
+        'SELECT * FROM "PG_CATALOG"."pg_class"',
+    ],
+)
+def test_a_system_relation_postgres_would_not_find_fails(
+    manager_with_model: SessionManager, sql: str
+) -> None:
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+    with pytest.raises(duckdb.Error):
+        emu.execute(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 'orionbelt.pg_catalog.x' AS a, '\"pg_catalog\".\"pg_proc\"' AS b",
+        "SELECT $$orionbelt.information_schema.tables$$",
+        'SELECT $t$"pg_catalog"."pg_proc"$t$',
+        "SELECT E'it\\'s orionbelt.pg_catalog.x'",
+        "-- don't\nSELECT 'orionbelt.pg_catalog.x'",
+        "/* it's */ SELECT 'orionbelt.pg_catalog.x' -- orionbelt.pg_catalog.x",
+        "SELECT 1 AS \"it's\", 'orionbelt.pg_catalog.x'",
+        'SELECT 1 AS "x orionbelt.pg_catalog.x"',
+        "SELECT $é$orionbelt.information_schema.tables$é$",
+        "SELECT name'a\\', 'orionbelt.pg_catalog.x'",
+    ],
+)
+def test_names_in_literals_comments_and_other_quoted_names_are_left_alone(sql: str) -> None:
+    assert _rewrite_for_duckdb(sql) == sql
+
+
+# A quote Postgres reads as part of a comment, an escape string, a dollar quote
+# or a quoted name, and a ``$`` it reads as part of a name: the name after it is
+# still spelled for the rewrites, and not taken for the inside of a string.
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "-- don't\nSELECT nspname FROM {} WHERE nspname <> 'x'",
+        "/* it's */ SELECT nspname FROM {} WHERE nspname <> 'x'",
+        "SELECT E'\\'' AS q, nspname FROM {} WHERE nspname <> 'x'",
+        "SELECT $$'$$ AS q, nspname FROM {} WHERE nspname <> 'x'",
+        "SELECT nspname AS \"it's\" FROM {} WHERE nspname <> 'x'",
+        "SELECT $é$'$é$ AS q, nspname FROM {} WHERE nspname <> 'x'",
+        "SELECT nspname AS a$b$c FROM {} WHERE nspname <> 'x'",
+    ],
+)
+def test_a_quote_in_a_comment_or_another_quote_ends_nothing(
+    manager_with_model: SessionManager, sql: str
+) -> None:
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+    expected = emu.execute(sql.format("pg_catalog.pg_namespace")).rows
+    assert expected
+    assert emu.execute(sql.format('"pg_catalog"."pg_namespace"')).rows == expected
 
 
 def test_pg_tables_pg_views_hide_main(manager_with_model: SessionManager) -> None:
