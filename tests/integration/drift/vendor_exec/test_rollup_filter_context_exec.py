@@ -6,6 +6,10 @@ scan's group of a NULL member, or none: the subtotals and the grand total
 read NULL, and the GROUPING() flags that tell a subtotal from a NULL member
 were gone from the result, beside a total too. The scan now rolls up the same
 dimensions and is joined on their flags as well, and the flags are returned.
+
+Filtered on one region, Dremio's planner carried the filter's constant into
+the rolled-up rows a wrapper reads: its grand total read the region 'n', with
+the region's values. Each key is now NULL by its ``GROUPING()`` there.
 """
 
 from __future__ import annotations
@@ -59,7 +63,11 @@ ROWS: list[tuple[int, str | None, str, int]] = [
     (5, None, "d", 5),
     (6, None, "d", 7),
 ]
-KEPT = {"n", "s"}
+# The query's filter on the region, and the regions it keeps.
+FILTERS = [
+    ({"op": "in", "value": ["n", "s"]}, {"n", "s"}),
+    ({"op": "=", "value": "n"}, {"n"}),
+]
 
 # int, string
 TYPES = {
@@ -96,13 +104,15 @@ def _with_rows(dialect: str, sql: str) -> str:
 MEASURES = [["Revenue", "Revenue Any Region", "Revenue All"], ["Revenue", "Revenue Total"]]
 
 
-def _run(target: VendorTarget, grouping: str, measures: list[str]) -> list[dict[str, Any]]:
+def _run(
+    target: VendorTarget, grouping: str, measures: list[str], region: dict[str, Any]
+) -> list[dict[str, Any]]:
     store = ModelStore()
     model_id = store.load_model(MODEL).model_id
     query = QueryObject.model_validate(
         {
             "select": {"dimensions": ["Region", "City"], "measures": measures},
-            "where": [{"field": "Region", "op": "in", "value": sorted(KEPT)}],
+            "where": [{"field": "Region", **region}],
             "grouping": grouping,
         }
     )
@@ -115,14 +125,17 @@ def _sum(rows: list[tuple[int, str | None, str, int]]) -> Decimal | None:
     return Decimal(sum(r[3] for r in rows)) if rows else None
 
 
-def _expected(region: str | None, city: str | None, flags: tuple[int, int]) -> dict[str, Any]:
+def _expected(
+    region: str | None, city: str | None, flags: tuple[int, int], kept_regions: set[str]
+) -> dict[str, Any]:
     """The row's values, each at its grouping set's level: a rolled-up
-    dimension takes every value, a kept one its own."""
+    dimension takes every value, a kept one its own. The query's filter keeps
+    *kept_regions*."""
 
     def matches(r: tuple[int, str | None, str, int]) -> bool:
         return (flags[0] == 1 or r[1] == region) and (flags[1] == 1 or r[2] == city)
 
-    kept = [r for r in ROWS if r[1] in KEPT]
+    kept = [r for r in ROWS if r[1] in kept_regions]
     return {
         "revenue": _sum([r for r in kept if matches(r)]),
         "revenue any region": _sum([r for r in ROWS if matches(r)]),
@@ -140,17 +153,23 @@ def _assert_subtotals(target: VendorTarget) -> None:
     wrong = []
     for grouping in groupings:
         for measures in MEASURES:
-            rows = _run(target, grouping, measures)
-            assert rows, (target.name, grouping)
-            for row in rows:
-                flags = (int(row["_g_region"]), int(row["_g_city"]))
-                expected = _expected(row["region"], row["city"], flags)
-                want = {name.lower(): expected[name.lower()] for name in measures}
-                got = {name: _number(row[name]) for name in want}
-                if got != want:
-                    wrong.append(
-                        f"{grouping} {row['region']}, {row['city']}, {flags}: {got} != {want}"
+            for region, kept in FILTERS:
+                rows = _run(target, grouping, measures, region)
+                assert rows, (target.name, grouping)
+                for row in rows:
+                    flags = (int(row["_g_region"]), int(row["_g_city"]))
+                    expected = _expected(row["region"], row["city"], flags, kept)
+                    # A rolled-up dimension is NULL, whatever the filter keeps.
+                    shown = (row["region"] is None or not flags[0]) and (
+                        row["city"] is None or not flags[1]
                     )
+                    want = {name.lower(): expected[name.lower()] for name in measures}
+                    got = {name: _number(row[name]) for name in want}
+                    if got != want or not shown:
+                        wrong.append(
+                            f"{grouping} {region['op']} {row['region']}, {row['city']}, "
+                            f"{flags}: {got} != {want}"
+                        )
     assert not wrong, f"{target.name}:\n" + "\n".join(wrong)
 
 
