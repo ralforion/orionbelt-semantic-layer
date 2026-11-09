@@ -639,7 +639,7 @@ class SemanticRouter:
         3. ``__default__`` session (single-model preload, MCP stdio,
            tests).
         4. ``database`` matches a model in some other session's store
-           by name (single unambiguous match).
+           by name (single unambiguous match), while sessions are listed.
         5. ``database='orionbelt'`` with exactly one listed model loaded —
            fall back to that single model (the demo case).
 
@@ -672,9 +672,12 @@ class SemanticRouter:
 
         # Last-resort scan across all sessions for the case where the
         # client passed a database name that doesn't match a session id
-        # but does identify a model in some other session.
+        # but does identify a model in some other session. Only while
+        # sessions are listed: the scan finds a REST session without its id
+        # (``database=''`` matches any model).
         matches: list[tuple[str, _ResolvedTarget]] = []
-        for session_summary in self._sessions.list_sessions():
+        listed = self._sessions.list_sessions() if self._list_sessions else []
+        for session_summary in listed:
             session_id = session_summary.session_id
             target = self._first_model_in(session_id, model_id=database or None)
             if target is not None:

@@ -330,19 +330,25 @@ def test_the_model_alias_reads_a_session_only_while_listing_is_on(list_sessions:
     assert b"D" in [tag for tag, _ in _parse_frames(own)]
 
 
+@pytest.mark.parametrize("database", ["orionbelt", "", "model id"])
 @pytest.mark.parametrize("list_sessions", [True, False])
-def test_the_brand_fallback_reads_a_session_only_while_listing_is_on(list_sessions: bool) -> None:
-    """With one model loaded, ``database=orionbelt`` reads it: a hidden session it does not."""
+def test_the_fallbacks_read_a_session_only_while_listing_is_on(
+    list_sessions: bool, database: str
+) -> None:
+    """With one model loaded, the brand database, an empty one and the model's id
+    read it: a hidden session they do not."""
 
     router, session_id = _router_with_a_rest_session(list_sessions)
+    store = router._sessions.get_store(session_id)  # noqa: SLF001
+    if database == "model id":
+        database = store.list_models()[0].model_id
     sql = 'SELECT "Customer Country" FROM model'
     if list_sessions:
-        target = router._resolve_target("orionbelt", sql)  # noqa: SLF001
-        assert target.store is router._sessions.get_store(session_id)  # noqa: SLF001
+        assert router._resolve_target(database, sql).store is store  # noqa: SLF001
     else:
         with pytest.raises(_ModelNotFoundError):
-            router._resolve_target("orionbelt", sql)  # noqa: SLF001
-    assert router._resolve_target(session_id, sql).model_id  # noqa: SLF001
+            router._resolve_target(database, sql)  # noqa: SLF001
+    assert router._resolve_target(session_id, sql).store is store  # noqa: SLF001
 
 
 def test_startup_passes_the_session_listing_setting(monkeypatch: pytest.MonkeyPatch) -> None:
