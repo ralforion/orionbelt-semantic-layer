@@ -70,6 +70,34 @@ class TestCoalesceCompilation:
         result = CompilationPipeline().compile(query, model, "postgres")
         assert 'ORDER BY "Employee"' in result.sql
 
+    @pytest.mark.parametrize(
+        ("extra", "order_by"),
+        [
+            ({"limit": 2}, 'ORDER BY "Employee" ASC'),
+            ({"grouping": "rollup"}, 'ORDER BY "Employee" ASC NULLS FIRST'),
+            ({"grouping": "cube"}, 'ORDER BY "Employee" ASC NULLS FIRST'),
+        ],
+        ids=["limit", "rollup", "cube"],
+    )
+    def test_default_order_by_coalesce_alias(self, extra: dict[str, object], order_by: str) -> None:
+        # Limited or rolled up, a query is sorted by its dimensions: a
+        # coalesced one by its alias, once. Its members are not in the outer
+        # SELECT, and DuckDB, PostgreSQL and Dremio refused them there.
+        model = _load_model()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=[
+                    CoalesceDimension(
+                        coalesce=["Sales Employee", "Purchase Employee"], alias="Employee"
+                    )
+                ],
+                measures=["Total Sales", "Total Purchase Quantity"],
+            ),
+            **extra,
+        )
+        sql = CompilationPipeline().compile(query, model, "postgres").sql
+        assert sql[sql.rindex("ORDER BY") :].splitlines()[0] == order_by
+
     def test_each_leg_still_projects_only_its_own_role(self) -> None:
         # The leg-level fix (via-aware projection) must still hold even when
         # the outer wrapper coalesces.

@@ -8,8 +8,8 @@ until each key was returned through its flag (``CASE WHEN GROUPING(key) = 0
 THEN key END``): the alias then named an expression holding ``GROUPING()``,
 which Dremio refuses too. The flag now reads the key.
 
-Sorted by a measure: by default a rollup is sorted by its dimensions, which
-for a coalesced one reads its members.
+Rolled up or limited, a query is sorted by its dimensions: a coalesced one by
+its alias, where its members, not in the outer query, were refused.
 """
 
 from __future__ import annotations
@@ -85,22 +85,25 @@ def _number(value: Any) -> Decimal | None:
     return None if value is None else Decimal(str(value))
 
 
+def _rows(
+    target: VendorTarget, store: ModelStore, model_id: str, raw: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The rows of query *raw* on *target*, their column names in lower case."""
+    sql = store.compile_query(model_id, QueryObject.model_validate(raw), target.dialect).sql
+    rows = target.execute(_with_rows(target.dialect, sql))
+    return [{k.lower(): v for k, v in row.items()} for row in rows]
+
+
 def _assert_coalesced(target: VendorTarget) -> None:
     store = ModelStore()
     model_id = store.load_model(MODEL).model_id
+    select = {"dimensions": [REGION], "measures": ["Revenue", "Spend"]}
     wrong = []
     for grouping in ["rollup"] if target.dialect == "mysql" else ["rollup", "cube"]:
         for where in FILTERS:
-            query = QueryObject.model_validate(
-                {
-                    "select": {"dimensions": [REGION], "measures": ["Revenue", "Spend"]},
-                    "where": where,
-                    "grouping": grouping,
-                    "orderBy": [{"field": "Revenue"}],
-                }
+            rows = _rows(
+                target, store, model_id, {"select": select, "where": where, "grouping": grouping}
             )
-            sql = store.compile_query(model_id, query, target.dialect).sql
-            rows = target.execute(_with_rows(target.dialect, sql))
             # A filter on the sales' region filters the sales; the purchases,
             # which do not reach it, are all counted.
             sales = [r for r in SALES if not where or r[0] == "n"]
@@ -118,10 +121,18 @@ def _assert_coalesced(target: VendorTarget) -> None:
                     _number(row["revenue"]),
                     _number(row["spend"]),
                 )
-                for row in ({k.lower(): v for k, v in r.items()} for r in rows)
+                for row in rows
             }
-            if got != expected or len(rows) != len(expected):
-                wrong.append(f"{grouping} {where}: {got} != {expected}")
+            # Sorted by the region, the grand total first.
+            order = [None, *sorted(region for region, flag in expected if not flag)]
+            regions = [row["region"] for row in rows]
+            if got != expected or regions != order:
+                wrong.append(f"{grouping} {where}: {got} != {expected}, {regions} != {order}")
+    # Limited, the first two regions.
+    rows = _rows(target, store, model_id, {"select": select, "limit": 2})
+    got_rows = [(row["region"], _number(row["revenue"]), _number(row["spend"])) for row in rows]
+    if got_rows != [("e", None, Decimal(7)), ("n", Decimal(30), Decimal(5))]:
+        wrong.append(f"limit 2: {got_rows}")
     assert not wrong, f"{target.name}:\n" + "\n".join(wrong)
 
 

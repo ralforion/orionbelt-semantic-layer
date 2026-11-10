@@ -1802,10 +1802,15 @@ class QueryResolver:
                         (ColumnRef(name=f.alias), False, nulls_default)
                     )
             elif ctx.result.dimensions:
-                for dim in ctx.result.dimensions:
-                    ctx.result.order_by_exprs.append(
-                        (ColumnRef(name=dim.name), False, nulls_default)
-                    )
+                # Where independent facts are stacked, a coalesced group is one
+                # column, its alias: its members are not in the outer SELECT,
+                # nor in its GROUP BY. One fact's query returns the members.
+                stacked = ctx.result.requires_cfl and not ctx.result.dimensions_exclude
+                for name in dict.fromkeys(
+                    d.coalesce_alias if stacked and d.coalesce_alias else d.name
+                    for d in ctx.result.dimensions
+                ):
+                    ctx.result.order_by_exprs.append((ColumnRef(name=name), False, nulls_default))
 
         if query.fill:
             self._check_fill(ctx, query)
