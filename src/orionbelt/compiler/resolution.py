@@ -1091,6 +1091,10 @@ class ResolvedQuery:
     where_filters: list[ResolvedFilter] = field(default_factory=list)
     having_filters: list[ResolvedFilter] = field(default_factory=list)
     order_by_exprs: list[tuple[Expr, bool, NullsPosition | None]] = field(default_factory=list)
+    default_order: bool = False
+    """``order_by_exprs`` is :meth:`default_order_by`, added under a limit,
+    rollup or cube where the query has no ``orderBy``: the planner that
+    returns a coalesce group as one column sorts by it there."""
     limit: int | None = None
     offset: int | None = None
     warnings: list[SemanticError] = field(default_factory=list)
@@ -1287,6 +1291,20 @@ class ResolvedQuery:
         deduplicated ones and :attr:`dedup_grain_components`. A wrapper that
         computes a total or grain override leaves these alone."""
         return set(self.dedup_targets) | self.dedup_grain_components
+
+    def default_order_by(
+        self, *, coalesced: bool = False
+    ) -> list[tuple[Expr, bool, NullsPosition | None]]:
+        """The ORDER BY of a query without one under a limit, rollup or cube:
+        each dimension's column, ascending, the totals first under rollup or
+        cube. *coalesced*, where the plan returns a coalesce group as one
+        column, its alias; a star returns its members.
+        """
+        nulls = NullsPosition.FIRST if self.grouping is not None else None
+        names = (
+            d.coalesce_alias if coalesced and d.coalesce_alias else d.name for d in self.dimensions
+        )
+        return [(ColumnRef(name=name), False, nulls) for name in dict.fromkeys(names)]
 
     @property
     def fact_tables(self) -> list[str]:
@@ -1802,10 +1820,10 @@ class QueryResolver:
                         (ColumnRef(name=f.alias), False, nulls_default)
                     )
             elif ctx.result.dimensions:
-                for dim in ctx.result.dimensions:
-                    ctx.result.order_by_exprs.append(
-                        (ColumnRef(name=dim.name), False, nulls_default)
-                    )
+                # Whether a coalesce group is one column is the plan's to say:
+                # a CFL query can still be planned as a star.
+                ctx.result.order_by_exprs = ctx.result.default_order_by()
+                ctx.result.default_order = True
 
         if query.fill:
             self._check_fill(ctx, query)
