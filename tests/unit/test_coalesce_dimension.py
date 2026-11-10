@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
-from orionbelt.compiler.resolution import ResolutionError
+from orionbelt.compiler.resolution import QueryResolver, ResolutionError
 from orionbelt.models.query import (
     CoalesceDimension,
     QueryObject,
@@ -29,6 +30,34 @@ def _load_model():
     raw, src = TrackedLoader().load(_MODEL_PATH)
     model, _ = ReferenceResolver().resolve(raw, src)
     return model
+
+
+# B's measure makes the query CFL, but needs no leg of its own (a filterContext,
+# an empty grain): the planner falls back to a star, which returns X and Y.
+STAR_FALLBACK_MODEL = """\
+version: 1.0
+dataObjects:
+  A:
+    code: a
+    columns:
+      X: {code: x, abstractType: string}
+      Y: {code: y, abstractType: string}
+      Amount: {code: amount, abstractType: int}
+  B:
+    code: b
+    columns:
+      Amount: {code: amount, abstractType: int}
+dimensions:
+  X: {dataObject: A, column: X, resultType: string}
+  Y: {dataObject: A, column: Y, resultType: string}
+measures:
+  Revenue: {columns: [{dataObject: A, column: Amount}], aggregation: sum}
+  Spend:
+    columns: [{dataObject: B, column: Amount}]
+    aggregation: sum
+    filterContext: {mode: FIXED}
+    grain: {mode: FIXED, include: []}
+"""
 
 
 class TestCoalesceCompilation:
@@ -97,6 +126,59 @@ class TestCoalesceCompilation:
         )
         sql = CompilationPipeline().compile(query, model, "postgres").sql
         assert sql[sql.rindex("ORDER BY") :].splitlines()[0] == order_by
+
+    @pytest.mark.parametrize(
+        ("extra", "rows"),
+        [
+            ({"limit": 2}, [("a", "b", 15, 20), ("n", "s", 10, 20)]),
+            (
+                {"grouping": "rollup"},
+                [
+                    (None, None, 25, 20, 1, 1),
+                    ("a", None, 15, 20, 0, 1),
+                    ("a", "b", 15, 20, 0, 0),
+                    ("n", None, 10, 20, 0, 1),
+                    ("n", "s", 10, 20, 0, 0),
+                ],
+            ),
+            (
+                {"grouping": "cube"},
+                [
+                    (None, None, 25, 20, 1, 1),
+                    (None, "b", 15, 20, 1, 0),
+                    (None, "s", 10, 20, 1, 0),
+                    ("a", None, 15, 20, 0, 1),
+                    ("a", "b", 15, 20, 0, 0),
+                    ("n", None, 10, 20, 0, 1),
+                    ("n", "s", 10, 20, 0, 0),
+                ],
+            ),
+        ],
+        ids=["limit", "rollup", "cube"],
+    )
+    def test_default_order_by_members_where_cfl_falls_back_to_a_star(
+        self, extra: dict[str, object], rows: list[tuple[object, ...]]
+    ) -> None:
+        # Sorted by the alias, which the star does not return, every row was
+        # refused: the plan, not the query, says what the columns are.
+        raw, src = TrackedLoader().load_string(STAR_FALLBACK_MODEL)
+        model, result = ReferenceResolver().resolve(raw, src)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=[CoalesceDimension(coalesce=["X", "Y"], alias="XY")],
+                measures=["Revenue", "Spend"],
+            ),
+            **extra,
+        )
+        assert QueryResolver().resolve(query, model).requires_cfl
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert "UNION" not in sql
+        con = duckdb.connect()
+        con.execute("CREATE TABLE a (x VARCHAR, y VARCHAR, amount INT)")
+        con.execute("INSERT INTO a VALUES ('n', 's', 10), ('a', 'b', 15)")
+        con.execute("CREATE TABLE b AS SELECT 20 AS amount")
+        assert con.execute(sql).fetchall() == rows
 
     def test_each_leg_still_projects_only_its_own_role(self) -> None:
         # The leg-level fix (via-aware projection) must still hold even when

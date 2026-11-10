@@ -1024,7 +1024,11 @@ class CFLPlanner:
                 continue
             outer_builder.having(inline_measure_aliases(hf.expression, outer_measure_exprs))
 
-        # ORDER BY and LIMIT — remap to CTE aliases
+        # ORDER BY and LIMIT — remap to CTE aliases. The default sort names the
+        # columns this query returns, a coalesce group's alias, and the passes
+        # wrapping it read the same list.
+        if resolved.default_order:
+            resolved.order_by_exprs = resolved.default_order_by(coalesced=True)
         for expr, desc, nulls in resolved.order_by_exprs:
             outer_builder.order_by(
                 self._remap_cfl_order_by(expr, resolved, model),
