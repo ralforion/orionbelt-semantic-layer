@@ -108,6 +108,7 @@ measures:
       exclude: [Region]
 metrics:
   SD per Revenue: {expression: "{[SD Total]} / {[Revenue]}"}
+  Revenue Share: {expression: "{[Revenue]} / {[Revenue Total]}"}
 """
 
 # id, region, city, amount: region n spans two cities, a NULL region is a
@@ -382,6 +383,26 @@ class TestRewrittenRows:
         rows = _run(con, query)
 
         assert {r[1] for r in rows} == {192}
+
+    @pytest.mark.parametrize(
+        "measures", [["Revenue Share"], ["Revenue Share", "Revenue"]], ids=["alone", "with_a_part"]
+    )
+    def test_a_metric_over_a_windowed_total_beside_a_filter_context(
+        self, con: Any, measures: list[str]
+    ) -> None:
+        """The totals pass rebuilds the metric from its components, over the
+        filter context's query: they are read from its main CTE, where the
+        plan's tables are, rather than computed again from a fact table that
+        query no longer reads."""
+        dimensions = ["Region"]
+        beside = _run(
+            con,
+            {"select": {"dimensions": dimensions, "measures": [*measures, "Revenue Any Region"]}},
+        )
+        alone = _run(con, {"select": {"dimensions": dimensions, "measures": measures}})
+
+        assert sorted((r[: len(measures) + 1] for r in beside), key=repr) == sorted(alone, key=repr)
+        assert {r[0]: r[1] for r in beside}["n"] == 90 / 192
 
 
 CASTS = """\

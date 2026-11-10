@@ -141,6 +141,7 @@ metrics:
     {{type: window, windowFunction: dense_rank, measure: Revenue, partitionBy: [Region]}}
   Ticket Rank:
     {{type: window, windowFunction: dense_rank, measure: Tickets Count, partitionBy: [Region]}}
+  Revenue Share: {{expression: '{{[Revenue]}} / {{[Revenue Total]}}'}}
   Revenue per Customer:
     {{type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}}
   Revenue per Day:
@@ -432,6 +433,17 @@ QUERIES = {
         },
         "where": [{"field": "Region", "op": "=", "value": "EU"}],
         "grouping": "rollup",
+    },
+    # The share of the revenue total, which the totals pass rebuilds from its
+    # components over the filter context's query, not over the fact tables.
+    "a_metric_over_a_total_beside_a_filter_context": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue Share", "Revenue Any Region"]},
+    },
+    "independent_facts_with_a_metric_over_a_total_beside_a_filter_context": {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": ["Revenue Share", "Revenue Any Region", "Tickets Count"],
+        },
     },
     "independent_facts_beside_a_fixed_context_after_a_date_filter": {
         "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
