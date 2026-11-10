@@ -339,6 +339,14 @@ class BigQueryDialect(Dialect):
         "second": "SECOND",
     }
 
+    def _render_today_in_zone(self, zone: str) -> str:
+        """BigQuery counts today in a zone itself: ``CURRENT_DATE(zone)``.
+
+        Without one it is the date in the script's ``@@time_zone``, UTC unless
+        a script sets it; probed, the zone argument wins over a set one.
+        """
+        return f"CURRENT_DATE({self._quote_zone(zone)})"
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """BigQuery has no ``AT TIME ZONE`` outside EXTRACT: ``DATETIME(x, zone)``
         reads a TIMESTAMP as wall clock in that zone, which is the same contract

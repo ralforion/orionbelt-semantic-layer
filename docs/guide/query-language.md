@@ -783,6 +783,8 @@ Without `calendar`, the window rolls: `{unit: month, count: 3}` is the three mon
 
 A week starts on the model's `weekStart` (Monday by default). `toDate` needs `calendar: true`, `include_current: true` and `direction: past`; anything else is `INVALID_RELATIVE_FILTER`.
 
+Today is the date in the model's [`queryTimezone`](functions.md#which-time-zone-a-timestamp-is-read-in) where it sets one, the zone its timestamps are read in; else the database session's.
+
 #### Period Literals
 
 A filter on a date or timestamp field also accepts a **period** as its value: a year (`'2025'`), a quarter (`'2025-Q1'`) or a month (`'2025-03'`). It stands for the whole period, so the comparison holds for every day in it, including the last day's times on a timestamp:

@@ -1602,7 +1602,7 @@ class Dialect(ABC):
             case "last_day":
                 return self._render_last_day(args[0])
             case "current_date":
-                return self._render_current_date()
+                return self._render_today(self._render_current_date())
             case "cast":
                 return self._render_cast_call(args)
             case "to_number":
@@ -2078,6 +2078,33 @@ class Dialect(ABC):
     fresh dialect for each query, so one model's calendar cannot leak into
     another's.
     """
+
+    today_zone: str | None = None
+    """The zone today's date is counted in, where the model reads its
+    timestamps in one: ``settings.queryTimezone``. Unset, today is the
+    database session's.
+
+    Set per compile by the pipeline, as :attr:`week_start` is. A filter on
+    today compares a column read in the query zone with today's date, so the
+    two have to be counted in one zone: on BigQuery, whose ``CURRENT_DATE`` is
+    UTC's by default, a model in New York saw no rows for today from 19:00 on.
+    """
+
+    def _render_today(self, session_today: str) -> str:
+        """Today's date in :attr:`today_zone`, else *session_today*, the session's."""
+        if self.today_zone is None:
+            return session_today
+        return self._render_today_in_zone(self.today_zone)
+
+    def _render_today_in_zone(self, zone: str) -> str:
+        """Default: the current instant read in *zone*, as a date.
+
+        Each dialect reads it as :meth:`_render_in_timezone` reads a timestamp
+        column that knows its instant, so today and the column are read alike,
+        whatever zone the session runs in. ``CURRENT_TIMESTAMP`` is a
+        ``timestamptz`` on DuckDB and Postgres, read with ``AT TIME ZONE``.
+        """
+        return f"CAST((CURRENT_TIMESTAMP AT TIME ZONE {self._quote_zone(zone)}) AS DATE)"
 
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """Default: ANSI ``AT TIME ZONE``, which DuckDB and Postgres share.
@@ -3053,7 +3080,7 @@ class Dialect(ABC):
         the current period at today.
         """
         col_sql = self.compile_expr(column)
-        base = self.current_date_sql()
+        base = self._render_today(self.current_date_sql())
 
         if calendar:
             # The start of the current period, through the same truncation the

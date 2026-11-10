@@ -1112,6 +1112,11 @@ class ClickHouseDialect(Dialect):
         """
         return self._render_null_guard(self._render_named_function(name, args), args)
 
+    def _render_today_in_zone(self, zone: str) -> str:
+        """ClickHouse: ``now()`` is a ``DateTime``, an instant shown in the
+        session's zone, which ``toTimeZone`` shows in *zone* instead."""
+        return f"CAST(toTimeZone(now(), {self._quote_zone(zone)}) AS DATE)"
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """ClickHouse: ``toTimeZone``, which keeps the value's type.
 

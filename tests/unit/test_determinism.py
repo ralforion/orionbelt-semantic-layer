@@ -42,6 +42,11 @@ class TestClockFunctions:
             "GETUTCDATE",
             "SYSTIMESTAMP",
             "UNIX_TIMESTAMP",
+            "CURDATE",
+            "CURTIME",
+            "UTC_DATE",
+            "UTC_TIME",
+            "UTC_TIMESTAMP",
         ],
     )
     def test_clock_function_call_detected(self, fn: str) -> None:

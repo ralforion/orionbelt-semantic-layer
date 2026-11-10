@@ -197,6 +197,20 @@ class DatabricksDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_today_in_zone(self, zone: str) -> str:
+        """Databricks: ``current_timestamp()`` is a ``TIMESTAMP``, an instant,
+        read in *zone* as :meth:`_render_in_timezone` reads one."""
+        now = self._utc_wall_clock("current_timestamp()")
+        return f"CAST(convert_timezone('UTC', {self._quote_zone(zone)}, {now}) AS DATE)"
+
+    @staticmethod
+    def _utc_wall_clock(instant_sql: str) -> str:
+        """The wall-clock time of a ``TIMESTAMP`` in UTC, from its epoch microseconds."""
+        return (
+            f"timestampadd(MICROSECOND, unix_micros({instant_sql}), "
+            "TIMESTAMP_NTZ'1970-01-01 00:00:00')"
+        )
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """Databricks: ``convert_timezone``, which answers the wall-clock time
         in *zone* as a ``TIMESTAMP_NTZ``, as every other engine returns it.
@@ -215,11 +229,7 @@ class DatabricksDialect(Dialect):
         target = self._quote_zone(zone)
         if from_zone is not None:
             return f"convert_timezone({self._quote_zone(from_zone)}, {target}, {rendered})"
-        in_utc = (
-            f"timestampadd(MICROSECOND, unix_micros({rendered}), "
-            "TIMESTAMP_NTZ'1970-01-01 00:00:00')"
-        )
-        return f"convert_timezone('UTC', {target}, {in_utc})"
+        return f"convert_timezone('UTC', {target}, {self._utc_wall_clock(rendered)})"
 
     def _render_week_start_sunday(self, value: Expr) -> str:
         """Spark's ``dayofweek`` numbers Sunday as 1, so the offset is one less."""
