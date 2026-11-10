@@ -425,6 +425,14 @@ QUERIES = {
         "where": [{"field": "Region", "op": "in", "value": ["EU", "US"]}],
         "grouping": "rollup",
     },
+    "independent_facts_rolled_up_beside_filter_contexts_in_one_region": {
+        "select": {
+            "dimensions": ["Region", "Order Date:month"],
+            "measures": ["Revenue Any Region", "Revenue Since February", "Tickets Count"],
+        },
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+        "grouping": "rollup",
+    },
     "independent_facts_beside_a_fixed_context_after_a_date_filter": {
         "select": {"dimensions": ["Region"], "measures": ["Revenue All", "Tickets Count"]},
         "where": [{"field": "Order Date", "op": ">=", "value": "2024-03-05"}],
