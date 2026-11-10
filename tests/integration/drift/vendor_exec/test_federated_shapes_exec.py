@@ -584,6 +584,19 @@ LATE_QUERIES: dict[str, Any] = {
         "grouping": "rollup",
     },
 }
+# A static filter on the tickets, which a filter context dropping the region
+# keeps: the orders' own scan does not read the tickets, and one database
+# applied it there too.
+SEVERE = "filters:\n  - {dataObject: Tickets, column: Severity, operator: equals, value: high}\n"
+SEVERE_QUERIES: dict[str, Any] = {
+    "independent_facts_beside_a_context_after_a_static_filter_on_the_other_fact": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue Any Region", "Tickets Count"]},
+    },
+    "independent_facts_in_one_region_beside_a_context_after_a_static_filter_on_the_other_fact": {
+        "select": {"dimensions": ["Region"], "measures": ["Revenue Any Region", "Tickets Count"]},
+        "where": [{"field": "Region", "op": "=", "value": "EU"}],
+    },
+}
 # Sorted where a group, a row or the period of the tickets is NULL, compared in
 # their order: the engine places NULL first or last, and so does the combined
 # answer. Limited without a sort, a query is sorted by its dimensions or fields.
@@ -682,6 +695,7 @@ def _assert_shapes(target: VendorTarget) -> None:
         (STATIC, STATIC_QUERIES),
         (BLANK, STATIC_QUERIES),
         (LATE, LATE_QUERIES),
+        (SEVERE, SEVERE_QUERIES),
     ):
         wrong += _wrong_shapes(target, store, static, queries)
     wrong += _wrong_shapes(target, store, "", ORDERED_QUERIES, ordered=True)

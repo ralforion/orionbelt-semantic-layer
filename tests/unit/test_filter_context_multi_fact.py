@@ -179,14 +179,14 @@ metrics:
 """
 
 
-def _model() -> SemanticModel:
-    raw, source_map = TrackedLoader().load_string(MODEL_YAML)
+def _model(static: str = "") -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(MODEL_YAML + static)
     model, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     return model
 
 
-def _sql(measures: list[str], dimensions: list[str] | None = None) -> str:
+def _sql(measures: list[str], dimensions: list[str] | None = None, static: str = "") -> str:
     return PIPELINE.compile(
         QueryObject(
             select=QuerySelect(
@@ -194,7 +194,7 @@ def _sql(measures: list[str], dimensions: list[str] | None = None) -> str:
             ),
             where=[QueryFilter(field="Day", op=FilterOperator.EQUALS, value=1)],
         ),
-        _model(),
+        _model(static),
         "duckdb",
     ).sql
 
@@ -223,12 +223,12 @@ def _connect() -> duckdb.DuckDBPyConnection:
 
 
 def _keyed(
-    measures: list[str], dimensions: list[str] | None = None
+    measures: list[str], dimensions: list[str] | None = None, static: str = ""
 ) -> dict[tuple, dict[str, float | None]]:
     """Rows as ``{dimension tuple: {measure: value}}``, for queries whose row
     sets differ - a union brings rows one fact alone would not have."""
     dims = ["Month"] if dimensions is None else dimensions
-    result = _connect().execute(_sql(measures, dimensions)).fetchdf()
+    result = _connect().execute(_sql(measures, dimensions, static)).fetchdf()
     out: dict[tuple, dict[str, float | None]] = {}
     for row in result.to_dict("records"):
         key = tuple(None if _is_null(row[d]) else row[d] for d in dims)
@@ -314,6 +314,25 @@ class TestTheValueDoesNotDependOnWhatElseIsSelected:
             "Unfiltered Revenue": [40.0, 5.0],
             "Refund Amount": [1.0, 4.0],
         }
+
+
+# A static filter on the refunds: month 1's refund of 1 is left out.
+_REFUNDS_OVER_2 = "filters:\n  - {dataObject: Refunds, column: Refund, operator: gt, value: 2}\n"
+
+
+class TestAStaticFilterOnTheOtherFact:
+    """A static filter applies where relevant: one on the refunds is the
+    refunds leg's. The revenue's scan applied it too, kept by a context that
+    drops only the day, and named a table that scan does not read."""
+
+    @pytest.mark.parametrize("measure", _FILTER_CONTEXTS)
+    def test_alone_and_alongside_the_other_fact(self, measure: str) -> None:
+        together = _keyed([measure, "Refund Amount"], static=_REFUNDS_OVER_2)
+        alone = _keyed([measure], static=_REFUNDS_OVER_2)
+        assert {k: v[measure] for k, v in together.items()} == {
+            k: v[measure] for k, v in alone.items()
+        }
+        assert {k: v["Refund Amount"] for k, v in together.items()} == {(1,): None, (2,): 4.0}
 
 
 # Two facts in the union, plus the isolated measure - the shape the wrapper has
