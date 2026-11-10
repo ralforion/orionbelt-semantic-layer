@@ -266,6 +266,11 @@ class SnowflakeDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_today_in_zone(self, zone: str) -> str:
+        """Snowflake: ``CURRENT_TIMESTAMP()`` is a ``TIMESTAMP_LTZ``, an instant,
+        which the two-argument ``CONVERT_TIMEZONE`` reads in *zone*."""
+        return f"CAST(CONVERT_TIMEZONE({self._quote_zone(zone)}, CURRENT_TIMESTAMP()) AS DATE)"
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """Snowflake: ``CONVERT_TIMEZONE``, whose two-argument form reads an
         aware value in *zone* and whose three-argument form declares a naive

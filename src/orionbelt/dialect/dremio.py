@@ -446,6 +446,11 @@ class DremioDialect(Dialect):
         """
         return self._render_concat_null_guard(args)
 
+    def _render_today_in_zone(self, zone: str) -> str:
+        """Dremio: ``CURRENT_TIMESTAMP`` is UTC's, which the two-argument
+        ``CONVERT_TIMEZONE`` reads in *zone*."""
+        return f"CAST(CONVERT_TIMEZONE({self._quote_zone(zone)}, CURRENT_TIMESTAMP) AS DATE)"
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """Dremio: ``CONVERT_TIMEZONE``, three-argument form when the source
         zone has to be declared, two-argument when the value knows its own.

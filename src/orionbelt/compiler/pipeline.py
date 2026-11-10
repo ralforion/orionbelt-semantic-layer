@@ -365,6 +365,7 @@ class CompilationPipeline:
         query: QueryObject,
         model: SemanticModel,
         dialect_name: str,
+        today_zone: str | None = None,
     ) -> CompilationResult:
         # Each dimension role is joined under its own alias, which everything
         # downstream takes from a data object's name (see ``models.roles``).
@@ -380,6 +381,12 @@ class CompilationPipeline:
         # calendar can be set on it without leaking into another query.
         if model.settings is not None:
             dialect.week_start = model.settings.week_start
+        # Today is counted in the zone the model reads its timestamps in. A
+        # federated combine step's model leaves that zone out, its legs having
+        # read the timestamps in it already, so the plan passes it in.
+        dialect.today_zone = today_zone or (
+            model.settings.query_timezone if model.settings else None
+        )
 
         qualify_table = _table_qualifier(dialect)
 
@@ -554,6 +561,7 @@ class CompilationPipeline:
         from orionbelt.service.federated_executor import federation_limits
 
         default_timezone = model.settings.default_timezone if model.settings else None
+        query_timezone = model.settings.query_timezone if model.settings else None
 
         def plan_part(part: QueryObject, part_model: SemanticModel) -> FederatedPlan:
             qualify_table = _table_qualifier(DialectRegistry.get(dialect_name))
@@ -575,7 +583,7 @@ class CompilationPipeline:
             model,
             resolved,
             dialect_name=dialect_name,
-            compile_leg=lambda q, m, d: self._compile(q, m, d).sql,
+            compile_leg=lambda q, m, d: self._compile(q, m, d, today_zone=query_timezone).sql,
             source_dialect=source_dialect,
             leg_row_limit=federation_limits().max_leg_rows,
             plan_part=plan_part,

@@ -12,6 +12,7 @@ executed values in ``tests/integration/drift/vendor_exec/test_function_exec.py``
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import pytest
 
@@ -800,6 +801,91 @@ measures:
             "convert_timezone('UTC', 'Europe/Zagreb', timestampadd(MICROSECOND, "
             "unix_micros(`Events`.`occurred_at`), TIMESTAMP_NTZ'1970-01-01 00:00:00'))"
         ) in sql
+
+
+_LAST_WEEK = {
+    "field": "Occurred On",
+    "op": "relative",
+    "value": {"unit": "day", "count": 7, "direction": "past"},
+}
+
+
+def _today_sql(settings: str, query: dict[str, Any], dialect: str = "duckdb") -> str:
+    from orionbelt.compiler.pipeline import CompilationPipeline
+
+    yaml_text = _TZ_MODEL_YAML.format(settings=settings, ttype="timestamp_tz").replace(
+        "  Event Count:\n",
+        "  Days Since Last:\n"
+        "    expression: \"date_diff('day', {[Events].[Occurred On]}, current_date())\"\n"
+        "    aggregation: min\n"
+        "    resultType: int\n"
+        "  Event Count:\n",
+    )
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    return CompilationPipeline().compile(QueryObject.model_validate(query), model, dialect).sql
+
+
+class TestTodayInTheQueryZone:
+    """Today is counted in ``queryTimezone`` where the model sets one.
+
+    A filter on today compares a column read in the query zone with today's
+    date, so both have to be counted in one zone. Read in the session's, a
+    BigQuery model in New York, whose ``CURRENT_DATE`` is UTC's by default, saw
+    no rows for today from 19:00 on.
+    """
+
+    QUERY_ZONE = "  queryTimezone: America/New_York"
+    BY_DAY = {"select": {"dimensions": ["Occurred On"], "measures": ["Event Count"]}}
+
+    def test_a_relative_filter_counts_from_today_in_the_query_zone(self) -> None:
+        sql = _today_sql(self.QUERY_ZONE, {**self.BY_DAY, "where": [_LAST_WEEK]})
+        assert "CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York'" in sql
+        assert "CURRENT_DATE" not in sql
+
+    def test_current_date_in_an_expression_is_the_query_zones(self) -> None:
+        query = {"select": {"dimensions": ["Occurred On"], "measures": ["Days Since Last"]}}
+        sql = _today_sql(self.QUERY_ZONE, query)
+        assert "CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York'" in sql
+        assert "CURRENT_DATE" not in sql
+
+    def test_without_a_query_zone_today_is_the_sessions(self) -> None:
+        sql = _today_sql(
+            "  defaultTimezone: America/New_York", {**self.BY_DAY, "where": [_LAST_WEEK]}
+        )
+        assert "CURRENT_DATE" in sql
+        assert "AT TIME ZONE" not in sql
+
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            # Probed on each engine with its session 25 hours from the zone.
+            ("duckdb", "CAST((CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York') AS DATE)"),
+            ("postgres", "CAST((CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York') AS DATE)"),
+            ("bigquery", "CURRENT_DATE('America/New_York')"),
+            (
+                "snowflake",
+                "CAST(CONVERT_TIMEZONE('America/New_York', CURRENT_TIMESTAMP()) AS DATE)",
+            ),
+            ("clickhouse", "CAST(toTimeZone(now(), 'America/New_York') AS DATE)"),
+            (
+                "databricks",
+                "CAST(convert_timezone('UTC', 'America/New_York', timestampadd(MICROSECOND, "
+                "unix_micros(current_timestamp()), TIMESTAMP_NTZ'1970-01-01 00:00:00')) AS DATE)",
+            ),
+            ("mysql", "CAST(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'America/New_York') AS DATE)"),
+            ("dremio", "CAST(CONVERT_TIMEZONE('America/New_York', CURRENT_TIMESTAMP) AS DATE)"),
+        ],
+    )
+    def test_every_dialect_reads_the_current_instant_in_the_zone(
+        self, dialect: str, expected: str
+    ) -> None:
+        from orionbelt.ast.nodes import FunctionCall
+
+        engine = DialectRegistry.get(dialect)
+        engine.today_zone = "America/New_York"
+        assert engine.compile_expr(FunctionCall(name="current_date", args=[])) == expected
 
 
 class TestWeeklyGrainFollowsTheCalendar:

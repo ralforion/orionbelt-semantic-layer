@@ -1792,6 +1792,20 @@ class TestFiltersAfterTheJoin:
         assert "CURRENT_DATE" not in plan.legs[0].sql
         assert "CURRENT_DATE" in plan.combine_sql
 
+    def test_the_combine_step_counts_today_in_the_query_zone(self) -> None:
+        """Its model leaves the zone out, the legs having read the timestamps
+        in it, so it is passed in: today is the query zone's, not the server's."""
+        query = {
+            "select": {"dimensions": ["Region"], "measures": ["Revenue"]},
+            "where": [_either(NEXT_DAYS, US)],
+        }
+        yaml = model_yaml(federated=True, settings="  queryTimezone: America/New_York\n")
+
+        plan = _compile(yaml, query).federation
+
+        assert "CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York'" in plan.combine_sql
+        assert "CURRENT_DATE" not in plan.combine_sql
+
 
 PERIOD_METRICS = (
     "  Running Revenue: {type: cumulative, measure: Revenue, timeDimension: Order Date}\n"

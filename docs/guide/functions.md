@@ -175,7 +175,7 @@ since Dremio is the one dialect that puts them in identifier position.
 | `date_diff(unit, start, end)` | int | **Boundaries crossed**, signed — not complete units elapsed |
 | `extract(unit, x)` | int | **ISO week numbering**, and `'day_of_week'` as **ISO, Monday 1 to Sunday 7**; an integer, not a numeric |
 | `last_day(x)` | date | Last day of `x`'s month |
-| `current_date()` | date | Today, per the database session |
+| `current_date()` | date | Today, in the model's [`queryTimezone`](#which-time-zone-a-timestamp-is-read-in) where it sets one, else per the database session |
 | `json_value(x, path)` | string | Scalar at a **literal JSONPath**; NULL when absent or when the path resolves to an object or array |
 | `cast(x, 'type')` | argument | To a **quoted OBML type**, `decimal(p, s)` or `double` only; a decimal target rounds ties away from zero, except where ClickHouse has no room for the digit the rounding reads |
 | `to_number(x)` | float | The number `x` names, or **NULL** when it does not name one; surrounding whitespace ignored |
@@ -410,6 +410,18 @@ Two column kinds are treated differently, because they are different questions:
 The session's own zone is deliberately not used as the fallback: it is a fact
 about the connection, not about the data, and reading it into the SQL would make
 the same query mean different things on different connections.
+
+Today's date is counted in `queryTimezone` too: `current_date()` and every
+[`relative` filter](query-language.md#range-operators) ("the last 7
+days", "this month"). A filter on today compares a column read in the query
+zone with today's date, so both have to be read in one zone. Counted in the
+session's, a store in New York whose orders are filtered to today on BigQuery,
+where `CURRENT_DATE` is UTC's by default, sees no orders from 19:00 on (20:00 in summer):
+by then UTC is already on the next day. The current moment is read in the zone
+as a column is (`CAST(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York' AS
+DATE)` on DuckDB and Postgres, `CURRENT_DATE('America/New_York')` on BigQuery),
+whatever zone the session runs in. Without `queryTimezone`, today is the
+session's, as before.
 
 ## Changing the week start
 

@@ -933,10 +933,15 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
         min_args=0,
         max_args=0,
         result_type="date",
-        summary="Today's date, per the database session.",
+        summary=(
+            "Today's date: in the model's ``queryTimezone`` where it sets one, else "
+            "per the database session."
+        ),
         semantics=(
-            "Written with parentheses, which Postgres rejects, so it renders as the "
-            "bare keyword there. ``current_timestamp`` is deliberately not in the "
+            "Counted in ``queryTimezone`` as its timestamp columns are read, so a "
+            "filter on today compares one zone's dates. Written with parentheses, "
+            "which Postgres rejects, so it renders as the bare keyword there. "
+            "``current_timestamp`` is deliberately not in the "
             "catalog: the engines disagree on whether it carries a time zone, and "
             "pinning that needs a stated stance on session time zones rather than a "
             "rewrite."

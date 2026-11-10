@@ -615,6 +615,14 @@ class MySQLDialect(Dialect):
         "second": "%Y-%m-%d %H:%i:%s",
     }
 
+    def _render_today_in_zone(self, zone: str) -> str:
+        """MySQL: the UTC clock read in *zone*, so the session's zone has no say.
+
+        ``NOW()`` is the session's wall clock, which ``SYSTEM`` names no zone
+        for; ``UTC_TIMESTAMP()`` is UTC's whatever the session runs in.
+        """
+        return f"CAST(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', {self._quote_zone(zone)}) AS DATE)"
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """MySQL: ``CONVERT_TZ``, which needs both ends named.
 

@@ -21,6 +21,9 @@ Gated by the ``docker`` pytest marker::
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 import orionbelt.dialect  # noqa: F401  -- triggers dialect registrations
@@ -237,6 +240,65 @@ def test_bigquery_query_timezone(vendor_bigquery: VendorTarget) -> None:
 
 def test_databricks_query_timezone(vendor_databricks: VendorTarget) -> None:
     _assert_timezone_conversion(vendor_databricks)
+
+
+# Today, in the query zone. The two zones are 25 hours apart, so their dates
+# always differ: a today that ignored the zone would get one of them wrong,
+# whatever zone the session runs in.
+_TODAY_ZONES = ("Pacific/Kiritimati", "Pacific/Pago_Pago")
+
+
+def _assert_today_in_query_zone(vendor: VendorTarget) -> None:
+    """``current_date()`` under ``queryTimezone``, executed, against the clock."""
+
+    def today(zone: str) -> str:
+        engine = DialectRegistry.get(vendor.dialect)
+        engine.today_zone = zone
+        return engine.compile_expr(FunctionCall(name="current_date", args=[]))
+
+    def dates() -> list[str]:
+        return [datetime.now(ZoneInfo(zone)).date().isoformat() for zone in _TODAY_ZONES]
+
+    sql = "SELECT " + ", ".join(f"{today(zone)} AS c{i}" for i, zone in enumerate(_TODAY_ZONES))
+    # Midnight may pass in a zone while the query runs: either date is its today.
+    before = dates()
+    row = list(vendor.execute(sql)[0].values())
+    after = dates()
+    for i, zone in enumerate(_TODAY_ZONES):
+        got = str(row[i])[:10]
+        assert got in {before[i], after[i]}, f"{vendor.name} {zone}: {got!r}\nSQL: {sql}"
+
+
+def test_duckdb_today_in_query_zone(vendor_duckdb: VendorTarget) -> None:
+    _assert_today_in_query_zone(vendor_duckdb)
+
+
+def test_postgres_today_in_query_zone(vendor_postgres: VendorTarget) -> None:
+    _assert_today_in_query_zone(vendor_postgres)
+
+
+def test_mysql_today_in_query_zone(vendor_mysql: VendorTarget) -> None:
+    _assert_today_in_query_zone(vendor_mysql)
+
+
+def test_clickhouse_today_in_query_zone(vendor_clickhouse: VendorTarget) -> None:
+    _assert_today_in_query_zone(vendor_clickhouse)
+
+
+def test_snowflake_today_in_query_zone(vendor_snowflake: VendorTarget) -> None:
+    _assert_today_in_query_zone(vendor_snowflake)
+
+
+def test_bigquery_today_in_query_zone(vendor_bigquery: VendorTarget) -> None:
+    _assert_today_in_query_zone(vendor_bigquery)
+
+
+def test_databricks_today_in_query_zone(vendor_databricks: VendorTarget) -> None:
+    _assert_today_in_query_zone(vendor_databricks)
+
+
+def test_dremio_today_in_query_zone(vendor_dremio: VendorTarget) -> None:
+    _assert_today_in_query_zone(vendor_dremio)
 
 
 # --- round over a float column -----------------------------------------------
