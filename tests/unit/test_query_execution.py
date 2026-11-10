@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 from orionbelt.cache.key import build_cache_key, build_datasource_key
 from orionbelt.cache.ttl import NoCacheReason
 from orionbelt.service.query_execution import resolve_cache_plan
@@ -98,3 +100,82 @@ class TestCacheability:
         assert plan.cacheable
         assert plan.ttl_outcome.ttl is not None
         assert plan.ttl_outcome.ttl.seconds == 300
+
+
+_TODAY_MODEL_YAML = """\
+version: 1.0
+settings:
+{settings}
+dataObjects:
+  Orders:
+    code: orders
+    columns:
+      Order ID: {{code: id, abstractType: string}}
+      Ordered On: {{code: ordered_on, abstractType: date}}
+dimensions:
+  Ordered On: {{dataObject: Orders, column: Ordered On, resultType: date}}
+measures:
+  Order Count:
+    columns: [{{dataObject: Orders, column: Order ID}}]
+    aggregation: count
+    resultType: int
+  Days Since Last:
+    expression: "date_diff('day', {{[Orders].[Ordered On]}}, current_date())"
+    aggregation: min
+    resultType: int
+"""
+
+_LAST_WEEK = {
+    "select": {"dimensions": ["Ordered On"], "measures": ["Order Count"]},
+    "where": [
+        {"field": "Ordered On", "op": "relative", "value": {"unit": "day", "count": 7}},
+    ],
+}
+_DAYS_SINCE = {"select": {"dimensions": ["Ordered On"], "measures": ["Days Since Last"]}}
+
+
+class TestTodayIsNeverCached:
+    """A query on today, as each dialect compiles it, is never cached.
+
+    The cache keys on the SQL, so a cached "last 7 days" would answer with
+    yesterday's window after midnight. MySQL's ``CURDATE()`` (a relative
+    filter) and ``UTC_TIMESTAMP()`` (today in ``queryTimezone``) were cached
+    for the default TTL.
+    """
+
+    @pytest.mark.parametrize("query", [_LAST_WEEK, _DAYS_SINCE], ids=["relative", "current_date"])
+    @pytest.mark.parametrize(
+        "settings",
+        ["  defaultDialect: duckdb", "  queryTimezone: America/New_York"],
+        ids=["session_zone", "query_zone"],
+    )
+    @pytest.mark.parametrize(
+        "dialect",
+        [
+            "bigquery",
+            "clickhouse",
+            "databricks",
+            "dremio",
+            "duckdb",
+            "mysql",
+            "postgres",
+            "snowflake",
+        ],
+    )
+    def test_today_is_not_cacheable(
+        self, dialect: str, settings: str, query: dict[str, Any]
+    ) -> None:
+        from orionbelt.compiler.pipeline import CompilationPipeline
+        from orionbelt.models.query import QueryObject
+        from orionbelt.parser.loader import TrackedLoader
+        from orionbelt.parser.resolver import ReferenceResolver
+
+        raw, source_map = TrackedLoader().load_string(_TODAY_MODEL_YAML.format(settings=settings))
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        sql = CompilationPipeline().compile(QueryObject.model_validate(query), model, dialect).sql
+
+        plan = _plan(dialect=dialect, sql=sql, physical_tables=["orders"])
+
+        assert not plan.cacheable, sql
+        assert plan.ttl_outcome.no_cache_reason == NoCacheReason.NON_DETERMINISTIC_SQL

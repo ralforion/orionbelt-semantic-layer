@@ -49,6 +49,15 @@ _NONDETERMINISTIC_FNS: frozenset[str] = frozenset(
         "SYSTIMESTAMP",
         "TODAY",
         "UNIX_TIMESTAMP",
+        # MySQL: CURDATE() is today in a relative filter, UTC_TIMESTAMP() the
+        # current moment read in a model's queryTimezone. Their bare forms
+        # are not listed: MySQL quotes identifiers with backticks, which are
+        # not stripped, so a column named `utc_date` would match.
+        "CURDATE",
+        "CURTIME",
+        "UTC_DATE",
+        "UTC_TIME",
+        "UTC_TIMESTAMP",
     }
 )
 
