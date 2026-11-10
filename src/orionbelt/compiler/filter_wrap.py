@@ -350,12 +350,15 @@ def _plan_isolated_scan(
         # A filter this scan applies inside a conformed subquery stays out of
         # its WHERE, which does not join the conformed fact; the outer plan
         # kept it there only for another leg that reads it natively.
+        # A static filter applies where relevant, and this scan's resolution
+        # said where: one on another fact, which the outer query's leg for that
+        # fact reads, is no table of this scan.
         # Lists, compared by equality: an expression holds lists (an IN's
         # values, an EXISTS body) and cannot be hashed.
         pushed = [wf.expression for kept in sub_resolved.conformed_filters.values() for wf in kept]
         native = [wf.expression for wf in sub_resolved.where_filters]
         sub_resolved.where_filters = [
-            f for f in filters if f.expression not in pushed or f.expression in native
+            f for f in filters if f.expression in native or not (f.static or f.expression in pushed)
         ]
         # Filters applied inside a conformed subquery are WHERE filters all the
         # same: the context drops them as it drops the others. The sub-query
