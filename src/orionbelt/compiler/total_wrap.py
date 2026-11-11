@@ -140,9 +140,9 @@ def _needs_window_wrap(measure: ResolvedMeasure, dedup_computed: Container[str])
 def is_avg_total(measure: ResolvedMeasure, dedup_computed: Container[str]) -> bool:
     """Whether a measure is an AVG total/grain-override, needing sum+count helpers.
 
-    Public because it is also a *precondition*: the helpers decompose the
-    aggregate's argument, so this measure cannot be window-wrapped over a value
-    some earlier pass already averaged. ``compiler.passes`` refuses that.
+    The helpers decompose the aggregate's argument, so they are computed where
+    it is: in the plan's own query, also when a filter context left this pass
+    only its averaged values (:func:`_avg_helpers`).
     """
     return _needs_window_wrap(measure, dedup_computed) and measure.aggregation.upper() == "AVG"
 
@@ -221,6 +221,17 @@ def _component_value(comp: ResolvedMeasure, resolved: ResolvedQuery) -> Expr:
     off in whichever order they wrap the aggregate.
     """
     return _bare(resolved.projected_expressions.get(comp.name, comp.expression), comp)
+
+
+def _reads_column(node: object, table: str, name: str | None) -> bool:
+    """Whether *node* reads column *name* of relation *table*."""
+    if isinstance(node, ColumnRef):
+        return node.table == table and node.name == name
+    if isinstance(node, (list, tuple)):
+        return any(_reads_column(child, table, name) for child in node)
+    if is_dataclass(node) and not isinstance(node, type):
+        return any(_reads_column(getattr(node, f.name), table, name) for f in fields(node))
+    return False
 
 
 def _relation_names(node: object) -> set[str]:
@@ -427,6 +438,8 @@ def wrap_with_totals(
     planned = {c.alias: c.expr for c in rows.columns if isinstance(c, AliasedExpr)}
     in_rows: list[AliasedExpr] = []
     in_rows_taken = {alias.casefold() for alias in planned}
+    # The plan's columns this pass computes again, from its CTE or beside it.
+    replaced: set[str] = set()
 
     def from_rows(value: Expr, name: str) -> Expr:
         """*value*, over the plan's tables, computed in their CTE and read from it."""
@@ -438,6 +451,7 @@ def wrap_with_totals(
         alias = _get_alias(col_node)
         if alias and alias in decompose_metrics:
             # Replace metric column with its individual component columns
+            replaced.add(alias)
             metric = next(m for m in resolved.measures if m.name == alias)
             for comp in metric_leaf_components(metric, resolved.metric_components):
                 if comp.name in apart_components or comp.name in projected_inputs:
@@ -449,9 +463,11 @@ def wrap_with_totals(
                 if is_avg_total(comp, resolved.dedup_computed):
                     # AVG total needs sum + count helper columns
                     comp_expr = resolved.projected_expressions.get(comp.name, comp.expression)
-                    sums, counts = helpers[comp.name]
-                    base_columns.append(_build_avg_helpers_base_col("SUM", comp_expr, sums))
-                    base_columns.append(_build_avg_helpers_base_col("COUNT", comp_expr, counts))
+                    if rows is not ast and comp.name in planned:
+                        comp_expr = planned[comp.name]
+                    base_columns += _avg_helpers(
+                        comp_expr, helpers[comp.name], rows is ast, from_rows
+                    )
                     continue
                 # A metric reads its components bare, as the planner inlines
                 # them. A selected measure's column is cast to its type, so the
@@ -479,15 +495,19 @@ def wrap_with_totals(
         elif alias and _is_avg_window_wrap_by_name(alias, resolved):
             # AVG total/grain-override direct measure: replace with sum + count helpers
             measure = next(m for m in resolved.measures if m.name == alias)
-            sums, counts = helpers[measure.name]
-            base_columns.append(_build_avg_helpers_base_col("SUM", col_node, sums))
-            base_columns.append(_build_avg_helpers_base_col("COUNT", col_node, counts))
+            moved = rows is not ast and alias in planned
+            if moved:
+                replaced.add(alias)
+            source = planned[alias] if moved else col_node
+            base_columns += _avg_helpers(source, helpers[measure.name], not moved, from_rows)
         elif alias and _is_window_wrapped_by_name(alias, resolved):
             # A window re-aggregates this column, so the planner's cast and the
             # declared default come off it here and go back on around the window.
             assert isinstance(col_node, AliasedExpr)
             measure = next(m for m in resolved.measures if m.name == alias)
             moved = rows is not ast and alias in planned
+            if moved:
+                replaced.add(alias)
             uncast, recasts[alias] = _peel_cast(planned[alias] if moved else col_node.expr)
             value = _peel_default(uncast, measure)
             base_columns.append(
@@ -574,8 +594,18 @@ def wrap_with_totals(
     # --- Assemble final Select ---
     # The totals before the base CTE: they read the plan's tables, one of which
     # may be named like it.
+    # A column computed again is dropped from the plan's CTE unless the outer
+    # query reads it there: computed for nobody, a rolled-up metric's column
+    # failed Dremio's planner ("out of bounds").
+    read: list[object] = [c for c in ast.columns if _get_alias(c) not in replaced]
+    read += [ast.where, ast.having, ast.order_by, ast.joins]
+    kept = [
+        c
+        for c in rows.columns
+        if _get_alias(c) not in replaced or _reads_column(read, MAIN_CTE, _get_alias(c))
+    ]
     ctes = [
-        replace(c, query=replace(rows, columns=[*rows.columns, *in_rows])) if c.query is rows else c
+        replace(c, query=replace(rows, columns=[*kept, *in_rows])) if c.query is rows else c
         for c in ast.ctes
     ]
     all_ctes = [*ctes, *total_ctes, base_cte]
@@ -760,6 +790,25 @@ def _averaged_argument(expr: Expr, helper: str) -> list[Expr] | None:
                 if found is not None:
                     return found
     return None
+
+
+def _avg_helpers(
+    source: Expr,
+    names: tuple[str, str],
+    in_place: bool,
+    from_rows: Callable[[Expr, str], Expr],
+) -> list[AliasedExpr]:
+    """The ``SUM`` and ``COUNT`` base columns an average total divides, named
+    *names*: over *source*'s argument where it stands (*in_place*), or computed
+    in the plan's own CTE beside it and read from there (*from_rows*), where a
+    filter context left this CTE only finished, averaged values."""
+    columns = [
+        _build_avg_helpers_base_col(helper, source, name)
+        for helper, name in zip(("SUM", "COUNT"), names, strict=True)
+    ]
+    if in_place:
+        return columns
+    return [AliasedExpr(expr=from_rows(c.expr, c.alias), alias=c.alias) for c in columns]
 
 
 def _build_avg_helpers_base_col(helper: str, source: Expr, alias: str) -> AliasedExpr:

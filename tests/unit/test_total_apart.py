@@ -325,6 +325,13 @@ class TestGeneratedNames:
         assert {(r[0], r[1]): r[3] for r in rows} == {(r[0], r[1]): by_region[r[0]] for r in rows}
 
 
+def _rounded(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+    """*rows* with their floats to 9 places, in a stable order."""
+    return sorted(
+        (tuple(round(v, 9) if isinstance(v, float) else v for v in r) for r in rows), key=repr
+    )
+
+
 class TestRewrittenRows:
     @pytest.mark.parametrize("measure", list(WHOLE))
     def test_a_total_beside_a_filter_context_reads_the_plans_rows(
@@ -367,21 +374,35 @@ class TestRewrittenRows:
         }
         assert next(r[4] for r in rows if r[5:] == (1, 1)) == _one(con, WHOLE["Revenue Total"])
 
-    def test_a_metric_over_a_total_beside_a_filter_context_is_refused(self) -> None:
-        """The totals pass computes the metric's other components from rows
-        the filter context's wrapper replaced."""
-        query = {
-            "select": {
-                "dimensions": ["Region"],
-                "measures": ["SD per Revenue", "Revenue Any Region"],
-            }
+    @pytest.mark.parametrize(
+        "measures",
+        [["SD per Revenue"], ["Mean Total"], ["Mean Total", "SD per Revenue", "Revenue"]],
+        ids=["metric_over_a_total_apart", "averaged_total", "together"],
+    )
+    @pytest.mark.parametrize("grouping", [None, "rollup", "cube"])
+    def test_a_total_beside_a_filter_context_reads_as_without_it(
+        self, con: Any, measures: list[str], grouping: str | None
+    ) -> None:
+        """Refused before: a metric over a total computed apart, whose other
+        components the totals pass computed from the rows the filter
+        context's wrapper replaced, and an averaged total, whose sum and count
+        helpers it built from that wrapper's averaged values. Both are computed
+        in the plan's own query now."""
+        dimensions = ["Region"] if grouping is None else ["Region", "City"]
+        query: dict[str, Any] = {"select": {"dimensions": dimensions, "measures": measures}}
+        if grouping:
+            query["grouping"] = grouping
+        beside = {
+            **query,
+            "select": {**query["select"], "measures": [*measures, "Revenue Any Region"]},
         }
+        # Columns in select order: the filter context's after the others,
+        # before any rollup flags.
+        context = len(dimensions) + len(measures)
 
-        with pytest.raises(ResolutionError) as caught:
-            _sql(query)
+        rows = [(*r[:context], *r[context + 1 :]) for r in _run(con, beside)]
 
-        assert [e.code for e in caught.value.errors] == ["INCOMPATIBLE_COMBINATION"]
-        assert "'SD Total'" in caught.value.errors[0].message
+        assert _rounded(rows) == _rounded(_run(con, query))
 
     def test_a_windowed_total_beside_a_filter_context_still_compiles(self, con: Any) -> None:
         query = {

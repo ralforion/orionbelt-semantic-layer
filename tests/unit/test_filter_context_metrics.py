@@ -472,21 +472,22 @@ class TestAMetricMixingAContextWithATotal:
         ],
         ids=["through a metric", "side by side"],
     )
-    def test_an_averaged_total_is_refused(self, measures: list[str]) -> None:
+    def test_an_averaged_total_is_answered(self, measures: list[str]) -> None:
         """An AVG total decomposes into SUM and COUNT of the aggregate's
-        *argument*, and by the time this wrapper has run the argument is a
-        value that has already been averaged. It was emitting ``SUM(1)`` and
-        ``COUNT(1)`` - neither the right number nor valid SQL - and it did so
-        whether the two met inside a metric or merely in the same query."""
-        with pytest.raises(ResolutionError) as exc:
-            _sql(measures)
-        message = str(exc.value)
-        assert "Grand Avg" in message
-        assert "average" in message
+        *argument*, which this wrapper leaves already averaged: built from its
+        columns, they were ``SUM(1)`` and ``COUNT(1)``, and the query was
+        refused. They are computed in the plan's own query now, where the
+        argument is: 2 and 5 on the filtered day average 3.5, and the month
+        totals 40 and 5 are 40 / 3.5 and 5 / 3.5 of it."""
+        rows = _rows(measures)
+
+        if "Share Of Grand Avg" in measures:
+            assert rows["Share Of Grand Avg"] == pytest.approx([40 / 3.5, 5 / 3.5])
+        else:
+            assert rows == {"Unfiltered Revenue": [40.0, 5.0], "Grand Avg": [3.5, 3.5]}
 
     def test_an_averaged_total_without_a_context_is_untouched(self) -> None:
-        """The refusal is about what filterContext does to the plan, so a query
-        without one still gets its averaged total."""
+        """The same averaged total, without a filterContext beside it."""
         assert _rows(["Grand Avg"])["Grand Avg"] == [3.5, 3.5]
 
 

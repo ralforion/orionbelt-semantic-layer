@@ -56,7 +56,7 @@ from orionbelt.compiler.reaggregate_wrap import (
     wrap_with_reaggregate,
 )
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
-from orionbelt.compiler.total_wrap import computed_apart, is_avg_total, wrap_with_totals
+from orionbelt.compiler.total_wrap import computed_apart, wrap_with_totals
 from orionbelt.compiler.window_wrap import (
     _ddm_window_components,
     axis_dimensions,
@@ -534,47 +534,6 @@ def evaluate_compatibility(
                 ]
             )
 
-    # Rule 2c (raising): an averaged total in a query that also has a
-    # filterContext. ``filter_wrap`` runs first and rewrites the FROM, leaving
-    # every measure as one column of a CTE - which is enough to re-aggregate a
-    # sum, a count, a min or a max over, and not enough for an average.
-    # ``total_wrap`` builds an AVG's grand total from SUM and COUNT of the
-    # aggregate's *argument*, and by then the argument is a value that has
-    # already been averaged; it was emitting ``SUM(1)`` and ``COUNT(1)``,
-    # neither the right number nor valid SQL.
-    if resolved.has_filter_context:
-        candidates = list(resolved.measures) + [
-            comp
-            for m in resolved.measures
-            for comp in metric_leaf_components(m, resolved.metric_components)
-        ]
-        avg_totals = sorted(
-            {c.name for c in candidates if is_avg_total(c, resolved.dedup_computed)}
-        )
-        if avg_totals:
-            listed = ", ".join(f"'{name}'" for name in avg_totals)
-            raise ResolutionError(
-                [
-                    SemanticError(
-                        code="INCOMPATIBLE_COMBINATION",
-                        message=(
-                            f"Measure(s) {listed} average over a total or grain override, in "
-                            f"a query that also has a filterContext. The filterContext is "
-                            f"computed first, in a CTE of its own, and leaves every measure "
-                            f"as one column - enough to re-aggregate a sum or a count over, "
-                            f"and not enough for an average, whose total is built from the "
-                            f"rows it averaged."
-                        ),
-                        path="select.measures",
-                        hint=(
-                            "Total a sum rather than an average, or query the averaged "
-                            "total without the filterContext measure."
-                        ),
-                        context={"measures": avg_totals},
-                    )
-                ]
-            )
-
     _refuse_totals_over_rewritten_rows(resolved)
 
     # Rule 2f (raising): a coalesce group the plan returns as one column, its
@@ -720,10 +679,8 @@ def _refuse_totals_over_rewritten_rows(resolved: ResolvedQuery) -> None:
     2e: a measure the totals pass computes apart (:func:`computed_apart`), in a
     query whose FROM grain dedup or rows without children rewrote first. It is
     computed again over the plan's own rows, which by then are those passes'
-    CTEs of finished values. A filterContext keeps the plan's rows in a CTE,
-    which a selected measure's total is computed from; a metric reading one
-    is refused, since the totals pass computes its other components from
-    rows that wrapper replaced.
+    CTEs of finished values. A filterContext keeps the plan's rows in a CTE of
+    its own, which the totals pass computes from (``total_wrap._rows_of``).
     """
     if not resolved.has_totals or resolved.has_pop or resolved.has_cumulative:
         return  # the totals pass does not run (rule 2)
@@ -732,19 +689,9 @@ def _refuse_totals_over_rewritten_rows(resolved: ResolvedQuery) -> None:
     apart = sorted(n for n, m in candidates.items() if computed_apart(m, resolved))
     if not apart:
         return
-    read_by_metrics = {
-        c.name
-        for measure in resolved.measures
-        for c in metric_leaf_components(measure, resolved.metric_components)
-    }
     rewritten = [
         (label, names)
         for label, applies, names in (
-            (
-                "a filterContext",
-                resolved.has_filter_context,
-                [n for n in apart if n in read_by_metrics],
-            ),
             ("measures deduplicated on a repeated object", bool(resolved.dedup_targets), apart),
             ("rows without children", bool(resolved.childless_legs), apart),
         )

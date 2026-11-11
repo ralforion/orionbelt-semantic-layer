@@ -36,6 +36,12 @@ MODEL = (
     columns: [{dataObject: Sales, column: City}]
     aggregation: count_distinct
     total: true
+  Average Total:
+    columns: [{dataObject: Sales, column: Amount}]
+    aggregation: avg
+    total: true
+metrics:
+  Median per Revenue: {expression: "{[Median Total]} / {[Revenue]}"}
 """
 )
 
@@ -64,6 +70,17 @@ def _at_level(region: str | None, city: str | None, flags: tuple[int, int]) -> D
             for r in ROWS
             if (flags[0] == 1 or r[1] == region) and (flags[1] == 1 or r[2] == city)
         )
+    )
+
+
+def _keyed(
+    target: VendorTarget, query: dict[str, Any], keys: list[str], measures: list[str]
+) -> list[tuple[Any, ...]]:
+    """The rows of *query*: their *keys*, then *measures*, in a stable order."""
+    rows = _run(target, query)
+    return sorted(
+        ((*(row[k] for k in keys), *(_number(row[m.lower()]) for m in measures)) for row in rows),
+        key=repr,
     )
 
 
@@ -105,6 +122,26 @@ def _assert_totals(target: VendorTarget) -> None:
         )
         if got != want:
             wrong.append(f"by region {row['region']}: {got} != {want}")
+    # An averaged total, and a metric over a total computed apart, were refused
+    # beside a filter context: each reads as it does without one.
+    shown = ["Average Total", "Median per Revenue", "Revenue"]
+    for grouping in [None, "rollup"] + ([] if target.dialect == "mysql" else ["cube"]):
+        dimensions = ["Region"] if grouping is None else ["Region", "City"]
+        alone: dict[str, Any] = {
+            "select": {"dimensions": dimensions, "measures": shown},
+            "where": IN_N_AND_S,
+        }
+        if grouping:
+            alone["grouping"] = grouping
+        beside = {
+            **alone,
+            "select": {**alone["select"], "measures": [*shown, "Revenue Any Region"]},
+        }
+        keys = [d.lower() for d in dimensions] + (["_g_region", "_g_city"] if grouping else [])
+
+        got, want = _keyed(target, beside, keys, shown), _keyed(target, alone, keys, shown)
+        if got != want:
+            wrong.append(f"{grouping}: {got} != {want}")
     assert not wrong, f"{target.name}:\n" + "\n".join(wrong)
 
 

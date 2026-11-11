@@ -340,13 +340,13 @@ dimension may be the rolled-up one or a NULL member. A total computed apart is
 refused in a query whose rows a deduplication on a repeated object computes
 first, in CTEs of finished values.
 
-Beside a measure with a `filterContext`, a total computed apart is computed
-from the query's own tables and `WHERE`, which the filter context's wrapper
-keeps in its `main` CTE: a median of all sales beside revenue of any region,
-or a revenue total under `rollup` beside it. A metric that reads such a total
-is still refused there (`INCOMPATIBLE_COMBINATION`): its other components
-would be read from rows that wrapper replaced. Query the metric separately
-from the `filterContext` measure.
+Beside a measure with a `filterContext`, totals are computed from the query's
+own tables and `WHERE`, which the filter context's wrapper keeps in its `main`
+CTE: a median of all sales beside revenue of any region, a revenue total under
+`rollup` beside it, an averaged total, and a metric over any of them. What a
+total or a metric reads unrounded (an average's sum and count, a metric's other
+components) is computed in `main` too, before the filter context's values are
+joined, so each reads as it does without the `filterContext` measure.
 
 ### CTE Structure for Filter Context
 
