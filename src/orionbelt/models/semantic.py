@@ -921,8 +921,9 @@ class DataObject(BaseModel):
         description=(
             "Name of the configured data source (OBSL_DATABASES) this data object's "
             "table is read from, overriding ``settings.defaultDataSource``. A name "
-            "only, never credentials. A query reaching data objects of more than one "
-            "data source is refused until federation ships."
+            "only, never credentials. A query reading data objects of several data "
+            "sources runs as a federated query: one query per source, combined in "
+            "DuckDB."
         ),
     )
     countable: bool = Field(

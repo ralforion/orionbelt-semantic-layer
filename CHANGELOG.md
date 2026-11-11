@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `dataSource` description says a query across sources is federated.** The OBML model's field description and the JSON schema (`schema/obml-schema.json`, and its copy in osi-orionbelt) still said a query reading data objects of more than one data source "is refused until federation ships", in the release that ships federation. They now say such a query runs as a federated query: one query per source, combined in DuckDB. osi-orionbelt 0.6.2 carries the schema copy.
+
 ## [3.0.0] - 2026-11-11
 
 ### Upgrading from 2.36
