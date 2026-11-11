@@ -850,7 +850,12 @@ class CFLPlanner:
                 # Enforcement first: a query repeating an enforced static
                 # filter makes it the query's, and it stays enforced.
                 if wf.static or wf.enforced:
-                    self._skip_static_filter_outside_leg(wf, missing, measures, resolved)
+                    # A leg kept for a filterContext measure's dimensions is
+                    # named after that measure.
+                    named = measures or cfl_projection.filter_context_measures_of_leg(
+                        self, resolved, model, obj_name
+                    )
+                    self._skip_static_filter_outside_leg(wf, missing, named, resolved)
                     continue
                 # An anchored measure reading the filter in its conformed
                 # subquery is filtered; only the others are named.
