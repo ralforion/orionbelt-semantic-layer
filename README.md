@@ -53,6 +53,8 @@ Both SQL surfaces speak [OBSQL](https://ralforion.com/orionbelt-semantic-layer/g
 
 Compiles to **BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, PostgreSQL, and Snowflake.** The warehouse behind the model is independent of the surface in front of it: any of the four surfaces, against any of the eight dialects.
 
+**One query across databases (from 2.37.0).** A model's data objects can live in different databases, the orders in MySQL and the customers in PostgreSQL. A query that reads both is split into one query per database, run at once, and combined in an in-memory DuckDB. It returns the answer one database holding all the tables would return, or a named `FEDERATION_*` error; it is never answered with a different number. See [Federated queries](https://ralforion.com/orionbelt-semantic-layer/guide/federation/).
+
 Here is TPC-DS query 98. Two measures over the same column, identical but for one line: `Class Revenue` is pinned to a coarser grain than the query asks for.
 
 ```yaml
