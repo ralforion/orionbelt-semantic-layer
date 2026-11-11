@@ -512,6 +512,53 @@ def test_loaded_model_names_excludes_transient_sessions_in_single_model_mode() -
     assert s.session_id.lower() in dyn_router._loaded_model_names()
 
 
+# A client may tag a statement with a comment (DBeaver prefixes
+# ``/* ApplicationName=... */``): the router answered the probes it handles
+# itself by their first word, and sent the tagged ones to the semantic path,
+# which refused them.
+_LEADING_COMMENTS = ["/* ApplicationName=DBeaver 24.1.0 - Main */ ", "-- c\n", "/*c*/"]
+
+
+@pytest.mark.parametrize("comment", _LEADING_COMMENTS, ids=["block", "line", "unspaced"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 1",
+        "SELECT 'a'",
+        "SELECT version()",
+        "SELECT current_schema()",
+        "SHOW search_path",
+        "SELECT nspname FROM pg_namespace ORDER BY 1 LIMIT 2",
+    ],
+)
+def test_a_leading_comment_changes_no_reply(comment: str, sql: str) -> None:
+    mgr, _ = _make_manager_with_model()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+
+    tagged = asyncio.run(router.handle(comment + sql, database="commerce"))
+
+    assert tagged == asyncio.run(router.handle(sql, database="commerce"))
+    assert b"E" not in [tag for tag, _ in _parse_frames(tagged)]
+
+
+def test_a_leading_comment_before_a_semantic_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    mgr, _ = _make_manager_with_model()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    sent: list[str] = []
+
+    def fake_execute(sql: str, **_: Any) -> ExecutionResult:
+        sent.append(sql)
+        return _stub_execute_two_rows()
+
+    monkeypatch.setattr("orionbelt.pgwire.router.execute_sql", fake_execute)
+    query = 'SELECT "Customer Country", "Total Revenue" FROM commerce'
+
+    tagged = asyncio.run(router.handle(_LEADING_COMMENTS[0] + query, database="commerce"))
+
+    assert tagged == asyncio.run(router.handle(query, database="commerce"))
+    assert len(sent) == 2 and sent[0] == sent[1]
+
+
 def test_semantic_query_round_trips_to_data_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     mgr, _ = _make_manager_with_model()
     router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")

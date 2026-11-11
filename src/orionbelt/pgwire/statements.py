@@ -78,6 +78,27 @@ def split_statements(sql: str) -> list[str]:
     return statements
 
 
+def without_leading_comments(sql: str) -> str:
+    """*sql* from its first token on: the comments and whitespace before it.
+
+    A client may tag a statement with a comment, as DBeaver prefixes
+    ``/* ApplicationName=... */``, and a leading comment says nothing about
+    what the statement does. The router recognises a statement by its first
+    words, so ``/* c */ SELECT 1`` went past every probe it answers itself.
+    Comments after the first token stay where they are.
+    """
+    for kind, start, end in scan(sql):
+        if kind == "comment":
+            continue
+        if kind == "code":
+            first = len(sql[start:end]) - len(sql[start:end].lstrip())
+            if start + first == end:
+                continue
+            return sql[start + first :]
+        return sql[start:]
+    return ""
+
+
 def scan(sql: str) -> Iterator[tuple[RunKind, int, int]]:
     """The runs of *sql* in order, as ``(kind, start, end)`` offsets.
 

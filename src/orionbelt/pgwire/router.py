@@ -57,6 +57,7 @@ from orionbelt.pgwire import protocol
 from orionbelt.pgwire.canned import match_canned
 from orionbelt.pgwire.catalog import CATALOG_SCHEMA, CatalogEmulator
 from orionbelt.pgwire.catalog_guard import catalog_rejection
+from orionbelt.pgwire.statements import without_leading_comments
 from orionbelt.pgwire.types import (
     can_encode_binary,
     can_encode_binary_value,
@@ -203,6 +204,9 @@ class SemanticRouter:
         (`Index 7 out of bounds for length 7`) trying to read 8-byte
         FLOAT8 from a 7-char text literal.
         """
+
+        # Every rule below reads a statement from its first word.
+        sql = without_leading_comments(sql)
 
         # 1. Canned protocol probes (SELECT 1, SHOW, SET, BEGIN, …).
         canned = match_canned(sql, database, self._effective_schema(database))
