@@ -141,7 +141,7 @@ metrics:
     {{type: window, windowFunction: dense_rank, measure: Revenue, partitionBy: [Region]}}
   Ticket Rank:
     {{type: window, windowFunction: dense_rank, measure: Tickets Count, partitionBy: [Region]}}
-  Revenue Share: {{expression: '{{[Revenue]}} / {{[Revenue Total]}}'}}
+  Revenue Elsewhere: {{expression: '{{[Revenue Total]}} - {{[Revenue]}}'}}
   Revenue per Customer:
     {{type: reaggregate, measure: Revenue, per: [Customer], aggregation: avg}}
   Revenue per Day:
@@ -434,15 +434,20 @@ QUERIES = {
         "where": [{"field": "Region", "op": "=", "value": "EU"}],
         "grouping": "rollup",
     },
-    # The share of the revenue total, which the totals pass rebuilds from its
-    # components over the filter context's query, not over the fact tables.
+    # The revenue of the other regions, from the total, which the totals pass
+    # rebuilds from its components over the filter context's query, not over
+    # the fact tables. A difference: a quotient is a double in the combine step
+    # and a decimal of the engine's own scale on one database.
     "a_metric_over_a_total_beside_a_filter_context": {
-        "select": {"dimensions": ["Region"], "measures": ["Revenue Share", "Revenue Any Region"]},
+        "select": {
+            "dimensions": ["Region"],
+            "measures": ["Revenue Elsewhere", "Revenue Any Region"],
+        },
     },
     "independent_facts_with_a_metric_over_a_total_beside_a_filter_context": {
         "select": {
             "dimensions": ["Region"],
-            "measures": ["Revenue Share", "Revenue Any Region", "Tickets Count"],
+            "measures": ["Revenue Elsewhere", "Revenue Any Region", "Tickets Count"],
         },
     },
     "independent_facts_beside_a_fixed_context_after_a_date_filter": {
