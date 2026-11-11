@@ -384,6 +384,33 @@ class TestRewrittenRows:
 
         assert {r[1] for r in rows} == {192}
 
+    @pytest.mark.parametrize("name", ["main", "fc_0"])
+    @pytest.mark.parametrize(
+        "measures",
+        [["Revenue Share"], ["Revenue Share", "Revenue", "Revenue Total"]],
+        ids=["metric", "metric_and_parts"],
+    )
+    def test_a_data_object_named_like_a_filter_context_cte(
+        self, con: Any, name: str, measures: list[str]
+    ) -> None:
+        """Its columns are the plan's, whatever it is called: read as the
+        columns of the filter context's CTE of that name, its amount was a
+        column that CTE does not have."""
+        renamed = MODEL.replace("Sales:", f"{name}:").replace(
+            "dataObject: Sales,", f"dataObject: {name},"
+        )
+        store = ModelStore()
+        model_id = store.load_model(renamed).model_id
+
+        def rows(beside: list[str]) -> list[tuple[Any, ...]]:
+            query = QueryObject.model_validate(
+                {"select": {"dimensions": ["Region"], "measures": [*measures, *beside]}}
+            )
+            sql = store.compile_query(model_id, query, "duckdb").sql
+            return sorted((r[: len(measures) + 1] for r in con.sql(sql).fetchall()), key=repr)
+
+        assert rows(["Revenue Any Region"]) == rows([])
+
     @pytest.mark.parametrize(
         "measures", [["Revenue Share"], ["Revenue Share", "Revenue"]], ids=["alone", "with_a_part"]
     )
@@ -598,7 +625,11 @@ class TestCastsBesideAFilterContext:
     and the shares as 100%, 0% and 0%."""
 
     @pytest.mark.parametrize("metric", ["Price Share", "Scaled Price", "Dear Share"])
-    @pytest.mark.parametrize("selected", [[], ["Price"]], ids=["", "price"])
+    @pytest.mark.parametrize(
+        "selected",
+        [[], ["Price"], ["Price Total"], ["Price Total", "Price"]],
+        ids=["", "price", "total", "total_and_price"],
+    )
     @pytest.mark.parametrize(
         ("model", "facts"),
         [(CASTS, []), (CASTS_ACROSS_FACTS, ["U Count"])],
@@ -610,12 +641,41 @@ class TestCastsBesideAFilterContext:
         store = ModelStore()
         model_id = store.load_model(model.replace("metrics:\n", UNFILTERED_PRICE)).model_id
 
-        def values(beside: list[str]) -> dict[str, float]:
-            measures = [metric, *facts, *selected, *beside]
+        shown = [metric, *facts, *selected]
+
+        def values(beside: list[str]) -> dict[tuple[str, str], float]:
             query = QueryObject.model_validate(
-                {"select": {"dimensions": ["G"], "measures": measures}}
+                {"select": {"dimensions": ["G"], "measures": [*shown, *beside]}}
             )
             sql = store.compile_query(model_id, query, "duckdb").sql
-            return {r[0]: float(r[1]) for r in facts_con.sql(sql).fetchall()}
+            return {
+                (r[0], measure): float(value)
+                for r in facts_con.sql(sql).fetchall()
+                for measure, value in zip(shown, r[1:], strict=False)
+            }
 
         assert values(["Unfiltered Price"]) == pytest.approx(values([]))
+
+    @pytest.mark.parametrize(
+        ("model", "facts"),
+        [(CASTS, []), (CASTS_ACROSS_FACTS, ["U Count"])],
+        ids=["one_fact", "two_facts"],
+    )
+    def test_a_selected_total_sums_the_groups_uncast(
+        self, facts_con: Any, model: str, facts: list[str]
+    ) -> None:
+        """The window read each group's value from that CTE, cast to an
+        integer: 1, 0 and 0, summed to 1 for the 1.60 that casts to 2."""
+        store = ModelStore()
+        model_id = store.load_model(model.replace("metrics:\n", UNFILTERED_PRICE)).model_id
+        query = QueryObject.model_validate(
+            {
+                "select": {
+                    "dimensions": ["G"],
+                    "measures": ["Price Total", *facts, "Unfiltered Price"],
+                }
+            }
+        )
+        sql = store.compile_query(model_id, query, "duckdb").sql
+
+        assert {r[1] for r in facts_con.sql(sql).fetchall()} == {2}
