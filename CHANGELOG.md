@@ -4,6 +4,22 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-11
+
+### Upgrading from 2.36
+
+3.0.0 brings [federated queries](https://ralforion.com/orionbelt-semantic-layer/guide/federation/): a model's data objects can live in different databases, and a query reading several is answered across them. It also changes some answers a 2.36 client gets. Each change is described in full below; these are the ones to check before upgrading.
+
+| What changes | What to do |
+|---|---|
+| A model named `dimensions`, `measures` or `metrics` is refused at startup, as `model` already was | Rename the model: its OBML `name:`, or its file name |
+| A query returns its measures in the order it selects them. Before, measures of independent facts came back grouped by fact, metrics over them after the rest, and measures with a `filterContext` last | A client that reads columns by position, or sorts by position (`field: "3"`), now gets the select's order |
+| Window metrics (rank, row number, ntile, lag, lead, first and last value) put NULL last, ranked up or down, on every engine | Ranks of rows with NULL change: ranked down on PostgreSQL, Snowflake and Dremio, ranked up on MySQL, BigQuery and Databricks |
+| A Postgres wire or Flight SQL connection to one model reads and lists only that model. A statement naming another loaded model is refused with `MODEL_MISMATCH` | Connect to the model you query (`database=<model>`), or select none (`database=orionbelt`, or Flight SQL without the `database` header) and name the model in `FROM` |
+| With `DISABLE_SESSION_LIST=true`, the Postgres wire catalog lists no REST session | Reach a session by its id: `database=<session id>`, or `FROM <session id>` on `database=orionbelt` |
+| A model with a `queryTimezone` counts today in that zone, for `current_date()` and every `relative` filter, and labels result timestamps with that zone. A request's `?timezone=` no longer overrides the label | Around midnight, a filter on today returns the model zone's day, not the database's |
+| `DELETE /v1/sessions/<model name>` on a model loaded from `MODEL_FILES` returns 403 | Nothing: the model stays loaded |
+
 ### Added
 
 - **An averaged total, and a metric over a total computed apart, beside a `filterContext` measure.** Both were refused (`INCOMPATIBLE_COMBINATION`): the average total of all orders beside revenue of any region, and a metric such as `{[Median Total]} / {[Revenue]}`, or any metric over a total under `rollup` or `cube`, beside it. The filter context's wrapper keeps the query's own rows in a CTE, and the totals pass now computes what it reads there, unrounded: an average's sum and count, and a metric's other components. Each reads as it does without the `filterContext` measure. `test_total_beside_filter_context_exec.py` compares both on all eight engines. An averaged total beside a measure deduplicated on a repeated object is refused (`GrainDedupUnsupportedError`), with or without a `filterContext`: without one it failed in the database, its sum and count built from values already averaged.

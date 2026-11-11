@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-<a href="https://github.com/ralforion/orionbelt-semantic-layer/releases"><img src="https://img.shields.io/badge/version-2.36.0-purple.svg" alt="Version 2.36.0"></a>
+<a href="https://github.com/ralforion/orionbelt-semantic-layer/releases"><img src="https://img.shields.io/badge/version-3.0.0-purple.svg" alt="Version 3.0.0"></a>
 <a href="https://pypi.org/project/orionbelt-semantic-layer/"><img src="https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white" alt="PyPI"></a>
 <a href="https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api"><img src="https://img.shields.io/docker/pulls/ralforion/orionbelt-semantic-layer-api?logo=docker&logoColor=white&color=2496ED" alt="Docker pulls"></a>
 <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
@@ -53,7 +53,7 @@ Both SQL surfaces speak [OBSQL](https://ralforion.com/orionbelt-semantic-layer/g
 
 Compiles to **BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, PostgreSQL, and Snowflake.** The warehouse behind the model is independent of the surface in front of it: any of the four surfaces, against any of the eight dialects.
 
-**One query across databases (from 2.37.0).** A model's data objects can live in different databases, the orders in MySQL and the customers in PostgreSQL. A query that reads both is split into one query per database, run at once, and combined in an in-memory DuckDB. It returns the answer one database holding all the tables would return, or a named `FEDERATION_*` error, with a few exceptions that are not refused: text and NULL sorting, time zones, and text join keys between two engines that differ only in case, which MySQL matches and the combine step does not. See [Federated queries](https://ralforion.com/orionbelt-semantic-layer/guide/federation/) and the [results that can differ](https://ralforion.com/orionbelt-semantic-layer/guide/federation/#results-that-can-differ-from-one-database).
+**One query across databases (v3.0.0+).** A model's data objects can live in different databases, the orders in MySQL and the customers in PostgreSQL. A query that reads both is split into one query per database, run at once, and combined in an in-memory DuckDB. It returns the answer one database holding all the tables would return, or a named `FEDERATION_*` error, with a few exceptions that are not refused: text and NULL sorting, time zones, and text join keys between two engines that differ only in case, which MySQL matches and the combine step does not. See [Federated queries](https://ralforion.com/orionbelt-semantic-layer/guide/federation/) and the [results that can differ](https://ralforion.com/orionbelt-semantic-layer/guide/federation/#results-that-can-differ-from-one-database).
 
 Here is TPC-DS query 98. Two measures over the same column, identical but for one line: `Class Revenue` is pinned to a coarser grain than the query asks for.
 
@@ -405,7 +405,7 @@ Open [http://localhost:8080/docs](http://localhost:8080/docs) to explore the API
 # docker-compose.yml
 services:
   api:
-    image: ralforion/orionbelt-semantic-layer-api:2.36.0
+    image: ralforion/orionbelt-semantic-layer-api:3.0.0
     ports: ["8080:8080"]
     env_file: .env
     volumes:
@@ -414,7 +414,7 @@ services:
       MODEL_FILES: /app/models/my-model.obml.yml
 
   ui:
-    image: ralforion/orionbelt-semantic-layer-ui:2.36.0
+    image: ralforion/orionbelt-semantic-layer-ui:3.0.0
     ports: ["7860:7860"]
     environment:
       API_BASE_URL: http://api:8080
@@ -430,7 +430,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralforion/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILES` (comma-separated paths) to pre-load on startup.
-> - For production, pin a version tag (`:2.36.0`) rather than `:latest`.
+> - For production, pin a version tag (`:3.0.0`) rather than `:latest`.
 
 ### Claude Desktop / MCP
 
@@ -697,8 +697,7 @@ API_BASE_URL=http://remote-api:8080 orionbelt-ui           # point UI to a remot
 
 | Status | Area |
 |--------|------|
-| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, **PostgreSQL wire protocol (v2.5.0+)**: Tableau / DBeaver / Superset / Power BI / `psql` / **Dremio as a federated Postgres source**, OBSL/SPARQL, **OSI v0.2 interop** with bidirectional schema validation, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision, timezone settings, grain & filter context overrides, **Trend Analysis**: partitioned rolling windows, `MetricType.WINDOW` for rank/lag/lead/ntile, 9 statistical aggregates (CORR, COVAR_*, REGR_*, STDDEV_*, VAR_*), **Unified authentication (v2.12.0)** across REST / Flight / pgwire / UI: `AUTH_MODE=api_key` with shared key store, pgwire SCRAM-SHA-256 + cleartext, **Artefacts Composability Resolution (ACR, v2.14.0)**: a `composables` endpoint that, given the query so far, returns which dimensions / measures / metrics can still be added (including CFL candidates), powering guided query building, **[`obsl` CLI](https://ralforion.com/orionbelt-semantic-layer/guide/cli/) (v2.17.0+)** for automation & CI/CD: `validate`, `compile`, `execute`, `describe`, `lineage`, `convert`, `rules` and more, in-process or against a server with `--server` |
-| Next release (on `main`) | **[Federated queries](https://ralforion.com/orionbelt-semantic-layer/guide/federation/)**: a model's data objects can live in different databases. A query reading more than one is split into one query per data source, run at once, and combined in an in-memory DuckDB. It returns the answer one database holding all the tables would return, or a named `FEDERATION_*` error |
+| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, **PostgreSQL wire protocol (v2.5.0+)**: Tableau / DBeaver / Superset / Power BI / `psql` / **Dremio as a federated Postgres source**, OBSL/SPARQL, **OSI v0.2 interop** with bidirectional schema validation, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision, timezone settings, grain & filter context overrides, **Trend Analysis**: partitioned rolling windows, `MetricType.WINDOW` for rank/lag/lead/ntile, 9 statistical aggregates (CORR, COVAR_*, REGR_*, STDDEV_*, VAR_*), **Unified authentication (v2.12.0)** across REST / Flight / pgwire / UI: `AUTH_MODE=api_key` with shared key store, pgwire SCRAM-SHA-256 + cleartext, **Artefacts Composability Resolution (ACR, v2.14.0)**: a `composables` endpoint that, given the query so far, returns which dimensions / measures / metrics can still be added (including CFL candidates), powering guided query building, **[`obsl` CLI](https://ralforion.com/orionbelt-semantic-layer/guide/cli/) (v2.17.0+)** for automation & CI/CD: `validate`, `compile`, `execute`, `describe`, `lineage`, `convert`, `rules` and more, in-process or against a server with `--server`, **[Federated queries](https://ralforion.com/orionbelt-semantic-layer/guide/federation/) (v3.0.0+)**: a model's data objects can live in different databases. A query reading more than one is split into one query per data source, run at once, and combined in an in-memory DuckDB |
 | Planned | OIDC / SSO authentication & per-token authorization scopes, DDL view generation (CREATE VIEW from queries), additional dialects, additional BI tool integrations, pre-aggregation / materialization layer |
 
 ---
