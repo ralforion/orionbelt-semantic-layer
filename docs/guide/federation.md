@@ -5,7 +5,9 @@ data objects of more than one [data source](data-sources.md) is a *federated
 query*: OBSL splits it into one query per source, runs them at once, and
 combines their results in an in-memory DuckDB. The answer is the one a single
 database holding all the tables would return, or the query is refused with a
-named `FEDERATION_*` error. It is never answered with a different number.
+named `FEDERATION_*` error. A few small differences are not refused, such as
+how text sorts or text join keys that differ only in case; they are listed
+under [Results that can differ](#results-that-can-differ-from-one-database).
 
 This page explains how a query is split, where each filter runs, how each
 aggregation is combined, what the run time settings are, and every
