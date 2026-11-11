@@ -6,6 +6,7 @@ type-mismatch / alias-collision error paths.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -250,6 +251,8 @@ metrics:
     {type: window, windowFunction: lag, measure: Revenue, timeDimension: Sales Day, offset: 1}
   Rank in Score:
     {type: window, windowFunction: dense_rank, measure: Revenue, partitionBy: [Sales Score]}
+  Revenue Rank by Day:
+    {type: window, windowFunction: dense_rank, measure: Revenue, timeDimension: Sales Day}
   Moving Revenue:
     type: window
     windowFunction: avg
@@ -326,6 +329,24 @@ class TestCoalescedBesideTheWrappers:
         # Region, the measure, Revenue, Spend, the Region's flag: the grand total is 1.
         assert [r[1] for r in rows if r[4] == 1] == [whole]
         assert len(rows) == 4
+
+    def test_a_rank_by_its_measure_beside_a_coalesced_month(
+        self, stacked_con: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Its time dimension orders nothing: ranked by revenue, it reads neither
+        the date nor the month coalesced beside it, and is not refused."""
+        month = CoalesceDimension(coalesce=["Sales Month", "Purchase Month"], alias="Month")
+        sql = _stacked_sql(["Sales Day", month], ["Revenue Rank by Day", "Spend"])
+
+        ranks = {(r[0], r[1]): r[2] for r in stacked_con.execute(sql).fetchall()}
+
+        assert ranks == {
+            (date(2024, 2, 10), date(2024, 2, 1)): 1,
+            (date(2024, 2, 3), date(2024, 2, 1)): 2,
+            (date(2024, 1, 5), date(2024, 1, 1)): 3,
+            (None, date(2024, 1, 1)): 4,
+            (None, date(2024, 3, 1)): 4,
+        }
 
     @pytest.mark.parametrize(
         ("metric", "dimensions"),

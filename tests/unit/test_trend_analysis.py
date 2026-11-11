@@ -14,7 +14,8 @@ from __future__ import annotations
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
-from orionbelt.compiler.resolution import ResolutionError
+from orionbelt.compiler.resolution import QueryResolver, ResolutionError
+from orionbelt.compiler.window_wrap import orders_by_time
 from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import Grouping, QueryObject, QuerySelect
@@ -750,3 +751,69 @@ def test_corr_on_supported_dialects(dialect_name: str) -> None:
     )
     result = CompilationPipeline().compile(query, model, dialect_name)
     assert "corr" in result.sql.lower()
+
+
+# Every window function over a time dimension: ``row_number`` and ``ntile``
+# also without a measure, which they order by time instead.
+_ORDERED_WINDOWS_YAML = """\
+version: 1.0
+dataObjects:
+  Sales:
+    code: s
+    columns:
+      Day: {code: day, abstractType: date}
+      Amount: {code: amount, abstractType: int}
+dimensions:
+  Sales Day: {dataObject: Sales, column: Day, resultType: date}
+measures:
+  Revenue: {columns: [{dataObject: Sales, column: Amount}], aggregation: sum}
+metrics:
+  Rank: {type: window, windowFunction: rank, measure: Revenue, timeDimension: Sales Day}
+  Dense Rank: {type: window, windowFunction: dense_rank, measure: Revenue, timeDimension: Sales Day}
+  Row Number: {type: window, windowFunction: row_number, measure: Revenue, timeDimension: Sales Day}
+  Row Number by Day: {type: window, windowFunction: row_number, timeDimension: Sales Day}
+  Quartile:
+    {type: window, windowFunction: ntile, measure: Revenue, buckets: 4, timeDimension: Sales Day}
+  Quartile by Day: {type: window, windowFunction: ntile, buckets: 4, timeDimension: Sales Day}
+  Previous:
+    {type: window, windowFunction: lag, measure: Revenue, offset: 1, timeDimension: Sales Day}
+  Next: {type: window, windowFunction: lead, measure: Revenue, offset: 1, timeDimension: Sales Day}
+  First: {type: window, windowFunction: first_value, measure: Revenue, timeDimension: Sales Day}
+  Last: {type: window, windowFunction: last_value, measure: Revenue, timeDimension: Sales Day}
+  Moving Sum:
+    type: window
+    windowFunction: sum
+    measure: Revenue
+    timeDimension: Sales Day
+    frame: {preceding: 1}
+"""
+
+
+@pytest.mark.parametrize(
+    ("metric", "by_time"),
+    [
+        ("Rank", False),
+        ("Dense Rank", False),
+        ("Row Number", False),
+        ("Row Number by Day", True),
+        ("Quartile", False),
+        ("Quartile by Day", True),
+        ("Previous", True),
+        ("Next", True),
+        ("First", True),
+        ("Last", True),
+        ("Moving Sum", True),
+    ],
+)
+def test_orders_by_time_is_how_the_window_is_ordered(metric: str, by_time: bool) -> None:
+    """``orders_by_time`` decides which windows a coalesced date refuses
+    (``passes`` rule 2f): it has to say what the window's ORDER BY does."""
+    model = _load_model(_ORDERED_WINDOWS_YAML)
+    query = QueryObject(select=QuerySelect(dimensions=["Sales Day"], measures=[metric]))
+    resolved = QueryResolver().resolve(query, model)
+    measure = next(m for m in resolved.measures if m.name == metric)
+    sql = CompilationPipeline().compile(query, model, "duckdb").sql
+    window = sql.split("OVER (", 1)[1].split(")", 1)[0]
+
+    assert orders_by_time(measure) is by_time
+    assert ('ORDER BY "Sales Day"' in window) is by_time

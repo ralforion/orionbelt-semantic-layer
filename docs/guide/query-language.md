@@ -142,7 +142,7 @@ Each leg still projects only its own role-playing dimension (others NULL); the o
 - The `as` alias must not collide with any model dimension or measure name
 - `orderBy` may reference the alias directly (`field: Employee`) — ordering happens in the outer wrapper where the alias is in scope
 - Without `orderBy`, a query with `limit`, `rollup` or `cube` is sorted by the alias, as by any other dimension
-- Over two facts, a running total, or a window metric along a date the query coalesces (the window's own date, or another dimension on its date column), can't be selected beside a coalesce group (`INCOMPATIBLE_COMBINATION`). Totals, grain overrides, window metrics over other dimensions and metrics over totals work as with any dimension
+- Over two facts, a running total, or a window metric ordered by a date the query coalesces (the window's own date, or another dimension on its date column), can't be selected beside a coalesce group (`INCOMPATIBLE_COMBINATION`). Totals, grain overrides, window metrics over other dimensions and metrics over totals work as with any dimension
 - `where` filters belong on the underlying dimension names (filtering is applied per leg, before the COALESCE collapses the values)
 
 **Error codes:** `COALESCE_MISSING_ALIAS`, `DUPLICATE_COALESCE_ALIAS`, `COALESCE_ALIAS_COLLISION`, `COALESCE_TOO_FEW_MEMBERS`, `COALESCE_TYPE_MISMATCH`.

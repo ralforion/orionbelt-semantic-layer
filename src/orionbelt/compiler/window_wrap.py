@@ -105,6 +105,40 @@ def _is_float_dimension(model: SemanticModel, name: str) -> bool:
     return column is not None and column.abstract_type in _FRACTIONAL_TYPES
 
 
+# Window functions ordered by time whenever they have a time dimension, and
+# those ordered by their measure, by time only without one.
+_BY_TIME = frozenset(
+    {
+        WindowFunctionKind.LAG,
+        WindowFunctionKind.LEAD,
+        WindowFunctionKind.FIRST_VALUE,
+        WindowFunctionKind.LAST_VALUE,
+    }
+)
+_BY_MEASURE = frozenset(
+    {
+        WindowFunctionKind.RANK,
+        WindowFunctionKind.DENSE_RANK,
+        WindowFunctionKind.ROW_NUMBER,
+        WindowFunctionKind.NTILE,
+    }
+)
+
+
+def orders_by_time(measure: ResolvedMeasure) -> bool:
+    """Whether the window of metric *measure* is ordered by its time dimension,
+    and so by the :func:`axis_dimensions` beside it: a framed window, ``lag``
+    and ``lead`` always; ``first_value`` and ``last_value`` with a time
+    dimension; a rank, row number or ntile only without a measure to order
+    by, as :func:`_build_window_call` orders them."""
+    kind = measure.window_function
+    if measure.window_time_dimension is None or kind is None:
+        return False
+    if kind in FRAME_WINDOW_FUNCTIONS or kind in _BY_TIME:
+        return True
+    return kind in _BY_MEASURE and measure.window_base_measure is None
+
+
 def axis_dimensions(resolved: ResolvedQuery, time_dim_name: str) -> list[str]:
     """The query's other dimensions on the time dimension's date column,
     coarsest grain first: positions on the time axis that break its ties."""
