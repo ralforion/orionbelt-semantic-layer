@@ -1292,6 +1292,23 @@ class ResolvedQuery:
         computes a total or grain override leaves these alone."""
         return set(self.dedup_targets) | self.dedup_grain_components
 
+    def dimension_column(self, name: str) -> str:
+        """The column the plan returns dimension *name* as: a coalesce group's
+        alias for one of its members, where the plan stacks the facts and
+        coalesces them (:attr:`composite_cte`); the dimension's own name
+        otherwise, a star returning a group's members."""
+        if self.composite_cte is not None:
+            for d in self.dimensions:
+                if d.name == name and d.coalesce_alias:
+                    return d.coalesce_alias
+        return name
+
+    @property
+    def dimension_columns(self) -> list[str]:
+        """The columns the plan returns the dimensions as, in order, a
+        coalesce group's alias once (:meth:`dimension_column`)."""
+        return list(dict.fromkeys(self.dimension_column(d.name) for d in self.dimensions))
+
     def default_order_by(
         self, *, coalesced: bool = False
     ) -> list[tuple[Expr, bool, NullsPosition | None]]:
