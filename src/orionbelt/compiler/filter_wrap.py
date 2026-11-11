@@ -464,18 +464,9 @@ def wrap_with_filter_context(
         main_columns.append(col_node)
 
     # A split metric's column is gone, so the components it carried that stay
-    # in ``main`` have to be projected in their own right. So do those of a
-    # metric over a total or a grain override: its column stays, but the
-    # totals pass rebuilds it from its components, over what this wrapper
-    # built rather than the fact tables.
-    rebuilt = [
-        m
-        for m in inline_measures
-        if m.name not in split_metrics
-        and any(c.total or c.grain_override is not None for c in leaf_components[m.name])
-    ]
+    # in ``main`` have to be projected in their own right.
     main_aliases = {a for c in main_columns if (a := _get_alias(c)) is not None}
-    for metric in [*split_metrics.values(), *rebuilt]:
+    for metric in split_metrics.values():
         for comp in leaf_components[metric.name]:
             if comp.filter_context is not None or comp.name in main_aliases:
                 continue
@@ -726,7 +717,7 @@ def wrap_with_filter_context(
     for cte_name, measure_group, _ in isolated_cte_info:
         for m in measure_group:
             resolved.projected_expressions[m.name] = isolated_value(m.name, cte_name)
-    for metric in [*split_metrics.values(), *rebuilt]:
+    for metric in split_metrics.values():
         for comp in leaf_components[metric.name]:
             if comp.filter_context is None:
                 resolved.projected_expressions[comp.name] = ColumnRef(name=comp.name, table=anchor)

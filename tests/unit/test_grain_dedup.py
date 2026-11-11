@@ -1855,6 +1855,22 @@ def test_deduplicated_component_beside_a_filter_context_component(
 
 
 @pytest.mark.parametrize(
+    "metric", ["Stock Share", "Stock per Grand Total", "Stock per Region Quantity"]
+)
+def test_a_deduplicated_metric_beside_a_filter_context_measure(metric: str) -> None:
+    """Its total or grain override is this pass's, which the totals pass
+    leaves alone: beside a filterContext measure it keeps its values, rather
+    than having its components computed again from ``Products``."""
+    yaml_text = MODEL_YAML.replace("metrics:\n", _FILTER_CONTEXT_METRICS, 1)
+
+    def rows(measures: list[str]) -> list[tuple[object, ...]]:
+        query = {"select": {"dimensions": ["Region", "Category"], "measures": measures}}
+        return sorted(_stock_db().execute(_compile(query, yaml_text).sql).fetchall())
+
+    assert [r[:3] for r in rows([metric, "Filtered Quantity"])] == rows([metric])
+
+
+@pytest.mark.parametrize(
     ("measures", "having", "kept"),
     [
         (["Region Stock per Quantity"], ("Region Stock per Quantity", "<", 60), ["south"]),

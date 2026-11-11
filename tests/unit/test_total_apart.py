@@ -580,3 +580,42 @@ class TestCastsAcrossFacts:
         else:
             want_by_group = dict.fromkeys(got, want)
         assert got == pytest.approx(want_by_group)
+
+
+# A sum of the prices whatever the query filters: a filterContext measure, whose
+# pass leaves the plan's groups in a CTE of finished, cast values.
+UNFILTERED_PRICE = """  Unfiltered Price:
+    columns: [{dataObject: T, column: P}]
+    aggregation: sum
+    filterContext: {mode: FIXED}
+metrics:
+"""
+
+
+class TestCastsBesideAFilterContext:
+    """Beside a filterContext measure a metric reads its components uncast too:
+    computed from that CTE's values, each group's 0.80 or 0.40 read as 1 or 0,
+    and the shares as 100%, 0% and 0%."""
+
+    @pytest.mark.parametrize("metric", ["Price Share", "Scaled Price", "Dear Share"])
+    @pytest.mark.parametrize("selected", [[], ["Price"]], ids=["", "price"])
+    @pytest.mark.parametrize(
+        ("model", "facts"),
+        [(CASTS, []), (CASTS_ACROSS_FACTS, ["U Count"])],
+        ids=["one_fact", "two_facts"],
+    )
+    def test_the_metric_reads_as_without_it(
+        self, facts_con: Any, metric: str, selected: list[str], model: str, facts: list[str]
+    ) -> None:
+        store = ModelStore()
+        model_id = store.load_model(model.replace("metrics:\n", UNFILTERED_PRICE)).model_id
+
+        def values(beside: list[str]) -> dict[str, float]:
+            measures = [metric, *facts, *selected, *beside]
+            query = QueryObject.model_validate(
+                {"select": {"dimensions": ["G"], "measures": measures}}
+            )
+            sql = store.compile_query(model_id, query, "duckdb").sql
+            return {r[0]: float(r[1]) for r in facts_con.sql(sql).fetchall()}
+
+        assert values(["Unfiltered Price"]) == pytest.approx(values([]))

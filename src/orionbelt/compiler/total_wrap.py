@@ -51,6 +51,7 @@ from orionbelt.ast.nodes import (
     Unnest,
     WindowFunction,
 )
+from orionbelt.compiler.expr_rewrite import collect_referenced_tables
 from orionbelt.compiler.filter_wrap import MAIN_CTE
 from orionbelt.compiler.having_hoist import apply_having_hoist, grouped_predicates
 from orionbelt.compiler.metric_expansion import expand_metric_expression, metric_leaf_components
@@ -411,6 +412,16 @@ def wrap_with_totals(
     projected_inputs: set[str] = set()
     # Track which component measures are already present as direct measures
     direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
+    # Under a filter context the plan's tables and groups are in the CTE its
+    # wrapper moved them into (:func:`_rows_of`), and this CTE reads that one's
+    # finished rows: a component's aggregate is computed there, beside the
+    # plan's own columns. A value the wrapper computed itself (a filter
+    # context's measure) is a column this CTE reads already.
+    rows = _rows_of(ast, resolved)
+    planned = {c.alias: c.expr for c in rows.columns if isinstance(c, AliasedExpr)}
+    readable = _relation_aliases(ast)
+    in_rows: list[AliasedExpr] = []
+    in_rows_taken = {alias.casefold() for alias in planned}
 
     for col_node in ast.columns:
         alias = _get_alias(col_node)
@@ -439,14 +450,18 @@ def wrap_with_totals(
                 # component's aggregate reads conformed subquery columns, which
                 # this CTE's FROM and joins keep in scope.
                 if selected:
-                    # From the selected column, which an earlier pass (grain
-                    # dedup) may have moved onto a CTE of its own.
+                    # From the column as the plan computed it, which an earlier
+                    # pass (grain dedup) may have moved onto a CTE of its own.
                     name = metric_inputs[comp.name] = _free_alias(
                         f"__ob_input_{len(metric_inputs)}", taken
                     )
-                    value = _bare(selected_columns[comp.name], comp)
+                    value = _bare(planned.get(comp.name, selected_columns[comp.name]), comp)
                 else:
                     name, value = comp.name, _component_value(comp, resolved)
+                if rows is not ast and not _tables_of(value) & readable:
+                    computed = _free_alias(name, in_rows_taken)
+                    in_rows.append(AliasedExpr(expr=value, alias=computed))
+                    value = ColumnRef(name=computed, table=MAIN_CTE)
                 base_columns.append(AliasedExpr(expr=value, alias=name))
         elif alias in apart:
             continue  # computed apart, in :func:`_total_ctes`
@@ -542,7 +557,11 @@ def wrap_with_totals(
     # --- Assemble final Select ---
     # The totals before the base CTE: they read the plan's tables, one of which
     # may be named like it.
-    all_ctes = [*ast.ctes, *total_ctes, base_cte]
+    ctes = [
+        replace(c, query=replace(rows, columns=[*rows.columns, *in_rows])) if c.query is rows else c
+        for c in ast.ctes
+    ]
+    all_ctes = [*ctes, *total_ctes, base_cte]
 
     outer = Select(
         columns=outer_columns,
@@ -561,6 +580,22 @@ def wrap_with_totals(
     # The rows a later window wrapper sees are the filtered ones, as before:
     # only the total's own window reads past the HAVING.
     return apply_having_hoist(outer, grouped_predicates(resolved, model), cte_name="totals_having")
+
+
+def _relation_aliases(ast: Select) -> set[str]:
+    """The names *ast*'s FROM and joins give the relations they read."""
+    return {
+        source.alias or source.source
+        for source in [ast.from_, *ast.joins]
+        if isinstance(source, (From, Join)) and isinstance(source.source, str)
+    }
+
+
+def _tables_of(expr: Expr) -> set[str]:
+    """The relations *expr*'s columns name."""
+    tables: set[str] = set()
+    collect_referenced_tables(expr, tables)
+    return tables
 
 
 def _rows_of(ast: Select, resolved: ResolvedQuery) -> Select:
