@@ -85,6 +85,8 @@ def _resolved(**attrs: object) -> ResolvedQuery:
         measures=measures,
         metric_components={},
         composite_cte=attrs.get("composite_cte"),
+        dimensions=[],
+        coalesce_aliases=set(),
     )
     return cast(ResolvedQuery, ns)
 

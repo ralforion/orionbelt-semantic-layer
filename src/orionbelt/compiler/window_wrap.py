@@ -211,7 +211,9 @@ def _build_window_call(
     return WindowFunction(
         func_name=func_name,
         args=args,
-        partition_by=partition_keys(measure.window_partition_by, model, dialect),
+        partition_by=partition_keys(
+            [resolved.dimension_column(n) for n in measure.window_partition_by], model, dialect
+        ),
         order_by=order_by,
     )
 
@@ -237,7 +239,12 @@ def _framed_window_call(
     assert measure.window_frame_preceding is not None
     time_name = measure.window_time_dimension
     partitions = list(
-        dict.fromkeys([*group_dimensions(resolved, time_name), *measure.window_partition_by])
+        dict.fromkeys(
+            map(
+                resolved.dimension_column,
+                [*group_dimensions(resolved, time_name), *measure.window_partition_by],
+            )
+        )
     )
     return WindowFunction(
         func_name=measure.window_function.value.upper(),
@@ -572,8 +579,8 @@ def wrap_with_window(
     # --- Build outer SELECT ---
     outer_columns: list[Expr] = []
 
-    for dim in resolved.dimensions:
-        outer_columns.append(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
+    for column in resolved.dimension_columns:
+        outer_columns.append(AliasedExpr(expr=ColumnRef(name=column), alias=column))
 
     for m in resolved.measures:
         if m.is_window and not m.window_over_reaggregate:

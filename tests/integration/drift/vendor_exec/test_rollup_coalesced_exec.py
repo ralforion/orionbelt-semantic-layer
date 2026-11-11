@@ -47,6 +47,9 @@ dimensions:
 measures:
   Revenue: {columns: [{dataObject: Sales, column: Amount}], aggregation: sum}
   Spend: {columns: [{dataObject: Purchases, column: Cost}], aggregation: sum}
+  Revenue Total: {columns: [{dataObject: Sales, column: Amount}], aggregation: sum, total: true}
+metrics:
+  Revenue Share: {expression: "{[Revenue]} / {[Revenue Total]}"}
 """
 
 # region, amount; region, cost: n has both, s sales only, e purchases only.
@@ -133,6 +136,34 @@ def _assert_coalesced(target: VendorTarget) -> None:
     got_rows = [(row["region"], _number(row["revenue"]), _number(row["spend"])) for row in rows]
     if got_rows != [("e", None, Decimal(7)), ("n", Decimal(30), Decimal(5))]:
         wrong.append(f"limit 2: {got_rows}")
+    # Beside a total and a metric over it, which the totals pass rebuilds over
+    # the plan's columns: the coalesced region among them, not its members.
+    whole = Decimal(sum(a for _, a in SALES))
+    for grouping in [None, "rollup"]:
+        raw: dict[str, Any] = {
+            "select": {
+                "dimensions": [REGION],
+                "measures": ["Revenue Total", "Revenue Share", "Spend"],
+            }
+        }
+        if grouping:
+            raw["grouping"] = grouping
+        got_totals = {
+            row["region"]: (_number(row["revenue total"]), _number(row["revenue share"]))
+            for row in _rows(target, store, model_id, raw)
+        }
+        revenues = {region: _sum([a for r, a in SALES if r == region]) for region in "ens"}
+        if grouping:
+            revenues[None] = whole
+        want = {
+            region: (
+                whole,
+                None if value is None else (value / whole).quantize(Decimal("0.000001")),
+            )
+            for region, value in revenues.items()
+        }
+        if got_totals != want:
+            wrong.append(f"totals {grouping}: {got_totals} != {want}")
     assert not wrong, f"{target.name}:\n" + "\n".join(wrong)
 
 

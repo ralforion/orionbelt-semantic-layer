@@ -6,6 +6,7 @@ type-mismatch / alias-collision error paths.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import duckdb
@@ -199,6 +200,136 @@ class TestCoalesceCompilation:
         assert 'CAST(NULL AS VARCHAR) AS "Purchase Employee"' in result.sql
         # Leg 2 (Purchases): Sales Employee projects as NULL
         assert 'CAST(NULL AS VARCHAR) AS "Sales Employee"' in result.sql
+
+
+# Sales and purchases by region, a fact each: n has both, s sales only, e
+# purchases only. A total, a grain, a window and a running total over them.
+STACKED_MODEL = """\
+version: 1.0
+dataObjects:
+  Sales:
+    code: s
+    columns:
+      Region: {code: region, abstractType: string}
+      Day: {code: day, abstractType: date}
+      Amount: {code: amount, abstractType: int}
+  Purchases:
+    code: p
+    columns:
+      Region: {code: region, abstractType: string}
+      Day: {code: day, abstractType: date}
+      Cost: {code: cost, abstractType: int}
+dimensions:
+  Sales Region: {dataObject: Sales, column: Region, resultType: string}
+  Purchase Region: {dataObject: Purchases, column: Region, resultType: string}
+  Sales Day: {dataObject: Sales, column: Day, resultType: date}
+  Purchase Day: {dataObject: Purchases, column: Day, resultType: date}
+measures:
+  Revenue: {columns: [{dataObject: Sales, column: Amount}], aggregation: sum}
+  Spend: {columns: [{dataObject: Purchases, column: Cost}], aggregation: sum}
+  Revenue Total: {columns: [{dataObject: Sales, column: Amount}], aggregation: sum, total: true}
+  Spend Median:
+    columns: [{dataObject: Purchases, column: Cost}]
+    aggregation: median
+    total: true
+  Revenue by Sales Region:
+    columns: [{dataObject: Sales, column: Amount}]
+    aggregation: sum
+    grain: {mode: FIXED, keepOnly: [Sales Region]}
+metrics:
+  Revenue Rank: {type: window, windowFunction: dense_rank, measure: Revenue}
+  Revenue Share: {expression: "{[Revenue]} / {[Revenue Total]}"}
+  Running Revenue: {type: cumulative, measure: Revenue, timeDimension: Sales Day}
+  Previous Revenue:
+    {type: window, windowFunction: lag, measure: Revenue, timeDimension: Sales Day, offset: 1}
+"""
+STACKED_REGION = CoalesceDimension(coalesce=["Sales Region", "Purchase Region"], alias="Region")
+
+
+@pytest.fixture(scope="module")
+def stacked_con() -> duckdb.DuckDBPyConnection:
+    con = duckdb.connect()
+    con.execute("CREATE TABLE s (region VARCHAR, day DATE, amount INT)")
+    con.execute(
+        "INSERT INTO s VALUES ('n', '2024-01-05', 10), ('n', '2024-02-03', 20), "
+        "('s', '2024-02-10', 40)"
+    )
+    con.execute("CREATE TABLE p (region VARCHAR, day DATE, cost INT)")
+    con.execute("INSERT INTO p VALUES ('n', '2024-01-07', 5), ('e', '2024-03-01', 7)")
+    return con
+
+
+def _stacked_sql(
+    dimensions: list[str | CoalesceDimension], measures: list[str], **extra: object
+) -> str:
+    raw, src = TrackedLoader().load_string(STACKED_MODEL)
+    model, result = ReferenceResolver().resolve(raw, src)
+    assert result.valid, result.errors
+    query = QueryObject(select=QuerySelect(dimensions=dimensions, measures=measures), **extra)
+    return CompilationPipeline().compile(query, model, "duckdb").sql
+
+
+class TestCoalescedBesideTheWrappers:
+    """Over two facts the plan returns a coalesce group as one column, its
+    alias. The totals and window passes projected, partitioned and joined by
+    the group's members, which their query does not have, and every such query
+    failed."""
+
+    @pytest.mark.parametrize(
+        ("measure", "by_region"),
+        [
+            ("Revenue Total", {"e": 70, "n": 70, "s": 70}),
+            ("Spend Median", {"e": 6.0, "n": 6.0, "s": 6.0}),
+            ("Revenue Rank", {"e": 3, "n": 2, "s": 1}),
+            ("Revenue Share", {"e": None, "n": Decimal("0.428571"), "s": Decimal("0.571429")}),
+            ("Revenue by Sales Region", {"e": None, "n": 30, "s": 40}),
+        ],
+        ids=["windowed_total", "total_apart", "window_metric", "metric_over_total", "grain"],
+    )
+    def test_each_region_reads_its_value(
+        self, stacked_con: duckdb.DuckDBPyConnection, measure: str, by_region: dict[str, object]
+    ) -> None:
+        sql = _stacked_sql([STACKED_REGION], [measure, "Revenue", "Spend"])
+
+        assert {r[0]: r[1] for r in stacked_con.execute(sql).fetchall()} == by_region
+
+    @pytest.mark.parametrize(
+        ("measure", "whole"),
+        [("Revenue Total", 70), ("Spend Median", 6.0), ("Revenue Share", Decimal("1.000000"))],
+        ids=["windowed_total", "total_apart", "metric_over_total"],
+    )
+    def test_under_rollup_the_grand_total_row_too(
+        self, stacked_con: duckdb.DuckDBPyConnection, measure: str, whole: object
+    ) -> None:
+        sql = _stacked_sql([STACKED_REGION], [measure, "Revenue", "Spend"], grouping="rollup")
+
+        rows = stacked_con.execute(sql).fetchall()
+
+        # Region, the measure, Revenue, Spend, the Region's flag: the grand total is 1.
+        assert [r[1] for r in rows if r[4] == 1] == [whole]
+        assert len(rows) == 4
+
+    @pytest.mark.parametrize(
+        ("dimensions", "metric"),
+        [
+            ([STACKED_REGION, "Sales Day:month"], "Running Revenue"),
+            (
+                [CoalesceDimension(coalesce=["Sales Day", "Purchase Day"], alias="Day")],
+                "Previous Revenue",
+            ),
+        ],
+        ids=["running_total", "window_over_a_coalesced_date"],
+    )
+    def test_a_running_total_or_a_window_over_its_dates_is_refused(
+        self, dimensions: list[str | CoalesceDimension], metric: str
+    ) -> None:
+        """Their passes read the group's members by name too, through several
+        steps: refused, rather than compiled to SQL naming absent columns."""
+        with pytest.raises(ResolutionError) as caught:
+            _stacked_sql(dimensions, [metric, "Spend"])
+
+        assert [e.code for e in caught.value.errors] == ["INCOMPATIBLE_COMBINATION"]
+        assert f"'{metric}'" in caught.value.errors[0].message
 
 
 class TestCoalesceValidation:

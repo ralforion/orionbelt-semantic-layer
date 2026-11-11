@@ -147,11 +147,11 @@ def is_avg_total(measure: ResolvedMeasure, dedup_computed: Container[str]) -> bo
     return _needs_window_wrap(measure, dedup_computed) and measure.aggregation.upper() == "AVG"
 
 
-def _partition_by_exprs(measure: ResolvedMeasure) -> list[Expr]:
-    """Build PARTITION BY column refs from effective_grain (empty = grand total)."""
-    if measure.effective_grain:
-        return [ColumnRef(name=d) for d in measure.effective_grain]
-    return []
+def _partition_by_exprs(measure: ResolvedMeasure, resolved: ResolvedQuery) -> list[Expr]:
+    """Build PARTITION BY column refs from effective_grain (empty = grand total),
+    each dimension the column the plan returns it as."""
+    columns = dict.fromkeys(map(resolved.dimension_column, measure.effective_grain or ()))
+    return [ColumnRef(name=c) for c in columns]
 
 
 def _peel_default(expr: Expr, measure: ResolvedMeasure) -> Expr:
@@ -258,7 +258,7 @@ def _bare(value: Expr, measure: ResolvedMeasure) -> Expr:
 
 def _build_total_window(
     measure: ResolvedMeasure,
-    dedup_computed: Container[str],
+    resolved: ResolvedQuery,
     helpers: dict[str, tuple[str, str]],
 ) -> Expr:
     """Build a window function for a total/grain-override measure's outer column.
@@ -268,16 +268,16 @@ def _build_total_window(
     reads. An average reads the base columns of its sums and counts named in
     *helpers*.
     """
-    return measure.with_default(_build_total_window_expr(measure, dedup_computed, helpers))
+    return measure.with_default(_build_total_window_expr(measure, resolved, helpers))
 
 
 def _build_total_window_expr(
     measure: ResolvedMeasure,
-    dedup_computed: Container[str],
+    resolved: ResolvedQuery,
     helpers: dict[str, tuple[str, str]],
 ) -> Expr:
-    partition_by = _partition_by_exprs(measure)
-    if is_avg_total(measure, dedup_computed):
+    partition_by = _partition_by_exprs(measure, resolved)
+    if is_avg_total(measure, resolved.dedup_computed):
         sums, counts = helpers[measure.name]
         return BinaryOp(
             left=WindowFunction(
@@ -354,7 +354,7 @@ def _substitute_metric_refs(
         if comp.name in apart:
             return apart[comp.name]
         if _needs_window_wrap(comp, resolved.dedup_computed):
-            return _build_total_window(comp, resolved.dedup_computed, helpers)
+            return _build_total_window(comp, resolved, helpers)
         return comp.with_default(ColumnRef(name=inputs.get(comp.name, comp.name)))
 
     return expand_metric_expression(expr, resolved.metric_components, value_of)
@@ -530,8 +530,8 @@ def wrap_with_totals(
     outer_columns: list[Expr] = []
 
     # Dimensions: pass-through
-    for dim in resolved.dimensions:
-        outer_columns.append(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
+    for column in resolved.dimension_columns:
+        outer_columns.append(AliasedExpr(expr=ColumnRef(name=column), alias=column))
 
     # Measures
     for m in resolved.measures:
@@ -552,7 +552,7 @@ def wrap_with_totals(
             outer_columns.append(AliasedExpr(expr=apart[m.name], alias=m.name))
         elif _needs_window_wrap(m, resolved.dedup_computed):
             # Total or grain-override measure: window function
-            window = _build_total_window(m, resolved.dedup_computed, helpers)
+            window = _build_total_window(m, resolved, helpers)
             outer_columns.append(
                 AliasedExpr(expr=recasts.get(m.name, _unchanged)(window), alias=m.name)
             )
@@ -565,7 +565,7 @@ def wrap_with_totals(
     if resolved.grouping is not None:
         outer_columns += [
             AliasedExpr(expr=ColumnRef(name=flag), alias=flag)
-            for flag in (grouping_flag_alias(d.name) for d in resolved.dimensions)
+            for flag in map(grouping_flag_alias, resolved.dimension_columns)
         ]
 
     # --- ORDER BY remapping: use CTE aliases instead of raw expressions ---
@@ -658,6 +658,9 @@ def _total_ctes(
     grains, values_seen = count(), count()
     for n, (grain, values) in enumerate(sorted(by_grain.items())):
         name = _free_alias(f"__ob_total_{n}", relations)
+        # Each dimension the column the plan returns it as, a coalesce
+        # group's members its alias, once.
+        grain = tuple(dict.fromkeys(map(resolved.dimension_column, grain)))
         keys = [projected[d] for d in grain]
         grain_names = [_free_alias(f"__ob_grain_{next(grains)}", taken) for _ in keys]
         columns: list[Expr] = [
