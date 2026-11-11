@@ -59,6 +59,7 @@ from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, Reso
 from orionbelt.compiler.total_wrap import computed_apart, is_avg_total, wrap_with_totals
 from orionbelt.compiler.window_wrap import (
     _ddm_window_components,
+    axis_dimensions,
     window_pass_applies,
     wrap_with_window,
 )
@@ -577,8 +578,9 @@ def evaluate_compatibility(
 
     # Rule 2f (raising): a coalesce group the plan returns as one column, its
     # alias, where it stacks the facts. The running-total pass, and a window
-    # metric's time axis, read the group's members by name, which that column
-    # replaced: the SQL named columns no query has.
+    # metric's time axis (its time dimension and the query's other dimensions
+    # on that date column, which order it), read the group's members by name,
+    # which that column replaced: the SQL named columns no query has.
     stacked = resolved.composite_cte is not None
     members = {d.name for d in resolved.dimensions if d.coalesce_alias} if stacked else set()
     if members:
@@ -586,7 +588,12 @@ def evaluate_compatibility(
             m.name
             for m in resolved.measures
             if (m.is_cumulative and not m.cumulative_over_reaggregate)
-            or (m.is_window and m.window_time_dimension in members)
+            or (
+                m.is_window
+                and m.window_time_dimension is not None
+                and members
+                & {m.window_time_dimension, *axis_dimensions(resolved, m.window_time_dimension)}
+            )
         )
         if over_members:
             listed = ", ".join(f"'{m}'" for m in over_members)
@@ -598,8 +605,8 @@ def evaluate_compatibility(
                         message=(
                             f"Metric(s) {listed} cannot be computed beside {aliases}, a "
                             f"dimension this query coalesces over independent facts: a "
-                            f"running total, or a window metric over a coalesced date, does "
-                            f"not support a coalesced dimension yet."
+                            f"running total, or a window metric along a date the query "
+                            f"coalesces, does not support a coalesced dimension yet."
                         ),
                         path="select.dimensions",
                         hint=(

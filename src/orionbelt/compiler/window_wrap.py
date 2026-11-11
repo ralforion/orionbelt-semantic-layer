@@ -13,6 +13,7 @@ metric name.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
@@ -58,7 +59,10 @@ _WINDOW_FUNCTION_NAMES: dict[WindowFunctionKind, str] = {
 
 
 def partition_keys(
-    dim_names: list[str], model: SemanticModel | None, dialect: Dialect | None
+    dim_names: list[str],
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+    column: Callable[[str], str] | None = None,
 ) -> list[Expr]:
     """``PARTITION BY`` keys for the dimension aliases *dim_names*.
 
@@ -66,10 +70,19 @@ def partition_keys(
     not every engine partitions by a float. A non-temporal dimension projects
     its column as it is, so the column's ``abstractType`` is the type the
     window sees; a declared ``resultType: float`` counts as well.
+
+    *column* names the column a dimension is read from where that is not its
+    own name (a coalesce group's alias, :meth:`ResolvedQuery.dimension_column`),
+    each once; its type is still the dimension's.
     """
     keys: list[Expr] = []
+    seen: set[str] = set()
     for name in dim_names:
-        key: Expr = ColumnRef(name=name)
+        read = column(name) if column is not None else name
+        if read in seen:
+            continue
+        seen.add(read)
+        key: Expr = ColumnRef(name=read)
         if dialect is not None and model is not None and _is_float_dimension(model, name):
             key = dialect.float_partition_key(key)
         keys.append(key)
@@ -212,7 +225,7 @@ def _build_window_call(
         func_name=func_name,
         args=args,
         partition_by=partition_keys(
-            [resolved.dimension_column(n) for n in measure.window_partition_by], model, dialect
+            measure.window_partition_by, model, dialect, resolved.dimension_column
         ),
         order_by=order_by,
     )
@@ -239,17 +252,12 @@ def _framed_window_call(
     assert measure.window_frame_preceding is not None
     time_name = measure.window_time_dimension
     partitions = list(
-        dict.fromkeys(
-            map(
-                resolved.dimension_column,
-                [*group_dimensions(resolved, time_name), *measure.window_partition_by],
-            )
-        )
+        dict.fromkeys([*group_dimensions(resolved, time_name), *measure.window_partition_by])
     )
     return WindowFunction(
         func_name=measure.window_function.value.upper(),
         args=[ColumnRef(name=measure.window_base_measure)],
-        partition_by=partition_keys(partitions, model, dialect),
+        partition_by=partition_keys(partitions, model, dialect, resolved.dimension_column),
         order_by=[
             OrderByItem(expr=ColumnRef(name=n), nulls_last=True)
             for n in [time_name, *axis_dimensions(resolved, time_name)]

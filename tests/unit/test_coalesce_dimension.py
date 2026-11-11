@@ -212,18 +212,24 @@ dataObjects:
     columns:
       Region: {code: region, abstractType: string}
       Day: {code: day, abstractType: date}
+      Score: {code: score, abstractType: float}
       Amount: {code: amount, abstractType: int}
   Purchases:
     code: p
     columns:
       Region: {code: region, abstractType: string}
       Day: {code: day, abstractType: date}
+      Score: {code: score, abstractType: float}
       Cost: {code: cost, abstractType: int}
 dimensions:
   Sales Region: {dataObject: Sales, column: Region, resultType: string}
   Purchase Region: {dataObject: Purchases, column: Region, resultType: string}
   Sales Day: {dataObject: Sales, column: Day, resultType: date}
   Purchase Day: {dataObject: Purchases, column: Day, resultType: date}
+  Sales Month: {dataObject: Sales, column: Day, resultType: date, timeGrain: month}
+  Purchase Month: {dataObject: Purchases, column: Day, resultType: date, timeGrain: month}
+  Sales Score: {dataObject: Sales, column: Score, resultType: float}
+  Purchase Score: {dataObject: Purchases, column: Score, resultType: float}
 measures:
   Revenue: {columns: [{dataObject: Sales, column: Amount}], aggregation: sum}
   Spend: {columns: [{dataObject: Purchases, column: Cost}], aggregation: sum}
@@ -242,6 +248,15 @@ metrics:
   Running Revenue: {type: cumulative, measure: Revenue, timeDimension: Sales Day}
   Previous Revenue:
     {type: window, windowFunction: lag, measure: Revenue, timeDimension: Sales Day, offset: 1}
+  Rank in Score:
+    {type: window, windowFunction: dense_rank, measure: Revenue, partitionBy: [Sales Score]}
+  Moving Revenue:
+    type: window
+    windowFunction: avg
+    measure: Revenue
+    timeDimension: Sales Day
+    frame: {preceding: 1}
+    partitionBy: [Sales Score]
 """
 STACKED_REGION = CoalesceDimension(coalesce=["Sales Region", "Purchase Region"], alias="Region")
 
@@ -260,13 +275,16 @@ def stacked_con() -> duckdb.DuckDBPyConnection:
 
 
 def _stacked_sql(
-    dimensions: list[str | CoalesceDimension], measures: list[str], **extra: object
+    dimensions: list[str | CoalesceDimension],
+    measures: list[str],
+    dialect: str = "duckdb",
+    **extra: object,
 ) -> str:
     raw, src = TrackedLoader().load_string(STACKED_MODEL)
     model, result = ReferenceResolver().resolve(raw, src)
     assert result.valid, result.errors
     query = QueryObject(select=QuerySelect(dimensions=dimensions, measures=measures), **extra)
-    return CompilationPipeline().compile(query, model, "duckdb").sql
+    return CompilationPipeline().compile(query, model, dialect).sql
 
 
 class TestCoalescedBesideTheWrappers:
@@ -310,6 +328,20 @@ class TestCoalescedBesideTheWrappers:
         assert len(rows) == 4
 
     @pytest.mark.parametrize(
+        ("metric", "dimensions"),
+        [("Rank in Score", []), ("Moving Revenue", ["Sales Day"])],
+        ids=["partition_by", "framed"],
+    )
+    def test_a_float_partition_keeps_its_cast(self, metric: str, dimensions: list[str]) -> None:
+        """BigQuery partitions by no float: the key is cast to a string, as the
+        dimension's type says, which the alias, declared nowhere, does not."""
+        score = CoalesceDimension(coalesce=["Sales Score", "Purchase Score"], alias="Score")
+        sql = _stacked_sql([score, *dimensions], [metric, "Spend"], dialect="bigquery")
+
+        assert "PARTITION BY CAST(`Score` AS STRING)" in sql
+        assert "`Sales Score`" not in sql.split("OVER (", 1)[1].split(")", 1)[0]
+
+    @pytest.mark.parametrize(
         ("dimensions", "metric"),
         [
             ([STACKED_REGION, "Sales Day:month"], "Running Revenue"),
@@ -317,8 +349,15 @@ class TestCoalescedBesideTheWrappers:
                 [CoalesceDimension(coalesce=["Sales Day", "Purchase Day"], alias="Day")],
                 "Previous Revenue",
             ),
+            (
+                [
+                    "Sales Day",
+                    CoalesceDimension(coalesce=["Sales Month", "Purchase Month"], alias="Month"),
+                ],
+                "Previous Revenue",
+            ),
         ],
-        ids=["running_total", "window_over_a_coalesced_date"],
+        ids=["running_total", "window_over_a_coalesced_date", "window_beside_a_coalesced_month"],
     )
     def test_a_running_total_or_a_window_over_its_dates_is_refused(
         self, dimensions: list[str | CoalesceDimension], metric: str
