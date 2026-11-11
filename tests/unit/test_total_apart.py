@@ -109,6 +109,9 @@ measures:
 metrics:
   SD per Revenue: {expression: "{[SD Total]} / {[Revenue]}"}
   Revenue Share: {expression: "{[Revenue]} / {[Revenue Total]}"}
+  SD over Any Region: {expression: "{[SD Total]} / {[Revenue Any Region]}"}
+  Median over Any Region: {expression: "{[Median Total]} / {[Revenue Any Region]}"}
+  Twice SD: {expression: "{[SD Total]} * 2"}
 """
 
 # id, region, city, amount: region n spans two cities, a NULL region is a
@@ -403,6 +406,42 @@ class TestRewrittenRows:
         rows = [(*r[:context], *r[context + 1 :]) for r in _run(con, beside)]
 
         assert _rounded(rows) == _rounded(_run(con, query))
+
+    @pytest.mark.parametrize(
+        ("metric", "total"),
+        [("SD over Any Region", "SD Total"), ("Median over Any Region", "Median Total")],
+    )
+    def test_a_metric_over_a_total_and_a_filter_context_measure(
+        self, con: Any, metric: str, total: str
+    ) -> None:
+        """The total is computed apart, from the plan's tables: it read the
+        component as a column of the filter context's CTE, which that query
+        does not select from. Without a filter, revenue of any region is each
+        region's revenue, and under rollup the grand total's is all of it."""
+        whole = _one(con, WHOLE[total])
+        revenue = dict(con.sql("SELECT region, SUM(amount) FROM sales GROUP BY 1").fetchall())
+
+        rows = _run(con, {"select": {"dimensions": ["Region"], "measures": [metric]}})
+        rolled = _run(
+            con,
+            {"select": {"dimensions": ["Region"], "measures": [metric]}, "grouping": "rollup"},
+        )
+
+        assert {r[0]: float(r[1]) for r in rows} == pytest.approx(
+            {region: whole / value for region, value in revenue.items()}, abs=1e-6
+        )
+        (grand,) = [r[1] for r in rolled if r[2] == 1]
+        assert float(grand) == pytest.approx(whole / sum(revenue.values()), abs=1e-6)
+
+    def test_without_dimensions_a_metric_over_a_total_is_one_row(self, con: Any) -> None:
+        """The metric's own column was the plan's only one, and dropped, left
+        it no column at all: it selected every row of the sales, eight
+        identical totals where the query has one."""
+        alone = _run(con, {"select": {"measures": ["Twice SD"]}})
+
+        rows = _run(con, {"select": {"measures": ["Twice SD", "Revenue Any Region"]}})
+
+        assert [r[0] for r in rows] == [r[0] for r in alone] and len(alone) == 1
 
     def test_a_windowed_total_beside_a_filter_context_still_compiles(self, con: Any) -> None:
         query = {

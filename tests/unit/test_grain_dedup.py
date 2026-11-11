@@ -1871,6 +1871,39 @@ def test_a_deduplicated_metric_beside_a_filter_context_measure(metric: str) -> N
 
 
 @pytest.mark.parametrize(
+    "measures",
+    [
+        ["Average Quantity Total", "Total Stock On Hand"],
+        ["Average Quantity Total", "Total Stock On Hand", "Filtered Quantity"],
+    ],
+    ids=["alone", "beside_a_filter_context"],
+)
+def test_an_averaged_total_beside_a_deduplicated_measure_is_refused(measures: list[str]) -> None:
+    """The total of an average is divided from the sums and counts of its
+    argument, which the deduplicated rows, finished values, no longer hold:
+    built from them, the helpers were ``SUM(1)`` and ``COUNT(1)`` over
+    ungrouped rows, and the database refused the query."""
+    averaged = _FILTER_CONTEXT_METRICS.replace(
+        "  Filtered Quantity:\n",
+        "  Average Quantity Total:\n"
+        "    resultType: float\n"
+        "    aggregation: avg\n"
+        "    expression: '{[Sales].[Quantity]}'\n"
+        "    total: true\n"
+        "  Filtered Quantity:\n",
+        1,
+    )
+    yaml_text = MODEL_YAML.replace("metrics:\n", averaged, 1)
+
+    with pytest.raises(
+        GrainDedupUnsupportedError, match="an averaged total \\('Average Quantity Total'\\)"
+    ):
+        _compile(
+            {"select": {"dimensions": ["Region", "Category"], "measures": measures}}, yaml_text
+        )
+
+
+@pytest.mark.parametrize(
     ("measures", "having", "kept"),
     [
         (["Region Stock per Quantity"], ("Region Stock per Quantity", "<", 60), ["south"]),

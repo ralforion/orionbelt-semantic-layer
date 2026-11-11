@@ -56,7 +56,7 @@ from orionbelt.compiler.reaggregate_wrap import (
     wrap_with_reaggregate,
 )
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
-from orionbelt.compiler.total_wrap import computed_apart, wrap_with_totals
+from orionbelt.compiler.total_wrap import computed_apart, is_avg_total, wrap_with_totals
 from orionbelt.compiler.window_wrap import (
     _ddm_window_components,
     axis_dimensions,
@@ -598,6 +598,16 @@ def evaluate_compatibility(
             and p.applies(resolved)
             and _conflicts_with_dedup(name, resolved)
         )
+        # An averaged total is divided from the sums and counts of its
+        # argument, which the deduplicated rows, finished values, no longer
+        # hold: built from them, the helpers were ``SUM(1)`` and ``COUNT(1)``.
+        averaged = sorted(
+            name
+            for name, m in _total_candidates(resolved).items()
+            if is_avg_total(m, resolved.dedup_computed)
+        )
+        if averaged:
+            blocking.append("an averaged total (" + ", ".join(f"'{n}'" for n in averaged) + ")")
         if resolved.grouping is not None:
             # Deduplicated once per grouping set, at that set's grain. A total
             # or grain override sets a grain of its own, which a subtotal row

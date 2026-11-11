@@ -604,6 +604,10 @@ def wrap_with_totals(
         for c in rows.columns
         if _get_alias(c) not in replaced or _reads_column(read, MAIN_CTE, _get_alias(c))
     ]
+    if not kept and not in_rows:
+        # A plan grouped by nothing keeps its one row by an aggregate: left
+        # without a column, it selected every row of its tables.
+        kept = list(rows.columns)
     ctes = [
         replace(c, query=replace(rows, columns=[*kept, *in_rows])) if c.query is rows else c
         for c in ast.ctes
@@ -672,9 +676,17 @@ def _total_ctes(
             wanted[(True, m.name)] = (tuple(m.effective_grain or ()), projected[m.name])
         for comp in metric_leaf_components(m, resolved.metric_components):
             if (False, comp.name) not in wanted and computed_apart(comp, resolved):
+                # The plan's own aggregate: under a filter context its wrapper
+                # records the component as a column of its CTE, which this
+                # one, selecting from the plan's tables, cannot read.
+                value = (
+                    _bare(projected[comp.name], comp)
+                    if rows is not ast and comp.name in projected
+                    else _component_value(comp, resolved)
+                )
                 wanted[(False, comp.name)] = (
                     tuple(comp.effective_grain or ()),
-                    comp.with_default(_component_value(comp, resolved)),
+                    comp.with_default(value),
                 )
     by_grain: dict[tuple[str, ...], list[tuple[tuple[bool, str], Expr]]] = {}
     for key, (grain, value) in wanted.items():

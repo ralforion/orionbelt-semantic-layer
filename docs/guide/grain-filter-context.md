@@ -338,7 +338,9 @@ include the subtotal rows. Like a windowed total, it covers the groups a
 A `grain` override is refused under `rollup` or `cube`: a subtotal row's empty
 dimension may be the rolled-up one or a NULL member. A total computed apart is
 refused in a query whose rows a deduplication on a repeated object computes
-first, in CTEs of finished values.
+first, in CTEs of finished values. So is an averaged total there: its total is
+divided from the sums and counts of the values it averages, which those CTEs
+no longer hold.
 
 Beside a measure with a `filterContext`, totals are computed from the query's
 own tables and `WHERE`, which the filter context's wrapper keeps in its `main`
