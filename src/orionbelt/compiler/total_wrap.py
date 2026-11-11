@@ -32,7 +32,7 @@ from __future__ import annotations
 from collections.abc import Callable, Container
 from dataclasses import fields, is_dataclass, replace
 from itertools import count
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from orionbelt.ast.nodes import (
     CTE,
@@ -57,7 +57,11 @@ from orionbelt.compiler.metric_expansion import expand_metric_expression, metric
 from orionbelt.compiler.outer_order_by import remap_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.star import grouping_flag_alias
+from orionbelt.compiler.window_wrap import _apply_metric_cast
 from orionbelt.models.semantic import SemanticModel
+
+if TYPE_CHECKING:
+    from orionbelt.dialect.base import Dialect
 
 # The aggregations a window over the grouped rows re-aggregates exactly, and
 # the window function that does it. ``AVG`` is the sum of its per-group sums
@@ -357,7 +361,10 @@ def _substitute_metric_refs(
 
 
 def wrap_with_totals(
-    ast: Select, resolved: ResolvedQuery, model: SemanticModel | None = None
+    ast: Select,
+    resolved: ResolvedQuery,
+    model: SemanticModel | None = None,
+    dialect: Dialect | None = None,
 ) -> Select:
     """Wrap a planner AST with a CTE + outer query for total measures.
 
@@ -531,10 +538,12 @@ def wrap_with_totals(
         if m.component_measures:
             # Metric
             if m.name in decompose_metrics:
-                # Rebuild expression with window functions for total components
+                # Rebuild expression with window functions for total components,
+                # cast to the metric's type as the planner's column was.
                 metric_expr = _substitute_metric_refs(
                     m.expression, resolved, apart_components, metric_inputs, helpers
                 )
+                metric_expr = _apply_metric_cast(metric_expr, m.name, model, dialect)
                 outer_columns.append(AliasedExpr(expr=metric_expr, alias=m.name))
             else:
                 # Metric without total components: pass-through

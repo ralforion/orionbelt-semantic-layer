@@ -214,9 +214,20 @@ class TestTotals:
 
         whole = _one(con, WHOLE["SD Total"])
         revenue = dict(con.sql("SELECT region, SUM(amount) FROM sales GROUP BY 1").fetchall())
-        assert {r[0]: r[1] for r in rows} == pytest.approx(
-            {region: whole / value for region, value in revenue.items()}
+        # At the six places of a quotient's default type, DECIMAL(18, 6).
+        assert {r[0]: float(r[1]) for r in rows} == pytest.approx(
+            {region: whole / value for region, value in revenue.items()}, abs=1e-6
         )
+
+    @pytest.mark.parametrize("metric", ["SD per Revenue", "Revenue Share"])
+    def test_a_metric_over_a_total_has_its_type(self, con: Any, metric: str) -> None:
+        """The totals pass rebuilds the metric from its components, and the
+        planner's cast wrapped the column it replaces: without it each engine
+        returned its own quotient (a double here, 20 places on PostgreSQL)
+        where a quotient without a total is DECIMAL(18, 6)."""
+        relation = con.sql(_sql({"select": {"dimensions": ["Region"], "measures": [metric]}}))
+
+        assert str(relation.types[1]) == "DECIMAL(18,6)"
 
     @pytest.mark.parametrize("grouping", ["rollup", "cube"])
     def test_subtotal_rows_do_not_add_to_the_total(self, con: Any, grouping: str) -> None:
@@ -534,6 +545,18 @@ class TestCasts:
         values = self._values(cast_con, ["Dear Share"])
 
         assert [float(v["Dear Share"]) for v in values.values()] == [0.0] * 3
+
+    def test_a_metric_over_a_total_has_its_declared_type(self, cast_con: Any) -> None:
+        """``dataType: double``: rebuilt by the totals pass without the cast,
+        the total of an integer-typed measure times 100 was DECIMAL(38, 2)."""
+        store = ModelStore()
+        model_id = store.load_model(CASTS).model_id
+        query = QueryObject.model_validate(
+            {"select": {"dimensions": ["G"], "measures": ["Scaled Price"]}}
+        )
+        relation = cast_con.sql(store.compile_query(model_id, query, "duckdb").sql)
+
+        assert str(relation.types[1]) == "DOUBLE"
 
     def test_a_windowed_total_is_cast_once(self, cast_con: Any) -> None:
         """Per group 0.80, 0.40 and 0.40 cast to 1, 0 and 0, which the window
