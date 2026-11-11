@@ -334,6 +334,39 @@ class TestAStaticFilterOnTheOtherFact:
         }
         assert {k: v["Refund Amount"] for k, v in together.items()} == {(1,): None, (2,): 4.0}
 
+    @staticmethod
+    def _compiled(static: str) -> object:
+        return PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Month"], measures=["Revenue Any Day", "Refund Amount"]
+                )
+            ),
+            _model(static),
+            "duckdb",
+        )
+
+    def test_the_skipped_filter_names_the_measure_its_leg_is_kept_for(self) -> None:
+        """The sales leg carries the month for 'Revenue Any Day' and has no
+        measure of its own: the warning named none ("this query")."""
+        result = self._compiled(_REFUNDS_OVER_2)
+
+        assert any(
+            "the fact behind 'Revenue Any Day' cannot reach 'Refunds'" in w.message
+            for w in result.warnings  # type: ignore[attr-defined]
+        )
+
+    def test_an_enforced_one_names_it_in_the_refusal(self) -> None:
+        """It read "the fact behind  cannot reach 'Refunds'", naming nothing."""
+        enforced = _REFUNDS_OVER_2.replace("value: 2}", "value: 2, enforce: always}")
+
+        with pytest.raises(ResolutionError) as caught:
+            self._compiled(enforced)
+
+        (error,) = caught.value.errors
+        assert error.code == "STATIC_FILTER_UNREACHABLE"
+        assert "the fact behind 'Revenue Any Day' cannot reach 'Refunds'" in error.message
+
 
 # Two facts in the union, plus the isolated measure - the shape the wrapper has
 # to keep out of it.

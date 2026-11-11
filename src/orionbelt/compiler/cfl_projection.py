@@ -926,6 +926,29 @@ def _measure_objects(
     return objects
 
 
+def filter_context_measures_of_leg(
+    planner: CFLPlanner,
+    resolved: ResolvedQuery,
+    model: SemanticModel,
+    leg: str,
+) -> list[ResolvedMeasure]:
+    """The filterContext measures a leg without measures of its own stands for.
+
+    :func:`group_measures_by_object` keeps such a leg where a filterContext
+    measure's leg would have been, to carry its fact's dimensions, the measure
+    computed in a scan of its own: these are the measures it keeps it for.
+    """
+    found: list[ResolvedMeasure] = []
+    for measure in resolved.measures:
+        for m in [measure, *metric_leaf_components(measure, resolved.metric_components)]:
+            if m.filter_context is None or any(f.name == m.name for f in found):
+                continue
+            objects = _measure_objects(planner, resolved, model, m)
+            if _dimension_carrying_leg(objects, resolved, model) == leg:
+                found.append(m)
+    return found
+
+
 def group_measures_by_object(
     planner: CFLPlanner,
     resolved: ResolvedQuery,
