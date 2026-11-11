@@ -167,6 +167,25 @@ def test_psycopg3_semantic_query_returns_rows(
     assert [d.name for d in description] == ["Customer Country", "Total Revenue"]
 
 
+class TestLeadingComments:
+    """A statement a client tags with a comment, as DBeaver prefixes
+    ``/* ApplicationName=... */``. Routing read it from its first word, so the
+    tagged ``SELECT 1`` went past the probes the router answers and was refused
+    by the semantic translator."""
+
+    @pytest.mark.parametrize(
+        "comment", ["/* ApplicationName=DBeaver 24.1.0 - Main */ ", "-- tagged\n"]
+    )
+    @pytest.mark.parametrize("prepare", [False, True], ids=["simple", "extended"])
+    def test_a_tagged_select_one(
+        self, pgwire_with_router_psycopg: tuple[PgWireServer, int], comment: str, prepare: bool
+    ) -> None:
+        _, port = pgwire_with_router_psycopg
+        with psycopg.connect(_dsn(port), autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute(comment + "SELECT 1", prepare=prepare)
+            assert cur.fetchall() == [(1,)]
+
+
 class TestMultiStatementSimpleQuery:
     """One ``Query`` message carrying several statements, driven by libpq.
 

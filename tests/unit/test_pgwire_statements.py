@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.pgwire.statements import scan, split_statements
+from orionbelt.pgwire.statements import scan, split_statements, without_leading_comments
 
 
 class TestTheOrdinaryCases:
@@ -201,3 +201,32 @@ class TestScan:
 
     def test_an_unterminated_run_takes_the_rest(self) -> None:
         assert [kind for kind, _, _ in scan("SELECT 'a")] == ["code", "literal"]
+
+
+class TestLeadingComments:
+    """What the router reads a statement from: its first token."""
+
+    @pytest.mark.parametrize(
+        ("sql", "statement"),
+        [
+            ("/* ApplicationName=DBeaver 24.1.0 - Main */ SELECT 1", "SELECT 1"),
+            ("-- c\nSELECT 1", "SELECT 1"),
+            ("/*c*/SELECT 1", "SELECT 1"),
+            ("/* a /* nested */ b */ SELECT 1", "SELECT 1"),
+            ("/* a */ -- b\n /* c */\tSELECT 1", "SELECT 1"),
+            ("/* it's */ SELECT 1", "SELECT 1"),
+            ("  \n SELECT 1", "SELECT 1"),
+        ],
+        ids=["block", "line", "unspaced", "nested", "several", "apostrophe", "whitespace"],
+    )
+    def test_comments_before_the_first_token_go(self, sql: str, statement: str) -> None:
+        assert without_leading_comments(sql) == statement
+
+    def test_a_comment_after_it_stays(self) -> None:
+        sql = "SELECT /* inline */ 1 -- trailing"
+        assert without_leading_comments(sql) == sql
+
+    def test_a_statement_of_comments_is_empty(self) -> None:
+        """As :func:`split_statements` drops such a fragment."""
+        assert without_leading_comments("/* only */ -- comments\n") == ""
+        assert split_statements("/* only */ -- comments\n") == []
