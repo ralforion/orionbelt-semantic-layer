@@ -411,6 +411,21 @@ def wrap_with_totals(
     projected_inputs: set[str] = set()
     # Track which component measures are already present as direct measures
     direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
+    # Under a filter context the plan's tables and groups are in the CTE its
+    # wrapper moved them into (:func:`_rows_of`), and this CTE reads that one's
+    # finished, cast values: a value read bare is computed there, from the
+    # plan's own expression, beside the plan's columns. Only a filter context's
+    # measures are the wrapper's own, in CTEs this one reads.
+    rows = _rows_of(ast, resolved)
+    planned = {c.alias: c.expr for c in rows.columns if isinstance(c, AliasedExpr)}
+    in_rows: list[AliasedExpr] = []
+    in_rows_taken = {alias.casefold() for alias in planned}
+
+    def from_rows(value: Expr, name: str) -> Expr:
+        """*value*, over the plan's tables, computed in their CTE and read from it."""
+        computed = _free_alias(name, in_rows_taken)
+        in_rows.append(AliasedExpr(expr=value, alias=computed))
+        return ColumnRef(name=computed, table=MAIN_CTE)
 
     for col_node in ast.columns:
         alias = _get_alias(col_node)
@@ -447,6 +462,10 @@ def wrap_with_totals(
                     value = _bare(selected_columns[comp.name], comp)
                 else:
                     name, value = comp.name, _component_value(comp, resolved)
+                if rows is not ast and comp.filter_context is None:
+                    if comp.name in planned:
+                        value = _bare(planned[comp.name], comp)
+                    value = from_rows(value, name)
                 base_columns.append(AliasedExpr(expr=value, alias=name))
         elif alias in apart:
             continue  # computed apart, in :func:`_total_ctes`
@@ -461,8 +480,12 @@ def wrap_with_totals(
             # declared default come off it here and go back on around the window.
             assert isinstance(col_node, AliasedExpr)
             measure = next(m for m in resolved.measures if m.name == alias)
-            uncast, recasts[alias] = _peel_cast(col_node.expr)
-            base_columns.append(AliasedExpr(expr=_peel_default(uncast, measure), alias=alias))
+            moved = rows is not ast and alias in planned
+            uncast, recasts[alias] = _peel_cast(planned[alias] if moved else col_node.expr)
+            value = _peel_default(uncast, measure)
+            base_columns.append(
+                AliasedExpr(expr=from_rows(value, alias) if moved else value, alias=alias)
+            )
         else:
             base_columns.append(col_node)
 
@@ -542,7 +565,11 @@ def wrap_with_totals(
     # --- Assemble final Select ---
     # The totals before the base CTE: they read the plan's tables, one of which
     # may be named like it.
-    all_ctes = [*ast.ctes, *total_ctes, base_cte]
+    ctes = [
+        replace(c, query=replace(rows, columns=[*rows.columns, *in_rows])) if c.query is rows else c
+        for c in ast.ctes
+    ]
+    all_ctes = [*ctes, *total_ctes, base_cte]
 
     outer = Select(
         columns=outer_columns,
