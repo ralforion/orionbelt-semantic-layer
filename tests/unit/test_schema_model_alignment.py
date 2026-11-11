@@ -14,7 +14,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from orionbelt.models.semantic import ModelSettings
+from orionbelt.models.semantic import DataObject, ModelSettings
 
 _SCHEMA = json.loads(
     (Path(__file__).resolve().parents[2] / "schema" / "obml-schema.json").read_text()
@@ -99,3 +99,15 @@ class TestModelSettingsDefaultLocale:
         model_aliases = {(f.alias or n) for n, f in ModelSettings.model_fields.items()}
         schema_props = set(_SCHEMA["properties"]["settings"]["properties"])
         assert model_aliases == schema_props
+
+
+class TestDataSourceDescription:
+    def test_a_query_across_sources_is_described_as_federated(self) -> None:
+        """3.0.0 ships federation, but the description of ``dataSource`` said a
+        query reading several sources is refused "until federation ships"."""
+        field = DataObject.model_fields["data_source"].description
+        schema = _SCHEMA["definitions"]["dataObject"]["properties"]["dataSource"]["description"]
+        for text in (field, schema):
+            assert text is not None
+            assert "federated query" in text
+            assert "refused" not in text
