@@ -16,6 +16,8 @@ than from the resolved expression. The one thing that cannot be rebuilt is a
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import duckdb
 
 from orionbelt.compiler.pipeline import CompilationPipeline
@@ -156,8 +158,8 @@ class TestAMetricOverATotalComponent:
 
     def test_it_binds_and_answers(self) -> None:
         rows = sorted(_run(_sql(["Sales Share", "Refund Amount"])))
-        # Month 1 is 10 of 30, month 2 is 20 of 30.
-        assert [(r[0], round(r[1], 4)) for r in rows] == [(1, 0.3333), (2, 0.6667)]
+        # Month 1 is 10 of 30, month 2 is 20 of 30, at a quotient's six places.
+        assert [(r[0], r[1]) for r in rows] == [(1, Decimal("0.333333")), (2, Decimal("0.666667"))]
 
     def test_an_avg_component_decomposes_over_the_composite(self) -> None:
         """A total AVG becomes SUM and COUNT helpers, whose argument is the
