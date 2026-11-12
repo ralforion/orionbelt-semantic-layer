@@ -330,7 +330,7 @@ was renamed. The first thing to say so is the warehouse, at query time.
 
 | Query param | Default | Meaning |
 |---|---|---|
-| `online` | `false` | Probe the datasource for every data object's table and declared columns |
+| `online` | `false` | Probe the datasource for every data object's table, declared columns, computed columns and nested fields |
 | `dialect` | the model's data source, then `DB_VENDOR` | Which configured datasource to probe |
 
 `dialect` here selects a *connection to open*. A model that names a configured
@@ -340,13 +340,24 @@ model's `settings.defaultDialect` — a model declaring `defaultDialect: snowfla
 on a DuckDB deployment would otherwise be probed by opening a Snowflake
 connection that does not exist.
 
-Each data object costs one round trip: a `SELECT <declared columns> FROM <table>
-LIMIT 0`, quoted exactly as a compiled query would quote it. That plans without
-scanning, and proves the columns are addressable through the same connection and
-the same spelling real queries use — which also settles identifier case without
-OBSL having to know which engines fold it. Only when that projection fails does
-a second `SELECT * ... LIMIT 0` run, to tell a missing table from a missing
-column and to name which one.
+Each data object costs one round trip: a `SELECT ... LIMIT 0` that reads every
+column the way a compiled query reads it. That plans without scanning, and proves
+the columns can be read through the same connection and the same SQL real
+queries use, which also settles identifier case without OBSL having to know
+which engines fold it.
+
+- A plain column is read by its `code`, quoted as a query quotes it.
+- A computed column is read as its `expression`, written for that database the
+  way a query writes it. A function the database lacks, or a column the
+  expression reads that is gone, fails here instead of in the first query.
+- A field of a `nestedIn` data object is read from the parent's array column,
+  unnested as a query unnests it, on the parent's data source. On Dremio, which
+  cannot unnest in a FROM clause, queries read the object's `code` table, and so
+  does the check.
+
+Only when that statement fails do narrower ones run: the plain columns alone,
+then `SELECT * ... LIMIT 0` to tell a missing table from a missing column, and
+each computed column and nested field on its own, to name the one that failed.
 
 Findings are errors like any other, so `valid` goes to `false`:
 
@@ -373,12 +384,14 @@ Findings are errors like any other, so `valid` goes to `false`:
 | Code | Meaning |
 |---|---|
 | `DATASOURCE_TABLE_MISSING` | The table a data object maps to could not be read. Carries the driver's own error. |
-| `DATASOURCE_COLUMN_MISSING` | A declared `code` names no column on an existing table. |
+| `DATASOURCE_COLUMN_MISSING` | A declared `code` names no column on an existing table, or no field of a nested array's elements. |
 | `DATASOURCE_COLUMN_CASE` | The column exists under a different letter case, and this engine rejected the model's spelling. The hint carries the real one. |
-| `DATASOURCE_TYPE_MISMATCH` | The column's type is not in the family its `abstractType` declares. |
+| `DATASOURCE_TYPE_MISMATCH` | The column's type, or the type a computed column's expression returns, is not in the family its `abstractType` declares. |
+| `DATASOURCE_EXPRESSION_FAILED` | The database could not evaluate a computed column's expression. Points at the `expression` and carries the driver's error. |
+| `DATASOURCE_UNNEST_FAILED` | The parent's column a `nestedIn` data object names could not be unnested. Points at `nestedIn.column` and carries the driver's error. |
 | `DATASOURCE_UNAVAILABLE` | The check could not run at all — no driver, no credentials, no connection. Reported once, not per data object. |
 | `DATASOURCE_UNSUPPORTED_DIALECT` | `dialect` names an engine OBSL has no dialect for. |
-| `DATASOURCE_PROBE_FAILED` | The table and columns are all there but the read was still refused (a column-level grant, most likely). Carries the driver's error. |
+| `DATASOURCE_PROBE_FAILED` | The table and columns are all there, or each part reads on its own, but the read was still refused (a column-level grant, most likely). Carries the driver's error. |
 
 Since the flag is opt-in, it fails closed: asking for a check that cannot run
 returns `DATASOURCE_UNAVAILABLE` and `valid: false` rather than a green light.
@@ -387,10 +400,16 @@ Two things are deliberately out of scope. Type comparison is by *family* —
 number, datetime, string, boolean, binary — so a `float` backed by `DECIMAL(38,9)`
 or a `timestamp` backed by `DATE` is not drift; only a `float` backed by text
 is. And a column that comes back null-typed, which a zero-row fetch is exactly
-where you find, is skipped rather than reported. Data objects sourced through
-`nestedIn` are not probed: their rows come from unnesting a parent's array
-column, so their columns belong to that array's element type rather than to any
-table of their own.
+where you find, is skipped rather than reported.
+
+The check reports what the database says, so some mistakes cannot be seen:
+
+| Not detected | Why | Example |
+|---|---|---|
+| A nested field the elements lack, on Snowflake and MySQL | Both read a field by its path in a JSON-like value, and a missing path reads as NULL, cast to the declared type | `code: Valu` instead of `Value` passes on Snowflake |
+| An expression that only fails on the values it reads | Some databases check types while planning, others only when rows are read, and `LIMIT 0` reads none | `{Name} * 2` fails on ClickHouse; Dremio converts it and returns a number, reported as a type mismatch if declared `string` |
+| The type of a computed column declared `date` | Queries cast it to a date, and so does the check | Any expression declared `date` |
+| A computed column that reads another data object | The check reads one data object at a time, and a query joins the other one first | `{[Customers].[Name]}` on `Orders` |
 
 The same options are on `POST /v1/validate` (stateless) and on the CLI as
 `obsl validate --online`.

@@ -110,10 +110,11 @@ leaves out — a data object's `code` and each column's `code` are opaque string
 to the validator, so a model stays valid after the table behind it is dropped or
 a column is renamed, and the warehouse is the first thing to say otherwise.
 
-`--online` adds a probe of every data object: one `SELECT <declared columns>
-FROM <table> LIMIT 0`, quoted the way a compiled query would quote it, which
-plans without scanning and proves the columns are readable under the spelling
-the model uses.
+`--online` adds a probe of every data object: one `SELECT ... LIMIT 0` that
+reads every column the way a compiled query reads it. That plans without
+scanning and proves the columns are readable with the SQL the model's queries
+use: plain columns by their `code`, computed columns by their `expression`, and
+the fields of a `nestedIn` data object unnested from the parent's array.
 
 ```bash
 obsl validate model.yaml --online
@@ -125,6 +126,9 @@ obsl validate model.yaml --online
 # error:   [DATASOURCE_TABLE_MISSING] Data object 'Shipments' maps to main.shipments,
 #          which the datasource could not read: Catalog Error: Table with name
 #          shipments does not exist!
+# error:   [DATASOURCE_EXPRESSION_FAILED] Computed column 'Net' on data object 'Orders'
+#          could not be evaluated by the datasource: Binder Error: No function
+#          matches the given name and argument types ...
 ```
 
 Findings are errors like any other, so the command exits `1` — which is what
