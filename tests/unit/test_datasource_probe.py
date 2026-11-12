@@ -71,11 +71,12 @@ class FakeResult:
     against a second reimplementation of it.
     """
 
-    def __init__(self, fields: list[tuple[str, Any]]) -> None:
+    def __init__(self, fields: list[tuple[str, Any]], rows: list[list[Any]] | None = None) -> None:
         import pyarrow as pa
 
         self.arrow_schema = pa.schema([pa.field(name, typ) for name, typ in fields])
         self.columns = [FakeColumn(name) for name, _ in fields]
+        self.rows = rows or []
 
 
 class FakeExecutor:
@@ -738,6 +739,167 @@ class TestNestedObjects:
         executor = stub(_orders_schema())
         assert probe_datasource(_resolve(yaml), dialect="dremio") == []
         assert len(executor.sql) == 1
+
+
+class TestParseSample:
+    @pytest.mark.parametrize(
+        ("text", "rows", "percent"),
+        [("1000", 1000, None), (" 50 ", 50, None), ("1%", None, 1.0), ("0.5%", None, 0.5)],
+    )
+    def test_a_count_or_a_percent(self, text: str, rows: Any, percent: Any) -> None:
+        sample = datasource_probe.parse_sample(text)
+        assert (sample.rows, sample.percent) == (rows, percent)
+
+    def test_a_percent_reads_at_most_the_cap(self) -> None:
+        assert datasource_probe.parse_sample("1%").limit == datasource_probe.SAMPLE_CAP == 1000
+
+    @pytest.mark.parametrize("text", ["0", "-5", "abc", "0%", "101%", "%", "", "nan%"])
+    def test_anything_else_is_refused(self, text: str) -> None:
+        with pytest.raises(ValueError, match="row count such as 1000"):
+            datasource_probe.parse_sample(text)
+
+
+def _sample(text: str) -> Any:
+    return datasource_probe.parse_sample(text)
+
+
+class TestSample:
+    """The sample pass: what only a value shows, reported as warnings."""
+
+    def test_it_follows_a_clean_zero_row_check(self, stub: Any) -> None:
+        executor = stub(_computed_schema(), _computed_schema())
+        model = _resolve(COMPUTED_MODEL_YAML)
+        assert probe_datasource(model, dialect="duckdb", sample=_sample("50")) == []
+        assert executor.sql[0].endswith("LIMIT 0")
+        assert executor.sql[1].endswith("LIMIT 50")
+        assert "WHERE" not in executor.sql[1]
+
+    def test_a_percent_is_a_random_filter_capped_at_a_thousand_rows(self, stub: Any) -> None:
+        executor = stub(_computed_schema(), _computed_schema())
+        probe_datasource(_resolve(COMPUTED_MODEL_YAML), dialect="duckdb", sample=_sample("1%"))
+        assert "WHERE random() < 0.01\nLIMIT 1000" in executor.sql[1]
+
+    @pytest.mark.parametrize(
+        ("dialect", "random"),
+        [
+            ("mysql", "RAND()"),
+            ("clickhouse", "randCanonical()"),
+            ("snowflake", "UNIFORM(0::FLOAT, 1::FLOAT, RANDOM())"),
+            ("databricks", "rand()"),
+            ("dremio", "RANDOM()"),
+            ("postgres", "random()"),
+        ],
+    )
+    def test_each_engine_draws_its_own_random_number(
+        self, stub: Any, dialect: str, random: str
+    ) -> None:
+        executor = stub(_computed_schema(), _computed_schema())
+        probe_datasource(_resolve(COMPUTED_MODEL_YAML), dialect=dialect, sample=_sample("1%"))
+        assert f"WHERE {random} < 0.01" in executor.sql[1]
+
+    def test_bigquery_samples_blocks_of_a_table(self, stub: Any) -> None:
+        """The one form that cuts what BigQuery bills: LIMIT and RAND() read every row."""
+        executor = stub(_computed_schema(), _computed_schema())
+        probe_datasource(_resolve(COMPUTED_MODEL_YAML), dialect="bigquery", sample=_sample("1%"))
+        assert "AS `Orders` TABLESAMPLE SYSTEM (1 PERCENT)" in executor.sql[1]
+        assert "RAND()" not in executor.sql[1]
+
+    def test_bigquery_reads_a_view_through_the_random_filter(self, stub: Any) -> None:
+        executor = stub(
+            _computed_schema(),
+            ExecutionError("TABLESAMPLE SYSTEM can only be applied directly to base tables."),
+            _computed_schema(),
+        )
+        model = _resolve(COMPUTED_MODEL_YAML)
+        assert probe_datasource(model, dialect="bigquery", sample=_sample("1%")) == []
+        assert "WHERE RAND() < 0.01" in executor.sql[2]
+
+    def test_bigquery_retries_only_the_refusal(self, stub: Any) -> None:
+        """Any other failure is the sample's own: a retry would read, and bill, every row."""
+        failed = ExecutionError("Bad double value: c1")
+        executor = stub(_computed_schema(), failed, failed)
+        (finding,) = probe_datasource(
+            _resolve(COMPUTED_MODEL_YAML), dialect="bigquery", sample=_sample("1%")
+        )
+        assert finding.code == "DATASOURCE_SAMPLE_FAILED"
+        assert not any("RAND()" in sql for sql in executor.sql)
+
+    def test_it_is_skipped_where_the_zero_row_check_found_something(self, stub: Any) -> None:
+        import pyarrow as pa
+
+        executor = stub(_computed_schema(net=pa.string()))
+        findings = probe_datasource(
+            _resolve(COMPUTED_MODEL_YAML), dialect="duckdb", sample=_sample("50")
+        )
+        assert [f.code for f in findings] == ["DATASOURCE_TYPE_MISMATCH"]
+        assert len(executor.sql) == 1
+
+    def test_a_value_the_expression_cannot_compute(self, stub: Any) -> None:
+        """Plain columns compute nothing, so only the expression is read on its own."""
+        failed = ExecutionError("Numeric value 'c1' is not recognized")
+        executor = stub(_computed_schema(), failed, failed)
+        (finding,) = probe_datasource(
+            _resolve(COMPUTED_MODEL_YAML), dialect="snowflake", sample=_sample("50")
+        )
+        assert finding.code == "DATASOURCE_SAMPLE_FAILED"
+        assert finding.severity == "warning"
+        assert finding.path == "dataObjects.Orders.columns.Net.expression"
+        assert "Numeric value 'c1' is not recognized" in finding.message
+        assert "a sample of 50 rows" in finding.message
+        assert len(executor.sql) == 3
+
+    def test_a_failure_no_part_repeats_is_reported_on_the_object(self, stub: Any) -> None:
+        """A random sample need not draw the failing row twice."""
+        stub(_computed_schema(), ExecutionError("bad value"), _computed_schema())
+        (finding,) = probe_datasource(
+            _resolve(COMPUTED_MODEL_YAML), dialect="snowflake", sample=_sample("1%")
+        )
+        assert (finding.code, finding.path) == ("DATASOURCE_SAMPLE_FAILED", "dataObjects.Orders")
+
+    def test_a_nested_field_null_on_every_sampled_element(self, stub: Any) -> None:
+        """What a field the elements lack reads as on Snowflake and MySQL."""
+        import pyarrow as pa
+
+        executor = stub(
+            _orders_schema(),
+            _orders_schema(),
+            _one_column(pa.string()),
+            FakeResult([("c1", pa.string())], rows=[[None], [None], [None]]),
+        )
+        findings = probe_datasource(
+            _resolve(NESTED_MODEL_YAML), dialect="snowflake", sample=_sample("100")
+        )
+        assert [(f.code, f.path, f.severity) for f in findings] == [
+            ("DATASOURCE_SAMPLE_ALL_NULL", "dataObjects.Order Lines.columns.Sku.code", "warning")
+        ]
+        assert "all 3 sampled elements" in findings[0].message
+        # Unnested inner, so a parent with an empty array is not an element.
+        assert "outer => TRUE" not in executor.sql[3]
+
+    @pytest.mark.parametrize("rows", [[], [[None], ["A-1"]]])
+    def test_no_rows_or_one_value_is_not_reported(self, stub: Any, rows: Any) -> None:
+        import pyarrow as pa
+
+        stub(
+            _orders_schema(),
+            _orders_schema(),
+            _one_column(pa.string()),
+            FakeResult([("c1", pa.string())], rows=rows),
+        )
+        model = _resolve(NESTED_MODEL_YAML)
+        assert probe_datasource(model, dialect="snowflake", sample=_sample("100")) == []
+
+    def test_warnings_leave_the_model_valid(self, stub: Any) -> None:
+        from orionbelt.service.model_store import ModelStore
+
+        failed = ExecutionError("Numeric value 'c1' is not recognized")
+        stub(_computed_schema(), failed, failed)
+        summary = ModelStore().validate(
+            COMPUTED_MODEL_YAML, datasource_dialect="snowflake", datasource_sample=_sample("50")
+        )
+        assert summary.valid is True
+        assert summary.errors == []
+        assert [w.code for w in summary.warnings] == ["DATASOURCE_SAMPLE_FAILED"]
 
 
 class TestProbeFailed:

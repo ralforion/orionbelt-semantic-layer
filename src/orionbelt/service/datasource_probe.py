@@ -343,8 +343,59 @@ def _table_ref(dialect: Any, obj: DataObject) -> str:
     return str(dialect.format_table_ref(obj.database, obj.schema_name, obj.code))
 
 
+#: The most rows a percent sample reads.
+SAMPLE_CAP = 1000
+
+
+@dataclass(frozen=True)
+class Sample:
+    """How much of each data object the sample check reads.
+
+    A row count reads the first that many rows the engine returns. A percent
+    reads that share of the rows, drawn row by row, and at most
+    :data:`SAMPLE_CAP` of them.
+    """
+
+    rows: int | None = None
+    percent: float | None = None
+
+    @property
+    def limit(self) -> int:
+        return self.rows if self.rows is not None else SAMPLE_CAP
+
+    def describe(self) -> str:
+        if self.percent is None:
+            return f"a sample of {self.limit} rows"
+        return f"a {self.percent:g}% sample of at most {self.limit} rows"
+
+
+def parse_sample(text: str) -> Sample:
+    """``"1000"`` for a row count, ``"1%"`` for a percent. Raises ``ValueError``."""
+    value = text.strip()
+    try:
+        if value.endswith("%"):
+            percent = float(value[:-1])
+            if 0 < percent <= 100:
+                return Sample(percent=percent)
+        else:
+            rows = int(value)
+            if rows > 0:
+                return Sample(rows=rows)
+    except ValueError:
+        pass
+    raise ValueError(
+        f"Invalid sample '{text}': give a row count such as 1000, or a percent such as 1%."
+    )
+
+
 def _select_sql(
-    dialect: Any, model: SemanticModel, chain: list[str], selected: list[_Selected]
+    dialect: Any,
+    model: SemanticModel,
+    chain: list[str],
+    selected: list[_Selected],
+    sample: Sample | None = None,
+    *,
+    table_sample: bool = False,
 ) -> str:
     """``SELECT <expressions> FROM <chain> LIMIT 0``, built the way a query is.
 
@@ -358,22 +409,33 @@ def _select_sql(
 
     ``LIMIT 0`` means the round trip costs a plan and no scan, and the result
     still carries a full schema, so the types come back from the same request.
+
+    With a *sample* the statement reads rows instead: ``LIMIT`` the sample's
+    count, and for a percent a ``WHERE <random> < fraction`` filter, or with
+    *table_sample* the dialect's FROM-clause sample. A nested object is then
+    unnested inner, so every row is an element and a NULL field is the
+    element's own rather than an empty array's.
     """
     from orionbelt.ast.builder import QueryBuilder
+    from orionbelt.ast.nodes import BinaryOp, Literal, RandomFraction
     from orionbelt.ast.nodes import JoinType as ASTJoinType
-    from orionbelt.ast.nodes import Literal
     from orionbelt.compiler.graph import JoinStep
     from orionbelt.compiler.nested import build_unnest
     from orionbelt.models.semantic import Cardinality
 
-    builder = QueryBuilder().from_(_table_ref(dialect, model.data_objects[chain[0]]), chain[0])
+    percent = sample.percent if sample is not None else None
+    builder = QueryBuilder().from_(
+        _table_ref(dialect, model.data_objects[chain[0]]),
+        chain[0],
+        sample_percent=percent if table_sample else None,
+    )
     for parent, child in itertools.pairwise(chain):
         step = JoinStep(
             from_object=parent,
             to_object=child,
             from_columns=[],
             to_columns=[],
-            join_type=ASTJoinType.LEFT,
+            join_type=ASTJoinType.LEFT if sample is None else ASTJoinType.INNER,
             cardinality=Cardinality.MANY_TO_ONE,
             nested=True,
         )
@@ -382,7 +444,11 @@ def _select_sql(
         builder.select_aliased(item.expr, f"c{i}")
     if not selected:
         builder.select(Literal(value=1))
-    return str(dialect.compile(builder.limit(0).build()))
+    if percent is not None and not table_sample:
+        fraction = Literal(value=percent / 100)
+        builder.where(BinaryOp(left=RandomFraction(), op="<", right=fraction))
+    limit = sample.limit if sample is not None else 0
+    return str(dialect.compile(builder.limit(limit).build()))
 
 
 def _select_star(dialect: Any, obj: DataObject) -> str:
@@ -555,6 +621,7 @@ class _Prober:
         model: SemanticModel,
         obj_name: str,
         source: DataSource | None,
+        sample: Sample | None = None,
     ) -> None:
         self.dialect = dialect
         self.dialect_name = dialect_name
@@ -562,6 +629,7 @@ class _Prober:
         self.obj_name = obj_name
         self.obj = model.data_objects[obj_name]
         self.source = source
+        self.sample = sample
         self.chain = _from_chain(dialect, model, obj_name)
 
     def _execute(self, sql: str) -> Any:
@@ -593,9 +661,12 @@ class _Prober:
         except ExecutionError as exc:
             error = str(exc)
         else:
-            return _type_findings(
+            findings = _type_findings(
                 self.dialect, self.obj_name, _columns_of(physical + computed), _kinds(result)
             )
+            if findings or self.sample is None:
+                return findings
+            return self._sample_findings(physical, computed, self.sample)
 
         if len(self.chain) > 1:
             findings, readable = self._nested_findings(physical)
@@ -609,6 +680,76 @@ class _Prober:
             # failed. Nothing here can name the cause, so return the driver's words.
             findings.append(_probe_failed(self.obj_name, error))
         return findings
+
+    def _sampled(self, selected: list[_Selected], sample: Sample) -> Any:
+        """*selected* read from *sample* of the rows. Raises on failure.
+
+        On BigQuery a percent is first tried as a block sample of the table,
+        the one form that cuts what the read is billed. A view refuses it
+        ("TABLESAMPLE SYSTEM can only be applied directly to base tables"), and
+        is read through the random filter instead.
+        """
+        from orionbelt.service.db_executor import ExecutionError
+
+        def sql(*, table_sample: bool = False) -> str:
+            return _select_sql(
+                self.dialect, self.model, self.chain, selected, sample, table_sample=table_sample
+            )
+
+        if sample.percent is not None and self.dialect.table_sample_clause(sample.percent):
+            try:
+                return self._execute(sql(table_sample=True))
+            except ExecutionError as exc:
+                # Only the refusal itself is retried. Any other failure is the
+                # sample's own, and a retry would read, and bill, every row.
+                if "TABLESAMPLE" not in str(exc).upper():
+                    raise
+        return self._execute(sql())
+
+    def _sample_findings(
+        self, physical: list[_Selected], computed: list[_Selected], sample: Sample
+    ) -> list[SemanticError]:
+        """Warnings from reading *sample* of the rows, for an object the zero-row check passed.
+
+        What fails here fails on a value: an expression that plans but cannot
+        compute a row, a nested field whose values do not cast to its declared
+        type. Only computed columns and nested fields compute anything, so only
+        they are read on their own to say which one failed. A nested field that
+        is NULL on every sampled element is reported too: on Snowflake and MySQL
+        that is what a field the elements lack reads as.
+        """
+        from orionbelt.service.db_executor import ExecutionError
+
+        selected = physical + computed
+        if not selected:
+            return []
+        try:
+            result = self._sampled(selected, sample)
+        except ExecutionError as exc:
+            error = str(exc)
+        else:
+            return self._null_fields(physical, result.rows) if len(self.chain) > 1 else []
+
+        computing = computed + (physical if len(self.chain) > 1 else [])
+        findings: list[SemanticError] = []
+        for item in computing:
+            try:
+                self._sampled([item], sample)
+            except ExecutionError as exc:
+                findings.append(_sample_failed(self.obj_name, sample, str(exc), column=item.column))
+        # Each part read on its own: the failing row was not drawn again, or the
+        # statement fails only as a whole. The driver's words are all there is.
+        return findings or [_sample_failed(self.obj_name, sample, error)]
+
+    def _null_fields(self, physical: list[_Selected], rows: list[list[Any]]) -> list[SemanticError]:
+        """A warning per nested field that is NULL on every sampled element."""
+        if not rows:
+            return []
+        return [
+            _sample_all_null(self.obj_name, self.obj, item.column, len(rows))
+            for i, item in enumerate(physical)
+            if all(row[i] is None for row in rows)
+        ]
 
     def _table_findings(
         self, physical: list[_Selected], computed: list[_Selected], error: str
@@ -759,6 +900,60 @@ def _probe_failed(obj_name: str, error: str) -> SemanticError:
     )
 
 
+def _sample_failed(
+    obj_name: str, sample: Sample, error: str, *, column: DataObjectColumn | None = None
+) -> SemanticError:
+    """A warning: reading *sample* of the rows failed on a value."""
+    if column is None:
+        subject, path = f"Data object '{obj_name}'", f"dataObjects.{obj_name}"
+    elif column.is_computed:
+        subject = f"Computed column '{column.name}' on data object '{obj_name}'"
+        path = f"dataObjects.{obj_name}.columns.{column.name}.expression"
+    else:
+        subject = f"Field '{column.code}' of data object '{obj_name}'"
+        path = f"dataObjects.{obj_name}.columns.{column.name}.code"
+    context = {"dataObject": obj_name, "sample": sample.describe(), "error": error}
+    if column is not None:
+        context["column"] = column.name
+    return SemanticError(
+        code="DATASOURCE_SAMPLE_FAILED",
+        message=f"{subject} failed on a value in {sample.describe()}: {error}",
+        path=path,
+        severity="warning",
+        hint=(
+            "The SQL plans, but a value in the data does not fit it: check the "
+            "expression, or the declared abstractType."
+        ),
+        context=context,
+    )
+
+
+def _sample_all_null(
+    obj_name: str, obj: DataObject, column: DataObjectColumn, count: int
+) -> SemanticError:
+    """A warning: a nested field is NULL on every sampled element."""
+    array = f"{obj.nested_in.data_object}.{obj.nested_in.column}" if obj.nested_in else obj_name
+    return SemanticError(
+        code="DATASOURCE_SAMPLE_ALL_NULL",
+        message=(
+            f"Field '{column.code}' is NULL on all {count} sampled elements of {array} "
+            f"(data object '{obj_name}')."
+        ),
+        path=f"dataObjects.{obj_name}.columns.{column.name}.code",
+        severity="warning",
+        hint=(
+            "On Snowflake and MySQL a field the elements lack reads as NULL: check "
+            "the column's 'code'."
+        ),
+        context={
+            "dataObject": obj_name,
+            "column": column.name,
+            "code": column.code,
+            "sampledElements": count,
+        },
+    )
+
+
 def _unavailable(
     dialect: str, exc: Exception, path: str | None = None, source: str | None = None
 ) -> SemanticError:
@@ -796,7 +991,11 @@ def _table_missing(obj_name: str, obj: DataObject, error: str) -> SemanticError:
 
 
 def probe_datasource(
-    model: SemanticModel, *, dialect: str, follow_sources: bool = False
+    model: SemanticModel,
+    *,
+    dialect: str,
+    follow_sources: bool = False,
+    sample: Sample | None = None,
 ) -> list[SemanticError]:
     """Check every data object in *model* against the configured datasource.
 
@@ -811,6 +1010,10 @@ def probe_datasource(
     An object sourced by ``nestedIn`` is read as a query reads it: unnested out
     of its parent's array column, on the parent's source, so its fields are
     checked against the array's elements rather than against a table of its own.
+
+    With a *sample*, each data object the zero-row check passed is also read
+    from that sample of its rows, for what only a value shows. Those findings
+    are warnings: a sample that finds nothing proves nothing.
     """
     from orionbelt.service.datasource_selection import reads_several_sources, resolve_datasource
     from orionbelt.service.db_executor import ExecutionUnavailableError, ensure_arrow
@@ -829,16 +1032,16 @@ def probe_datasource(
         ]
 
     if reads_several_sources(model):
-        return _probe_each_source(model, dialect, follow_sources)
+        return _probe_each_source(model, dialect, follow_sources, sample)
     try:
         source = resolve_datasource(model, dialect)
     except ExecutionUnavailableError as exc:
         return [_unavailable(dialect, exc)]
-    return _probe_objects(impl, dialect, model, list(model.data_objects), source)
+    return _probe_objects(impl, dialect, model, list(model.data_objects), source, sample)
 
 
 def _probe_each_source(
-    model: SemanticModel, dialect: str, follow_sources: bool
+    model: SemanticModel, dialect: str, follow_sources: bool, sample: Sample | None
 ) -> list[SemanticError]:
     """Each data object probed on the data source its queries read it from.
 
@@ -886,12 +1089,17 @@ def _probe_each_source(
             findings.append(_unavailable(source_dialect_name, exc, path, source_name))
             continue
         impl = DialectRegistry.get(source_dialect_name)
-        findings.extend(_probe_objects(impl, source_dialect_name, model, objects, source))
+        findings.extend(_probe_objects(impl, source_dialect_name, model, objects, source, sample))
     return findings
 
 
 def _probe_objects(
-    impl: Any, dialect: str, model: SemanticModel, objects: list[str], source: DataSource | None
+    impl: Any,
+    dialect: str,
+    model: SemanticModel,
+    objects: list[str],
+    source: DataSource | None,
+    sample: Sample | None = None,
 ) -> list[SemanticError]:
     """The findings for *objects* of *model*, each probed on *source*."""
     from orionbelt.service.db_executor import ExecutionUnavailableError
@@ -899,7 +1107,7 @@ def _probe_objects(
     findings: list[SemanticError] = []
     for obj_name in objects:
         try:
-            findings.extend(_Prober(impl, dialect, model, obj_name, source).probe())
+            findings.extend(_Prober(impl, dialect, model, obj_name, source, sample).probe())
         except ExecutionUnavailableError as exc:
             # No connection, no driver, or no credentials. Every remaining
             # object would fail the same way, so stop rather than repeat it

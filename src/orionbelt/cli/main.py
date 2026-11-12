@@ -226,6 +226,17 @@ OnlineOpt = Annotated[
         ),
     ),
 ]
+SampleOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--sample",
+        help=(
+            "Also read a sample of each data object's rows (implies --online): a row "
+            "count such as 1000, or a percent such as 1% (at most 1000 rows). What only "
+            "a value shows is reported as warnings."
+        ),
+    ),
+]
 #: Separate from ``DialectOpt`` because it selects a different thing. That one
 #: picks the SQL to generate and falls back to the model's ``defaultDialect``;
 #: this one picks the connection the probe opens, and the only connection a
@@ -247,6 +258,7 @@ def validate(
     fmt: FormatOpt = OutputFormat.table,
     online: OnlineOpt = False,
     dialect: ProbeDialectOpt = None,
+    sample: SampleOpt = None,
     server: ServerOpt = None,
     api_key: ApiKeyOpt = None,
     client_cert: ClientCertOpt = None,
@@ -258,15 +270,17 @@ def validate(
     Offline by default: the model is checked against itself and the OBML
     schema, and no connection is opened. ``--online`` adds a datasource probe
     whose findings are errors like any other, so a dropped table or a renamed
-    column fails the command.
+    column fails the command. ``--sample`` reads rows too, and reports what only
+    a value shows as warnings, which do not fail it.
     """
     model_yaml = _io.read_text(model)
+    online = online or sample is not None
     if server:
         from orionbelt.cli._local import CliError
 
         try:
             data = _remote_client(server, api_key, client_cert, client_key, ca_cert).validate(
-                model_yaml, online=online, dialect=dialect
+                model_yaml, online=online, dialect=dialect, sample=sample
             )
         except CliError as exc:
             raise _fail(str(exc)) from None
@@ -276,7 +290,10 @@ def validate(
     else:
         from orionbelt.cli import _local
 
-        summary = _local.validate(model_yaml, online=online, dialect=dialect)
+        try:
+            summary = _local.validate(model_yaml, online=online, dialect=dialect, sample=sample)
+        except _local.CliError as exc:
+            raise _fail(str(exc)) from None
         valid = summary.valid
         errors = [dataclasses.asdict(e) for e in summary.errors]
         warnings = [dataclasses.asdict(w) for w in summary.warnings]

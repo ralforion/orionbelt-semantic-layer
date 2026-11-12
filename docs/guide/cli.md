@@ -64,7 +64,7 @@ For `compile` and `execute` you supply the query one of two ways (exactly one):
 | Command | Options |
 | --- | --- |
 | _common (where remote-capable)_ | `-f, --format {table,json,csv,tsv}` · `-s, --server URL` (env `OBSL_SERVER`) · `--api-key KEY` (env `OBSL_API_KEY`) · `--ca-cert PATH` (env `OBSL_CA_CERT`) · `--client-cert PATH` (env `OBSL_CLIENT_CERT`) · `--client-key PATH` (env `OBSL_CLIENT_KEY`) - see [TLS in remote mode](#tls-in-remote-mode) |
-| `validate` | `--online` · `-d/--dialect NAME` (with `--online`; defaults to `DB_VENDOR`) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
+| `validate` | `--online` · `-d/--dialect NAME` (with `--online`; defaults to `DB_VENDOR`) · `--sample N\|P%` (implies `--online`) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `compile` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--explain` · `--pretty/--no-pretty` (default pretty) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `execute` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--limit N` (default 1000; see note) · `-f/--format` · `-s/--server` · `--api-key` · TLS options above |
 | `describe` | `-f/--format` |
@@ -152,6 +152,24 @@ Because the flag is opt-in it fails closed — if the connection is missing you 
 `DATASOURCE_UNAVAILABLE` and a non-zero exit, not a pass. See
 [the endpoint reference](../api/endpoints.md#checking-the-model-against-the-datasource)
 for the full list of codes and what the probe deliberately does not check.
+
+`--sample` also reads rows, for what only a value shows, and implies `--online`:
+a row count such as `--sample 1000`, or a percent such as `--sample 1%` (at most
+1000 rows). What it finds is a warning, so the command still exits `0`:
+
+```bash
+obsl validate model.yaml --sample 50
+# warning: [DATASOURCE_SAMPLE_FAILED] Computed column 'Name Twice' on data object
+#          'Clients' failed on a value in a sample of 50 rows: Database execution
+#          failed: 100038 (22018): Numeric value 'Indigo Nakamura' is not recognized
+#          ... (at dataObjects.Clients.columns.Name Twice.expression) Hint: The SQL
+#          plans, but a value in the data does not fit it: check the expression, or
+#          the declared abstractType.
+# model is valid
+```
+
+See [Reading a sample of the rows](../api/endpoints.md#reading-a-sample-of-the-rows)
+for what each form reads and costs.
 
 ## Compile
 

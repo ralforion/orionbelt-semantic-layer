@@ -402,6 +402,9 @@ class DatabricksDialect(Dialect):
     def current_date_sql(self) -> str:
         return "current_date()"
 
+    def random_fraction_sql(self) -> str:
+        return "rand()"
+
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         if unit == "day":
             return f"date_add({date_sql}, {count})"

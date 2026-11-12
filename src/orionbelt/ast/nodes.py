@@ -200,6 +200,16 @@ class Exists:
 
 
 @dataclass(frozen=True)
+class RandomFraction:
+    """A random number in ``[0, 1)``, drawn again for every row.
+
+    Each engine spells it its own way
+    (:meth:`~orionbelt.dialect.base.Dialect.random_fraction_sql`); online
+    validation's percent sample filters on it.
+    """
+
+
+@dataclass(frozen=True)
 class RawSQL:
     """Escape hatch for dialect-specific raw SQL fragments.
 
@@ -384,6 +394,7 @@ Expr = (
     | SubqueryExpr
     | Exists
     | RawSQL
+    | RandomFraction
     | Between
     | RegexMatch
     | LikeMatch
@@ -400,6 +411,9 @@ class From:
 
     source: str | Select
     alias: str | None = None
+    sample_percent: float | None = None
+    """Read only this percent of the table, in the dialect's
+    :meth:`~orionbelt.dialect.base.Dialect.table_sample_clause`."""
 
 
 @dataclass(frozen=True)

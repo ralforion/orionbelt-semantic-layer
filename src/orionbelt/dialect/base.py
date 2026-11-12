@@ -30,6 +30,7 @@ from orionbelt.ast.nodes import (
     Literal,
     NestedField,
     OrderByItem,
+    RandomFraction,
     RawSQL,
     RegexMatch,
     RelativeDateRange,
@@ -1445,6 +1446,27 @@ class Dialect(ABC):
     def current_date_sql(self) -> str:
         """Return SQL for the current date."""
 
+    def random_fraction_sql(self) -> str:
+        """SQL for a random number in ``[0, 1)``, drawn again for every row.
+
+        What the online validation's percent sample filters on
+        (``WHERE <this> < 0.01``): row by row, so it works on views and on
+        tables too small for a block sample, where PostgreSQL and DuckDB
+        returned no rows at all. Measured on all eight engines.
+        """
+        return "random()"
+
+    def table_sample_clause(self, percent: float) -> str | None:
+        """A FROM-clause sample of *percent* of a base table, or ``None``.
+
+        ``None`` everywhere but BigQuery, where it is the one form that cuts
+        what a sample is billed: ``LIMIT`` and a ``WHERE RAND()`` filter both
+        bill every row of the columns read. The clause is refused on a view
+        there, so a caller has to be ready to fall back to
+        :meth:`random_fraction_sql`.
+        """
+        return None
+
     @abstractmethod
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         """Return SQL that adds count units to date_sql."""
@@ -2744,6 +2766,11 @@ class Dialect(ABC):
             result = self._render_source_string(node.source)
         if node.alias:
             result += f" AS {self.quote_identifier(node.alias)}"
+        if node.sample_percent is not None:
+            clause = self.table_sample_clause(node.sample_percent)
+            if clause is None:
+                raise ValueError(f"The {self.name} dialect has no table sample clause.")
+            result += f" {clause}"
         return result
 
     def compile_join(self, node: Join) -> str:
@@ -2968,6 +2995,8 @@ class Dialect(ABC):
                 return f"NOT EXISTS (\n{self.compile_select(subq)}\n)"
             case RawSQL(sql=sql):
                 return sql
+            case RandomFraction():
+                return self.random_fraction_sql()
             case Between(expr=inner, low=low, high=high, negated=negated):
                 op = "NOT BETWEEN" if negated else "BETWEEN"
                 inner_sql = self.compile_expr(inner, _parent_prec=self._PREC_CMP)

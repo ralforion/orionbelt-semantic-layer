@@ -405,6 +405,7 @@ async def shortcut_validate(
     body: ValidateRequest,
     online: bool = False,
     dialect: str | None = None,
+    sample: str | None = None,
 ) -> ValidateResponse:
     """Validate an OBML model (stateless — no session required).
 
@@ -416,16 +417,22 @@ async def shortcut_validate(
     names a connection to open, not SQL to generate, so unlike the ``dialect``
     on the query endpoints it does not fall back to the model's
     ``settings.defaultDialect``.
-    """
-    from orionbelt.api.routers.sessions import _probe_dialect
 
+    ``sample`` (``1000`` rows, or ``1%`` of the rows, at most 1000) also reads
+    that sample of each data object, and reports what only a value shows as
+    warnings. It implies ``online=true``.
+    """
+    from orionbelt.api.routers.sessions import _probe_dialect, _probe_sample
+
+    probe_sample = _probe_sample(sample)
     store = ModelStore()
     raw = cast("dict[str, object] | None", body.model_json)
     summary = store.validate(
         body.model_yaml,
         raw_dict=raw,
-        datasource_dialect=_probe_dialect(online, dialect),
+        datasource_dialect=_probe_dialect(online or probe_sample is not None, dialect),
         follow_model_source=dialect is None,
+        datasource_sample=probe_sample,
     )
     return ValidateResponse(
         valid=summary.valid,

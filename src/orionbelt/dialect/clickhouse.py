@@ -1255,6 +1255,9 @@ class ClickHouseDialect(Dialect):
     def current_date_sql(self) -> str:
         return "today()"
 
+    def random_fraction_sql(self) -> str:
+        return "randCanonical()"
+
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         funcs: dict[str, str] = {
             "day": "addDays",

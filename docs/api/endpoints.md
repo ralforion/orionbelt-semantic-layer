@@ -332,6 +332,7 @@ was renamed. The first thing to say so is the warehouse, at query time.
 |---|---|---|
 | `online` | `false` | Probe the datasource for every data object's table, declared columns, computed columns and nested fields |
 | `dialect` | the model's data source, then `DB_VENDOR` | Which configured datasource to probe |
+| `sample` | none | Also read a sample of each data object's rows: a count such as `1000`, or a percent such as `1%`. Implies `online=true`. See [Reading a sample of the rows](#reading-a-sample-of-the-rows) |
 
 `dialect` here selects a *connection to open*. A model that names a configured
 data source (`settings.defaultDataSource`) is probed on that source, the one its
@@ -414,8 +415,35 @@ The check reports what the database says, so some mistakes cannot be seen:
 | The type of a computed column declared `date` | Queries cast it to a date, and so does the check | Any expression declared `date` |
 | A computed column that reads another data object | The check reads one data object at a time, and a query joins the other one first | `{[Customers].[Name]}` on `Orders` |
 
+The first two rows are what a sample can find.
+
+#### Reading a sample of the rows
+
+`sample` reads rows as well, for what only a value shows. It runs after the
+check above, and only for a data object that passed it.
+
+| `sample` | What is read |
+|---|---|
+| `1000` | The first 1000 rows the database returns |
+| `1%` | About 1% of the rows, drawn row by row, at most 1000 of them |
+
+A percent works on every database and on views. On BigQuery it reads blocks of
+a table instead (`TABLESAMPLE SYSTEM`), because that is the only way to pay for
+less than the whole table there: a `LIMIT` is billed for every row of the
+columns it reads. A view on BigQuery is read row by row. A table smaller than a
+block, on BigQuery, comes back whole, and the 1000-row cap still applies.
+
+What the sample finds is a **warning**, not an error: the model stays valid,
+and `obsl validate` exits `0`. A sample that finds nothing proves nothing about
+the rows it did not read.
+
+| Code | Meaning | Example |
+|---|---|---|
+| `DATASOURCE_SAMPLE_FAILED` | Reading the sample failed on a value. Points at the computed column's `expression` or the nested field's `code` that fails on its own, else at the data object. Carries the driver's error. | `{Name} * 2` on Snowflake: `Numeric value 'Acme' is not recognized` |
+| `DATASOURCE_SAMPLE_ALL_NULL` | A nested field is NULL on every sampled element. On Snowflake and MySQL, that is what a field the elements lack reads as. | `code: Valu` instead of `Value` on Snowflake |
+
 The same options are on `POST /v1/validate` (stateless) and on the CLI as
-`obsl validate --online`.
+`obsl validate --online` and `--sample`.
 
 ---
 

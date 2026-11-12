@@ -327,7 +327,7 @@ class TestOnlineValidationOfComputedAndNestedColumns:
         con = duckdb.connect(str(shops / "eu.duckdb"))
         con.execute(
             "CREATE TABLE charges AS SELECT 'c1' AS id, 10.5 AS cost, "
-            "[{'Key': 'team', 'Value': 'core'}] AS labels"
+            "[{'Key': 'team', 'Value': 'core', 'Note': NULL::VARCHAR}] AS labels"
         )
         con.close()
         return shops
@@ -370,6 +370,34 @@ class TestOnlineValidationOfComputedAndNestedColumns:
     def test_a_missing_parent_is_reported_on_the_parent(self, charges: Any) -> None:
         yaml = CHARGES_MODEL.replace("code: charges", "code: charges_gone")
         assert self._errors(yaml) == [("DATASOURCE_TABLE_MISSING", "dataObjects.Charges.code")]
+
+    @pytest.mark.parametrize("sample", ["100", "50%"])
+    def test_a_sample_of_a_matching_model_warns_of_nothing(self, charges: Any, sample: str) -> None:
+        from orionbelt.cli import _local
+
+        summary = _local.validate(CHARGES_MODEL, sample=sample)
+        assert (summary.valid, summary.errors, summary.warnings) == (True, [], [])
+
+    def test_a_nested_field_null_on_every_sampled_element(self, charges: Any) -> None:
+        """A warning, so the model stays valid; ``sample`` implies the online check."""
+        from orionbelt.cli import _local
+
+        yaml = CHARGES_MODEL.replace(
+            "      Label Value: {code: Value, abstractType: string}\n",
+            "      Label Value: {code: Value, abstractType: string}\n"
+            "      Label Note: {code: Note, abstractType: string}\n",
+        )
+        summary = _local.validate(yaml, sample="100")
+        assert summary.valid is True
+        assert [(w.code, w.path) for w in summary.warnings] == [
+            ("DATASOURCE_SAMPLE_ALL_NULL", "dataObjects.Charge Labels.columns.Label Note.code")
+        ]
+
+    def test_a_sample_that_is_neither_a_count_nor_a_percent(self, charges: Any) -> None:
+        from orionbelt.cli import _local
+
+        with pytest.raises(_local.CliError, match="row count such as 1000"):
+            _local.validate(CHARGES_MODEL, sample="lots")
 
 
 @pytest.fixture
@@ -458,6 +486,32 @@ class TestRest:
         for path in (f"/v1/sessions/{session}/validate", "/v1/validate"):
             response = await client.post(path, params={"online": "true"}, json={"model_yaml": yaml})
             assert response.json()["valid"], (path, response.json())
+
+    async def test_a_sample_implies_the_online_check(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without ``online=true``: a model on a source no one configured is reported."""
+        monkeypatch.setattr("orionbelt.api.deps.get_db_vendor", lambda: "postgres")
+        session = (await client.post("/v1/sessions")).json()["session_id"]
+
+        for path in (f"/v1/sessions/{session}/validate", "/v1/validate"):
+            response = await client.post(
+                path, params={"sample": "1%"}, json={"model_yaml": shop_model("shop-xx")}
+            )
+            codes = [e["code"] for e in response.json()["errors"]]
+            assert codes == ["DATASOURCE_UNAVAILABLE"], (path, response.json())
+
+    async def test_a_sample_that_is_neither_a_count_nor_a_percent(
+        self, client: AsyncClient
+    ) -> None:
+        session = (await client.post("/v1/sessions")).json()["session_id"]
+
+        for path in (f"/v1/sessions/{session}/validate", "/v1/validate"):
+            response = await client.post(
+                path, params={"sample": "lots"}, json={"model_yaml": shop_model("shop-us")}
+            )
+            assert response.status_code == 422, (path, response.text)
+            assert "row count such as 1000" in response.json()["detail"]
 
     async def test_the_settings_mirror_reports_it(self, client: AsyncClient) -> None:
         session = (await client.post("/v1/sessions")).json()["session_id"]
