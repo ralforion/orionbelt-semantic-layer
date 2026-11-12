@@ -220,20 +220,49 @@ def _hint_family(type_hint: str) -> str | None:
     return None
 
 
-def _families(result: Any) -> list[str | None]:
-    """Family per result column, in the order the driver returned them.
+@dataclass(frozen=True)
+class _Kind:
+    """What came back for one column: its family, and whether a number is an integer.
 
-    Prefers the Arrow schema, which distinguishes a boolean from a string;
-    the coarse PEP 249 hint cannot. Seven of the eight drivers are
-    Arrow-native, so the fallback is the exception.
+    ``integer`` is ``None`` where the result does not say: for a column that is
+    not a number, and for a number known only by the coarse PEP 249 hint or a
+    vendor type name. The distinction matters for one comparison only, a
+    boolean on an engine that answers one as an integer (:func:`_refutes`).
+    """
+
+    family: str | None
+    integer: bool | None = None
+
+
+def _arrow_integer(arrow_type: Any) -> bool | None:
+    """Whether an Arrow number type is an integer; ``None`` when it does not say."""
+    import pyarrow as pa
+
+    try:
+        if pa.types.is_integer(arrow_type):
+            return True
+        if pa.types.is_floating(arrow_type) or pa.types.is_decimal(arrow_type):
+            return False
+    except (AttributeError, TypeError):
+        # The extension subclasses :func:`_structural_family` describes.
+        return None
+    return None
+
+
+def _kinds(result: Any) -> list[_Kind]:
+    """What came back for each result column, in the order the driver returned them.
+
+    Prefers the Arrow schema, which distinguishes a boolean from a string and an
+    integer from a decimal; the coarse PEP 249 hint can do neither. Seven of the
+    eight drivers are Arrow-native, so the fallback is the exception.
     """
     schema = result.arrow_schema
     if schema is not None:
         try:
-            return [_arrow_family(field.type) for field in schema]
+            return [_Kind(_arrow_family(f.type), _arrow_integer(f.type)) for f in schema]
         except ImportError:  # pragma: no cover - a schema implies pyarrow
             pass
-    return [_hint_family(col.type_hint) for col in result.columns]
+    return [_Kind(_hint_family(col.type_hint)) for col in result.columns]
 
 
 @dataclass(frozen=True)
@@ -362,23 +391,28 @@ def _select_star(dialect: Any, obj: DataObject) -> str:
     return f"SELECT * FROM {table} LIMIT 0"
 
 
-def _represents(dialect: Any, declared: str, actual: str) -> bool:
-    """Whether *dialect* answers a column of the *declared* family as *actual*.
+def _refutes(dialect: Any, declared: str, actual: _Kind) -> bool:
+    """Whether a column that came back as *actual* contradicts the *declared* family.
 
-    The same family, or a boolean as an integer where the engine returns one
-    (:attr:`~orionbelt.dialect.base.Dialect.booleans_as_integers`): MySQL has
-    no boolean type, and a ClickHouse comparison is a ``UInt8``.
+    An unplaced type refutes nothing, and neither does the same family. Nor does
+    an integer behind a boolean where the engine answers one that way
+    (:attr:`~orionbelt.dialect.base.Dialect.booleans_as_integers`): MySQL has no
+    boolean type, and a ClickHouse comparison is a ``UInt8``. A float or a
+    decimal there is still drift, as query execution leaves it a number; a
+    number of unknown kind refutes nothing.
     """
-    if declared == actual:
-        return True
-    return declared == _BOOLEAN and actual == _NUMBER and dialect.booleans_as_integers
+    if actual.family is None or actual.family == declared:
+        return False
+    if declared == _BOOLEAN and actual.family == _NUMBER and dialect.booleans_as_integers:
+        return actual.integer is False
+    return True
 
 
 def _type_findings(
     dialect: Any,
     obj_name: str,
     columns: list[DataObjectColumn],
-    families: list[str | None],
+    kinds: list[_Kind],
 ) -> list[SemanticError]:
     """Compare each declared ``abstractType`` against the type that came back.
 
@@ -388,10 +422,11 @@ def _type_findings(
     is nothing to gain from it.
     """
     findings: list[SemanticError] = []
-    for col, actual in zip(columns, families, strict=False):
+    for col, kind in zip(columns, kinds, strict=False):
         declared = _DECLARED_FAMILY.get(col.abstract_type)
-        if declared is None or actual is None or _represents(dialect, declared, actual):
+        if declared is None or not _refutes(dialect, declared, kind):
             continue
+        actual = kind.family
         if col.is_computed:
             subject = f"Computed column '{col.name}'"
             fix = f"change its expression to return {col.abstract_type}"
@@ -429,27 +464,27 @@ def _column_findings(
     obj: DataObject,
     columns: list[DataObjectColumn],
     present: list[str],
-    families: list[str | None],
+    kinds: list[_Kind],
     projection_error: str,
 ) -> list[SemanticError]:
     """Explain why the projection failed, given the columns ``SELECT *`` found.
 
-    ``present`` and *families* come from the star probe, so they describe the
+    ``present`` and *kinds* come from the star probe, so they describe the
     table as it really is. A declared column absent from it is missing; one
     that matches only when case is ignored is the more interesting answer,
     because the projection just proved the engine will not accept the spelling
     the model uses.
     """
     findings: list[SemanticError] = []
-    by_name = dict(zip(present, families, strict=False))
+    by_name = dict(zip(present, kinds, strict=False))
     folded = {name.casefold(): name for name in present}
     surviving: list[DataObjectColumn] = []
-    surviving_families: list[str | None] = []
+    surviving_kinds: list[_Kind] = []
 
     for col in columns:
         if col.code in by_name:
             surviving.append(col)
-            surviving_families.append(by_name[col.code])
+            surviving_kinds.append(by_name[col.code])
             continue
         actual_name = folded.get(col.code.casefold())
         if actual_name is None:
@@ -485,7 +520,7 @@ def _column_findings(
             )
         )
         surviving.append(col)
-        surviving_families.append(by_name[actual_name])
+        surviving_kinds.append(by_name[actual_name])
 
     if not findings:
         # The table is readable and every declared column is there under the
@@ -507,7 +542,7 @@ def _column_findings(
         )
         return findings
 
-    return findings + _type_findings(dialect, obj_name, surviving, surviving_families)
+    return findings + _type_findings(dialect, obj_name, surviving, surviving_kinds)
 
 
 class _Prober:
@@ -559,7 +594,7 @@ class _Prober:
             error = str(exc)
         else:
             return _type_findings(
-                self.dialect, self.obj_name, _columns_of(physical + computed), _families(result)
+                self.dialect, self.obj_name, _columns_of(physical + computed), _kinds(result)
             )
 
         if len(self.chain) > 1:
@@ -594,7 +629,7 @@ class _Prober:
                 physical_error = str(exc)
             else:
                 findings = _type_findings(
-                    self.dialect, self.obj_name, _columns_of(physical), _families(result)
+                    self.dialect, self.obj_name, _columns_of(physical), _kinds(result)
                 )
                 return findings, True
         elif physical:
@@ -611,7 +646,7 @@ class _Prober:
             self.obj,
             _columns_of(physical),
             [col.name for col in star.columns],
-            _families(star),
+            _kinds(star),
             physical_error,
         )
         return findings, True
@@ -654,7 +689,7 @@ class _Prober:
                 findings.append(failed(self.obj_name, self.obj, item.column, str(exc)))
             else:
                 findings += _type_findings(
-                    self.dialect, self.obj_name, [item.column], _families(result)
+                    self.dialect, self.obj_name, [item.column], _kinds(result)
                 )
         return findings
 

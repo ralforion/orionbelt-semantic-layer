@@ -22,7 +22,8 @@ engine says:
     and MySQL (``JSON_TABLE``), where the probe cannot see it.
 *   An array column the parent lacks fails everywhere.
 *   A boolean comes back as an integer on MySQL, which has no boolean type, and
-    from a ClickHouse comparison (``UInt8``), and is accepted there.
+    from a ClickHouse comparison (``UInt8``), and is accepted there; a float or
+    a decimal behind a boolean is reported everywhere.
 *   A nested field's type is the declared one on Snowflake and MySQL, which cast
     to it, so a wrong declaration cannot be seen there either.
 *   An expression no engine can evaluate (it reads a column that does not
@@ -170,6 +171,14 @@ def _assert_types(target: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None
     wrong = TYPED_MODEL_YAML.replace('0.8", abstractType: float', '0.8", abstractType: string')
     assert _driver_findings(target, monkeypatch, wrong) == [
         ("DATASOURCE_TYPE_MISMATCH", net_cost)
+    ], target.name
+
+    # A boolean is an integer on MySQL and in a ClickHouse comparison; a
+    # fraction is not one anywhere.
+    always = "dataObjects.Charges.columns.Always.abstractType"
+    fraction = TYPED_MODEL_YAML.replace('expression: "TRUE"', 'expression: "0.5"')
+    assert _driver_findings(target, monkeypatch, fraction) == [
+        ("DATASOURCE_TYPE_MISMATCH", always)
     ], target.name
 
     amount = "dataObjects.Charge Credits.columns.Credit Amount.abstractType"

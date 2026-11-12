@@ -604,6 +604,30 @@ class TestBooleansAsIntegers:
         (finding,) = probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect="mysql")
         assert finding.path == "dataObjects.Orders.columns.Paid.abstractType"
 
+    @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
+    @pytest.mark.parametrize("arrow_type", ["float64", "decimal"])
+    def test_a_float_or_decimal_behind_a_boolean_is_drift_there(
+        self, stub: Any, dialect: str, arrow_type: str
+    ) -> None:
+        """Only an integer is how those engines answer a boolean; ``0.5`` is not one."""
+        import pyarrow as pa
+
+        actual = {"float64": pa.float64(), "decimal": pa.decimal128(2, 1)}[arrow_type]
+        stub(FakeResult([("c1", pa.int8()), ("c2", actual)]))
+        (finding,) = probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect=dialect)
+        assert finding.code == "DATASOURCE_TYPE_MISMATCH"
+        assert finding.path == "dataObjects.Orders.columns.Always.abstractType"
+
+    def test_a_number_of_unknown_kind_refutes_nothing_there(self, stub: Any) -> None:
+        """The coarse PEP 249 hint cannot tell an integer from a decimal."""
+
+        class NoArrowResult:
+            arrow_schema = None
+            columns = [FakeColumn("c1", "number"), FakeColumn("c2", "number")]
+
+        stub(NoArrowResult())
+        assert probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect="mysql") == []
+
 
 NESTED_MODEL_YAML = """\
 version: 1.0
