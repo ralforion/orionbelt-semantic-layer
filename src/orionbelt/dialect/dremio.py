@@ -626,6 +626,9 @@ class DremioDialect(Dialect):
     def current_date_sql(self) -> str:
         return "CURRENT_DATE"
 
+    def random_fraction_sql(self) -> str:
+        return "RANDOM()"
+
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         # TIMESTAMPADD (not DATE_ADD + INTERVAL) because Dremio/Calcite interval
         # qualifiers are limited to YEAR/MONTH/DAY/HOUR/MINUTE/SECOND — QUARTER

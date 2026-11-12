@@ -888,6 +888,9 @@ class MySQLDialect(Dialect):
     def current_date_sql(self) -> str:
         return "CURDATE()"
 
+    def random_fraction_sql(self) -> str:
+        return "RAND()"
+
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         """MySQL: DATE_ADD(date, INTERVAL n unit) / DATE_SUB for negative."""
         if count < 0:

@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from rdflib import Graph
 
@@ -28,6 +29,9 @@ from orionbelt.parser.schema_validation import validate_obml_document
 from orionbelt.parser.validator import SemanticValidator
 from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.model_cache import CompiledModel, ModelCache
+
+if TYPE_CHECKING:
+    from orionbelt.service.datasource_probe import Sample
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -1041,6 +1045,7 @@ class ModelStore:
         inherits_model_id: str | None = None,
         datasource_dialect: str | None = None,
         follow_model_source: bool = False,
+        datasource_sample: Sample | None = None,
     ) -> ValidationSummary:
         """Validate a model without storing it.  Accepts YAML string or raw dict.
 
@@ -1058,7 +1063,9 @@ class ModelStore:
         is only a default: a model naming a configured data source is probed
         with that source's dialect, the connection its queries open, and a
         model read from several has each data object probed on its own source,
-        in that source's dialect.
+        in that source's dialect. ``datasource_sample`` additionally reads that
+        sample of each data object's rows, and reports what only a value shows
+        as warnings.
         """
         _model, raw, errors, warnings = self._parse_and_validate(
             yaml_str,
@@ -1078,9 +1085,14 @@ class ModelStore:
                 from orionbelt.service.datasource_selection import named_source_dialect
 
                 datasource_dialect = named_source_dialect(_model) or datasource_dialect
-            errors = errors + self._datasource_errors(
-                _model, datasource_dialect, follow_sources=follow_model_source
+            found = self._datasource_errors(
+                _model,
+                datasource_dialect,
+                follow_sources=follow_model_source,
+                sample=datasource_sample,
             )
+            errors = errors + [f for f in found if f.severity == "error"]
+            warnings = warnings + [f for f in found if f.severity != "error"]
         return ValidationSummary(
             valid=len(errors) == 0,
             errors=errors,
@@ -1089,9 +1101,13 @@ class ModelStore:
 
     @staticmethod
     def _datasource_errors(
-        model: SemanticModel, dialect: str, *, follow_sources: bool = False
+        model: SemanticModel,
+        dialect: str,
+        *,
+        follow_sources: bool = False,
+        sample: Sample | None = None,
     ) -> list[ErrorInfo]:
-        """Online findings for *model*, as ``ErrorInfo``.
+        """Online findings for *model*, errors and sample warnings, as ``ErrorInfo``.
 
         Imported here rather than at module scope so that the offline path —
         which is every caller that does not ask for the check — never pulls in
@@ -1108,7 +1124,9 @@ class ModelStore:
                 hint=f.hint,
                 context=f.context,
             )
-            for f in probe_datasource(model, dialect=dialect, follow_sources=follow_sources)
+            for f in probe_datasource(
+                model, dialect=dialect, follow_sources=follow_sources, sample=sample
+            )
         ]
 
     @staticmethod

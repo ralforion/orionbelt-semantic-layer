@@ -212,6 +212,9 @@ class SnowflakeDialect(Dialect):
     def current_date_sql(self) -> str:
         return "CURRENT_DATE()"
 
+    def random_fraction_sql(self) -> str:
+        return "UNIFORM(0::FLOAT, 1::FLOAT, RANDOM())"
+
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         unit_sql = unit.lower()
         return f"DATEADD('{unit_sql}', {count}, {date_sql})"

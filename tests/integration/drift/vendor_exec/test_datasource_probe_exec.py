@@ -45,7 +45,7 @@ import pytest
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
-from orionbelt.service.datasource_probe import probe_datasource
+from orionbelt.service.datasource_probe import parse_sample, probe_datasource
 from orionbelt.service.db_executor import ExecutionError
 
 from ._seed import SCHEMA as SEED_SCHEMA
@@ -152,15 +152,22 @@ TYPES_NESTED_FIELDS = {"postgres", "clickhouse", "bigquery", "databricks"}
 
 
 def _driver_findings(
-    target: VendorTarget, monkeypatch: pytest.MonkeyPatch, yaml: str
+    target: VendorTarget, monkeypatch: pytest.MonkeyPatch, yaml: str, sample: str | None = None
 ) -> list[tuple[str, str | None]]:
-    """The probe's findings through OBSL's own driver, with its result metadata."""
+    """The probe's findings through OBSL's own driver, with its result metadata.
+
+    With a *sample*, warnings carry a ``~`` before their code.
+    """
     with monkeypatch.context() as env:
         env.delenv("OBSL_DATABASES", raising=False)
         for name, value in target.connection_env.items():
             env.setenv(name, value)
-        findings = probe_datasource(_model(target, yaml), dialect=target.dialect)
-    return [(f.code, f.path) for f in findings]
+        findings = probe_datasource(
+            _model(target, yaml),
+            dialect=target.dialect,
+            sample=parse_sample(sample) if sample is not None else None,
+        )
+    return [(("~" if f.severity == "warning" else "") + f.code, f.path) for f in findings]
 
 
 def _assert_types(target: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,7 +198,10 @@ def _assert_types(target: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def _assert_probe(target: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
-    for statement in DDL[target.dialect]:
+    # MySQL's fixture connection does not autocommit, and the sample pass reads
+    # the rows through OBSL's own driver, another connection.
+    commit = ["COMMIT"] if target.dialect == "mysql" else []
+    for statement in [*DDL[target.dialect], *commit]:
         # DDL returns no cursor description for the fixture to read.
         with contextlib.suppress(TypeError):
             target.execute(statement)
@@ -229,6 +239,46 @@ def _assert_probe(target: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None
     assert _findings(target, monkeypatch, reading_lacking_field) == expected, target.name
 
 
+#: Where a string times a number fails: while planning (a zero-row error), only
+#: on a value (a sample warning), or not at all.
+STRING_TIMES_NUMBER = {
+    "postgres": "plan",
+    "clickhouse": "plan",
+    "bigquery": "plan",
+    "snowflake": "value",
+    "databricks": "value",
+    "mysql": "never",
+}
+
+
+def _assert_sample(target: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sample pass: a count and a percent, NULL fields, and values that do not compute."""
+    for sample in ("100", "50%"):
+        assert _driver_findings(target, monkeypatch, TYPED_MODEL_YAML, sample) == [], (
+            target.name,
+            sample,
+        )
+
+    key = "dataObjects.Charge Labels.columns.Label Key.code"
+    is_team = "dataObjects.Charge Labels.columns.Is Team.expression"
+    lacking = TYPED_MODEL_YAML.replace("code: Key, abstractType", "code: Kee, abstractType")
+    expected = (
+        [("DATASOURCE_COLUMN_MISSING", key), ("DATASOURCE_EXPRESSION_FAILED", is_team)]
+        if target.dialect in READS_STRUCT_FIELDS
+        else [("~DATASOURCE_SAMPLE_ALL_NULL", key)]
+    )
+    assert _driver_findings(target, monkeypatch, lacking, "100") == expected, target.name
+
+    net_cost = "dataObjects.Charges.columns.Net Cost.expression"
+    string_times = TYPED_MODEL_YAML.replace('"{{Cost}} * 0.8"', '"{{Charge Id}} * 2"')
+    expected = {
+        "plan": [("DATASOURCE_EXPRESSION_FAILED", net_cost)],
+        "value": [("~DATASOURCE_SAMPLE_FAILED", net_cost)],
+        "never": [],
+    }[STRING_TIMES_NUMBER[target.dialect]]
+    assert _driver_findings(target, monkeypatch, string_times, "100") == expected, target.name
+
+
 def test_duckdb_probe(vendor_duckdb: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_duckdb, monkeypatch)
 
@@ -236,28 +286,34 @@ def test_duckdb_probe(vendor_duckdb: VendorTarget, monkeypatch: pytest.MonkeyPat
 def test_postgres_probe(vendor_postgres: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_postgres, monkeypatch)
     _assert_types(vendor_postgres, monkeypatch)
+    _assert_sample(vendor_postgres, monkeypatch)
 
 
 def test_mysql_probe(vendor_mysql: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_mysql, monkeypatch)
     _assert_types(vendor_mysql, monkeypatch)
+    _assert_sample(vendor_mysql, monkeypatch)
 
 
 def test_clickhouse_probe(vendor_clickhouse: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_clickhouse, monkeypatch)
     _assert_types(vendor_clickhouse, monkeypatch)
+    _assert_sample(vendor_clickhouse, monkeypatch)
 
 
 def test_bigquery_probe(vendor_bigquery: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_bigquery, monkeypatch)
     _assert_types(vendor_bigquery, monkeypatch)
+    _assert_sample(vendor_bigquery, monkeypatch)
 
 
 def test_snowflake_probe(vendor_snowflake: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_snowflake, monkeypatch)
     _assert_types(vendor_snowflake, monkeypatch)
+    _assert_sample(vendor_snowflake, monkeypatch)
 
 
 def test_databricks_probe(vendor_databricks: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_databricks, monkeypatch)
     _assert_types(vendor_databricks, monkeypatch)
+    _assert_sample(vendor_databricks, monkeypatch)

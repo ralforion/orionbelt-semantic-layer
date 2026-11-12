@@ -105,7 +105,11 @@ def _compile(
 
 
 def validate(
-    model_yaml: str, *, online: bool = False, dialect: str | None = None
+    model_yaml: str,
+    *,
+    online: bool = False,
+    dialect: str | None = None,
+    sample: str | None = None,
 ) -> ValidationSummary:
     """Validate an OBML model without storing it.
 
@@ -113,11 +117,22 @@ def validate(
     object's table and declared columns. The dialect selects the *connection*
     to open, so it falls back to the dialect of the data source the model
     names, then to ``DB_VENDOR``, rather than to the model's ``defaultDialect``
-    — see ``api.routers.sessions._probe_dialect``.
+    — see ``api.routers.sessions._probe_dialect``. ``sample`` (``"1000"`` or
+    ``"1%"``) also reads that sample of each data object, and implies ``online``.
     """
+    from orionbelt.service.datasource_probe import parse_sample
+
+    try:
+        probe_sample = parse_sample(sample) if sample is not None else None
+    except ValueError as exc:
+        raise CliError(str(exc)) from None
+    online = online or probe_sample is not None
     probe_dialect = (dialect or os.getenv("DB_VENDOR") or "duckdb") if online else None
     return ModelStore().validate(
-        model_yaml, datasource_dialect=probe_dialect, follow_model_source=dialect is None
+        model_yaml,
+        datasource_dialect=probe_dialect,
+        follow_model_source=dialect is None,
+        datasource_sample=probe_sample,
     )
 
 

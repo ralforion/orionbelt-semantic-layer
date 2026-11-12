@@ -422,7 +422,7 @@ def test_execute_remote_sql_limit_warns(monkeypatch, query_file):
 def test_validate_remote(monkeypatch, model_file):
     from orionbelt.cli import _remote
 
-    def fake_validate(self, model_yaml, *, online=False, dialect=None):
+    def fake_validate(self, model_yaml, *, online=False, dialect=None, sample=None):
         return {"valid": True, "errors": [], "warnings": []}
 
     monkeypatch.setattr(_remote.RemoteClient, "validate", fake_validate)
@@ -436,7 +436,7 @@ def test_validate_remote_forwards_online_flags(monkeypatch, model_file):
 
     seen = {}
 
-    def fake_validate(self, model_yaml, *, online=False, dialect=None):
+    def fake_validate(self, model_yaml, *, online=False, dialect=None, sample=None):
         seen["online"] = online
         seen["dialect"] = dialect
         return {"valid": True, "errors": [], "warnings": []}
@@ -448,6 +448,22 @@ def test_validate_remote_forwards_online_flags(monkeypatch, model_file):
     )
     assert result.exit_code == 0
     assert seen == {"online": True, "dialect": "duckdb"}
+
+
+def test_validate_remote_forwards_a_sample(monkeypatch, model_file):
+    """``--sample`` travels to the server and turns the online check on."""
+    seen = {}
+
+    def fake_validate(self, model_yaml, *, online=False, dialect=None, sample=None):
+        seen.update(online=online, sample=sample)
+        return {"valid": True, "errors": [], "warnings": []}
+
+    monkeypatch.setattr("orionbelt.cli._remote.RemoteClient.validate", fake_validate)
+    result = runner.invoke(
+        app, ["validate", model_file, "-s", "http://example", "-f", "json", "--sample", "1%"]
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == {"online": True, "sample": "1%"}
 
 
 def test_validate_online_query_params(monkeypatch):
@@ -463,6 +479,20 @@ def test_validate_online_query_params(monkeypatch):
     monkeypatch.setattr(RemoteClient, "_request", fake_request)
     RemoteClient("http://example", None).validate("version: 1.0", online=True, dialect="postgres")
     assert seen["params"] == {"online": "true", "dialect": "postgres"}
+
+
+def test_validate_sample_query_param(monkeypatch):
+    from orionbelt.cli._remote import RemoteClient
+
+    seen = {}
+
+    def fake_request(self, method, path, *, json=None, params=None, text=False):
+        seen["params"] = params
+        return {"valid": True, "errors": [], "warnings": []}
+
+    monkeypatch.setattr(RemoteClient, "_request", fake_request)
+    RemoteClient("http://example", None).validate("version: 1.0", online=True, sample="1%")
+    assert seen["params"] == {"online": "true", "sample": "1%"}
 
 
 def test_validate_offline_sends_no_params(monkeypatch):

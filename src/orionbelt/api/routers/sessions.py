@@ -103,6 +103,7 @@ from orionbelt.service.session_manager import (
 if TYPE_CHECKING:
     from orionbelt.compiler.federation import FederatedLeg, FederatedPlan
     from orionbelt.models.semantic import SemanticModel
+    from orionbelt.service.datasource_probe import Sample
 
 logger = logging.getLogger("orionbelt.api.sessions")
 
@@ -118,6 +119,7 @@ __all__ = [
     # re-exported helpers (imported by other modules from this namespace)
     "_resolve_dialect",
     "_probe_dialect",
+    "_probe_sample",
     "_run_with_cache",
     "_build_execute_response",
     "_build_explain_response",
@@ -476,12 +478,25 @@ def _probe_dialect(online: bool, dialect: str | None) -> str | None:
     return dialect or get_db_vendor()
 
 
+def _probe_sample(sample: str | None) -> Sample | None:
+    """The ``sample`` query parameter, parsed; 422 when it is neither a count nor a percent."""
+    if sample is None:
+        return None
+    from orionbelt.service.datasource_probe import parse_sample
+
+    try:
+        return parse_sample(sample)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
 @router.post("/{session_id}/validate", response_model=ValidateResponse)
 async def validate_model(
     session_id: str,
     body: ValidateRequest,
     online: bool = False,
     dialect: str | None = None,
+    sample: str | None = None,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> ValidateResponse:
     """Validate an OBML model within a session context.
@@ -494,17 +509,23 @@ async def validate_model(
     names a connection to open, not SQL to generate, so unlike the ``dialect``
     on the query endpoints it does not fall back to the model's
     ``settings.defaultDialect``.
+
+    ``sample`` (``1000`` rows, or ``1%`` of the rows, at most 1000) also reads
+    that sample of each data object, and reports what only a value shows as
+    warnings. It implies ``online=true``.
     """
     if not body.model_yaml and not body.model_json:
         raise HTTPException(status_code=422, detail="Provide either model_yaml or model_json")
+    probe_sample = _probe_sample(sample)
     store = _get_store(session_id, mgr)
     summary = store.validate(
         body.model_yaml,
         raw_dict=cast("dict[str, object] | None", body.model_json),
         extends_yaml=body.extends,
         inherits_model_id=body.inherits,
-        datasource_dialect=_probe_dialect(online, dialect),
+        datasource_dialect=_probe_dialect(online or probe_sample is not None, dialect),
         follow_model_source=dialect is None,
+        datasource_sample=probe_sample,
     )
     return ValidateResponse(
         valid=summary.valid,

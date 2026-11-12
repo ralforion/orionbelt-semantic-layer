@@ -49,8 +49,10 @@ class QueryBuilder:
         self._columns.append(AliasedExpr(expr=expr, alias=alias))
         return self
 
-    def from_(self, table: str, alias: str | None = None) -> Self:
-        self._from = From(source=table, alias=alias)
+    def from_(
+        self, table: str, alias: str | None = None, *, sample_percent: float | None = None
+    ) -> Self:
+        self._from = From(source=table, alias=alias, sample_percent=sample_percent)
         return self
 
     def from_subquery(self, subquery: Select, alias: str) -> Self:
