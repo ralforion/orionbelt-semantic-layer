@@ -399,8 +399,11 @@ returns `DATASOURCE_UNAVAILABLE` and `valid: false` rather than a green light.
 Two things are deliberately out of scope. Type comparison is by *family* —
 number, datetime, string, boolean, binary — so a `float` backed by `DECIMAL(38,9)`
 or a `timestamp` backed by `DATE` is not drift; only a `float` backed by text
-is. And a column that comes back null-typed, which a zero-row fetch is exactly
-where you find, is skipped rather than reported.
+is. A `boolean` that comes back as an integer 0/1 is not drift on MySQL,
+which has no boolean type, or on ClickHouse, where a comparison returns
+`UInt8`; on the other six it is. And a column that comes back null-typed,
+which a zero-row fetch is exactly where you find, is skipped rather than
+reported.
 
 The check reports what the database says, so some mistakes cannot be seen:
 

@@ -547,6 +547,64 @@ dataObjects:
         assert "Customers" not in executor.sql[0]
 
 
+BOOLEAN_MODEL_YAML = """\
+version: 1.0
+
+dataObjects:
+  Orders:
+    code: orders
+    database: ""
+    schema: main
+    columns:
+      Paid:
+        code: paid
+        abstractType: boolean
+      Always:
+        expression: "TRUE"
+        abstractType: boolean
+
+dimensions:
+  Paid Flag:
+    dataObject: Orders
+    column: Paid
+    resultType: boolean
+"""
+
+
+class TestBooleansAsIntegers:
+    """MySQL has no boolean type, and a ClickHouse comparison is a ``UInt8``.
+
+    Measured on all eight engines: there, and only there, an integer behind a
+    declared boolean is how the engine answers, which query execution already
+    reconciles (``result_schema.reconcile_to_declared``).
+    """
+
+    @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
+    def test_an_integer_boolean_is_not_drift_there(self, stub: Any, dialect: str) -> None:
+        import pyarrow as pa
+
+        stub(FakeResult([("c1", pa.int8()), ("c2", pa.int64())]))
+        assert probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect=dialect) == []
+
+    def test_an_integer_boolean_is_drift_elsewhere(self, stub: Any) -> None:
+        """PostgreSQL has a boolean type, so an integer behind one is a real mismatch."""
+        import pyarrow as pa
+
+        stub(FakeResult([("c1", pa.int8()), ("c2", pa.int64())]))
+        findings = probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect="postgres")
+        assert [f.path for f in findings] == [
+            "dataObjects.Orders.columns.Paid.abstractType",
+            "dataObjects.Orders.columns.Always.abstractType",
+        ]
+
+    def test_text_behind_a_boolean_is_drift_there_too(self, stub: Any) -> None:
+        import pyarrow as pa
+
+        stub(FakeResult([("c1", pa.string()), ("c2", pa.int64())]))
+        (finding,) = probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect="mysql")
+        assert finding.path == "dataObjects.Orders.columns.Paid.abstractType"
+
+
 NESTED_MODEL_YAML = """\
 version: 1.0
 

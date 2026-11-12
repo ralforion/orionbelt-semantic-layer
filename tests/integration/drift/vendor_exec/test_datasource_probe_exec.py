@@ -7,8 +7,12 @@ it, and rejects them where the model is wrong, so this runs the probe itself
 through the connection each fixture opened.
 
 The tables are ``test_nested_plan_exec``'s: a charges table with two arrays of
-structs. The fixtures hand back rows rather than an Arrow schema, so the type
-comparison is not exercised here; the unit tests cover it.
+structs. Two passes. The first runs every statement through the fixture's own
+connection, on all seven engines, for what each engine accepts and rejects. The
+second runs the probe through OBSL's own driver (``db_executor.execute_sql``), so
+the type comparison reads the result metadata a deployment reads: every engine
+but DuckDB, whose fixture database is in-memory and which the real-DuckDB tests
+in ``tests/unit/test_named_datasource_selection.py`` cover.
 
 What the engines can tell differs, and the probe can only report what the
 engine says:
@@ -17,6 +21,10 @@ engine says:
     struct, and reads as NULL on Snowflake (a path into a semi-structured value)
     and MySQL (``JSON_TABLE``), where the probe cannot see it.
 *   An array column the parent lacks fails everywhere.
+*   A boolean comes back as an integer on MySQL, which has no boolean type, and
+    from a ClickHouse comparison (``UInt8``), and is accepted there.
+*   A nested field's type is the declared one on Snowflake and MySQL, which cast
+    to it, so a wrong declaration cannot be seen there either.
 *   An expression no engine can evaluate (it reads a column that does not
     exist) fails everywhere. One that only fails on the values it reads, such as
     a string times a number, is the engine's call: some reject it while planning
@@ -105,9 +113,72 @@ def _findings(
             raise ExecutionError(str(exc)) from exc
         return _NoRows()
 
-    monkeypatch.setattr("orionbelt.service.db_executor.execute_sql", execute_sql)
-    findings = probe_datasource(_model(target, yaml), dialect=target.dialect)
+    with monkeypatch.context() as patched:
+        patched.setattr("orionbelt.service.db_executor.execute_sql", execute_sql)
+        findings = probe_datasource(_model(target, yaml), dialect=target.dialect)
     return [(f.code, f.path) for f in findings]
+
+
+TYPED_MODEL_YAML = """
+version: "1.0"
+name: probe_types
+dataObjects:
+  Charges:
+    code: {table}
+    schema: {schema}
+    columns:
+      Charge Id: {{code: id, abstractType: string}}
+      Cost: {{code: cost, abstractType: float}}
+      Net Cost: {{expression: "{{Cost}} * 0.8", abstractType: float}}
+      Is Costly: {{expression: "{{Cost}} > 75", abstractType: boolean}}
+      Always: {{expression: "TRUE", abstractType: boolean}}
+  Charge Labels:
+    nestedIn: {{dataObject: Charges, column: Labels}}
+    columns:
+      Label Key: {{code: Key, abstractType: string}}
+      Is Team: {{expression: "{{Label Key}} = 'team'", abstractType: boolean}}
+  Charge Credits:
+    nestedIn: {{dataObject: Charges, column: Credits}}
+    columns:
+      Credit Amount: {{code: Amount, abstractType: float}}
+dimensions:
+  Label Key: {{dataObject: Charge Labels, column: Label Key}}
+"""
+
+#: The engines whose nested fields come back in their stored type rather than
+#: cast to the declared one.
+TYPES_NESTED_FIELDS = {"postgres", "clickhouse", "bigquery", "databricks"}
+
+
+def _driver_findings(
+    target: VendorTarget, monkeypatch: pytest.MonkeyPatch, yaml: str
+) -> list[tuple[str, str | None]]:
+    """The probe's findings through OBSL's own driver, with its result metadata."""
+    with monkeypatch.context() as env:
+        env.delenv("OBSL_DATABASES", raising=False)
+        for name, value in target.connection_env.items():
+            env.setenv(name, value)
+        findings = probe_datasource(_model(target, yaml), dialect=target.dialect)
+    return [(f.code, f.path) for f in findings]
+
+
+def _assert_types(target: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declared types against the engine's own, booleans included."""
+    assert _driver_findings(target, monkeypatch, TYPED_MODEL_YAML) == [], target.name
+
+    net_cost = "dataObjects.Charges.columns.Net Cost.abstractType"
+    wrong = TYPED_MODEL_YAML.replace('0.8", abstractType: float', '0.8", abstractType: string')
+    assert _driver_findings(target, monkeypatch, wrong) == [
+        ("DATASOURCE_TYPE_MISMATCH", net_cost)
+    ], target.name
+
+    amount = "dataObjects.Charge Credits.columns.Credit Amount.abstractType"
+    wrong_field = TYPED_MODEL_YAML.replace(
+        "code: Amount, abstractType: float", "code: Amount, abstractType: date"
+    )
+    assert _driver_findings(target, monkeypatch, wrong_field) == (
+        [("DATASOURCE_TYPE_MISMATCH", amount)] if target.dialect in TYPES_NESTED_FIELDS else []
+    ), target.name
 
 
 def _assert_probe(target: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -155,23 +226,29 @@ def test_duckdb_probe(vendor_duckdb: VendorTarget, monkeypatch: pytest.MonkeyPat
 
 def test_postgres_probe(vendor_postgres: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_postgres, monkeypatch)
+    _assert_types(vendor_postgres, monkeypatch)
 
 
 def test_mysql_probe(vendor_mysql: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_mysql, monkeypatch)
+    _assert_types(vendor_mysql, monkeypatch)
 
 
 def test_clickhouse_probe(vendor_clickhouse: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_clickhouse, monkeypatch)
+    _assert_types(vendor_clickhouse, monkeypatch)
 
 
 def test_bigquery_probe(vendor_bigquery: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_bigquery, monkeypatch)
+    _assert_types(vendor_bigquery, monkeypatch)
 
 
 def test_snowflake_probe(vendor_snowflake: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_snowflake, monkeypatch)
+    _assert_types(vendor_snowflake, monkeypatch)
 
 
 def test_databricks_probe(vendor_databricks: VendorTarget, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_probe(vendor_databricks, monkeypatch)
+    _assert_types(vendor_databricks, monkeypatch)

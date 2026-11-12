@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -99,6 +99,12 @@ class VendorTarget:
     # not contain, and every engine spells an inline row set differently.
     # Defaults to the UNION ALL form, which six of the eight accept.
     literal_rows: Callable[[str, str, list[int | None]], str] | None = None
+    # The variables OBSL's own driver reads to reach this engine, for a test
+    # that runs through ``db_executor.execute_sql`` and so sees the result
+    # metadata a deployment sees. Set by the container fixtures; the cloud
+    # fixtures connect with the variables already in the environment, and
+    # DuckDB's database is in-memory, out of the driver's reach.
+    connection_env: dict[str, str] = field(default_factory=dict)
 
     def rows_of(self, alias: str, column: str, values: list[int | None]) -> str:
         """A FROM-able source of one integer column holding *values*."""
@@ -180,8 +186,18 @@ def vendor_postgres() -> VendorTarget:
                 cols = [d[0] for d in cur.description]
                 return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
+        env = {
+            "POSTGRES_HOST": pg.get_container_host_ip(),
+            "POSTGRES_PORT": str(pg.get_exposed_port(5432)),
+            "POSTGRES_DBNAME": pg.dbname,
+            "POSTGRES_USER": pg.username,
+            "POSTGRES_PASSWORD": pg.password,
+            "POSTGRES_SCHEMA": "public",
+        }
         try:
-            yield VendorTarget(name="postgres", dialect="postgres", execute=_execute)
+            yield VendorTarget(
+                name="postgres", dialect="postgres", execute=_execute, connection_env=env
+            )
         finally:
             conn.close()
 
@@ -223,8 +239,15 @@ def vendor_mysql() -> VendorTarget:
                 cols = [d[0] for d in cur.description]
                 return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
+        env = {
+            "MYSQL_HOST": my.get_container_host_ip(),
+            "MYSQL_PORT": str(my.get_exposed_port(3306)),
+            "MYSQL_DATABASE": my.dbname,
+            "MYSQL_USER": my.username,
+            "MYSQL_PASSWORD": my.password,
+        }
         try:
-            yield VendorTarget(name="mysql", dialect="mysql", execute=_execute)
+            yield VendorTarget(name="mysql", dialect="mysql", execute=_execute, connection_env=env)
         finally:
             conn.close()
 
@@ -253,8 +276,17 @@ def vendor_clickhouse() -> VendorTarget:
             res = client.query(sql)
             return [dict(zip(res.column_names, row, strict=True)) for row in res.result_rows]
 
+        env = {
+            "CLICKHOUSE_HOST": ch.get_container_host_ip(),
+            "CLICKHOUSE_PORT": str(ch.get_exposed_port(8123)),
+            "CLICKHOUSE_USERNAME": ch.username,
+            "CLICKHOUSE_PASSWORD": ch.password,
+            "CLICKHOUSE_DATABASE": ch.dbname,
+        }
         try:
-            yield VendorTarget(name="clickhouse", dialect="clickhouse", execute=_execute)
+            yield VendorTarget(
+                name="clickhouse", dialect="clickhouse", execute=_execute, connection_env=env
+            )
         finally:
             client.close()
 

@@ -362,7 +362,20 @@ def _select_star(dialect: Any, obj: DataObject) -> str:
     return f"SELECT * FROM {table} LIMIT 0"
 
 
+def _represents(dialect: Any, declared: str, actual: str) -> bool:
+    """Whether *dialect* answers a column of the *declared* family as *actual*.
+
+    The same family, or a boolean as an integer where the engine returns one
+    (:attr:`~orionbelt.dialect.base.Dialect.booleans_as_integers`): MySQL has
+    no boolean type, and a ClickHouse comparison is a ``UInt8``.
+    """
+    if declared == actual:
+        return True
+    return declared == _BOOLEAN and actual == _NUMBER and dialect.booleans_as_integers
+
+
 def _type_findings(
+    dialect: Any,
     obj_name: str,
     columns: list[DataObjectColumn],
     families: list[str | None],
@@ -377,7 +390,7 @@ def _type_findings(
     findings: list[SemanticError] = []
     for col, actual in zip(columns, families, strict=False):
         declared = _DECLARED_FAMILY.get(col.abstract_type)
-        if declared is None or actual is None or declared == actual:
+        if declared is None or actual is None or _represents(dialect, declared, actual):
             continue
         if col.is_computed:
             subject = f"Computed column '{col.name}'"
@@ -411,6 +424,7 @@ def _type_findings(
 
 
 def _column_findings(
+    dialect: Any,
     obj_name: str,
     obj: DataObject,
     columns: list[DataObjectColumn],
@@ -493,7 +507,7 @@ def _column_findings(
         )
         return findings
 
-    return findings + _type_findings(obj_name, surviving, surviving_families)
+    return findings + _type_findings(dialect, obj_name, surviving, surviving_families)
 
 
 class _Prober:
@@ -545,7 +559,7 @@ class _Prober:
             error = str(exc)
         else:
             return _type_findings(
-                self.obj_name, _columns_of(physical + computed), _families(result)
+                self.dialect, self.obj_name, _columns_of(physical + computed), _families(result)
             )
 
         if len(self.chain) > 1:
@@ -579,7 +593,10 @@ class _Prober:
             except ExecutionError as exc:
                 physical_error = str(exc)
             else:
-                return _type_findings(self.obj_name, _columns_of(physical), _families(result)), True
+                findings = _type_findings(
+                    self.dialect, self.obj_name, _columns_of(physical), _families(result)
+                )
+                return findings, True
         elif physical:
             physical_error = error  # the statement that failed read these alone
         try:
@@ -589,6 +606,7 @@ class _Prober:
         if physical_error is None:
             return [], True
         findings = _column_findings(
+            self.dialect,
             self.obj_name,
             self.obj,
             _columns_of(physical),
@@ -635,7 +653,9 @@ class _Prober:
             except ExecutionError as exc:
                 findings.append(failed(self.obj_name, self.obj, item.column, str(exc)))
             else:
-                findings += _type_findings(self.obj_name, [item.column], _families(result))
+                findings += _type_findings(
+                    self.dialect, self.obj_name, [item.column], _families(result)
+                )
         return findings
 
 
