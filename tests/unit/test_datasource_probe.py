@@ -741,6 +741,28 @@ class TestNestedObjects:
         assert len(executor.sql) == 1
 
 
+class TestTableSampleRefused:
+    """Only BigQuery's own refusal of a view sends the sample to the random filter."""
+
+    def test_bigquery_recognises_its_refusal(self) -> None:
+        from orionbelt.dialect.registry import DialectRegistry
+
+        bigquery = DialectRegistry.get("bigquery")
+        refusal = (
+            "Database execution failed: 400 TABLESAMPLE SYSTEM can only be applied "
+            "directly to base tables.; reason: invalidQuery"
+        )
+        assert bigquery.table_sample_refused(refusal) is True
+        assert bigquery.table_sample_refused("Bad double value: TABLESAMPLE") is False
+
+    def test_no_other_engine_samples_a_table(self) -> None:
+        from orionbelt.dialect.registry import DialectRegistry
+
+        duckdb = DialectRegistry.get("duckdb")
+        assert duckdb.table_sample_clause(1.0) is None
+        assert duckdb.table_sample_refused("TABLESAMPLE SYSTEM can only be applied") is False
+
+
 class TestParseSample:
     @pytest.mark.parametrize(
         ("text", "rows", "percent"),
@@ -814,9 +836,10 @@ class TestSample:
         assert probe_datasource(model, dialect="bigquery", sample=_sample("1%")) == []
         assert "WHERE RAND() < 0.01" in executor.sql[2]
 
-    def test_bigquery_retries_only_the_refusal(self, stub: Any) -> None:
+    @pytest.mark.parametrize("message", ["Bad double value: c1", "Bad double value: TABLESAMPLE"])
+    def test_bigquery_retries_only_the_refusal(self, stub: Any, message: str) -> None:
         """Any other failure is the sample's own: a retry would read, and bill, every row."""
-        failed = ExecutionError("Bad double value: c1")
+        failed = ExecutionError(message)
         executor = stub(_computed_schema(), failed, failed)
         (finding,) = probe_datasource(
             _resolve(COMPUTED_MODEL_YAML), dialect="bigquery", sample=_sample("1%")
@@ -875,6 +898,31 @@ class TestSample:
         assert "all 3 sampled elements" in findings[0].message
         # Unnested inner, so a parent with an empty array is not an element.
         assert "outer => TRUE" not in executor.sql[3]
+
+    def test_a_null_field_beside_a_failing_expression(self, stub: Any) -> None:
+        """The failing statement returned no rows, so each field read alone is checked."""
+        import pyarrow as pa
+
+        yaml = NESTED_MODEL_YAML.replace(
+            "      Sku:\n        code: sku\n        abstractType: string\n",
+            "      Sku:\n        code: sku\n        abstractType: string\n"
+            "      Sku Number:\n        expression: \"cast({Sku}, 'double')\"\n"
+            "        abstractType: float\n",
+        )
+        failed = ExecutionError("Could not convert string 'A-1' to DOUBLE")
+        stub(
+            _orders_schema(),
+            _orders_schema(),
+            FakeResult([("c1", pa.string()), ("c2", pa.float64())]),
+            failed,
+            failed,
+            FakeResult([("c1", pa.string())], rows=[[None], [None]]),
+        )
+        findings = probe_datasource(_resolve(yaml), dialect="snowflake", sample=_sample("100"))
+        assert [(f.code, f.path) for f in findings] == [
+            ("DATASOURCE_SAMPLE_FAILED", "dataObjects.Order Lines.columns.Sku Number.expression"),
+            ("DATASOURCE_SAMPLE_ALL_NULL", "dataObjects.Order Lines.columns.Sku.code"),
+        ]
 
     @pytest.mark.parametrize("rows", [[], [[None], ["A-1"]]])
     def test_no_rows_or_one_value_is_not_reported(self, stub: Any, rows: Any) -> None:

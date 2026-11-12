@@ -1463,9 +1463,18 @@ class Dialect(ABC):
         what a sample is billed: ``LIMIT`` and a ``WHERE RAND()`` filter both
         bill every row of the columns read. The clause is refused on a view
         there, so a caller has to be ready to fall back to
-        :meth:`random_fraction_sql`.
+        :meth:`random_fraction_sql`, when :meth:`table_sample_refused` says so.
         """
         return None
+
+    def table_sample_refused(self, error: str) -> bool:
+        """Whether *error* is this engine refusing :meth:`table_sample_clause` on a view.
+
+        Matched on the engine's own words for that refusal and nothing looser:
+        any other failure is the sample's own, and retrying it without the
+        clause would read, and bill, every row.
+        """
+        return False
 
     @abstractmethod
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:

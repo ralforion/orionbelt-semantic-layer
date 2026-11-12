@@ -393,6 +393,25 @@ class TestOnlineValidationOfComputedAndNestedColumns:
             ("DATASOURCE_SAMPLE_ALL_NULL", "dataObjects.Charge Labels.columns.Label Note.code")
         ]
 
+    def test_a_null_field_beside_an_expression_failing_on_a_value(self, charges: Any) -> None:
+        """The cast plans, and fails on the value 'team'; the NULL field is still reported."""
+        from orionbelt.cli import _local
+
+        yaml = CHARGES_MODEL.replace(
+            "      Label Value: {code: Value, abstractType: string}\n",
+            "      Label Value: {code: Value, abstractType: string}\n"
+            "      Label Note: {code: Note, abstractType: string}\n"
+            "      Key Number:\n"
+            "        expression: \"cast({Label Key}, 'double')\"\n"
+            "        abstractType: float\n",
+        )
+        summary = _local.validate(yaml, sample="100")
+        assert summary.valid is True
+        assert [(w.code, w.path) for w in summary.warnings] == [
+            ("DATASOURCE_SAMPLE_FAILED", "dataObjects.Charge Labels.columns.Key Number.expression"),
+            ("DATASOURCE_SAMPLE_ALL_NULL", "dataObjects.Charge Labels.columns.Label Note.code"),
+        ]
+
     def test_a_sample_that_is_neither_a_count_nor_a_percent(self, charges: Any) -> None:
         from orionbelt.cli import _local
 

@@ -702,7 +702,7 @@ class _Prober:
             except ExecutionError as exc:
                 # Only the refusal itself is retried. Any other failure is the
                 # sample's own, and a retry would read, and bill, every row.
-                if "TABLESAMPLE" not in str(exc).upper():
+                if not self.dialect.table_sample_refused(str(exc)):
                     raise
         return self._execute(sql())
 
@@ -730,16 +730,28 @@ class _Prober:
         else:
             return self._null_fields(physical, result.rows) if len(self.chain) > 1 else []
 
-        computing = computed + (physical if len(self.chain) > 1 else [])
-        findings: list[SemanticError] = []
-        for item in computing:
-            try:
-                self._sampled([item], sample)
-            except ExecutionError as exc:
-                findings.append(_sample_failed(self.obj_name, sample, str(exc), column=item.column))
+        fields = physical if len(self.chain) > 1 else []
+        findings = [f for item in computed for f in self._sample_one(item, sample, field=False)]
+        findings += [f for item in fields for f in self._sample_one(item, sample, field=True)]
+        if any(f.code == "DATASOURCE_SAMPLE_FAILED" for f in findings):
+            return findings
         # Each part read on its own: the failing row was not drawn again, or the
         # statement fails only as a whole. The driver's words are all there is.
-        return findings or [_sample_failed(self.obj_name, sample, error)]
+        return [*findings, _sample_failed(self.obj_name, sample, error)]
+
+    def _sample_one(self, item: _Selected, sample: Sample, *, field: bool) -> list[SemanticError]:
+        """*item* read from *sample* on its own: a failure, or for a nested *field*, NULLs.
+
+        A field that reads fine still has to be checked for NULLs here: the
+        statement reading it beside a failing column returned no rows to check.
+        """
+        from orionbelt.service.db_executor import ExecutionError
+
+        try:
+            result = self._sampled([item], sample)
+        except ExecutionError as exc:
+            return [_sample_failed(self.obj_name, sample, str(exc), column=item.column)]
+        return self._null_fields([item], result.rows) if field else []
 
     def _null_fields(self, physical: list[_Selected], rows: list[list[Any]]) -> list[SemanticError]:
         """A warning per nested field that is NULL on every sampled element."""

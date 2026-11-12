@@ -599,6 +599,9 @@ class BigQueryDialect(Dialect):
         digits = f"{percent:f}".rstrip("0").rstrip(".")
         return f"TABLESAMPLE SYSTEM ({digits} PERCENT)"
 
+    def table_sample_refused(self, error: str) -> bool:
+        return "TABLESAMPLE SYSTEM can only be applied directly to base tables" in error
+
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         unit_sql = unit.upper()
         return f"DATE_ADD({date_sql}, INTERVAL {count} {unit_sql})"
