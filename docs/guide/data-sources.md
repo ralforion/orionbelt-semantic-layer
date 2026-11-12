@@ -207,7 +207,8 @@ SQL, PostgreSQL wire and the CLI.
 Online validation (`validate --online`, `POST .../validate?online=true`) probes
 the source the model names. A model whose data objects are read from several
 sources has each data object probed on its own source, in that source's
-dialect, as its queries read it; a source that cannot be reached is reported
+dialect, as its queries read it, and a data object read through `nestedIn` on
+its parent's source; a source that cannot be reached is reported
 where it is named, and the others are probed all the same. An explicit
 `dialect` cannot point the probe at another source: one that differs from a
 source's dialect is reported as `DATASOURCE_UNAVAILABLE`, naming both dialects.

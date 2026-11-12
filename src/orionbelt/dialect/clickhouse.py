@@ -326,6 +326,7 @@ class ClickHouseDialect(Dialect):
     }
 
     unions_resolve_leg_types = False
+    booleans_as_integers = True
     key_injection_max_keys = 10_000
     #: 5 million groups by key in 0.28 s, joining a map in 0.24-0.32 s: the
     #: leg shrinks to a row per group.

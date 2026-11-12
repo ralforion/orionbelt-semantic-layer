@@ -38,9 +38,6 @@ dataObjects:
       Ordered At:
         code: ordered_at
         abstractType: timestamp
-      Net:
-        expression: "{Amount} * 0.8"
-        abstractType: float
 
 dimensions:
   Order Ref:
@@ -143,18 +140,16 @@ class TestHappyPath:
         probe_datasource(model, dialect="duckdb")
         assert len(executor.sql) == 1
 
-    def test_projection_names_declared_columns_quoted(self, model: Any, stub: Any) -> None:
+    def test_projection_reads_columns_as_a_query_does(self, model: Any, stub: Any) -> None:
+        """Quoted and qualified by the data object's alias, as codegen spells them."""
         executor = stub(_matching_schema())
         probe_datasource(model, dialect="duckdb")
         assert executor.sql[0] == (
-            'SELECT "order_id", "amount", "ordered_at" FROM "main"."orders" LIMIT 0'
+            'SELECT "Orders"."order_id" AS "c1", "Orders"."amount" AS "c2", '
+            '"Orders"."ordered_at" AS "c3"\n'
+            'FROM "main"."orders" AS "Orders"\n'
+            "LIMIT 0"
         )
-
-    def test_computed_column_is_not_projected(self, model: Any, stub: Any) -> None:
-        """``Net`` has an expression, so its ``code`` is not a physical column."""
-        executor = stub(_matching_schema())
-        probe_datasource(model, dialect="duckdb")
-        assert "net" not in executor.sql[0]
 
     def test_probe_scans_nothing(self, model: Any, stub: Any) -> None:
         executor = stub(_matching_schema())
@@ -397,6 +392,243 @@ class TestUnavailable:
         assert executor.sql == []
 
 
+COMPUTED_MODEL_YAML = """\
+version: 1.0
+
+dataObjects:
+  Orders:
+    code: orders
+    database: ""
+    schema: main
+    columns:
+      Order ID:
+        code: order_id
+        abstractType: string
+      Amount:
+        code: amount
+        abstractType: float
+        numClass: additive
+      Net:
+        expression: "{Amount} * 0.8"
+        abstractType: float
+
+dimensions:
+  Order Ref:
+    dataObject: Orders
+    column: Order ID
+    resultType: string
+"""
+
+
+def _resolve(yaml: str) -> Any:
+    from orionbelt.parser.loader import TrackedLoader
+
+    raw, source_map = TrackedLoader().load_string(yaml)
+    resolved, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    return resolved
+
+
+def _physical_schema() -> FakeResult:
+    import pyarrow as pa
+
+    return FakeResult([("c1", pa.string()), ("c2", pa.float64())])
+
+
+def _computed_schema(net: Any = None) -> FakeResult:
+    import pyarrow as pa
+
+    return FakeResult([("c1", pa.string()), ("c2", pa.float64()), ("c3", net or pa.float64())])
+
+
+def _one_column(arrow_type: Any) -> FakeResult:
+    return FakeResult([("c1", arrow_type)])
+
+
+class TestComputedColumns:
+    """A computed column is read as its expression, in the same statement."""
+
+    def test_read_in_the_same_round_trip(self, stub: Any) -> None:
+        executor = stub(_computed_schema())
+        assert probe_datasource(_resolve(COMPUTED_MODEL_YAML), dialect="duckdb") == []
+        assert len(executor.sql) == 1
+        assert '"Orders"."amount" * 0.8 AS "c3"' in executor.sql[0]
+
+    def test_a_result_of_another_type_names_the_expression(self, stub: Any) -> None:
+        import pyarrow as pa
+
+        stub(_computed_schema(net=pa.string()))
+        (finding,) = probe_datasource(_resolve(COMPUTED_MODEL_YAML), dialect="duckdb")
+        assert finding.code == "DATASOURCE_TYPE_MISMATCH"
+        assert finding.path == "dataObjects.Orders.columns.Net.abstractType"
+        assert "Computed column 'Net'" in finding.message
+        assert finding.hint is not None
+        assert "expression" in finding.hint
+
+    def test_an_expression_the_engine_rejects(self, stub: Any) -> None:
+        """The physical columns read alone, so the expression is what failed."""
+        executor = stub(
+            ExecutionError("No function matches the given name"),
+            _physical_schema(),
+            ExecutionError("No function matches the given name"),
+        )
+        (finding,) = probe_datasource(_resolve(COMPUTED_MODEL_YAML), dialect="duckdb")
+        assert finding.code == "DATASOURCE_EXPRESSION_FAILED"
+        assert finding.path == "dataObjects.Orders.columns.Net.expression"
+        assert "No function matches the given name" in finding.message
+        assert "order_id" not in executor.sql[2]
+        assert "0.8" in executor.sql[2]
+
+    def test_a_missing_column_and_the_expression_reading_it(self, stub: Any) -> None:
+        import pyarrow as pa
+
+        stub(
+            ExecutionError('column "amount" does not exist'),
+            ExecutionError('column "amount" does not exist'),
+            FakeResult([("order_id", pa.string())]),
+            ExecutionError('column "amount" does not exist'),
+        )
+        findings = probe_datasource(_resolve(COMPUTED_MODEL_YAML), dialect="duckdb")
+        assert [f.code for f in findings] == [
+            "DATASOURCE_COLUMN_MISSING",
+            "DATASOURCE_EXPRESSION_FAILED",
+        ]
+
+    def test_a_missing_table_is_reported_once(self, stub: Any) -> None:
+        """No expression can be read from a table that is not there."""
+        executor = stub(
+            ExecutionError("relation orders does not exist"),
+            ExecutionError("relation orders does not exist"),
+            ExecutionError("relation orders does not exist"),
+        )
+        findings = probe_datasource(_resolve(COMPUTED_MODEL_YAML), dialect="duckdb")
+        assert [f.code for f in findings] == ["DATASOURCE_TABLE_MISSING"]
+        assert len(executor.sql) == 3
+
+    def test_parts_that_read_alone_but_not_together(self, stub: Any) -> None:
+        import pyarrow as pa
+
+        stub(ExecutionError("statement too complex"), _physical_schema(), _one_column(pa.float64()))
+        (finding,) = probe_datasource(_resolve(COMPUTED_MODEL_YAML), dialect="duckdb")
+        assert finding.code == "DATASOURCE_PROBE_FAILED"
+        assert "statement too complex" in finding.message
+
+    def test_an_expression_reading_another_object_is_left_out(self, stub: Any) -> None:
+        """A query joins the other object first; the probe reads this one alone."""
+        import pyarrow as pa
+
+        yaml = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: orders
+    database: ""
+    schema: main
+    columns:
+      Order ID: {code: order_id, abstractType: string}
+      Customer ID: {code: customer_id, abstractType: string}
+      Customer Label: {expression: "{[Customers].[Customer Name]}", abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Customer ID]
+        columnsTo: [Customer ID]
+  Customers:
+    code: customers
+    database: ""
+    schema: main
+    columns:
+      Customer ID: {code: customer_id, abstractType: string}
+      Customer Name: {code: name, abstractType: string}
+"""
+        two = FakeResult([("c1", pa.string()), ("c2", pa.string())])
+        executor = stub(two, two)
+        assert probe_datasource(_resolve(yaml), dialect="duckdb") == []
+        assert "Customers" not in executor.sql[0]
+
+
+BOOLEAN_MODEL_YAML = """\
+version: 1.0
+
+dataObjects:
+  Orders:
+    code: orders
+    database: ""
+    schema: main
+    columns:
+      Paid:
+        code: paid
+        abstractType: boolean
+      Always:
+        expression: "TRUE"
+        abstractType: boolean
+
+dimensions:
+  Paid Flag:
+    dataObject: Orders
+    column: Paid
+    resultType: boolean
+"""
+
+
+class TestBooleansAsIntegers:
+    """MySQL has no boolean type, and a ClickHouse comparison is a ``UInt8``.
+
+    Measured on all eight engines: there, and only there, an integer behind a
+    declared boolean is how the engine answers, which query execution already
+    reconciles (``result_schema.reconcile_to_declared``).
+    """
+
+    @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
+    def test_an_integer_boolean_is_not_drift_there(self, stub: Any, dialect: str) -> None:
+        import pyarrow as pa
+
+        stub(FakeResult([("c1", pa.int8()), ("c2", pa.int64())]))
+        assert probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect=dialect) == []
+
+    def test_an_integer_boolean_is_drift_elsewhere(self, stub: Any) -> None:
+        """PostgreSQL has a boolean type, so an integer behind one is a real mismatch."""
+        import pyarrow as pa
+
+        stub(FakeResult([("c1", pa.int8()), ("c2", pa.int64())]))
+        findings = probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect="postgres")
+        assert [f.path for f in findings] == [
+            "dataObjects.Orders.columns.Paid.abstractType",
+            "dataObjects.Orders.columns.Always.abstractType",
+        ]
+
+    def test_text_behind_a_boolean_is_drift_there_too(self, stub: Any) -> None:
+        import pyarrow as pa
+
+        stub(FakeResult([("c1", pa.string()), ("c2", pa.int64())]))
+        (finding,) = probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect="mysql")
+        assert finding.path == "dataObjects.Orders.columns.Paid.abstractType"
+
+    @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
+    @pytest.mark.parametrize("arrow_type", ["float64", "decimal"])
+    def test_a_float_or_decimal_behind_a_boolean_is_drift_there(
+        self, stub: Any, dialect: str, arrow_type: str
+    ) -> None:
+        """Only an integer is how those engines answer a boolean; ``0.5`` is not one."""
+        import pyarrow as pa
+
+        actual = {"float64": pa.float64(), "decimal": pa.decimal128(2, 1)}[arrow_type]
+        stub(FakeResult([("c1", pa.int8()), ("c2", actual)]))
+        (finding,) = probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect=dialect)
+        assert finding.code == "DATASOURCE_TYPE_MISMATCH"
+        assert finding.path == "dataObjects.Orders.columns.Always.abstractType"
+
+    def test_a_number_of_unknown_kind_refutes_nothing_there(self, stub: Any) -> None:
+        """The coarse PEP 249 hint cannot tell an integer from a decimal."""
+
+        class NoArrowResult:
+            arrow_schema = None
+            columns = [FakeColumn("c1", "number"), FakeColumn("c2", "number")]
+
+        stub(NoArrowResult())
+        assert probe_datasource(_resolve(BOOLEAN_MODEL_YAML), dialect="mysql") == []
+
+
 NESTED_MODEL_YAML = """\
 version: 1.0
 
@@ -433,25 +665,79 @@ dimensions:
 """
 
 
-class TestSkippedObjects:
-    def test_nested_object_is_not_probed(self, stub: Any) -> None:
-        """Its rows come from unnesting the parent's array column, so its
-        columns belong to that array's element type rather than to a table.
-        Projecting the declared codes against the fallback ``code`` table would
-        report drift that is not there.
-        """
+def _orders_schema() -> FakeResult:
+    import pyarrow as pa
+
+    return FakeResult([("c1", pa.string()), ("c2", pa.string())])
+
+
+class TestNestedObjects:
+    """A ``nestedIn`` object is read the way a query reads it: unnested out of its
+    parent's array column, not from the fallback ``code`` table.
+    """
+
+    def test_fields_are_read_from_the_parents_array(self, stub: Any) -> None:
         import pyarrow as pa
 
-        from orionbelt.parser.loader import TrackedLoader
+        executor = stub(_orders_schema(), _one_column(pa.string()))
+        assert probe_datasource(_resolve(NESTED_MODEL_YAML), dialect="duckdb") == []
+        assert len(executor.sql) == 2
+        lines_sql = executor.sql[1]
+        assert 'FROM "main"."orders" AS "Orders"' in lines_sql
+        assert 'UNNEST("Orders"."Lines")' in lines_sql
+        assert '"main"."lines"' not in lines_sql
 
-        raw, source_map = TrackedLoader().load_string(NESTED_MODEL_YAML)
-        model, result = ReferenceResolver().resolve(raw, source_map)
-        assert result.valid, result.errors
+    def test_a_field_the_elements_lack(self, stub: Any) -> None:
+        import pyarrow as pa
 
-        executor = stub(FakeResult([("order_id", pa.string()), ("lines", pa.string())]))
-        assert probe_datasource(model, dialect="duckdb") == []
+        stub(
+            _orders_schema(),
+            ExecutionError('Could not find key "sku" in struct'),
+            _one_column(pa.int32()),
+            ExecutionError('Could not find key "sku" in struct'),
+        )
+        (finding,) = probe_datasource(_resolve(NESTED_MODEL_YAML), dialect="duckdb")
+        assert finding.code == "DATASOURCE_COLUMN_MISSING"
+        assert finding.path == "dataObjects.Order Lines.columns.Sku.code"
+        assert 'Could not find key "sku"' in finding.message
+
+    def test_an_array_column_that_cannot_be_unnested(self, stub: Any) -> None:
+        import pyarrow as pa
+
+        stub(
+            _orders_schema(),
+            ExecutionError("UNNEST requires a list"),
+            ExecutionError("UNNEST requires a list"),
+            _one_column(pa.int32()),
+        )
+        (finding,) = probe_datasource(_resolve(NESTED_MODEL_YAML), dialect="duckdb")
+        assert finding.code == "DATASOURCE_UNNEST_FAILED"
+        assert finding.path == "dataObjects.Order Lines.nestedIn.column"
+
+    def test_an_unreadable_parent_is_reported_on_the_parent_only(self, stub: Any) -> None:
+        missing = ExecutionError("relation orders does not exist")
+        stub(missing, missing, missing, missing, missing)
+        findings = probe_datasource(_resolve(NESTED_MODEL_YAML), dialect="duckdb")
+        assert [(f.code, f.path) for f in findings] == [
+            ("DATASOURCE_TABLE_MISSING", "dataObjects.Orders.code")
+        ]
+
+    def test_without_a_from_clause_unnest_the_code_table_is_read(self, stub: Any) -> None:
+        """Dremio has no FROM-clause unnest, so its queries read ``code``; so does the probe."""
+        import pyarrow as pa
+
+        executor = stub(_orders_schema(), _one_column(pa.string()))
+        assert probe_datasource(_resolve(NESTED_MODEL_YAML), dialect="dremio") == []
+        assert 'FROM "main"."lines" AS "Order Lines"' in executor.sql[1]
+
+    def test_without_an_unnest_or_a_table_nothing_is_read(self, stub: Any) -> None:
+        yaml = NESTED_MODEL_YAML.replace(
+            '  Order Lines:\n    code: lines\n    database: ""\n    schema: main\n',
+            "  Order Lines:\n",
+        )
+        executor = stub(_orders_schema())
+        assert probe_datasource(_resolve(yaml), dialect="dremio") == []
         assert len(executor.sql) == 1
-        assert "orders" in executor.sql[0]
 
 
 class TestProbeFailed:

@@ -11,20 +11,31 @@ query time, to whoever ran the query rather than to whoever wrote the model.
 
 This module closes that gap on request. Two things make the shape of the probe:
 
-*   It asks for the declared columns **by name, quoted exactly as codegen
-    quotes them** - ``SELECT "amount", "order_date" FROM "sales" LIMIT 0`` -
-    rather than reading ``information_schema``. That proves the columns are
-    addressable *through the same connection and the same spelling the
-    compiled query will use*, which a catalog read does not, and it settles
-    identifier case without this module having to carry a table of which
-    engines fold it: the engine answers.
+*   It asks for the declared columns **as the compiled query reads them** -
+    ``SELECT "Sales"."amount", ("Sales"."amount" * 0.8) FROM "sales" AS "Sales"
+    LIMIT 0`` - rather than reading ``information_schema``. The statement is
+    built from the compiler's own pieces: each column from its column builder,
+    so a computed column is its expression inlined, and a ``nestedIn`` object's
+    FROM clause from the planners' unnest fragment, so its fields are read from
+    the parent's array the way the engine spells it. That proves the columns
+    can be read *through the same connection and the same SQL the compiled
+    query will use*, which a catalog read does not, and it settles identifier
+    case without this module having to carry a table of which engines fold it:
+    the engine answers.
 *   ``LIMIT 0`` means the round trip costs a plan and no scan, and the result
     still carries a full schema, so column types come back from the same
     request that proves the columns exist.
 
-Only when that fails does a second ``SELECT *`` run, to tell a missing table
-from a missing column and to name which column. The happy path is one round
-trip per data object.
+Only when that fails do narrower probes run: the physical columns alone, then
+a ``SELECT *`` to tell a missing table from a missing column and to name which
+column, and each computed column and nested field on its own. The happy path is
+one round trip per data object.
+
+What the engine cannot answer, the probe cannot either. Snowflake reads a nested
+field as a path into a semi-structured value and MySQL through ``JSON_TABLE``:
+on both, a field the elements do not have reads as NULL rather than failing,
+and the value is cast to the declared type, so neither a missing field nor its
+type can be told apart from a correct one there.
 
 Findings use the same :class:`SemanticError` shape as the offline validator,
 so a caller that already renders validation errors renders these unchanged.
@@ -32,7 +43,9 @@ so a caller that already renders validation errors renders these unchanged.
 
 from __future__ import annotations
 
+import itertools
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from orionbelt.dialect.registry import DialectRegistry, UnsupportedDialectError
@@ -40,8 +53,11 @@ from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import DataType
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ob_flight.datasources import DataSource
 
+    from orionbelt.ast.nodes import Expr
     from orionbelt.models.semantic import DataObject, DataObjectColumn, SemanticModel
 
 logger = logging.getLogger(__name__)
@@ -204,30 +220,117 @@ def _hint_family(type_hint: str) -> str | None:
     return None
 
 
-def _families(result: Any) -> list[str | None]:
-    """Family per result column, in the order the driver returned them.
+@dataclass(frozen=True)
+class _Kind:
+    """What came back for one column: its family, and whether a number is an integer.
 
-    Prefers the Arrow schema, which distinguishes a boolean from a string;
-    the coarse PEP 249 hint cannot. Seven of the eight drivers are
-    Arrow-native, so the fallback is the exception.
+    ``integer`` is ``None`` where the result does not say: for a column that is
+    not a number, and for a number known only by the coarse PEP 249 hint or a
+    vendor type name. The distinction matters for one comparison only, a
+    boolean on an engine that answers one as an integer (:func:`_refutes`).
+    """
+
+    family: str | None
+    integer: bool | None = None
+
+
+def _arrow_integer(arrow_type: Any) -> bool | None:
+    """Whether an Arrow number type is an integer; ``None`` when it does not say."""
+    import pyarrow as pa
+
+    try:
+        if pa.types.is_integer(arrow_type):
+            return True
+        if pa.types.is_floating(arrow_type) or pa.types.is_decimal(arrow_type):
+            return False
+    except (AttributeError, TypeError):
+        # The extension subclasses :func:`_structural_family` describes.
+        return None
+    return None
+
+
+def _kinds(result: Any) -> list[_Kind]:
+    """What came back for each result column, in the order the driver returned them.
+
+    Prefers the Arrow schema, which distinguishes a boolean from a string and an
+    integer from a decimal; the coarse PEP 249 hint can do neither. Seven of the
+    eight drivers are Arrow-native, so the fallback is the exception.
     """
     schema = result.arrow_schema
     if schema is not None:
         try:
-            return [_arrow_family(field.type) for field in schema]
+            return [_Kind(_arrow_family(f.type), _arrow_integer(f.type)) for f in schema]
         except ImportError:  # pragma: no cover - a schema implies pyarrow
             pass
-    return [_hint_family(col.type_hint) for col in result.columns]
+    return [_Kind(_hint_family(col.type_hint)) for col in result.columns]
 
 
-def _physical_columns(obj: DataObject) -> list[DataObjectColumn]:
-    """The columns of *obj* that name a physical column.
+@dataclass(frozen=True)
+class _Selected:
+    """A declared column and the expression a compiled query reads it as."""
 
-    A computed column defines itself with an inline ``expression`` and its
-    ``code`` is ignored at codegen, so asking the warehouse for it would
-    report every computed column as missing.
+    column: DataObjectColumn
+    expr: Expr
+
+
+def _columns_of(selected: list[_Selected]) -> list[DataObjectColumn]:
+    return [item.column for item in selected]
+
+
+def _selected_columns(
+    model: SemanticModel, obj_name: str, obj: DataObject
+) -> tuple[list[_Selected], list[_Selected]]:
+    """The physical and the computed columns of *obj*, each as a query reads it.
+
+    Every expression comes from the compiler's own column builder
+    (:func:`~orionbelt.compiler.resolution.make_column_expr`), so a computed
+    column is its expression inlined and a nested field is read the way its
+    engine spells it, exactly as in a compiled query. Read without the query
+    time zone: the question is whether the column can be read at all.
+
+    Two computed columns are left out. One whose expression reads another data
+    object, which a query joins first and the probe, reading this object alone,
+    cannot. And one whose expression does not parse: offline validation already
+    reports it (``INVALID_COLUMN_EXPRESSION``), and there is no SQL to send.
     """
-    return [col for col in obj.columns.values() if col.code and not col.is_computed]
+    from orionbelt.compiler.resolution import ResolutionError, make_column_expr
+
+    physical: list[_Selected] = []
+    computed: list[_Selected] = []
+    for col in obj.columns.values():
+        if not col.is_computed:
+            if col.code:
+                expr = make_column_expr(model, obj_name, col.name, in_query_timezone=False)
+                physical.append(_Selected(col, expr))
+            continue
+        if model.column_reference_objects(obj_name, col.name):
+            continue
+        try:
+            expr = make_column_expr(model, obj_name, col.name, in_query_timezone=False)
+        except ResolutionError:
+            continue
+        computed.append(_Selected(col, expr))
+    return physical, computed
+
+
+def _from_chain(dialect: Any, model: SemanticModel, obj_name: str) -> list[str]:
+    """The data objects a FROM clause names to read *obj_name*, outermost first.
+
+    Just the object itself for one read from its own table. A ``nestedIn``
+    object is unnested out of its parent, so the chain runs from the first
+    ancestor with a table down to it, the order a planner unnests them in. On a
+    dialect without a FROM-clause unnest (Dremio) a query reads the object's
+    ``code`` table instead, and so does the probe.
+    """
+    chain = [obj_name]
+    obj = model.data_objects[obj_name]
+    while obj.nested_in is not None and dialect.capabilities.supports_from_unnest:
+        parent = obj.nested_in.data_object
+        if parent in chain or parent not in model.data_objects:
+            break  # a loop or a dangling parent, both refused by offline validation
+        chain.insert(0, parent)
+        obj = model.data_objects[parent]
+    return chain
 
 
 def _qualified_name(obj: DataObject) -> str:
@@ -236,16 +339,50 @@ def _qualified_name(obj: DataObject) -> str:
     return ".".join(parts) if parts else obj.code
 
 
-def _select_columns(dialect: Any, obj: DataObject, columns: list[DataObjectColumn]) -> str:
-    """``SELECT <declared columns> FROM <table> LIMIT 0`` for *obj*.
+def _table_ref(dialect: Any, obj: DataObject) -> str:
+    return str(dialect.format_table_ref(obj.database, obj.schema_name, obj.code))
 
-    The column list is quoted through the dialect, which is what makes a pass
-    meaningful: it is the spelling a compiled query will use, so the engine is
-    answering the question the model actually asks of it.
+
+def _select_sql(
+    dialect: Any, model: SemanticModel, chain: list[str], selected: list[_Selected]
+) -> str:
+    """``SELECT <expressions> FROM <chain> LIMIT 0``, built the way a query is.
+
+    The FROM clause names the first object's table, aliased by the object's
+    name as the planners alias it, and unnests each later object out of the one
+    before it with the planners' own fragment
+    (:func:`~orionbelt.compiler.nested.build_unnest`). The dialect renders the
+    whole statement, so the engine is asked what a compiled query would ask it,
+    in the spelling that query would use. ``SELECT 1`` when nothing is
+    selected: the question is then only whether the FROM clause can be read.
+
+    ``LIMIT 0`` means the round trip costs a plan and no scan, and the result
+    still carries a full schema, so the types come back from the same request.
     """
-    projection = ", ".join(dialect.quote_identifier(col.code) for col in columns)
-    table = dialect.format_table_ref(obj.database, obj.schema_name, obj.code)
-    return f"SELECT {projection} FROM {table} LIMIT 0"
+    from orionbelt.ast.builder import QueryBuilder
+    from orionbelt.ast.nodes import JoinType as ASTJoinType
+    from orionbelt.ast.nodes import Literal
+    from orionbelt.compiler.graph import JoinStep
+    from orionbelt.compiler.nested import build_unnest
+    from orionbelt.models.semantic import Cardinality
+
+    builder = QueryBuilder().from_(_table_ref(dialect, model.data_objects[chain[0]]), chain[0])
+    for parent, child in itertools.pairwise(chain):
+        step = JoinStep(
+            from_object=parent,
+            to_object=child,
+            from_columns=[],
+            to_columns=[],
+            join_type=ASTJoinType.LEFT,
+            cardinality=Cardinality.MANY_TO_ONE,
+            nested=True,
+        )
+        builder.unnest(build_unnest(step, model.data_objects[child]))
+    for i, item in enumerate(selected, start=1):
+        builder.select_aliased(item.expr, f"c{i}")
+    if not selected:
+        builder.select(Literal(value=1))
+    return str(dialect.compile(builder.limit(0).build()))
 
 
 def _select_star(dialect: Any, obj: DataObject) -> str:
@@ -254,10 +391,28 @@ def _select_star(dialect: Any, obj: DataObject) -> str:
     return f"SELECT * FROM {table} LIMIT 0"
 
 
+def _refutes(dialect: Any, declared: str, actual: _Kind) -> bool:
+    """Whether a column that came back as *actual* contradicts the *declared* family.
+
+    An unplaced type refutes nothing, and neither does the same family. Nor does
+    an integer behind a boolean where the engine answers one that way
+    (:attr:`~orionbelt.dialect.base.Dialect.booleans_as_integers`): MySQL has no
+    boolean type, and a ClickHouse comparison is a ``UInt8``. A float or a
+    decimal there is still drift, as query execution leaves it a number; a
+    number of unknown kind refutes nothing.
+    """
+    if actual.family is None or actual.family == declared:
+        return False
+    if declared == _BOOLEAN and actual.family == _NUMBER and dialect.booleans_as_integers:
+        return actual.integer is False
+    return True
+
+
 def _type_findings(
+    dialect: Any,
     obj_name: str,
     columns: list[DataObjectColumn],
-    families: list[str | None],
+    kinds: list[_Kind],
 ) -> list[SemanticError]:
     """Compare each declared ``abstractType`` against the type that came back.
 
@@ -267,26 +422,30 @@ def _type_findings(
     is nothing to gain from it.
     """
     findings: list[SemanticError] = []
-    for col, actual in zip(columns, families, strict=False):
+    for col, kind in zip(columns, kinds, strict=False):
         declared = _DECLARED_FAMILY.get(col.abstract_type)
-        if declared is None or actual is None or declared == actual:
+        if declared is None or not _refutes(dialect, declared, kind):
             continue
+        actual = kind.family
+        if col.is_computed:
+            subject = f"Computed column '{col.name}'"
+            fix = f"change its expression to return {col.abstract_type}"
+        else:
+            subject = f"Column '{col.code}'"
+            fix = f"cast '{col.code}' to {col.abstract_type} in the source view"
         findings.append(
             SemanticError(
                 code="DATASOURCE_TYPE_MISMATCH",
                 message=(
-                    f"Column '{col.code}' on data object '{obj_name}' is declared "
+                    f"{subject} on data object '{obj_name}' is declared "
                     f"'{col.abstract_type}' but the datasource returns a {actual} column."
                 ),
                 path=f"dataObjects.{obj_name}.columns.{col.name}.abstractType",
-                hint=(
-                    # Names the family that came back, not the declared one. The
-                    # declared family is what the model already says, so offering
-                    # it as the correction reads as "change float to a number
-                    # type" - advice to make no change at all.
-                    f"Either change abstractType to a '{actual}' type, or cast "
-                    f"'{col.code}' to {col.abstract_type} in the source view."
-                ),
+                # Names the family that came back, not the declared one. The
+                # declared family is what the model already says, so offering it
+                # as the correction reads as "change float to a number type" -
+                # advice to make no change at all.
+                hint=f"Either change abstractType to a '{actual}' type, or {fix}.",
                 context={
                     "dataObject": obj_name,
                     "column": col.name,
@@ -300,31 +459,32 @@ def _type_findings(
 
 
 def _column_findings(
+    dialect: Any,
     obj_name: str,
     obj: DataObject,
     columns: list[DataObjectColumn],
     present: list[str],
-    families: list[str | None],
+    kinds: list[_Kind],
     projection_error: str,
 ) -> list[SemanticError]:
     """Explain why the projection failed, given the columns ``SELECT *`` found.
 
-    ``present`` and *families* come from the star probe, so they describe the
+    ``present`` and *kinds* come from the star probe, so they describe the
     table as it really is. A declared column absent from it is missing; one
     that matches only when case is ignored is the more interesting answer,
     because the projection just proved the engine will not accept the spelling
     the model uses.
     """
     findings: list[SemanticError] = []
-    by_name = dict(zip(present, families, strict=False))
+    by_name = dict(zip(present, kinds, strict=False))
     folded = {name.casefold(): name for name in present}
     surviving: list[DataObjectColumn] = []
-    surviving_families: list[str | None] = []
+    surviving_kinds: list[_Kind] = []
 
     for col in columns:
         if col.code in by_name:
             surviving.append(col)
-            surviving_families.append(by_name[col.code])
+            surviving_kinds.append(by_name[col.code])
             continue
         actual_name = folded.get(col.code.casefold())
         if actual_name is None:
@@ -360,7 +520,7 @@ def _column_findings(
             )
         )
         surviving.append(col)
-        surviving_families.append(by_name[actual_name])
+        surviving_kinds.append(by_name[actual_name])
 
     if not findings:
         # The table is readable and every declared column is there under the
@@ -382,50 +542,220 @@ def _column_findings(
         )
         return findings
 
-    return findings + _type_findings(obj_name, surviving, surviving_families)
+    return findings + _type_findings(dialect, obj_name, surviving, surviving_kinds)
 
 
-def _probe_object(
-    dialect: Any, dialect_name: str, obj_name: str, obj: DataObject, source: DataSource | None
-) -> list[SemanticError]:
-    """Probe one data object. Raises ``ExecutionUnavailableError`` to the caller."""
-    from orionbelt.service.db_executor import ExecutionError, execute_sql
+class _Prober:
+    """The probes of one data object, run on its data source."""
 
-    columns = _physical_columns(obj)
+    def __init__(
+        self,
+        dialect: Any,
+        dialect_name: str,
+        model: SemanticModel,
+        obj_name: str,
+        source: DataSource | None,
+    ) -> None:
+        self.dialect = dialect
+        self.dialect_name = dialect_name
+        self.model = model
+        self.obj_name = obj_name
+        self.obj = model.data_objects[obj_name]
+        self.source = source
+        self.chain = _from_chain(dialect, model, obj_name)
 
-    if not columns:
-        # Nothing to project, so the table's own existence is the whole
-        # question - a data object whose columns are all computed still has
-        # to come FROM somewhere.
+    def _execute(self, sql: str) -> Any:
+        from orionbelt.service.db_executor import execute_sql
+
+        return execute_sql(sql, dialect=self.dialect_name, source=self.source)
+
+    def _select(self, selected: list[_Selected], chain: list[str] | None = None) -> Any:
+        """Select *selected* over *chain*, by default this object's. Raises on failure."""
+        chain = self.chain if chain is None else chain
+        return self._execute(_select_sql(self.dialect, self.model, chain, selected))
+
+    def probe(self) -> list[SemanticError]:
+        """Every finding for the object. Raises ``ExecutionUnavailableError``.
+
+        One statement selects every column the probe can evaluate, so a model
+        that matches its warehouse costs one round trip per data object. Only
+        when it fails do narrower probes run, to say which part failed.
+        """
+        from orionbelt.service.db_executor import ExecutionError
+
+        if self.obj.nested_in is not None and len(self.chain) == 1 and not self.obj.code:
+            # No FROM-clause unnest on this dialect and no table to fall back
+            # to: queries refuse the object here before any SQL runs.
+            return []
+        physical, computed = _selected_columns(self.model, self.obj_name, self.obj)
         try:
-            execute_sql(_select_star(dialect, obj), dialect=dialect_name, source=source)
+            result = self._select(physical + computed)
         except ExecutionError as exc:
-            return [_table_missing(obj_name, obj, str(exc))]
-        return []
+            error = str(exc)
+        else:
+            return _type_findings(
+                self.dialect, self.obj_name, _columns_of(physical + computed), _kinds(result)
+            )
 
-    try:
-        result = execute_sql(
-            _select_columns(dialect, obj, columns), dialect=dialect_name, source=source
+        if len(self.chain) > 1:
+            findings, readable = self._nested_findings(physical)
+        else:
+            findings, readable = self._table_findings(physical, computed, error)
+        if not readable:
+            return findings
+        findings += self._isolated(computed, _expression_failed)
+        if all(f.code == "DATASOURCE_TYPE_MISMATCH" for f in findings):
+            # Every part read on its own, yet the statement reading them together
+            # failed. Nothing here can name the cause, so return the driver's words.
+            findings.append(_probe_failed(self.obj_name, error))
+        return findings
+
+    def _table_findings(
+        self, physical: list[_Selected], computed: list[_Selected], error: str
+    ) -> tuple[list[SemanticError], bool]:
+        """The physical columns' findings, and whether the table can be read.
+
+        Probed apart from the computed columns. When they fail, a ``SELECT *``
+        separates a missing table from a missing column and returns the column
+        list needed to say which.
+        """
+        from orionbelt.service.db_executor import ExecutionError
+
+        physical_error: str | None = None
+        if physical and computed:
+            try:
+                result = self._select(physical)
+            except ExecutionError as exc:
+                physical_error = str(exc)
+            else:
+                findings = _type_findings(
+                    self.dialect, self.obj_name, _columns_of(physical), _kinds(result)
+                )
+                return findings, True
+        elif physical:
+            physical_error = error  # the statement that failed read these alone
+        try:
+            star = self._execute(_select_star(self.dialect, self.obj))
+        except ExecutionError as exc:
+            return [_table_missing(self.obj_name, self.obj, str(exc))], False
+        if physical_error is None:
+            return [], True
+        findings = _column_findings(
+            self.dialect,
+            self.obj_name,
+            self.obj,
+            _columns_of(physical),
+            [col.name for col in star.columns],
+            _kinds(star),
+            physical_error,
         )
-    except ExecutionError as exc:
-        projection_error = str(exc)
-    else:
-        return _type_findings(obj_name, columns, _families(result))
+        return findings, True
 
-    # The projection failed. A second probe separates a missing table from a
-    # missing column, and returns the column list needed to say which.
-    try:
-        star = execute_sql(_select_star(dialect, obj), dialect=dialect_name, source=source)
-    except ExecutionError as exc:
-        return [_table_missing(obj_name, obj, str(exc))]
+    def _nested_findings(self, physical: list[_Selected]) -> tuple[list[SemanticError], bool]:
+        """The fields' findings for a nested object, and whether its rows can be read.
 
-    return _column_findings(
-        obj_name,
-        obj,
-        columns,
-        [col.name for col in star.columns],
-        _families(star),
-        projection_error,
+        A ``SELECT 1`` over the same FROM clause asks whether the element rows
+        can be read at all. When they cannot, the parent's own FROM clause says
+        whose fault it is: if the parent cannot be read either, the parent's
+        probe reports that, and reporting it here too would name the wrong object.
+        """
+        from orionbelt.service.db_executor import ExecutionError
+
+        try:
+            self._select([])
+        except ExecutionError as exc:
+            unnest_error = str(exc)
+        else:
+            return self._isolated(physical, _field_missing), True
+        try:
+            self._select([], self.chain[:-1])
+        except ExecutionError:
+            return [], False
+        return [_unnest_failed(self.obj_name, self.obj, unnest_error)], False
+
+    def _isolated(
+        self,
+        selected: list[_Selected],
+        failed: Callable[[str, DataObject, DataObjectColumn, str], SemanticError],
+    ) -> list[SemanticError]:
+        """Each of *selected* probed on its own: *failed* for one the engine rejects."""
+        from orionbelt.service.db_executor import ExecutionError
+
+        findings: list[SemanticError] = []
+        for item in selected:
+            try:
+                result = self._select([item])
+            except ExecutionError as exc:
+                findings.append(failed(self.obj_name, self.obj, item.column, str(exc)))
+            else:
+                findings += _type_findings(
+                    self.dialect, self.obj_name, [item.column], _kinds(result)
+                )
+        return findings
+
+
+def _field_missing(
+    obj_name: str, obj: DataObject, col: DataObjectColumn, error: str
+) -> SemanticError:
+    """A nested object's field the engine could not read from the elements."""
+    array = f"{obj.nested_in.data_object}.{obj.nested_in.column}" if obj.nested_in else obj_name
+    return SemanticError(
+        code="DATASOURCE_COLUMN_MISSING",
+        message=(
+            f"Field '{col.code}' could not be read from the elements of {array} "
+            f"(data object '{obj_name}'): {error}"
+        ),
+        path=f"dataObjects.{obj_name}.columns.{col.name}.code",
+        hint="Correct the column's 'code', or drop the column from the model.",
+        context={"dataObject": obj_name, "column": col.name, "code": col.code, "error": error},
+    )
+
+
+def _expression_failed(
+    obj_name: str, obj: DataObject, col: DataObjectColumn, error: str
+) -> SemanticError:
+    """A computed column whose expression the engine rejected."""
+    return SemanticError(
+        code="DATASOURCE_EXPRESSION_FAILED",
+        message=(
+            f"Computed column '{col.name}' on data object '{obj_name}' could not be "
+            f"evaluated by the datasource: {error}"
+        ),
+        path=f"dataObjects.{obj_name}.columns.{col.name}.expression",
+        hint=(
+            "Correct the expression for this database: check the columns it reads "
+            "and that the database has every function it calls."
+        ),
+        context={"dataObject": obj_name, "column": col.name, "error": error},
+    )
+
+
+def _unnest_failed(obj_name: str, obj: DataObject, error: str) -> SemanticError:
+    """A nested object whose parent's array column could not be unnested."""
+    assert obj.nested_in is not None
+    parent, column = obj.nested_in.data_object, obj.nested_in.column
+    return SemanticError(
+        code="DATASOURCE_UNNEST_FAILED",
+        message=(
+            f"Data object '{obj_name}' unnests column '{column}' of '{parent}', which "
+            f"the datasource could not read as an array: {error}"
+        ),
+        path=f"dataObjects.{obj_name}.nestedIn.column",
+        hint=f"Correct nestedIn.column, or check that '{column}' is an array column of '{parent}'.",
+        context={"dataObject": obj_name, "parent": parent, "column": column, "error": error},
+    )
+
+
+def _probe_failed(obj_name: str, error: str) -> SemanticError:
+    """The object's statement failed, though every part of it read on its own."""
+    return SemanticError(
+        code="DATASOURCE_PROBE_FAILED",
+        message=(
+            f"Reading data object '{obj_name}' failed, though each of its columns "
+            f"could be read on its own: {error}"
+        ),
+        path=f"dataObjects.{obj_name}",
+        context={"dataObject": obj_name, "error": error},
     )
 
 
@@ -478,11 +808,9 @@ def probe_datasource(
     probed on its own source (:func:`_probe_each_source`), as its queries read
     it; with *follow_sources*, in that source's dialect, else in *dialect*.
 
-    Objects sourced by ``nestedIn`` are skipped: their rows come from unnesting
-    an array on another object, so their columns belong to that array's element
-    type rather than to any table of their own, and projecting the declared
-    codes against the fallback ``code`` table would report drift that is not
-    there.
+    An object sourced by ``nestedIn`` is read as a query reads it: unnested out
+    of its parent's array column, on the parent's source, so its fields are
+    checked against the array's elements rather than against a table of its own.
     """
     from orionbelt.service.datasource_selection import reads_several_sources, resolve_datasource
     from orionbelt.service.db_executor import ExecutionUnavailableError, ensure_arrow
@@ -506,8 +834,7 @@ def probe_datasource(
         source = resolve_datasource(model, dialect)
     except ExecutionUnavailableError as exc:
         return [_unavailable(dialect, exc)]
-    objects = [name for name, obj in model.data_objects.items() if obj.nested_in is None]
-    return _probe_objects(impl, dialect, model, objects, source)
+    return _probe_objects(impl, dialect, model, list(model.data_objects), source)
 
 
 def _probe_each_source(
@@ -516,7 +843,8 @@ def _probe_each_source(
     """Each data object probed on the data source its queries read it from.
 
     Its ``dataSource``, else ``settings.defaultDataSource``, else the
-    dialect's own connection. A source is probed in its own dialect with
+    dialect's own connection; a ``nestedIn`` object's is the source of the
+    ancestor whose table it is unnested from. A source is probed in its own dialect with
     *follow_sources*, as a query on it is compiled, else in *dialect*, which
     then reports a source of another one, as for a model read from one. A
     source that cannot be reached is reported once, at the path naming it, and
@@ -532,11 +860,10 @@ def _probe_each_source(
     default = model.settings.default_data_source if model.settings else None
     # Grouped as the registry compares names, in declaration order.
     groups: dict[str | None, tuple[str | None, list[str]]] = {}
-    for name, obj in model.data_objects.items():
-        if obj.nested_in is None:
-            named = obj.data_source or default
-            key = source_key(named) if named is not None else None
-            groups.setdefault(key, (named, []))[1].append(name)
+    for name in model.data_objects:
+        named = model.data_objects[model.unnest_root(name)].data_source or default
+        key = source_key(named) if named is not None else None
+        groups.setdefault(key, (named, []))[1].append(name)
 
     findings: list[SemanticError] = []
     for source_name, objects in groups.values():
@@ -571,9 +898,8 @@ def _probe_objects(
 
     findings: list[SemanticError] = []
     for obj_name in objects:
-        obj = model.data_objects[obj_name]
         try:
-            findings.extend(_probe_object(impl, dialect, obj_name, obj, source))
+            findings.extend(_Prober(impl, dialect, model, obj_name, source).probe())
         except ExecutionUnavailableError as exc:
             # No connection, no driver, or no credentials. Every remaining
             # object would fail the same way, so stop rather than repeat it

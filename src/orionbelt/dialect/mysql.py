@@ -159,6 +159,7 @@ class MySQLDialect(Dialect):
     }
 
     avg_over_integers_is_exact = True
+    booleans_as_integers = True
     key_injection_max_keys = 10_000
     #: 5 million groups by key in 31 s, joining a map in 3.5-9.6 s.
     pushes_key_maps = True

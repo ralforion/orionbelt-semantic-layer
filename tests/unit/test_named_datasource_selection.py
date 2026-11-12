@@ -285,6 +285,93 @@ class TestOnlineValidation:
         assert all("which is duckdb" in e.message for e in summary.errors)
 
 
+#: Charges on shop-eu with a computed column, their labels unnested from an array
+#: on them, and Customers on shop-us with a computed column of their own.
+CHARGES_MODEL = """\
+version: 1.0
+settings:
+  defaultDialect: duckdb
+dataObjects:
+  Charges:
+    code: charges
+    dataSource: shop-eu
+    columns:
+      Charge ID: {code: id, abstractType: string}
+      Cost: {code: cost, abstractType: float}
+      Net Cost: {expression: "{Cost} * 0.8", abstractType: float}
+  Charge Labels:
+    nestedIn: {dataObject: Charges, column: labels}
+    columns:
+      Label Key: {code: Key, abstractType: string}
+      Label Value: {code: Value, abstractType: string}
+  Customers:
+    code: shop
+    dataSource: shop-us
+    columns:
+      Customer Region: {code: region, abstractType: string}
+      Is EU: {expression: "CASE WHEN {Customer Region} = 'eu' THEN 1 ELSE 0 END", abstractType: int}
+dimensions:
+  Region: {dataObject: Customers, column: Customer Region, resultType: string}
+"""
+
+
+class TestOnlineValidationOfComputedAndNestedColumns:
+    """Each read on a real DuckDB, as its queries read it.
+
+    Only shop-eu holds ``charges``, so the labels pass only when they are read
+    from the source of the object they are unnested from: they name none.
+    """
+
+    @pytest.fixture
+    def charges(self, shops: Any) -> Any:
+        con = duckdb.connect(str(shops / "eu.duckdb"))
+        con.execute(
+            "CREATE TABLE charges AS SELECT 'c1' AS id, 10.5 AS cost, "
+            "[{'Key': 'team', 'Value': 'core'}] AS labels"
+        )
+        con.close()
+        return shops
+
+    def _errors(self, yaml: str) -> list[tuple[str, str | None]]:
+        from orionbelt.cli import _local
+
+        return [(e.code, e.path) for e in _local.validate(yaml, online=True).errors]
+
+    def test_a_matching_model_is_valid(self, charges: Any) -> None:
+        assert self._errors(CHARGES_MODEL) == []
+
+    def test_a_field_the_elements_lack(self, charges: Any) -> None:
+        yaml = CHARGES_MODEL.replace("code: Value,", "code: Valu,")
+        assert self._errors(yaml) == [
+            ("DATASOURCE_COLUMN_MISSING", "dataObjects.Charge Labels.columns.Label Value.code")
+        ]
+
+    def test_an_array_column_the_parent_lacks(self, charges: Any) -> None:
+        yaml = CHARGES_MODEL.replace("column: labels}", "column: labelz}")
+        assert self._errors(yaml) == [
+            ("DATASOURCE_UNNEST_FAILED", "dataObjects.Charge Labels.nestedIn.column")
+        ]
+
+    def test_an_expression_the_engine_rejects(self, charges: Any) -> None:
+        """A string times a number parses, and DuckDB has no such operator."""
+        yaml = CHARGES_MODEL.replace("{Cost} * 0.8", "{Charge ID} * 0.8")
+        assert self._errors(yaml) == [
+            ("DATASOURCE_EXPRESSION_FAILED", "dataObjects.Charges.columns.Net Cost.expression")
+        ]
+
+    def test_a_computed_column_of_another_type(self, charges: Any) -> None:
+        yaml = CHARGES_MODEL.replace(
+            'THEN 1 ELSE 0 END", abstractType: int', 'THEN 1 ELSE 0 END", abstractType: string'
+        )
+        assert self._errors(yaml) == [
+            ("DATASOURCE_TYPE_MISMATCH", "dataObjects.Customers.columns.Is EU.abstractType")
+        ]
+
+    def test_a_missing_parent_is_reported_on_the_parent(self, charges: Any) -> None:
+        yaml = CHARGES_MODEL.replace("code: charges", "code: charges_gone")
+        assert self._errors(yaml) == [("DATASOURCE_TABLE_MISSING", "dataObjects.Charges.code")]
+
+
 @pytest.fixture
 async def client(shops: Any) -> AsyncIterator[AsyncClient]:
     app = create_app(settings=Settings(session_ttl_seconds=3600, session_cleanup_interval=9999))

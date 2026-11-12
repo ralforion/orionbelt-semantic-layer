@@ -753,6 +753,16 @@ class Dialect(ABC):
     #: (:func:`~orionbelt.compiler.type_resolver.apply_float_input`).
     avg_rounds_exact_input: bool = False
 
+    #: Whether a boolean can come back as an integer 0/1. Measured on all eight
+    #: engines (#783): MySQL has no boolean type, so every boolean, ``TRUE``
+    #: included, is an integer; ClickHouse returns its ``Bool`` for a literal
+    #: but ``UInt8`` for a comparison or a predicate such as ``IS NOT NULL``.
+    #: There a declared ``boolean`` over an integer is the engine's
+    #: representation, not drift - the reading
+    #: :func:`~orionbelt.service.result_schema.reconcile_to_declared` gives the
+    #: values a query returns.
+    booleans_as_integers: bool = False
+
     def integer_avg_is_exact(self) -> bool:
         """Whether an integer ``AVG`` ends up exact here, natively or rewritten.
 
