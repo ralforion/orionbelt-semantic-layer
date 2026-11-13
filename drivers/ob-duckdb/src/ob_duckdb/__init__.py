@@ -15,6 +15,7 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import duckdb
@@ -67,10 +68,11 @@ def connect(
     ob_timeout : int
         HTTP timeout in seconds for OBML compilation.
     """
+    init = _statements(init_sql) if init_sql else None
     native = duckdb.connect(database=database, read_only=read_only, config=config or {})
-    if init_sql:
+    if init is not None:
         try:
-            native.execute(init_sql)
+            init(native)
         except Exception:
             native.close()
             raise
@@ -78,8 +80,17 @@ def connect(
         native,
         ob_api_url=ob_api_url,
         ob_timeout=ob_timeout,
-        init_sql=init_sql,
+        init=init,
     )
+
+
+def _statements(sql: str) -> Callable[[duckdb.DuckDBPyConnection], None]:
+    """A connection setup that runs ``sql``."""
+
+    def init(con: duckdb.DuckDBPyConnection) -> None:
+        con.execute(sql)
+
+    return init
 
 
 __all__ = [

@@ -233,7 +233,10 @@ connection settings, secrets included, so:
 - a dialect configured without a name keeps the cache keys it always had.
 
 The fingerprint is a hash and shows nothing of what went into it. For BigQuery
-the content of the key file counts, not only its path.
+the content of the key file counts, not only its path. For DuckDB the
+[setup statements, memory, thread, spill and path settings](files-and-lakehouse.md)
+count too: a pool hands out connections opened with one set of them, and the
+paths a source may read decide what its queries can return.
 
 Each pool also bounds the source's connections in use at once
 (`MAX_CONNECTIONS`, default 10), whether a query runs through REST, pgwire,

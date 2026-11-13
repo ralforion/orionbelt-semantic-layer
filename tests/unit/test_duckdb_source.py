@@ -28,6 +28,7 @@ from orionbelt.service import duckdb_source  # noqa: E402
 from orionbelt.service import federated_executor as federation  # noqa: E402
 from orionbelt.service.datasource_selection import describe_datasources  # noqa: E402
 from orionbelt.service.db_executor import (  # noqa: E402
+    ExecutionError,
     ExecutionUnavailableError,
     execute_sql,
 )
@@ -73,12 +74,36 @@ def orders(tmp_path: Any) -> str:
     return str(tmp_path / "parts" / "*.parquet")
 
 
+def parts(orders: str) -> str:
+    """The directory of the ``orders`` files, for ``DUCKDB_ALLOWED_PATHS``."""
+    return os.path.dirname(orders)
+
+
 class TestSettings:
-    def test_unset_is_an_in_memory_source_with_duckdbs_defaults(self) -> None:
+    def test_unset_is_an_in_memory_source_reading_nothing_else_in_half_the_memory(
+        self,
+    ) -> None:
         config = duckdb_source.settings(lake())
 
         assert config == duckdb_source.DuckDBSettings(database=":memory:")
         assert config.in_memory
+        assert config.allowed_paths == ()
+        assert config.memory_limit == "50%"
+
+    def test_allowed_paths_are_a_list_and_a_star_lifts_the_limit(self) -> None:
+        assert duckdb_source.settings(
+            lake(DUCKDB_ALLOWED_PATHS=" /data/a/ , s3://bucket/,")
+        ).allowed_paths == ("/data/a/", "s3://bucket/")
+        assert duckdb_source.settings(lake(DUCKDB_ALLOWED_PATHS="*")).allowed_paths is None
+
+    def test_a_motherduck_database_is_not_limited_unless_asked(self) -> None:
+        """Its data is remote, not in files beside the server."""
+        motherduck = {"DUCKDB_DATABASE": "md:shop", "MOTHERDUCK_ACCESS_TOKEN": "token"}
+
+        assert duckdb_source.settings(lake(**motherduck)).allowed_paths is None
+        assert duckdb_source.settings(
+            lake(**motherduck, DUCKDB_ALLOWED_PATHS="/data/")
+        ).allowed_paths == ("/data/",)
 
     def test_a_sources_own_variable_wins_over_the_shared_one(self) -> None:
         source = DataSource(
@@ -114,6 +139,39 @@ class TestSettings:
 
         assert one.fingerprint() != two.fingerprint()
 
+    def test_memory_threads_spill_and_paths_decide_the_identity_too(self) -> None:
+        """A pool hands out connections opened with one set of them, and the
+        paths decide what a query may return."""
+        base = lake().fingerprint()
+
+        for variable, setting in [
+            ("DUCKDB_MEMORY_LIMIT", "64MB"),
+            ("DUCKDB_THREADS", "2"),
+            ("DUCKDB_SPILL_DIR", "off"),
+            ("DUCKDB_SPILL_MAX_MB", "100"),
+            ("DUCKDB_ALLOWED_PATHS", "*"),
+        ]:
+            assert lake(**{variable: setting}).fingerprint() != base, variable
+
+    def test_pooled_connections_keep_each_sources_memory_limit(self) -> None:
+        """Two sources alike but for their memory limit shared a pool, and the
+        second was handed connections with the first one's limit."""
+        limits = {}
+        for name, limit in [("a", "64MiB"), ("b", "128MiB")]:
+            source = DataSource(
+                name=name,
+                dialect="duckdb",
+                prefix=f"DB_{name.upper()}_",
+                environ={f"DB_{name.upper()}_DUCKDB_MEMORY_LIMIT": limit},
+            )
+            with db_router.get_connection(source) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT current_setting('memory_limit')")
+                limits[name] = cursor.fetchall()[0][0]
+        db_router.close_all_pools()
+
+        assert limits == {"a": "64.0 MiB", "b": "128.0 MiB"}
+
     def test_the_listing_shows_no_setup_statements(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OBSL_DATABASES", "lake")
         monkeypatch.setenv("DB_LAKE_TYPE", "duckdb")
@@ -126,7 +184,9 @@ class TestSourceWithoutDatabaseFile:
     def test_it_reads_files_by_path(self, orders: str) -> None:
         """Opened read-only, as a database file is, an in-memory database
         refused to start: ``Cannot launch in-memory database in read-only mode``."""
-        assert value(lake(), f"SELECT sum(amount) FROM '{orders}'") == 90
+        source = lake(DUCKDB_ALLOWED_PATHS=parts(orders))
+
+        assert value(source, f"SELECT sum(amount) FROM '{orders}'") == 90
 
     def test_its_queries_share_one_instance(self) -> None:
         source = lake(DUCKDB_INIT_SQL="CREATE SEQUENCE IF NOT EXISTS seq")
@@ -153,7 +213,8 @@ class TestSourceWithoutDatabaseFile:
                 "CREATE SCHEMA IF NOT EXISTS sales; "
                 f"CREATE OR REPLACE VIEW sales.orders AS SELECT * FROM '{orders}'; "
                 "SET search_path = 'memory.sales'"
-            )
+            ),
+            DUCKDB_ALLOWED_PATHS=parts(orders),
         )
 
         assert [value(source, "SELECT count(*) FROM orders") for _ in range(2)] == [10, 10]
@@ -166,7 +227,9 @@ class TestSourceWithoutDatabaseFile:
             conn.close()
 
     def test_queries_at_once_each_get_a_connection(self, orders: str) -> None:
-        source = lake()
+        """The first connections race to restrict the new instance: DuckDB
+        refuses to set the allowed paths of one restricted in between."""
+        source = lake(DUCKDB_ALLOWED_PATHS=parts(orders))
         results: list[Any] = []
         errors: list[Exception] = []
 
@@ -185,6 +248,55 @@ class TestSourceWithoutDatabaseFile:
         assert errors == []
         assert results == [10] * 8
         assert len(duckdb_source._instances) == 1
+
+    def test_unset_the_memory_limit_is_half_the_memory(self) -> None:
+        half = duckdb.connect(config={"memory_limit": "50%"})
+        expected = half.sql("SELECT current_setting('memory_limit')").fetchall()[0][0]
+        half.close()
+
+        assert value(lake(), "SELECT current_setting('memory_limit')") == expected
+
+    def test_setup_statements_of_connections_at_once_do_not_conflict(self) -> None:
+        """Run at once, two ``CREATE OR REPLACE VIEW``s conflict in DuckDB's
+        catalog: 14 of 16 connections failed with ``Catalog write-write
+        conflict`` before setup ran one connection of an instance at a time.
+        Flight's cursors are set up the same way."""
+        source = lake(
+            DUCKDB_INIT_SQL=(
+                "CREATE SCHEMA IF NOT EXISTS s; "
+                "CREATE OR REPLACE VIEW s.v AS SELECT 1 AS x; "
+                "SET search_path = 'memory.s'"
+            )
+        )
+        results: list[Any] = []
+        errors: list[Exception] = []
+
+        def rest() -> None:
+            try:
+                results.append(value(source, "SELECT x FROM v"))
+            except Exception as exc:
+                errors.append(exc)
+
+        def flight() -> None:
+            try:
+                conn = db_router.connect(source)
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT x FROM v")
+                    results.append(cursor.fetchall()[0][0])
+                finally:
+                    conn.close()
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=rest if i % 2 else flight) for i in range(16)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert errors == []
+        assert results == [1] * 16
 
     def test_memory_and_threads_reach_duckdb(self) -> None:
         source = lake(DUCKDB_MEMORY_LIMIT="256MiB", DUCKDB_THREADS="2")
@@ -298,6 +410,11 @@ class TestDatabaseFile:
 
         assert spilled == str(tmp_path / "spill" / f"obsl-duckdb-{source.fingerprint()}")
 
+    def test_the_spill_limit_holds_in_duckdbs_own_directory_too(self, shop: str) -> None:
+        source = lake(DUCKDB_DATABASE=shop, DUCKDB_SPILL_MAX_MB="100")
+
+        assert value(source, "SELECT current_setting('max_temp_directory_size')") == "100.0 MiB"
+
     def test_sources_reading_one_file_at_once_must_agree_on_settings(self, shop: str) -> None:
         first = duckdb_source.connect(lake(DUCKDB_DATABASE=shop, DUCKDB_MEMORY_LIMIT="500MB"))
         try:
@@ -324,6 +441,7 @@ class TestModelOverFiles:
             monkeypatch.delenv(variable, raising=False)
         monkeypatch.setenv("OBSL_DATABASES", "lake")
         monkeypatch.setenv("DB_LAKE_TYPE", "duckdb")
+        monkeypatch.setenv("DB_LAKE_DUCKDB_ALLOWED_PATHS", f"{parts(orders)},{customers}")
         monkeypatch.setenv(
             "DB_LAKE_DUCKDB_INIT_SQL",
             "CREATE SCHEMA IF NOT EXISTS crm; "
@@ -389,3 +507,77 @@ measures:
 
         assert result.rows == [["Even", 40.0], ["Odd", 50.0]]
         assert _local.validate(model, online=True).errors == []
+
+
+class TestAllowedPaths:
+    """A model names files in ``code``: a source reads only what it lists."""
+
+    @pytest.fixture
+    def secret(self, tmp_path: Any) -> str:
+        path = tmp_path / "keys" / "key.json"
+        path.parent.mkdir()
+        path.write_text('{"private_key": "hush"}')
+        return str(path)
+
+    def test_unset_a_file_beside_the_server_is_refused_and_named(self, secret: str) -> None:
+        with pytest.raises(ExecutionError) as raised:
+            value(lake(), f'SELECT * FROM "{secret}"')
+
+        assert "disabled by configuration" in str(raised.value)
+        assert "DUCKDB_ALLOWED_PATHS" in str(raised.value)
+
+    def test_a_database_file_still_reads_its_own_tables(self, tmp_path: Any, secret: str) -> None:
+        shop = str(tmp_path / "shop.duckdb")
+        con = duckdb.connect(shop)
+        con.execute("CREATE TABLE shop AS SELECT 'eu' AS region")
+        con.close()
+        source = lake(DUCKDB_DATABASE=shop)
+
+        assert value(source, "SELECT region FROM shop") == "eu"
+        with pytest.raises(ExecutionError, match="disabled by configuration"):
+            value(source, f'SELECT * FROM "{secret}"')
+
+    def test_a_listed_directory_reads_and_its_neighbour_does_not(
+        self, orders: str, tmp_path: Any
+    ) -> None:
+        neighbour = tmp_path / "parts_private"
+        neighbour.mkdir()
+        con = duckdb.connect()
+        con.execute(f"COPY (SELECT 1 AS x) TO '{neighbour / 'x.parquet'}'")
+        con.close()
+        source = lake(DUCKDB_ALLOWED_PATHS=parts(orders))
+
+        assert value(source, f"SELECT count(*) FROM '{orders}'") == 10
+        with pytest.raises(ExecutionError, match="disabled by configuration"):
+            value(source, f"SELECT * FROM '{neighbour / 'x.parquet'}'")
+        with pytest.raises(ExecutionError, match="disabled by configuration"):
+            value(source, f"SELECT * FROM '{parts(orders)}/../parts_private/x.parquet'")
+
+    def test_a_listed_file_reads_and_its_neighbour_does_not(self, orders: str) -> None:
+        source = lake(DUCKDB_ALLOWED_PATHS=f"{parts(orders)}/p0.parquet")
+
+        assert value(source, f"SELECT count(*) FROM '{parts(orders)}/p0.parquet'") == 5
+        with pytest.raises(ExecutionError, match="disabled by configuration"):
+            value(source, f"SELECT count(*) FROM '{parts(orders)}/p1.parquet'")
+
+    def test_a_star_reads_anything_the_server_can(self, secret: str) -> None:
+        source = lake(DUCKDB_ALLOWED_PATHS="*")
+
+        assert value(source, f'SELECT private_key FROM "{secret}"') == "hush"
+
+    def test_flight_is_limited_too(self, secret: str) -> None:
+        conn = db_router.connect(lake())
+        try:
+            cursor = conn.cursor()
+            with pytest.raises(duckdb.PermissionException):
+                cursor.execute(f'SELECT * FROM "{secret}"')
+        finally:
+            conn.close()
+
+    def test_the_limit_holds_on_every_later_connection(self, secret: str) -> None:
+        """DuckDB's setting is the instance's, and cannot be turned back on."""
+        source = lake(DUCKDB_INIT_SQL="SET enable_external_access = true")
+
+        with pytest.raises(ExecutionUnavailableError, match="Cannot enable external access"):
+            for _ in range(2):
+                value(source, f'SELECT * FROM "{secret}"')

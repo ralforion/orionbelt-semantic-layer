@@ -97,7 +97,12 @@ def connect(source: DataSource | str, **overrides: Any) -> Any:
         from orionbelt.service import duckdb_source
 
         native = duckdb_source.connect(datasource)
-        return module.Connection(native, init_sql=duckdb_source.settings(datasource).init_sql)
+        config = duckdb_source.settings(datasource)
+
+        def prepare(cursor: Any) -> None:
+            duckdb_source.prepare(cursor, datasource, config)
+
+        return module.Connection(native, init=prepare)
     kwargs = datasource.credentials(**overrides)
     # DuckDB: open read-only to avoid cross-process file lock conflicts.
     # MotherDuck is remote, so no local file lock exists to conflict over --

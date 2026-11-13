@@ -9,12 +9,12 @@ they are: Parquet, CSV and JSON files on disk or in object storage, and Apache
 Iceberg tables behind a REST catalog. No warehouse is needed. The DuckDB inside
 the OrionBelt process runs the queries, so the model's dialect is `duckdb`.
 
-| What you read | How a data object names it | Setup statements |
-|---|---|---|
-| Parquet, CSV or JSON files on disk | `code` is the path or a glob, `schema: ""` | none |
-| Files in S3-compatible object storage | `code` is the `s3://` path or glob, `schema: ""` | a `CREATE SECRET` for the bucket |
-| Iceberg tables in a REST catalog | `code` is the table, `schema` its namespace | `ATTACH` the catalog, `SET search_path` |
-| An Iceberg table without a catalog | a view over `iceberg_scan(...)` | `CREATE OR REPLACE VIEW` |
+| What you read | How a data object names it | Setup statements | `DUCKDB_ALLOWED_PATHS` |
+|---|---|---|---|
+| Parquet, CSV or JSON files on disk | `code` is the path or a glob, `schema: ""` | none | the files' directory |
+| Files in S3-compatible object storage | `code` is the `s3://` path or glob, `schema: ""` | a `CREATE SECRET` for the bucket | the bucket, `s3://bucket/` |
+| Iceberg tables in a REST catalog | `code` is the table, `schema` its namespace | `ATTACH` the catalog, `SET search_path` | the catalog's URL and the bucket |
+| An Iceberg table without a catalog | a view over `iceberg_scan(...)` | `CREATE OR REPLACE VIEW` | the table's folder |
 
 ## A source without a database file
 
@@ -34,9 +34,42 @@ attached.
 Set `:memory:` explicitly where `DUCKDB_DATABASE` is set for the whole server,
 as the Docker image does: a named source falls back to the unprefixed variable.
 
+## What a source may read
+
+A data object's `code` can name a file, so a model could name any file the
+server can read: its configuration, a key file. A DuckDB source therefore reads
+only its own database, unless `DUCKDB_ALLOWED_PATHS` lists more:
+
+```bash
+DB_LAKE_DUCKDB_ALLOWED_PATHS=/data/orders/,s3://my-bucket/,https://catalog.example.com/
+```
+
+| Entry | Allows |
+|---|---|
+| A directory | Every file in it and below it, and nothing beside it: `/data/orders/` does not open `/data/orders_private/`, and `..` cannot climb out |
+| A file | That file alone |
+| A URL prefix | Everything under it: an S3 bucket, an Iceberg catalog's REST endpoint |
+| `*` | Everything the server can read, as before this setting existed |
+| Unset | The source's database alone. A MotherDuck (`md:`) database is not limited unless the setting is given: its data is remote |
+
+- **What it covers.** Every query of the source, on REST, the Postgres wire and
+  Flight SQL. A path the list leaves out is refused with DuckDB's `Permission
+  Error`, and the error names `DUCKDB_ALLOWED_PATHS`.
+- **The setup statements run first.** The limit is set after them, so they can
+  still load extensions and attach a catalog. What the queries then read, the
+  files behind a view or the catalog's tables, has to be listed.
+- **Extensions.** Once the limit is set, DuckDB loads no further extension. One
+  that the setup statements do not load (with `LOAD`, or by using it, as
+  `CREATE SECRET (TYPE s3, ...)` loads `httpfs`) cannot be loaded later.
+- **It cannot be lifted while the server runs.** DuckDB refuses to turn it off
+  again; a changed list takes effect with the next instance (for a source
+  without a database file, after a restart).
+
 ## Files by path
 
-Put the path in the data object's `code`, and leave `schema` empty:
+Put the path in the data object's `code`, leave `schema` empty, and list the
+files' directory in the source's `DUCKDB_ALLOWED_PATHS` (here
+`DB_LAKE_DUCKDB_ALLOWED_PATHS=/data/orders/`):
 
 ```yaml
 dataObjects:
@@ -62,6 +95,7 @@ source's setup statements, and use the `s3://` path in `code`:
 
 ```bash
 DB_LAKE_DUCKDB_INIT_SQL=CREATE OR REPLACE SECRET lake_s3 (TYPE s3, KEY_ID 'AKIA...', SECRET '...', REGION 'eu-west-1')
+DB_LAKE_DUCKDB_ALLOWED_PATHS=s3://my-bucket/
 ```
 
 DuckDB's [secrets](https://duckdb.org/docs/stable/configuration/secrets_manager)
@@ -78,6 +112,7 @@ or set the search path.
 |---|---|
 | They run on **every** connection | `SET search_path`, `USE` and `TEMP` views last only for the connection that ran them |
 | Write them to run again: `ATTACH IF NOT EXISTS`, `CREATE OR REPLACE SECRET`, `CREATE OR REPLACE VIEW` | A source without a database file keeps its instance, so an `ATTACH` without `IF NOT EXISTS` fails on the second query |
+| They run for one connection of an instance at a time | Run at once, two connections' `CREATE OR REPLACE VIEW`s conflict in DuckDB's catalog (`Catalog write-write conflict`) |
 | They are never shown | They can hold keys. They are not listed with the source, and an error names the variable rather than repeating the statements |
 | Changing them is a different source | They decide what the source's tables are, so cached results of the old statements are not served for the new ones |
 
@@ -95,7 +130,11 @@ OBSL_DATABASES=lake
 DB_LAKE_TYPE=duckdb
 DB_LAKE_DUCKDB_DATABASE=:memory:
 DB_LAKE_DUCKDB_INIT_SQL="CREATE OR REPLACE SECRET lake_s3 (TYPE s3, KEY_ID 'admin', SECRET 'password', REGION 'us-east-1', ENDPOINT 'minio:9000', URL_STYLE 'path', USE_SSL false); ATTACH IF NOT EXISTS 'warehouse' AS lake (TYPE iceberg, ENDPOINT 'http://iceberg-rest:8181', AUTHORIZATION_TYPE 'none', ACCESS_DELEGATION_MODE 'none'); SET search_path = 'lake.sales'"
+DB_LAKE_DUCKDB_ALLOWED_PATHS=http://iceberg-rest:8181/,s3://warehouse/
 ```
+
+Each query asks the catalog for the table, so the catalog's URL is listed as
+well as the bucket that holds the data files.
 
 A data object's `schema` is the namespace and its `code` the table:
 
@@ -135,6 +174,8 @@ CREATE OR REPLACE VIEW sales.orders AS
   SELECT * FROM iceberg_scan('/warehouse/sales/orders', version = '?');
 ```
 
+- List the table's folder in `DUCKDB_ALLOWED_PATHS`: the view reads it at query
+  time.
 - `version = '?'` reads the newest metadata file DuckDB finds in the table's
   folder.
 - A path to one `metadata.json` file reads that snapshot, and keeps reading it
@@ -144,10 +185,10 @@ CREATE OR REPLACE VIEW sales.orders AS
 
 | Variable | Default | What it sets |
 |---|---|---|
-| `DUCKDB_MEMORY_LIMIT` | 80% of the memory DuckDB sees | DuckDB's `memory_limit`, such as `500MB` or `50%` |
+| `DUCKDB_MEMORY_LIMIT` | `50%` of the memory DuckDB sees | DuckDB's `memory_limit`, such as `500MB` or `50%`. DuckDB's own default, 80%, is left out on purpose: see below |
 | `DUCKDB_THREADS` | every CPU DuckDB sees | DuckDB's `threads` |
 | `DUCKDB_SPILL_DIR` | see below | Where DuckDB writes joins, aggregates and sorts that outgrow the limit; `off` turns spilling off |
-| `DUCKDB_SPILL_MAX_MB` | DuckDB's, 90% of the free disk | The most DuckDB may spill |
+| `DUCKDB_SPILL_MAX_MB` | DuckDB's, 90% of the free disk | The most DuckDB may spill, wherever it spills |
 
 Each is read as `DB_<NAME>_<VARIABLE>` for a named source, then as the bare
 variable. In a container, DuckDB sees the container's memory and CPU limits.
@@ -162,16 +203,25 @@ Unset, the spill directory is:
 
 ### How much memory to give DuckDB
 
-DuckDB's limit covers its own work, not the server around it. Measured in a
-1 GB container with 2 CPUs, four queries at once, each grouping 24 million
-Parquet rows by 7.6 million keys:
+DuckDB's limit covers its own work, not the server around it, and DuckDB
+spills to disk only once it reaches the limit. Measured in a 1 GB container
+with 2 CPUs, four queries at once, each grouping 24 million Parquet rows by 7.6
+million keys:
 
-| Setting | Result |
+| Memory limit | Result |
 |---|---|
-| Defaults | The container ran out of memory after 11 s: the server was killed, and all four queries were lost |
-| `DB_LAKE_DUCKDB_MEMORY_LIMIT=500MB` | All four answered in about 83 s, spilling to disk; the server stayed up |
+| DuckDB's default, 80% (819 MiB) | The container ran out of memory after 11 s: the server was killed, and all four queries were lost. With the server's own memory on top, 80% leaves no room |
+| Unset: 50% (512 MiB) | All four answered in about 68 s, spilling to disk; the server stayed up |
+| 500 MB | All four answered in about 83 s, spilling to disk; the server stayed up |
+| 150 MB per query | Each query failed with DuckDB's `Out of Memory Error`: too little memory even to spill. The server stayed up |
 
-Set the limit to about half the container's memory, shared by:
+That is why a source's limit is half the memory unless you set it. Spilling
+lets a query past the limit finish, more slowly, rather than fail: one of these
+queries alone took 7.6 s with the memory it needed.
+
+Each limit is one instance's. Two DuckDB sources busy at once can, at half the
+memory each, still take all of it; where several are, set their limits so that
+together they stay near half the container's memory. The limits that add up:
 
 - each source without a database file: one limit for all its queries;
 - each database file: queries that overlap share one DuckDB instance and its
@@ -184,8 +234,8 @@ Instances belong to sources, not to models: every model on one source shares
 its instance. `DB_<NAME>_MAX_CONNECTIONS` caps how many of the source's queries
 run at once.
 
-Where spilling is off, a query past the limit fails with DuckDB's
-`Out of Memory Error` rather than the server being killed.
+Where spilling is off (`DUCKDB_SPILL_DIR=off`, or a temp directory in memory),
+a query past the limit fails with DuckDB's `Out of Memory Error`.
 
 ## In Docker
 
@@ -211,6 +261,7 @@ docker run -v obsl-spill:/app/spill -e DB_LAKE_DUCKDB_SPILL_DIR=/app/spill ...
 
 | Limitation | Why | Workaround |
 |---|---|---|
+| Sources that read one database file at the same time must agree on `DUCKDB_ALLOWED_PATHS` | The limit is the instance's; the first connection sets it | Give them the same list |
 | One Iceberg catalog per source | The DuckDB dialect writes `"schema"."table"`, without the catalog's name | Declare a second source for the second catalog. A query reading both is a [federated query](federation.md) |
 | Sources that read one database file at the same time must agree on `DUCKDB_MEMORY_LIMIT`, `DUCKDB_THREADS` and `DUCKDB_SPILL_DIR` | DuckDB opens one instance per file in a process, with one set of settings | Give them the same settings. A mismatch is refused, naming the settings |
 | An Iceberg folder cannot be named in `code` | DuckDB reads a bare path only for files such as Parquet | A view over `iceberg_scan`, or a catalog |

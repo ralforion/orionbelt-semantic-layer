@@ -142,6 +142,8 @@ def lake(catalog: Catalog, monkeypatch: pytest.MonkeyPatch) -> Iterator[Catalog]
     monkeypatch.setenv("OBSL_DATABASES", "lake")
     monkeypatch.setenv("DB_LAKE_TYPE", "duckdb")
     monkeypatch.setenv("DB_LAKE_DUCKDB_INIT_SQL", catalog.setup_sql())
+    # What the queries read: the catalog's REST endpoint and the bucket.
+    monkeypatch.setenv("DB_LAKE_DUCKDB_ALLOWED_PATHS", f"{catalog.rest}/,s3://warehouse/")
     yield catalog
     duckdb_source.close_instances()
 
@@ -234,6 +236,14 @@ class TestIcebergRestSource:
             assert cursor.fetchall() == [(10,)]
         finally:
             conn.close()
+
+    def test_a_catalog_the_source_does_not_list_is_refused_by_name(
+        self, lake: Catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DB_LAKE_DUCKDB_ALLOWED_PATHS", "s3://warehouse/")
+
+        with pytest.raises(Exception, match="DUCKDB_ALLOWED_PATHS"):
+            _rows()
 
     def test_online_validation_reads_the_catalogs_tables(self, lake: Catalog) -> None:
         assert _local.validate(MODEL, online=True).errors == []

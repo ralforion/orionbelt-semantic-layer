@@ -9,10 +9,21 @@ apply wherever it is queried:
   Iceberg catalog, a ``SET search_path``. They run again on each connection,
   so they are written to run twice (``IF NOT EXISTS``, ``OR REPLACE``).
 - ``DUCKDB_MEMORY_LIMIT`` and ``DUCKDB_THREADS``: DuckDB's ``memory_limit``
-  and ``threads``. Unset, DuckDB takes 80% of the memory and every CPU it
-  sees (in a container, the container's limits).
+  and ``threads``, of the memory and CPUs DuckDB sees (in a container, the
+  container's limits). Unset, the limit is half the memory, not DuckDB's
+  80%: what DuckDB holds is not all the process does, and four queries at
+  once in a 1 GB container at 80% got the server killed for memory, where at
+  50% they spilled and finished.
 - ``DUCKDB_SPILL_DIR`` and ``DUCKDB_SPILL_MAX_MB``: where DuckDB writes the
   joins, aggregates and sorts that outgrow its memory limit, and how much.
+- ``DUCKDB_ALLOWED_PATHS``: the directories, files and URL prefixes the
+  source's queries may read besides its database. A model names files in a
+  data object's ``code``, so without a list it could name any file the server
+  can read. Unset, a source reads its database alone (a MotherDuck database,
+  remote, keeps reading as before); ``*`` lifts the limit. After the setup
+  statements, which may still load extensions and attach catalogs, DuckDB's
+  ``enable_external_access`` is turned off with these paths allowed. The
+  setting is the instance's and cannot be turned back on while it is open.
 
 A source with no database file (``DUCKDB_DATABASE`` unset or ``:memory:``)
 keeps one DuckDB instance for the life of the process, and each query runs
@@ -81,6 +92,10 @@ class _ImplicitSource:
         return self.name
 
 
+#: ``memory_limit`` of a source that sets none: see the module's docstring.
+DEFAULT_MEMORY_LIMIT = "50%"
+
+
 @dataclass(frozen=True)
 class DuckDBSettings:
     """How a DuckDB data source is opened.
@@ -90,19 +105,23 @@ class DuckDBSettings:
             ``:memory:``.
         init_sql: Statements run on every new connection (``DUCKDB_INIT_SQL``).
             Never shown: a ``CREATE SECRET`` carries keys.
-        memory_limit: DuckDB's ``memory_limit`` (``DUCKDB_MEMORY_LIMIT``).
+        memory_limit: DuckDB's ``memory_limit`` (``DUCKDB_MEMORY_LIMIT``),
+            :data:`DEFAULT_MEMORY_LIMIT` when unset.
         threads: DuckDB's ``threads`` (``DUCKDB_THREADS``).
         spill_dir: ``DUCKDB_SPILL_DIR`` as configured: a directory, ``off``,
             or ``None`` for the default.
         spill_max_mb: The most DuckDB may spill (``DUCKDB_SPILL_MAX_MB``).
+        allowed_paths: What queries may read besides the database
+            (``DUCKDB_ALLOWED_PATHS``); ``None`` for no limit.
     """
 
     database: str
     init_sql: str | None = field(default=None, repr=False)
-    memory_limit: str | None = None
+    memory_limit: str = DEFAULT_MEMORY_LIMIT
     threads: int | None = None
     spill_dir: str | None = None
     spill_max_mb: int | None = None
+    allowed_paths: tuple[str, ...] | None = ()
 
     @property
     def in_memory(self) -> bool:
@@ -117,13 +136,15 @@ def settings(source: _Source) -> DuckDBSettings:
         ExecutionUnavailableError: A count is not a positive whole number.
     """
     credentials = source.credentials()
+    database = str(credentials.get("database") or ":memory:")
     return DuckDBSettings(
-        database=str(credentials.get("database") or ":memory:"),
+        database=database,
         init_sql=_text(credentials.get("init_sql")),
-        memory_limit=_text(source.getenv("DUCKDB_MEMORY_LIMIT")),
+        memory_limit=_text(source.getenv("DUCKDB_MEMORY_LIMIT")) or DEFAULT_MEMORY_LIMIT,
         threads=_count(source, "DUCKDB_THREADS"),
         spill_dir=_text(source.getenv("DUCKDB_SPILL_DIR")),
         spill_max_mb=_count(source, "DUCKDB_SPILL_MAX_MB"),
+        allowed_paths=_allowed_paths(source.getenv("DUCKDB_ALLOWED_PATHS"), database),
     )
 
 
@@ -138,20 +159,42 @@ def connect(source: _Source | str) -> duckdb.DuckDBPyConnection:
             failed, or another source holds the database file with other
             settings.
     """
-    import duckdb
-
     datasource = _source(source)
     config = settings(datasource)
     con = _kept_cursor(datasource, config) if config.in_memory else _open_file(datasource, config)
-    if config.init_sql:
-        try:
-            con.execute(config.init_sql)
-        except duckdb.Error as exc:
-            con.close()
-            # ``from None``: the chained error would carry the statements,
-            # and with them any key a CREATE SECRET holds, into the logs.
-            raise ExecutionUnavailableError(_init_failed(datasource, exc)) from None
+    try:
+        prepare(con, datasource, config)
+    except Exception:
+        con.close()
+        raise
     return con
+
+
+def prepare(con: duckdb.DuckDBPyConnection, source: _Source, config: DuckDBSettings) -> None:
+    """Set up a new connection: its setup statements, then the limit on paths.
+
+    One connection of an instance at a time. Run at once, the setup
+    statements of two connections conflict in DuckDB's catalog (``Catalog
+    write-write conflict`` on a ``CREATE OR REPLACE VIEW``), and DuckDB
+    refuses to set the allowed paths of an instance another connection
+    restricted in between. A Flight cursor is a connection of its own and is
+    set up here too.
+
+    Raises:
+        ExecutionUnavailableError: The setup statements failed.
+    """
+    import duckdb
+
+    with _setup_lock(config):
+        if config.init_sql:
+            try:
+                con.execute(config.init_sql)
+            except duckdb.Error as exc:
+                # ``from None``: the chained error would carry the statements,
+                # and with them any key a CREATE SECRET holds, into the logs.
+                raise ExecutionUnavailableError(_init_failed(source, exc)) from None
+        if config.allowed_paths is not None:
+            _restrict(con, config.allowed_paths)
 
 
 def close_instances() -> None:
@@ -192,6 +235,18 @@ class _Instance:
 
 _instances: dict[DuckDBSettings, _Instance] = {}
 _instances_lock = threading.Lock()
+_setup_locks: dict[object, threading.Lock] = {}
+
+
+def _setup_lock(config: DuckDBSettings) -> threading.Lock:
+    """The lock of one DuckDB instance's setup: a kept instance's, or a database's.
+
+    Sources of one database file share DuckDB's instance of it while their
+    queries overlap, so its lock is the file's.
+    """
+    key: object = config if config.in_memory else config.database
+    with _instances_lock:
+        return _setup_locks.setdefault(key, threading.Lock())
 
 
 def _kept_cursor(source: _Source, config: DuckDBSettings) -> duckdb.DuckDBPyConnection:
@@ -250,8 +305,6 @@ def _open(
     try:
         return duckdb.connect(config.database, read_only=read_only, config=options)
     except (duckdb.ParserException, duckdb.SyntaxException) as exc:
-        if not options:
-            raise
         raise ExecutionUnavailableError(
             f"DuckDB refused the settings of data source '{source.name}' "
             f"(DUCKDB_MEMORY_LIMIT, DUCKDB_THREADS, DUCKDB_SPILL_MAX_MB): "
@@ -275,21 +328,60 @@ def _spill_root(source: _Source, directory: str, *, unique: bool = False) -> str
         ) from None
 
 
+def _restrict(con: duckdb.DuckDBPyConnection, allowed: tuple[str, ...]) -> None:
+    """Let the instance read only its database and ``allowed``, from now on.
+
+    Called under the instance's setup lock. An instance a connection already
+    restricted stays as it is: a source's kept instance, or a database file
+    that other queries hold open, which sources of the same file share (so
+    they must agree on the paths).
+    """
+    access = con.execute("SELECT current_setting('enable_external_access')").fetchall()
+    if not access[0][0]:
+        return
+    files = [path for path in allowed if os.path.isfile(path)]
+    directories = [path for path in allowed if path not in files]
+    if directories:
+        con.execute(f"SET allowed_directories = {_sql_list(directories)}")
+    if files:
+        con.execute(f"SET allowed_paths = {_sql_list(files)}")
+    con.execute("SET enable_external_access = false")
+
+
+def _sql_list(values: list[str]) -> str:
+    """A SQL list of string literals."""
+    quoted = ", ".join("'" + value.replace("'", "''") + "'" for value in values)
+    return f"[{quoted}]"
+
+
+def _allowed_paths(raw: str | None, database: str) -> tuple[str, ...] | None:
+    """``DUCKDB_ALLOWED_PATHS`` as a tuple; ``None`` for no limit.
+
+    ``*`` is no limit, as is a MotherDuck database without the setting:
+    its data is remote, not in files beside the server.
+    """
+    text = _text(raw)
+    if text is None:
+        return None if database.startswith("md:") else ()
+    if text == "*":
+        return None
+    return tuple(path for path in (part.strip() for part in text.split(",")) if path)
+
+
 def _duckdb_config(config: DuckDBSettings, spill_dir: str | None) -> dict[str, Any]:
     """DuckDB's own options for these settings.
 
     ``spill_dir`` ``None`` leaves DuckDB's default spill directory (beside a
     database file); ``""`` turns spilling off.
     """
-    options: dict[str, Any] = {}
-    if config.memory_limit is not None:
-        options["memory_limit"] = config.memory_limit
+    options: dict[str, Any] = {"memory_limit": config.memory_limit}
     if config.threads is not None:
         options["threads"] = config.threads
     if spill_dir is not None:
         options["temp_directory"] = spill_dir
-        if spill_dir and config.spill_max_mb is not None:
-            options["max_temp_directory_size"] = f"{config.spill_max_mb}MiB"
+    if spill_dir != "" and config.spill_max_mb is not None:
+        # Whichever directory spills: DuckDB's default beside a database too.
+        options["max_temp_directory_size"] = f"{config.spill_max_mb}MiB"
     return options
 
 
@@ -341,4 +433,11 @@ def _count(source: _Source, variable: str) -> int | None:
     return int(raw)
 
 
-__all__ = ["DuckDBSettings", "close_instances", "connect", "settings"]
+__all__ = [
+    "DEFAULT_MEMORY_LIMIT",
+    "DuckDBSettings",
+    "close_instances",
+    "connect",
+    "prepare",
+    "settings",
+]

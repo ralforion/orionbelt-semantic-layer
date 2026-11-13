@@ -1052,7 +1052,9 @@ def _hint(exc: Exception) -> str:
     """What to change where the database refused the statement's own setting.
 
     A ClickHouse statement with an outer join carries ``SETTINGS
-    join_use_nulls = 1``, which a ``readonly = 1`` user may not set.
+    join_use_nulls = 1``, which a ``readonly = 1`` user may not set. A DuckDB
+    source reads no path its ``DUCKDB_ALLOWED_PATHS`` leaves out
+    (:mod:`orionbelt.service.duckdb_source`).
     """
     message = str(exc)
     if "join_use_nulls" in message and "readonly" in message.lower():
@@ -1060,6 +1062,12 @@ def _hint(exc: Exception) -> str:
             ". The statement sets join_use_nulls = 1 so that a LEFT JOIN without a "
             "match reads NULL; a readonly = 1 user may not change settings. Set "
             "join_use_nulls = 1 in the user's settings profile, or use readonly = 2."
+        )
+    if "disabled by configuration" in message:
+        return (
+            ". A DuckDB data source reads only its database and the directories, files "
+            "and URL prefixes its DUCKDB_ALLOWED_PATHS lists (DB_<NAME>_DUCKDB_ALLOWED_PATHS "
+            "for a named source); * lifts the limit."
         )
     return ""
 
