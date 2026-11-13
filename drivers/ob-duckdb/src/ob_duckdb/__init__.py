@@ -44,6 +44,7 @@ def connect(
     *,
     read_only: bool = False,
     config: dict[str, Any] | None = None,
+    init_sql: str | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
     ob_timeout: int = 30,
@@ -58,16 +59,26 @@ def connect(
         Open in read-only mode.
     config : dict
         DuckDB configuration options (threads, memory_limit, etc.).
+    init_sql : str
+        Statements run on this connection and on every cursor of it, such as
+        ``LOAD iceberg``, ``CREATE SECRET``, ``ATTACH`` or ``SET search_path``.
     ob_api_url : str
         OrionBelt REST API URL (must be running in single-model mode).
     ob_timeout : int
         HTTP timeout in seconds for OBML compilation.
     """
     native = duckdb.connect(database=database, read_only=read_only, config=config or {})
+    if init_sql:
+        try:
+            native.execute(init_sql)
+        except Exception:
+            native.close()
+            raise
     return Connection(
         native,
         ob_api_url=ob_api_url,
         ob_timeout=ob_timeout,
+        init_sql=init_sql,
     )
 
 

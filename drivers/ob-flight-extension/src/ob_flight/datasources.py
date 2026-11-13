@@ -59,7 +59,9 @@ _CREDENTIAL_KEYS: dict[str, list[str]] = {
         "BIGQUERY_LOCATION",
         "BIGQUERY_CREDENTIALS_FILE",
     ],
-    "duckdb": ["DUCKDB_DATABASE", "MOTHERDUCK_ACCESS_TOKEN"],
+    # DUCKDB_INIT_SQL decides what the source's tables are (an ATTACHed
+    # catalog, a view over files), so it counts toward the fingerprint.
+    "duckdb": ["DUCKDB_DATABASE", "MOTHERDUCK_ACCESS_TOKEN", "DUCKDB_INIT_SQL"],
     "postgres": [
         "POSTGRES_HOST",
         "POSTGRES_PORT",
@@ -160,6 +162,7 @@ _ENV_TO_KWARG: dict[str, str] = {
     "BIGQUERY_LOCATION": "location",
     "BIGQUERY_CREDENTIALS_FILE": "credentials_file",
     "DUCKDB_DATABASE": "database",
+    "DUCKDB_INIT_SQL": "init_sql",
     "MOTHERDUCK_ACCESS_TOKEN": "motherduck_token",
     "POSTGRES_HOST": "host",
     "POSTGRES_PORT": "port",

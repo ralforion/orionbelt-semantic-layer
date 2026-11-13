@@ -23,20 +23,33 @@ class Connection:
         *,
         ob_api_url: str = "http://localhost:8000",
         ob_timeout: int = 30,
+        init_sql: str | None = None,
     ) -> None:
         self._native = native
         self._closed = False
         self._ob_api_url = ob_api_url
         self._ob_timeout = ob_timeout
+        self._init_sql = init_sql
 
     def _check_open(self) -> None:
         if self._closed:
             raise ProgrammingError("Connection is closed.")
 
     def cursor(self) -> Cursor:
-        """Return a new Cursor for this connection."""
+        """Return a new Cursor for this connection.
+
+        A DuckDB cursor is a connection of its own, so it runs ``init_sql``
+        too: what the statements set per connection (``SET search_path``,
+        ``USE``, a ``TEMP`` view) is not inherited from this one.
+        """
         self._check_open()
         native_cursor = self._native.cursor()
+        if self._init_sql:
+            try:
+                native_cursor.execute(self._init_sql)
+            except Exception:
+                native_cursor.close()
+                raise
         return Cursor(
             native_cursor,
             ob_api_url=self._ob_api_url,

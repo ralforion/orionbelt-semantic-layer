@@ -69,15 +69,6 @@ def _target(dialect: str, source: DataSource | None) -> DataSource | str:
     return source
 
 
-def _credentials(target: DataSource | str) -> dict[str, Any]:
-    """``connect()`` kwargs of a data source, or of a dialect's implicit source."""
-    if isinstance(target, str):
-        from ob_flight.db_router import get_credentials
-
-        return get_credentials(target)
-    return target.credentials()
-
-
 def _tz_key(target: DataSource | str) -> str:
     """Cache key of a session timezone: the dialect, unless a named source is given.
 
@@ -727,11 +718,10 @@ def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo
             return _DB_SESSION_TZ.get(key)
 
         if dialect == "duckdb":
-            import duckdb
+            from orionbelt.service import duckdb_source
 
-            database = _credentials(datasource).get("database", ":memory:")
             with _connection_slot(datasource, wait=False):
-                conn = duckdb.connect(database=database, read_only=True)
+                conn = duckdb_source.connect(datasource)
                 try:
                     return _detect_db_timezone(conn, "duckdb", key)
                 finally:
@@ -1172,15 +1162,15 @@ def _execute_duckdb(
 ) -> ExecutionResult:
     """Execute SQL directly via native duckdb.
 
-    Uses the native ``duckdb`` package with ``read_only=True`` to avoid
-    cross-process file lock conflicts with the notebook process. Result
-    shaping lives in :func:`duckdb_execution_result`.
+    The connection comes from :mod:`orionbelt.service.duckdb_source`: a
+    database file read-only, to avoid cross-process file lock conflicts with
+    the notebook process; a source without one on the instance it keeps.
+    Result shaping lives in :func:`duckdb_execution_result`.
     """
-    import duckdb
+    from orionbelt.service import duckdb_source
 
-    database = _credentials(source).get("database", ":memory:")
     with _connection_slot(source):
-        conn = duckdb.connect(database=database, read_only=True)
+        conn = duckdb_source.connect(source)
         try:
             effective_tz: ZoneInfo | None
             if override_db_tz and tz is not None:
@@ -1294,11 +1284,10 @@ def explain_sql(sql: str, *, dialect: str, source: DataSource | None = None) -> 
     explain_stmt = f"EXPLAIN {sql}"
     try:
         if dialect == "duckdb":
-            import duckdb
+            from orionbelt.service import duckdb_source
 
-            database = _credentials(datasource).get("database", ":memory:")
             with _connection_slot(datasource):
-                conn = duckdb.connect(database=database, read_only=True)
+                conn = duckdb_source.connect(datasource)
                 try:
                     rows = conn.execute(explain_stmt).fetchall()
                 finally:

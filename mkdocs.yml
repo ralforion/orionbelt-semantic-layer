@@ -147,6 +147,7 @@ nav:
       - Result Cache: guide/result-cache.md
       - Data Sources: guide/data-sources.md
       - Federated Queries: guide/federation.md
+      - Files and Lakehouse Tables: guide/files-and-lakehouse.md
       - Command-Line Interface: guide/cli.md
       - Gradio UI: guide/ui.md
       - AI Integrations: guide/integrations.md

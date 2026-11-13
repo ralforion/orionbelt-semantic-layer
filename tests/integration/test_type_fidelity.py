@@ -196,32 +196,35 @@ class TestProbeOmitsUnreachableEngines:
         spec.loader.exec_module(module)
         return module
 
-    def test_measure_raises_rather_than_returning_a_row_of_errors(self) -> None:
-        probe = self._probe_module()
-        previous = os.environ.pop("DUCKDB_DATABASE", None)
-        try:
-            with pytest.raises(probe.EngineUnreachableError):
-                probe.measure("duckdb")
-        finally:
-            if previous is not None:
-                os.environ["DUCKDB_DATABASE"] = previous
+    # An engine nothing answers on: a DuckDB file that does not exist, which
+    # DuckDB will not open read-only. (An unset DUCKDB_DATABASE served before
+    # this, as an in-memory database opened read-only; it opens now.)
 
-    def test_json_output_omits_the_engine(self) -> None:
+    def test_measure_raises_rather_than_returning_a_row_of_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         probe = self._probe_module()
-        previous = os.environ.pop("DUCKDB_DATABASE", None)
-        try:
-            proc = subprocess.run(
-                [sys.executable, str(Path(probe.__file__)), "--json", "duckdb"],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            assert proc.returncode == 0, proc.stderr
-            assert json.loads(proc.stdout)["engines"] == {}
-            assert "unreachable: duckdb" in proc.stderr
-        finally:
-            if previous is not None:
-                os.environ["DUCKDB_DATABASE"] = previous
+        monkeypatch.setenv("DUCKDB_DATABASE", str(tmp_path / "missing.duckdb"))
+
+        with pytest.raises(probe.EngineUnreachableError):
+            probe.measure("duckdb")
+
+    def test_json_output_omits_the_engine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        probe = self._probe_module()
+        monkeypatch.setenv("DUCKDB_DATABASE", str(tmp_path / "missing.duckdb"))
+
+        proc = subprocess.run(
+            [sys.executable, str(Path(probe.__file__)), "--json", "duckdb"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)["engines"] == {}
+        assert "unreachable: duckdb" in proc.stderr
 
 
 class TestPublishedLabelsMatchWhatIsCast:
