@@ -261,7 +261,7 @@ docker run -v obsl-spill:/app/spill -e DB_LAKE_DUCKDB_SPILL_DIR=/app/spill ...
 
 | Limitation | Why | Workaround |
 |---|---|---|
-| Sources that read one database file at the same time must agree on `DUCKDB_ALLOWED_PATHS` | The limit is the instance's; the first connection sets it | Give them the same list |
+| Sources that read one database file at the same time must agree on `DUCKDB_ALLOWED_PATHS` | DuckDB opens one instance per file in a process, limited to the paths of the first source, and the limit cannot change while it is open | Give them the same list. A source with other paths is refused while the file is open, rather than reading with another source's paths |
 | One Iceberg catalog per source | The DuckDB dialect writes `"schema"."table"`, without the catalog's name | Declare a second source for the second catalog. A query reading both is a [federated query](federation.md) |
 | Sources that read one database file at the same time must agree on `DUCKDB_MEMORY_LIMIT`, `DUCKDB_THREADS` and `DUCKDB_SPILL_DIR` | DuckDB opens one instance per file in a process, with one set of settings | Give them the same settings. A mismatch is refused, naming the settings |
 | An Iceberg folder cannot be named in `code` | DuckDB reads a bare path only for files such as Parquet | A view over `iceberg_scan`, or a catalog |

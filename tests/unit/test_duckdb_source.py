@@ -574,6 +574,46 @@ class TestAllowedPaths:
         finally:
             conn.close()
 
+    @pytest.fixture
+    def shop(self, tmp_path: Any) -> str:
+        path = str(tmp_path / "shop.duckdb")
+        con = duckdb.connect(path)
+        con.execute("CREATE TABLE shop AS SELECT 'eu' AS region")
+        con.close()
+        return path
+
+    def test_a_source_cannot_borrow_the_paths_of_another_on_a_shared_file(
+        self, shop: str, secret: str
+    ) -> None:
+        """Queries reading one file at once share DuckDB's instance of it,
+        limited to the paths of the first. Unrefused, source b read a key file
+        it is refused on its own while source a, which lists it, held the file
+        open."""
+        a = lake(DUCKDB_DATABASE=shop, DUCKDB_ALLOWED_PATHS=os.path.dirname(secret))
+        b = lake(DUCKDB_DATABASE=shop)
+
+        held = duckdb_source.connect(a)
+        try:
+            with pytest.raises(ExecutionUnavailableError, match="other allowed paths"):
+                duckdb_source.connect(b)
+            # The same paths share it.
+            duckdb_source.connect(a).close()
+        finally:
+            held.close()
+
+        with pytest.raises(ExecutionError, match="disabled by configuration"):
+            value(b, f'SELECT * FROM "{secret}"')
+
+    def test_an_unlimited_source_cannot_share_a_file_another_limited(
+        self, shop: str, secret: str
+    ) -> None:
+        limited = duckdb_source.connect(lake(DUCKDB_DATABASE=shop))
+        try:
+            with pytest.raises(ExecutionUnavailableError, match="other allowed paths"):
+                duckdb_source.connect(lake(DUCKDB_DATABASE=shop, DUCKDB_ALLOWED_PATHS="*"))
+        finally:
+            limited.close()
+
     def test_the_limit_holds_on_every_later_connection(self, secret: str) -> None:
         """DuckDB's setting is the instance's, and cannot be turned back on."""
         source = lake(DUCKDB_INIT_SQL="SET enable_external_access = true")

@@ -193,8 +193,7 @@ def prepare(con: duckdb.DuckDBPyConnection, source: _Source, config: DuckDBSetti
                 # ``from None``: the chained error would carry the statements,
                 # and with them any key a CREATE SECRET holds, into the logs.
                 raise ExecutionUnavailableError(_init_failed(source, exc)) from None
-        if config.allowed_paths is not None:
-            _restrict(con, config.allowed_paths)
+        _limit_paths(con, source, config)
 
 
 def close_instances() -> None:
@@ -237,16 +236,25 @@ _instances: dict[DuckDBSettings, _Instance] = {}
 _instances_lock = threading.Lock()
 _setup_locks: dict[object, threading.Lock] = {}
 
+#: The paths each instance was limited to (:func:`_limit_paths`), by
+#: :func:`_instance_key`; ``None`` for no limit. Written under the instance's
+#: setup lock, when a connection limits an instance no connection limited.
+_limits: dict[object, frozenset[str] | None] = {}
 
-def _setup_lock(config: DuckDBSettings) -> threading.Lock:
-    """The lock of one DuckDB instance's setup: a kept instance's, or a database's.
+
+def _instance_key(config: DuckDBSettings) -> object:
+    """Which DuckDB instance a connection is of: a kept instance's settings, or a database.
 
     Sources of one database file share DuckDB's instance of it while their
-    queries overlap, so its lock is the file's.
+    queries overlap, so it is the file's.
     """
-    key: object = config if config.in_memory else config.database
+    return config if config.in_memory else config.database
+
+
+def _setup_lock(config: DuckDBSettings) -> threading.Lock:
+    """The lock of one DuckDB instance's setup."""
     with _instances_lock:
-        return _setup_locks.setdefault(key, threading.Lock())
+        return _setup_locks.setdefault(_instance_key(config), threading.Lock())
 
 
 def _kept_cursor(source: _Source, config: DuckDBSettings) -> duckdb.DuckDBPyConnection:
@@ -328,24 +336,41 @@ def _spill_root(source: _Source, directory: str, *, unique: bool = False) -> str
         ) from None
 
 
-def _restrict(con: duckdb.DuckDBPyConnection, allowed: tuple[str, ...]) -> None:
-    """Let the instance read only its database and ``allowed``, from now on.
+def _limit_paths(con: duckdb.DuckDBPyConnection, source: _Source, config: DuckDBSettings) -> None:
+    """Let the instance read only its database and the source's allowed paths, from now on.
 
-    Called under the instance's setup lock. An instance a connection already
-    restricted stays as it is: a source's kept instance, or a database file
-    that other queries hold open, which sources of the same file share (so
-    they must agree on the paths).
+    Called under the instance's setup lock. DuckDB's limit is the instance's,
+    and stays as it was first set. A database file that other queries hold
+    open is one instance for every source reading it, so a source whose
+    paths differ from the ones it was limited to is refused: it would read
+    with another source's paths, more or fewer than its own.
+
+    Raises:
+        ExecutionUnavailableError: The instance is limited to other paths.
     """
+    wanted = None if config.allowed_paths is None else frozenset(config.allowed_paths)
+    key = _instance_key(config)
     access = con.execute("SELECT current_setting('enable_external_access')").fetchall()
     if not access[0][0]:
+        if key in _limits and _limits[key] == wanted:
+            return
+        raise ExecutionUnavailableError(
+            f"Data source '{source.name}' reads {config.database} with other allowed "
+            "paths than another source reading it at the moment. Queries reading one "
+            "file at once share one DuckDB instance, which keeps the paths it was "
+            "first limited to, so give every source of the file the same "
+            "DUCKDB_ALLOWED_PATHS."
+        )
+    if wanted is None:
         return
-    files = [path for path in allowed if os.path.isfile(path)]
-    directories = [path for path in allowed if path not in files]
+    files = sorted(path for path in wanted if os.path.isfile(path))
+    directories = sorted(wanted.difference(files))
     if directories:
         con.execute(f"SET allowed_directories = {_sql_list(directories)}")
     if files:
         con.execute(f"SET allowed_paths = {_sql_list(files)}")
     con.execute("SET enable_external_access = false")
+    _limits[key] = wanted
 
 
 def _sql_list(values: list[str]) -> str:
