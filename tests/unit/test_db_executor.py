@@ -284,12 +284,7 @@ class TestExecuteSql:
         mock_conn.sql.return_value = mock_result
 
         with (
-            patch(
-                "ob_flight.db_router.get_credentials",
-                return_value={"database": ":memory:"},
-                create=True,
-            ),
-            patch("duckdb.connect", return_value=mock_conn),
+            patch("orionbelt.service.duckdb_source.connect", return_value=mock_conn),
         ):
             result = execute_sql("SELECT 1", dialect="duckdb")
 
@@ -321,12 +316,7 @@ class TestExecuteSql:
         mock_conn.sql.return_value = mock_result
 
         with (
-            patch(
-                "ob_flight.db_router.get_credentials",
-                return_value={"database": ":memory:"},
-                create=True,
-            ),
-            patch("duckdb.connect", return_value=mock_conn),
+            patch("orionbelt.service.duckdb_source.connect", return_value=mock_conn),
         ):
             result = execute_sql("SELECT 1", dialect="duckdb")
 
@@ -351,12 +341,7 @@ class TestExecuteSql:
         mock_conn.sql.return_value = mock_result
 
         with (
-            patch(
-                "ob_flight.db_router.get_credentials",
-                return_value={"database": ":memory:"},
-                create=True,
-            ),
-            patch("duckdb.connect", return_value=mock_conn),
+            patch("orionbelt.service.duckdb_source.connect", return_value=mock_conn),
             pytest.raises(ExecutionError, match="boom"),
         ):
             execute_sql("SELECT 1", dialect="duckdb")

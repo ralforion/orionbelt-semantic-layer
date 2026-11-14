@@ -57,6 +57,22 @@ def test_connect_context_manager() -> None:
         assert cur.fetchone() == (1,)
 
 
+def test_connect_init_sql_runs_on_every_cursor() -> None:
+    """A cursor is a DuckDB connection of its own: a TEMP view (or a
+    ``SET search_path``) of the connection's setup would not reach it."""
+    init = "CREATE OR REPLACE TEMP VIEW answer AS SELECT 42 AS value"
+    with ob_duckdb.connect(init_sql=init) as conn:
+        for _ in range(2):
+            with conn.cursor() as cur:
+                cur.execute("SELECT value FROM answer")
+                assert cur.fetchone() == (42,)
+
+
+def test_connect_init_sql_that_fails_raises() -> None:
+    with pytest.raises(Exception, match="nope"):
+        ob_duckdb.connect(init_sql="SELECT * FROM nope")
+
+
 # ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------

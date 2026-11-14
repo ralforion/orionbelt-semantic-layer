@@ -90,6 +90,19 @@ def connect(source: DataSource | str, **overrides: Any) -> Any:
     if dialect not in VENDOR_MAP:
         raise KeyError(f"Unsupported dialect: {dialect!r}. Supported: {sorted(VENDOR_MAP)}")
     module = importlib.import_module(VENDOR_MAP[dialect])
+    if dialect == "duckdb" and not overrides:
+        # OBSL opens a DuckDB source alike on every surface: its setup
+        # statements, memory and spill settings, and the instance a source
+        # without a database file keeps.
+        from orionbelt.service import duckdb_source
+
+        native = duckdb_source.connect(datasource)
+        config = duckdb_source.settings(datasource)
+
+        def prepare(cursor: Any) -> None:
+            duckdb_source.prepare(cursor, datasource, config)
+
+        return module.Connection(native, init=prepare)
     kwargs = datasource.credentials(**overrides)
     # DuckDB: open read-only to avoid cross-process file lock conflicts.
     # MotherDuck is remote, so no local file lock exists to conflict over --
