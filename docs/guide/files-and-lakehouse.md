@@ -62,8 +62,10 @@ DB_LAKE_DUCKDB_ALLOWED_PATHS=/data/orders/,s3://my-bucket/,https://catalog.examp
   that the setup statements do not load (with `LOAD`, or by using it, as
   `CREATE SECRET (TYPE s3, ...)` loads `httpfs`) cannot be loaded later.
 - **It cannot be lifted while the server runs.** DuckDB refuses to turn it off
-  again; a changed list takes effect with the next instance (for a source
-  without a database file, after a restart).
+  again. A changed list takes effect after a restart.
+- **One list per database file.** The first source to open a file decides its
+  paths until the server restarts; another source of the file with other paths
+  is refused.
 
 ## Files by path
 
@@ -261,7 +263,7 @@ docker run -v obsl-spill:/app/spill -e DB_LAKE_DUCKDB_SPILL_DIR=/app/spill ...
 
 | Limitation | Why | Workaround |
 |---|---|---|
-| Sources that read one database file at the same time must agree on `DUCKDB_ALLOWED_PATHS` | DuckDB opens one instance per file in a process, limited to the paths of the first source, and the limit cannot change while it is open | Give them the same list. A source with other paths is refused while the file is open, rather than reading with another source's paths |
+| Sources of one database file must agree on `DUCKDB_ALLOWED_PATHS` | DuckDB shares one instance of a file between the queries reading it at once, and its limit, once set, cannot change; setting it would also cut off a source reading without one | The first source to open a file decides its paths until the server restarts, however the path is spelled. A source of the file with other paths is refused, naming its setting: give them the same list |
 | One Iceberg catalog per source | The DuckDB dialect writes `"schema"."table"`, without the catalog's name | Declare a second source for the second catalog. A query reading both is a [federated query](federation.md) |
 | Sources that read one database file at the same time must agree on `DUCKDB_MEMORY_LIMIT`, `DUCKDB_THREADS` and `DUCKDB_SPILL_DIR` | DuckDB opens one instance per file in a process, with one set of settings | Give them the same settings. A mismatch is refused, naming the settings |
 | An Iceberg folder cannot be named in `code` | DuckDB reads a bare path only for files such as Parquet | A view over `iceberg_scan`, or a catalog |

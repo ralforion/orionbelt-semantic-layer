@@ -588,7 +588,8 @@ class TestAllowedPaths:
         """Queries reading one file at once share DuckDB's instance of it,
         limited to the paths of the first. Unrefused, source b read a key file
         it is refused on its own while source a, which lists it, held the file
-        open."""
+        open. The first source decides the file's paths until the server stops,
+        so b stays refused once a is closed."""
         a = lake(DUCKDB_DATABASE=shop, DUCKDB_ALLOWED_PATHS=os.path.dirname(secret))
         b = lake(DUCKDB_DATABASE=shop)
 
@@ -596,13 +597,44 @@ class TestAllowedPaths:
         try:
             with pytest.raises(ExecutionUnavailableError, match="other allowed paths"):
                 duckdb_source.connect(b)
-            # The same paths share it.
-            duckdb_source.connect(a).close()
+            duckdb_source.connect(a).close()  # the same paths share it
         finally:
             held.close()
+        with pytest.raises(ExecutionUnavailableError, match="DB_LAKE_DUCKDB_ALLOWED_PATHS"):
+            duckdb_source.connect(b)
 
+    def test_another_spelling_of_the_path_is_the_same_file(
+        self, shop: str, secret: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DuckDB shares one instance between a relative and an absolute path.
+        Kept by the path as written, the limit of the restricted source went
+        stale, and it read the key file through the instance the broader one,
+        opened by its relative path, had limited to its own paths."""
+        monkeypatch.chdir(os.path.dirname(shop))
+        restricted = lake(DUCKDB_DATABASE=shop)
+        broad = lake(
+            DUCKDB_DATABASE=os.path.basename(shop),
+            DUCKDB_ALLOWED_PATHS=os.path.dirname(secret),
+        )
+        duckdb_source.connect(restricted).close()
+
+        with pytest.raises(ExecutionUnavailableError, match="other allowed paths"):
+            duckdb_source.connect(broad)
         with pytest.raises(ExecutionError, match="disabled by configuration"):
-            value(b, f'SELECT * FROM "{secret}"')
+            value(restricted, f'SELECT * FROM "{secret}"')
+
+    def test_an_unlimited_source_is_not_cut_off_by_a_limited_one(
+        self, shop: str, secret: str
+    ) -> None:
+        """Limiting the shared instance would have cut off the connection of
+        the source reading without a limit."""
+        free = duckdb_source.connect(lake(DUCKDB_DATABASE=shop, DUCKDB_ALLOWED_PATHS="*"))
+        try:
+            with pytest.raises(ExecutionUnavailableError, match="other allowed paths"):
+                duckdb_source.connect(lake(DUCKDB_DATABASE=shop))
+            assert free.sql(f'SELECT private_key FROM "{secret}"').fetchall() == [("hush",)]
+        finally:
+            free.close()
 
     def test_an_unlimited_source_cannot_share_a_file_another_limited(
         self, shop: str, secret: str

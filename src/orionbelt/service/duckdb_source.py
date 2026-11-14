@@ -23,7 +23,9 @@ apply wherever it is queried:
   remote, keeps reading as before); ``*`` lifts the limit. After the setup
   statements, which may still load extensions and attach catalogs, DuckDB's
   ``enable_external_access`` is turned off with these paths allowed. The
-  setting is the instance's and cannot be turned back on while it is open.
+  setting is the instance's and cannot be turned back on while it is open,
+  so the first source to open a database file decides its paths until the
+  server stops, and a source of the file with other paths is refused.
 
 A source with no database file (``DUCKDB_DATABASE`` unset or ``:memory:``)
 keeps one DuckDB instance for the life of the process, and each query runs
@@ -193,14 +195,18 @@ def prepare(con: duckdb.DuckDBPyConnection, source: _Source, config: DuckDBSetti
                 # ``from None``: the chained error would carry the statements,
                 # and with them any key a CREATE SECRET holds, into the logs.
                 raise ExecutionUnavailableError(_init_failed(source, exc)) from None
-        _limit_paths(con, source, config)
+        _limit_paths(con, config)
 
 
 def close_instances() -> None:
-    """Close the instances kept for sources without a database file, at shutdown."""
+    """Close the instances kept for sources without a database file, at shutdown.
+
+    The paths each database file was claimed with go too.
+    """
     with _instances_lock:
         instances = list(_instances.values())
         _instances.clear()
+        _claims.clear()
     for instance in instances:
         instance.close()
 
@@ -236,19 +242,23 @@ _instances: dict[DuckDBSettings, _Instance] = {}
 _instances_lock = threading.Lock()
 _setup_locks: dict[object, threading.Lock] = {}
 
-#: The paths each instance was limited to (:func:`_limit_paths`), by
-#: :func:`_instance_key`; ``None`` for no limit. Written under the instance's
-#: setup lock, when a connection limits an instance no connection limited.
-_limits: dict[object, frozenset[str] | None] = {}
+#: The allowed paths each database file is read with, for the life of the
+#: process, by its real path (:func:`_claim_paths`); ``None`` for no limit.
+_claims: dict[object, frozenset[str] | None] = {}
 
 
 def _instance_key(config: DuckDBSettings) -> object:
     """Which DuckDB instance a connection is of: a kept instance's settings, or a database.
 
     Sources of one database file share DuckDB's instance of it while their
-    queries overlap, so it is the file's.
+    queries overlap, so it is the file's, by its real path: DuckDB shares it
+    between a relative and an absolute spelling of the path.
     """
-    return config if config.in_memory else config.database
+    if config.in_memory:
+        return config
+    if config.database.startswith("md:"):
+        return config.database
+    return os.path.realpath(os.path.expanduser(config.database))
 
 
 def _setup_lock(config: DuckDBSettings) -> threading.Lock:
@@ -275,6 +285,7 @@ def _open_file(source: _Source, config: DuckDBSettings) -> duckdb.DuckDBPyConnec
     """A read-only connection to the source's database file (or MotherDuck database)."""
     import duckdb
 
+    _claim_paths(source, config)
     spill_dir: str | None = None
     if config.spill_dir is not None:
         if config.spill_dir.lower() == "off":
@@ -336,41 +347,52 @@ def _spill_root(source: _Source, directory: str, *, unique: bool = False) -> str
         ) from None
 
 
-def _limit_paths(con: duckdb.DuckDBPyConnection, source: _Source, config: DuckDBSettings) -> None:
-    """Let the instance read only its database and the source's allowed paths, from now on.
+def _claim_paths(source: _Source, config: DuckDBSettings) -> None:
+    """Fix a database file's allowed paths until the server stops, or refuse a source with others.
 
-    Called under the instance's setup lock. DuckDB's limit is the instance's,
-    and stays as it was first set. A database file that other queries hold
-    open is one instance for every source reading it, so a source whose
-    paths differ from the ones it was limited to is refused: it would read
-    with another source's paths, more or fewer than its own.
+    Sources of one file share DuckDB's instance of it while their queries
+    overlap, and DuckDB's limit is the instance's: the first connection to
+    set it would decide what every other source of the file reads, and
+    setting it would cut off one reading without a limit. So the first
+    source to open a file decides its paths for the life of the process,
+    and a source with other paths is refused before it connects. A kept
+    instance needs no claim: its settings, paths included, are its own.
 
     Raises:
-        ExecutionUnavailableError: The instance is limited to other paths.
+        ExecutionUnavailableError: The file is read with other paths.
     """
     wanted = None if config.allowed_paths is None else frozenset(config.allowed_paths)
-    key = _instance_key(config)
+    with _instances_lock:
+        claimed = _claims.setdefault(_instance_key(config), wanted)
+    if claimed != wanted:
+        raise ExecutionUnavailableError(
+            f"Data source '{source.name}' reads {config.database} with other allowed paths "
+            f"({source.prefix}DUCKDB_ALLOWED_PATHS) than the source that opened it first. "
+            "DuckDB limits the paths of a file for every source reading it at once, so the "
+            "first source to open a file decides them until the server restarts: give "
+            "every source of the file the same DUCKDB_ALLOWED_PATHS."
+        )
+
+
+def _limit_paths(con: duckdb.DuckDBPyConnection, config: DuckDBSettings) -> None:
+    """Let the instance read only its database and the source's allowed paths, from now on.
+
+    Called under the instance's setup lock. An instance already limited was
+    limited to these paths: a kept instance by its own settings, a database
+    file by the source that claimed it (:func:`_claim_paths`).
+    """
+    if config.allowed_paths is None:
+        return
     access = con.execute("SELECT current_setting('enable_external_access')").fetchall()
     if not access[0][0]:
-        if key in _limits and _limits[key] == wanted:
-            return
-        raise ExecutionUnavailableError(
-            f"Data source '{source.name}' reads {config.database} with other allowed "
-            "paths than another source reading it at the moment. Queries reading one "
-            "file at once share one DuckDB instance, which keeps the paths it was "
-            "first limited to, so give every source of the file the same "
-            "DUCKDB_ALLOWED_PATHS."
-        )
-    if wanted is None:
         return
-    files = sorted(path for path in wanted if os.path.isfile(path))
-    directories = sorted(wanted.difference(files))
+    files = sorted(path for path in config.allowed_paths if os.path.isfile(path))
+    directories = sorted(set(config.allowed_paths).difference(files))
     if directories:
         con.execute(f"SET allowed_directories = {_sql_list(directories)}")
     if files:
         con.execute(f"SET allowed_paths = {_sql_list(files)}")
     con.execute("SET enable_external_access = false")
-    _limits[key] = wanted
 
 
 def _sql_list(values: list[str]) -> str:
