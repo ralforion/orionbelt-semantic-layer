@@ -417,6 +417,10 @@ def _build_execute_response(
     )
     # Before ``rows`` below, which materialises the table and frees it.
     arrow_table = exec_result.arrow_table
+    # The Arrow frame carries the table itself. Only values to format, or a
+    # result without a table (a PEP 249 driver), need the rows: building them
+    # cost 39 ms on a 100k-row result that an Arrow response then never read.
+    needs_rows = response_format != "arrow" or format_values or arrow_table is None
 
     return _render_response(
         response_format=response_format,
@@ -424,7 +428,7 @@ def _build_execute_response(
         locale=locale,
         accept_encoding=accept_encoding,
         columns_meta=columns_meta,
-        rows=exec_result.rows,
+        rows=exec_result.rows if needs_rows else [],
         arrow_table=arrow_table,
         fmt_map=fmt_map,
         type_map=type_map,

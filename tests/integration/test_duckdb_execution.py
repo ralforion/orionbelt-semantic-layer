@@ -1330,6 +1330,67 @@ class TestAPIExecuteEndpoint:
         finally:
             reset_session_manager()
 
+    async def test_execute_format_arrow_builds_no_python_rows(
+        self, api_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The Arrow frame carries the driver's table, so the Python rows the JSON
+        shape needs are not built for it: they cost 39 ms on a 100k-row result
+        an Arrow response then never read. Formatted values still need them."""
+        pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
+        from orionbelt.service import db_executor
+
+        settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        init_session_manager(mgr, query_execute_enabled=True, db_vendor="duckdb")
+        built: list[int] = []
+        to_rows = db_executor._arrow_to_rows
+
+        def counting_to_rows(table: Any, tz: Any) -> list[list[Any]]:
+            built.append(table.num_rows)
+            return to_rows(table, tz)
+
+        try:
+            body = {
+                "model_id": None,
+                "query": {
+                    "select": {"dimensions": ["Customer Country"], "measures": ["Total Revenue"]}
+                },
+                "dialect": "duckdb",
+            }
+            with (
+                patch("orionbelt.api.query_cache.execute_sql", _make_execute_sql(api_duckdb)),
+                patch.object(db_executor, "_arrow_to_rows", counting_to_rows),
+            ):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as c:
+                    sid = (await c.post("/v1/sessions")).json()["session_id"]
+                    body["model_id"] = (
+                        await c.post(
+                            f"/v1/sessions/{sid}/models",
+                            json={"model_yaml": SAMPLE_MODEL_YAML},
+                        )
+                    ).json()["model_id"]
+                    url = f"/v1/sessions/{sid}/query/execute"
+
+                    arrow = await c.post(f"{url}?format=arrow", json=body)
+                    after_arrow = len(built)
+                    formatted = await c.post(f"{url}?format=arrow&format_values=true", json=body)
+                    after_formatted = len(built)
+                    as_json = await c.post(url, json=body)
+
+            assert [arrow.status_code, formatted.status_code, as_json.status_code] == [200] * 3
+            assert after_arrow == 0
+            assert after_formatted == 1
+            assert len(built) == 2
+            _, table = _split_result_frame(arrow.content)
+            assert table.num_rows == as_json.json()["row_count"] > 0
+        finally:
+            reset_session_manager()
+
     async def test_execute_format_arrow_empty_result_keeps_declared_types(
         self, api_duckdb: duckdb.DuckDBPyConnection
     ) -> None:
