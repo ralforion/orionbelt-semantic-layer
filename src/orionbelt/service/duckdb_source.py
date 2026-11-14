@@ -27,9 +27,11 @@ apply wherever it is queried:
   so the first source to open a database file decides its paths until the
   server stops, and a source of the file with other paths is refused.
 
-A source with no database file (``DUCKDB_DATABASE`` unset or ``:memory:``)
-keeps one DuckDB instance for the life of the process, and each query runs
-on a connection of its own to it. The queries running at once then share one
+A source with no database file (``DUCKDB_DATABASE`` unset, ``:memory:`` or a
+named ``:memory:name``) keeps one DuckDB instance for the life of the
+process, and each query runs on a connection of its own to it. The instance
+is the source's settings' own: sources with the same settings share it, and
+no other connection reaches it by a name. The queries running at once then share one
 memory limit, rather than each claiming the default 80% of the container in
 an instance of its own, and what the setup statements attach stays attached.
 A database file is opened read-only for each query, as before: holding it
@@ -321,8 +323,13 @@ def _open(
     import duckdb
 
     options = _duckdb_config(config, spill_dir)
+    # A named in-memory database (``:memory:name``) is one DuckDB instance for
+    # every connection naming it, whatever its source's settings, allowed
+    # paths included. Each kept instance is a database of its own instead;
+    # sources with the same settings share one through ``_instances``.
+    database = ":memory:" if config.in_memory else config.database
     try:
-        return duckdb.connect(config.database, read_only=read_only, config=options)
+        return duckdb.connect(database, read_only=read_only, config=options)
     except (duckdb.ParserException, duckdb.SyntaxException) as exc:
         raise ExecutionUnavailableError(
             f"DuckDB refused the settings of data source '{source.name}' "

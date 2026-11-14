@@ -646,6 +646,33 @@ class TestAllowedPaths:
         finally:
             limited.close()
 
+    def test_a_named_in_memory_database_is_no_way_round_the_paths(self, secret: str) -> None:
+        """DuckDB keeps one instance per ``:memory:name`` for every connection
+        naming it. Opened by that name, source b read the key file through
+        the instance source a, which lists it, had limited to its own paths."""
+        named = {"DUCKDB_DATABASE": ":memory:shared", "DUCKDB_SPILL_DIR": "off"}
+        a = duckdb_source.connect(lake(**named, DUCKDB_ALLOWED_PATHS=os.path.dirname(secret)))
+        try:
+            with pytest.raises(ExecutionError, match="disabled by configuration"):
+                value(lake(**named), f'SELECT * FROM "{secret}"')
+            assert a.sql(f'SELECT private_key FROM "{secret}"').fetchall() == [("hush",)]
+        finally:
+            a.close()
+
+    def test_sources_alike_on_a_named_in_memory_database_share_it(self) -> None:
+        def source(name: str) -> DataSource:
+            return DataSource(
+                name=name,
+                dialect="duckdb",
+                prefix=f"DB_{name.upper()}_",
+                environ={
+                    f"DB_{name.upper()}_DUCKDB_DATABASE": ":memory:shared",
+                    f"DB_{name.upper()}_DUCKDB_INIT_SQL": "CREATE SEQUENCE IF NOT EXISTS seq",
+                },
+            )
+
+        assert [value(source(name), "SELECT nextval('seq')") for name in "ab"] == [1, 2]
+
     def test_the_limit_holds_on_every_later_connection(self, secret: str) -> None:
         """DuckDB's setting is the instance's, and cannot be turned back on."""
         source = lake(DUCKDB_INIT_SQL="SET enable_external_access = true")

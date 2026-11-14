@@ -29,7 +29,9 @@ DB_LAKE_DUCKDB_DATABASE=:memory:
 Such a source keeps one DuckDB instance for as long as the server runs, and
 each query runs on a connection of its own to it. The queries running at once
 share the instance's memory limit, and what its setup statements attach stays
-attached.
+attached. The instance is the source's own, a named `:memory:name` included:
+sources with the same settings share one, and nothing else reaches it by its
+name.
 
 Set `:memory:` explicitly where `DUCKDB_DATABASE` is set for the whole server,
 as the Docker image does: a named source falls back to the unprefixed variable.
