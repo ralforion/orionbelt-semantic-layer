@@ -20,6 +20,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Fixed
 
+- **A large result returned as Arrow costs a quarter of what it did, and less than JSON.** `format=arrow` built the Python rows the JSON shape needs and then never read them, and compressed the Arrow data with gzip level 6, so a 100k-row result took longer as Arrow than as JSON. It now ships the driver's table without building the rows, and the result frame and the result cache use gzip level 3: within 2% of the size at a fifth of the time (on 2.3 MB of Arrow, 13.7 ms for 313 kB against 69.7 ms for 307 kB). Measured through the REST API on a 100k-row DuckDB result: 27.9 queries a second (p50 36 ms) against 6.4 (132 ms) for one client, and 54.1 against 7.2 for eight, where JSON answers 10.0 and 12.2. The frame and the cache entries keep their format, plain gzip over uncompressed Arrow IPC, so every reader, and every entry written before, still reads them.
+
 - **The `dataSource` description says a query across sources is federated.** The OBML model's field description and the JSON schema (`schema/obml-schema.json`, and its copy in osi-orionbelt) still said a query reading data objects of more than one data source "is refused until federation ships", in the release that ships federation. They now say such a query runs as a federated query: one query per source, combined in DuckDB. osi-orionbelt 0.6.2 carries the schema copy.
 
 ## [3.0.0] - 2026-11-11

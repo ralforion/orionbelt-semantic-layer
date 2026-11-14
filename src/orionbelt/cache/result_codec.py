@@ -26,10 +26,13 @@ from __future__ import annotations
 import gzip
 from typing import Any
 
-# gzip level 6: the balance point measured in the plan (§5) — whole-blob gzip
-# lands smaller than Arrow-level per-buffer zstd while staying cheap enough to
-# hide behind the DB query on a miss.
-_GZIP_LEVEL = 6
+# gzip level 3. Level 6 was the plan's balance point (§5), but on a large
+# result it cost more than the query: measured on a 100k-row, 3-column result
+# (2.3 MB of IPC), level 6 took 69.7 ms for 307 kB, level 3 13.7 ms for 313 kB
+# and level 1 9.1 ms for 401 kB; on 6 columns (5.1 MB), 145.7 ms / 30.6 ms /
+# 19.7 ms for 748 / 766 / 872 kB. Level 3 keeps the size within 2% at a fifth
+# of the time, and the blob stays plain gzip over uncompressed IPC.
+_GZIP_LEVEL = 3
 
 # Bounded results (LIMIT-capped) serialize as a single record batch. Keep the
 # chunk size well above 10k rows to avoid IPC batch-fragmentation overhead
