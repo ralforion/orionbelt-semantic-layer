@@ -13,7 +13,7 @@ the OrionBelt process runs the queries, so the model's dialect is `duckdb`.
 |---|---|---|---|
 | Parquet, CSV or JSON files on disk | `code` is the path or a glob, `schema: ""` | none | the files' directory |
 | Files in S3-compatible object storage | `code` is the `s3://` path or glob, `schema: ""` | a `CREATE SECRET` for the bucket | the bucket, `s3://bucket/` |
-| Iceberg tables in a REST catalog | `code` is the table, `schema` its namespace | `ATTACH` the catalog, `SET search_path` | the catalog's URL and the bucket |
+| Iceberg tables in a REST catalog | `code` is the table, `schema` its namespace | `ATTACH` the catalog; `SET search_path` on each connection | the catalog's URL and the bucket |
 | An Iceberg table without a catalog | a view over `iceberg_scan(...)` | `CREATE OR REPLACE VIEW` | the table's folder |
 
 ## A source without a database file
@@ -57,8 +57,9 @@ DB_LAKE_DUCKDB_ALLOWED_PATHS=/data/orders/,s3://my-bucket/,https://catalog.examp
 - **What it covers.** Every query of the source, on REST, the Postgres wire and
   Flight SQL. A path the list leaves out is refused with DuckDB's `Permission
   Error`, and the error names `DUCKDB_ALLOWED_PATHS`.
-- **The setup statements run first.** The limit is set after them, so they can
-  still load extensions and attach a catalog. What the queries then read, the
+- **The setup statements run first.** The limit is set after `DUCKDB_INIT_SQL`,
+  so it can still load extensions and attach a catalog; `DUCKDB_CONNECTION_SQL`
+  runs under the limit. What the queries then read, the
   files behind a view or the catalog's tables, has to be listed.
 - **Extensions.** Once the limit is set, DuckDB loads no further extension. One
   that the setup statements do not load (with `LOAD`, or by using it, as
@@ -107,18 +108,20 @@ cover the other ways to sign in, and Google Cloud Storage and Azure.
 
 ## Setup statements
 
-`DUCKDB_INIT_SQL` holds statements DuckDB runs on every new connection of the
-source, before the connection's query: on REST, the Postgres wire and Flight SQL
-alike. Use them to sign in to object storage, attach a catalog, define views,
-or set the search path.
+Two settings hold statements DuckDB runs before a source's queries, on REST,
+the Postgres wire and Flight SQL alike:
+
+| Setting | Runs | For |
+|---|---|---|
+| `DUCKDB_INIT_SQL` | Once for each DuckDB instance of the source: for a source without a database file, once while the server runs; for a database file, which each query opens anew, on each query | What the queries share: `CREATE SECRET` for storage or a catalog, `ATTACH`, `LOAD`, views |
+| `DUCKDB_CONNECTION_SQL` | On every connection: every query, and every Flight SQL cursor | What lasts only for the connection that ran it: `SET search_path`, `USE`, `TEMP` views |
 
 | Rule | Why |
 |---|---|
-| They run on **every** connection | `SET search_path`, `USE` and `TEMP` views last only for the connection that ran them |
-| Write them to run again: `ATTACH IF NOT EXISTS`, `CREATE OR REPLACE SECRET`, `CREATE OR REPLACE VIEW` | A source without a database file keeps its instance, so an `ATTACH` without `IF NOT EXISTS` fails on the second query |
+| Write them to run again: `ATTACH IF NOT EXISTS`, `CREATE OR REPLACE SECRET`, `CREATE OR REPLACE VIEW` | A database file runs its setup statements on each query, and the connection statements run on every connection |
 | They run for one connection of an instance at a time | Run at once, two connections' `CREATE OR REPLACE VIEW`s conflict in DuckDB's catalog (`Catalog write-write conflict`) |
 | They are never shown | They can hold keys. They are not listed with the source, and an error names the variable rather than repeating the statements |
-| Changing them is a different source | They decide what the source's tables are, so cached results of the old statements are not served for the new ones |
+| Changing them is a different source | They decide what the source's tables are and how its names resolve, so cached results of the old statements are not served for the new ones |
 
 A statement that fails reports which variable holds it and what DuckDB said,
 for example: `The setup statements of data source 'lake'
@@ -126,14 +129,15 @@ for example: `The setup statements of data source 'lake'
 
 ## Iceberg tables in a REST catalog
 
-Attach the catalog in the setup statements, and point the search path at one of
-its namespaces:
+Attach the catalog in the setup statements, and point each connection's search
+path at one of its namespaces:
 
 ```bash
 OBSL_DATABASES=lake
 DB_LAKE_TYPE=duckdb
 DB_LAKE_DUCKDB_DATABASE=:memory:
-DB_LAKE_DUCKDB_INIT_SQL="CREATE OR REPLACE SECRET lake_s3 (TYPE s3, KEY_ID 'admin', SECRET 'password', REGION 'us-east-1', ENDPOINT 'minio:9000', URL_STYLE 'path', USE_SSL false); ATTACH IF NOT EXISTS 'warehouse' AS lake (TYPE iceberg, ENDPOINT 'http://iceberg-rest:8181', AUTHORIZATION_TYPE 'none', ACCESS_DELEGATION_MODE 'none'); SET search_path = 'lake.sales'"
+DB_LAKE_DUCKDB_INIT_SQL="CREATE OR REPLACE SECRET lake_s3 (TYPE s3, KEY_ID 'admin', SECRET 'password', REGION 'us-east-1', ENDPOINT 'minio:9000', URL_STYLE 'path', USE_SSL false); ATTACH IF NOT EXISTS 'warehouse' AS lake (TYPE iceberg, ENDPOINT 'http://iceberg-rest:8181', AUTHORIZATION_TYPE 'none', ACCESS_DELEGATION_MODE 'none')"
+DB_LAKE_DUCKDB_CONNECTION_SQL=SET search_path = 'lake.sales'
 DB_LAKE_DUCKDB_ALLOWED_PATHS=http://iceberg-rest:8181/,s3://warehouse/
 ```
 
@@ -174,15 +178,22 @@ dataObjects:
   | A bearer token | `CREATE OR REPLACE SECRET lake_cat (TYPE iceberg, TOKEN '...')` | The catalog's URL |
   | AWS (Glue, S3 Tables) | AWS credentials as an S3 secret (`CREATE OR REPLACE SECRET (TYPE s3, ...)`); the `ATTACH` takes `ENDPOINT_TYPE 'glue'` or `'s3_tables'` (or the catalog's URI with `AUTHORIZATION_TYPE 'sigv4'`) | The catalog's AWS endpoint and the bucket |
 
-  An OAuth2 secret asks the token server for a token when it is created, and
-  the setup statements run on every connection: measured, each query asked for
-  one, with `CREATE SECRET IF NOT EXISTS` too. A token server the list leaves
-  out answers the first query, made before the limit is set, and refuses the
-  next one (`Could not get token from ...`). A bearer token is used as given;
-  one that expires (Google Cloud's after an hour) has to be replaced in the
-  setting, and the server restarted.
+  Measured on DuckDB 2.0, with a token server and a catalog that refuses
+  expired tokens:
 
-This setup was tested with Apache Iceberg's REST catalog and MinIO, without sign-in and with an OAuth2 secret against a local token server. Vended credentials and the AWS and Google catalogs were not tested.
+  | Case | What happens |
+  |---|---|
+  | Many queries | An OAuth2 secret asks the token server once, when the source's instance is set up; every query after uses that token |
+  | The token expires | DuckDB asks for a new one before it expires (from the token server's `expires_in`), or on the catalog's `401` where the server sends none, and repeats the request. The query does not fail |
+  | The token is revoked early | The same: a `401`, a new token, the request repeated |
+  | A bearer token (`TOKEN '...'`) expires | The query fails: `HTTP Error: ... Unauthorized_401`. Neither DuckDB nor OrionBelt has what it takes to ask for another: replace it in the setting (Google Cloud's expire after an hour), and restart the server |
+
+  DuckDB renews tokens while queries run, after the limit on paths is set, so
+  the token server has to be in `DUCKDB_ALLOWED_PATHS`. Left out, only the
+  first token is fetched, and the first renewal fails with `Could not get
+  token from ...`.
+
+This setup was tested with Apache Iceberg's REST catalog and MinIO, without sign-in, and with OAuth2 and bearer-token secrets against a local token server and a catalog that refuses expired tokens. Vended credentials and the AWS and Google catalogs were not tested.
 
 ## An Iceberg table without a catalog
 

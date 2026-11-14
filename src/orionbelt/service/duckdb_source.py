@@ -3,11 +3,16 @@
 REST, pgwire and Flight SQL all open a DuckDB source here, so its settings
 apply wherever it is queried:
 
-- ``DUCKDB_INIT_SQL``: statements run on every new connection before its
-  query, for what a connection needs to read lake tables and files: loading
-  an extension, a ``CREATE SECRET`` for object storage, an ``ATTACH`` of an
-  Iceberg catalog, a ``SET search_path``. They run again on each connection,
-  so they are written to run twice (``IF NOT EXISTS``, ``OR REPLACE``).
+- ``DUCKDB_INIT_SQL``: statements run once for each DuckDB instance of the
+  source, for what its queries share: loading an extension, a ``CREATE
+  SECRET`` for object storage or a catalog, an ``ATTACH`` of an Iceberg
+  catalog, a view. A source without a database file runs them once for the
+  life of the process, so a catalog's OAuth2 secret asks its token server
+  once and DuckDB renews the token as it expires; a database file, opened
+  for each query, runs them for each query.
+- ``DUCKDB_CONNECTION_SQL``: statements run on every connection, for what
+  lasts only for the connection that ran it: ``SET search_path``, ``USE``,
+  a ``TEMP`` view.
 - ``DUCKDB_MEMORY_LIMIT`` and ``DUCKDB_THREADS``: DuckDB's ``memory_limit``
   and ``threads``, of the memory and CPUs DuckDB sees (in a container, the
   container's limits). Unset, the limit is half the memory, not DuckDB's
@@ -107,8 +112,10 @@ class DuckDBSettings:
     Attributes:
         database: The database file, a ``md:`` MotherDuck database, or
             ``:memory:``.
-        init_sql: Statements run on every new connection (``DUCKDB_INIT_SQL``).
-            Never shown: a ``CREATE SECRET`` carries keys.
+        init_sql: Statements run once for each DuckDB instance
+            (``DUCKDB_INIT_SQL``). Never shown: a ``CREATE SECRET`` carries keys.
+        connection_sql: Statements run on every connection
+            (``DUCKDB_CONNECTION_SQL``). Never shown either.
         memory_limit: DuckDB's ``memory_limit`` (``DUCKDB_MEMORY_LIMIT``),
             :data:`DEFAULT_MEMORY_LIMIT` when unset.
         threads: DuckDB's ``threads`` (``DUCKDB_THREADS``).
@@ -121,6 +128,7 @@ class DuckDBSettings:
 
     database: str
     init_sql: str | None = field(default=None, repr=False)
+    connection_sql: str | None = field(default=None, repr=False)
     memory_limit: str = DEFAULT_MEMORY_LIMIT
     threads: int | None = None
     spill_dir: str | None = None
@@ -144,6 +152,7 @@ def settings(source: _Source) -> DuckDBSettings:
     return DuckDBSettings(
         database=database,
         init_sql=_text(credentials.get("init_sql")),
+        connection_sql=_text(source.getenv("DUCKDB_CONNECTION_SQL")),
         memory_limit=_text(source.getenv("DUCKDB_MEMORY_LIMIT")) or DEFAULT_MEMORY_LIMIT,
         threads=_count(source, "DUCKDB_THREADS"),
         spill_dir=_text(source.getenv("DUCKDB_SPILL_DIR")),
@@ -153,10 +162,12 @@ def settings(source: _Source) -> DuckDBSettings:
 
 
 def connect(source: _Source | str) -> duckdb.DuckDBPyConnection:
-    """A new connection to a DuckDB source, its setup statements run.
+    """A new connection to a DuckDB source, set up.
 
-    A dialect name means its implicit source. The caller closes the
-    connection; closing it leaves a kept instance open.
+    The instance's setup statements have run when it was opened (for a
+    database file, now), and the connection's run here. A dialect name means
+    its implicit source. The caller closes the connection; closing it leaves
+    a kept instance open.
 
     Raises:
         ExecutionUnavailableError: A setting is invalid, the setup statements
@@ -175,29 +186,51 @@ def connect(source: _Source | str) -> duckdb.DuckDBPyConnection:
 
 
 def prepare(con: duckdb.DuckDBPyConnection, source: _Source, config: DuckDBSettings) -> None:
-    """Set up a new connection: its setup statements, then the limit on paths.
+    """Set up a new connection of a set-up instance: its connection statements.
 
-    One connection of an instance at a time. Run at once, the setup
-    statements of two connections conflict in DuckDB's catalog (``Catalog
-    write-write conflict`` on a ``CREATE OR REPLACE VIEW``), and DuckDB
-    refuses to set the allowed paths of an instance another connection
-    restricted in between. A Flight cursor is a connection of its own and is
-    set up here too.
+    A Flight cursor is a connection of its own and is set up here too. One
+    connection of an instance at a time: run at once, two ``CREATE OR
+    REPLACE VIEW``s conflict in DuckDB's catalog (``Catalog write-write
+    conflict``).
+
+    Raises:
+        ExecutionUnavailableError: The statements failed.
+    """
+    if config.connection_sql:
+        with _setup_lock(config):
+            _run(con, source, config.connection_sql, "DUCKDB_CONNECTION_SQL")
+
+
+def _set_up_instance(
+    con: duckdb.DuckDBPyConnection, source: _Source, config: DuckDBSettings
+) -> None:
+    """Run a new instance's setup statements, then limit the paths it reads.
+
+    Called under the instance's setup lock: DuckDB refuses to set the allowed
+    paths of an instance another connection limited in between.
 
     Raises:
         ExecutionUnavailableError: The setup statements failed.
     """
+    if config.init_sql:
+        _run(con, source, config.init_sql, "DUCKDB_INIT_SQL")
+    _limit_paths(con, config)
+
+
+def _run(con: duckdb.DuckDBPyConnection, source: _Source, sql: str, variable: str) -> None:
+    """Run a source's statements, failing without repeating them.
+
+    Raises:
+        ExecutionUnavailableError: They failed.
+    """
     import duckdb
 
-    with _setup_lock(config):
-        if config.init_sql:
-            try:
-                con.execute(config.init_sql)
-            except duckdb.Error as exc:
-                # ``from None``: the chained error would carry the statements,
-                # and with them any key a CREATE SECRET holds, into the logs.
-                raise ExecutionUnavailableError(_init_failed(source, exc)) from None
-        _limit_paths(con, config)
+    try:
+        con.execute(sql)
+    except duckdb.Error as exc:
+        # ``from None``: the chained error would carry the statements, and
+        # with them any key a CREATE SECRET holds, into the logs.
+        raise ExecutionUnavailableError(_init_failed(source, exc, variable)) from None
 
 
 def close_instances() -> None:
@@ -225,6 +258,11 @@ class _Instance:
             self.root = _open(source, config, read_only=False, spill_dir=self.spill_dir or "")
         except Exception:
             self._remove_spill_dir()
+            raise
+        try:
+            _set_up_instance(self.root, source, config)
+        except Exception:
+            self.close()
             raise
 
     def cursor(self) -> duckdb.DuckDBPyConnection:
@@ -273,13 +311,18 @@ def _kept_cursor(source: _Source, config: DuckDBSettings) -> duckdb.DuckDBPyConn
     """A new connection to the instance kept for these settings, opened on first use.
 
     Sources with the same settings read the same rows, so they share one.
-    The connection is made under the lock too: DuckDB does not promise that
-    ``cursor()`` may be called from several threads at once.
+    Opened under the instance's setup lock alone, so a slow catalog holds up
+    the source's first queries and no other source's. The connection is made
+    under the lock too: DuckDB does not promise that ``cursor()`` may be
+    called from several threads at once.
     """
-    with _instances_lock:
-        instance = _instances.get(config)
+    with _setup_lock(config):
+        with _instances_lock:
+            instance = _instances.get(config)
         if instance is None:
-            instance = _instances[config] = _Instance(source, config)
+            instance = _Instance(source, config)
+            with _instances_lock:
+                _instances[config] = instance
         return instance.cursor()
 
 
@@ -299,7 +342,7 @@ def _open_file(source: _Source, config: DuckDBSettings) -> duckdb.DuckDBPyConnec
                 source, os.path.join(config.spill_dir, f"obsl-duckdb-{source.fingerprint()}")
             )
     try:
-        return _open(source, config, read_only=True, spill_dir=spill_dir)
+        con = _open(source, config, read_only=True, spill_dir=spill_dir)
     except duckdb.ConnectionException as exc:
         if "different configuration" not in str(exc):
             raise
@@ -310,6 +353,13 @@ def _open_file(source: _Source, config: DuckDBSettings) -> duckdb.DuckDBPyConnec
             "so give every source of the file the same DUCKDB_MEMORY_LIMIT, "
             "DUCKDB_THREADS and DUCKDB_SPILL_DIR."
         ) from None
+    try:
+        with _setup_lock(config):
+            _set_up_instance(con, source, config)
+    except Exception:
+        con.close()
+        raise
+    return con
 
 
 def _open(
@@ -439,19 +489,23 @@ def _duckdb_config(config: DuckDBSettings, spill_dir: str | None) -> dict[str, A
     return options
 
 
-def _init_failed(source: _Source, exc: duckdb.Error) -> str:
-    """What failed in the source's setup statements, without repeating them."""
+def _init_failed(source: _Source, exc: duckdb.Error, variable: str) -> str:
+    """What failed in a source's statements, without repeating them."""
     import duckdb
 
-    variable = f"{source.prefix}DUCKDB_INIT_SQL"
     if isinstance(exc, duckdb.ParserException):
         # A parser error quotes the text around the error, which can be a key.
         reason = "DuckDB could not parse them"
     else:
         reason = str(exc).splitlines()[0]
+    when = (
+        "every connection"
+        if variable == "DUCKDB_CONNECTION_SQL"
+        else "each new DuckDB instance of the source, and for a database file on each query"
+    )
     return (
-        f"The setup statements of data source '{source.name}' ({variable}) failed: "
-        f"{reason}. They run on every new connection, so write them to run again: "
+        f"The setup statements of data source '{source.name}' ({source.prefix}{variable}) "
+        f"failed: {reason}. They run on {when}, so write them to run again: "
         "ATTACH IF NOT EXISTS, CREATE OR REPLACE SECRET, CREATE OR REPLACE VIEW."
     )
 

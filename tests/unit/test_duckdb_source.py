@@ -130,6 +130,7 @@ class TestSettings:
         secret = "CREATE SECRET s (TYPE s3, KEY_ID 'k', SECRET 'hush')"
 
         assert "hush" not in repr(duckdb_source.settings(lake(DUCKDB_INIT_SQL=secret)))
+        assert "hush" not in repr(duckdb_source.settings(lake(DUCKDB_CONNECTION_SQL=secret)))
 
     def test_the_setup_statements_decide_the_sources_identity(self) -> None:
         """They decide what its tables are (an attached catalog), so a cached
@@ -145,6 +146,7 @@ class TestSettings:
         base = lake().fingerprint()
 
         for variable, setting in [
+            ("DUCKDB_CONNECTION_SQL", "SET search_path = 'lake.sales'"),
             ("DUCKDB_MEMORY_LIMIT", "64MB"),
             ("DUCKDB_THREADS", "2"),
             ("DUCKDB_SPILL_DIR", "off"),
@@ -205,15 +207,21 @@ class TestSourceWithoutDatabaseFile:
         finally:
             conn.close()
 
-    def test_every_connection_runs_the_setup_statements(self, orders: str) -> None:
+    def test_its_setup_statements_run_once(self) -> None:
+        """Once for the instance, not for each query: a catalog's OAuth2 secret
+        asks its token server once, and DuckDB renews the token as it expires."""
+        source = lake(DUCKDB_INIT_SQL="CREATE SEQUENCE seq")
+
+        assert [value(source, "SELECT nextval('seq')") for _ in range(3)] == [1, 2, 3]
+
+    def test_every_connection_runs_the_connection_statements(self, orders: str) -> None:
         """``search_path`` holds per connection, and every query and every
         Flight cursor is a connection of its own."""
         source = lake(
             DUCKDB_INIT_SQL=(
-                "CREATE SCHEMA IF NOT EXISTS sales; "
-                f"CREATE OR REPLACE VIEW sales.orders AS SELECT * FROM '{orders}'; "
-                "SET search_path = 'memory.sales'"
+                f"CREATE SCHEMA sales; CREATE VIEW sales.orders AS SELECT * FROM '{orders}'"
             ),
+            DUCKDB_CONNECTION_SQL="SET search_path = 'memory.sales'",
             DUCKDB_ALLOWED_PATHS=parts(orders),
         )
 
@@ -256,17 +264,16 @@ class TestSourceWithoutDatabaseFile:
 
         assert value(lake(), "SELECT current_setting('memory_limit')") == expected
 
-    def test_setup_statements_of_connections_at_once_do_not_conflict(self) -> None:
+    def test_statements_of_connections_at_once_do_not_conflict(self) -> None:
         """Run at once, two ``CREATE OR REPLACE VIEW``s conflict in DuckDB's
         catalog: 14 of 16 connections failed with ``Catalog write-write
         conflict`` before setup ran one connection of an instance at a time.
         Flight's cursors are set up the same way."""
         source = lake(
-            DUCKDB_INIT_SQL=(
-                "CREATE SCHEMA IF NOT EXISTS s; "
-                "CREATE OR REPLACE VIEW s.v AS SELECT 1 AS x; "
-                "SET search_path = 'memory.s'"
-            )
+            DUCKDB_INIT_SQL="CREATE SCHEMA s",
+            DUCKDB_CONNECTION_SQL=(
+                "CREATE OR REPLACE VIEW s.v AS SELECT 1 AS x; SET search_path = 'memory.s'"
+            ),
         )
         results: list[Any] = []
         errors: list[Exception] = []
@@ -370,12 +377,15 @@ class TestSetupStatementsFailing:
 
         assert "hush" not in str(raised.value)
 
-    def test_statements_that_cannot_run_twice_fail_on_the_second_connection(self) -> None:
-        source = lake(DUCKDB_INIT_SQL="CREATE SEQUENCE seq")
+    def test_connection_statements_that_cannot_run_twice_fail_on_the_second(self) -> None:
+        source = lake(DUCKDB_CONNECTION_SQL="CREATE SEQUENCE seq")
         assert value(source, "SELECT nextval('seq')") == 1
 
-        with pytest.raises(ExecutionUnavailableError, match="write them to run again"):
+        with pytest.raises(ExecutionUnavailableError) as raised:
             value(source, "SELECT nextval('seq')")
+
+        assert "DB_LAKE_DUCKDB_CONNECTION_SQL" in str(raised.value)
+        assert "write them to run again" in str(raised.value)
 
 
 class TestDatabaseFile:
@@ -675,8 +685,7 @@ class TestAllowedPaths:
 
     def test_the_limit_holds_on_every_later_connection(self, secret: str) -> None:
         """DuckDB's setting is the instance's, and cannot be turned back on."""
-        source = lake(DUCKDB_INIT_SQL="SET enable_external_access = true")
+        source = lake(DUCKDB_CONNECTION_SQL="SET enable_external_access = true")
 
         with pytest.raises(ExecutionUnavailableError, match="Cannot enable external access"):
-            for _ in range(2):
-                value(source, f'SELECT * FROM "{secret}"')
+            value(source, f'SELECT * FROM "{secret}"')

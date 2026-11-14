@@ -12,11 +12,15 @@ Opt-in - requires Docker, and network access for DuckDB's iceberg extension::
 
 from __future__ import annotations
 
+import json
+import threading
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, ClassVar
 
 import pytest
 
@@ -42,19 +46,30 @@ class Catalog:
     rest: str  # http://host:port of the REST catalog
     s3: str  # host:port of MinIO
 
-    def setup_sql(self, *, search_path: bool = True) -> str:
-        """The source's setup statements: S3 secret, the catalog, its namespace."""
+    def setup_sql(self, *, endpoint: str | None = None, sign_in: str | None = None) -> str:
+        """The source's setup statements: the S3 secret and the catalog.
+
+        ``sign_in`` is a ``CREATE SECRET lake_cat ...`` the catalog is attached
+        with; without one it is attached without sign-in.
+        """
         statements = [
             f"CREATE OR REPLACE SECRET lake_s3 (TYPE s3, KEY_ID '{KEY_ID}', SECRET '{SECRET}', "
-            f"REGION 'us-east-1', ENDPOINT '{self.s3}', URL_STYLE 'path', USE_SSL false)",
-            f"ATTACH IF NOT EXISTS 'warehouse' AS lake (TYPE iceberg, ENDPOINT '{self.rest}', "
-            "AUTHORIZATION_TYPE 'none', ACCESS_DELEGATION_MODE 'none')",
+            f"REGION 'us-east-1', ENDPOINT '{self.s3}', URL_STYLE 'path', USE_SSL false)"
         ]
-        if search_path:
-            # The DuckDB dialect names a table schema.table; the search path
-            # finds the schema (an Iceberg namespace) in the attached catalog.
-            statements.append("SET search_path = 'lake.sales'")
+        if sign_in:
+            statements.append(sign_in)
+        auth = "SECRET lake_cat" if sign_in else "AUTHORIZATION_TYPE 'none'"
+        statements.append(
+            f"ATTACH IF NOT EXISTS 'warehouse' AS lake (TYPE iceberg, ENDPOINT "
+            f"'{endpoint or self.rest}', {auth}, ACCESS_DELEGATION_MODE 'none')"
+        )
         return "; ".join(statements)
+
+
+#: The DuckDB dialect names a table schema.table; the search path finds the
+#: schema (an Iceberg namespace) in the attached catalog. It lasts for the
+#: connection that sets it, so it is a connection statement.
+SEARCH_PATH = "SET search_path = 'lake.sales'"
 
 
 def _wait_until_up(url: str, timeout: float = 60.0) -> None:
@@ -125,7 +140,7 @@ def _write(catalog: Catalog, statements: list[str]) -> None:
     con = duckdb.connect()
     try:
         try:
-            con.execute(catalog.setup_sql(search_path=False))
+            con.execute(catalog.setup_sql())
         except duckdb.IOException as exc:
             pytest.skip(f"DuckDB's iceberg extension is not available: {exc}")
         for statement in statements:
@@ -142,6 +157,7 @@ def lake(catalog: Catalog, monkeypatch: pytest.MonkeyPatch) -> Iterator[Catalog]
     monkeypatch.setenv("OBSL_DATABASES", "lake")
     monkeypatch.setenv("DB_LAKE_TYPE", "duckdb")
     monkeypatch.setenv("DB_LAKE_DUCKDB_INIT_SQL", catalog.setup_sql())
+    monkeypatch.setenv("DB_LAKE_DUCKDB_CONNECTION_SQL", SEARCH_PATH)
     # What the queries read: the catalog's REST endpoint and the bucket.
     monkeypatch.setenv("DB_LAKE_DUCKDB_ALLOWED_PATHS", f"{catalog.rest}/,s3://warehouse/")
     yield catalog
@@ -259,3 +275,160 @@ def _lake_source() -> Any:
     from ob_flight.datasources import configured_datasources
 
     return next(source for source in configured_datasources() if source.name == "lake")
+
+
+class _TokenServer(BaseHTTPRequestHandler):
+    """An OAuth2 token endpoint issuing tokens that live ``lifetime`` seconds."""
+
+    issued: ClassVar[dict[str, float]] = {}
+    lifetime: ClassVar[list[float]] = [60.0]
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        token = f"token-{len(self.issued) + 1}"
+        self.issued[token] = time.monotonic()
+        body = json.dumps(
+            {"access_token": token, "token_type": "bearer", "expires_in": int(self.lifetime[0])}
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args: Any) -> None:
+        pass
+
+
+def _checking_proxy(catalog: str) -> type[BaseHTTPRequestHandler]:
+    """A catalog in front of ``catalog`` that refuses a token it did not issue, or expired."""
+
+    class Proxy(BaseHTTPRequestHandler):
+        def _forward(self) -> None:
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            born = _TokenServer.issued.get(token)
+            if born is None or time.monotonic() - born > _TokenServer.lifetime[0]:
+                body = json.dumps(
+                    {"error": {"message": "Token expired", "type": "NotAuthorized", "code": 401}}
+                ).encode()
+                status, kind = 401, "application/json"
+            else:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                request = urllib.request.Request(
+                    catalog + self.path,
+                    data=self.rfile.read(length) if length else None,
+                    method=self.command,
+                    headers={"Content-Type": self.headers.get("Content-Type", "application/json")},
+                )
+                try:
+                    with urllib.request.urlopen(request) as answer:
+                        status, body = answer.status, answer.read()
+                        kind = answer.headers.get("Content-Type", "application/json")
+                except urllib.error.HTTPError as refused:
+                    status, body = refused.code, refused.read()
+                    kind = refused.headers.get("Content-Type", "application/json")
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            self._forward()
+
+        def do_POST(self) -> None:
+            self._forward()
+
+        def do_HEAD(self) -> None:
+            self._forward()
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    return Proxy
+
+
+@pytest.fixture
+def signed_in(lake: Catalog, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[str, str]]:
+    """A catalog that takes OAuth2 tokens, and its token endpoint: (catalog, tokens)."""
+    _TokenServer.issued.clear()
+    _TokenServer.lifetime[0] = 60.0
+    servers = [
+        ThreadingHTTPServer(("127.0.0.1", 0), _TokenServer),
+        ThreadingHTTPServer(("127.0.0.1", 0), _checking_proxy(lake.rest)),
+    ]
+    for server in servers:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    tokens, catalog = (f"http://127.0.0.1:{server.server_address[1]}" for server in servers)
+    monkeypatch.setenv("DB_LAKE_DUCKDB_ALLOWED_PATHS", f"{catalog}/,{tokens}/,s3://warehouse/")
+    try:
+        yield catalog, tokens
+    finally:
+        duckdb_source.close_instances()
+        for server in servers:
+            server.shutdown()
+
+
+def _sign_in(lake: Catalog, monkeypatch: pytest.MonkeyPatch, catalog: str, secret: str) -> None:
+    monkeypatch.setenv("DB_LAKE_DUCKDB_INIT_SQL", lake.setup_sql(endpoint=catalog, sign_in=secret))
+    duckdb_source.close_instances()
+
+
+class TestSigningIn:
+    """Measured on DuckDB 2.0: these pin what the guide says about tokens."""
+
+    def test_an_oauth2_secret_asks_once_for_many_queries(
+        self, lake: Catalog, signed_in: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        catalog, tokens = signed_in
+        _sign_in(
+            lake,
+            monkeypatch,
+            catalog,
+            "CREATE OR REPLACE SECRET lake_cat (TYPE iceberg, CLIENT_ID 'obsl', "
+            f"CLIENT_SECRET 'not-a-secret', OAUTH2_SERVER_URI '{tokens}/oauth/tokens')",
+        )
+
+        assert [len(_rows()) for _ in range(4)] == [2, 2, 2, 2]
+        assert len(_TokenServer.issued) == 1
+
+    def test_duckdb_renews_an_expired_token(
+        self, lake: Catalog, signed_in: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No error: DuckDB asks for a new token as the old one expires."""
+        catalog, tokens = signed_in
+        _TokenServer.lifetime[0] = 2.0
+        _sign_in(
+            lake,
+            monkeypatch,
+            catalog,
+            "CREATE OR REPLACE SECRET lake_cat (TYPE iceberg, CLIENT_ID 'obsl', "
+            f"CLIENT_SECRET 'not-a-secret', OAUTH2_SERVER_URI '{tokens}/oauth/tokens')",
+        )
+        assert len(_rows()) == 2
+
+        time.sleep(3)
+
+        assert len(_rows()) == 2
+        assert len(_TokenServer.issued) == 2
+
+    def test_a_bearer_token_that_expires_fails_the_query(
+        self, lake: Catalog, signed_in: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fixed token cannot be renewed: neither DuckDB nor OBSL has what
+        it takes to ask for another."""
+        catalog, _ = signed_in
+        _TokenServer.lifetime[0] = 2.0
+        _TokenServer.issued["fixed"] = time.monotonic()
+        _sign_in(
+            lake,
+            monkeypatch,
+            catalog,
+            "CREATE OR REPLACE SECRET lake_cat (TYPE iceberg, TOKEN 'fixed')",
+        )
+        assert len(_rows()) == 2
+
+        time.sleep(3)
+
+        with pytest.raises(Exception, match="401"):
+            _rows()

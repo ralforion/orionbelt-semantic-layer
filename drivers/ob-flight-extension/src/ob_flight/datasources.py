@@ -54,11 +54,13 @@ class DataSourceNotFoundError(LookupError):
 
 #: Settings that shape a connection but are not ``connect()`` arguments, read
 #: where OBSL opens the connection (``orionbelt.service.duckdb_source``):
-#: DuckDB's memory, threads and spilling, and the paths its queries may read.
+#: DuckDB's per-connection statements (they decide how names resolve), memory,
+#: threads and spilling, and the paths its queries may read.
 #: Part of the fingerprint, so sources differing in them get pools of their
 #: own, and, as the paths decide what a query may return, cached results too.
 _FINGERPRINT_SETTINGS: dict[str, tuple[str, ...]] = {
     "duckdb": (
+        "DUCKDB_CONNECTION_SQL",
         "DUCKDB_MEMORY_LIMIT",
         "DUCKDB_THREADS",
         "DUCKDB_SPILL_DIR",
