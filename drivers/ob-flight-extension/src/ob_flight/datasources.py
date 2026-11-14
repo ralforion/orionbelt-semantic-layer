@@ -52,6 +52,21 @@ class DataSourceNotFoundError(LookupError):
     """No configured data source has the name asked for."""
 
 
+#: Settings that shape a connection but are not ``connect()`` arguments, read
+#: where OBSL opens the connection (``orionbelt.service.duckdb_source``):
+#: DuckDB's memory, threads and spilling, and the paths its queries may read.
+#: Part of the fingerprint, so sources differing in them get pools of their
+#: own, and, as the paths decide what a query may return, cached results too.
+_FINGERPRINT_SETTINGS: dict[str, tuple[str, ...]] = {
+    "duckdb": (
+        "DUCKDB_MEMORY_LIMIT",
+        "DUCKDB_THREADS",
+        "DUCKDB_SPILL_DIR",
+        "DUCKDB_SPILL_MAX_MB",
+        "DUCKDB_ALLOWED_PATHS",
+    ),
+}
+
 # Environment variable prefixes for vendor credentials
 _CREDENTIAL_KEYS: dict[str, list[str]] = {
     "bigquery": [
@@ -59,7 +74,9 @@ _CREDENTIAL_KEYS: dict[str, list[str]] = {
         "BIGQUERY_LOCATION",
         "BIGQUERY_CREDENTIALS_FILE",
     ],
-    "duckdb": ["DUCKDB_DATABASE", "MOTHERDUCK_ACCESS_TOKEN"],
+    # DUCKDB_INIT_SQL decides what the source's tables are (an ATTACHed
+    # catalog, a view over files), so it counts toward the fingerprint.
+    "duckdb": ["DUCKDB_DATABASE", "MOTHERDUCK_ACCESS_TOKEN", "DUCKDB_INIT_SQL"],
     "postgres": [
         "POSTGRES_HOST",
         "POSTGRES_PORT",
@@ -160,6 +177,7 @@ _ENV_TO_KWARG: dict[str, str] = {
     "BIGQUERY_LOCATION": "location",
     "BIGQUERY_CREDENTIALS_FILE": "credentials_file",
     "DUCKDB_DATABASE": "database",
+    "DUCKDB_INIT_SQL": "init_sql",
     "MOTHERDUCK_ACCESS_TOKEN": "motherduck_token",
     "POSTGRES_HOST": "host",
     "POSTGRES_PORT": "port",
@@ -337,13 +355,20 @@ class DataSource:
         """Who connects to what, as 16 hex characters.
 
         A hash over the dialect and every connection setting, secrets
-        included, so a changed password is a different identity. Two names
+        included, so a changed password is a different identity. The settings
+        that shape a connection without being ``connect()`` arguments
+        (:data:`_FINGERPRINT_SETTINGS`) count too: a pool hands out
+        connections opened with one set of them. Two names
         for the same target with the same credentials share it, and with it
         a pool: the rows they return are the same. For a BigQuery key file
         the file's content counts, not only its path. The hash shows nothing
         of what went into it.
         """
         material: dict[str, Any] = dict(self._raw_credentials())
+        for variable in _FINGERPRINT_SETTINGS.get(self.dialect, ()):
+            value = self.getenv(variable)
+            if value is not None:
+                material[variable] = value
         key_file = material.get("credentials_file")
         if isinstance(key_file, str):
             try:

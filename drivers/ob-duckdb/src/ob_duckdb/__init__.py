@@ -15,6 +15,7 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import duckdb
@@ -44,6 +45,7 @@ def connect(
     *,
     read_only: bool = False,
     config: dict[str, Any] | None = None,
+    init_sql: str | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
     ob_timeout: int = 30,
@@ -58,17 +60,37 @@ def connect(
         Open in read-only mode.
     config : dict
         DuckDB configuration options (threads, memory_limit, etc.).
+    init_sql : str
+        Statements run on this connection and on every cursor of it, such as
+        ``LOAD iceberg``, ``CREATE SECRET``, ``ATTACH`` or ``SET search_path``.
     ob_api_url : str
         OrionBelt REST API URL (must be running in single-model mode).
     ob_timeout : int
         HTTP timeout in seconds for OBML compilation.
     """
+    init = _statements(init_sql) if init_sql else None
     native = duckdb.connect(database=database, read_only=read_only, config=config or {})
+    if init is not None:
+        try:
+            init(native)
+        except Exception:
+            native.close()
+            raise
     return Connection(
         native,
         ob_api_url=ob_api_url,
         ob_timeout=ob_timeout,
+        init=init,
     )
+
+
+def _statements(sql: str) -> Callable[[duckdb.DuckDBPyConnection], None]:
+    """A connection setup that runs ``sql``."""
+
+    def init(con: duckdb.DuckDBPyConnection) -> None:
+        con.execute(sql)
+
+    return init
 
 
 __all__ = [

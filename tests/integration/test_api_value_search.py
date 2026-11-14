@@ -84,7 +84,14 @@ async def _client(
         **cache_kwargs,
     )
     try:
-        with patch("orionbelt.api.query_cache.execute_sql", _make_execute_sql(warehouse)):
+        # The fixture stands in for the warehouse on a cache hit too: its
+        # sessions declare no zone, as the fake execute_sql applies none.
+        # Asked for real, the configured DuckDB source would answer instead
+        # (the machine's zone, where it opens).
+        with (
+            patch("orionbelt.api.query_cache.execute_sql", _make_execute_sql(warehouse)),
+            patch("orionbelt.api.query_cache.session_timezone", return_value=None),
+        ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 yield c
     finally:

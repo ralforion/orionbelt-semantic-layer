@@ -193,7 +193,7 @@ conn = ob_duckdb.connect(ob_api_url="http://my-api:9000")
 
 | Driver          | Parameters                                                                                |
 | --------------- | ----------------------------------------------------------------------------------------- |
-| `ob-duckdb`     | `database` (`:memory:`), `read_only`, `config`                                            |
+| `ob-duckdb`     | `database` (`:memory:`), `read_only`, `config`, `init_sql` (run on the connection and every cursor) |
 | `ob-postgres`   | `dsn`, `host`, `port`, `dbname`, `user`, `password`, `sslmode`                            |
 | `ob-snowflake`  | `account`, `user`, `password`, `database`, `schema`, `warehouse`, `role`, `authenticator` |
 | `ob-clickhouse` | `host`, `port`, `username`, `password`, `database`, `secure`                              |
@@ -306,7 +306,7 @@ POSTGRES_PASSWORD=secret
 
 | DB_VENDOR    | Driver        | Credential Environment Variables                                                                                             |
 | ------------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `duckdb`     | ob-duckdb     | `DUCKDB_DATABASE` (a file, `:memory:`, or `md:<db>` for MotherDuck), `MOTHERDUCK_ACCESS_TOKEN` (required for `md:`)           |
+| `duckdb`     | ob-duckdb     | `DUCKDB_DATABASE` (a file, `:memory:`, or `md:<db>` for MotherDuck), `MOTHERDUCK_ACCESS_TOKEN` (required for `md:`), `DUCKDB_INIT_SQL`, `DUCKDB_ALLOWED_PATHS`; `DUCKDB_MEMORY_LIMIT`, `DUCKDB_THREADS`, `DUCKDB_SPILL_DIR`, `DUCKDB_SPILL_MAX_MB` ([Files and Lakehouse Tables](guide/files-and-lakehouse.md)) |
 | `postgres`   | ob-postgres   | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DBNAME`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_SCHEMA`                 |
 | `snowflake`  | ob-snowflake  | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_ROLE` |
 | `clickhouse` | ob-clickhouse | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`                    |

@@ -44,6 +44,10 @@ Each source reads its dialect's usual variables (see
 variable the source does not set falls back to the unprefixed one, so the two
 shops above share a user, password and database name and differ only in host.
 
+A DuckDB source can also read Parquet, CSV and JSON files and Iceberg tables in
+place, with no database file: see [Files and Lakehouse
+Tables](files-and-lakehouse.md) for its setup statements and memory settings.
+
 | Rule | Behavior |
 |---|---|
 | `OBSL_DATABASES` | Comma-separated names. Their order is the order sources are listed in |
@@ -229,7 +233,10 @@ connection settings, secrets included, so:
 - a dialect configured without a name keeps the cache keys it always had.
 
 The fingerprint is a hash and shows nothing of what went into it. For BigQuery
-the content of the key file counts, not only its path.
+the content of the key file counts, not only its path. For DuckDB the
+[setup statements, memory, thread, spill and path settings](files-and-lakehouse.md)
+count too: a pool hands out connections opened with one set of them, and the
+paths a source may read decide what its queries can return.
 
 Each pool also bounds the source's connections in use at once
 (`MAX_CONNECTIONS`, default 10), whether a query runs through REST, pgwire,

@@ -593,6 +593,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             close_all_pools()
         except ImportError:
             pass
+        from orionbelt.service.duckdb_source import close_instances
+
+        close_instances()
         try:
             await cache.shutdown()
         except Exception:
