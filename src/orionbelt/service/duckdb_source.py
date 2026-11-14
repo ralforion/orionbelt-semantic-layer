@@ -226,7 +226,9 @@ def _run(con: duckdb.DuckDBPyConnection, source: _Source, sql: str, variable: st
     import duckdb
 
     try:
-        con.execute(sql)
+        # Read to the end: DuckDB 2.0 holds a result left unread (a SELECT
+        # last among them) against the next statement on the connection.
+        con.execute(sql).fetchall()
     except duckdb.Error as exc:
         # ``from None``: the chained error would carry the statements, and
         # with them any key a CREATE SECRET holds, into the logs.

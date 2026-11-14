@@ -207,6 +207,16 @@ class TestSourceWithoutDatabaseFile:
         finally:
             conn.close()
 
+    def test_statements_ending_in_a_result_leave_the_connection_free(self) -> None:
+        """Unread, the result of the last statement held up the query after it:
+        ``connection has an unfinished result from execute()``."""
+        source = lake(
+            DUCKDB_INIT_SQL="CREATE SEQUENCE seq; SELECT 1",
+            DUCKDB_CONNECTION_SQL="SET search_path = 'memory.main'; SELECT nextval('seq')",
+        )
+
+        assert value(source, "SELECT 42") == 42
+
     def test_its_setup_statements_run_once(self) -> None:
         """Once for the instance, not for each query: a catalog's OAuth2 secret
         asks its token server once, and DuckDB renews the token as it expires."""
