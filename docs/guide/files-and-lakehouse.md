@@ -159,14 +159,30 @@ dataObjects:
 - **The newest snapshot.** Each query reads a table's newest snapshot: a commit
   made after the source attached the catalog is read by the next query.
 - **Storage keys.** With `ACCESS_DELEGATION_MODE 'none'` DuckDB reads the data
-  files with your own secret, rather than with credentials the catalog hands
-  out.
-- **Signing in to the catalog.** The example needs none. For a catalog that
-  needs a token, see DuckDB's
-  [Iceberg REST catalog](https://duckdb.org/docs/stable/core_extensions/iceberg/iceberg_rest_catalogs)
-  documentation.
+  files with your own S3 secret. Without it DuckDB asks the catalog for
+  credentials to the files (`vended_credentials`), where the catalog hands
+  them out; the buckets they are for still have to be listed.
+- **Signing in to the catalog.** The example's catalog needs none; most do.
+  Each way to sign in is a secret in the setup statements, named in the
+  `ATTACH` (`SECRET lake_cat`); DuckDB's
+  [Iceberg catalogs](https://duckdb.org/docs/stable/core_extensions/iceberg/catalogs)
+  page covers each catalog:
 
-This setup was tested with Apache Iceberg's REST catalog and MinIO.
+  | Catalog sign-in | Secret | List in `DUCKDB_ALLOWED_PATHS` |
+  |---|---|---|
+  | OAuth2 client credentials (Apache Polaris, Lakekeeper, most REST catalogs) | `CREATE OR REPLACE SECRET lake_cat (TYPE iceberg, CLIENT_ID '...', CLIENT_SECRET '...', OAUTH2_SERVER_URI 'https://auth.example.com/oauth/tokens')` | The catalog's URL **and** the token server's |
+  | A bearer token | `CREATE OR REPLACE SECRET lake_cat (TYPE iceberg, TOKEN '...')` | The catalog's URL |
+  | AWS (Glue, S3 Tables) | AWS credentials as an S3 secret (`CREATE OR REPLACE SECRET (TYPE s3, ...)`); the `ATTACH` takes `ENDPOINT_TYPE 'glue'` or `'s3_tables'` (or the catalog's URI with `AUTHORIZATION_TYPE 'sigv4'`) | The catalog's AWS endpoint and the bucket |
+
+  An OAuth2 secret asks the token server for a token when it is created, and
+  the setup statements run on every connection: measured, each query asked for
+  one, with `CREATE SECRET IF NOT EXISTS` too. A token server the list leaves
+  out answers the first query, made before the limit is set, and refuses the
+  next one (`Could not get token from ...`). A bearer token is used as given;
+  one that expires (Google Cloud's after an hour) has to be replaced in the
+  setting, and the server restarted.
+
+This setup was tested with Apache Iceberg's REST catalog and MinIO, without sign-in and with an OAuth2 secret against a local token server. Vended credentials and the AWS and Google catalogs were not tested.
 
 ## An Iceberg table without a catalog
 
