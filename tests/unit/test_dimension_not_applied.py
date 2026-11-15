@@ -125,3 +125,62 @@ def test_facts_that_all_reach_the_dimension_are_not_reported(model: SemanticMode
 
 def test_a_single_fact_query_is_not_reported(model: SemanticModel) -> None:
     assert WarningCode.DIMENSION_NOT_APPLIED not in _codes(_compile(model, ["Revenue"]))
+
+
+ROLES_YAML = """\
+version: 1.0
+name: role_dimensions
+dataObjects:
+  Customers:
+    code: customers
+    columns:
+      Customer ID: {code: customer_id, abstractType: string, primaryKey: true}
+      Region: {code: region, abstractType: string}
+  Orders:
+    code: orders
+    columns:
+      Order ID: {code: order_id, abstractType: string, primaryKey: true}
+      Order Customer: {code: customer_id, abstractType: string}
+      Amount: {code: amount, abstractType: int}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer]
+        columnsTo: [Customer ID]
+        pathName: customer
+  Returns:
+    code: returns
+    columns:
+      Return ID: {code: return_id, abstractType: string, primaryKey: true}
+      Return Customer: {code: customer_id, abstractType: string}
+      Return Amount: {code: amount, abstractType: int}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Return Customer]
+        columnsTo: [Customer ID]
+        pathName: customer
+dimensions:
+  Order Region:
+    {dataObject: Customers, column: Region, resultType: string, via: Orders, pathName: customer}
+  Return Region:
+    {dataObject: Customers, column: Region, resultType: string, via: Returns, pathName: customer}
+measures:
+  Revenue: {columns: [{dataObject: Orders, column: Amount}], aggregation: sum}
+  Returned: {columns: [{dataObject: Returns, column: Return Amount}], aggregation: sum}
+"""
+
+
+def test_a_role_padded_by_the_other_fact_is_not_reported() -> None:
+    # Each role belongs to one fact; the other leg pads it on purpose.
+    raw, source_map = TrackedLoader().load_string(ROLES_YAML)
+    roles, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = QueryObject(
+        select={
+            "dimensions": ["Order Region", "Return Region"],
+            "measures": ["Revenue", "Returned"],
+        }
+    )
+    compiled = CompilationPipeline().compile(query, roles, "duckdb")
+    assert WarningCode.DIMENSION_NOT_APPLIED not in _codes(compiled)

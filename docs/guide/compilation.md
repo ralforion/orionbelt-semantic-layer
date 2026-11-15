@@ -661,7 +661,9 @@ total.
 
 When the expression reads only conformed facts, an anchor row with rows in
 **none** of them stays `NULL`: a customer with no orders and no returns adds
-nothing, and a group of such customers is `NULL`, as any `SUM` over no rows is.
+nothing, and a group of such customers is `NULL`, as any `SUM` over no rows is,
+so a `defaultValue` applies to it. A measure filter on the anchor (`Region` is
+not `NOWHERE`) chooses which customers count and does not change this.
 A fact whose rows hold only `NULL` in the column summed counts like a fact with
 no rows.
 

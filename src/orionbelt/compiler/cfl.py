@@ -666,8 +666,14 @@ class CFLPlanner:
             # are NULL-padded so each leg only projects the values that
             # belong to its own fact.
             if measures:
+                # A role (``via:``) belongs to one fact by design, and the other
+                # legs pad it on purpose, so only a plain dimension is reported.
                 self._report_dimensions_outside_leg(
-                    [dim for dim in resolved.dimensions if dim.object_name not in reachable],
+                    [
+                        dim
+                        for dim in resolved.dimensions
+                        if dim.via is None and dim.object_name not in reachable
+                    ],
                     measures,
                     resolved,
                 )

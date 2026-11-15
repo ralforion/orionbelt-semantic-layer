@@ -31,6 +31,7 @@ dataObjects:
     columns:
       Customer ID: {code: customer_id, abstractType: string, primaryKey: true}
       Region: {code: region, abstractType: string}
+      Credit: {code: credit, abstractType: int}
   Orders:
     code: orders
     schema: main
@@ -38,6 +39,7 @@ dataObjects:
       Order ID: {code: order_id, abstractType: string, primaryKey: true}
       Order Customer: {code: customer_id, abstractType: string}
       Order Amount: {code: amount, abstractType: int}
+      Adjusted: {expression: '{Order Amount} + {[Customers].[Credit]}', abstractType: int}
     joins:
       - joinType: many-to-one
         joinTo: Customers
@@ -71,12 +73,42 @@ measures:
     resultType: int
     aggregation: sum
     expression: '{[Orders].[Order Amount]} * {[Returns].[Return Amount]}'
+  Net Credit:
+    resultType: int
+    aggregation: sum
+    expression: '{[Orders].[Order Amount]} + {[Customers].[Credit]} - {[Returns].[Return Amount]}'
+  Net Credit Computed:
+    resultType: int
+    aggregation: sum
+    expression: '{[Orders].[Adjusted]} - {[Returns].[Return Amount]}'
+  Average Net:
+    resultType: float
+    aggregation: avg
+    expression: '{[Orders].[Order Amount]} - {[Returns].[Return Amount]}'
+  Average Net Filtered:
+    resultType: float
+    aggregation: avg
+    expression: '{[Orders].[Order Amount]} - {[Returns].[Return Amount]}'
+    filters:
+      - column: {dataObject: Customers, column: Region}
+        operator: notequals
+        values: [{dataType: string, valueString: NOWHERE}]
+  Net Filtered:
+    resultType: int
+    aggregation: sum
+    defaultValue: -1
+    expression: '{[Orders].[Order Amount]} - {[Returns].[Return Amount]}'
+    filters:
+      - column: {dataObject: Customers, column: Region}
+        operator: notequals
+        values: [{dataType: string, valueString: NOWHERE}]
 """
 
 SETUP = """
 CREATE TABLE customers AS SELECT * FROM (VALUES
-  ('C1', 'EAST'), ('C2', 'EAST'), ('C3', 'WEST'), ('C4', 'NORTH'), ('C5', 'SOUTH')
-) t(customer_id, region);
+  ('C1', 'EAST', 1), ('C2', 'EAST', 2), ('C3', 'WEST', 3), ('C4', 'NORTH', 4),
+  ('C5', 'SOUTH', 10)
+) t(customer_id, region, credit);
 CREATE TABLE orders AS SELECT * FROM (VALUES
   ('O1', 'C1', 100), ('O2', 'C1', 200), ('O3', 'C2', 50), ('O4', 'C3', 300)
 ) t(order_id, customer_id, amount);
@@ -131,6 +163,36 @@ def test_a_missing_side_in_a_product_contributes_nothing(model: SemanticModel) -
     # Only C1 has both: 300 * 25. The others multiply by 0 and add nothing,
     # which the SUM shows the same way NULL did.
     assert _rows(model, {"select": {"measures": ["Product"]}}) == [(7500,)]
+
+
+def test_a_filter_on_the_anchor_keeps_an_empty_customer_out_of_an_average(
+    model: SemanticModel,
+) -> None:
+    # The filter reads Customers, the anchor, inside the aggregate. That made
+    # C5 (no orders, no returns) a row of 0: 615 / 5 instead of 615 / 4.
+    rows = _rows(model, {"select": {"measures": ["Average Net", "Average Net Filtered"]}})
+    assert rows == [(pytest.approx(153.75), pytest.approx(153.75))]
+
+
+def test_a_filter_on_the_anchor_keeps_an_empty_group_empty(model: SemanticModel) -> None:
+    # SOUTH has no fact rows: NULL, so the measure's defaultValue applies.
+    query = {"select": {"dimensions": ["Region"], "measures": ["Net Filtered"]}}
+    assert dict(_rows(model, query)) == {"EAST": 325, "WEST": 300, "NORTH": -10, "SOUTH": -1}
+
+
+def test_a_computed_column_reading_the_anchor_counts_as_reading_it(
+    model: SemanticModel,
+) -> None:
+    # Credit is on Customers, the anchor, so every customer has a row: C5 adds
+    # its credit of 10 although it has no orders and no returns. Through the
+    # computed column Orders.Adjusted the measure names only the two facts, and
+    # C5 read NULL. Per customer: 300 + 1 - 25, 50 + 2, 300 + 3, 4 - 10, 10.
+    totals = _rows(model, {"select": {"measures": ["Net Credit", "Net Credit Computed"]}})
+    assert totals == [(635, 635)]
+    query = {
+        "select": {"dimensions": ["Region"], "measures": ["Net Credit", "Net Credit Computed"]}
+    }
+    assert {row[0]: row[1:] for row in _rows(model, query)}["SOUTH"] == (10, 10)
 
 
 @pytest.mark.parametrize(
