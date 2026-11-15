@@ -1,0 +1,19 @@
+version: 1.0
+settings:
+  defaultDialect: duckdb
+  defaultDataSource: lake
+dataObjects:
+  Orders:
+    code: /data/orders.parquet
+    schema: ""
+    columns:
+      Order Id: {code: id, abstractType: int, primaryKey: true}
+      Order Customer: {code: cust, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+dimensions:
+  Customer: {dataObject: Orders, column: Order Customer, resultType: string}
+measures:
+  Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    resultType: float
+    aggregation: sum

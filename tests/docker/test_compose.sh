@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Tests for the Docker Compose setup in deploy/compose: OBSL alone, with the
 # local lake (COMPOSE_PROFILES=lake), and with the DuckDB workers
-# (compose.pool.yml), including what a worker does when the catalog or S3 is
-# down.
+# (compose.pool.yml) with and without the lake, including what a worker does
+# when the catalog or S3 is down. The shipped examples (obsl.env.example,
+# hardcharger-init.sql.example) run as they are, and with their lake blocks
+# uncommented. The models are in compose_models/.
 #
 # Usage: ./tests/docker/test_compose.sh [--no-build] [--keep]
 #   --no-build  use the OBSL image built before (orionbelt-semantic-layer-api:compose)
@@ -17,6 +19,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 COMPOSE_DIR="$ROOT/deploy/compose"
 PROBE_SCRIPT="$ROOT/tests/docker/compose_probe.py"
+FIXTURE_MODELS="$ROOT/tests/docker/compose_models"
 PROJECT=obsl-compose-test
 NETWORK="${PROJECT}_obsl"
 HOST_PORT=18080
@@ -51,6 +54,7 @@ FILES=()
 dc() { (cd "$COMPOSE_DIR" && docker compose -p "$PROJECT" --env-file "$WORK/compose.env" "${FILES[@]}" "$@"); }
 alone() { FILES=(-f compose.yml); }
 with_lake() { FILES=(-f compose.yml --profile lake); }
+with_workers() { FILES=(-f compose.yml -f compose.pool.yml); }
 with_pool() { FILES=(-f compose.yml -f compose.pool.yml --profile lake); }
 
 cleanup() {
@@ -101,52 +105,13 @@ probe_refused() {  # prints the error code the worker answered with
 # ── Fixtures ─────────────────────────────────────────────────────────
 
 mkdir -p "$WORK/models" "$WORK/data" "$WORK/secrets"
+cp "$FIXTURE_MODELS"/*.yaml "$WORK/models/"
 
-cat > "$WORK/models/files.yaml" <<'EOF'
-version: 1.0
-settings:
-  defaultDialect: duckdb
-  defaultDataSource: lake
-dataObjects:
-  Orders:
-    code: /data/orders.parquet
-    schema: ""
-    columns:
-      Order Id: {code: id, abstractType: int, primaryKey: true}
-      Order Customer: {code: cust, abstractType: string}
-      Amount: {code: amount, abstractType: float}
-dimensions:
-  Customer: {dataObject: Orders, column: Order Customer, resultType: string}
-measures:
-  Revenue:
-    columns: [{dataObject: Orders, column: Amount}]
-    resultType: float
-    aggregation: sum
-EOF
-
-cat > "$WORK/models/lake.yaml" <<'EOF'
-version: 1.0
-settings:
-  defaultDialect: duckdb
-  defaultDataSource: lake
-dataObjects:
-  Lake Orders:
-    code: orders
-    schema: sales
-    columns:
-      Lake Order Id: {code: id, abstractType: int, primaryKey: true}
-      Lake Order Customer: {code: cust, abstractType: string}
-      Lake Amount: {code: amount, abstractType: float}
-dimensions:
-  Lake Customer: {dataObject: Lake Orders, column: Lake Order Customer, resultType: string}
-measures:
-  Lake Revenue:
-    columns: [{dataObject: Lake Orders, column: Lake Amount}]
-    resultType: float
-    aggregation: sum
-EOF
-
-# OBSL alone: a DuckDB source reading the Parquet file.
+# OBSL's settings: the example as shipped; with its lake block and a model
+# uncommented; and settings of one's own, a DuckDB source over the Parquet file.
+cp "$COMPOSE_DIR/obsl.env.example" "$WORK/obsl-shipped.env"
+sed -E -e 's/^# (OBSL_DATABASES=|DB_LAKE_)/\1/' -e 's/^# (MODEL_DIR=.*)/\1/' \
+    -e 's/^# MODEL_FILES=.*/MODEL_FILES=lake.yaml/' "$COMPOSE_DIR/obsl.env.example" > "$WORK/obsl-lake.env"
 cat > "$WORK/obsl-files.env" <<'EOF'
 MODEL_DIR=/models
 MODEL_FILES=files.yaml
@@ -156,23 +121,29 @@ DB_LAKE_TYPE=duckdb
 DB_LAKE_DUCKDB_DATABASE=:memory:
 DB_LAKE_DUCKDB_ALLOWED_PATHS=/data/
 EOF
-# With the lake: the example obsl.env as shipped, with the lake model.
-sed 's/^MODEL_FILES=.*/MODEL_FILES=lake.yaml/' "$COMPOSE_DIR/obsl.env.example" > "$WORK/obsl-lake.env"
-# The workers: the example init SQL as shipped.
-cp "$COMPOSE_DIR/hardcharger-init.sql.example" "$WORK/secrets/hardcharger-init.sql"
-chmod 644 "$WORK/secrets/hardcharger-init.sql"
+# The workers' init SQL: as shipped, and with its lake block uncommented.
+cp "$COMPOSE_DIR/hardcharger-init.sql.example" "$WORK/secrets/init-shipped.sql"
+sed -E 's/^-- (INSTALL|LOAD|CREATE OR REPLACE SECRET|ATTACH|GRANT) /\1 /' \
+    "$COMPOSE_DIR/hardcharger-init.sql.example" > "$WORK/secrets/init-lake.sql"
+chmod 644 "$WORK"/secrets/*.sql
+for f in obsl-lake.env secrets/init-lake.sql; do
+    if grep -q -E '^(# (OBSL_DATABASES|DB_LAKE_|MODEL_)|-- (INSTALL|LOAD|CREATE|ATTACH|GRANT) )' "$WORK/$f"; then
+        echo "a lake line of $f stayed commented: the example's layout changed" >&2
+        exit 1
+    fi
+done
 
-compose_env() {  # compose_env OBSL_ENV_FILE [pool]
+compose_env() {  # compose_env OBSL_ENV_FILE [INIT_SQL]: with INIT_SQL, the workers' settings too
     {
         echo "OBSL_MODELS=$WORK/models"
         echo "OBSL_DATA=$WORK/data"
         echo "OBSL_ENV_FILE=$1"
         echo "OBSL_PORT=$HOST_PORT"
         echo "OBSL_FLIGHT_PORT=18815"
-        if [[ "${2:-}" == pool ]]; then
+        if [[ -n "${2:-}" ]]; then
             echo "HARDCHARGER_ADMIN_PASSWORD=compose-test-admin"
             echo "HARDCHARGER_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-            echo "HARDCHARGER_INIT_SQL=$WORK/secrets/hardcharger-init.sql"
+            echo "HARDCHARGER_INIT_SQL=$2"
             # A short statement timeout, so a query on a stopped S3 ends within the test.
             echo "HC_QUERY_TIMEOUT=10"
         fi
@@ -181,7 +152,7 @@ compose_env() {  # compose_env OBSL_ENV_FILE [pool]
 
 # ── Build ────────────────────────────────────────────────────────────
 
-compose_env "$WORK/obsl-files.env"
+compose_env "$WORK/obsl-shipped.env"
 alone
 if [[ $BUILD -eq 1 ]]; then
     log "Building the OBSL image from this checkout..."
@@ -207,10 +178,15 @@ if [[ "$out" == *HARDCHARGER_ADMIN_PASSWORD* ]]; then pass "compose.pool.yml ref
 
 log "2. OBSL alone"
 alone
+compose_env "$WORK/obsl-shipped.env"
 dc up -d --wait >/dev/null 2>&1 || true
 check "only OBSL runs" "obsl" "$(dc ps --format '{{.Service}}' | sort | tr '\n' ' ' | xargs)"
-check "OBSL is healthy" "running healthy" "$(state obsl | cut -d' ' -f1-2)"
-check "OBSL reads a Parquet file in process" "$EXPECTED_ROWS" "$(query "$FILES_QUERY")"
+check "OBSL is healthy with obsl.env.example as shipped" "running healthy" "$(state obsl | cut -d' ' -f1-2)"
+check "with obsl.env.example as shipped, OBSL serves the image's example model" "orionbelt_1_commerce" \
+    "$(curl -s "http://localhost:${HOST_PORT}/v1/models" | python3 -c 'import json,sys; print(" ".join(m["name"] for m in json.load(sys.stdin)["models"]))')"
+compose_env "$WORK/obsl-files.env"
+dc up -d --wait >/dev/null 2>&1 || true
+check "with a model and a source of its own, OBSL reads a Parquet file in process" "$EXPECTED_ROWS" "$(query "$FILES_QUERY")"
 
 # ── 3. OBSL with the local lake ──────────────────────────────────────
 
@@ -248,14 +224,32 @@ dc up -d --wait >/dev/null 2>&1 || true
 check "the lake is healthy" "running healthy running healthy" \
     "$(echo "$(state lake-s3 | cut -d' ' -f1-2) $(state lake-rest | cut -d' ' -f1-2)")"
 seed_lake
-check "OBSL reads an Iceberg table in process, with obsl.env.example" "$EXPECTED_ROWS" "$(query "$LAKE_QUERY")"
+check "with obsl.env.example's lake block, OBSL reads an Iceberg table in process" "$EXPECTED_ROWS" "$(query "$LAKE_QUERY")"
 
-# ── 4. With the workers ──────────────────────────────────────────────
+PARQUET="SELECT cust, sum(amount) FROM read_parquet('/data/orders.parquet') GROUP BY ALL ORDER BY 1"
+ICEBERG="SELECT cust, sum(amount) FROM lake.sales.orders GROUP BY ALL ORDER BY 1"
 
-log "4. OBSL, the lake and the workers, from a cold start"
+# ── 4. With the workers, without the lake ────────────────────────────
+
+log "4. OBSL and the workers, without the lake, with the shipped examples"
+dc down -v --remove-orphans >/dev/null 2>&1 || true
+with_workers
+compose_env "$WORK/obsl-shipped.env" "$WORK/secrets/init-shipped.sql"
+if dc up -d --wait >/dev/null 2>&1; then pass "up --wait starts OBSL and the workers"; else fail "up --wait" "$(dc ps -a --format '{{.Service}} {{.State}} {{.Health}}' | tr '\n' ';')"; fi
+check "no lake runs" "hardcharger-1 hardcharger-2 obsl" "$(dc ps --format '{{.Service}}' | sort | tr '\n' ' ' | xargs)"
+for w in hardcharger-1 hardcharger-2; do
+    check "$w is healthy, with no catalog to attach" "running healthy 0" "$(state $w)"
+    check "$w: reads a file in its location grant" "$EXPECTED_ROWS" "$(probe_rows $w "$PARQUET")"
+    check "$w: refuses object storage without a grant" "UNAUTHORIZED" \
+        "$(probe_refused $w "SELECT * FROM read_parquet('s3://warehouse/x.parquet')")"
+done
+
+# ── 5. With the workers and the lake ─────────────────────────────────
+
+log "5. OBSL, the lake and the workers, from a cold start, with the lake blocks"
 dc down -v --remove-orphans >/dev/null 2>&1 || true
 with_pool
-compose_env "$WORK/obsl-lake.env" pool
+compose_env "$WORK/obsl-lake.env" "$WORK/secrets/init-lake.sql"
 if dc up -d --wait >/dev/null 2>&1; then pass "up --wait starts everything at once"; else fail "up --wait" "$(dc ps -a --format '{{.Service}} {{.State}} {{.Health}}' | tr '\n' ';')"; fi
 for w in hardcharger-1 hardcharger-2; do
     check "$w is healthy, without a restart while the catalog started" "running healthy 0" "$(state $w)"
@@ -274,8 +268,6 @@ print('ok')" 2>&1 | tail -1)
 check "the OBSL container reaches every worker by name" "ok" "$reach"
 check "OBSL still reads the lake in process" "$EXPECTED_ROWS" "$(query "$LAKE_QUERY")"
 
-PARQUET="SELECT cust, sum(amount) FROM read_parquet('/data/orders.parquet') GROUP BY ALL ORDER BY 1"
-ICEBERG="SELECT cust, sum(amount) FROM lake.sales.orders GROUP BY ALL ORDER BY 1"
 for w in hardcharger-1 hardcharger-2; do
     log "   $w, as the source's store user $STORE_USER (each worker has its own store)"
     check "$w: reads a file in its location grant" "$EXPECTED_ROWS" "$(probe_rows $w "$PARQUET")"
@@ -291,9 +283,9 @@ for w in hardcharger-1 hardcharger-2; do
     check "$w: refuses a wrong password" "UNAUTHENTICATED" "$(probe_refused $w "SELECT 1" wrong-password)"
 done
 
-# ── 5. Failures ──────────────────────────────────────────────────────
+# ── 6. Failures ──────────────────────────────────────────────────────
 
-log "5. The catalog or S3 down"
+log "6. The catalog or S3 down"
 docker stop "${PROJECT}-lake-rest-1" >/dev/null
 check "catalog down while a worker runs: an Iceberg query fails at once" "INVALID_ARGUMENT" \
     "$(probe_refused hardcharger-2 "$ICEBERG")"

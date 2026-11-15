@@ -20,8 +20,17 @@ cp .env.example .env            # which files, images, ports
 cp obsl.env.example obsl.env    # OBSL's settings: models and data sources
 mkdir -p models data            # your models, and the files they read
 docker compose up -d --wait
-curl http://localhost:8080/health
+curl http://localhost:8080/v1/models
 ```
+
+As shipped, OBSL starts with the example model built into its image. Its data
+is not in the image, so it compiles queries but cannot run them.
+
+**Your own models.** Put the model files in `models/` and the files they read
+in `data/`. In `obsl.env`, uncomment `MODEL_DIR=/models` and name the files in
+`MODEL_FILES`, add the data sources they use
+([Data Sources](https://ralforion.com/orionbelt-semantic-layer/guide/data-sources/)),
+and run `docker compose up -d --wait` again.
 
 OBSL is built from this checkout. To run a published image instead, set
 `OBSL_IMAGE` in `.env`, for example
@@ -50,10 +59,18 @@ OBSL is built from this checkout. To run a published image instead, set
 
 `COMPOSE_PROFILES=lake` adds `lake-s3` (S3 at `lake-s3:9000`, keys `lake-key` /
 `lake-secret`, bucket `warehouse`) and `lake-rest` (the Iceberg REST catalog at
-`http://lake-rest:8181`, warehouse `s3://warehouse/`). `obsl.env.example` holds
-a DuckDB source `lake` that reads both in process, and
-`hardcharger-init.sql.example` does the same for the workers. The lake keeps
-its data in its containers: `docker compose down` deletes it.
+`http://lake-rest:8181`, warehouse `s3://warehouse/`). The lake keeps its data
+in its containers: `docker compose down` deletes it.
+
+The example files read the lake only once you say so, since without the
+profile there is no catalog to attach:
+
+| File | Uncomment | Then |
+|---|---|---|
+| `obsl.env` | The block after "With the local lake" | A DuckDB source `lake` reads files under `/data` and the lake's Iceberg tables in process |
+| `secrets/hardcharger-init.sql` | The block after "With the local lake" | The workers read the lake too. Uncomment it only with the profile: a worker whose init SQL cannot attach the catalog does not start |
+
+For your own S3 and catalog, uncomment the same blocks and change the values.
 
 ## DuckDB workers
 
@@ -67,15 +84,17 @@ OBSL runs every source in process, as without the workers.
 - **Reached by name.** The workers publish no ports. On the project network
   they are `hardcharger://hardcharger-1?tls=false`, and so on.
 - **The init SQL** (`secrets/hardcharger-init.sql`, mounted as a Compose secret)
-  runs at each worker's start: it loads DuckDB's extensions, creates the
-  storage and catalog secrets, attaches the Iceberg catalog, and creates one
-  user per OBSL source with the locations it may read
-  (`GRANT READ FILESYSTEM | READ OBJECT STORAGE ON LOCATION ...`). A source's
-  user cannot create secrets, attach or read outside its grants. Each worker
-  keeps its own users, created by the same file. On Linux the file must be
-  readable by the worker's user (uid 999): `chmod 644`.
+  runs at each worker's start. As shipped, it creates one user per OBSL source
+  with the locations it may read (`GRANT READ FILESYSTEM ON LOCATION '/data/'`).
+  Its lake block adds DuckDB's extensions, the storage and catalog secrets, the
+  `ATTACH` of the Iceberg catalog, and the grants on them (`READ OBJECT
+  STORAGE`, `SELECT ON CATALOG`). A source's user cannot create secrets, attach
+  or read outside its grants. Each worker keeps its own users, created by the
+  same file. On Linux the file must be readable by the worker's user (uid
+  999): `chmod 644`.
 - **Extensions.** `INSTALL` downloads them when a worker's container is
-  created, so the workers need DuckDB's extension repository then.
+  created, so with the lake block the workers need DuckDB's extension
+  repository then.
 - **Same paths.** `./data` is mounted at `/data` in OBSL and in every worker,
   because the grants and the models name that path.
 - **Size.** Each worker gets `HC_CPUS` (2) and `HC_MEMORY` (4g), and DuckDB

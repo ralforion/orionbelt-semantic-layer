@@ -50,9 +50,13 @@ docker compose up -d --wait
 
 - **The image.** OBSL is built from the checkout; `OBSL_IMAGE` in `.env` runs a
   published image instead.
-- **The example `obsl.env`** declares a DuckDB source that reads the local
-  lake's files and Iceberg tables in process
-  ([Files and Lakehouse Tables](../guide/files-and-lakehouse.md)).
+- **Models.** As shipped, OBSL starts with the example model built into its
+  image, which compiles queries but has no data to run them. Put your models in
+  `models/`, and name them in `obsl.env` (`MODEL_DIR=/models`, `MODEL_FILES`).
+- **The local lake.** The example `obsl.env` has a block, commented out, for a
+  DuckDB source that reads the lake's files and Iceberg tables in process
+  ([Files and Lakehouse Tables](../guide/files-and-lakehouse.md)). Uncomment it
+  with the profile: without the profile there is no catalog to attach.
 - **Federation's spill files** go to a volume at `/app/spill` (below).
 - **DuckDB workers.** `compose.pool.yml` adds DuckDB servers beside OBSL. OBSL
   does not send queries to them yet.
