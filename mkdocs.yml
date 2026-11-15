@@ -190,5 +190,6 @@ nav:
           - API Schemas and Settings: reference/api/schemas.md
       - Architecture: reference/architecture.md
       - Configuration: reference/configuration.md
+      - Metrics: reference/metrics.md
       - Arrow type fidelity: reference/type-fidelity.md
   - Drivers & Flight SQL: drivers.md

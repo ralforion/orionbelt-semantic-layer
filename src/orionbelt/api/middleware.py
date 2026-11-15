@@ -12,6 +12,7 @@ import structlog
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,88 @@ class RequestTimingMiddleware(BaseHTTPMiddleware):
         duration_ms = (time.monotonic() - start) * 1000
         response.headers["X-Request-Duration-Ms"] = f"{duration_ms:.1f}"
         return response
+
+
+class MetricsMiddleware:
+    """Count each REST request for the Prometheus metrics (``service/metrics.py``).
+
+    By method, the route's template (``/v1/sessions/{session_id}/...``, so the
+    series do not grow with sessions; ``unmatched`` for a path no route has),
+    and status. It marks the request's queries as the ``rest`` surface. A
+    plain ASGI middleware: it passes requests straight on while the metrics
+    are off.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        from orionbelt.service import metrics
+
+        if scope["type"] != "http" or not metrics.enabled():
+            await self.app(scope, receive, send)
+            return
+        status = 500
+        started = time.monotonic()
+        surface = metrics.SURFACE.set("rest")
+
+        async def record_status(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, record_status)
+        finally:
+            metrics.SURFACE.reset(surface)
+            metrics.observe_http(
+                scope["method"], _route_label(scope), status, time.monotonic() - started
+            )
+
+
+def _route_label(scope: Scope) -> str:
+    """The template of the route a request matched, ``unmatched`` for none.
+
+    FastAPI keeps a route's path relative to the router that holds it
+    (``/models`` for ``/v1/models``). The request's leading segments supply
+    the routers' prefixes, and the result is kept only when it is a template
+    the app declares, so no value of a path parameter can reach the label;
+    otherwise the relative path is the label.
+    """
+    template = getattr(scope.get("route"), "path", None)
+    if not isinstance(template, str) or not template:
+        return "unmatched"
+    path = scope.get("path", "")
+    root = scope.get("root_path", "")
+    if root and path.startswith(root):
+        path = path[len(root) :]
+    head = [part for part in path.split("/") if part]
+    tail = [part for part in template.split("/") if part]
+    if len(head) > len(tail):
+        candidate = "/" + "/".join([*head[: len(head) - len(tail)], *tail])
+        if candidate in _declared_templates(scope.get("app")):
+            return candidate
+    return template
+
+
+_TEMPLATES: dict[int, frozenset[str]] = {}
+
+
+def _declared_templates(app: object) -> frozenset[str]:
+    """The path templates an app declares (its OpenAPI paths), read once per app."""
+    if app is None:
+        return frozenset()
+    key = id(app)
+    found = _TEMPLATES.get(key)
+    if found is None:
+        openapi = getattr(app, "openapi", None)
+        try:
+            found = frozenset(openapi().get("paths", {})) if callable(openapi) else frozenset()
+        except Exception:  # noqa: BLE001 - a label without the prefix is still bounded
+            found = frozenset()
+        _TEMPLATES[key] = found
+    return found
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

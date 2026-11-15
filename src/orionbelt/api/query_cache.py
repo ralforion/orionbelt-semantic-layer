@@ -14,6 +14,7 @@ the pgwire layer adapts it into an ``ExecutionResult`` for wire encoding.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import logging
 import time
@@ -547,8 +548,11 @@ async def execute_query_with_cache(
     if run is not None:
         exec_result = await run()
     else:
+        # In a copy of this context, so the thread knows the query's surface
+        # (and the request's log context) as this coroutine does.
         exec_result = await asyncio.get_running_loop().run_in_executor(
             executor,
+            contextvars.copy_context().run,
             functools.partial(
                 execute_sql,
                 compile_result.sql,
@@ -817,6 +821,7 @@ async def execute_federated_with_cache(
                 tables = await run_at_once(legs)
             return await asyncio.get_running_loop().run_in_executor(
                 pool,
+                contextvars.copy_context().run,
                 federation.combine,
                 plan,
                 tables,
